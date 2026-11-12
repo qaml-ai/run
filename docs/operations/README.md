@@ -27,6 +27,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Sandbox](sandbox.md): the codemode sandbox's layers and limits
 - [Voice pipeline](voice-pipeline.md): media workers, the control/media protocol, streaming, audio hygiene, turn latency
 - [Integration seam](integration.md)
+- [CI on the sprite pool](sprite-ci.md): `scripts/sprite-ci.mjs` runs CI's gates for a PR head on the sprites and posts the `sprite-ci` commit status, for when GitHub Actions is down
 
 ## Pending removals
 

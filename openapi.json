@@ -4156,6 +4156,26 @@
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
           },
+          "workflows": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "maxBudgetUsd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "required": [
+                  "maxBudgetUsd"
+                ]
+              }
+            ],
+            "description": "The workflows builtin (workflow_start and its kin), on for an agent with delegate settings where the account has workflows (the Workers runtime): false turns it off; { maxBudgetUsd } bounds one workflow's budget (default $100)"
+          },
           "mcpServers": {
             "type": "array",
             "items": {
@@ -7915,6 +7935,273 @@
             "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
           }
         }
+      },
+      "Workflow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "wf_7c1d0b6e2f9a4c3b8d5e1f0a2b3c4d5e6f7a8b9c"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "waiting",
+              "paused",
+              "completed",
+              "failed",
+              "aborted",
+              "budget_exhausted"
+            ]
+          },
+          "pauseReason": {
+            "type": "string",
+            "description": "Why it paused: user, payer_exhausted, confirm_rerun, waiting_on_gate, capacity_refused, or a script fault"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "result": {
+            "description": "What the script returned, once completed"
+          },
+          "error": {
+            "type": "string"
+          },
+          "budget": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          },
+          "concurrency": {
+            "type": "integer"
+          },
+          "spent": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number"
+              },
+              "calls": {
+                "type": "integer"
+              },
+              "inputTokens": {
+                "type": "number"
+              },
+              "cachedInputTokens": {
+                "type": "number"
+              },
+              "outputTokens": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "usd",
+              "calls",
+              "inputTokens",
+              "cachedInputTokens",
+              "outputTokens"
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Effects by status"
+          },
+          "args": {},
+          "classes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "owner": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "agent",
+                  "workflow"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "description": "The agent that started it with its workflows builtin, which owns it"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "revision",
+          "step",
+          "budget",
+          "concurrency",
+          "spent",
+          "counts",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": {}
+      },
+      "WorkflowStart": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "description": "The workflow's JavaScript: an async function body using agent(), parallel(), gate(), sleep(), log(), phase() and `args`"
+          },
+          "args": {
+            "description": "JSON the script reads as `args`"
+          },
+          "budget": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "usd"
+            ],
+            "description": "The most it may spend (USD), or null for no cap; it pauses with budget_exhausted when spent"
+          },
+          "concurrency": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Sub-agents at once (default 8)"
+          },
+          "classes": {
+            "type": "object",
+            "properties": {
+              "worker": {
+                "type": "string",
+                "enum": [
+                  "fast",
+                  "strong",
+                  "max"
+                ]
+              },
+              "critic": {
+                "type": "string",
+                "enum": [
+                  "fast",
+                  "strong",
+                  "max"
+                ]
+              },
+              "lead": {
+                "type": "string",
+                "enum": [
+                  "fast",
+                  "strong",
+                  "max"
+                ]
+              }
+            },
+            "description": "Pin a type's model class for the whole workflow"
+          },
+          "name": {
+            "type": "string"
+          },
+          "allowFastJudgment": {
+            "type": "boolean",
+            "description": "Let critics and leads run on the fast class"
+          }
+        },
+        "required": [
+          "script",
+          "budget"
+        ]
+      },
+      "WorkflowItems": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": {}
+      },
+      "WorkflowEvents": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      },
+      "WorkflowEdit": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it changed; kept with the revision"
+          },
+          "rerunConfirmPercent": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "script",
+          "reason"
+        ]
       },
       "Decisions": {
         "type": "object",
@@ -21337,6 +21624,497 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Transcription"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The workflow, started: its first step runs at once. An Idempotency-Key header gives the same workflow for the same key. 403 WORKFLOWS_OFF where the account does not have workflows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its status, phase, revision, counts by effect status, spend and, once it ends, its result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/items": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "phase",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its effects (agents, gates, timers) with their keys, attempts, status, results and costs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowItems"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/events": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its events (created, phase, paused, completed …), oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowEvents"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/diff": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "revision",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What a revision of its script kept, issued and dropped, and why it changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/script": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowEdit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The new revision: effects whose keys and arguments are unchanged keep their results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/pause": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paused: nothing new starts; { children: \"abort\" } stops its running sub-agents too",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/resume": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resumed; { rerun: [keys] } runs those effects again. Effects refused for money are issued again under a new attempt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/abort": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aborted for good: its running sub-agents stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows/{id}/budget": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its new budget, { usd } (null: no cap)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
                 }
               }
             }

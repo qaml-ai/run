@@ -18,6 +18,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Application metadata](guides/agents.md): project data in agent lists and indexed filtering
    - [Projects](guides/projects.md): an agent builds a bot, site or report; your app checks and publishes versions
    - [Computers](guides/computers.md): native Linux computers, remote browsers and Cloudflare Tunnel; forking a computer into sub-agents
+   - [Workflows](guides/workflows.md): a script that runs many sub-agents durably under a budget, outliving the turn; editing, rerunning, the API and the agent builtin
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins
    - [Human input](guides/human-input.md): approvals, questions and forms; answering
    - [Structured output](guides/structured-output.md): a run's answer as an object in your schema (zod, pydantic, JSON Schema)

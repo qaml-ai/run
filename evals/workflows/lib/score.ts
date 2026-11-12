@@ -2,9 +2,10 @@
 // default, since the tree is model-written code), and scanning a tree for the ways a swarm games a test gate:
 // deleted or skipped tests, stubs, type escapes and edits to files it was told to leave alone.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -142,7 +143,7 @@ export interface ExecResult { status: number | null; stdout: string; stderr: str
  * Runs `command` with `tree` copied to /work (and `mounts` read-only at their container paths). In docker: no network,
  * 4 CPUs and 4 GiB, as today's Cloudflare job limit; on the host only for trusted trees (the scorers' self-test).
  */
-export function execIn(sandbox: Sandbox, tree: string, command: string[], options: { env?: Record<string, string>; mounts?: Record<string, string>; timeoutMs?: number } = {}): ExecResult {
+export function execIn(sandbox: Sandbox, tree: string, command: string[], options: { env?: Record<string, string>; mounts?: Record<string, string>; timeoutMs?: number; image?: string } = {}): ExecResult {
   const work = mkdtempSync(join(tmpdir(), "wf-eval-score-"));
   try {
     cpSync(tree, work, { recursive: true });
@@ -153,7 +154,7 @@ export function execIn(sandbox: Sandbox, tree: string, command: string[], option
     const result = sandbox === "docker"
       ? spawnSync("docker", ["run", "--rm", "--network", "none", "--cpus", "4", "--memory", "4g", "--pids-limit", "512", "-v", `${work}:/work`, "-w", "/work",
         ...Object.entries(options.mounts ?? {}).flatMap(([at, from]) => ["-v", `${from}:${at}:ro`]),
-        ...Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]), SCORE_IMAGE, ...argv], { encoding: "utf8", timeout, maxBuffer: 64 << 20 })
+        ...Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]), options.image ?? SCORE_IMAGE, ...argv], { encoding: "utf8", timeout, maxBuffer: 64 << 20 })
       : spawnSync(argv[0]!, argv.slice(1), { cwd: work, env: { PATH: process.env.PATH, HOME: work, ...env }, encoding: "utf8", timeout, maxBuffer: 64 << 20 });
     return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" };
   } finally { rmSync(work, { recursive: true, force: true }); }
@@ -186,6 +187,21 @@ export function dockerReady(): { ok: boolean; why?: string } {
   if (info.status === 0) return { ok: true };
   const pull = spawnSync("docker", ["pull", SCORE_IMAGE], { encoding: "utf8", timeout: 300_000 });
   return pull.status === 0 ? { ok: true } : { ok: false, why: (pull.stderr || pull.error?.message || "docker unavailable").trim().slice(0, 300) };
+}
+
+/**
+ * A task's own judge image, built from its `judge/` directory (a Dockerfile with pinned toolchains) and tagged by the
+ * hash of that directory, so an edited Dockerfile builds a new image and an unchanged one is reused. Building fetches
+ * the toolchain; scoring never does (the container has no network).
+ */
+export function judgeImage(dir: string): string {
+  const hash = createHash("sha256");
+  for (const file of walk(dir)) hash.update(file).update(readFileSync(join(dir, file)));
+  const tag = `wfeval-judge-${basename(dirname(dir))}:${hash.digest("hex").slice(0, 12)}`;
+  if (spawnSync("docker", ["image", "inspect", tag], { encoding: "utf8" }).status === 0) return tag;
+  const built = spawnSync("docker", ["build", "-q", "-t", tag, dir], { encoding: "utf8", timeout: 1_200_000 });
+  if (built.status !== 0) throw new Error(`Building the judge image ${tag}: ${(built.stderr || built.error?.message || "").slice(0, 500)}`);
+  return tag;
 }
 
 /** The directory size in bytes (for reporting what a run produced). */

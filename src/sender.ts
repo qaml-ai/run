@@ -17,7 +17,7 @@ export const CONTEXT_OPEN = "<<<RUNTIME_CONTEXT>>>";
 export const CONTEXT_CLOSE = "<<<END_RUNTIME_CONTEXT>>>";
 const MARKER = /<<<\s*(?:END_)?RUNTIME_CONTEXT\s*>>>/gi;
 /** The tags of a sub-agent's notification, message and progress blocks, which only the runtime writes either. */
-const AGENT_TAG = /<\s*\/?\s*agent_(?:notification|message|updates)\b/gi;
+const AGENT_TAG = /<\s*\/?\s*(?:agent_(?:notification|message|updates)|workflow_notification)\b/gi;
 /**
  * The marker of a tool result's content part that carries <agent_updates> (multi-agent.ts `agentUpdates`): only the
  * runtime makes it, as a tool's own parts are rebuilt as `{ type, text }` (mcp-results.ts `contentResult`).
@@ -81,6 +81,8 @@ const attribute = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_-
 function noticeBlock(source: MessageSource, metadata: Record<string, unknown> | undefined, parts: Part[]): Part[] {
   const text = escapeParts(parts).flatMap(part => part.type === "text" && part.text !== undefined ? [part.text] : []).join("\n");
   if (metadata?.kind === "message") return [{ type: "text", text: `<agent_message name="${attribute(source.name)}">\n${text}\n</agent_message>` }];
+  // A workflow the agent owns reporting a change (it ended, paused, or finished a phase): workflow-object.ts.
+  if (metadata?.kind === "workflow") return [{ type: "text", text: `<workflow_notification workflow="${attribute(metadata.workflowId)}" name="${attribute(source.name)}" status="${attribute(metadata.status)}" event="${attribute(metadata.event)}">\n${text}\n</workflow_notification>` }];
   const block = (name: unknown, meta: Record<string, unknown> | undefined, body: string) =>
     `<agent_notification name="${attribute(name)}" status="${attribute(meta?.status)}"${runAttributes(meta)}>\n${body}\n</agent_notification>`;
   // Endings of other sub-agents that rode in this turn (a batch, multi-agent.ts BatchedEnding): a block each.

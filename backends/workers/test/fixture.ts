@@ -63,6 +63,8 @@ export async function startFixture(
     entrypoint?: string;
     scheduled?: boolean;
     signal?: AbortSignal;
+    /** No AGENT_PUBLIC_URL, as a local `wrangler dev` or a self-host without one: origins come from requests. */
+    noPublicUrl?: boolean;
   } = {},
 ) {
   const token =
@@ -179,6 +181,7 @@ export async function startFixture(
     ...(options.vars?.AGENT_PUBLIC_URL === "" ? { AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`, PUBLIC_URL: `http://127.0.0.1:${port}` } : {}),
     ...(options.modelURL ? { TEST_MODEL_BASE_URL: options.modelURL } : {}),
   };
+  if (options.noPublicUrl) delete config.vars.AGENT_PUBLIC_URL;
   const configPath = join(storage, "wrangler.json");
   const assetDirectory = join(storage, "public");
   await publicAssets(assetDirectory, {

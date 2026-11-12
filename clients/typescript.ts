@@ -493,6 +493,11 @@ export interface CreateAgentOptions extends AgentOptions {
   /** Who the agent may hand tasks to (sub-agents), without a definition; it adds the delegate builtin. See the multi-agent guide. */
   delegate?: DelegateSettings;
   /**
+   * The `workflows` builtin, on for an agent with `delegate` settings (Workers runtimes with workflows enabled): `false` turns it
+   * off; `{ maxBudgetUsd }` is the most one workflow it starts may spend (default $100). See the workflows guide.
+   */
+  workflows?: boolean | { maxBudgetUsd: number };
+  /**
    * Remote MCP servers of the agent's own, without a definition (one made from a definition has its definition's). They
    * carry no credentials: auth `{ type: "runtime" }` (identity tokens) or none. A server that needs a token or headers goes in a definition.
    */
@@ -1158,7 +1163,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["networking", "metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "computerLimit", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["networking", "metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "computerLimit", "builtins", "decide", "delegate", "workflows", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1732,6 +1737,178 @@ export class Voice {
   deleteRecording(id: string): Promise<{ id: string; deleted: true }> { return this.transport.json(`/v1/voice/recordings/${encodeURIComponent(id)}`, this.key(), "DELETE"); }
 }
 
+/** A workflow's status. `waiting`: nothing to do until a child, gate or timer answers; `paused` says why in `pauseReason`. */
+export type WorkflowStatus = "running" | "waiting" | "paused" | "completed" | "failed" | "aborted" | "budget_exhausted";
+/** Why a workflow paused: a person, a payer out of credit, an edit that needs a confirm, a gate past its expiry, a refused capacity slot, or a fault code. */
+export type WorkflowPauseReason = "user" | "payer_exhausted" | "confirm_rerun" | "waiting_on_gate" | "capacity_refused" | (string & {});
+/** What a sub-agent in a workflow is allowed to do (see the workflows guide). */
+export type WorkflowAgentType = "worker" | "critic" | "lead";
+/** How hard a sub-agent thinks: `camelrun/fast`, `camelrun/strong` or `camelrun/max`, resolved at each call. */
+export type WorkflowModelClass = "fast" | "strong" | "max";
+/** What `workflows.start` sends: the script, its `args`, a budget (`usd: null` for no cap) and the rest. */
+export interface WorkflowStart {
+  /** The workflow's JavaScript: its body runs as an async function, at most 256 KiB. */
+  script: string;
+  /** JSON the script reads as `args`, at most 64 KiB. */
+  args?: unknown;
+  /** The most it may spend (USD); it pauses with status `budget_exhausted` once that is spent. `null`: no cap. */
+  budget: { usd: number | null };
+  /** Sub-agents at once, 1 to 64 (default 8). */
+  concurrency?: number;
+  /** Pin a type's model class for the whole workflow, e.g. `{ worker: "strong" }`. */
+  classes?: Partial<Record<WorkflowAgentType, WorkflowModelClass>>;
+  /** 1 to 100 letters, digits, spaces and `_ . : -`. */
+  name?: string;
+  /** Let `critic` and `lead` agents run on the `fast` class when pinned there (refused otherwise). */
+  allowFastJudgment?: boolean;
+}
+/** A workflow as `GET /v1/workflows/{id}` shows it: status, where it is, what it spent and what it was started with. */
+export interface WorkflowSummary {
+  id: string;
+  status: WorkflowStatus;
+  pauseReason?: WorkflowPauseReason;
+  /** Its script's revision: 1 at the start, one more per edit. */
+  revision: number;
+  /** Steps run so far (each step replays the script with the results landed since the last). */
+  step: number;
+  /** The script's latest `phase(title)`. */
+  phase?: string;
+  /** What the script returned, once `completed`. */
+  result?: unknown;
+  /** Why it `failed`. */
+  error?: string;
+  /** A fault of the runner's (not the script's), with its code. */
+  fault?: { code: string; message: string };
+  budget: { usd: number | null };
+  concurrency: number;
+  spent: { usd: number; calls: number; inputTokens: number; cachedInputTokens: number; outputTokens: number };
+  /** Its effects by status: `pending`, `running`, `done`, `failed`, `refused`, `aborted`. */
+  counts: Record<string, number>;
+  throttledUntil?: number;
+  createdAt: number;
+  updatedAt: number;
+  name?: string;
+  args?: unknown;
+  classes?: Partial<Record<WorkflowAgentType, WorkflowModelClass>>;
+  /** Who started it: an agent through the `workflows` builtin (which then owns it); absent for a start through the API. */
+  owner?: { kind: "agent" | "workflow"; id: string };
+}
+/** One effect of a workflow: an `agent()`, `gate()` or `sleep()` call, by its key. */
+export interface WorkflowItem {
+  key: string;
+  /** 1, one more each time the effect is re-issued (a resume with `rerun`, a refused effect re-issued). */
+  attempt: number;
+  /** Whether this attempt is the one that counts. */
+  current: boolean;
+  kind: "agent" | "gate" | "timer" | (string & {});
+  origin: string;
+  status: "pending" | "running" | "done" | "failed" | "refused" | "aborted" | (string & {});
+  phase?: string;
+  revision: number;
+  seenRevision: number;
+  /** What the script called it with (an agent's prompt and options, a gate's question). */
+  args: unknown;
+  /** Its answer, once `done`. */
+  result?: unknown;
+  /** Why it failed or was refused. */
+  reason?: string;
+  issuedAt: number;
+  endedAt?: number;
+  costUsd?: number;
+  model?: string;
+  /** Its place in the journal: pass the page's `next` as `after` for the next page. */
+  ord: number;
+}
+export interface WorkflowItemsQuery { after?: number; limit?: number; status?: WorkflowItem["status"]; phase?: string; kind?: WorkflowItem["kind"] }
+export interface WorkflowEvent { seq: number; at: number; type: string; data?: unknown }
+/** What a revision did to the journal: keys it kept from before, keys it issued new, and current keys it has not reached yet. */
+export interface WorkflowDiff { revision: number; reason?: string; kept: string[]; issued: string[]; unseen: string[] }
+export interface WorkflowEdit {
+  /** The new script. */
+  script: string;
+  /** Why it changed; kept with the revision. */
+  reason: string;
+  /** An edit that re-issues more than this share (percent) of the finished effects pauses for a confirm (default 25; 100 never does). */
+  rerunConfirmPercent?: number;
+}
+/** The statuses `workflows.wait` ends on: the workflow ended, or needs someone (a resume, a budget, a gate). */
+const WORKFLOW_SETTLED: ReadonlySet<WorkflowStatus> = new Set(["completed", "failed", "aborted", "paused", "budget_exhausted"]);
+
+/**
+ * Workflows (`runtime.workflows`, `agents.workflows`): a JavaScript script that runs many sub-agents, durably, under a budget,
+ * and outlives the call that started it. Workers runtimes only, enabled per account (403 `WORKFLOWS_OFF` otherwise).
+ * See docs/guides/workflows.md.
+ *
+ *   const wf = await agents.workflows.start({ script, args: { files }, budget: { usd: 20 } });
+ *   const done = await agents.workflows.wait(wf.id);
+ */
+export class Workflows {
+  private readonly transport: Transport;
+  private readonly key: () => string;
+  constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
+  private path(id: string, action = "") {
+    if (!/^wf_[A-Za-z0-9_-]{1,80}$/.test(id)) throw new AgentError("Invalid workflow id");
+    return `/v1/workflows/${encodeURIComponent(id)}${action}`;
+  }
+  /** Start one. With `idempotencyKey`, a retry with the same key is the same workflow (and the call is retried on transport failures). */
+  start(input: WorkflowStart, request: { idempotencyKey?: string } = {}): Promise<WorkflowSummary> {
+    const key = request.idempotencyKey;
+    return this.transport.json("/v1/workflows", this.key(), "POST", input, !!key, key ? { "Idempotency-Key": key } : {});
+  }
+  /** Its status, counts, spend, phase and, once it ends, its result. */
+  get(id: string): Promise<WorkflowSummary> { return this.transport.json(this.path(id), this.key()); }
+  /** Its effects (agents, gates, timers) in journal order, a page at a time (`limit` at most 500); pass `next` back as `after`. */
+  items(id: string, query: WorkflowItemsQuery = {}): Promise<{ items: WorkflowItem[]; next?: number }> {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`${this.path(id, "/items")}${params.size ? `?${params}` : ""}`, this.key());
+  }
+  /** Its events (created, step, paused, resumed, edited, ended…) after `after`, at most `limit` (500). */
+  events(id: string, query: { after?: number; limit?: number } = {}): Promise<{ events: WorkflowEvent[] }> {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`${this.path(id, "/events")}${params.size ? `?${params}` : ""}`, this.key());
+  }
+  /** What a revision (default: the current one) kept, issued and has not reached. */
+  diff(id: string, revision?: number): Promise<WorkflowDiff> {
+    return this.transport.json(`${this.path(id, "/diff")}${revision !== undefined ? `?revision=${revision}` : ""}`, this.key());
+  }
+  /**
+   * Replace its script: a new revision, replayed at the next step. Effects whose keys and arguments are unchanged keep their
+   * results; new or changed ones run. Not retried: a retry would make a second revision.
+   */
+  edit(id: string, input: WorkflowEdit): Promise<{ revision: number; workflow: WorkflowSummary }> {
+    return this.transport.json(this.path(id, "/script"), this.key(), "PUT", input, false);
+  }
+  /** Pause it: nothing new starts. Running sub-agents finish unless `children: "abort"` stops them (they re-run on resume). */
+  pause(id: string, options: { children?: "abort" } = {}): Promise<WorkflowSummary> {
+    return this.transport.json(this.path(id, "/pause"), this.key(), "POST", options);
+  }
+  /** Resume a paused one. `rerun` names effect keys to run again (a new attempt each). Not retried. */
+  resume(id: string, options: { rerun?: string[] } = {}): Promise<WorkflowSummary> {
+    return this.transport.json(this.path(id, "/resume"), this.key(), "POST", options, false);
+  }
+  /** Stop it for good: its running sub-agents stop, the journal stays readable. */
+  abort(id: string): Promise<WorkflowSummary> { return this.transport.json(this.path(id, "/abort"), this.key(), "POST", {}); }
+  /** Change its budget (USD; `null`: no cap). One at `budget_exhausted` runs again once the budget is above what it spent. */
+  budget(id: string, usd: number | null): Promise<WorkflowSummary> {
+    return this.transport.json(this.path(id, "/budget"), this.key(), "POST", { usd });
+  }
+  /**
+   * Poll until it settles: `completed`, `failed`, `aborted`, `paused` or `budget_exhausted` (read `pauseReason` and decide).
+   * Every `pollMs` (default 2 s); throws an AgentError after `timeoutMs` (default: no limit), with the latest summary as `workflow`.
+   */
+  async wait(id: string, options: { timeoutMs?: number; pollMs?: number; signal?: AbortSignal } = {}): Promise<WorkflowSummary> {
+    const deadline = options.timeoutMs === undefined ? Infinity : Date.now() + options.timeoutMs;
+    const pollMs = Math.max(100, options.pollMs ?? 2000);
+    for (;;) {
+      const workflow = await this.get(id);
+      if (WORKFLOW_SETTLED.has(workflow.status)) return workflow;
+      if (options.signal?.aborted) throw options.signal.reason;
+      if (Date.now() + pollMs > deadline) throw Object.assign(new AgentError(`Workflow ${id} is still ${workflow.status} after ${options.timeoutMs} ms`), { workflow });
+      await pause(pollMs);
+    }
+  }
+}
+
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
 export type UsageOptions = { days?: number; groupBy?: ("agent" | "definition" | "endUser" | "bucket" | "model" | "day")[]; rollup?: boolean; limit?: number; cursor?: string; workspaceId?: string };
 export interface GroupedUsage {
@@ -1753,6 +1930,8 @@ export class AgentRuntime {
   /** Voice calls held for your bot: `create`, `get`, `list`, `update`, `end`. */
   readonly voice: Voice;
   readonly voices: Voices;
+  /** Workflows (Workers runtimes, enabled per account): `start`, `get`, `items`, `events`, `edit`, `pause`, `resume`, `abort`, `budget`, `wait`. */
+  readonly workflows: Workflows;
   constructor(options: RuntimeOptions = {}) {
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
     options = { ...options, apiKey: options.apiKey ?? (env.CAMELRUN_API_KEY || env.CAMELAI_API_KEY || env.AGENT_RUNTIME_TOKEN),
@@ -1763,6 +1942,7 @@ export class AgentRuntime {
     this.images = new Images(this.transport, () => this.operator());
     this.voice = new Voice(this.transport, () => this.operator());
     this.voices = new Voices(this.transport, () => this.operator());
+    this.workflows = new Workflows(this.transport, () => this.operator());
   }
   /**
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;

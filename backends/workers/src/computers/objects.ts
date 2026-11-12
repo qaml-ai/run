@@ -246,9 +246,10 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
         await transaction(this.env, async sql => reserveComputer(sql, payer.tenant, payer.agent, machine, until, Date.now(), await limit));
         await this.ctx.storage.put("computer:permit", { tenant: payer.tenant, machine });
       },
-      started: (instance, idleMs) => meter.started(payer, instance, idleMs),
+      // Named by the job: a run of the same job made again is charged under the same receipt, once.
+      started: (instance, idleMs) => meter.started(payer, instance, idleMs, 0, `job:${id}`),
       used: cpu => meter.used(cpu),
-      stopped: async cpu => { await meter.stopped(cpu); await this.releasePermit(); },
+      stopped: async cpu => { await meter.stopped(cpu); await this.releasePermit(); return meter.spentUsd(); },
     };
   }
   /** Run one job (jobs/container-job.ts). A second call while one runs answers job_running. */

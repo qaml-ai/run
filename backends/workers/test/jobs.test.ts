@@ -75,7 +75,7 @@ function recordingMeter(refuse = false) {
     async admit(instance) { events.push(`admit:${instance}`); if (refuse) throw new Error("Spending limit reached"); },
     async started(instance, idleMs) { events.push(`started:${instance}:${idleMs}`); },
     async used(cpu) { events.push(`used:${cpu}`); },
-    async stopped(cpu) { events.push(`stopped:${cpu}`); },
+    async stopped(cpu) { events.push(`stopped:${cpu}`); return 0.0125; },
   };
   return { meter, events };
 }
@@ -105,6 +105,10 @@ test("a job spec is checked before any compute starts, and picks the smallest in
   assert.deepEqual(Object.keys(spec.files!), ["src/a.ts"]);
   assert.equal(spec.image, "workspace");
   assert.throws(() => jobSpec({ id: "j", command: "x", timeoutSeconds: 1 }), /needs a payer/, "a job without a payer is refused");
+  // A workflow payer: its tenant pays under the workflow's id, which must be one.
+  assert.deepEqual(jobSpec({ payer: { tenant: PAYER.tenant, agent: "wf_abc", kind: "workflow" }, id: "w", command: "x", timeoutSeconds: 1 }).payer, { tenant: PAYER.tenant, agent: "wf_abc", kind: "workflow" });
+  assert.throws(() => jobSpec({ payer: { tenant: PAYER.tenant, agent: "client_x", kind: "workflow" }, id: "w", command: "x", timeoutSeconds: 1 }), /payer kind is "workflow"/);
+  assert.throws(() => jobSpec({ payer: { ...PAYER, kind: "account" }, id: "w", command: "x", timeoutSeconds: 1 }), /payer kind is "workflow"/);
   // A checked spec checks again unchanged (the driver checks, the container object checks what it is sent).
   const checked = jobSpec({ payer: PAYER, id: "rt", command: "x", timeoutSeconds: 5, outputs: ["a.txt"], limits: { cpus: 2, pids: 128 }, files: { "a.txt": bytes("a") }, saveSnapshot: "warm" });
   assert.deepEqual(jobSpec(checked), checked);
@@ -205,6 +209,7 @@ test("a job starts, syncs, runs one command in /repo, collects its outputs and i
   assert.equal(events.at(-1), "destroy");
   assert.equal(container.running, false);
   assert.deepEqual(metered, ["admit:standard-3", `started:standard-3:${(60 + 600 + 120) * 1000}`, "stopped:4200000"]);
+  assert.equal(result.costUsd, 0.0125, "the result says what its container time cost, as the meter charged it");
   for (const key of ["startMs", "syncMs", "commandMs", "collectMs", "totalMs"] as const) assert.ok(result.timings[key] >= 0);
 });
 

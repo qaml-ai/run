@@ -6,7 +6,7 @@ const token = "local-integration-only-token-with-at-least-32-characters";
 // The WorkflowObject class in workerd, with its migration, its real alarm and steps through the real sandbox Worker
 // (exchange protocol 3). There is no public route yet: TEST_MODE's operator-only hook reaches the object.
 test("a WorkflowObject runs a workflow through the sandbox Worker, its alarm and the TEST_MODE executor", { timeout: 240_000 }, async (t) => {
-  const fixture = await startFixture();
+  const fixture = await startFixture({ vars: { TEST_WORKFLOW_EXECUTOR: "stub" } });
   t.after(() => fixture.stop());
   const call = async (path: string, body?: unknown) => {
     const response = await fetch(`${fixture.worker.url}/__test/workflows/${path}`, {

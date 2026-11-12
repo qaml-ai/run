@@ -30,7 +30,7 @@ not one series.
 | S | `s-esm-refactor`: 50 CommonJS modules to ES modules, a printf formatter replaced by template literals | ready | 410 hidden calls (expected values from running the originals; `%d` truncation, `%j`, `%%` are traps), and each module must be clean ESM to count | $3, 30 min |
 | N | `n-data-audit`: 20 CSV tables against their schema (non-code) | ready | Rubric: 26 planted defects across 16 tables (4 tables clean), matched on (table, column, kind); 0.6 recall + 0.25 precision + 0.15 right rows. The generator checks its own rules find exactly the planted set | $3, 30 min |
 | M | `m-mustache-rust`: mustache.js → Rust | planned | mustache/spec v1.4.3, ~200 cases | ~$10, 45 min |
-| M | `m-toml-go`: smol-toml (TS) → Go | planned | toml-lang/toml-test v2.2.0, ~700 decoder cases plus encoder | ~$30, 90 min |
+| M | `m-toml-go`: smol-toml v1.9.1 (TypeScript, 1.6k lines) → Go, standard library only | **ready** | toml-test v2.2.0, TOML 1.0: 205 valid, 474 invalid, 205 encoder cases, in a pinned judge image (`judge/Dockerfile`: Go 1.27.3; no network). 0.5 valid + 0.2 invalid + 0.3 encoder; a build failure scores 0, and wrapping a TOML library scores 0 and is flagged. Reference: BurntSushi/toml v1.6.0 vendored as the module (0.989) | $7, 90 min |
 | M | `m-jsonschema-python`: @cfworker/json-schema (TS) → Python | planned | JSON-Schema-Test-Suite, drafts 2019-09 and 2020-12, ~1,300 cases | ~$30, 90 min |
 | M | `m-commonmark-rust`: commonmark.js → Rust | planned | CommonMark spec 0.31.2, 652 examples plus smart punctuation, byte for byte | ~$50, 2 h |
 | L | `l-lua-rust`: Lua 5.4 (C, ~30k lines) → Rust | planned | the official Lua 5.4 test suite plus a differential corpus against the C build | ~$5k, 3 days |
@@ -39,8 +39,15 @@ not one series.
 **Tier M** candidates are permissively licensed (BSD-2, BSD-3, MIT; the CommonMark examples are CC-BY-SA) and judged
 by a suite every implementation of the format is held to, as Bun's TypeScript tests judged its Rust. Every one
 builds and runs its judge in a 4-vCPU, no-network container, today's Cloudflare job limit. Their `task.json` names
-the port and judge at a ref, the judge command and image, and the steps to prepare them. Build `m-mustache-rust`
-first: it is cheap and shakes out the judge images and `job()`.
+the port and judge at a ref, the judge command and image, and the steps to prepare them. `m-toml-go` is built: Go's
+standard library has JSON and needs no vendored modules, so its judge builds offline, and a port's commands speak
+toml-test's protocol directly. A task with its own toolchain names its image directory in `judgeImage`; `run.ts`
+builds it once (tagged by the directory's hash) and its fixtures are checked by `run.ts check` in docker, not in CI.
+
+Dry-mode agents have no compiler, and a Go port that does not build scores 0. Until `job()` exists, a task can ask
+for dry mode's stand-in (`"jobs": ["go"]`): the harness serves the orchestrator `go_build` and `go_decode` tools that
+build the volume as it is in the judge image (never running toml-test) and answer the compiler's output. Sub-agents
+do not get them, so the orchestrator runs the build round, as a workflow's `job()` would.
 
 **Tier L** needs infrastructure phase 1 does not have (see each `task.json`'s `needs`):
 
@@ -61,6 +68,9 @@ first: it is cheap and shakes out the judge images and `job()`.
 
 Workflow modes answer `unavailable` on a runtime without a workflow API, so the same command runs before and after
 PR 7 (`--workflow-api auto|public|test-hook` picks the transport; `auto` tries the public route, then the hook). The
+hook's shapes (create `{ code, budgetUsd, concurrency }`, `get`, `items` paged by `ord`) are pinned by a mock in
+`tests/workflow-evals.test.ts`; a real local run needs a Workers checkout with #806 and #804 merged and wired, then
+`--modes workflow-direct --workflow-api test-hook` against its `npm run dev`. The
 model classes are the virtual models `camelrun/fast` (Muse Ember) and `camelrun/strong` (Gemini 4 Carbon on flex),
 which exist today (#796); the orchestrator defaults to `camelrun/strong` (`--orchestrator` to change it, e.g. to
 `camelrun/max` once it exists).
@@ -80,6 +90,47 @@ orchestrator type). Without it, the agent chooses, and on Tier S a strong orches
 - `agent()` takes `definition` (#804); `type` is passed too and ignored until PR 8 makes it an option;
 - usage rolled up under the orchestrator does not already include its workflows' children (else `mergeCost` double
   counts: compare with `GET /v1/usage` once).
+
+## Choosing to split the work
+
+`run.ts choice` scores whether the agent splits the work when it should. It reads 12 prompts in
+`choice/prompts.json`: 6 should be split (400 module conversions, 60 translations, a 120-table audit with checks,
+80 contract extractions with a second reader, a 150-file security review, a 40-source research sweep) and 6 should
+not (a typo, a one-file question, a local rename, a one-doc summary, one table's total, a `.gitignore`). Each prompt
+gets generated files, and each run stops at the agent's first decision, so the work is never paid for (about $0.05
+a prompt). The decision is `split` when the agent:
+
+- started a workflow whose script calls `agent()` (workflow mode). Agents also start workflows to run one command
+  (only `job()`) or to look around (a script that lists its globals); those are counted (`otherWorkflows`) and the run
+  goes on. Splitting with `delegate` instead is reported apart; or
+- started at least two sub-agents in its first turn (dry mode).
+
+The summary gives accuracy, how often the agent split when it should, and how often it split when it should not, for
+each wording. The wording the agent decides from is the delegate tool's and the orchestrator's prompt today, and the
+`workflows` builtin's description once PR 7 lands (design open question 13). `--guidance <file>` appends candidate
+wording to the orchestrator's prompt, to compare drafts before one ships. `choice/guidance-design-draft.md` is the
+design's draft, adapted to `delegate`.
+
+```sh
+… run.ts choice --modes dry --guidance none,evals/workflows/choice/guidance-design-draft.md --label choice-baseline
+… run.ts choice --modes workflow --label choice-builtin        # once the builtin exists
+```
+
+## Workflow mode
+
+The agent gets the task, delegate settings (so the `workflows` builtin is on) and one added sentence: which volume its
+`/workspace` is, since `agent(…, { repo })` and `job({ at })` take a volume id; plus the task's `workflowNote` (what a
+job's container has). Whether it writes a workflow is its own choice. The harness reads each workflow id from
+`workflow_start`'s answer, waits for every workflow to end, then for the agent to go idle, and reads its history:
+
+- `notifications`: the workflow notifications it got (user messages the runtime writes with `metadata.kind:
+  "workflow"`), whether it wrote text after the last one (it reported back), and its `workflow_status` calls (polling);
+- `choice.workflowAgents`, `choice.workflowJobs`: a workflow with jobs and no agents ran commands; it did not split
+  the work;
+- the cost is the tenant's spend across the run (runs are serialized), so children, jobs (`computer:cloudflare/…`)
+  and the owner all count once, however usage rolls up;
+- `failures`: model errors and retries, failed sub-agents, failed or refused effects, faults, and with
+  `--runtime-log` the runtime's own error lines during the run.
 
 ## Comparison runs
 
@@ -119,21 +170,21 @@ know (`--allow-host` for another dev runtime). Keys come from the environment on
 - **The pilot** (`https://run-pilot.camelai.dev`): `AGENT_RUNTIME_TOKEN` is a pilot tenant API key. An operator mints
   one with `node backends/workers/scripts/pilot-admin-key.mjs` in their own terminal (see `backends/workers/PILOT.md`)
   and keeps it in a password manager. The pilot's platform OpenRouter key pays for model calls.
-- **A local Workers dev runtime** (what the first dry runs used):
+- **A local Workers dev runtime** with workflows on and `job()` on local Docker (`local-runtime.ts`):
 
   ```sh
-  (cd backends/workers && npm ci && node scripts/local-postgres.mjs)
-  # backends/workers/.dev.vars (gitignored): a throwaway encryption key, and real models instead of test/echo
-  printf 'AGENT_SECRETS_KEY=%s\nTEST_MODEL=0\nMODEL=camelrun/default\n' "$(openssl rand -hex 32)" > backends/workers/.dev.vars
-  (cd backends/workers && npm run dev)        # prints its port
-  # Store your OpenRouter key on the local tenant from the environment (never on the command line):
-  node -e 'fetch(process.argv[1]+"/v1/providers/openrouter/key",{method:"PUT",headers:{authorization:"Bearer "+process.argv[2],"content-type":"application/json"},body:JSON.stringify({apiKey:process.env.OPENROUTER_API_KEY})}).then(r=>console.log(r.status))' \
-    http://127.0.0.1:8788 local-integration-only-token-with-at-least-32-characters
-  AGENT_URL=http://127.0.0.1:8788 AGENT_RUNTIME_TOKEN=local-integration-only-token-with-at-least-32-characters … run …
+  (cd backends/workers && npm ci)
+  OPENROUTER_API_KEY=… node --experimental-strip-types --disable-warning=ExperimentalWarning evals/workflows/local-runtime.ts > rt.log 2>&1 &
+  AGENT_URL=http://127.0.0.1:8788 AGENT_RUNTIME_TOKEN=local-integration-only-token-with-at-least-32-characters \
+    … run.ts run --modes workflow --runtime-log rt.log …
+  node … evals/workflows/local-runtime.ts --stop        # removes the database, and the key stored in it
   ```
 
-  The token is the local fixture operator token in `wrangler.jsonc`, not a credential. `node scripts/local-postgres.mjs --stop`
-  removes the database and the key stored in it.
+  It derives a config from `wrangler.computers.test.jsonc` (the jobs e2e's) into `backends/workers/.wrangler/evals/`
+  (gitignored): real models, `AGENT_WORKFLOW_TENANTS` for the local tenant, a throwaway `.dev.vars` encryption key, and
+  a job image that adds Go 1.27.3 to the computers image (phase 1's `job()` has one image; the pilot's has no Go yet).
+  It stores `OPENROUTER_API_KEY` on the local tenant through the API. The token is the local fixture operator token,
+  not a credential. `--checkout <dir>` runs another checkout's Workers app, e.g. an unmerged branch.
 
 Judges run model-written code, so by default they run in a throwaway `node:22.21.1-bookworm-slim` container with no
 network, 4 CPUs and 4 GiB (`--sandbox host` only for trees you trust; the CI self-test uses it on fixtures).

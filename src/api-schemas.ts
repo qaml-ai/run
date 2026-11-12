@@ -577,6 +577,7 @@ export const AgentInput = z.object({
   builtins: z.array(Builtin).max(13).optional().openapi({ description: "Tools the runtime answers itself (file_link, file_import, web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   decide: z.boolean().optional().openapi({ description: "The decide tool (typed questions answered with probabilities by a decision model; see Decisions) is every agent's by default, except one with no code mode and no other tools. false: none; true: even then. Not for an agent made from a definition: its definition's decide applies" }),
   delegate: DelegateSettings.optional().openapi({ description: "With the delegate or agents builtin: who the agent may hand tasks to. Not with a definition, whose own it takes" }),
+  workflows: z.union([z.boolean(), z.object({ maxBudgetUsd: z.number().positive() })]).optional().openapi({ description: "The workflows builtin (workflow_start and its kin), on for an agent with delegate settings where the account has workflows (the Workers runtime): false turns it off; { maxBudgetUsd } bounds one workflow's budget (default $100)" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
@@ -870,6 +871,36 @@ export const ChildAgent = z.object({
   progressAt: z.number().optional(),
   error: z.string().optional().openapi({ description: "Why a background child's run failed or was aborted" }),
 }).openapi("ChildAgent");
+/** A workflow (docs/guides/workflows.md): its summary, as GET /v1/workflows/{id} answers. */
+export const Workflow = z.object({
+  id: z.string().openapi({ example: "wf_7c1d0b6e2f9a4c3b8d5e1f0a2b3c4d5e6f7a8b9c" }),
+  name: z.string().optional(),
+  status: z.enum(["running", "waiting", "paused", "completed", "failed", "aborted", "budget_exhausted"]),
+  pauseReason: z.string().optional().openapi({ description: "Why it paused: user, payer_exhausted, confirm_rerun, waiting_on_gate, capacity_refused, or a script fault" }),
+  revision: z.number().int(), step: z.number().int(), phase: z.string().optional(),
+  result: z.unknown().optional().openapi({ description: "What the script returned, once completed" }),
+  error: z.string().optional(),
+  budget: z.object({ usd: z.number().nullable() }),
+  concurrency: z.number().int(),
+  spent: z.object({ usd: z.number(), calls: z.number().int(), inputTokens: z.number(), cachedInputTokens: z.number(), outputTokens: z.number() }),
+  counts: z.record(z.string(), z.number().int()).openapi({ description: "Effects by status" }),
+  args: z.unknown().optional(), classes: z.record(z.string(), z.string()).optional(),
+  owner: z.object({ kind: z.enum(["agent", "workflow"]), id: z.string() }).optional().openapi({ description: "The agent that started it with its workflows builtin, which owns it" }),
+  createdAt: z.number(), updatedAt: z.number(),
+}).passthrough().openapi("Workflow");
+export const WorkflowStart = z.object({
+  script: z.string().openapi({ description: "The workflow's JavaScript: an async function body using agent(), parallel(), gate(), sleep(), log(), phase() and `args`" }),
+  args: z.unknown().optional().openapi({ description: "JSON the script reads as `args`" }),
+  budget: z.object({ usd: z.number().positive().nullable() }).openapi({ description: "The most it may spend (USD), or null for no cap; it pauses with budget_exhausted when spent" }),
+  concurrency: z.number().int().min(1).max(64).optional().openapi({ description: "Sub-agents at once (default 8)" }),
+  classes: z.record(z.enum(["worker", "critic", "lead"]), z.enum(["fast", "strong", "max"])).optional().openapi({ description: "Pin a type's model class for the whole workflow" }),
+  name: z.string().optional(),
+  allowFastJudgment: z.boolean().optional().openapi({ description: "Let critics and leads run on the fast class" }),
+}).openapi("WorkflowStart");
+export const WorkflowItems = z.object({ items: z.array(z.record(z.string(), z.unknown())) }).passthrough().openapi("WorkflowItems");
+export const WorkflowEvents = z.object({ events: z.array(z.record(z.string(), z.unknown())) }).openapi("WorkflowEvents");
+export const WorkflowEdit = z.object({ script: z.string(), reason: z.string().openapi({ description: "Why it changed; kept with the revision" }), rerunConfirmPercent: z.number().min(0).max(100).optional() }).openapi("WorkflowEdit");
+
 export const ChildAgents = z.object({
   children: z.array(ChildAgent).openapi({ description: "Newest first, at most 200" }),
 }).openapi("ChildAgents");
