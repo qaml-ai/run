@@ -1,13 +1,15 @@
-// The job host agent (docs/design/job-hosts-plan.md, slice 3). It dials out to the runtime over one WebSocket (no
-// inbound ports), says who it is and how many jobs it takes, and runs the jobs the runtime sends: a VM per job from
+// The job host agent (docs/design/job-hosts-plan.md, slices 3 and 4). It enrolls (an attestation of who it is, for a
+// short-lived credential bound to that host id), dials out to the runtime over one WebSocket (no inbound ports) with
+// the credential as its first message, enrolls again before the credential ends, says how many jobs it takes, and runs the jobs the runtime sends: a VM per job from
 // a copy-on-write clone (vm.ts), the job's files synced in, its command run under its limits by the guest agent
 // (guest.ts), its outputs collected and sent back, the VM destroyed. A job the runtime cancels is destroyed at once.
 // While the socket is down, jobs keep running and their results wait to be sent when it is back.
 //
-//   node --experimental-strip-types jobhost/agent.ts --runtime https://run.example --name host-1 --slots 8 --fake
-//   (the token comes from JOB_HOST_TOKEN in the environment, never the command line)
+//   node --experimental-strip-types jobhost/agent.ts --runtime https://run.example --attestor aws --slots 8 --fake
+//   node … --attestor test --name host-1 --fake      (JOB_HOST_TEST_SECRET from the environment: tests only)
 import { hostname } from "node:os";
 import { frames, Frames, type HostMessage, type RuntimeMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
+import { signGetCallerIdentity, type Attestation } from "../shared/job-host-attest.ts";
 import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
 
 export const AGENT_VERSION = "0.1.0";
@@ -15,7 +17,8 @@ export const AGENT_VERSION = "0.1.0";
 const DISK_LOW_BYTES = 2 * 1024 * 1024 * 1024;
 
 export type AgentOptions = {
-  runtime: string; token: string; name: string; slots: number; vcpus: number; memoryMiB: number;
+  /** Proves who this host is, for each enrollment: AWS (awsAttestor) on a real host, a test secret in tests. */
+  runtime: string; attest: (audience: string) => Promise<Attestation>; slots: number; vcpus: number; memoryMiB: number;
   launcher: VmLauncher; heartbeatMs?: number; diskLowBytes?: number; log?: (line: Record<string, unknown>) => void;
 };
 
@@ -27,7 +30,20 @@ export class HostAgent {
   private closed = false;
   private registered = Promise.withResolvers<void>();
   private readonly options: AgentOptions;
+  /** The host id the runtime bound this host's credential to (the attestation's, not one it chose). */
+  name = "";
   constructor(options: AgentOptions) { this.options = options; }
+
+  /** Enroll: the attestation for this runtime, a credential back (shared/job-host-attest.ts, hosts.ts). */
+  private async enroll() {
+    const audience = `camelrun-job-host:${this.options.runtime.replace(/\/+$/, "")}`;
+    const response = await fetch(`${this.options.runtime.replace(/\/+$/, "")}/v1/internal/job-hosts/enroll`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ attestation: await this.options.attest(audience) }), signal: AbortSignal.timeout(30_000),
+    });
+    const body = await response.json().catch(() => ({})) as { host?: string; credential?: string; expiresAt?: number; error?: string };
+    if (!response.ok || !body.host || !body.credential || !body.expiresAt) throw new Error(`Enrollment refused: ${response.status} ${body.error ?? ""}`.trim());
+    return body as { host: string; credential: string; expiresAt: number };
+  }
   private log(line: Record<string, unknown>) { (this.options.log ?? (value => console.log(JSON.stringify(value))))(line); }
 
   /** Connect, and keep connecting until `close()`. Resolves once the runtime has registered this host. */
@@ -46,17 +62,22 @@ export class HostAgent {
     }
   }
 
-  private connectOnce() {
+  private async connectOnce() {
+    const enrolled = await this.enroll();
+    this.name = enrolled.host;
     return new Promise<void>((resolve, reject) => {
-      const url = `${this.options.runtime.replace(/^http/, "ws")}/v1/internal/job-hosts/connect?host=${encodeURIComponent(this.options.name)}`;
+      const url = `${this.options.runtime.replace(/^http/, "ws")}/v1/internal/job-hosts/connect?host=${encodeURIComponent(enrolled.host)}`;
       const socket = new WebSocket(url);
       let heartbeat: ReturnType<typeof setInterval> | undefined;
+      // Before the credential ends: close, and the loop enrolls again and reconnects (jobs keep running meanwhile).
+      const left = enrolled.expiresAt - Date.now();
+      const renew = setTimeout(() => socket.close(1000, "Renewing"), Math.max(1_000, left - Math.min(60_000, left / 5)));
       socket.addEventListener("open", () => {
         this.socket = socket;
-        // The token is the first message, not part of the URL: a URL lands in access logs.
-        socket.send(JSON.stringify({ type: "auth", token: this.options.token }));
+        // The credential is the first message, not part of the URL: a URL lands in access logs.
+        socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
         // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
-        this.send({ type: "hello", host: this.options.name, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION });
+        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION });
         heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {
@@ -67,6 +88,7 @@ export class HostAgent {
       });
       socket.addEventListener("close", () => {
         clearInterval(heartbeat);
+        clearTimeout(renew);
         if (this.socket === socket) this.socket = undefined;
         resolve();
       });
@@ -144,13 +166,29 @@ export class HostAgent {
 }
 class Stopped extends Error {}
 
+/**
+ * The production attestor: this instance's role credentials from IMDSv2, signing sts:GetCallerIdentity for the runtime
+ * (shared/job-host-attest.ts). The runtime learns the host id from STS (the role session: this instance's id).
+ */
+export function awsAttestor(imds = "http://169.254.169.254") {
+  return async (audience: string): Promise<Attestation> => {
+    const token = await (await fetch(`${imds}/latest/api/token`, { method: "PUT", headers: { "x-aws-ec2-metadata-token-ttl-seconds": "300" } })).text();
+    const get = async (path: string) => { const response = await fetch(`${imds}${path}`, { headers: { "x-aws-ec2-metadata-token": token } }); if (!response.ok) throw new Error(`IMDS ${path}: ${response.status}`); return response.text(); };
+    const role = (await get("/latest/meta-data/iam/security-credentials/")).split("\n")[0]!.trim();
+    const credentials = JSON.parse(await get(`/latest/meta-data/iam/security-credentials/${role}`)) as { AccessKeyId: string; SecretAccessKey: string; Token: string };
+    const region = (await get("/latest/meta-data/placement/region")).trim();
+    return signGetCallerIdentity({ accessKeyId: credentials.AccessKeyId, secretAccessKey: credentials.SecretAccessKey, sessionToken: credentials.Token }, audience, { region });
+  };
+}
+
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const arg = (name: string) => { const at = process.argv.indexOf(`--${name}`); return at > 0 ? process.argv[at + 1] : undefined; };
-  const token = process.env.JOB_HOST_TOKEN;
-  if (!token) throw new Error("Set JOB_HOST_TOKEN");
   if (!process.argv.includes("--fake")) throw new Error("Only --fake runs today: Firecracker needs the host image (docs/design/job-hosts-plan.md, slice 1)");
+  const kind = arg("attestor") ?? "aws", secret = process.env.JOB_HOST_TEST_SECRET, name = arg("name") ?? hostname();
+  if (kind === "test" && !secret) throw new Error("Set JOB_HOST_TEST_SECRET for the test attestor");
+  const attest = kind === "test" ? async (): Promise<Attestation> => ({ kind: "test", host: name, secret: secret! }) : awsAttestor();
   const agent = new HostAgent({
-    runtime: arg("runtime") ?? "http://127.0.0.1:8787", token, name: arg("name") ?? hostname(), slots: Number(arg("slots") ?? 4),
+    runtime: arg("runtime") ?? "http://127.0.0.1:8787", attest, slots: Number(arg("slots") ?? 4),
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192), launcher: fakeLauncher({ base: arg("base") }),
     diskLowBytes: Number(arg("disk-low") ?? DISK_LOW_BYTES),
   });
