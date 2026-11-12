@@ -143,7 +143,7 @@ for the host-level tests only after the go-ahead.
 | 4 | Runtime: hosts, placement, driver | An expand-only migration for `job_hosts`, `job_host_leases` and `job_snapshots` (`{ id, tenant, baseImage, sizeBytes, s3Key }` plus its hosts). Host enrollment (landed): the host signs an STS `GetCallerIdentity` request; the runtime checks it, sends it to STS, matches the role, and issues a short-lived credential bound to the instance id. The `JobHost` and `HostJob` Durable Objects, `placeJob`, `HostsJobDriver` and driver selection, on Workers only | Unit tests for placement (ties, draining, snapshot affinity, capacity races under concurrent places); a Workers integration test with the fake-mode host agent: admit, place, run, a rerun charged once, host loss turning into `container_failed`, and the retry by key |
 | 5 | Snapshots | `saveSnapshot` on hosts promotes the job's clone to a snapshot (an upload to S3 with presigned multipart, then a `job_snapshots` row); the image cache records what each host holds and placement prefers holders; snapshot expiry and GC | Integration test with the fake host and a local S3 (MinIO) |
 | 6 | Isolation suite | The egress allowlist per job (registries and GitHub granted by the definition, the runtime API, nothing else), IMDS unreachable, no host services, no cross-job routes, the pid cap, disk full failing as `disk_low`. Written as a test suite the host agent runs against a real host | Runs on a real host after the go-ahead; until then, against a KVM sprite |
-| 7 | AWS infrastructure, as code | Terraform module `infra/terraform/job_hosts/`, for the resources listed below. Plan only | `terraform validate` and a plan against the prod account, read-only; apply after the go-ahead |
+| 7 | AWS infrastructure, as code | Root module `infra/job-hosts/terraform/` (own state; [README](../../infra/job-hosts/README.md)) and the guarded `infra/job-hosts/apply.sh`, for the resources listed below. Plan only | `tofu validate` and `tofu test` with mock providers (the trust-policy invariant among them); a plan against the prod account, read-only; apply after the go-ahead |
 | 8 | Pools and scaling | Queue-depth metric from the runtime; the test pool's target tracking; the build pool's fixed warm size with one build sandbox started before it is loaded (and nothing else placed on it); a drain on scale-in and spot notice | Fake-host integration; then a canary on real pools |
 | 9 | Acceptance run | The phase 2 dogfood: the camelCode review loop with jobs on our hosts, including a Bun-class build. Measure the four targets above and cost per job against Cloudflare, and publish the numbers in the design doc | Real pools |
 
@@ -162,15 +162,16 @@ In the camelRun prod account and region (to confirm: the same as the ECS runtime
     URLs, and has the SSM core permissions;
   - nothing else: no runtime database, no secrets.
 - **Networking:**
-  - private subnets for the pools;
+  - dedicated public subnets for the pools, behind a security group with no inbound rule and a return-traffic-only network ACL (no NAT, decided 2026-11-12);
   - an S3 gateway endpoint;
-  - egress through NAT for the allowlisted registries and GitHub (the allowlist is enforced on the host, per job);
+  - egress through the VPC's internet gateway for the allowlisted registries and GitHub (the allowlist is enforced on the host, per job);
   - a security group with no inbound rule and egress on 443 only.
 - **Launch templates:** two (`r8gd` build, `c8gd` test) with `EnclaveOptions.Enabled=true`, IMDSv2 required with a
-  hop limit of 1 (the host's own agent uses it; jobs cannot reach it), and the NVMe instance store mapped.
+  hop limit of 1 (the host's own agent uses it; the hop limit alone does not keep a routed sandbox out, so the host's
+  nftables rules drop sandbox traffic to IMDS), and the NVMe instance store mapped.
 - **Auto Scaling groups:**
-  - build: `r8gd.4xlarge` (8xlarge for ASAN), on-demand (decided 2026-11-12, for the testing phase), a fixed warm size of 2;
-  - test: `c8gd` sizes with a mixed-instances spot policy, min 0, scaled on the runtime's queue-depth metric;
+  - build: `r8gd.4xlarge` (8xlarge for ASAN), on-demand (decided 2026-11-12, for the testing phase), a warm size that defaults to 0 (scale from zero, decided 2026-11-12; `build_warm_size=2` keeps two warm);
+  - test: `c8gd.4xlarge` (a list, for more sizes), on-demand too (decided 2026-11-12; spot stays a switch, off), min 0, max 16, scaled on the runtime's queue-depth metric;
   - capacity-rebalance and lifecycle hooks on both, for draining.
 - **Quotas:** On-Demand and Spot vCPU quota increases for the Graviton families, if the current limits are below the
   pool maxima.
@@ -180,9 +181,7 @@ In the camelRun prod account and region (to confirm: the same as the ECS runtime
 - **SSM parameters:** the runtime URL and the enrollment audience for hosts. No long-lived secrets are stored on a
   host.
 
-Cost at list: the build pool's warm 2 × `r8gd.4xlarge` is the fixed cost (a few dollars an hour on-demand; reserved
-pricing can come after the testing phase). The spot test pool scales from zero. The ASG maxima are the spend cap: proposed 4 build and 16 test hosts
-until the acceptance run says otherwise.
+Cost at list: with the build pool scaling from zero, the fixed cost is about $2 a month plus S3; two warm build hosts would add about $1,730 a month ([infra/job-hosts/README.md](../../infra/job-hosts/README.md), "Cost"). The ASG maxima are the spend cap: 4 build and 16 test hosts until the acceptance run says otherwise.
 
 ## Decisions and open questions
 
