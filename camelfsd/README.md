@@ -217,3 +217,41 @@ verifies existing disk chunks once per daemon lifetime. Trusted hits perform no
 file read, hash or stat. Use timestamps update at most once per minute per hash.
 A 256-entry open-file LRU serves NBD reads; eviction invalidates trusted entries
 and retires descriptors after active readers finish.
+
+## Cold network path (unit 7)
+
+Hydrating cold mounts replay the lineage pattern, then prefetch every non-hole
+chunk in offset order. The root pool is shared across connections and mounts;
+`--fetch-depth` bounds network operations independently of lookahead. dm-clone
+alone writes the destination and owns its hydration bitmap. Its batch size and
+threshold are 256. NBD and the guest mapper device use 4 MiB readahead; logical
+sectors remain 512 bytes, with four connections and 32 MiB maximum requests.
+
+`--packs` defaults on; `--pack-window` defaults to 4 MiB. Imports write packs for
+windows with at least two non-hole chunks. Promotions queue a coalesced serial
+background packer. Chunks remain the storage, dedupe and checkpoint upload unit.
+Roots without packs remain complete. Pack IDs hash the concatenated lowercase
+hex chunk hashes; pack bytes concatenate the corresponding chunks. Each chunk
+is verified before any pack bytes enter the cache. Background reads use a pack
+when at least eight window chunks are missing; demand fetches single chunks.
+Pack reads currently fetch the whole window, including sparse subsets.
+
+`--demand-slots` defaults to 16 of 64. Idle demand capacity can be borrowed;
+borrowed background GETs are cancellable when demand arrives. Queued chunk
+fetches can be displaced by demand. `GET /v0/stats` reports fetches, payload bytes,
+packs used and trusted cache hits (process totals; take deltas between runs).
+Packs add up to another full copy of non-hole chunk bytes for packed roots;
+GC v1 must trace and collect `p/` objects alongside `c/` objects.
+
+The reviewer runs `sudo scripts/ec2-unit7.sh` in a separately granted host slot.
+It uses only `/nvme/camelfs-u7`, port 10811 and its own device prefix. Unit 1–5
+host smokes already verified reflink, hydration and eviction; their recorded
+results remain valid. All unit 7 host timings, the NIC ceiling and the ublk
+comparison are **reviewer runs**, not measured by this coding session.
+
+The bounded ublk experiment builds the upstream `libublk` loop example (source:
+https://github.com/ublk-org/libublk-rs), with no daemon integration. If its QD1
+mean latency is below 60% of NBD and QD16 IOPS exceed twice NBD, it warrants a
+separate unit. Otherwise record `NBD stays; ublk is v1 (L19)`. L19's decision is
+pending the reviewer table. L2's cold read/hydration numbers are likewise pending;
+L61 was removed by unit 6.
