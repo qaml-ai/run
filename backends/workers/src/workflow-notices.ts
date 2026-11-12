@@ -127,7 +127,14 @@ export class WorkflowNotices {
         metadata: { kind: "workflow", workflowId: this.deps.workflowId, status: next.status, event: next.event },
       };
       try {
-        await this.deps.send(owner.id, request, notice);
+        const answer = await this.deps.send(owner.id, request, notice) as { gone?: boolean } | undefined;
+        if (answer?.gone) {
+          // The owner was deleted or expired: no notice can reach it, now or later. The rest go with this one.
+          const dropped = sql.exec<{ n: number }>("SELECT count(*) AS n FROM workflow_notices").one().n;
+          console.error(JSON.stringify({ type: "workflow_notice_dropped", workflow: this.deps.workflowId, reason: "owner_gone", owner: owner.id, notices: Number(dropped) }));
+          sql.exec("DELETE FROM workflow_notices");
+          return;
+        }
         sql.exec("DELETE FROM workflow_notices WHERE seq = ?", next.seq);
       } catch (error) {
         const attempts = Number(next.attempts) + 1;

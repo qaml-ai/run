@@ -216,3 +216,39 @@ test('outbox rows an earlier build kept in KV move into the table and are delive
   assert.deepEqual(delivered, ['old_run']);
   assert.equal(c.store.values.has('child-outbox:old_run:z'), false);
 });
+
+test('a deleted agent that owes nothing goes quiet (no jobs, no alarm); a live one, or a failed read, is never touched', async () => {
+  const { settleDeleted } = await import('../src/ending-outbox.ts');
+  const make = (values: Record<string, unknown>, failRead = false) => {
+    const state = { alarm: 5_000 as number | null, pushed: [] as number[] };
+    const storage = withSql({
+      async get(key: string) { if (failRead) throw new Error('storage unavailable'); return values[key]; },
+      async deleteAlarm() { state.alarm = null; },
+    }) as unknown as DurableObjectStorage;
+    storage.sql.exec("CREATE TABLE cf_agents_jobs (id TEXT PRIMARY KEY, capability TEXT, time INTEGER)");
+    storage.sql.exec("INSERT INTO cf_agents_jobs VALUES ('camel-wake', 'host', 1), ('pi', 'pi', 2)");
+    const jobs = () => Number(storage.sql.exec<{ n: number }>("SELECT count(*) AS n FROM cf_agents_jobs").one().n);
+    return { storage, state, jobs, push: async (at: number) => { state.pushed.push(at); } };
+  };
+  // A tombstone, nothing owed: every job and the alarm go.
+  const gone = make({ deleted: true });
+  assert.equal(await settleDeleted(gone.storage, Infinity, gone.push), 'quiet');
+  assert.equal(gone.jobs(), 0);
+  assert.equal(gone.state.alarm, null);
+  // A tombstone that still owes a delivery: it wakes for it, its jobs stay.
+  const owing = make({ deleted: true });
+  assert.equal(await settleDeleted(owing.storage, 9_000, owing.push), 'armed');
+  assert.deepEqual(owing.state.pushed, [9_000]);
+  assert.equal(owing.jobs(), 2);
+  assert.equal(owing.state.alarm, 5_000);
+  // No tombstone (its configuration missing for a moment, say): live, untouched.
+  const live = make({});
+  assert.equal(await settleDeleted(live.storage, Infinity, live.push), 'live');
+  assert.equal(live.jobs(), 2);
+  assert.equal(live.state.alarm, 5_000);
+  // A read that fails is not a tombstone: it throws, and nothing is removed.
+  const failing = make({ deleted: true }, true);
+  await assert.rejects(settleDeleted(failing.storage, Infinity, failing.push), /storage unavailable/);
+  assert.equal(failing.jobs(), 2);
+  assert.equal(failing.state.alarm, 5_000);
+});

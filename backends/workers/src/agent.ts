@@ -13,6 +13,8 @@ export { json } from "./agent-types.ts";
 /** Durable Object entry points. Runtime internals stay off the RPC surface. */
 export class CamelAgent extends DurableObject<Env> {
   readonly #runtime = new AgentRuntime(this.ctx, this.env, this);
+  /** Per method: when a call to this deleted agent was last logged, and how many came since (deleted_agent_rpc). */
+  readonly #goneLogged = new Map<string, { at: number; since: number }>();
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // After the runtime's lifecycle installed its alarm handler on this instance (field initializers run first).
@@ -20,6 +22,27 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   removeMember(member: string) { return this.#runtime.removeMember(member); }
+
+  /**
+   * Whether this agent is gone for good: deleted, or past its expiry. Both are durable facts in its own storage (the
+   * flag is never cleared, the expiry never moves back), so an agent merely evicted, hibernating or busy is never taken
+   * for gone. A call to a gone agent is logged by method and caller kind, at most once a minute per method, so a sender
+   * that keeps calling one shows up.
+   */
+  async #gone(method: string, caller: string) {
+    const storage = this.ctx.storage;
+    if (await storage.get("deleted") !== true) {
+      const expiresAt = (await storage.get<{ expiresAt?: number }>("configuration"))?.expiresAt;
+      if (!expiresAt || expiresAt > Date.now()) return false;
+    }
+    const seen = this.#goneLogged.get(method), now = Date.now();
+    // Tests count every call (TEST_MODE), to see that a sender stops.
+    if (!seen || now - seen.at >= 60_000 || (this.env as { TEST_MODE?: string }).TEST_MODE === "1") {
+      console.warn(JSON.stringify({ type: "deleted_agent_rpc", agent: this.ctx.id.name ?? null, method, caller, suppressed: seen?.since ?? 0 }));
+      this.#goneLogged.set(method, { at: now, since: 0 });
+    } else seen.since++;
+    return true;
+  }
 
   /** Binding-only pilot counters; no runtime state, SQL or values are exposed. */
   databaseProfile(reset = false) {
@@ -48,20 +71,27 @@ export class CamelAgent extends DurableObject<Env> {
   inboxAudience() {
     return this.#runtime.inboxAudience();
   }
-  receiveAgentMessage(
+  /**
+   * A message or notice for this agent (a child's send_message, a workflow's notice). A gone agent answers `{ gone:
+   * true }`: the sender drops it rather than retrying a delivery that can never land.
+   */
+  async receiveAgentMessage(
     request: NoticeRequest,
     notice: RuntimeNotice,
   ): Promise<unknown> {
+    if (await this.#gone("receiveAgentMessage", String(notice?.metadata?.kind ?? notice?.source?.kind ?? "message"))) return { gone: true };
     return this.#runtime.receiveAgentMessage(request, notice);
   }
 
-  /** A child's progress report, delivered by the child's outbox (binding-only). */
-  receiveProgress(report: ChildProgressReport): Promise<Receipt> {
+  /** A child's progress report, delivered by the child's outbox (binding-only). A gone owner acknowledges it. */
+  async receiveProgress(report: ChildProgressReport): Promise<Receipt> {
+    if (await this.#gone("receiveProgress", "child")) return { accepted: true };
     return this.#runtime.receiveProgress(report);
   }
 
-  /** A child's ending, delivered by the child's outbox until this answers (binding-only). */
-  receiveEnding(ending: ChildEnding): Promise<Receipt> {
+  /** A child's ending, delivered by the child's outbox until this answers (binding-only). A gone owner acknowledges it. */
+  async receiveEnding(ending: ChildEnding): Promise<Receipt> {
+    if (await this.#gone("receiveEnding", "child")) return { accepted: true };
     return this.#runtime.receiveEnding(ending);
   }
 
@@ -70,11 +100,14 @@ export class CamelAgent extends DurableObject<Env> {
     return this.#runtime.admitDelegated(request, placement);
   }
 
-  hasChild(id: string): Promise<boolean> {
+  async hasChild(id: string): Promise<boolean> {
+    if (await this.#gone("hasChild", "browser")) return false;
     return this.#runtime.hasChild(id);
   }
 
-  cancelRequest(id: string) {
+  /** Stop a run (its owner's cancel). A gone agent runs nothing: there is nothing to stop, and the cancel is done. */
+  async cancelRequest(id: string) {
+    if (await this.#gone("cancelRequest", "owner")) return false;
     return this.#runtime.cancelRequest(id);
   }
 

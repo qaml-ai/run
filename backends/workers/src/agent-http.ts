@@ -326,6 +326,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
               conf.id,
             );
           for (const listener of this.listeners) listener(0, null);
+          // Planned as a deleted agent now: it wakes only for what it still owes, or goes quiet (settleDeleted).
+          await this.arm();
           return json({ deleted: true });
         });
         this.admission = deletion.catch(() => {});

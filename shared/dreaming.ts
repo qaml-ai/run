@@ -27,6 +27,14 @@ export interface DreamHost {
   result(tenant: string, agent: string, request: string): Promise<{done: boolean; output?: unknown; error?: string}>;
   publish(tenant: string, volume: string, files: Record<string, string>, key: string): Promise<void>;
 }
+/**
+ * Forget an agent's dreaming job and its runs' results as its purge removes it (`query`: the purge's transaction). The
+ * agent's row stays as a tombstone, so the foreign key's cascade never fires; left alone, the job would fail on every
+ * scheduled night forever. The memory volume and its snapshots are the tenant's, and stay.
+ */
+export async function forgetAgentDreaming(query: (sql: string, values?: unknown[]) => Promise<unknown>, agent: string) {
+  await query('delete from agent_dreaming where agent=$1', [agent]);
+}
 export class DreamError extends Error { status: number; constructor(message: string, status = 400) { super(message); this.status=status; } }
 export function dreamConfig(value: unknown): DreamConfig {
   const c = value as DreamConfig;

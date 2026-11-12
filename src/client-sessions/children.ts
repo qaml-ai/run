@@ -10,6 +10,7 @@ import { jsonResult, type ToolCall, type ToolServer, type ToolSourceView } from 
 import { safeError } from "../metrics.ts";
 import { agentMessage, agentsTools, agentUpdates, batchedEnding, childNotice, withBatch, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, REPORT_PROGRESS, SEND_MESSAGE, startsChildren, type ChildNotice, type DelegateSettings } from "../multi-agent.ts";
 import { reachable, sometimes } from "../assert.ts";
+import { agentGone, deliveryDropped } from "../agent-gone.ts";
 
 import * as spend from "./spend.ts";
 import { type Session, validSessionId, runningRun } from "./state.ts";
@@ -538,7 +539,13 @@ export async function childEnded(ctx: ChildrenContext, child: string, record: Re
 async function deliverChild(ctx: ChildrenContext, row: any) {
   const release = () => ctx.db.query("update agent_children set claimed_until = null where id = $1", [row.id]).catch(() => {});
   try {
-    if ((await ctx.options.inputs?.pending(row.parent))?.some(input => input.blocking !== false)) return void await release();
+    if ((await ctx.options.inputs?.pending(row.parent))?.some(input => input.blocking !== false)) {
+      // A deleted or expired parent keeps its pending inputs until its purge: that wait would never end. Its row (it
+      // wrote this one) is never deleted, so a missing one is gone too.
+      if (!await agentGone(ctx.db, row.parent, { missing: true })) return void await release();
+      deliveryDropped({ delivery: "child_ending", agent: row.parent, child: row.child, request: row.request_id });
+      return void await ctx.db.query("update agent_children set state = 'notified', claimed_until = null, updated_at = $2 where id = $1", [row.id, Date.now()]);
+    }
     const submit = ctx.options.submit ?? ((agent, tenant, request) => ctx.submit(agent, tenant, request));
     await submit(row.parent, row.tenant, { id: `child_${row.request_id}`, method: "prompt", params: { ...row.notice, ...(row.payer ? { endUser: row.payer } : {}), ...(row.bucket ? { bucket: row.bucket } : {}), allowDisconnected: true } });
   } catch (error) {

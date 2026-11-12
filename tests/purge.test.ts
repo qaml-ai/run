@@ -13,6 +13,9 @@ import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
+import { Triggers } from "../src/triggers.ts";
+import { HookAdmission, handleHook } from "../src/core/trigger-ingress.ts";
+import { transaction } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
 import { until } from "./runtime-server.ts";
 
@@ -144,6 +147,41 @@ test("the sweep purges agents revoked before it existed and agents whose TTL exp
   }
   assert.ok(objectsOf(storage, live) > 0);
   assert.equal((await a.sessions.inspect(live, "default")).requests.length, 1);
+});
+
+test("purging an agent forgets its dreaming job and disables its triggers, whose hooks then answer 202 and run nothing", { timeout: 60_000 }, async t => {
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const { sessions } = await node(t, db, storage, "a");
+  const { id } = await sessions.create([], { model }, "dreamer", {}, "default");
+  const { id: other } = await sessions.create([], { model }, "other", {}, "default");
+  for (const [agent, volume] of [[id, "vol_doomed"], [other, "vol_other"]]) {
+    await db.query("insert into agent_dreaming (agent, tenant, volume, config, since, due_at) values ($1, 'default', $2, '{}', 0, 0)", [agent, volume]);
+    await db.query("insert into agent_dreaming_runs (id, agent, tenant, created_at, result) values ($1, $2, 'default', 0, '{}')", [`run-${agent}`, agent]);
+  }
+  const submitted: string[] = [];
+  const triggers = new Triggers({ db, transaction: work => transaction(db, work), keys: { seal: (_c, text) => ({ text }), unseal: (_c, value) => value.text },
+    fresh: { precheck: async () => {}, definition: async () => "d", upsert: async () => id }, upload: async () => ({ path: "x" }), submit: async agent => { submitted.push(agent); return {}; } });
+  const hook = await triggers.create("default", id, { name: "Stripe", prompt: "Handle it", budget: { usd: 1 } }, "https://hooks.test");
+  const kept = await triggers.create("default", other, { name: "Other", prompt: "Handle it", budget: { usd: 1 } }, "https://hooks.test");
+  const post = (url: string) => handleHook(new Request(url, { method: "POST", body: "{}" }), "127.0.0.1", async () => triggers, new HookAdmission());
+
+  assert.equal(await sessions.destroyAgent(id, "default"), true);
+  await sessions.sweep();
+  assert.equal(Number((await db.query("select count(*) as count from agent_dreaming where agent = $1", [id])).rows[0].count), 0, "its dreaming job goes");
+  assert.equal(Number((await db.query("select count(*) as count from agent_dreaming_runs where agent = $1", [id])).rows[0].count), 0, "with its runs");
+  assert.equal(Number((await db.query("select count(*) as count from agent_dreaming where agent = $1", [other])).rows[0].count), 1, "another agent's stays");
+  const rows = (await db.query("select id, disabled_at from agent_triggers order by id")).rows;
+  assert.equal(rows.length, 2, "the trigger rows stay");
+  assert.ok(Number(rows.find(row => row.id === hook.id).disabled_at) > 0, "the purged agent's trigger is disabled");
+  assert.equal(rows.find(row => row.id === kept.id).disabled_at, null, "another agent's is not");
+
+  // Its hook answers as accepted, records nothing and runs nothing; the live agent's still does.
+  assert.deepEqual(await post(hook.url), { code: 202, body: { status: "disabled", verified: false, deduped: false } });
+  assert.equal(Number((await db.query("select count(*) as count from trigger_deliveries where trigger_id = $1", [hook.id])).rows[0].count), 0);
+  assert.equal(((await post(kept.url)).body as { status: string }).status, "queued");
+  await triggers.scan();
+  assert.deepEqual([...new Set(submitted)], [other]);
 });
 
 test("purging an agent tells its tenant's inbox when the agent had an item waiting, and says nothing when it did not", { timeout: 60_000 }, async t => {
