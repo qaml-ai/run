@@ -291,7 +291,10 @@ and v0 item 4 measures the floor with the journal pinned.
 Because the tree is walked and streamed under the same freeze the snapshot is taken in, and the root is derived from
 that snapshot, a root's tree is the tracked view of exactly that image. A guest can only make them disagree by lying
 about its own files, which hurts only its own lineage. A periodic verify job (mount a sample root in a sacrificial
-VM, walk, compare to the tree) catches drift from bugs on our side.
+VM, walk, compare to the tree) catches drift from bugs on our side. One property of such snapshots, found by the
+unit 3 smoke: an ext4 image snapshotted under `fsfreeze` carries the "recovery needed" flag, so a read-only mount
+of it fails without `noload`, while a read-write mount in a VM replays the journal in milliseconds. Only
+verification and test mounts are affected; a guest mounting its fork read-write never sees it.
 
 **Checkpoints: automatic and manual, both always on, nothing to configure** (Miguel, 2026-11-12).
 
