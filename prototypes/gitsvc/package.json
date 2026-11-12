@@ -1,0 +1,10 @@
+{
+  "name": "proto-gitsvc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "bench": "node --experimental-strip-types --disable-warning=ExperimentalWarning bench/bench.ts",
+    "serve": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/server.ts"
+  }
+}

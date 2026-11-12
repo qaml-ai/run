@@ -1,0 +1,9 @@
+#!/bin/sh
+# A write token may name the refs it can touch (GITSVC_REFS, comma-separated prefixes): a job pushes its own branch
+# and nothing else.
+[ -n "$GITSVC_REFS" ] || exit 0
+while read -r old new ref; do
+  ok=0
+  for prefix in $(echo "$GITSVC_REFS" | tr ',' ' '); do case "$ref" in "$prefix"*) ok=1 ;; esac; done
+  [ $ok = 1 ] || { echo "gitsvc: this token cannot update $ref" >&2; exit 1; }
+done

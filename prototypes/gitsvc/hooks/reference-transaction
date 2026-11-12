@@ -1,0 +1,8 @@
+#!/bin/sh
+# Replication gate: in `prepared` the ref locks are held and nothing is committed; the service ships the packs and
+# the new manifest to the bucket and only then answers 200. Any failure aborts the ref update (the push gets `ng`).
+# `aborted` lets the service re-ship the committed truth. `committed` needs nothing.
+[ -n "$GITSVC_REPLICATE_URL" ] || exit 0
+case "$1" in prepared|aborted) ;; *) exit 0 ;; esac
+exec curl -fsS -o /dev/null --max-time 60 -X POST -H "x-gitsvc-internal: $GITSVC_INTERNAL" \
+  --data-binary @- "$GITSVC_REPLICATE_URL?repo=$GITSVC_REPO&state=$1"
