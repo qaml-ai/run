@@ -105,7 +105,8 @@ locals {
   subnet_ids  = [for subnet in aws_subnet.pool : subnet.id]
 }
 
-# Build: a fixed warm size (slice 8 keeps one build sandbox started on each).
+# Build: build_warm_size hosts always running (default 0); the scaler (scaler.tf) adds hosts above it on demand and
+# removes idle ones down to it, so Terraform sets desired capacity only at creation.
 resource "aws_autoscaling_group" "build" {
   count = contains(keys(local.enabled_pools), "build") ? 1 : 0
 
@@ -124,8 +125,8 @@ resource "aws_autoscaling_group" "build" {
     version = aws_launch_template.pool["build"].latest_version
   }
 
-  # A terminating host gets drain_timeout_seconds to finish or hand back its jobs (the agent completes the action
-  # when drained; slice 8). CONTINUE: a host that never answers is terminated anyway.
+  # A terminating host gets drain_timeout_seconds to finish or hand back its jobs; the scaler (scaler.tf) completes
+  # the action once the runtime reports it idle or gone. CONTINUE: a hook nobody completes ends in termination.
   initial_lifecycle_hook {
     name                 = "drain"
     lifecycle_transition = "autoscaling:EC2_INSTANCE_TERMINATING"
@@ -140,6 +141,7 @@ resource "aws_autoscaling_group" "build" {
   }
 
   lifecycle {
+    ignore_changes = [desired_capacity]
     precondition {
       condition     = var.build_warm_size >= 0 && var.build_warm_size <= var.build_max_size
       error_message = "build_warm_size must be between 0 and build_max_size."
@@ -147,7 +149,7 @@ resource "aws_autoscaling_group" "build" {
   }
 }
 
-# Test: min 0; slice 8 scales desired capacity on the runtime's queue depth, so Terraform leaves it alone.
+# Test: min 0; the scaler (scaler.tf) sets desired capacity from the runtime's demand, so Terraform leaves it alone.
 resource "aws_autoscaling_group" "test" {
   count = contains(keys(local.enabled_pools), "test") ? 1 : 0
 

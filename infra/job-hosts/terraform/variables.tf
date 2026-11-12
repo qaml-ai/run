@@ -115,7 +115,7 @@ variable "test_instance_types" {
 }
 
 variable "test_max_size" {
-  description = "Most test hosts (the spend cap). The test pool's min is 0; slice 8 scales it on the runtime's queue depth."
+  description = "Most test hosts (the spend cap). The test pool's min is 0; the scaler sizes it from the runtime's demand."
   type        = number
   default     = 16
   validation {
@@ -166,4 +166,16 @@ variable "alerts_topic_name" {
   description = "The runtime's us-west-2 alerts topic (infra/terraform/alarms.tf, aws_sns_topic.alerts_regional), which emails Miguel. Looked up by name, not managed here."
   type        = string
   default     = "camelai-agent-runtime-alerts"
+}
+
+# --- Scaler ---
+
+variable "scaler_idle_minutes" {
+  description = "The scaler (scaler.tf) drains and removes a host that has run no job for this many minutes, down to the pool's min."
+  type        = number
+  default     = 10
+  validation {
+    condition     = var.scaler_idle_minutes >= 1 && var.scaler_idle_minutes <= 240
+    error_message = "scaler_idle_minutes is between 1 and 240."
+  }
 }

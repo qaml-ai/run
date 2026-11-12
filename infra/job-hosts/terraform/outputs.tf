@@ -32,3 +32,13 @@ output "enrollment_audience" {
   description = "camelrun-job-host:<AGENT_PUBLIC_URL>; must match the runtime's jobHostAudience."
   value       = local.enrollment_audience
 }
+
+output "scaler_function_name" {
+  description = "The scaler Lambda; empty until a pool exists."
+  value       = try(aws_lambda_function.scaler[0].function_name, "")
+}
+
+output "scaler_token_parameter" {
+  description = "The SSM SecureString the scaler reads its runtime token from. Create it by hand (README, \"Scaler token\")."
+  value       = local.scaler_token_parameter
+}

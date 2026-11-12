@@ -1,7 +1,7 @@
 # Alarms on the pools, to the runtime's us-west-2 alerts topic (infra/terraform/alarms.tf), which emails Miguel.
 # Modest on purpose: "hosts the pool wants are not in service" (failed boots, quota or capacity errors, hosts dying)
-# and failed EC2 status checks. Heartbeat loss as the runtime sees it, stuck leases and queue depth are runtime
-# metrics and come with slice 8.
+# and failed EC2 status checks; the scaler's own errors are in scaler.tf. Heartbeat loss as the runtime sees it and
+# stuck leases are runtime metrics, alarmed on the runtime's side.
 
 data "aws_sns_topic" "alerts" {
   name = var.alerts_topic_name
