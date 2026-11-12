@@ -355,6 +355,9 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		}
 		if m.Origin != nil {
 			v.releaseOrigin = m.Origin.Register(v.Root, v.Lineage, r)
+			if v.Hydrate {
+				m.Origin.PrefetchRoot(v.Root)
+			}
 		}
 		e = m.cold(ctx, v, r)
 	}
@@ -522,7 +525,7 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 	v.State = "cold"
 	v.TotalRegions = (r.VirtualSize + chunk.Size - 1) / chunk.Size
 	if v.Hydrate {
-		for _, msg := range []string{"hydration_batch_size 64", "hydration_threshold 64", "enable_hydration"} {
+		for _, msg := range []string{"hydration_batch_size 256", "hydration_threshold 256", "enable_hydration"} {
 			if _, e = run(ctx, "dmsetup", "message", dm, "0", msg); e != nil {
 				return e
 			}

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 
@@ -16,19 +17,22 @@ import (
 const patternLimit = 64 << 10
 
 type origin struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	server   *Server
-	root     root.Root
-	refs     int
-	queue    []int64
-	pending  map[int64]bool
-	seen     map[int64]bool
-	touches  []int64
-	lineages map[string]bool
+	mu          sync.Mutex
+	cond        *sync.Cond
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	server      *Server
+	root        root.Root
+	refs        int
+	queue       []int64
+	rootOrder   []int64
+	rootNext    int
+	rootStarted bool
+	pending     map[int64]bool
+	seen        map[int64]bool
+	touches     []int64
+	lineages    map[string]bool
 }
 
 func (s *Server) pattern(lineage string) string {
@@ -58,7 +62,11 @@ func (s *Server) Register(id, lineage string, r root.Root) func() {
 			}
 		}
 		s.origins[id] = p
-		for i := 0; i < max(1, s.Prefetch); i++ {
+		depth := s.FetchDepth
+		if depth == 0 {
+			depth = s.Prefetch
+		}
+		for i := 0; i < max(1, depth); i++ {
 			p.wg.Add(1)
 			go p.worker()
 		}
@@ -92,6 +100,28 @@ func (s *Server) Register(id, lineage string, r root.Root) func() {
 		})
 	}
 }
+
+// PrefetchRoot queues the full sparse root after pattern replay, once per pool.
+func (s *Server) PrefetchRoot(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.origins[id]
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.rootStarted {
+		return
+	}
+	p.rootStarted = true
+	for k := range p.root.Chunks {
+		o, _ := strconv.ParseInt(k, 10, 64)
+		p.rootOrder = append(p.rootOrder, o)
+	}
+	sort.Slice(p.rootOrder, func(i, j int) bool { return p.rootOrder[i] < p.rootOrder[j] })
+	p.cond.Broadcast()
+}
 func (p *origin) enqueue(o int64) {
 	// Caller holds mu, except while constructing the pool before publication.
 	if o < 0 || o >= p.root.VirtualSize || o%root.ChunkSize != 0 || p.root.Chunks[strconv.FormatInt(o, 10)] == "" || p.pending[o] || len(p.queue) >= patternLimit {
@@ -120,15 +150,21 @@ func (p *origin) worker() {
 	defer p.wg.Done()
 	for {
 		p.mu.Lock()
-		for len(p.queue) == 0 && p.ctx.Err() == nil {
+		for len(p.queue) == 0 && p.rootNext == len(p.rootOrder) && p.ctx.Err() == nil {
 			p.cond.Wait()
 		}
 		if p.ctx.Err() != nil {
 			p.mu.Unlock()
 			return
 		}
-		o := p.queue[0]
-		p.queue = p.queue[1:]
+		var o int64
+		if len(p.queue) > 0 {
+			o = p.queue[0]
+			p.queue = p.queue[1:]
+		} else {
+			o = p.rootOrder[p.rootNext]
+			p.rootNext++
+		}
 		p.mu.Unlock()
 		_, _ = p.server.Cache.EnsureContext(p.ctx, p.root.Chunks[strconv.FormatInt(o, 10)])
 		p.mu.Lock()
