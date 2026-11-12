@@ -212,6 +212,11 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             }
           }
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; routing.failures = []; }
+          // Cut off at its output limit (Responses' incomplete: max_output_tokens): a truncated answer, as from any model,
+          // never a member failure (the next member has the same limit). Logged: a reasoning model can spend it all thinking.
+          if (event.type === "done" && event.message.stopReason === "length")
+            console.log(JSON.stringify({ type: "model_output_cut", tenant: env.AGENT_TENANT ?? null, model: `${prepared.model.provider}/${prepared.model.id}`, maxTokens: prepared.model.maxTokens,
+              output: event.message.usage?.output ?? null, answered: event.message.content.some(part => part.type === "text" || part.type === "toolCall") }));
           if (event.type === "done") await replayRetry.success();
           await hooks.onStreamEvent?.(event);
           output.push(event);

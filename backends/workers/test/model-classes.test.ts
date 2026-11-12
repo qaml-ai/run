@@ -28,7 +28,7 @@ test("camelrun/fast and camelrun/strong are virtual models; camelrun/default is 
   const strong = resolveModel("camelrun/strong");
   assert.deepEqual([strong.provider, strong.id, (strong as { virtual?: string }).virtual, tier(strong)], ["openrouter", CARBON, "camelrun/strong", "flex"]);
   assert.equal(strong.api, "openai-responses", "Gemini on OpenRouter's Responses API, as every non-Anthropic, non-DeepSeek model");
-  assert.equal(strong.maxTokens, 32_768, "every Carbon endpoint serves it, AI Studio's default tier included");
+  assert.equal(strong.maxTokens, 65_536, "room for high-effort reasoning; Vertex's US and EU endpoints serve it");
   const listed = listModels("camelrun");
   assert.deepEqual(listed.map(model => [model.id, model.routes, model.serviceTiers]), [
     ["camelrun/default", [`openrouter/${EMBER}`, `openrouter/${FLASH}`], undefined],
@@ -151,7 +151,10 @@ function scriptedProvider(script: Step[] | ((model: Model<Api>) => Step)) {
       calls.push({ model: model.id, tier: tier(model), payload });
       const step = typeof script === "function" ? script(model) : script.shift() ?? "unscripted";
       const base = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage: { ...usage(), input: 1_000_000, output: 1_000_000 }, timestamp: Date.now() } as AssistantMessage;
-      if (typeof step === "object") {
+      if (step === "LENGTH") {
+        const message = { ...base, content: [{ type: "thinking", thinking: "" }], stopReason: "length" } as AssistantMessage;
+        output.push({ type: "done", reason: "length", message } as never); output.end(message);
+      } else if (typeof step === "object") {
         const error = { ...base, content: [], stopReason: "error", errorMessage: step.error } as AssistantMessage;
         output.push({ type: "error", reason: "error", error }); output.end(error);
       } else {
@@ -274,4 +277,16 @@ test("every member failing: the request fails with the last member's own error, 
   const aliased = withSettings(plain.provider, { settings: async () => ({ model: "camelrun/default" }) as never, credentials: async () => ({ apiKey: "fixture" }) }, {} as never);
   for await (const _ of aliased.stream(resolveModel("camelrun/default"), context, {})) { /* drain */ }
   assert.deepEqual(JSON.parse(logs.find(line => line.includes('"virtual_model_chain_failed"'))!).failures.map((f: { member: string }) => f.member), [`openrouter/${EMBER}`, `openrouter/${FLASH}`]);
+});
+
+test("an answer cut off at its output limit is passed through as truncated (stop: length), logged, and never walks the chain", async t => {
+  const logs: string[] = [];
+  t.mock.method(console, "log", (line: string) => { logs.push(line); });
+  const run = await call("camelrun/strong", ["LENGTH"]);
+  assert.equal(run.last.type, "done");
+  assert.equal(run.last.message.stopReason, "length");
+  assert.deepEqual(run.calls.map(c => c.tier), ["flex"], "the default tier is not asked: it has the same limit");
+  const cut = JSON.parse(logs.find(line => line.includes('"model_output_cut"'))!);
+  assert.deepEqual([cut.model, cut.maxTokens, cut.answered], [`openrouter/${CARBON}`, 65_536, false]);
+  assert.ok(!logs.some(line => line.includes("virtual_model_chain")));
 });
