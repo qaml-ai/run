@@ -379,27 +379,55 @@ table), not a design change.
 ### 1.7 Search: trigrams per shard, composed per snapshot
 
 Miguel: simple is better. Trigrams only: literal and regex queries with path filters; no symbol index, no semantic
-or embedding search. Shape (from `proto/search`; its measured numbers land in its RESULTS and will be copied here):
+or embedding search. Shape, as built and measured on `proto/search` (`prototypes/search/DESIGN.md`, `RESULTS.md`,
+on an 8-vCPU sprite; an NVMe rerun is coming):
 
-- Content is grouped into **shards of ~64 MB** at index time; a shard is a content-addressed object holding, for its
-  files, a trigram → file-id posting list and the file list with blob ids. A shard never changes.
-- A **snapshot's index** is the list of shards that cover its tree, plus a small exclusion list for files the
-  snapshot changed or removed since the shard was built. A **commit** on top of a snapshot indexes only its changed
-  files into a delta shard; when deltas exceed a threshold they are compacted into a new base shard. A **fork**
-  inherits its parent's shard list: zero work.
-- A **query** turns the regex into a trigram set (Cox's trick; Zoekt's shape), intersects posting lists across the
-  snapshot's shards, excludes stale file ids, applies the path glob, and runs the regex over the surviving
-  candidates' bytes (from the cache). A pattern with no literal trigrams scans the candidates' bytes directly.
+- A **shard** is an immutable, content-addressed set of blobs (~64 MB of content in a base build; its id is the
+  hash of its sorted blob ids) holding document-level trigram postings (which blobs contain each trigram, not
+  positions) over ASCII-folded text. The prototype also keeps a copy of the blob bytes in the shard for
+  verification; in camelFS the verification bytes come from the host's blob cache, so a shard is postings only.
+- A **snapshot's index** is its list of shard ids plus its path table (path → blob id, keyed by the tree); on open a
+  **live mask** hides blobs in shared shards that this tree no longer references. A **commit** puts the blobs its
+  parent's shards lack into one delta shard; the new manifest is the parent's shards (fully dead ones dropped) plus
+  the delta. A **fork** is a ref to the same tree: no index work. A **merge** is the union of both parents' shards.
+  Compaction folds small delta shards LSM-style; a shard lives while a reachable snapshot names it (the GC rule of
+  §1.9, nothing extra).
+- A **query** turns the regex into an AND/OR trigram query (codesearch's `RegexpQuery`), intersects postings per
+  shard, applies the live mask and the path filters, verifies candidates on their bytes (find a required literal,
+  run the regex on that line only), ranks, and stops at 2,000 matching blobs. A pattern with no literal trigrams
+  scans candidates directly.
 - Indexing runs **on the host at checkpoint** for held branches (the dirty files are in hand and hashed) and on the
   API node at checkpoint for API-held ones; the shards go to S3 and the host cache. A snapshot made from a GitHub
-  import is indexed by the import job. Index lag is therefore the checkpoint cadence plus seconds; an agent inside a
-  VM greps its own disk with `rg` as today, and the index serves the API, the console and every other agent.
+  import is indexed by the import job. Index lag is the checkpoint cadence plus milliseconds; an agent inside a VM
+  greps its own disk with `rg` as today, and the index serves the API, the console and every other agent.
+
+Measured (Kubernetes 283 MB of source; Linux 1.68 GB):
+
+| | Kubernetes | Linux |
+|---|---:|---:|
+| trigram index as a share of source | 13 % (37.5 MB) | 11 % (178 MB) |
+| full build | 4.0 s | 22.6 s (~110 core-seconds per GB) |
+| incremental per commit: 1 file / 100 files | 4.5 ms / 36 ms | 3.6 ms / 38 ms (a 0.5–0.7 MB delta shard) |
+| fork | 0.2–0.3 ms | 0.2–0.3 ms |
+| compaction of small shards into one | 21 → 1 in 156 ms | 28 → 1 in 1.8 s |
+| query p50 / p99, warm: literal | 21 / 57 ms | 16 / 38 ms |
+| regex | 10 / 79 ms | 32 / 506 ms (the p99 is a full-scan regex with no literal, 460 ms) |
+| path-filtered | 2.4 / 12 ms | 9 / 11 ms |
+| ripgrep warm, same queries | 145–490 ms | 320–1,010 ms |
+| `git grep` on the commit | 570–760 ms | 1.2–2.0 s |
+| cold: index in a new process, page cache dropped / ripgrep cold | 1.9 s / 8.0 s | 1.8 s / 15.8 s |
+| ripgrep over a cold FUSE lazy mount at 20 ms per blob: lazy / 32 prefetchers / warm cache | 72 s / 13.5 s / 2.5 s | 262 s / 60 s / 13.9 s |
+
+So a query is 10–30 ms p50 at any size with no slowdown at 45 shards, 10–30× faster than warm ripgrep and two
+orders faster than anything cold; indexing a turn's commit costs single-digit milliseconds per file; a fork costs
+nothing. The last row is also the clearest statement of why grep over a lazy mount is the wrong design: the index
+is the only thing that makes "instant over any snapshot" true.
 
 Why not one index per lineage, mutated in place: forks and snapshots would each need a copy or a versioned index;
 content-addressed shards make a fork free and an old snapshot searchable forever.
 
-Targets: a query over a 50k-file snapshot in ≤ 50 ms warm (shards in the host or API cache) and ≤ 300 ms cold
-(shard GETs), index cost per commit proportional to changed bytes, index size ≤ 0.3× the text it covers.
+Targets, now measured rather than guessed: ≤ 50 ms p50 warm at any tree size; cold ≤ 2 s plus shard GETs; index
+≤ 0.15× the text it covers; per-commit index cost proportional to changed bytes.
 
 ### 1.8 The git edge
 
@@ -554,7 +582,7 @@ Baseline load ("today", the figure the prototypes share): 1,000 concurrent agent
 | reads (Workers and API nodes, cache misses) | ~$50 | ~$5k |
 | storage: 0.5 TB S3 (+ versioning tail) + the hot generation in DynamoDB (~5 KB of trees per version × 30 days ≈ 70 GB) | ~$12 + ~$18 | ~$1.2k + ~$1.8k |
 | generation packs: history at S3 prices, ~70 GB/month growth at baseline | ~$2/month, cumulative | ~$160/month, cumulative |
-| search shards (0.3× of text, rebuilt per commit as deltas) | ~$10 | ~$1k |
+| search shards (0.13× of text, delta shards per commit, compacted) | ~$5 | ~$500 |
 | API tier: 2 × `c8g.large` + ALB | ~$150 | ~$2k (autoscaled) |
 | GC: Inventory + Batch Operations + marks | ~$10 | ~$500 |
 | **camelFS total** | **~$1,100/month** | **~$100k/month** |
@@ -692,6 +720,22 @@ question (cold mount of a root made elsewhere) cannot be faked by evicting the f
 | git edge | export of a branch as a bare repo on the API node + `git clone` over smart HTTP by stock git (read only); push, mirror and import are v1 |
 | camelRun integration | **`job()` on the hosts driver with `at: <volume>`**: the runtime's `JobDriver` sends `{ lineage, tree, token }` instead of `files`/`sync`; the host mounts a `job:<id>` fork and checkpoints it if `commit: true`; outputs come from the image. Second, if time allows: one agent's `/workspace` as a lineage on a computer VM on the host, through the `MicroVmComputer` provider's first cut (lease, sleep, wake, fork) |
 
+**The v0 daemon contract** (agreed with the runtime side, which builds a third `JobDriver`, `provider:
+"camelfs-host"`, configured by `CAMELFS_HOST_URL` and a shared bearer `CAMELFS_HOST_TOKEN` over a tunnel; no inbound
+port, no enrollment in v0):
+
+- `POST /v0/trees` `{ lineage, parentTree?, files: { path: base64 | { sha256 } } }` → `{ tree }`: an import of a
+  volume version, **once per version** (the driver caches `(seq → tree)` on the volume), incremental within a
+  lineage through a per-lineage sha256 → git-sha1 map so later versions send bytes only for files the lineage has
+  not seen. This is the bridge until volumes are lineages; it is never per job.
+- `POST /v0/jobs` `{ id, command, cwd?, env?, timeoutMs, limits, internet, at?: { lineage, tree }, files?,
+  outputs?: [glob], commit?: boolean }` → `{ status, exitCode, stdout, stderr, outputs, tree?, root?, warm,
+  timings: { placeMs, mountMs, applyMs, bootMs, runMs, checkpointMs } }`. `at` mounts a `job:<id>` fork of the tree
+  (reflink or the cold stack); no `at` is an empty image file; `files` are written into `/repo` by the guest after
+  the mount; `outputs` are read from the image after the run; `commit: true` checkpoints the fork with the §1.3
+  contract and returns its tree and root. Idempotent by `id`; a finished result is kept ten minutes for repeats.
+- `POST /v0/jobs/:id/stop` → `{ stopped }`.
+
 **What v0 deliberately skips:** HA and a second AZ; more than one host; GC **sweep** (the mark runs and logs what it
 would delete, nothing is deleted); forwarded writes and reads (one writer, refusal otherwise); per-tool-call
 durability (per turn only); generation packing; quotas beyond a per-mount XFS project quota; the ignore list beyond
@@ -773,9 +817,9 @@ purpose; v0's measurements will reshape them.
   materialized bare repo cache on API nodes; clone/fetch/push with ref-policy tokens and the CAS in the transaction
   hook; import with history; mirror to GitHub from the API (`push()` stops being a job); `blame`, `log`, `diff` as
   agent tools; rename-aware merges through `merge-tree`; the console's history view.
-- Bar: `grep` over a 50k-file snapshot ≤ 50 ms warm / ≤ 300 ms cold, index lag ≤ 5 s after checkpoint, index ≤ 0.3×
-  text; clone of the large tree within 1.2× of `gitsvc`'s stock-git number; a mirror push of a turn's commit ≤ 2 s;
-  blame of a 2,000-line file ≤ 300 ms.
+- Bar: `grep` over a 50k-file snapshot ≤ 50 ms p50 warm / ≤ 2 s cold, index lag ≤ 5 s after checkpoint, index
+  ≤ 0.15× text (`proto/search` measured 11–13 %); clone of the large tree within 1.2× of `gitsvc`'s stock-git
+  number; a mirror push of a turn's commit ≤ 2 s; blame of a 2,000-line file ≤ 300 ms.
 - AWS: API nodes with NVMe (`c8gd`) for the repo cache; egress to GitHub from the API tier's security group.
 
 ### Phase 4: the sweep, generations, 100× and the long tail
@@ -852,4 +896,4 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 | Is Artifacts the answer? | no: 1 GB/repo, 32 MiB/file, 33× price, no server-side writes | `artifacts-volumes` |
 | Is a stateful git fleet the answer? | not as truth: 6/10, a fleet to page on; as a cache at the edge, yes | `gitsvc` |
 | Does lazy mounting pay on cold full reads? | yes with prefetch (3.0 s vs 5.5 s local cold for 500 MB at 15 ms injected latency); it is the chunk GETs and nothing else | `proto/block` |
-| Search over snapshots? | trigrams per content-addressed shard, forks free | `proto/search` (numbers pending) |
+| Search over snapshots? | trigrams per content-addressed shard: 11–13 % of source, 10–30 ms p50 warm, ~4 ms per changed file to index, forks free; 10–30× warm ripgrep | `proto/search` |
