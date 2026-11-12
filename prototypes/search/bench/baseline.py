@@ -46,7 +46,6 @@ def timed(cmd, cwd):
     return (time.perf_counter() - t) * 1000, p.stdout
 
 for q in json.load(open(qfile)):
-    if q.get("symbol"): continue
     for tool in tools:
         build = rg_cmd if tool == "rg" else git_cmd
         cmd = build(q)

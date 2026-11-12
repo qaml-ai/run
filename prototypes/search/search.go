@@ -650,12 +650,9 @@ func Search(sn *Snap, q Query) (*SearchResult, error) {
 	close(work)
 	wg.Wait()
 
-	defs := definitionSets(sn, q)
 	for i := range files {
 		files[i].Score = score(&files[i], q, vre)
-		if defs[int64(files[i].si)<<32|int64(files[i].ord)] {
-			files[i].Score += 30 // the file defines the symbol searched for
-		}
+
 	}
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].Score != files[j].Score {
@@ -681,7 +678,7 @@ func Search(sn *Snap, q Query) (*SearchResult, error) {
 var lowValue = regexp.MustCompile(`(^|/)(test|tests|testdata|vendor|third_party|node_modules|generated|docs?|Documentation)(/|$)|_test\.|\.min\.|\.pb\.go$|zz_generated`)
 
 // score: more matches help (sub-linearly), a basename hit helps most, a shallow path a little; tests, vendored and
-// generated code sink. Symbol definitions win when the shard has a symbol table.
+// generated code sink.
 func score(f *FileMatch, q Query, re *regexp.Regexp) float64 {
 	s := 10 * math.Log2(1+float64(f.Matches))
 	if re.MatchString(path.Base(f.Path)) {
@@ -808,44 +805,6 @@ func langOf(p string) uint8 {
 func isASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}
-
-// definitionSets: for a plain identifier query, the blobs whose symbol table defines that name (for ranking).
-func definitionSets(sn *Snap, q Query) map[int64]bool {
-	if q.Regex || !isIdent(q.Pattern) {
-		return nil
-	}
-	low := strings.ToLower(q.Pattern)
-	out := map[int64]bool{}
-	for si, s := range sn.Shards {
-		t := s.syms
-		if t == nil {
-			continue
-		}
-		i := sort.Search(t.n, func(i int) bool { n, _, _, _ := t.at(i); return strings.ToLower(n) >= low })
-		for ; i < t.n; i++ {
-			n, kind, ord, _ := t.at(i)
-			if strings.ToLower(n) != low {
-				break
-			}
-			if (q.IgnoreCase || n == q.Pattern) && symKinds[kind] != "prototype" {
-				out[int64(si)<<32|int64(ord)] = true
-			}
-		}
-	}
-	return out
-}
-
-func isIdent(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
 			return false
 		}
 	}

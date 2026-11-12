@@ -1,10 +1,9 @@
-// camelsearch: a trigram + symbol code search over content-addressed snapshots (prototype; see DESIGN.md).
+// camelsearch: a trigram code search over content-addressed snapshots (prototype; see DESIGN.md).
 //
-//	camelsearch index   -store S -repo R -commit C [-parent P,...] [-ref NAME] [-symbols]
+//	camelsearch index   -store S -repo R -commit C [-parent P,...] [-ref NAME]
 //	camelsearch fork    -store S -from REF -name NAME
 //	camelsearch compact -store S -snap REF [-limit BYTES]
 //	camelsearch search  -store S -snap REF [-regex] [-i] [-path G] [-file G] [-lang L] [-context N] PATTERN
-//	camelsearch sym     -store S -snap REF [-regex] NAME
 //	camelsearch serve   -store S -addr :7700
 //	camelsearch bench   -store S -snap REF -queries Q.json [-n 20]
 package main
@@ -34,7 +33,7 @@ func out(v any) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: camelsearch index|fork|compact|search|sym|serve|bench ...")
+		fmt.Fprintln(os.Stderr, "usage: camelsearch index|fork|compact|search|serve|bench ...")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -44,7 +43,6 @@ func main() {
 	commit := fs.String("commit", "HEAD", "commit to index")
 	parent := fs.String("parent", "", "comma-separated parent snapshots/refs")
 	ref := fs.String("ref", "", "ref to point at the indexed tree")
-	symbols := fs.Bool("symbols", false, "build the ctags symbol index")
 	shardMB := fs.Int("shard-mb", 64, "content MB per shard")
 	from := fs.String("from", "", "fork source")
 	name := fs.String("name", "", "fork name")
@@ -65,7 +63,6 @@ func main() {
 	if err != nil {
 		die(err)
 	}
-	st.Symbols = *symbols
 	st.ShardTarget = int64(*shardMB) << 20
 
 	switch cmd {
@@ -99,21 +96,13 @@ func main() {
 			die(err)
 		}
 		out(r)
-	case "search", "sym":
+	case "search":
 		t0 := time.Now()
 		sn, err := st.Open(*snap)
 		if err != nil {
 			die(err)
 		}
 		openMs := ms(time.Since(t0))
-		if cmd == "sym" {
-			hits, qms, err := SearchSymbols(sn, strings.Join(fs.Args(), " "), *isRe, *limit)
-			if err != nil {
-				die(err)
-			}
-			out(map[string]any{"openMs": openMs, "ms": qms, "hits": hits})
-			return
-		}
 		r, err := Search(sn, Query{Pattern: strings.Join(fs.Args(), " "), Regex: *isRe, IgnoreCase: *ic, PathGlob: *pathG,
 			FileGlob: *fileG, Lang: *lang, Context: *ctx, Limit: *limit})
 		if err != nil {
@@ -158,16 +147,6 @@ func serve(st *Store, addr string) {
 		res, err := Search(sn, q)
 		reply(w, res, err)
 	})
-	mux.HandleFunc("GET /v1/snapshots/{ref}/symbols", func(w http.ResponseWriter, r *http.Request) {
-		sn, err := st.Open(r.PathValue("ref"))
-		if err != nil {
-			reply(w, nil, err)
-			return
-		}
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		hits, qms, err := SearchSymbols(sn, r.URL.Query().Get("q"), r.URL.Query().Get("regex") == "1", limit)
-		reply(w, map[string]any{"ms": qms, "hits": hits}, err)
-	})
 	mux.HandleFunc("POST /v1/snapshots/{ref}/fork", func(w http.ResponseWriter, r *http.Request) {
 		tree, err := st.Fork(r.PathValue("ref"), r.URL.Query().Get("name"))
 		reply(w, map[string]string{"tree": tree}, err)
@@ -191,9 +170,8 @@ func serve(st *Store, addr string) {
 // ---- bench: latency per query, in process ----
 
 type BenchQuery struct {
-	Class string `json:"class"` // literal | regex | path | symbol | ...
+	Class string `json:"class"` // literal | regex | path | ...
 	Query
-	Symbol string `json:"symbol,omitempty"`
 }
 
 func pct(xs []float64, p float64) float64 {
@@ -229,24 +207,16 @@ func bench(st *Store, snap, qfile string, n int) {
 		var last any
 		for i := 0; i < n+1; i++ {
 			t := time.Now()
-			if bq.Symbol != "" {
-				hits, _, err := SearchSymbols(sn, bq.Symbol, bq.Regex, 20)
-				if err != nil {
-					die(err)
-				}
-				last = map[string]any{"hits": len(hits), "top": firstOr(hits)}
-			} else {
-				r, err := Search(sn, bq.Query)
-				if err != nil {
-					die(err)
-				}
-				top := ""
-				if len(r.Files) > 0 {
-					top = r.Files[0].Path
-				}
-				last = map[string]any{"fileHits": r.Stats.FileHits, "candidates": r.Stats.Candidates,
-					"verified": r.Stats.Verified, "truncated": r.Stats.Truncated, "top": top}
+			r, err := Search(sn, bq.Query)
+			if err != nil {
+				die(err)
 			}
+			top := ""
+			if len(r.Files) > 0 {
+				top = r.Files[0].Path
+			}
+			last = map[string]any{"fileHits": r.Stats.FileHits, "candidates": r.Stats.Candidates,
+				"verified": r.Stats.Verified, "truncated": r.Stats.Truncated, "top": top}
 			d := ms(time.Since(t))
 			if i == 0 {
 				first = d // first run: page faults on the mmapped shards
@@ -259,9 +229,6 @@ func bench(st *Store, snap, qfile string, n int) {
 		}
 		byClass[bq.Class] = append(byClass[bq.Class], lat...)
 		label := bq.Pattern
-		if bq.Symbol != "" {
-			label = "sym:" + bq.Symbol
-		}
 		if bq.PathGlob != "" {
 			label += " path:" + bq.PathGlob
 		}
@@ -288,13 +255,6 @@ func bench(st *Store, snap, qfile string, n int) {
 		out(map[string]any{"event": "class", "class": c, "n": len(byClass[c]), "p50": pct(byClass[c], 0.5),
 			"p99": pct(byClass[c], 0.99)})
 	}
-}
-
-func firstOr(h []SymbolHit) any {
-	if len(h) == 0 {
-		return nil
-	}
-	return h[0].Path + ":" + strconv.Itoa(h[0].Line)
 }
 
 // gen writes the sibling prototypes' synthetic tree (proto/artifacts-volumes bench.ts: same paths, same generator).

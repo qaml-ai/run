@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -101,9 +103,11 @@ func TestSearchMatchesBruteForceAcrossCheckpointsAndForks(t *testing.T) {
 	run(t, repo, "commit", "-qm", "base")
 	st, _ := openStore(t.TempDir())
 	st.ShardTarget = 512 // many tiny shards: exercises the multi-shard paths
-	if _, err := st.Ingest(repo, "HEAD", nil); err != nil {
+	baseStats, err := st.Ingest(repo, "HEAD", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	checkPaths(t, st, repo, "HEAD", baseStats, "ls-tree")
 	base := run(t, repo, "rev-parse", "HEAD^{tree}")
 	st.SetRef("base", base)
 
@@ -157,6 +161,7 @@ func TestSearchMatchesBruteForceAcrossCheckpointsAndForks(t *testing.T) {
 	if s1.NewBlobs != 2 || s1.NewShards != 1 {
 		t.Fatalf("delta: %+v", s1)
 	}
+	checkPaths(t, st, repo, "HEAD", s1, "diff")
 	st.SetRef("v1", s1.Tree)
 	sn1, _ := st.Open("v1")
 	check("v1", sn1)
@@ -172,6 +177,7 @@ func TestSearchMatchesBruteForceAcrossCheckpointsAndForks(t *testing.T) {
 	if err != nil || sf.NewBlobs != 1 {
 		t.Fatalf("fork ingest %+v %v", sf, err)
 	}
+	checkPaths(t, st, repo, "HEAD", sf, "diff")
 	st.SetRef("fork", sf.Tree)
 	snf, _ := st.Open("fork")
 	check("fork", snf)
@@ -188,6 +194,7 @@ func TestSearchMatchesBruteForceAcrossCheckpointsAndForks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkPaths(t, st, repo, "HEAD", ss, "diff")
 	st.SetRef("side", ss.Tree)
 	run(t, repo, "checkout", "-q", "-")
 	run(t, repo, "merge", "-q", "--no-edit", "side")
@@ -195,6 +202,7 @@ func TestSearchMatchesBruteForceAcrossCheckpointsAndForks(t *testing.T) {
 	if err != nil || sm.NewBlobs != 0 {
 		t.Fatalf("merge ingest %+v %v", sm, err)
 	}
+	checkPaths(t, st, repo, "HEAD", sm, "ls-tree")
 	st.SetRef("merged", sm.Tree)
 	snm, _ := st.Open("merged")
 	check("merged", snm)
@@ -235,4 +243,183 @@ func TestMatchGlob(t *testing.T) {
 			t.Errorf("matchGlob(%q, %q) = %v", c.pat, c.name, got)
 		}
 	}
+}
+
+func checkPaths(t *testing.T, st *Store, repo, commit string, stats *IngestStats, mode string) {
+	t.Helper()
+	if stats.Mode != mode {
+		t.Fatalf("mode = %q, want %q", stats.Mode, mode)
+	}
+	want, err := lsTree(repo, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have, err := readPaths(filepath.Join(st.Dir, "paths", stats.Tree+".paths"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != len(have) {
+		t.Fatalf("paths: got %d, want %d", len(have), len(want))
+	}
+	for i := range want {
+		if want[i] != have[i] {
+			t.Fatalf("path %d: got %+v, want %+v", i, have[i], want[i])
+		}
+	}
+	m, err := st.readManifest(stats.Tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantCommit := run(t, repo, "rev-parse", commit+"^{commit}"); m.Commit != wantCommit {
+		t.Fatalf("commit = %s, want %s", m.Commit, wantCommit)
+	}
+}
+
+func TestDiffPathChanges(t *testing.T) {
+	repo := t.TempDir()
+	run(t, repo, "init", "-q")
+	write(t, repo, map[string]string{"a.b": "dot", "a/b": "nested", "a0": "zero", "rename": "rename content", "exec": "executable", "link": "regular", "gone/deep/file": "delete"})
+	run(t, repo, "add", "-A")
+	run(t, repo, "commit", "-qm", "base")
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.ShardTarget = 1 // each dead blob's shard must be dropped
+	base, err := st.Ingest(repo, "HEAD", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPaths(t, st, repo, "HEAD", base, "ls-tree")
+	run(t, repo, "mv", "rename", "renamed")
+	if err := os.Chmod(filepath.Join(repo, "exec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("renamed", filepath.Join(repo, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(repo, "gone")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, repo, map[string]string{"a/c": "added", "a.b": "changed"})
+	run(t, repo, "add", "-A")
+	run(t, repo, "commit", "-qm", "changes")
+	next, err := st.Ingest(repo, "HEAD", []string{base.Tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPaths(t, st, repo, "HEAD", next, "diff")
+	if next.NewBlobs != 2 {
+		t.Fatalf("new blobs = %d, want 2", next.NewBlobs)
+	}
+	sn, err := st.Open(next.Tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for si := range sn.Shards {
+		if !slices.ContainsFunc(sn.live[si], func(pi int32) bool { return pi >= 0 }) {
+			t.Fatal("fully dead shard retained")
+		}
+	}
+	// A directory replaced by a file, and a file replaced by a directory.
+	run(t, repo, "rm", "-qr", "a", "a.b")
+	write(t, repo, map[string]string{"a": "file now", "a.b/child": "directory now"})
+	run(t, repo, "add", "-A")
+	run(t, repo, "commit", "-qm", "type changes")
+	last, err := st.Ingest(repo, "HEAD", []string{next.Tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPaths(t, st, repo, "HEAD", last, "diff")
+}
+
+func TestIngestFallbackAndReuse(t *testing.T) {
+	for _, parentCommit := range []string{"", strings.Repeat("0", 40)} {
+		t.Run("parent-"+parentCommit, func(t *testing.T) {
+			repo := t.TempDir()
+			run(t, repo, "init", "-q")
+			write(t, repo, map[string]string{"file": "original"})
+			run(t, repo, "add", "-A")
+			run(t, repo, "commit", "-qm", "base")
+			st, err := openStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			base, err := st.Ingest(repo, "HEAD", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := st.readManifest(base.Tree)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Commit = parentCommit
+			data, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeAtomic(filepath.Join(st.Dir, "snaps", base.Tree+".json"), data); err != nil {
+				t.Fatal(err)
+			}
+			write(t, repo, map[string]string{"file": "modified"})
+			run(t, repo, "add", "-A")
+			run(t, repo, "commit", "-qm", "next")
+			next, err := st.Ingest(repo, "HEAD", []string{base.Tree})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkPaths(t, st, repo, "HEAD", next, "ls-tree")
+			// Reusing an identical tree still records the newly resolved commit.
+			run(t, repo, "commit", "--allow-empty", "-qm", "same tree")
+			reused, err := st.Ingest(repo, "HEAD", []string{next.Tree})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reused.Reused {
+				t.Fatal("identical tree not reused")
+			}
+			checkPaths(t, st, repo, "HEAD", reused, "diff")
+		})
+	}
+}
+
+func TestDiffSubmodules(t *testing.T) {
+	repo := t.TempDir()
+	run(t, repo, "init", "-q")
+	write(t, repo, map[string]string{"file": "blob", "keep": "keep"})
+	run(t, repo, "add", "-A")
+	run(t, repo, "commit", "-qm", "base")
+	commit := run(t, repo, "rev-parse", "HEAD")
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := st.Ingest(repo, "HEAD", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A blob replaced by a gitlink and a newly added gitlink must both be omitted.
+	run(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+commit+",file")
+	run(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+commit+",sub")
+	run(t, repo, "commit", "-qm", "gitlinks")
+	next, err := st.Ingest(repo, "HEAD", []string{base.Tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPaths(t, st, repo, "HEAD", next, "diff")
+	if next.NewBlobs != 0 {
+		t.Fatalf("indexed gitlinks: %+v", next)
+	}
+	// A gitlink replaced by a blob is indexed normally.
+	id := run(t, repo, "rev-parse", commit+":file")
+	run(t, repo, "update-index", "--cacheinfo", "100644,"+id+",file")
+	run(t, repo, "commit", "-qm", "blob again")
+	last, err := st.Ingest(repo, "HEAD", []string{next.Tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPaths(t, st, repo, "HEAD", last, "diff")
 }

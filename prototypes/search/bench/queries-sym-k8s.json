@@ -1,6 +1,0 @@
-[
- {"class":"symbol","symbol":"NewSharedInformerFactory"},
- {"class":"symbol","symbol":"Reconcile"},
- {"class":"symbol","symbol":"NewController"},
- {"class":"symbol","symbol":"^New.*Admission$","regex":true}
-]

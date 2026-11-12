@@ -51,7 +51,6 @@ func parseBlobID(s string) (BlobID, error) {
 type pendingBlob struct {
 	ID      BlobID
 	Content []byte
-	Ext     string // a representative path extension, for the symbol pass
 }
 
 type Shard struct {
@@ -63,7 +62,6 @@ type Shard struct {
 	blobs []byte // blob table slice of idx
 	tris  []byte // trigram table slice of idx
 	post  []byte // postings slice of idx
-	syms  *SymbolTable
 }
 
 // lowerASCII folds A-Z only; the index is built over folded bytes and queries are folded the same way.
@@ -90,7 +88,7 @@ func docTrigrams(content []byte, buf []uint32) []uint32 {
 }
 
 // buildShard writes one shard from blobs (already deduplicated) into dir and returns its id and sizes.
-func buildShard(dir string, blobs []pendingBlob, withSymbols bool) (string, int64, int64, error) {
+func buildShard(dir string, blobs []pendingBlob) (string, int64, int64, error) {
 	sort.Slice(blobs, func(i, j int) bool { return bytes.Compare(blobs[i].ID[:], blobs[j].ID[:]) < 0 })
 	h := sha256.New()
 	for _, b := range blobs {
@@ -176,11 +174,6 @@ func buildShard(dir string, blobs []pendingBlob, withSymbols bool) (string, int6
 	if err := writeAtomic(filepath.Join(dir, id+".dat"), dat.Bytes()); err != nil {
 		return "", 0, 0, err
 	}
-	if withSymbols {
-		if err := buildSymbols(dir, id, blobs); err != nil {
-			return "", 0, 0, err
-		}
-	}
 	idx := slices.Concat(hdr, blobTab, triTab, post)
 	if err := writeAtomic(idxPath, idx); err != nil {
 		return "", 0, 0, err
@@ -233,7 +226,6 @@ func openShard(dir, id string) (*Shard, error) {
 	s.blobs = idx[bo:to]
 	s.tris = idx[to:po]
 	s.post = idx[po:]
-	s.syms, _ = openSymbols(dir, id) // optional
 	return s, nil
 }
 

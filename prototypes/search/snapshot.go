@@ -4,7 +4,7 @@ package main
 // table. Nothing in it is copied from its parent: a child snapshot names the parent's shards and adds one delta shard
 // with the blobs the parent did not have. A fork of a snapshot is a ref to the same tree, so it costs nothing.
 //
-//	store/shards/<id>.{idx,dat,sym}   immutable, shared by every snapshot that names them
+//	store/shards/<id>.{idx,dat}   immutable, shared by every snapshot that names them
 //	store/snaps/<tree>.json           manifest: shards, parent, counts
 //	store/paths/<tree>.paths          path table: path, mode, blob id (one per tree; equal trees share it)
 //	store/refs/<name>                 a volume/fork head: a tree sha (what the FS's refs would hold)
@@ -18,7 +18,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -34,7 +33,6 @@ type Store struct {
 	shards      map[string]*Shard
 	snaps       map[string]*Snap
 	ShardTarget int64 // content bytes per shard
-	Symbols     bool
 }
 
 func openStore(dir string) (*Store, error) {
@@ -47,6 +45,7 @@ func openStore(dir string) (*Store, error) {
 }
 
 type Manifest struct {
+	Commit       string   `json:"commit,omitempty"`
 	Tree         string   `json:"tree"`
 	Parents      []string `json:"parents,omitempty"`
 	Shards       []string `json:"shards"`
@@ -220,6 +219,9 @@ func readPaths(file string) ([]PathEntry, error) {
 // ---- ingest from git ----
 
 type IngestStats struct {
+	Mode        string  `json:"mode"`
+	DiffMs      float64 `json:"diffMs"`
+	KnownMs     float64 `json:"knownMs"`
 	Tree        string  `json:"tree"`
 	Files       int     `json:"files"`
 	NewBlobs    int     `json:"newBlobs"`
@@ -227,7 +229,6 @@ type IngestStats struct {
 	NewShards   int     `json:"newShards"`
 	IdxBytes    int64   `json:"idxBytes"`
 	DatBytes    int64   `json:"datBytes"`
-	SymBytes    int64   `json:"symBytes"`
 	PathsBytes  int64   `json:"pathsBytes"`
 	ListMs      float64 `json:"listMs"`
 	ReadMs      float64 `json:"readMs"`
@@ -313,26 +314,21 @@ func catFile(repo string, ids []BlobID, emit func(BlobID, []byte)) error {
 // this volume, or both sides of a merge); their shards are reused and only blobs they lack are read and indexed.
 func (st *Store) Ingest(repo, commit string, parents []string) (*IngestStats, error) {
 	t0 := time.Now()
+	commitOut, err := git(repo, "rev-parse", commit+"^{commit}")
+	if err != nil {
+		return nil, err
+	}
+	commit = strings.TrimSpace(string(commitOut))
 	treeOut, err := git(repo, "rev-parse", commit+"^{tree}")
 	if err != nil {
 		return nil, err
 	}
 	tree := strings.TrimSpace(string(treeOut))
 	stats := &IngestStats{Tree: tree}
-	if m, err := st.readManifest(tree); err == nil {
-		stats.Reused, stats.Files, stats.TotalShards = true, m.Files, len(m.Shards)
-		stats.TotalMs = ms(time.Since(t0))
-		return stats, nil
-	}
-	paths, err := lsTree(repo, commit)
-	if err != nil {
-		return nil, err
-	}
-	stats.Files = len(paths)
-	stats.ListMs = ms(time.Since(t0))
-
-	// Blobs the parents already index.
-	known := map[BlobID]bool{}
+	// Reuse sorted on-disk blob tables instead of rebuilding a map of every parent blob.
+	knownStart := time.Now()
+	var parentManifests []*Manifest
+	var knownShards []*Shard
 	var parentTrees, shardIDs []string
 	seenShard := map[string]bool{}
 	for _, p := range parents {
@@ -345,24 +341,70 @@ func (st *Store) Ingest(repo, commit string, parents []string) (*IngestStats, er
 			return nil, err
 		}
 		parentTrees = append(parentTrees, pt)
+		parentManifests = append(parentManifests, pm)
 		for _, id := range pm.Shards {
 			s, err := st.shard(id)
 			if err != nil {
 				return nil, err
 			}
-			for o := 0; o < s.nBlob; o++ {
-				known[s.blobID(o)] = true
-			}
 			if !seenShard[id] {
+				knownShards = append(knownShards, s)
 				seenShard[id] = true
 				shardIDs = append(shardIDs, id)
 			}
 		}
 	}
+	stats.KnownMs = ms(time.Since(knownStart))
+	known := func(id BlobID) bool {
+		for _, s := range knownShards {
+			i := sort.Search(s.nBlob, func(i int) bool { b := s.blobID(i); return bytes.Compare(b[:], id[:]) >= 0 })
+			if i < s.nBlob && s.blobID(i) == id {
+				return true
+			}
+		}
+		return false
+	}
+	var paths []PathEntry
+	var changedBlobs map[BlobID]bool
+	stats.Mode = "ls-tree"
+	if len(parentManifests) == 1 && parentManifests[0].Commit != "" {
+		cmd := exec.Command("git", "-C", repo, "cat-file", "-e", parentManifests[0].Commit+"^{commit}")
+		if cmd.Run() == nil {
+			stats.Mode = "diff"
+		}
+	}
+	if m, err := st.readManifest(tree); err == nil {
+		m.Commit = commit
+		b, _ := json.MarshalIndent(m, "", " ")
+		if err := writeAtomic(filepath.Join(st.Dir, "snaps", tree+".json"), b); err != nil {
+			return nil, err
+		}
+		st.mu.Lock()
+		delete(st.snaps, tree)
+		st.mu.Unlock()
+		stats.Reused, stats.Files, stats.TotalShards = true, m.Files, len(m.Shards)
+		stats.TotalMs = ms(time.Since(t0))
+		return stats, nil
+	}
+	listStart := time.Now()
+	if stats.Mode == "diff" {
+		var old []PathEntry
+		old, err = readPaths(filepath.Join(st.Dir, "paths", parentTrees[0]+".paths"))
+		if err == nil {
+			paths, changedBlobs, err = diffPaths(repo, parentManifests[0].Commit, commit, old)
+		}
+		stats.DiffMs = ms(time.Since(listStart))
+	} else {
+		paths, err = lsTree(repo, commit)
+		stats.ListMs = ms(time.Since(listStart))
+	}
+	if err != nil {
+		return nil, err
+	}
+	stats.Files = len(paths)
 	// New blobs, in path order (locality: a directory's files land in the same shard).
 	type nb struct {
 		id   BlobID
-		ext  string
 		size uint32
 	}
 	var fresh []nb
@@ -373,11 +415,12 @@ func (st *Store) Ingest(repo, commit string, parents []string) (*IngestStats, er
 			continue // symlink target text: not indexed
 		}
 		live[p.ID] = true
-		if known[p.ID] || seen[p.ID] {
+		// Unchanged regular files were indexed by the parent. Only changed blobs need lookup.
+		if stats.Mode == "diff" && !changedBlobs[p.ID] || seen[p.ID] || known(p.ID) {
 			continue
 		}
 		seen[p.ID] = true
-		fresh = append(fresh, nb{p.ID, path.Ext(p.Path), p.Size})
+		fresh = append(fresh, nb{p.ID, p.Size})
 	}
 	// Drop parent shards that no longer hold any live blob (a fully superseded delta shard).
 	var keep []string
@@ -422,20 +465,18 @@ func (st *Store) Ingest(repo, commit string, parents []string) (*IngestStats, er
 			defer func() { <-sem }()
 			r0 := time.Now()
 			ids := make([]BlobID, len(g))
-			ext := map[BlobID]string{}
 			for i, b := range g {
 				ids[i] = b.id
-				ext[b.id] = b.ext
 			}
 			blobs := make([]pendingBlob, 0, len(g))
 			err := catFile(repo, ids, func(id BlobID, c []byte) {
-				blobs = append(blobs, pendingBlob{ID: id, Content: c, Ext: ext[id]})
+				blobs = append(blobs, pendingBlob{ID: id, Content: c})
 			})
 			r1 := time.Now()
 			var id string
 			var ib, db int64
 			if err == nil {
-				id, ib, db, err = buildShard(filepath.Join(st.Dir, "shards"), blobs, st.Symbols)
+				id, ib, db, err = buildShard(filepath.Join(st.Dir, "shards"), blobs)
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -447,9 +488,6 @@ func (st *Store) Ingest(repo, commit string, parents []string) (*IngestStats, er
 			newIDs[gi] = id
 			stats.IdxBytes += ib
 			stats.DatBytes += db
-			if fi, e := os.Stat(filepath.Join(st.Dir, "shards", id+".sym")); e == nil {
-				stats.SymBytes += fi.Size()
-			}
 		}(gi, g)
 	}
 	wg.Wait()
@@ -472,7 +510,7 @@ func (st *Store) Ingest(repo, commit string, parents []string) (*IngestStats, er
 	for _, p := range paths {
 		content += int64(p.Size)
 	}
-	m := Manifest{Tree: tree, Parents: parentTrees, Shards: append(keep, newIDs...), Files: len(paths),
+	m := Manifest{Commit: commit, Tree: tree, Parents: parentTrees, Shards: append(keep, newIDs...), Files: len(paths),
 		NewBlobs: len(fresh), NewShards: newIDs, ContentBytes: content}
 	b, _ := json.MarshalIndent(m, "", " ")
 	if err := writeAtomic(filepath.Join(st.Dir, "snaps", tree+".json"), b); err != nil {
@@ -502,7 +540,7 @@ func (st *Store) Compact(name string, limit int64) (map[string]any, error) {
 		merged++
 		for o := 0; o < s.nBlob; o++ {
 			if pi := sn.live[si][o]; pi >= 0 {
-				blobs = append(blobs, pendingBlob{ID: s.blobID(o), Content: s.content(o), Ext: path.Ext(sn.Paths[pi].Path)})
+				blobs = append(blobs, pendingBlob{ID: s.blobID(o), Content: s.content(o)})
 			}
 		}
 	}
@@ -510,7 +548,7 @@ func (st *Store) Compact(name string, limit int64) (map[string]any, error) {
 		return map[string]any{"merged": merged, "ms": ms(time.Since(t0))}, nil
 	}
 	sort.Slice(blobs, func(i, j int) bool { return bytes.Compare(blobs[i].ID[:], blobs[j].ID[:]) < 0 })
-	id, ib, db, err := buildShard(filepath.Join(st.Dir, "shards"), blobs, st.Symbols)
+	id, ib, db, err := buildShard(filepath.Join(st.Dir, "shards"), blobs)
 	if err != nil {
 		return nil, err
 	}
@@ -524,4 +562,95 @@ func (st *Store) Compact(name string, limit int64) (map[string]any, error) {
 	delete(st.snaps, m.Tree)
 	st.mu.Unlock()
 	return map[string]any{"merged": merged, "blobs": len(blobs), "idxBytes": ib, "datBytes": db, "shards": len(m.Shards), "ms": ms(time.Since(t0))}, nil
+}
+
+// diffPaths merges changed leaves into the parent's recursive tree listing. With directory
+// separators included, full leaf paths have the same byte order as git's recursive tree walk.
+// Only the changed list is sorted; the full path table is merged in linear time.
+func diffPaths(repo, parent, commit string, old []PathEntry) ([]PathEntry, map[BlobID]bool, error) {
+	out, err := git(repo, "diff-tree", "-r", "-z", "--no-renames", "--raw", parent, commit)
+	if err != nil {
+		return nil, nil, err
+	}
+	recs := bytes.Split(out, []byte{0})
+	var changes []PathEntry
+	changedBlobs := map[BlobID]bool{}
+	var input bytes.Buffer
+	for i := 0; i < len(recs)-1; i += 2 {
+		f := strings.Fields(string(recs[i]))
+		if len(f) != 5 || i+1 >= len(recs) {
+			return nil, nil, fmt.Errorf("invalid diff-tree record")
+		}
+		mode, err := strconv.ParseUint(f[1], 8, 32)
+		if err != nil {
+			return nil, nil, err
+		}
+		p := PathEntry{Path: string(recs[i+1]), Mode: uint32(mode)}
+		if p.Mode == 0o160000 {
+			p.Mode = 0
+		} // submodules remove any old blob entry
+		if p.Mode != 0 {
+			p.ID, err = parseBlobID(f[3])
+			if err != nil {
+				return nil, nil, err
+			}
+			fmt.Fprintln(&input, p.ID.String())
+			if p.Mode != 0o120000 {
+				changedBlobs[p.ID] = true
+			}
+		}
+		changes = append(changes, p)
+	}
+	if input.Len() > 0 {
+		cmd := exec.Command("git", "-C", repo, "cat-file", "--batch-check")
+		cmd.Stdin = &input
+		cmd.Stderr = os.Stderr
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, nil, err
+		}
+		sc := bufio.NewScanner(bytes.NewReader(out))
+		for i := range changes {
+			if changes[i].Mode == 0 {
+				continue
+			}
+			if !sc.Scan() {
+				return nil, nil, fmt.Errorf("cat-file: missing size")
+			}
+			f := strings.Fields(sc.Text())
+			if len(f) != 3 || f[1] != "blob" {
+				return nil, nil, fmt.Errorf("cat-file: invalid blob size")
+			}
+			size, err := strconv.ParseUint(f[2], 10, 32)
+			if err != nil {
+				return nil, nil, err
+			}
+			changes[i].Size = uint32(size)
+		}
+		if err := sc.Err(); err != nil {
+			return nil, nil, err
+		}
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
+	paths := make([]PathEntry, 0, len(old)+len(changes))
+	i, j := 0, 0
+	for i < len(old) || j < len(changes) {
+		switch {
+		case j == len(changes) || i < len(old) && old[i].Path < changes[j].Path:
+			paths = append(paths, old[i])
+			i++
+		case i == len(old) || changes[j].Path < old[i].Path:
+			if changes[j].Mode != 0 {
+				paths = append(paths, changes[j])
+			}
+			j++
+		default:
+			if changes[j].Mode != 0 {
+				paths = append(paths, changes[j])
+			}
+			i++
+			j++
+		}
+	}
+	return paths, changedBlobs, nil
 }
