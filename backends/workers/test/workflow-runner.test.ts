@@ -204,64 +204,20 @@ test("gate(), sleep() and phase() are gone: a script that calls one fails on tha
   }
 });
 
-test("a workflow from runner 1 waiting on a gate or a timer ends failed with script_api_retired; one waiting on nothing else runs on", { timeout: 30_000 }, async () => {
-  // As runner 1 left it: an agent running beside a pending gate, status `waiting` once the agent lands.
+test("a workflow from runner 1 that has not ended ends failed with runtime_upgraded on first touch; an ended one is left alone", { timeout: 30_000 }, async () => {
   const h = harness();
   h.init({ code: `const [a] = await parallel([() => agent("a", { key: "a" }), () => agent("b", { key: "b" })]); return a;` });
   await h.wake();
-  h.store.db.exec(`INSERT INTO workflow_effects (key, attempt, current, ord, origin, revision, kind, args, status, started, issued_step, seen_revision, issued_at, version)
-    VALUES ('ship', 1, 1, 100, 'script', 1, 'gate', '{"title":"Ship?"}', 'pending', 1, 1, 1, 1000, 1)`);
-  h.store.db.exec("UPDATE workflow_state SET version = 1, status = 'waiting'");
-  await h.wake();
-  const summary = h.runner.get();
-  assert.deepEqual([summary.status, summary.fault?.code], ["failed", "script_api_retired"]);
-  assert.equal(summary.fault?.message, "gate(), sleep() and phase() were removed: start the workflow again without them");
-  assert.deepEqual(h.world.cancelled.sort(), ["a:1", "b:1"], "its running agents are stopped; the gate goes to no executor");
-  assert.ok(h.runner.items().items.every(item => item.status === "cancelled"));
-  assert.equal(h.store.db.prepare("SELECT version FROM workflow_state").get()!.version, 2);
-  await h.wake();
-  assert.equal(h.runner.events().filter(event => event.type === "failed").length, 1, "brought up to date once");
-
-  // `waiting` with nothing retired pending (an agent's result waiting for its step): it is running, and finishes.
-  const other = harness();
-  other.init({ code: `return (await agent("a")).answer;` });
-  await other.wake();
-  other.store.db.exec("UPDATE workflow_state SET version = 1, status = 'waiting'");
-  await other.wake();
-  assert.equal(other.runner.get().status, "running");
-  await other.run();
-  assert.deepEqual([other.runner.get().status, other.runner.get().result], ["completed", "re: a"]);
-});
-
-test("a workflow from runner 1 whose script calls sleep() after a landed agent() ends script_api_retired, not a replay fault", { timeout: 30_000 }, async () => {
-  const h = harness();
-  h.init({ code: `const a = await agent("a"); const b = await agent("b"); await sleep(5); return a.answer + b.answer;` });
-  await h.wake();
-  await h.next(); // a lands; b is running and nothing retired is pending
-  assert.equal(h.world.queue.length, 1);
   h.store.db.exec("UPDATE workflow_state SET version = 1");
   await h.wake();
   const summary = h.runner.get();
-  assert.deepEqual([summary.status, summary.fault?.code], ["failed", "script_api_retired"]);
-  const b = h.runner.items().items.find(item => (item.args as { prompt: string }).prompt === "b")!;
-  assert.deepEqual(h.world.cancelled, [`${b.key}:1`], "its running agent is stopped");
-  assert.ok(!h.runner.events().some(event => event.type === "fault"), "no replay ran to fault it");
-
-  // A script without them, from runner 1, runs on.
-  const plain = harness();
-  plain.init({ code: `const a = await agent("a"); return (await agent("b")).answer + a.answer;` });
-  await plain.wake();
-  await plain.next();
-  plain.store.db.exec("UPDATE workflow_state SET version = 1");
-  await plain.run();
-  assert.equal(plain.runner.get().status, "completed");
-});
-
-test("a waiting status written after the stamp (a rolled-back build) reads as running", { timeout: 30_000 }, async () => {
-  const h = harness();
-  h.init({ code: `return (await agent("a")).answer;` });
+  assert.deepEqual([summary.status, summary.fault?.code], ["failed", "runtime_upgraded"]);
+  assert.deepEqual(h.world.cancelled.sort(), ["a:1", "b:1"], "its running agents are stopped");
   await h.wake();
-  h.store.db.exec("UPDATE workflow_state SET status = 'waiting'");
-  await h.next();
-  assert.equal(h.runner.get().status, "completed");
+  assert.equal(h.runner.events().filter(event => event.type === "failed").length, 1, "once");
+
+  const done = await drive(`return (await agent("a")).answer;`);
+  done.store.db.exec("UPDATE workflow_state SET version = 1");
+  await done.wake();
+  assert.deepEqual([done.runner.get().status, done.runner.get().result], ["completed", "re: a"]);
 });

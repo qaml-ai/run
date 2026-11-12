@@ -22,8 +22,8 @@ import { WORKFLOW_STEP_PROTOCOL } from "../codemode/workflow-protocol.ts";
 
 /**
  * The runner's own version, on every journal row it writes (a runner rolled back past a row's version faults) and on
- * `workflow_state`, where a workflow from an older runner is brought up to date once (`upgrade`). 2: gate(), sleep()
- * and phase() were removed (docs/design/workflow-simplification.md).
+ * `workflow_state`, where a workflow from an older runner that has not ended is ended once (`upgrade`). 2: gate(),
+ * sleep() and phase() were removed (docs/design/workflow-simplification.md).
  */
 export const WORKFLOW_RUNNER_VERSION = 2;
 export const WORKFLOW_LIMITS = Object.freeze({
@@ -190,11 +190,6 @@ const SCHEMA = [
 type Row = Record<string, SqlStorageValue>;
 const bytesOf = (value: SqlStorageValue) => value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
 const text = (value: SqlStorageValue) => value === null || value === undefined ? undefined : String(value);
-/** A call of a removed script global, and the fault's message (`upgrade`). */
-const RETIRED_CALL = /\b(gate|sleep|phase)\s*\(/;
-export const SCRIPT_API_RETIRED = "gate(), sleep() and phase() were removed: start the workflow again without them";
-/** The script as written: without the `args` line the object puts first (withArgs). */
-const scriptOf = (code: string) => code.startsWith("const args = Object.freeze(") ? code.slice(code.indexOf("\n") + 1) : code;
 const EXECUTED = new Set(["agent", "job", "commit", "push"]);
 /** The executed kinds as an SQL list: every one is swept, and keeps the sweep's alarm armed, until it lands. */
 const EXECUTED_SQL = [...EXECUTED].map(kind => `'${kind}'`).join(", ");
@@ -379,38 +374,26 @@ export class WorkflowRunner {
   }
 
   /**
-   * A workflow from an older runner, brought up to date once, before anything else runs on it (WORKFLOW_RUNNER_VERSION).
-   * Version 2: gate(), sleep() and phase() are gone. A workflow that has not ended and still waits on a gate or a
-   * timer, or whose script calls one of them, ends failed with `script_api_retired` (its gates' inbox items were closed
-   * by migration 140). The script is matched as text: its snapshot is refused under the new prelude, so its next step
-   * replays, and a call after a journaled effect would throw mid-replay as `nondeterministic_script`. The `waiting`
-   * status is gone too: it reads as running.
+   * A workflow from an older runner (WORKFLOW_RUNNER_VERSION 1, before gate(), sleep() and phase() were removed) that
+   * has not ended ends failed with `runtime_upgraded` the first time it is touched, as fail() ends one. No workflow was
+   * running at that deploy, so nothing older is carried forward.
    */
   private async upgrade() {
-    const state = this.sql.exec("SELECT status, pause_reason, revision, version FROM workflow_state WHERE id = 1").toArray()[0];
-    if (!state) return;
-    // On every call, not once: a build rolled back past this one can write `waiting` again after the stamp.
-    if (state.status === "waiting") this.sql.exec("UPDATE workflow_state SET status = 'running' WHERE id = 1");
-    if (Number(state.version) >= WORKFLOW_RUNNER_VERSION) return;
-    const status = state.status as string, at = this.now();
-    const retired = !TERMINAL.has(status as WorkflowStatus) && (state.pause_reason === "waiting_on_gate"
-      || this.sql.exec("SELECT 1 FROM workflow_effects WHERE current = 1 AND status = 'pending' AND kind IN ('gate', 'sleep') LIMIT 1").toArray().length > 0
-      || RETIRED_CALL.test(scriptOf(String(this.sql.exec("SELECT code FROM workflow_revisions WHERE revision = ?", state.revision).toArray()[0]?.code ?? ""))));
+    const state = this.sql.exec("SELECT status, version FROM workflow_state WHERE id = 1").toArray()[0];
+    if (!state || Number(state.version) >= WORKFLOW_RUNNER_VERSION) return;
+    const ended = TERMINAL.has(state.status as WorkflowStatus);
     this.storage.transactionSync(() => {
-      // Nothing runs a gate or a timer any more, so none is ever cancelled through the executor.
-      this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1, cancel_next_at = NULL WHERE kind IN ('gate', 'sleep') AND cancel_sent = 0");
-      if (retired) {
-        const fault = { code: "script_api_retired" as const, message: SCRIPT_API_RETIRED };
-        this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = ?, ended_at = ? WHERE current = 1 AND status = 'pending'", fault.message, at);
+      if (!ended) {
+        const message = "This workflow was started on an older runtime: start the workflow again";
+        this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = ?, ended_at = ? WHERE current = 1 AND status = 'pending'", message, this.now());
         this.dropSnapshot();
-        this.sql.exec("UPDATE workflow_state SET error = ?, fault_code = ? WHERE id = 1", fault.message, fault.code);
+        this.sql.exec("UPDATE workflow_state SET error = ?, fault_code = 'runtime_upgraded' WHERE id = 1", message);
         this.setStatus("failed");
-        this.event("failed", { code: fault.code, error: fault.message });
+        this.event("failed", { code: "runtime_upgraded", error: message });
       }
       this.sql.exec("UPDATE workflow_state SET version = ? WHERE id = 1", WORKFLOW_RUNNER_VERSION);
     });
-    if (!retired) return;
-    // Ended failed, as fail() ends one: its running children stop, and its capacity is given back.
+    if (ended) return;
     await this.cancelEnded();
     await this.executor.abort?.();
     await this.capacityHousekeeping();
