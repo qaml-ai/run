@@ -37,6 +37,8 @@ test("agentGone counts only a durable deletion, purge or expiry", async () => {
   assert.equal(await agentGone(db, "client_purged"), true);
   assert.equal(await agentGone(db, "client_missing"), false, "a row that may not be committed yet is not gone");
   assert.equal(await agentGone(db, "client_missing", { missing: true }), true);
+  assert.equal(await agentGone(db, "client_expired", { expiry: false }), false, "expiry need not count");
+  assert.equal(await agentGone(db, "client_revoked", { expiry: false }), true);
 });
 
 /** A background child's ended row whose parent waits on a person (a blocking input pending). */
@@ -54,7 +56,7 @@ async function childEndingSetup(parentLiveness: Liveness) {
   return { ctx, row, submitted, parent };
 }
 
-for (const liveness of ["revoked", "expired", "purged", "missing"] as const) {
+for (const liveness of ["revoked", "purged", "missing"] as const) {
   test(`a child's ending for a ${liveness} parent that waits on a person is dropped, not retried each sweep`, async () => {
     const { ctx, row, submitted, parent } = await childEndingSetup(liveness);
     const lines = await logged(() => sweepChildren(ctx, Date.now()));
@@ -66,8 +68,8 @@ for (const liveness of ["revoked", "expired", "purged", "missing"] as const) {
   });
 }
 
-test("a child's ending for a live parent that waits on a person waits for it (the row is released for the next sweep)", async () => {
-  const { ctx, row, submitted } = await childEndingSetup("live");
+for (const liveness of ["live", "expired"] as const) test(`a child's ending for a ${liveness} parent that waits on a person waits for it (the row is released for the next sweep): Postgres's expiry can lag a live parent`, async () => {
+  const { ctx, row, submitted } = await childEndingSetup(liveness);
   const lines = await logged(() => sweepChildren(ctx, Date.now()));
   const after = await row();
   assert.equal(after.state, "running");

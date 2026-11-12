@@ -43,6 +43,8 @@ export function deletedDeadline(owed: { billing: boolean; events: boolean; outbo
 export async function settleDeleted(storage: DurableObjectStorage, at: number, push: (at: number) => Promise<unknown>): Promise<"live" | "armed" | "quiet"> {
   if (await storage.get("deleted") !== true) return "live";
   if (Number.isFinite(at)) { await push(at); return "armed"; }
+  // Pi's own wake job goes too: a turn still settling after a restart is fine, since the harness pushes its wake again
+  // on start, and its settle writes a receipt and calls arm(), which plans this agent for it.
   if (storage.sql.exec<{ n: number }>("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_jobs'").one().n)
     storage.sql.exec("DELETE FROM cf_agents_jobs");
   await storage.deleteAlarm();

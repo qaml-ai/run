@@ -140,6 +140,8 @@ export async function resumeKeptQueueImpl(this: AgentRuntime) {
 /** Withdraw only this delegated input, including a cancellation that arrives before it. */
 export async function cancelRequestImpl(this: AgentRuntime,
   id: string) {
+    // A gone agent runs nothing: there is nothing to stop, and its owner's cancel is done.
+    if (await this.gone("cancelRequest", "owner")) return false;
     this.invalidateMaintenance();
     const cancel = this.admission.then(async () => {
       await this.ctx.storage.put(`cancelled-request:${id}`, true);

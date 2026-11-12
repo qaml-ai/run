@@ -542,7 +542,9 @@ async function deliverChild(ctx: ChildrenContext, row: any) {
     if ((await ctx.options.inputs?.pending(row.parent))?.some(input => input.blocking !== false)) {
       // A deleted or expired parent keeps its pending inputs until its purge: that wait would never end. Its row (it
       // wrote this one) is never deleted, so a missing one is gone too.
-      if (!await agentGone(ctx.db, row.parent, { missing: true })) return void await release();
+      // Deleted only: expiry here comes from Postgres alone, which can lag a live parent; an expired parent's inputs go at
+      // its purge, and the submit below then answers 410, which marks the row notified.
+      if (!await agentGone(ctx.db, row.parent, { missing: true, expiry: false })) return void await release();
       deliveryDropped({ delivery: "child_ending", agent: row.parent, child: row.child, request: row.request_id });
       return void await ctx.db.query("update agent_children set state = 'notified', claimed_until = null, updated_at = $2 where id = $1", [row.id, Date.now()]);
     }

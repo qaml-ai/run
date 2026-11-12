@@ -1,5 +1,5 @@
 import { ChildOutbox, deletedDeadline, settleDeleted } from "./ending-outbox.ts";
-import { stageMissedEndings } from "./agent-endings.ts";
+import { goneStart, stageMissedEndings } from "./agent-endings.ts";
 import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
@@ -208,7 +208,10 @@ export async function restorePendingImpl(this: AgentRuntime) {
     // there): billing, terminal events and its outbox, on the alarm arm() plans.
     const startConfig = await this.ctx.storage.get<Config>("configuration");
     if (await this.ctx.storage.get("deleted") || (startConfig?.expiresAt && startConfig.expiresAt <= Date.now())) {
-      await timed(this, "arm", () => this.arm());
+      // Except a run's ending it still owes: one that ended (its record committed) as the object died, before the event
+      // that stages its ending, is staged now and delivered, as for a live agent (stageMissedEndings reads storage, not
+      // the configuration a gone agent refuses).
+      await timed(this, "goneStart", () => goneStart(this));
       return;
     }
     this.configurationQueue.kick();
@@ -269,8 +272,11 @@ export async function onJobImpl(this: AgentRuntime,
 
 export async function wakeImpl(this: AgentRuntime) {
     if (await this.ctx.storage.get("deleted")) {
-      await this.flushBilling();
-      await this.flushTerminalEvents();
+      // Each step logs and goes on: whatever fails, arm() below (in deletedWake) still plans the next wake for what is
+      // owed, so a failed billing flush is retried rather than left until the account's purge.
+      await this.flushBilling().catch(error => failure(this.env, "deleted_agent_billing_flush_failed", error));
+      await this.flushTerminalEvents().catch(error => failure(this.env, "deleted_agent_events_flush_failed", error));
+      await stageMissedEndings(this, await this.records()).catch(error => failure(this.env, "deleted_agent_stage_endings_failed", error));
       // A child deleted or expired mid-run staged a failed ending for its owner: deliver it, and keep retrying (the
       // alarm, re-armed for the outbox's next row) while the owner is unreachable. A gone owner acknowledges it.
       await ChildOutbox.deletedWake(this);
