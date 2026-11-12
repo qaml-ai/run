@@ -1,5 +1,3 @@
-import { camelfsConfigured, importTree, volumeLineage, type CamelfsEnv } from "./camelfs.ts";
-import type { Volume } from "../volume.ts";
 // Jobs on our own hosts (docs/design/job-hosts-plan.md, slices 3 and 4), behind the JobDriver seam (driver.ts):
 // - JobHostRegistry: the hosts, their free slots and last heartbeat, and who may connect (one object, "hosts"). A host
 //   enrolls first (POST /v1/internal/job-hosts/enroll): it proves who it is with an attestation (shared/job-host-attest.ts:
@@ -24,6 +22,8 @@ import type { KeyEnv } from "../security-services.ts";
 import { keyServices } from "../security-services.ts";
 import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
+import { camelfsConfigured, importTree, volumeLineage, type CamelfsEnv } from "./camelfs.ts";
+import type { Volume } from "../volume.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
@@ -56,8 +56,9 @@ export const HOST_CREDENTIAL_MS = 60 * 60_000;
 const ATTESTATION_MEMORY_MS = 20 * 60_000;
 export const HOST_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
-export type JobHostsEnv = KeyEnv & WebhookEnv & Omit<VolumeSyncEnv, "VOLUMES"> & HostPriceEnv & CamelfsEnv & {
+export type JobHostsEnv = KeyEnv & WebhookEnv & Omit<VolumeSyncEnv, "VOLUMES" | "BUCKET"> & HostPriceEnv & CamelfsEnv & {
   VOLUMES?: DurableObjectNamespace<Volume>;
+  BUCKET?: R2Bucket;
   /** Which attestors enroll hosts: "aws" (needs JOB_HOST_ROLE_ARNS), "test" (needs TEST_MODE and JOB_HOST_TEST_SECRET). */
   JOB_HOST_ATTESTORS?: string;
   /**
@@ -734,10 +735,15 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       const cached = await volume.camelfsTree(snapshot);
       if (cached) return { files: [], camelfs: cached };
       const { files: entries } = await volume.readSet("/", snapshot);
-      const files = entries.map(entry => ({ path: entry.path, size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)! }));
+      const files = entries.map(entry => ({ path: entry.path, key: entry.key, size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)! }));
       const { tree } = await importTree(this.env, {
         lineage, parentTree: await volume.latestCamelfsTree() ?? undefined, files,
-        read: async file => (await volume.read(file.path, snapshot)).bytes,
+        read: async file => {
+          const object = await this.env.BUCKET?.get(file.key);
+          if (!object) throw new Error("camelFS import: a volume file object is missing");
+          // R2's body has a known length; stream it so concurrent uploads never buffer whole files in the DO.
+          return { body: object.body, size: object.size };
+        },
       });
       await volume.setCamelfsTree(snapshot, lineage, tree);
       return { files: [], camelfs: { lineage, tree } };
