@@ -135,6 +135,15 @@ test("a job spec is checked before any compute starts, and picks the smallest in
   ]) assert.throws(() => jobSpec(bad), JobSpecError, JSON.stringify(bad).slice(0, 120));
 });
 
+test("commit checkpoints only a volume's tree", () => {
+  const base = { payer: PAYER, id: "checkpoint", command: "true", timeoutSeconds: 5 };
+  const volume = { tenant: "t", volume: "v", snapshot: "s" };
+  assert.equal(jobSpec({ ...base, volume, commit: true }).commit, true);
+  assert.equal(jobSpec({ ...base, commit: false }).commit, undefined);
+  assert.throws(() => jobSpec({ ...base, commit: true }), { code: "JOB_INVALID", message: "A job commits only a volume's tree: commit needs volume" });
+  for (const commit of ["true", 1, null]) assert.throws(() => jobSpec({ ...base, volume, commit }), JobSpecError);
+});
+
 test("camel-sync writes a tar the system tar unpacks, long and non-ASCII paths included", async () => {
   const long = `${"deep/".repeat(30)}file.txt`;
   const archive = concat([...tarEntry("a.txt", bytes("alpha")), ...tarEntry(long, bytes("long")), ...tarEntry("ünï/cödé.ts", bytes("utf8")), ...tarEntry("empty", new Uint8Array()), tarEnd()]);
@@ -347,6 +356,11 @@ test("JOB_PROVIDER: containers, hosts or auto, each only where configured; auto 
   await auto.driver.run({ payer: PAYER, id: "big", command: "true", timeoutSeconds: 5, limits: { cpus: 16, memoryMiB: 64 * 1024 } });
   await auto.driver.run({ payer: PAYER, id: "snap", command: "true", timeoutSeconds: 5, saveSnapshot: "warm" });
   assert.deepEqual(calls, ["container job:small standard-3", "host job:big standard-4 16", "container job:snap standard-1"]);
+  const commitSpec = { payer: PAYER, id: "checkpoint", command: "true", timeoutSeconds: 5, volume: { tenant: "t", volume: "v", snapshot: "s" }, commit: true };
+  await auto.driver.run(commitSpec);
+  assert.equal(calls.at(-1), "host job:checkpoint standard-1 ");
+  for (const extra of [{ saveSnapshot: "warm" }, { image: "custom" }, { snapshot: { id: "s", name: "warm", size: 1, image: "workspace", createdAt: 1, expiresAt: Date.now() + SNAPSHOT_TTL_MS } }])
+    await assert.rejects(auto.driver.run({ ...commitSpec, ...extra }), { code: "JOB_INVALID", message: "commit cannot be combined with a snapshot or a custom image" });
   // Past even a build host: the spec error, before any object.
   await assert.rejects(auto.driver.run({ payer: PAYER, id: "huge", command: "true", timeoutSeconds: 5, limits: { cpus: 32 } }), /No job host has these limits/);
   // A stop reaches whichever driver ran it.
@@ -356,6 +370,7 @@ test("JOB_PROVIDER: containers, hosts or auto, each only where configured; auto 
   // Containers alone still refuse what does not fit one.
   const containersOnly = jobDriver({ COMPUTER_CONTAINERS: containerNs });
   assert.ok(containersOnly.ok);
+  await assert.rejects(containersOnly.driver.run(commitSpec), { code: "JOB_INVALID", message: "commit needs camelFS job hosts; Cloudflare containers cannot checkpoint a job's tree" });
   await assert.rejects(containersOnly.driver.run({ payer: PAYER, id: "big2", command: "true", timeoutSeconds: 5, limits: { cpus: 16 } }), /largest has 4 vCPUs/);
 });
 

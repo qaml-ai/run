@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { registerHooks } from "node:module";
+import { applyScope } from "../../../shared/apply-scope.ts";
+import type { WorkflowJobsEnv } from "../src/workflow-jobs.ts";
 import type { StartedEffect, EffectOutcome } from "../src/workflow-runner.ts";
 import type { JobResult, JobSpec } from "../src/jobs/job.ts";
 import { harness, FakeCapacity } from "./workflow-harness.ts";
@@ -91,7 +93,7 @@ test("byKind sends agents to the children, job/commit/push to the jobs, polls by
 });
 
 /** WorkflowJobs over a fake driver and storage: what it lands. */
-function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, available = true, payer: string | null = "agent_owner") {
+function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, available = true, payer: string | null = "agent_owner", env = {} as WorkflowJobsEnv) {
   const rows = new Map<string, unknown>();
   const storage = {
     put: async (key: string, value: unknown) => { rows.set(key, value); },
@@ -101,7 +103,7 @@ function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, availab
   };
   const landed: [string, number, unknown, unknown?][] = [], specs: JobSpec[] = [], pending: Promise<unknown>[] = [], stopped: string[] = [];
   const driver = { provider: "cloudflare-containers" as const, run: async (spec: JobSpec) => { specs.push(spec); return result(spec); }, stop: async (id: string) => { stopped.push(id); return { stopped: true }; } };
-  const executor = new WorkflowJobs({} as never, {
+  const executor = new WorkflowJobs(env, {
     workflow: { id: "wf_1", tenant: "t1" }, storage: storage as never, payer: () => payer ?? undefined,
     land: async (key, attempt, outcome, usage) => { landed.push([key, attempt, outcome, usage]); },
     waitUntil: promise => { pending.push(promise); },
@@ -198,6 +200,51 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   release();
   await j.settled();
   assert.deepEqual(j.landed.map(entry => [entry[0], (entry[2] as { error?: string }).error]), [["h", "commit() needs a fork's volume id"]]);
+});
+
+test("WorkflowJobs: commit needs at and a boolean", async () => {
+  for (const [commit, error] of [[true, "job() commit needs at: the volume whose tree it checkpoints"], ["true", "job() commit is true or false"]]) {
+    const j = jobs(() => { throw new Error("never"); });
+    await j.executor.start(effect("checkpoint", { command: "true", timeoutSeconds: 5, commit }));
+    await j.settled();
+    assert.deepEqual(j.landed[0]![2], { ok: false, error });
+    assert.equal(j.specs.length, 0);
+  }
+});
+
+test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", async () => {
+  const checkpoint = { walkMs: 1, streamMs: 2, freezeMs: 3, files: 4, bytes: 5, skipped: 6,
+    changedChunks: 7, uploadedChunks: 8, changedBytes: 9, reflinkMs: 10, fiemapMs: 11, hashMs: 12, uploadMs: 13 };
+  const step = { warm: true, mountMs: 2, applyMs: 3, checkpointMs: 4, checkpoint };
+  for (const fields of [{ commit: "c".repeat(40), tree: "b".repeat(40), root: "r" }, { checkpointError: "checkpoint failed" }]) {
+    const written: string[] = [];
+    const env = { VOLUMES: { getByName: () => ({
+      initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
+      write: async (path: string) => { written.push(path); return { path }; },
+    }) } } as unknown as WorkflowJobsEnv;
+    const sql = { query: async (text: string) => {
+      if (text.startsWith("SELECT name,created_at")) return { rows: [{ name: "test", created_at: 0, tenant: "t1", deleted_at: null }], rowCount: 1 };
+      if (text.startsWith("INSERT INTO volumes")) return { rows: [], rowCount: 1 };
+      if (text.includes("billing_accounts") || text === "select billing, limits from tenants where id = $1") return { rows: [], rowCount: 0 };
+      throw new Error(`Unexpected SQL: ${text}`);
+    } };
+    await applyScope.run({ sql: sql as never }, async () => {
+      const j = jobs(spec => ({ ok: true, id: spec.id, instance: "standard-1", exitCode: 1, timedOut: false,
+        stdout: { bytes: new Uint8Array(), size: 0, truncated: false }, stderr: { bytes: new Uint8Array(), size: 0, truncated: false },
+        outputs: {}, missing: [], timings, camelfs: { ...step, ...fields },
+      }), true, "agent_owner", env);
+      await j.executor.start(effect("checkpoint", { command: "false", timeoutSeconds: 5, at: "vol_source", commit: true }));
+      await j.settled();
+      assert.equal(j.specs[0]?.commit, true);
+      assert.deepEqual(j.specs[0]?.volume, { tenant: "t1", volume: "vol_source", snapshot: "snapshot" });
+      const outcome = j.landed[0]?.[2] as { ok: boolean; value: Record<string, any> };
+      assert.equal(outcome?.ok, true);
+      for (const key of ["commit", "tree", "root", "checkpointError"] as const) assert.equal(outcome.value[key], fields[key as keyof typeof fields]);
+      assert.deepEqual(outcome.value.timings.camelfs, step);
+      assert.equal(outcome.value.exitCode, 1);
+      assert.equal(written.length, 2);
+    });
+  }
 });
 
 test("a fork's changes: written paths are those whose content differs from the base it was made from; removed ones", () => {

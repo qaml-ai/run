@@ -60,6 +60,8 @@ type JobArgs = {
   command: string; timeoutSeconds: number; outputs?: string[]; limits?: JobSpec["limits"]; internet?: boolean;
   /** A volume of the tenant's whose files the job starts with, in /repo (synced from a snapshot taken now). */
   at?: string;
+  /** Checkpoint /repo when the command ends; needs `at` and camelFS job hosts. */
+  commit?: boolean;
   /** Small files given inline, path to text. */
   files?: Record<string, string>;
 };
@@ -184,9 +186,11 @@ export class WorkflowJobs implements EffectExecutor {
 
   /** A script's job() as a JobSpec: paid by `payer()`, its container in that payer's computer tree. */
   private async jobSpec(id: string, args: JobArgs): Promise<JobSpec> {
-    const known = ["command", "timeoutSeconds", "outputs", "limits", "internet", "at", "files", "nocache"];
+    const known = ["command", "timeoutSeconds", "outputs", "limits", "internet", "at", "files", "nocache", "commit"];
     const extra = Object.keys(args ?? {}).find(name => !known.includes(name));
     if (extra) throw new JobSpecError(`job() has no option ${extra}: it takes ${known.join(", ")}`);
+    if (args.commit !== undefined && typeof args.commit !== "boolean") throw new JobSpecError("job() commit is true or false");
+    if (args.commit && args.at === undefined) throw new JobSpecError("job() commit needs at: the volume whose tree it checkpoints");
     if (args.at !== undefined && args.files !== undefined) throw new JobSpecError("job() takes at or files, not both");
     if (args.files !== undefined && (!args.files || typeof args.files !== "object" || Object.values(args.files).some(text => typeof text !== "string")))
       throw new JobSpecError("job() files maps paths to text");
@@ -201,7 +205,7 @@ export class WorkflowJobs implements EffectExecutor {
     } else if (args.files) source = { files: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, new TextEncoder().encode(text)])) };
     return {
       id, command: args.command, timeoutSeconds: Math.ceil(args.timeoutSeconds), ...(args.outputs ? { outputs: args.outputs } : {}),
-      ...(args.limits ? { limits: args.limits } : {}), ...(args.internet ? { internet: true } : {}), ...source,
+      ...(args.limits ? { limits: args.limits } : {}), ...(args.internet ? { internet: true } : {}), ...(args.commit ? { commit: true } : {}), ...source,
       payer: this.payer(),
     };
   }
@@ -254,6 +258,13 @@ export class WorkflowJobs implements EffectExecutor {
       stdout: await stream("stdout.txt", result.stdout), stderr: await stream("stderr.txt", result.stderr), outputs, missing: result.missing,
       timings: { totalMs: result.timings.totalMs, commandMs: result.timings.commandMs },
     };
+    if (result.camelfs) {
+      const { tree, root, commit, checkpointError, warm, mountMs, applyMs, checkpointMs, checkpoint } = result.camelfs;
+      for (const [key, field] of Object.entries({ tree, root, commit, checkpointError })) if (field !== undefined) value[key] = field;
+      (value.timings as Record<string, unknown>).camelfs = {
+        warm, mountMs, applyMs, ...(checkpointMs ? { checkpointMs } : {}), ...(checkpoint ? { checkpoint } : {}),
+      };
+    }
     // The inline result stays under the runner's cap: the tails shrink first (the streams are whole in the volume).
     for (let tail = TAIL_CHARS; new TextEncoder().encode(JSON.stringify(value)).byteLength > WORKFLOW_LIMITS.inlineResultBytes - 512 && tail > 0; tail = Math.floor(tail / 2)) {
       for (const name of ["stdout", "stderr"] as const) (value[name] as { tail: string }).tail = (value[name] as { tail: string }).tail.slice(-tail);
