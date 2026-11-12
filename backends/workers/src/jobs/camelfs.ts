@@ -43,15 +43,20 @@ export async function importTree(env: CamelfsEnv, input: {
   const request = fetcher ?? ((input, init) => env.CAMELFS!.fetch(input, init));
   const authorization = `Bearer ${env.CAMELFS_API_TOKEN}`;
   const byHash = new Map(input.files.map(file => [file.sha256, file]));
-  const files = Object.fromEntries(input.files.map(file => [file.path, { sha256: file.sha256 }]));
+  // camelFS paths are relative ("src/a.ts"); a Volume's are absolute ("/src/a.ts").
+  const files = Object.fromEntries(input.files.map(file => [file.path.replace(/^\/+/, ""), { sha256: file.sha256 }]));
   let uploaded = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await request("http://camelfs/v0/trees", {
       method: "POST", headers: { authorization, "content-type": "application/json" }, signal: AbortSignal.timeout(60_000),
       body: JSON.stringify({ lineage: input.lineage, ...(input.parentTree ? { parentTree: input.parentTree } : {}), files }),
     });
-    const value = await body(response) as { tree?: unknown; missing?: unknown } | null;
-    const bad = () => new Error(`camelFS status ${response.status}: invalid tree import response`);
+    const value = await body(response) as { tree?: unknown; missing?: unknown; error?: unknown; detail?: unknown } | null;
+    // The daemon's error code (its shape checked) and detail (the token cut out, printable, bounded) say why it refused.
+    const code = typeof value?.error === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value.error) ? value.error : "";
+    const detail = typeof value?.detail === "string" ? value.detail.split(env.CAMELFS_API_TOKEN!).join("***").replace(/[^\x20-\x7e]/g, "").slice(0, 160) : "";
+    const said = [code, detail].filter(Boolean).join(": ").split(env.CAMELFS_API_TOKEN!).join("***");
+    const bad = () => new Error(`camelFS status ${response.status}: ${said || "invalid tree import response"}`);
     if (response.status === 200) {
       if (typeof value?.tree !== "string" || !/^[0-9a-f]{40}$/.test(value.tree)) throw bad();
       return { tree: value.tree, uploaded };

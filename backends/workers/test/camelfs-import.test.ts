@@ -114,3 +114,14 @@ test("streams missing blobs with their known content length and Node duplex", as
   assert.ok(putSignal instanceof AbortSignal);
   assert.equal(putSignal.aborted, false);
 });
+
+test("Volume paths are sent relative, and a refusal carries the daemon's error and detail", async () => {
+  const f = { ...file("/src/a.txt", "a"), key: "k" };
+  let sent: Record<string, unknown> | undefined;
+  await importTree(env, { lineage, files: [f], read: async () => ({ body: Buffer.from("a"), size: 1 }) }, async (_url, init) => {
+    sent = JSON.parse(init!.body as string).files; return json(200, { tree });
+  });
+  assert.deepEqual(Object.keys(sent!), ["src/a.txt"]);
+  await assert.rejects(importTree(env, { lineage, files: [f], read: async () => ({ body: Buffer.from("a"), size: 1 }) }, async () => json(400, { error: "invalid-request", detail: "invalid path" })),
+    /camelFS status 400: invalid-request: invalid path/);
+});
