@@ -37,9 +37,19 @@ export interface NoticeDeps {
   bucket(): string | undefined;
   /** The owner agent's `receiveAgentMessage` (binding). */
   send(owner: string, request: NoticeRequest, notice: RuntimeNotice): Promise<unknown>;
-  /** Try again later (the object's waitUntil, with a delay). */
-  later(afterMs: number, task: () => Promise<void>): void;
+  /**
+   * Make sure the object's alarm fires by `at` (no later; an earlier alarm stays): a notice not yet taken is retried
+   * by the alarm, durably, whatever the workflow's own state (a completed workflow arms nothing else).
+   */
+  arm(at: number): Promise<void>;
+  now?(): number;
+  random?(): number;
 }
+
+/** First retry after 1 s, times four each time, at most 5 minutes apart, each up to a fifth later at random. */
+export const NOTICE_RETRY = { firstMs: 1_000, maxMs: 5 * 60_000, jitter: 0.2 } as const;
+/** A notice its owner never takes is dropped after this long (as a child's outbox row is). */
+export const NOTICE_GIVE_UP_MS = 7 * 86_400_000;
 
 export class WorkflowNotices {
   private readonly deps: NoticeDeps;
@@ -48,7 +58,14 @@ export class WorkflowNotices {
     this.deps = deps;
     deps.sql.exec("CREATE TABLE IF NOT EXISTS workflow_notice_state (id INTEGER PRIMARY KEY CHECK (id = 1), status TEXT, pause_reason TEXT, phase TEXT)");
     deps.sql.exec("CREATE TABLE IF NOT EXISTS workflow_notices (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)");
+    // When each is next due, and when it was made (a table made by an earlier build gets the columns, its rows due now).
+    const columns = deps.sql.exec<{ name: string }>("PRAGMA table_info(workflow_notices)").toArray().map(column => column.name);
+    if (!columns.includes("next_at")) deps.sql.exec("ALTER TABLE workflow_notices ADD COLUMN next_at INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("created_at")) deps.sql.exec("ALTER TABLE workflow_notices ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
+    // A row from before created_at was made now, as far as giving up goes: seen first here, it gets its week from now.
+    deps.sql.exec("UPDATE workflow_notices SET created_at = ? WHERE created_at = 0", this.now());
   }
+  private now() { return this.deps.now?.() ?? Date.now(); }
 
   /**
    * Compare the workflow with what the owner last heard, and stage a notice when it should hear more. Synchronous: it
@@ -71,10 +88,13 @@ export class WorkflowNotices {
     };
     let text = JSON.stringify(body);
     if (text.length > NOTICE_BODY_CHARS) text = JSON.stringify({ ...body, result: `(cut: ${text.length} characters; workflow_status has it)` });
-    sql.exec("INSERT INTO workflow_notices (event, body, status) VALUES (?, ?, ?)", event, text, summary.status);
+    sql.exec("INSERT INTO workflow_notices (event, body, status, next_at, created_at) VALUES (?, ?, ?, ?, ?)", event, text, summary.status, this.now(), this.now());
   }
 
-  /** Deliver staged notices in order; one that fails stops the rest (they keep their order) and is tried again later. */
+  /**
+   * Deliver staged notices in order, those that are due; one that fails stops the rest (they keep their order) and is
+   * tried again from the alarm, with backoff, for at most a week.
+   */
   flush(): Promise<void> {
     this.flushing ??= this.flushOnce().finally(() => { this.flushing = undefined; });
     return this.flushing;
@@ -85,8 +105,15 @@ export class WorkflowNotices {
     if (owner?.kind !== "agent") return;
     const { sql } = this.deps;
     for (;;) {
-      const next = sql.exec<{ seq: number; event: string; body: string; status: string; attempts: number }>("SELECT seq, event, body, status, attempts FROM workflow_notices ORDER BY seq LIMIT 1").toArray()[0];
+      const next = sql.exec<{ seq: number; event: string; body: string; status: string; attempts: number; next_at: number; created_at: number }>("SELECT seq, event, body, status, attempts, next_at, created_at FROM workflow_notices ORDER BY seq LIMIT 1").toArray()[0];
       if (!next) return;
+      // Not due yet: the alarm comes back for it (arming again costs nothing when it is already set earlier).
+      if (Number(next.next_at) > this.now()) { await this.deps.arm(Number(next.next_at)); return; }
+      if (this.now() - Number(next.created_at) > NOTICE_GIVE_UP_MS) {
+        console.error(JSON.stringify({ type: "workflow_notice_dropped", workflow: this.deps.workflowId, seq: next.seq, event: next.event, attempts: next.attempts }));
+        sql.exec("DELETE FROM workflow_notices WHERE seq = ?", next.seq);
+        continue;
+      }
       const bucket = this.deps.bucket();
       const request: NoticeRequest = { id: `${this.deps.workflowId}_n${next.seq}`, method: "prompt", params: { text: next.body, allowDisconnected: true, whileRunning: "followUp", ...(bucket ? { bucket } : {}) } };
       const notice: RuntimeNotice = {
@@ -98,14 +125,29 @@ export class WorkflowNotices {
         sql.exec("DELETE FROM workflow_notices WHERE seq = ?", next.seq);
       } catch (error) {
         const attempts = Number(next.attempts) + 1;
-        sql.exec("UPDATE workflow_notices SET attempts = ? WHERE seq = ?", attempts, next.seq);
+        const delay = Math.min(NOTICE_RETRY.maxMs, NOTICE_RETRY.firstMs * 4 ** Math.min(5, attempts - 1));
+        const nextAt = this.now() + Math.round(delay * (1 + NOTICE_RETRY.jitter * (this.deps.random?.() ?? Math.random())));
+        sql.exec("UPDATE workflow_notices SET attempts = ?, next_at = ? WHERE seq = ?", attempts, nextAt, next.seq);
         console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.deps.workflowId, seq: next.seq, attempts, error: String(error) }));
-        this.deps.later(Math.min(5 * 60_000, 1000 * 4 ** Math.min(5, attempts - 1)), () => this.flush());
+        await this.deps.arm(nextAt);
         return;
       }
     }
   }
 
+  /** When the alarm must come back for the next notice (strictly in the future), or undefined: none waiting. */
+  retryAt(): number | undefined {
+    // The first in order: the ones behind it wait for it, whatever their own times.
+    const row = this.deps.sql.exec<{ at: number }>("SELECT next_at AS at FROM workflow_notices ORDER BY seq LIMIT 1").toArray()[0];
+    return row === undefined ? undefined : Math.max(Number(row.at), this.now() + 1);
+  }
+
   /** Notices not yet taken by the owner. */
+  /**
+   * Before a first send that runs in the background: arm the alarm for the first retry, so a send the isolate dies in
+   * the middle of (nothing recorded its failure, and nothing else may arm the alarm) is still retried.
+   */
+  async guard() { if (this.pending()) await this.deps.arm(this.now() + NOTICE_RETRY.firstMs); }
+
   pending(): number { return Number(this.deps.sql.exec<{ n: number }>("SELECT count(*) AS n FROM workflow_notices").one().n); }
 }
