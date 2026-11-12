@@ -22,6 +22,8 @@ import type { KeyEnv } from "../security-services.ts";
 import { keyServices } from "../security-services.ts";
 import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
+import { camelfsConfigured, importTree, volumeLineage, type CamelfsEnv } from "./camelfs.ts";
+import type { Volume } from "../volume.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
@@ -54,7 +56,9 @@ export const HOST_CREDENTIAL_MS = 60 * 60_000;
 const ATTESTATION_MEMORY_MS = 20 * 60_000;
 export const HOST_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
-export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & HostPriceEnv & {
+export type JobHostsEnv = KeyEnv & WebhookEnv & Omit<VolumeSyncEnv, "VOLUMES" | "BUCKET"> & HostPriceEnv & CamelfsEnv & {
+  VOLUMES?: DurableObjectNamespace<Volume>;
+  BUCKET?: R2Bucket;
   /** Which attestors enroll hosts: "aws" (needs JOB_HOST_ROLE_ARNS), "test" (needs TEST_MODE and JOB_HOST_TEST_SECRET). */
   JOB_HOST_ATTESTORS?: string;
   /**
@@ -442,6 +446,7 @@ export async function jobHostRoutes(request: Request, env: JobHostsEnv & { ADMIN
 /** One host's connection: jobs out, results in. */
 export class JobHost extends DurableObject<JobHostsEnv> {
   private socket?: WebSocket;
+  private features: string[] = [];
   /** The pool its credential says (the attested role's). */
   private pool?: HostPool;
   /** When the host last said anything, and when each job's VM started (the host's `started`): the span a job is charged. */
@@ -495,6 +500,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
             // A host that reconnects replaces its old socket; jobs in flight on it keep their pending results.
             if (this.socket && this.socket !== socket) try { this.socket.close(1000, "Replaced"); } catch { /* already closed */ }
             this.socket = socket;
+            this.features = [];
             this.pool = checked.pool;
             this.lastSeen = Date.now();
             if (this.gone) { clearTimeout(this.gone); this.gone = undefined; }
@@ -533,6 +539,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
   private async receive(name: string, message: HostMessage) {
     this.lastSeen = Date.now();
     if (message.type === "hello") {
+      this.features = message.features ?? [];
       // Its free slots as it reports them: a reconnecting host's jobs in flight keep theirs. Its pool is its credential's.
       await registry(this.env).seen(name, message.slots, message.free, this.pool ?? "test", { vcpus: message.vcpus, memoryMiB: message.memoryMiB });
       this.send({ type: "registered", host: name });
@@ -551,6 +558,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
    * never started, and nothing is charged. The socket gone, or the deadline passed, answers a failure.
    */
   async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult & { ranFrom?: number; ranUntil?: number }> {
+    if (spec.camelfs && !this.features.includes("camelfs")) return { ok: false, code: "start_failed", message: "This job host cannot mount camelFS trees" };
     if (this.cancelled.delete(id)) return { ok: false, code: "stopped", message: "The job was stopped" };
     const result = await new Promise<WireResult>(resolve => {
       // Past its deadline the job is given up: the host is told to stop it (its VM, its slot, any sync still running).
@@ -618,8 +626,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     try { await meter.admit(spec.payer); }
     catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
     if (waiting.stopped) return fail("stopped", "The job was stopped");
-    let files: WireFile[], sync: WireJob["sync"];
-    try { ({ files, sync } = await this.files(spec)); }
+    let files: WireFile[], sync: WireJob["sync"], camelfs: WireJob["camelfs"];
+    try { ({ files, sync, camelfs } = await this.files(spec)); }
     catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
     if (waiting.stopped) return fail("stopped", "The job was stopped");
     // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
@@ -672,7 +680,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       // A dispatch that throws (the host object unreachable, the RPC refused) is the job's result, never a throw out of
       // run(): a throw would leave the workflow's row to be run again, and fail again, on every restart.
       wire = await this.env.JOB_HOSTS!.getByName(host).dispatch(spec.id, {
-        command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files, ...(sync ? { sync } : {}),
+        command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files, ...(sync ? { sync } : {}), ...(camelfs ? { camelfs } : {}),
         limits: { cpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskMiB: shape.diskMiB, ...(spec.limits?.pids ? { pids: spec.limits.pids } : {}) },
         ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
       }, lifetimeMs).catch((error: unknown): WireResult => ({ ok: false, code: "container_failed", message: `The job could not be sent to its host: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}` }));
@@ -694,6 +702,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       ok: true, id: spec.id, instance: spec.instance, exitCode: wire.exitCode, timedOut: wire.timedOut,
       stdout: stream(wire.stdout), stderr: stream(wire.stderr), missing: wire.missing,
       outputs: Object.fromEntries(Object.entries(wire.outputs).map(([name, output]) => [name, stream(output)])),
+      ...(wire.camelfs ? { camelfs: wire.camelfs } : {}),
       pids: wire.pids === "enforced" ? "ulimit" : "unenforced",
       timings: { ...wire.timings, startedAt: at, endedAt: Date.now() }, costUsd,
     };
@@ -709,7 +718,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
    * inline; a larger one (within the job sync limits) the host fetches itself, file by file (host-side sync): the job
    * gets a manifest and a token for this job's files only, valid for its lifetime, kept here hashed.
    */
-  private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"] }> {
+  private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"]; camelfs?: WireJob["camelfs"] }> {
     const out: WireFile[] = [];
     let bytes = 0;
     const add = (path: string, data: Uint8Array) => {
@@ -720,6 +729,25 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     if (spec.files) { for (const [path, data] of Object.entries(spec.files)) add(path, data); return { files: out }; }
     if (!spec.volume) return { files: out };
     if (!this.env.VOLUMES) throw new Error("Volume storage is not bound here");
+    if (camelfsConfigured(this.env)) {
+      const { tenant, volume: name, snapshot } = spec.volume, lineage = volumeLineage(tenant, name);
+      const volume = this.env.VOLUMES.getByName(lineage);
+      const cached = await volume.camelfsTree(snapshot);
+      if (cached) return { files: [], camelfs: cached };
+      const { files: entries } = await volume.readSet("/", snapshot);
+      const files = entries.map(entry => ({ path: entry.path, key: entry.key, size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)! }));
+      const { tree } = await importTree(this.env, {
+        lineage, parentTree: await volume.latestCamelfsTree() ?? undefined, files,
+        read: async file => {
+          const object = await this.env.BUCKET?.get(file.key);
+          if (!object) throw new Error("camelFS import: a volume file object is missing");
+          // R2's body has a known length; stream it so concurrent uploads never buffer whole files in the DO.
+          return { body: object.body, size: object.size };
+        },
+      });
+      await volume.setCamelfsTree(snapshot, lineage, tree);
+      return { files: [], camelfs: { lineage, tree } };
+    }
     const { files: entries } = await this.env.VOLUMES.getByName(`${spec.volume.tenant}:${spec.volume.volume}`).readSet("/", spec.volume.snapshot);
     if (entries.length > JOB_LIMITS.syncFiles) throw new Error(`A job syncs at most ${JOB_LIMITS.syncFiles} files`);
     const total = entries.reduce((sum, entry) => sum + entry.size, 0);
