@@ -346,12 +346,26 @@ jobs:
       - name: Stop test Postgres
         if: always() && steps.postgres.outputs.container != ''
         run: docker rm -f '${{ steps.postgres.outputs.container }}'
+  camelfsd:
+    # The Go host storage daemon (camelfsd/): vet and unit tests, under a minute; cgo for SQLite.
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.reuse.outputs.passed != 'true' }}
+    timeout-minutes: 15
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    defaults: { run: { working-directory: camelfsd } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: camelfsd/go.mod, cache-dependency-path: camelfsd/go.sum }
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
   ci:
     name: CI success
     timeout-minutes: 5
     # Always report a result on ready PRs, including when a dependency failed or was cancelled.
     if: always() && needs.changes.outputs.draft != 'true'
-    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs]
+    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs, camelfsd]
     runs-on: ubuntu-latest
     permissions:
       contents: read
