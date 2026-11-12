@@ -9,10 +9,15 @@ uname -m; nproc; free -g | head -2; df -h "$HOME" | tail -1; git --version; node
 # sprite's Docker cannot do -p for this image reliably, and loopback is what we want anyway.
 export MINIO_ROOT_USER=gitsvcbench MINIO_ROOT_PASSWORD=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
 docker rm -f gitsvc-minio >/dev/null 2>&1 || true
-docker run -d --name gitsvc-minio --network host -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD \
-  minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >/dev/null
+if ! docker run -d --name gitsvc-minio --network host -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD \
+  quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >/dev/null; then
+  # Fallback stand-in: SeaweedFS's S3 gateway (no identities configured = accepts any signed request).
+  docker rm -f gitsvc-minio >/dev/null 2>&1 || true
+  docker run -d --name gitsvc-minio --network host chrislusf/seaweedfs:3.80 server -dir=/data -ip=127.0.0.1 -s3 -s3.port=9000 >/dev/null
+  echo "S3 stand-in: SeaweedFS"
+else echo "S3 stand-in: MinIO"; fi
 trap 'docker rm -f gitsvc-minio >/dev/null 2>&1' EXIT
-for i in $(seq 1 60); do curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1 && break; sleep 0.5; done
+for i in $(seq 1 60); do curl -sS -o /dev/null http://127.0.0.1:9000/ >/dev/null 2>&1 && break; sleep 0.5; done
 export S3_ENDPOINT=http://127.0.0.1:9000 S3_BUCKET=gitsvc S3_ACCESS_KEY_ID=$MINIO_ROOT_USER S3_SECRET_ACCESS_KEY=$MINIO_ROOT_PASSWORD
 node --experimental-strip-types --disable-warning=ExperimentalWarning -e '
 const { S3Client, CreateBucketCommand } = await import("@aws-sdk/client-s3");
