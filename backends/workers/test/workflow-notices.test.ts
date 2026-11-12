@@ -154,18 +154,15 @@ test("a fault's notice carries its code and message, and every stop says what it
     send: async (_owner, request) => { sent.push(JSON.parse(request.params.text)); }, arm: async () => {}, now: () => 1_000, random: () => 0,
   });
   notices.check({ status: 'running' });
-  notices.check({ status: 'paused', pauseReason: 'key_required', fault: { code: 'key_required', message: 'commit() inside parallel() needs a key' } });
-  notices.check({ status: 'running' });
-  notices.check({ status: 'paused', pauseReason: 'confirm_rerun' });
+  notices.check({ status: 'failed', fault: { code: 'key_required', message: 'commit() inside parallel() needs a key' } });
   await notices.flush();
   assert.deepEqual(sent[0].fault, { code: 'key_required', message: 'commit() inside parallel() needs a key' });
-  assert.match(sent[0].next, /^The script failed \(key_required\): fix it with workflow_edit/);
-  assert.equal(sent[1].fault, undefined);
-  assert.match(sent[1].next, /confirm with workflow_resume, or workflow_edit with confirm: true/);
+  assert.match(sent[0].next, /^The script failed \(key_required\): fix it and start a new workflow; finished agent\(\) and job\(\) results are reused/);
+  assert.doesNotMatch(JSON.stringify(sent), /workflow_edit/);
   assert.equal(workflowNext({ status: 'running' }), undefined);
-  // The runtime's own faults are resumed, not edited; a payer stop names jobs too; a long message is cut.
-  assert.match(workflowNext({ status: 'paused', pauseReason: 'vm_crash', fault: { code: 'vm_crash', message: 'x' } })!, /workflow_resume runs the step again/);
-  assert.match(workflowNext({ status: 'paused', pauseReason: 'journal_version', fault: { code: 'journal_version', message: 'x' } })!, /once that version is deployed/);
+  // A VM crash ends it too, and says so; a newer journal goes on by itself; a payer stop names jobs too; a long message is cut.
+  assert.match(workflowNext({ status: 'failed', fault: { code: 'vm_crash', message: 'x' } })!, /start it again with workflow_start/);
+  assert.match(workflowNext({ status: 'paused', pauseReason: 'journal_version' })!, /goes on by itself once that version runs it/);
   assert.match(workflowNext({ status: 'paused', pauseReason: 'payer_exhausted' })!, /A sub-agent or job/);
   assert.equal(shortFault({ code: 'vm_crash', message: 'e'.repeat(2000) }).message.length, 500 + '… (cut)'.length);
   assert.match(workflowNext({ status: 'budget_exhausted' })!, /workflow_budget/);

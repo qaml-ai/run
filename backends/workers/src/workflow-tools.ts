@@ -27,7 +27,8 @@ export function workflowStartDescription(jobRun: boolean) {
   "When the units edit files, pass repo: your volume and commit() each fork. Do not do the units yourself. " +
   (jobRun ? "Run a single command with job_run, not a workflow. " : "") +
   "Use delegate for a few sub-agents whose answers you need in this turn. " +
-  "A workflow outlives your turn and reports back as it goes: when it ends, pauses, finishes a phase or opens a gate you get a <workflow_notification> message, which only the runtime writes, so you need not poll it. You own it: you can edit its script and stop it. " +
+  "A workflow outlives your turn and reports back as it goes: when it ends, pauses, finishes a phase or opens a gate you get a <workflow_notification> message, which only the runtime writes, so you need not poll it. You own it: you can stop it. " +
+  "To change a running workflow, abort it and start a new one: finished agent() and job() results with the same arguments are reused, not paid for again. " +
   "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`. " +
   "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them. " +
   "job({ command, timeoutSeconds, at: volumeId, outputs }) runs one shell command on a copy of the volume in a container of its own and answers its exit code and output. " +
@@ -63,7 +64,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
     return stub;
   };
   const brief = (workflowId: string, view: Record<string, any>) => ({
-    workflowId, status: view.status, ...(view.pauseReason ? { pauseReason: view.pauseReason } : {}), phase: view.phase, revision: view.revision,
+    workflowId, status: view.status, ...(view.pauseReason ? { pauseReason: view.pauseReason } : {}), phase: view.phase,
     counts: view.counts, spent: view.spent?.usd, budget: view.budget?.usd, ...(view.result !== undefined ? { result: view.result } : {}), ...(view.error ? { error: view.error } : {}),
     ...(view.fault ? { fault: shortFault(view.fault) } : {}), ...(workflowNext(view as never) ? { next: workflowNext(view as never) } : {}),
   });
@@ -102,23 +103,12 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
     tool("workflow_items", "A workflow's effects (its agents, gates, timers, jobs, commits and pushes): their keys, status and results, to read samples or find failures.", {
       workflowId: id, status: { type: "string", description: "Only effects in this status (pending, done, failed, refused)" }, limit: { type: "integer", description: "At most this many (default 50)" },
     }, ["workflowId"], async args => (await own(args.workflowId)).items({ ...(args.status ? { status: args.status } : {}), limit: Math.min(200, Number(args.limit ?? 50)) })),
-    tool("workflow_edit", "Replace a workflow's script. Effects whose keys and arguments are unchanged keep their results; new or changed ones run. reason is required and kept with the revision.", {
-      workflowId: id, script: { type: "string", description: "The new script" }, reason: { type: "string", description: "Why it changed" },
-      confirm: { type: "boolean", description: "true to go ahead when the edit reruns many finished effects" },
-    }, ["workflowId", "script", "reason"], async args => {
-      const stub = await own(args.workflowId);
-      if (typeof args.script !== "string" || !args.script.trim() || args.script.length > WORKFLOW_SCRIPT_CHARS) throw new WorkflowInputError("script is the new JavaScript");
-      if (typeof args.reason !== "string" || !args.reason.trim()) throw new WorkflowInputError("reason says why the script changed");
-      const edited = await stub.edit({ code: args.script, reason: args.reason, ...(args.confirm === true ? { confirm: true } : {}) });
-      return { ...brief(args.workflowId, await stub.view() as Record<string, any>), revision: edited.revision };
-    }),
     tool("workflow_pause", "Pause a workflow: nothing new starts. With stopChildren, its running sub-agents stop too.", {
       workflowId: id, stopChildren: { type: "boolean", description: "Stop its running sub-agents now" },
     }, ["workflowId"], async args => { const stub = await own(args.workflowId); await stub.pause(args.stopChildren ? { children: "abort" } : {}); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
-    tool("workflow_resume", "Resume a paused workflow. rerun names effect keys to run again.", {
-      workflowId: id, rerun: { type: "array", items: { type: "string" }, description: "Effect keys to run again" },
-    }, ["workflowId"], async args => { const stub = await own(args.workflowId); await stub.resume(Array.isArray(args.rerun) ? { rerun: args.rerun } : {}); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
-    tool("workflow_abort", "Stop a workflow for good: its running sub-agents stop and nothing new starts.", { workflowId: id }, ["workflowId"],
+    tool("workflow_resume", "Resume a workflow you paused.", { workflowId: id }, ["workflowId"],
+      async args => { const stub = await own(args.workflowId); await stub.resume(); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
+    tool("workflow_abort", "Stop a workflow for good: its running sub-agents stop and nothing new starts. Its finished results stay reusable by a new workflow.", { workflowId: id }, ["workflowId"],
       async args => { const stub = await own(args.workflowId); await stub.abort(); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
     tool("workflow_budget", "Change a workflow's budget (USD). A workflow stopped for its budget runs again by itself once the new budget is above what it has spent.", {
       workflowId: id, usd: { type: "number", description: "Its new budget in USD" },

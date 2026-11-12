@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import type { WorkflowSandbox, WorkflowStepRequest } from "../codemode/workflow-protocol.ts";
 import { serveWorkflowStep } from "../codemode/workflow-vm.ts";
-import { WorkflowRunner, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit } from "../src/workflow-runner.ts";
+import { WorkflowRunner, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type ResultCache, type StartedEffect, type WorkflowInit } from "../src/workflow-runner.ts";
 
 // The QuickJS build production runs: the one pi-codemode bundles (`cloudflareQuickJSWasm` resolves it from pi-codemode).
 const require = createRequire(import.meta.url);
@@ -158,7 +158,23 @@ export class FakeCapacity {
   }
 }
 
-export function harness(options: { crashAt?: number; snapshotCap?: number; rewrite?: (request: WorkflowStepRequest) => Promise<WorkflowStepRequest>; db?: DatabaseSync; capacity?: FakeCapacity } = {}) {
+/** An owner's result cache in memory, as WorkflowObject wires workflow-results.ts: the first result for a kind and arguments stays. */
+export class FakeResults implements ResultCache {
+  readonly entries = new Map<string, { value: unknown; source: string }>();
+  lookups = 0;
+  failLookup?: string;
+  async lookup(kind: string, args: string) {
+    this.lookups++;
+    if (this.failLookup) throw new Error(this.failLookup);
+    return this.entries.get(`${kind}\n${args}`);
+  }
+  landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown }) {
+    const at = `${effect.kind}\n${effect.args}`;
+    if (!this.entries.has(at)) this.entries.set(at, { value: effect.value, source: `wf_source:${effect.key}:${effect.attempt}` });
+  }
+}
+
+export function harness(options: { crashAt?: number; snapshotCap?: number; rewrite?: (request: WorkflowStepRequest) => Promise<WorkflowStepRequest>; db?: DatabaseSync; capacity?: FakeCapacity; results?: ResultCache } = {}) {
   let ops = 0;
   const self = {
     crashes: 0, crashed: undefined as string | undefined, clock: 5_000, alarmAt: null as number | null,
@@ -171,7 +187,7 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
   world.crash = crash;
   // Every harness watches its runner's alarm for hot loops (test/alarm-watch.ts).
   const watch = new AlarmWatch("WorkflowRunner");
-  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { watch.armed(at); self.alarmAt = at; } }, capacity: options.capacity?.seam() });
+  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { watch.armed(at); self.alarmAt = at; } }, capacity: options.capacity?.seam(), results: options.results });
   let runner = make();
   if (options.capacity) options.capacity.wake = grants => runner.capacityGranted(grants);
   /** Run `work`; a crash drops the runner, and a new one over the same storage wakes up. */

@@ -25,6 +25,17 @@ export class ForkJanitor {
   /** A fork made for a child: recorded before the child gets it, so no fork outlives the workflow unrecorded. */
   async made(volume: string) { await this.host.storage.put(ROW + volume, { at: this.now() }); }
 
+  /**
+   * A fork the owner's result cache keeps (workflow-results.ts): a later workflow may get its child's result, fork and
+   * all, and commit it. The end does not delete a pinned fork; the cache's release (`unpin`) gives it back to `ended`.
+   * Issued synchronously (its storage write before any later read), so an end right after a landing sees the pin.
+   */
+  pin(volume: string) { return this.host.storage.put(ROW + volume, { at: this.now(), pinned: true }); }
+  async unpin(volume: string) {
+    const row = await this.host.storage.get<{ at: number; pinned?: boolean }>(ROW + volume);
+    if (row?.pinned) await this.host.storage.put(ROW + volume, { at: row.at });
+  }
+
   /** When the next try is due (an alarm the object keeps armed), or undefined when nothing waits. */
   async retryAt() { return (await this.host.storage.get<{ at: number }>(RETRY))?.at; }
 
@@ -33,7 +44,8 @@ export class ForkJanitor {
    * always in the future, or undefined when every fork is gone.
    */
   async ended(): Promise<number | undefined> {
-    const forks = [...(await this.host.storage.list({ prefix: ROW })).keys()];
+    // A fork the result cache pins stays until it is released (unpin), then goes on the next end pass.
+    const forks = [...(await this.host.storage.list<{ pinned?: boolean }>({ prefix: ROW }))].filter(([, row]) => !row?.pinned).map(([key]) => key);
     if (!forks.length) { await this.host.storage.delete(RETRY); return undefined; }
     const committing = [...(await this.host.storage.list<{ kind?: string }>({ prefix: IN_FLIGHT })).values()].some(row => row.kind === "commit");
     let failed = committing;

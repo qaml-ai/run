@@ -35,8 +35,7 @@ test("a WorkflowObject runs a workflow through the sandbox Worker, its alarm and
     log("decided", go);
     return { reviews: reviews.map(r => r.answer), go };`;
 
-  const created = await call("wf1", { code: script(["a", "b"]), budgetUsd: 5 });
-  assert.equal(created.revision, 1);
+  await call("wf1", { code: script(["a", "b"]), budgetUsd: 5 });
   // The one-second timer lands on the object's own alarm.
   const done = await until("wf1", value => value.status === "completed");
   assert.deepEqual(done.result, { reviews: ["re: review a", "re: review b"], go: "ship" });
@@ -46,12 +45,15 @@ test("a WorkflowObject runs a workflow through the sandbox Worker, its alarm and
   const events = (await call("wf1/events")) as unknown as { type: string }[];
   assert.deepEqual(events.map(event => event.type), ["created", "completed"]);
 
-  const edited = await call("wf1/edit", { code: script(["a", "b", "c"]), reason: "review c too", rerunConfirmPercent: 100 });
-  assert.equal(edited.revision, 2);
-  await until("wf1", value => value.status === "completed");
-  const diff = await call("wf1/diff");
-  assert.equal(diff.reason, "review c too");
-  assert.ok(diff.kept.includes("review:a") && diff.issued.includes("review:c"), JSON.stringify(diff));
+  // No edit: to change it, start a new one. The reviews wf1 finished come from the owner's result cache, at no cost.
+  await call("wf3", { code: script(["a", "b", "c"]), budgetUsd: 5 });
+  const redone = await until("wf3", value => value.status === "completed");
+  assert.deepEqual(redone.result.reviews, ["re: review a", "re: review b", "re: review c"]);
+  assert.equal(redone.counts.cached, 2, JSON.stringify(redone.counts));
+  assert.ok(redone.spent.usd < done.spent.usd, `only review:c was paid for: ${redone.spent.usd}`);
+  const reused = ((await call("wf3/items")).items as { key: string; origin: string; cachedFrom?: string; costUsd?: number }[]).filter(item => item.origin === "cache");
+  assert.deepEqual(reused.map(item => item.key).sort(), ["review:a", "review:b"]);
+  assert.ok(reused.every(item => /review:[ab]:1$/.test(item.cachedFrom ?? "") && !item.costUsd), JSON.stringify(reused));
 
   // Abort: a long timer is cancelled and the alarm goes with it.
   await call("wf2", { code: `await sleep(3600); return 1;` });

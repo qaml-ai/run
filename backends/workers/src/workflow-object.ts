@@ -15,6 +15,8 @@ import { WorkflowAgents, workflowChildren } from "./workflow-agents.ts";
 import { WorkflowJobs, type WorkflowJobsEnv } from "./workflow-jobs.ts";
 import { deleteFork, forkForChild, forkId } from "./workflow-volumes.ts";
 import { ForkJanitor } from "./workflow-forks.ts";
+import { cacheKey, type WorkflowResults } from "./workflow-results.ts";
+import { volume } from "./files.ts";
 
 const ENDED = new Set(["completed", "failed", "aborted"]);
 
@@ -30,7 +32,7 @@ import type { AgentType, ModelClass } from "./workflow-types.ts";
 import type { Owner } from "../../../shared/owner.ts";
 import type { Env } from "./agent-types.ts";
 import {
-  WorkflowRunner, WorkflowError, refusable, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit,
+  WorkflowRunner, WorkflowError, refusable, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type ResultCache, type StartedEffect, type WorkflowInit,
 } from "./workflow-runner.ts";
 
 /** The tenant's capacity limiter (WorkflowCapacity, workflow-capacity-object.ts), as this object calls it over RPC. */
@@ -45,6 +47,8 @@ interface CapacityStub {
 export interface WorkflowEnv extends SecurityEnv, Omit<WorkflowJobsEnv, keyof SecurityEnv> {
   CODEMODE_SANDBOX: DurableObjectNamespace;
   WORKFLOWS: DurableObjectNamespace<WorkflowObject>;
+  /** The owners' result caches (workflow-results.ts); absent where not deployed: then nothing is reused. */
+  WORKFLOW_RESULTS?: DurableObjectNamespace<WorkflowResults>;
   /** Absent where the capacity limiter is not deployed: then nothing but the workflow's own concurrency bounds it. */
   WORKFLOW_CAPACITY?: { getByName(tenant: string): CapacityStub };
   TEST_MODE?: string;
@@ -252,9 +256,58 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
           await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
         } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
+        results: name && env.WORKFLOW_RESULTS ? this.resultCache(env, name) : undefined,
       },
     );
   }
+
+  /**
+   * The owner's result cache, as the runner uses it (workflow-results.ts). Scoped to the owner agent (`tenant:agent`), or
+   * `tenant:api` for a workflow started with an API key. An agent() on a fork of `repo` is keyed with the repo's head
+   * version (at lookup: now; at landing: what its fork started from), so a result never outlives its tree. A landing
+   * whose result names a fork pins that fork here first (the end does not delete it while an entry keeps it).
+   */
+  private resultCache(env: WorkflowEnv, name: string): ResultCache {
+    const scope = () => { const owner = this.settings().owner; return `${this.runner.identity().tenant}:${owner?.kind === "agent" ? owner.id : "api"}`; };
+    const repoOf = (args: string) => { try { const repo = (JSON.parse(args) as { repo?: unknown }).repo; return typeof repo === "string" ? repo : undefined; } catch { return undefined; } };
+    const cache = () => env.WORKFLOW_RESULTS!.getByName(scope());
+    return {
+      lookup: async (kind, args) => {
+        const repo = kind === "agent" ? repoOf(args) : undefined;
+        const key = cacheKey(args, repo === undefined ? undefined : (await (await volume(env, this.runner.identity().tenant!, repo)).info()).seq);
+        return await cache().lookup(kind, key);
+      },
+      landed: effect => {
+        const fork = effect.kind === "agent" ? (effect.value as { fork?: { volume?: unknown } } | null)?.fork?.volume : undefined;
+        // Pinned before anything else (its write is issued now), so an end that follows the landing keeps the fork.
+        const pinned = typeof fork === "string" ? this.forks.pin(fork) : undefined;
+        const release = async () => { if (typeof fork === "string") { await this.forks.unpin(fork); await this.ended(); } };
+        this.ctx.waitUntil((async () => {
+          await pinned;
+          const repo = effect.kind === "agent" ? repoOf(effect.args) : undefined;
+          let baseSeq: number | undefined;
+          if (repo !== undefined) {
+            // The version of the repo its fork started from: the key a later lookup on the same tree finds.
+            if (typeof fork !== "string") return;
+            baseSeq = (await (await volume(env, this.runner.identity().tenant!, fork)).info()).origin?.seq;
+            if (baseSeq === undefined) return release();
+          }
+          const { stored } = await cache().put({ kind: effect.kind, key: cacheKey(effect.args, baseSeq), source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(typeof fork === "string" ? { fork } : {}) });
+          if (!stored) await release();
+        })().catch(async error => {
+          console.error(JSON.stringify({ type: "workflow_cache_put_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+          await release().catch(() => {});
+        }));
+      },
+    };
+  }
+
+  /** The result cache let go of a fork this workflow made (its entry expired or was evicted): an ended workflow deletes it. */
+  async forkReleased(fork: string) {
+    await this.forks.unpin(fork);
+    await this.ended();
+  }
+
 
   /**
    * Create the workflow (once; a second create returns it) and run its first step. The object is addressed by name:
@@ -340,11 +393,9 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   // The RPC surface the API and the builtin use answers a WorkflowError as a refusal (refusable), not a throw.
   view() { return refusable(() => { const { name, args, classes, owner } = this.settings(); return { ...this.runner.get(), ...(name ? { name } : {}), ...(args !== undefined ? { args } : {}), ...(classes ? { classes } : {}), ...(owner ? { owner } : {}) }; }); }
   items(query: Parameters<WorkflowRunner["items"]>[0]) { return refusable(() => this.runner.items(query)); }
-  diff(revision?: number) { return refusable(() => this.runner.diff(revision)); }
   events(query: Parameters<WorkflowRunner["events"]>[0]) { return refusable(() => this.runner.events(query)); }
   pause(options: Parameters<WorkflowRunner["pause"]>[0]) { return refusable(async () => { await this.runner.pause(options); return this.told(this.runner.get()); }); }
-  resume(options: Parameters<WorkflowRunner["resume"]>[0]) { return refusable(async () => { await this.runner.resume(options); return this.told(this.runner.get()); }); }
-  edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return refusable(async () => { await this.checkScript(options.code); const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }); }
+  resume() { return refusable(async () => { await this.runner.resume(); return this.told(this.runner.get()); }); }
   abort() { return refusable(async () => { await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }); }
   setBudget(usd: number | null) { return refusable(async () => { await this.runner.setBudget(usd); return this.told(this.runner.get()); }); }
   /** An executor's landing of effect `key:attempt`. */
@@ -449,11 +500,9 @@ export async function workflowTestRoute(request: Request, env: WorkflowEnv, path
     if (!action) return respond(await stub.get());
     if (action === "items" && !post) return respond(await stub.items({ ...query, after: query.after ? Number(query.after) : undefined, limit: query.limit ? Number(query.limit) : undefined }));
     if (action === "events" && !post) return respond(await stub.events({ after: query.after ? Number(query.after) : undefined }));
-    if (action === "diff" && !post) return respond(await stub.diff(query.revision ? Number(query.revision) : undefined));
     if (!post) return respond({ error: "Not found" }, 404);
     if (action === "pause") return respond(await stub.pause(input as never));
-    if (action === "resume") return respond(await stub.resume(input as never));
-    if (action === "edit") return respond(await stub.edit(input as never));
+    if (action === "resume") return respond(await stub.resume());
     if (action === "abort") return respond(await stub.abort());
     if (action === "budget") return respond(await stub.setBudget((input.usd ?? null) as number | null));
     if (action === "alarm") { await stub.fireAlarm(); return respond(await stub.get()); }

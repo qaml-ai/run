@@ -11,22 +11,21 @@ import type { NoticeRequest, RuntimeNotice } from "./delegation-notifications.ts
 export type NoticeSummary = { status: string; pauseReason?: string; phase?: string; result?: unknown; error?: string; fault?: { code: string; message: string }; counts?: Record<string, number>; spent?: { usd: number }; budget?: { usd: number | null }; revision?: number };
 
 /**
- * What a stopped workflow waits for, as its owner reads it (a notice, workflow_status): a script's fault is fixed with an
- * edit; a fault of the runtime's (the VM crashed, a journal from a newer runner) is resumed; every other stop names who
- * goes on and how. Undefined while it runs, waits or has ended.
+ * What a stopped workflow waits for, as its owner reads it (a notice, workflow_status): a fault ends it, and the owner
+ * starts a fixed one (finished results are reused); every other stop names who goes on and how. Undefined while it runs
+ * or waits, and once it ended any other way.
  */
 export function workflowNext(summary: Pick<NoticeSummary, "status" | "pauseReason" | "fault">): string | undefined {
-  if (summary.fault?.code === "vm_crash") return "The script's VM crashed (not the script's error): workflow_resume runs the step again.";
-  if (summary.fault?.code === "journal_version") return "Its journal was written by a newer runtime: once that version is deployed here, workflow_resume goes on.";
-  if (summary.fault) return `The script failed (${summary.fault.code}): fix it with workflow_edit; the edit resumes it.`;
+  if (summary.fault?.code === "vm_crash") return "The script's VM crashed (not the script's error): start it again with workflow_start; finished agent() and job() results are reused.";
+  if (summary.fault) return `The script failed (${summary.fault.code}): fix it and start a new workflow; finished agent() and job() results are reused.`;
   if (summary.status === "budget_exhausted") return "Its budget is spent: raise it with workflow_budget to go on.";
   if (summary.status !== "paused") return undefined;
   switch (summary.pauseReason) {
-    case "confirm_rerun": return "Your edit reruns many finished effects: confirm with workflow_resume, or workflow_edit with confirm: true.";
     case "user": return "Paused: workflow_resume goes on.";
-    case "payer_exhausted": return "A sub-agent or job was refused for credit (the spend limit): workflow_resume once there is credit.";
+    case "payer_exhausted": return "A sub-agent or job was refused for credit (the spend limit): it tries again by itself; workflow_resume tries now.";
     case "waiting_on_gate": return "A gate expired unanswered: once it is answered in the inbox, workflow_resume goes on.";
-    case "capacity_refused": return "The account is at its running-workflows limit: workflow_resume once another ends.";
+    case "capacity_refused": return "The account is at its running-workflows limit: it goes on by itself once another ends.";
+    case "journal_version": return "Its journal was written by a newer runtime: it goes on by itself once that version runs it.";
     default: return "Paused: workflow_resume goes on.";
   }
 }

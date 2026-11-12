@@ -53,7 +53,9 @@ export interface IssuedEffect { key: string; kind: string; args: string; options
 
 /** What the host must handle as a workflow fault: the script cannot go on as written. */
 export type WorkflowFaultCode =
-  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "out_of_memory" | "vm_crash" | "effect_limit" | "script_error" | "missing_origin";
+  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "out_of_memory" | "vm_crash" | "effect_limit" | "script_error" | "missing_origin"
+  // A workflow held for an edit's confirm when edits were removed (runner version 2) ends with it.
+  | "edit_retired";
 
 export type WorkflowStepOutcome =
   | {
