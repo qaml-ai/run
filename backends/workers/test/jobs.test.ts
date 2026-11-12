@@ -6,7 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { camelSync, inlineFiles, tarEnd, tarEntry, volumeFiles } from "../src/jobs/camel-sync.ts";
 import { readCapped, runContainerJob, type JobMeter } from "../src/jobs/container-job.ts";
-import { jobDriver, jobObjectName } from "../src/jobs/driver.ts";
+import { jobDriver, jobObjectName, needsContainer, needsHost } from "../src/jobs/driver.ts";
+import { checkComplete, checkPart, hostSnapshotParts, hostSnapshotPlan, HostSnapshotStore, snapshotKey, snapshotPartBytes, snapshotPayer, snapshotResult, snapshotWire } from "../src/jobs/host-snapshots.ts";
+import { DatabaseSync } from "node:sqlite";
 import { JOB_LIMITS, JobSpecError, jobInstance, jobSpec, type JobResult } from "../src/jobs/job.ts";
 import { SNAPSHOT_TTL_MS, type ComputerSnapshot } from "../src/computers/provider.ts";
 
@@ -269,6 +271,12 @@ test("snapshots: one from another image version is refused; saveSnapshot saves o
   assert.equal(result.snapshot?.image, "registry/workspace@sha256:1", "a saved snapshot records the image its disk came from");
   assert.ok(saved.events.indexOf("snapshot:bun-warm") < saved.events.lastIndexOf("destroy"));
 
+  // A host's snapshot is never started on a container: its id is not Cloudflare's.
+  const hostMade = fakeContainer();
+  const fromHost = await runContainerJob(jobSpec({ payer: PAYER, id: "h", snapshot: { ...old, id: `host:hs_${"b".repeat(22)}:${"0".repeat(64)}`, image: "workspace" }, command: "true", timeoutSeconds: 5 }), { container: hostMade.container as never });
+  assert.match(!fromHost.ok ? fromHost.message : "", /taken on a job host/);
+  assert.deepEqual(hostMade.starts, []);
+
   const failing = fakeContainer({ command: () => ({ exitCode: 1 }) });
   const failed = ok(await runContainerJob(jobSpec({ payer: PAYER, id: "f", command: "false", timeoutSeconds: 5, saveSnapshot: "bun-warm" }), { container: failing.container as never }));
   assert.equal(failed.exitCode, 1);
@@ -347,6 +355,20 @@ test("JOB_PROVIDER: containers, hosts or auto, each only where configured; auto 
   await auto.driver.run({ payer: PAYER, id: "big", command: "true", timeoutSeconds: 5, limits: { cpus: 16, memoryMiB: 64 * 1024 } });
   await auto.driver.run({ payer: PAYER, id: "snap", command: "true", timeoutSeconds: 5, saveSnapshot: "warm" });
   assert.deepEqual(calls, ["container job:small standard-3", "host job:big standard-4 16", "container job:snap standard-1"]);
+  // Snapshots (slice 5): a save goes by size (a container's snapshot when it fits one, a host's past it); a host snapshot
+  // goes to hosts, whatever its size; a container snapshot, or another image, to a container.
+  calls.length = 0;
+  const later = Date.now() + 60_000;
+  const hostSnapshot = { id: `host:hs_${"a".repeat(22)}:${"0".repeat(64)}`, name: "warm", size: 10, image: "workspace", createdAt: 1, expiresAt: later };
+  await auto.driver.run({ payer: PAYER, id: "snap-big", command: "true", timeoutSeconds: 5, saveSnapshot: "warm", limits: { cpus: 16, memoryMiB: 64 * 1024 } });
+  await auto.driver.run({ payer: PAYER, id: "from-host", command: "true", timeoutSeconds: 5, snapshot: hostSnapshot });
+  await auto.driver.run({ payer: PAYER, id: "from-container", command: "true", timeoutSeconds: 5, snapshot: { ...hostSnapshot, id: "cf-snap", image: "registry/workspace@sha256:1" } });
+  await auto.driver.run({ payer: PAYER, id: "other-image", command: "true", timeoutSeconds: 5, image: "python" });
+  assert.deepEqual(calls, ["host job:snap-big standard-4 16", "host job:from-host standard-1 ", "container job:from-container standard-1", "container job:other-image standard-1"]);
+  assert.equal(needsContainer({ snapshot: hostSnapshot }), false);
+  assert.equal(needsHost({ snapshot: hostSnapshot }), true);
+  assert.equal(needsContainer({ saveSnapshot: "warm" } as never), false, "a save alone needs neither");
+  calls.length = 0;
   // Past even a build host: the spec error, before any object.
   await assert.rejects(auto.driver.run({ payer: PAYER, id: "huge", command: "true", timeoutSeconds: 5, limits: { cpus: 32 } }), /No job host has these limits/);
   // A stop reaches whichever driver ran it.
@@ -357,4 +379,81 @@ test("JOB_PROVIDER: containers, hosts or auto, each only where configured; auto 
   const containersOnly = jobDriver({ COMPUTER_CONTAINERS: containerNs });
   assert.ok(containersOnly.ok);
   await assert.rejects(containersOnly.driver.run({ payer: PAYER, id: "big2", command: "true", timeoutSeconds: 5, limits: { cpus: 16 } }), /largest has 4 vCPUs/);
+});
+
+test("host snapshots: refused where hosts cannot, on wherever the bucket is, keyed under the payer's tenant", () => {
+  const later = Date.now() + 60_000;
+  const handle = { id: `host:hs_${"c".repeat(22)}:${"1".repeat(64)}`, name: "warm", size: 1234, image: "workspace", createdAt: 1, expiresAt: later };
+  const env = { BUCKET: {} as R2Bucket, AGENT_PUBLIC_URL: "https://run.example/" };
+  const refused = (spec: object, on: object = env) => { const plan = hostSnapshotPlan({ payer: PAYER, ...spec } as never, on); return "refused" in plan ? plan.refused : undefined; };
+  assert.match(refused({ image: "python" }) ?? "", /workspace image only/);
+  assert.match(refused({ snapshot: { ...handle, id: "cf-snap" } }) ?? "", /taken on Cloudflare Containers/);
+  assert.match(refused({ snapshot: { ...handle, id: "host:nope" } }) ?? "", /not a valid job host snapshot/);
+  assert.match(refused({ snapshot: { ...handle, expiresAt: Date.now() - 1 } }) ?? "", /expired/);
+  // Off without the bucket (or the public URL its routes need): saving and starting from one both refused, plainly.
+  for (const off of [{}, { AGENT_PUBLIC_URL: "https://run.example" }, { BUCKET: {} }]) {
+    assert.match(refused({ saveSnapshot: "warm" }, off) ?? "", /not configured here/);
+    assert.match(refused({ snapshot: handle }, off) ?? "", /not configured here/);
+  }
+  assert.equal(refused({}, {}), undefined, "a job without snapshots needs no bucket");
+
+  const plan = hostSnapshotPlan({ payer: PAYER, snapshot: handle, saveSnapshot: "next" } as never, env) as Exclude<ReturnType<typeof hostSnapshotPlan>, { refused: string }>;
+  const id = `hs_${"c".repeat(22)}`;
+  assert.deepEqual(plan.load, { key: snapshotKey(PAYER.tenant, id), cacheId: `${PAYER.tenant}/${id}`, sha256: "1".repeat(64), size: 1234 }, "read under the payer's tenant");
+  assert.match(plan.save!.id, /^hs_[A-Za-z0-9_-]{22}$/);
+  assert.equal(plan.save!.key, `snapshots/${PAYER.tenant}/${plan.save!.id}.gz`);
+  assert.equal(plan.save!.payer, snapshotPayer(PAYER));
+  const wire = snapshotWire(plan, "job-1", "t0ken", env);
+  assert.deepEqual(wire.snapshot, { id: plan.load!.cacheId, url: "https://run.example/v1/internal/job-hosts/snapshots/job-1", token: "t0ken", sha256: "1".repeat(64), size: 1234 });
+  assert.deepEqual(wire.save, { id: plan.save!.cacheId, url: "https://run.example/v1/internal/job-hosts/snapshots/job-1", token: "t0ken", partBytes: 64 * 1024 * 1024 });
+  assert.equal(snapshotPartBytes({ TEST_MODE: "1", JOB_HOST_SNAPSHOT_PART_BYTES: String(5 * 1024 * 1024) }), 5 * 1024 * 1024);
+  assert.equal(snapshotPartBytes({ JOB_HOST_SNAPSHOT_PART_BYTES: String(5 * 1024 * 1024) }), 64 * 1024 * 1024, "tests only");
+  assert.equal(snapshotPartBytes({ TEST_MODE: "1", JOB_HOST_SNAPSHOT_PART_BYTES: "1024" }), 64 * 1024 * 1024, "never under R2's 5 MiB");
+  // The result's handle is what the runtime completed, never what the host claims.
+  const ran = { ok: true, exitCode: 0, timedOut: false } as never as Parameters<typeof snapshotResult>[2];
+  const saved = { size: 99, sha256: "2".repeat(64), createdAt: 1000, expiresAt: 1000 + SNAPSHOT_TTL_MS };
+  const made = snapshotResult(plan, saved, { ...ran, snapshot: { id: "whatever", size: 1, sha256: "3".repeat(64) } });
+  assert.deepEqual(made.snapshot, { id: `host:${plan.save!.id}:${"2".repeat(64)}`, name: "next", size: 99, image: "workspace", createdAt: 1000, expiresAt: 1000 + SNAPSHOT_TTL_MS });
+  assert.equal(hostSnapshotParts(made.snapshot!)?.id, plan.save!.id);
+  assert.deepEqual(snapshotResult(plan, undefined, { ...ran, snapshot: { id: "x", size: 1, sha256: "3".repeat(64) } }), { snapshotError: "The job host did not save the snapshot" });
+  assert.deepEqual(snapshotResult(plan, undefined, { ...ran, snapshotError: "The snapshot was not saved: disk busy" }), { snapshotError: "The snapshot was not saved: disk busy" });
+  assert.deepEqual(snapshotResult(plan, saved, { ...ran, exitCode: 1 }), {});
+});
+
+test("a job's snapshot record: its token reads one key and writes one, parts checked, a completion adds up", () => {
+  const db = new DatabaseSync(":memory:");
+  const sql = { exec(query: string, ...args: any[]) { const rows = db.prepare(query).all(...args) as any[]; return Object.assign(rows[Symbol.iterator](), { toArray: () => rows, one: () => rows[0] }); } } as unknown as SqlStorage;
+  const store = new HostSnapshotStore(sql);
+  store.put("t0ken", 2_000, { key: "snapshots/t/hs_a.gz", size: 10 }, "snapshots/t/hs_b.gz");
+  assert.deepEqual(store.load("t0ken", 1_000), { ok: true, key: "snapshots/t/hs_a.gz", size: 10 });
+  assert.deepEqual(store.load("wrong", 1_000), { ok: false, status: 401 });
+  assert.deepEqual(store.load("t0ken", 2_000), { ok: false, status: 401 }, "expired with the job");
+  assert.deepEqual(store.save("t0ken", 1_000), { ok: true, key: "snapshots/t/hs_b.gz", done: false });
+  store.started("upload-1");
+  store.part(1, "e1", 5); store.part(2, "e2", 3);
+  assert.equal(store.writtenBesides(2), 5);
+  assert.deepEqual(store.save("t0ken", 1_000), { ok: true, key: "snapshots/t/hs_b.gz", uploadId: "upload-1", done: false });
+  assert.deepEqual(store.unfinished(), { key: "snapshots/t/hs_b.gz", uploadId: "upload-1" }, "what the job's end aborts");
+  store.completed({ size: 8, sha256: "a".repeat(64), createdAt: 1, expiresAt: 2 });
+  assert.equal(store.unfinished(), undefined);
+  assert.deepEqual(store.saved(), { size: 8, sha256: "a".repeat(64), createdAt: 1, expiresAt: 2 });
+  store.put("other", 2_000, undefined, undefined);
+  assert.deepEqual(store.load("other", 1_000), { ok: false, status: 404 }, "a job that starts from none reads nothing");
+  assert.deepEqual(store.save("other", 1_000), { ok: false, status: 404 });
+  assert.deepEqual(store.load("t0ken", 1_000), { ok: false, status: 401 }, "a run made again replaces the token");
+  store.clear();
+  assert.deepEqual(store.save("other", 1_000), { ok: false, status: 401 });
+
+  assert.equal(checkPart(1, 5, 5, 0), undefined);
+  assert.match(checkPart(0, 5, 5, 0)!, /part number/);
+  assert.match(checkPart(1, 6, 5, 0)!, /1 to 5 bytes/);
+  assert.match(checkPart(1, NaN, 5, 0)!, /Content-Length/);
+  assert.match(checkPart(2, 5, 5, 64 * 1024 ** 3)!, /at most/);
+  const sha = "b".repeat(64);
+  assert.equal(checkComplete([{ n: 1, size: 5 }, { n: 2, size: 5 }, { n: 3, size: 2 }], 5, 12, sha), undefined);
+  assert.match(checkComplete([{ n: 1, size: 5 }, { n: 3, size: 2 }], 5, 7, sha)!, /not all there/);
+  assert.match(checkComplete([{ n: 1, size: 4 }, { n: 2, size: 2 }], 5, 6, sha)!, /Every part but the last/);
+  assert.match(checkComplete([{ n: 1, size: 5 }], 5, 6, sha)!, /add up/);
+  assert.match(checkComplete([{ n: 1, size: 5 }], 5, 5, "nope")!, /size and sha256/);
+  assert.match(checkComplete([], 5, 5, sha)!, /not all there/);
 });

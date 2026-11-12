@@ -102,7 +102,7 @@ import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { JobHost, JobHostRegistry, HostJob } from "./jobs/hosts.ts";
-import { HOST_NAME, enrollHost, jobHostRoutes, scalerRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
+import { HOST_NAME, enrollHost, jobHostRoutes, scalerRoutes, snapshotRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
 import { jobObjectName } from "./jobs/driver.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
@@ -226,6 +226,13 @@ const worker = {
         try { job = decodeURIComponent(synced[1]!); } catch { /* malformed: refused below */ }
         if (!/^[A-Za-z0-9_-]{1,100}$/.test(job)) return new Response("Not found", { status: 404 });
         return hosts.HOST_JOBS.getByName(jobObjectName(job)).fetch(new Request(`https://host-job/sync/${synced[2]}`, { headers: { authorization: request.headers.get("authorization") ?? "" } }));
+      }
+      // Snapshots on hosts: a job's host saves and loads its snapshot through these (snapshotRoutes checks its token).
+      const snapshotted = /^\/v1\/internal\/job-hosts\/snapshots\/([^/]{1,200})(\/.*)?$/.exec(hostPath);
+      if (snapshotted) {
+        let job = "";
+        try { job = decodeURIComponent(snapshotted[1]!); } catch { /* malformed: refused there */ }
+        return snapshotRoutes(request, hosts, job, snapshotted[2] ?? "");
       }
       const scaled = await scalerRoutes(request, hosts);
       if (scaled) return scaled;

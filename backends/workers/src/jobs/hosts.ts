@@ -8,13 +8,16 @@
 //   only that host's jobs and takes their results;
 // - HostJob: one per job id, as ContainerComputer is for a container job: it admits the payer, takes a computer slot,
 //   places the job on a host, meters it from dispatch to result under the session `job:<id>` (so a job run again is
-//   charged once), and answers the JobResult.
+//   charged once), and answers the JobResult;
+// - snapshots (slice 5, host-snapshots.ts): a job may save its disk (saveSnapshot) or start from one saved on a host,
+//   its bytes in R2 through token-authorised runtime routes (no storage key anywhere else). Hosts report the snapshots
+//   they hold, and placement prefers a holder. On wherever the R2 bucket (BUCKET) and AGENT_PUBLIC_URL are.
 // Off by default: jobDriver() picks these only where the bindings and JOB_HOST_ATTESTORS are set (test configs today).
 import { DurableObject } from "cloudflare:workers";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { releaseComputer, reserveComputer } from "../../../../src/core/computer-limit.ts";
 import { AttestationError, awsCaller, checkAwsAttestation } from "../../../../shared/job-host-attest.ts";
-import { Frames, frames, fromBase64, toBase64, type HostMessage, type WireFile, type WireJob, type WireResult, type WireStream } from "../../../../shared/job-host-protocol.ts";
+import { CACHED_REPORT_MAX, Frames, frames, fromBase64, toBase64, type HostMessage, type WireFile, type WireJob, type WireResult, type WireStream } from "../../../../shared/job-host-protocol.ts";
 import { guardAlarms } from "../alarm-guard.ts";
 import { ComputerMeter } from "../computers/meter.ts";
 import { meterBilling } from "../computers/meter-billing.ts";
@@ -24,8 +27,9 @@ import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
-import { needsContainer } from "./driver.ts";
+import { checkComplete, checkPart, hostSnapshotPlan, HostSnapshotStore, snapshotPartBytes, snapshotResult, snapshotTtlMs, snapshotWire, type HostSnapshotEnv } from "./host-snapshots.ts";
 import { HostSyncStore } from "./host-sync-store.ts";
+import { jobObjectName } from "./driver.ts";
 import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
 /** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
@@ -54,7 +58,7 @@ export const HOST_CREDENTIAL_MS = 60 * 60_000;
 const ATTESTATION_MEMORY_MS = 20 * 60_000;
 export const HOST_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
-export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & HostPriceEnv & {
+export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & HostPriceEnv & HostSnapshotEnv & {
   /** Which attestors enroll hosts: "aws" (needs JOB_HOST_ROLE_ARNS), "test" (needs TEST_MODE and JOB_HOST_TEST_SECRET). */
   JOB_HOST_ATTESTORS?: string;
   /**
@@ -114,6 +118,15 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     sql.exec("CREATE INDEX IF NOT EXISTS host_credentials_expires ON host_credentials (expires_at)");
     sql.exec("CREATE INDEX IF NOT EXISTS host_credentials_host ON host_credentials (host, expires_at)");
     if (!sql.exec<{ name: string }>("PRAGMA table_info(host_credentials)").toArray().some(column => column.name === "pool")) sql.exec("ALTER TABLE host_credentials ADD COLUMN pool TEXT");
+    // Every saved host snapshot (host-snapshots.ts): what superseding and the expiry sweep (alarm) go by.
+    sql.exec(`CREATE TABLE IF NOT EXISTS host_snapshot_records (key TEXT PRIMARY KEY, tenant TEXT NOT NULL, payer TEXT NOT NULL, name TEXT NOT NULL,
+      size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)`);
+    sql.exec("CREATE INDEX IF NOT EXISTS host_snapshot_records_name ON host_snapshot_records (payer, name)");
+    sql.exec("CREATE INDEX IF NOT EXISTS host_snapshot_records_expiry ON host_snapshot_records (expires_at)");
+    guardAlarms(this, ctx, "JobHostRegistry", { test: env.TEST_MODE === "1" });
+    // The snapshots each host holds (its cache, as its last hello or heartbeat said): placement prefers a holder.
+    sql.exec("CREATE TABLE IF NOT EXISTS host_snapshots (host TEXT NOT NULL, snapshot TEXT NOT NULL, PRIMARY KEY (host, snapshot))");
+    sql.exec("CREATE INDEX IF NOT EXISTS host_snapshots_snapshot ON host_snapshots (snapshot)");
   }
   private revoked(name: string) { return !!this.ctx.storage.sql.exec<{ revoked: number }>("SELECT revoked FROM hosts WHERE name = ?", name).toArray()[0]?.revoked; }
 
@@ -168,7 +181,7 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
    * A host's hello (slots, vCPUs, memory) or heartbeat (free slots alone). `pool` is its credential's, which the attested
    * role decides (enrollHost), never the host's own word. A build host runs one job: one that says otherwise is refused.
    */
-  seen(name: string, slots: number | undefined, free: number, pool?: HostPool, machine?: { vcpus?: unknown; memoryMiB?: unknown }, running?: unknown) {
+  seen(name: string, slots: number | undefined, free: number, pool?: HostPool, machine?: { vcpus?: unknown; memoryMiB?: unknown }, running?: unknown, cached?: unknown) {
     // A code in the message: an error's class does not survive Durable Object RPC (JobHost matches on it).
     if (this.revoked(name)) throw new Error(`${HOST_REVOKED}: this host is revoked`);
     // What a host reports is checked: whole numbers, free within its slots (a host cannot claim more than it has).
@@ -199,6 +212,13 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
       sql.exec("DELETE FROM placements WHERE host = ? AND at <= ? AND job NOT IN (SELECT value FROM json_each(?))", name, now - PLACEMENT_GRACE_MS, ids);
       sql.exec("INSERT OR IGNORE INTO placements (job, host, mib, at) SELECT value, ?, 0, ? FROM json_each(?)", name, now, ids);
     }
+    // What it holds, replaced whole by each report that says (a host from before snapshots says nothing, and holds none).
+    if (cached !== undefined) {
+      if (!Array.isArray(cached) || cached.length > CACHED_REPORT_MAX || !cached.every(id => typeof id === "string" && id.length <= 256)) throw new Error("Invalid host snapshot list");
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM host_snapshots WHERE host = ?", name);
+      sql.exec("INSERT OR IGNORE INTO host_snapshots (host, snapshot) SELECT ?, value FROM json_each(?)", name, JSON.stringify(cached));
+    }
     this.recount(name);
   }
   /**
@@ -217,12 +237,14 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
   /**
    * A fresh, allowed, undrained host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox
    * memory, which are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed
-   * boot).
+   * boot). Among those, one that holds `snapshot` (the job starts from it) first: it skips the download.
    */
-  place(pool: HostPool, memoryMiB: number, job: string): string | undefined {
+  place(pool: HostPool, memoryMiB: number, job: string, snapshot?: string): string | undefined {
     const room = HOST_POOL_PRICES[pool].memoryGiB * 1024 - memoryMiB;
     if (room < 0) return undefined;
-    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND draining = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
+    const row = this.ctx.storage.sql.exec<{ name: string }>(`SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND draining = 0 AND pool = ? AND used_mib <= ?
+      ORDER BY EXISTS (SELECT 1 FROM host_snapshots WHERE host_snapshots.host = hosts.name AND host_snapshots.snapshot = ?) DESC, free DESC, name LIMIT 1`,
+      Date.now() - HOST_STALE_MS, pool, room, snapshot ?? null).toArray()[0];
     if (!row) return undefined;
     // A job placed again (a run made again) moves: its old host is recounted without it.
     const before = this.ctx.storage.sql.exec<{ host: string }>("SELECT host FROM placements WHERE job = ?", job).toArray()[0]?.host;
@@ -235,7 +257,7 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
    * A job's turn at a host (HostJob, while it waits): a host when one is free and no job of its pool has waited longer,
    * else undefined, and the job counts as waiting (the demand the scaler reads) until it calls again or gives up.
    */
-  want(job: string, pool: HostPool, memoryMiB = 0): string | undefined {
+  want(job: string, pool: HostPool, memoryMiB = 0, snapshot?: string): string | undefined {
     const sql = this.ctx.storage.sql, now = Date.now();
     sql.exec("DELETE FROM waiting WHERE seen_at <= ?", now - WAITER_STALE_MS);
     sql.exec("INSERT INTO waiting (job, pool, since, seen_at, mib) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job) DO UPDATE SET seen_at = excluded.seen_at, mib = excluded.mib", job, pool, now, now, memoryMiB);
@@ -246,7 +268,7 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     if (room === null) return undefined;
     const first = sql.exec<{ job: string }>("SELECT job FROM waiting WHERE pool = ? AND mib <= ? ORDER BY since, job LIMIT 1", pool, room).toArray()[0];
     if (first?.job !== job) return undefined;
-    const host = this.place(pool, memoryMiB, job);
+    const host = this.place(pool, memoryMiB, job, snapshot);
     if (host) sql.exec("DELETE FROM waiting WHERE job = ?", job);
     return host;
   }
@@ -255,6 +277,49 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
   release(name: string, _memoryMiB: number, job: string) {
     this.ctx.storage.sql.exec("DELETE FROM placements WHERE job = ? AND host = ?", job, name);
     this.recount(name);
+  }
+  /**
+   * A host snapshot saved (HostJob, once its upload completed): recorded, and the payer's earlier snapshot of the same
+   * name deleted (superseded), its R2 object first. The sweep is armed for the soonest expiry.
+   */
+  async snapshotSaved(record: { key: string; tenant: string; payer: string; name: string; size: number; sha256: string; createdAt: number; expiresAt: number }) {
+    const sql = this.ctx.storage.sql;
+    sql.exec("INSERT OR REPLACE INTO host_snapshot_records (key, tenant, payer, name, size, sha256, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      record.key, record.tenant, record.payer, record.name, record.size, record.sha256, record.createdAt, record.expiresAt);
+    const superseded = sql.exec<{ key: string }>("SELECT key FROM host_snapshot_records WHERE payer = ? AND name = ? AND key != ?", record.payer, record.name, record.key).toArray().map(row => row.key);
+    if (superseded.length) await this.deleteSnapshots(superseded, "superseded");
+    await this.armSweep();
+    return { superseded };
+  }
+  /** A snapshot's record, while it lasts: what a job starting from it checks its handle against. */
+  snapshotRecord(key: string) {
+    const row = this.ctx.storage.sql.exec<{ size: number; sha256: string; expires_at: number }>("SELECT size, sha256, expires_at FROM host_snapshot_records WHERE key = ?", key).toArray()[0];
+    return row && row.expires_at > Date.now() ? { size: Number(row.size), sha256: row.sha256, expiresAt: Number(row.expires_at) } : undefined;
+  }
+  /** R2 objects first, then their records: a delete that fails leaves the record for the next sweep. */
+  private async deleteSnapshots(keys: string[], why: "superseded" | "expired") {
+    if (!this.env.BUCKET) return;
+    await this.env.BUCKET.delete(keys);
+    for (const key of keys) this.ctx.storage.sql.exec("DELETE FROM host_snapshot_records WHERE key = ?", key);
+    console.log(JSON.stringify({ type: "host_snapshots_deleted", why, count: keys.length }));
+  }
+  private async armSweep() {
+    const next = this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MIN(expires_at) AS at FROM host_snapshot_records").one().at;
+    const current = await this.ctx.storage.getAlarm();
+    if (next !== null && (current === null || Number(next) < current)) await this.ctx.storage.setAlarm(Number(next));
+  }
+  /** The expiry sweep: snapshots past their handle's expiry are deleted, a bounded batch a time, then the next one armed. */
+  async alarm() {
+    const expired = this.ctx.storage.sql.exec<{ key: string }>("SELECT key FROM host_snapshot_records WHERE expires_at <= ? ORDER BY expires_at LIMIT 1000", Date.now()).toArray().map(row => row.key);
+    try { if (expired.length) await this.deleteSnapshots(expired, "expired"); }
+    catch (error) {
+      // R2 refused: tried again in a minute, the records kept.
+      console.error(JSON.stringify({ type: "host_snapshot_sweep_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      return;
+    }
+    const next = this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MIN(expires_at) AS at FROM host_snapshot_records").one().at;
+    if (next !== null) await this.ctx.storage.setAlarm(Math.max(Number(next), Date.now() + 1_000));
   }
   list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked, draining, idle_since AS idleSince FROM hosts ORDER BY name").toArray(); }
   /** Drain a host (the scaler, before it ends it): no new job is placed on it. Undefined: no such host. */
@@ -278,6 +343,7 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     sql.exec("DELETE FROM waiting WHERE seen_at <= ?", now - WAITER_STALE_MS);
     // Hosts not heard from in a day are forgotten (their instances are long gone); a revoked one stays revoked.
     sql.exec("DELETE FROM hosts WHERE seen_at < ? AND revoked = 0", now - HOST_FORGET_MS);
+    sql.exec("DELETE FROM host_snapshots WHERE host NOT IN (SELECT name FROM hosts)");
     // Every host it knows, with when it was last heard from: the scaler ends a terminating host's hook only once it has
     // been gone a while, not on one missed heartbeat. Capacity counts only the live ones.
     const known = sql.exec<{ name: string; pool: string; slots: number; free: number; draining: number; idle_since: number | null; seen_at: number; used_mib: number }>(
@@ -439,6 +505,52 @@ export async function jobHostRoutes(request: Request, env: JobHostsEnv & { ADMIN
   return Response.json({ error: "Not found", code: "NOT_FOUND" }, { status: 404 });
 }
 
+/**
+ * A job's snapshot routes, for its host (host-snapshots.ts), on the stateless Worker: the job's object checks the token
+ * and says which key it may read or write, and the bytes go between the host and R2 here, never through that object.
+ * - GET /v1/internal/job-hosts/snapshots/<job>: the snapshot the job starts from, R2's body passed straight through;
+ * - PUT …/<job>/parts/<n>: one part (its Content-Length at most the job's part size) straight into the R2 upload;
+ * - POST …/<job>/complete: `{ size, sha256 }`, the upload completed and recorded.
+ * Every answer is no-store. Limited per client address with JOB_HOST_SYNC_LIMITER where it is bound.
+ */
+export async function snapshotRoutes(request: Request, env: JobHostsEnv, job: string, rest: string): Promise<Response> {
+  const headers = { "cache-control": "no-store" };
+  const refuse = (status: number, error: string) => Response.json({ error }, { status, headers });
+  if (env.JOB_HOST_SYNC_LIMITER && !(await env.JOB_HOST_SYNC_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") ?? "unknown" })).success) return refuse(429, "Too many requests");
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(job) || !env.HOST_JOBS || !env.BUCKET) return refuse(404, "Not found");
+  const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+  const object = env.HOST_JOBS.getByName(jobObjectName(job));
+  if (rest === "" && request.method === "GET") {
+    const source = await object.snapshotSource(token);
+    if (!source.ok) return refuse(source.status, source.status === 401 ? "Unauthorized" : "This job starts from no snapshot");
+    const stored = await (env.BUCKET as R2Bucket).get(source.key);
+    if (!stored) return refuse(404, "The snapshot is gone");
+    return new Response(stored.body, { headers: { ...headers, "content-type": "application/gzip", "content-length": String(stored.size) } });
+  }
+  const part = /^\/parts\/(\d{1,5})$/.exec(rest);
+  if (part && request.method === "PUT") {
+    const n = Number(part[1]), length = Number(request.headers.get("content-length") ?? NaN);
+    const target = await object.snapshotPartTarget(token, n, length);
+    if (!target.ok) return refuse(target.status, target.error);
+    if (!request.body) return refuse(400, "No body");
+    let written: R2UploadedPart;
+    try { written = await env.BUCKET.resumeMultipartUpload(target.key, target.uploadId).uploadPart(n, request.body); }
+    catch (error) { return refuse(502, `The part was not stored: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}`); }
+    if (!(await object.snapshotPartWritten(token, n, written.etag, length)).ok) return refuse(409, "The upload ended");
+    return Response.json({ part: n, etag: written.etag }, { headers });
+  }
+  if (rest === "/complete" && request.method === "POST") {
+    if (Number(request.headers.get("content-length") ?? 0) > 1024) return refuse(413, "Too large");
+    let body: { size?: unknown; sha256?: unknown };
+    try { body = await request.json(); } catch { return refuse(400, "A completion is JSON"); }
+    try {
+      const done = await object.snapshotComplete(token, body?.size, body?.sha256);
+      return done.ok ? Response.json({ ok: true }, { headers }) : refuse(done.status, done.error);
+    } catch (error) { return refuse(502, `The snapshot was not completed: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}`); }
+  }
+  return refuse(404, "Not found");
+}
+
 /** One host's connection: jobs out, results in. */
 export class JobHost extends DurableObject<JobHostsEnv> {
   private socket?: WebSocket;
@@ -534,9 +646,9 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     this.lastSeen = Date.now();
     if (message.type === "hello") {
       // Its free slots as it reports them: a reconnecting host's jobs in flight keep theirs. Its pool is its credential's.
-      await registry(this.env).seen(name, message.slots, message.free, this.pool ?? "test", { vcpus: message.vcpus, memoryMiB: message.memoryMiB });
+      await registry(this.env).seen(name, message.slots, message.free, this.pool ?? "test", { vcpus: message.vcpus, memoryMiB: message.memoryMiB }, undefined, message.cached);
       this.send({ type: "registered", host: name });
-    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test", undefined, message.running);
+    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test", undefined, message.running, message.cached);
     else if (message.type === "started") { if (this.pending.has(message.id)) this.startedAt.set(message.id, Date.now()); }
     else if (message.type === "result") { const done = this.pending.get(message.id); this.pending.delete(message.id); done?.(message.result); }
   }
@@ -604,9 +716,16 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     // host's slot and its computer slot given back, nothing charged.
     const waiting = this.waiting = { job: spec.id, stopped: false };
     try {
-    // Snapshots and other images are Cloudflare containers' alone so far (driver.ts needsContainer): refused, never
-    // run without them.
-    if (needsContainer(spec)) return fail("start_failed", "Job hosts run the workspace image only, without snapshots, so far: run this job on Cloudflare Containers (JOB_PROVIDER=auto routes it there)");
+    // Hosts run the workspace image, and start only from their own snapshots (host-snapshots.ts): anything else is
+    // refused, never run without it (driver.ts routes those to Cloudflare Containers).
+    const snapshots = hostSnapshotPlan(spec, this.env);
+    if ("refused" in snapshots) return fail("start_failed", snapshots.refused);
+    // The snapshot it starts from must still exist, as its handle says: not superseded, swept or another tenant's.
+    if (snapshots.load) {
+      const record = await registry(this.env).snapshotRecord(snapshots.load.key);
+      if (!record) return fail("start_failed", `Snapshot ${spec.snapshot!.name} no longer exists (a newer save of that name replaced it, it expired, or it is not this tenant's); take a new one`);
+      if (record.sha256 !== snapshots.load.sha256 || record.size !== snapshots.load.size) return fail("start_failed", `Snapshot ${spec.snapshot!.name} does not match the snapshot saved under its id`);
+    }
     const lifetimeMs = jobLifetimeMs(spec.timeoutSeconds), meter = this.meter(lifetimeMs), machine = `job:${spec.id}`;
     // The VM the host boots is the one priced: its shape (the job's limits, else its instance type's), and the pool that
     // shape goes to. A pricing setting that does not parse refuses the job before anything starts.
@@ -629,7 +748,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       this.waiting = undefined;
       return fail("stopped", "The job was stopped");
     };
-    const host = await this.waitForHost(waiting, pool, shape.memoryMiB);
+    const host = await this.waitForHost(waiting, pool, shape.memoryMiB, snapshots.load?.cacheId);
     if (host === "stopped") return stopped();
     if (!host) { this.waiting = undefined; return fail("start_failed", `No ${pool} job host was free within ${Math.round(this.waitMs() / 1000)} s`); }
     if (waiting.stopped) return stopped(host);
@@ -666,6 +785,15 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       return fail("stopped", "The job was stopped");
     }
     await registry(this.env).touch(spec.id).catch(() => {});
+    // Its snapshot routes (host-snapshots.ts): a token for this job's load and save only, kept here hashed, for the
+    // job's lifetime from its dispatch. The host carries it; the VM never sees it.
+    let snapshot: WireJob["snapshot"], save: WireJob["save"];
+    if (snapshots.load || snapshots.save) {
+      const token = randomBytes(32).toString("base64url");
+      new HostSnapshotStore(this.ctx.storage.sql).put(token, Date.now() + lifetimeMs, snapshots.load, snapshots.save?.key);
+      this.snapshotPlan = snapshots;
+      ({ snapshot, save } = snapshotWire(snapshots, spec.id, token, this.env));
+    }
     const dispatchedAt = Date.now();
     active.sent = true;
     try {
@@ -673,6 +801,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       // run(): a throw would leave the workflow's row to be run again, and fail again, on every restart.
       wire = await this.env.JOB_HOSTS!.getByName(host).dispatch(spec.id, {
         command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files, ...(sync ? { sync } : {}),
+        ...(snapshot ? { snapshot } : {}), ...(save ? { save } : {}),
         limits: { cpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskMiB: shape.diskMiB, ...(spec.limits?.pids ? { pids: spec.limits.pids } : {}) },
         ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
       }, lifetimeMs).catch((error: unknown): WireResult => ({ ok: false, code: "container_failed", message: `The job could not be sent to its host: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}` }));
@@ -691,6 +820,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     }
     if (!wire.ok) return fail(wire.code, wire.message, costUsd);
     return {
+      // The saved snapshot's handle (its id carries the archive's digest, which a job from it checks), or why there is none.
+      ...snapshotResult(snapshots, new HostSnapshotStore(this.ctx.storage.sql).saved(), wire),
       ok: true, id: spec.id, instance: spec.instance, exitCode: wire.exitCode, timedOut: wire.timedOut,
       stdout: stream(wire.stdout), stderr: stream(wire.stderr), missing: wire.missing,
       outputs: Object.fromEntries(Object.entries(wire.outputs).map(([name, output]) => [name, stream(output)])),
@@ -702,6 +833,16 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       if (this.waiting === waiting) this.waiting = undefined;
       // Its host-side sync ends with it: the token serves nothing more.
       try { new HostSyncStore(this.ctx.storage.sql).clear(); } catch { /* none */ }
+      // So does its snapshot token; an upload its host started and never completed is aborted (R2 keeps no parts).
+      this.snapshotPlan = undefined;
+      try {
+        const store = new HostSnapshotStore(this.ctx.storage.sql), left = store.unfinished();
+        store.clear();
+        if (left && this.env.BUCKET) {
+          await this.env.BUCKET.resumeMultipartUpload(left.key, left.uploadId).abort();
+          console.log(JSON.stringify({ type: "host_snapshot_upload_aborted", job: spec.id }));
+        }
+      } catch (error) { console.error(JSON.stringify({ type: "host_snapshot_abort_failed", job: spec.id, error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })); }
     }
   }
   /**
@@ -755,18 +896,69 @@ export class HostJob extends DurableObject<JobHostsEnv> {
   }
 
 
+  /** The running job's snapshot plan: what a completed save is recorded as. */
+  private snapshotPlan?: ReturnType<typeof hostSnapshotPlan>;
+  /** The upload being started (the first part's createMultipartUpload), so two parts at once start one. */
+  private starting?: Promise<string>;
+
+  /** Snapshot load (the Worker's route streams it from R2): the key this job's token may read, or the refusal's status. */
+  snapshotSource(token: string) { return new HostSnapshotStore(this.ctx.storage.sql).load(token); }
+  /**
+   * Snapshot save, part `n` of `length` bytes: where the Worker's route writes it (the key and the R2 multipart upload,
+   * started here on the first part), or why not.
+   */
+  async snapshotPartTarget(token: string, n: number, length: number): Promise<{ ok: true; key: string; uploadId: string } | { ok: false; status: number; error: string }> {
+    const store = new HostSnapshotStore(this.ctx.storage.sql), save = store.save(token);
+    if (!save.ok) return { ok: false, status: save.status, error: save.status === 401 ? "Unauthorized" : "This job saves no snapshot" };
+    if (save.done) return { ok: false, status: 409, error: "The snapshot is already complete" };
+    const refused = checkPart(n, length, snapshotPartBytes(this.env), store.writtenBesides(n));
+    if (refused) return { ok: false, status: 400, error: refused };
+    if (!this.env.BUCKET) return { ok: false, status: 503, error: "No bucket" };
+    let uploadId = save.uploadId;
+    if (!uploadId) {
+      this.starting ??= this.env.BUCKET.createMultipartUpload(save.key, { httpMetadata: { contentType: "application/gzip" } }).then(upload => { store.started(upload.uploadId); return upload.uploadId; });
+      try { uploadId = await this.starting; } finally { this.starting = undefined; }
+    }
+    return { ok: true, key: save.key, uploadId };
+  }
+  /** A part the Worker's route wrote: its etag, for the completion. */
+  snapshotPartWritten(token: string, n: number, etag: string, size: number) {
+    const store = new HostSnapshotStore(this.ctx.storage.sql), save = store.save(token);
+    if (!save.ok || !save.uploadId) return { ok: false };
+    store.part(n, etag, size);
+    return { ok: true };
+  }
+  /**
+   * The save's completion: its parts all there and adding up to the size the host says, the R2 upload completed, and
+   * the snapshot recorded in the registry (which deletes the payer's earlier one of that name).
+   */
+  async snapshotComplete(token: string, size: unknown, sha256: unknown): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+    const store = new HostSnapshotStore(this.ctx.storage.sql), save = store.save(token), plan = this.snapshotPlan;
+    if (!save.ok) return { ok: false, status: save.status, error: save.status === 401 ? "Unauthorized" : "This job saves no snapshot" };
+    if (save.done) return { ok: true };
+    if (!save.uploadId || !this.env.BUCKET || !plan || "refused" in plan || !plan.save) return { ok: false, status: 409, error: "No upload in progress" };
+    const parts = store.parts(), refused = checkComplete(parts, snapshotPartBytes(this.env), size, sha256);
+    if (refused) return { ok: false, status: 400, error: refused };
+    const object = await this.env.BUCKET.resumeMultipartUpload(save.key, save.uploadId).complete(parts.map(part => ({ partNumber: part.n, etag: part.etag })));
+    if (object.size !== size) return { ok: false, status: 400, error: "The stored snapshot's size is not what the host says" };
+    const createdAt = Date.now(), saved = { size: size as number, sha256: sha256 as string, createdAt, expiresAt: createdAt + snapshotTtlMs(this.env) };
+    store.completed(saved);
+    await registry(this.env).snapshotSaved({ key: save.key, tenant: plan.save.tenant, payer: plan.save.payer, name: plan.save.name, ...saved });
+    return { ok: true };
+  }
+
   private waiting?: { job: string; stopped: boolean };
   private waitMs() {
     const seconds = Number(this.env.JOB_HOST_WAIT_SECONDS ?? NaN);
     return Number.isFinite(seconds) && seconds >= 0 && seconds <= 3600 ? seconds * 1000 : HOST_WAIT_MS;
   }
   /** A host for `job`, its turn in its pool's queue; undefined when none came in time, "stopped" when stopped meanwhile. */
-  private async waitForHost(waiting: { job: string; stopped: boolean }, pool: HostPool, memoryMiB: number): Promise<string | undefined | "stopped"> {
+  private async waitForHost(waiting: { job: string; stopped: boolean }, pool: HostPool, memoryMiB: number, snapshot?: string): Promise<string | undefined | "stopped"> {
     const hosts = registry(this.env), until = Date.now() + this.waitMs(), job = waiting.job;
     try {
       for (let pause = 250; ; pause = Math.min(3_000, pause * 2)) {
         if (waiting.stopped) return "stopped";
-        const host = await hosts.want(job, pool, memoryMiB);
+        const host = await hosts.want(job, pool, memoryMiB, snapshot);
         // A stop that landed while it asked: the host it got goes back.
         if (host && waiting.stopped) { await hosts.release(host, memoryMiB, job).catch(() => {}); return "stopped"; }
         if (host) return host;

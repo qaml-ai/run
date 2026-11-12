@@ -193,7 +193,7 @@ test("the isolation suite reports each property, and fails one that leaks", asyn
     async boot(id) {
       const ip = id.includes("online") ? "10.200.0.2" : "10.200.1.2";
       return {
-        id, destroy: async () => {},
+        id, destroy: async () => {}, export: async () => {},
         async request(request) {
           if (request.op === "free") return { ok: true, freeBytes: 1024 };
           const command = String(request.command);

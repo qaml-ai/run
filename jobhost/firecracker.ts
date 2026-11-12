@@ -4,11 +4,16 @@
 // - makes the job slot's tap (network.ts), and writes the egress proxy's policy for the slot's guest address;
 // - writes the Firecracker config (vm.ts firecrackerConfig) and starts `firecracker --no-api`;
 // - connects to the guest agent over vsock (Firecracker's UDS: "CONNECT <port>"), the same NDJSON channel as fake mode.
-// destroy() kills Firecracker and removes the clone, the tap, the policy and the socket. Booting needs a Nitro host
-// (or plain KVM for everything but the enclave block); nothing here has run on one yet.
+// destroy() kills Firecracker and removes the clone, the tap, the policy and the socket. export() (a saved snapshot,
+// slice 5) syncs the guest's disk, stops Firecracker keeping the clone, checks and shrinks its ext4 to its smallest, and
+// gzips it; a job from that snapshot boots from it unpacked (`from`) and grows it to its own disk size as usual.
+// Booting needs a Nitro host (or plain KVM for everything but the enclave block); nothing here has run on one yet.
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { connect, type Socket } from "node:net";
-import { open, rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { open, rm, stat, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { DEFAULT_EGRESS, removePolicy, writePolicy } from "./egress-proxy.ts";
@@ -39,6 +44,13 @@ export type FirecrackerOptions = {
 };
 
 const run = (file: string, args: string[]) => promisify(execFile)(file, args);
+
+/** An ext4's size in bytes from `dumpe2fs -h`: its block count times its block size. */
+export function ext4Bytes(dumpe2fs: string) {
+  const count = /^Block count:\s+(\d+)$/m.exec(dumpe2fs)?.[1], size = /^Block size:\s+(\d+)$/m.exec(dumpe2fs)?.[1];
+  if (!count || !size) throw new Error("dumpe2fs did not say the filesystem's size");
+  return Number(count) * Number(size);
+}
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
@@ -107,7 +119,7 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
   });
   return {
     kind: "firecracker",
-    async boot(id: string, shape: VmShape, boot: { internet?: boolean } = {}): Promise<Vm> {
+    async boot(id: string, shape: VmShape, boot: { internet?: boolean; from?: string } = {}): Promise<Vm> {
       if (!/^[A-Za-z0-9._-]{1,96}$/.test(id)) throw new Error("Invalid job id");
       const slot = [...free][0];
       if (slot === undefined) throw new Error("No free job slot on this host");
@@ -115,22 +127,28 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
       const address = jobAddress(slot), internet = !!boot.internet;
       const disk = join(options.work, `${id}.ext4`), vsock = join(options.work, `${id}.vsock`), config = join(options.work, `${id}.json`), log = join(options.work, `${id}.log`);
       let child: ChildProcess | undefined, channel: VsockChannel | undefined, gone = false;
-      const destroy = async () => {
-        if (gone) return;
-        gone = true;
+      // Stop the VM; its disk stays (destroy removes it).
+      const halt = async () => {
         channel?.close();
-        if (child && child.exitCode === null) {
+        if (child && child.exitCode === null && child.signalCode == null) {
           child.kill("SIGKILL");
           await new Promise(resolve => { const timer = setTimeout(resolve, 5_000); child!.once("exit", () => { clearTimeout(timer); resolve(undefined); }); });
         }
+      };
+      const destroy = async () => {
+        if (gone) return;
+        gone = true;
+        await halt();
         await tapDown(address, exec);
         await removePolicy(options.policyDir, address.guestIp);
         await Promise.all([disk, vsock, config].map(file => rm(file, { force: true })));
         free.add(slot);
       };
       try {
-        // The job's disk: a reflink clone of the base image (1.5 ms on XFS), grown to its size.
-        await exec("cp", ["--reflink=always", options.image, disk]);
+        // The job's disk: a reflink clone of the base image, or of a snapshot's (1.5 ms on XFS), grown to its size. A
+        // snapshot whose filesystem is past the job's disk would be cut short: refused.
+        if (boot.from && (await stat(boot.from)).size > shape.diskMiB * 1024 * 1024) throw new Error(`The snapshot is larger than this job's ${shape.diskMiB} MiB disk: ask for more diskMiB`);
+        await exec("cp", ["--reflink=always", boot.from ?? options.image, disk]);
         await exec("truncate", ["-s", `${shape.diskMiB}M`, disk]);
         await exec("resize2fs", ["-f", disk]);
         await tapUp(address, exec);
@@ -147,7 +165,21 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
         exited.catch(() => {}); // after boot, a Firecracker that exits shows up as the guest no longer answering
         channel = await Promise.race([vsockChannel(vsock, GUEST_PORT, options.bootDeadlineMs ?? BOOT_DEADLINE_MS), exited]);
         const ready = channel;
-        return { id, request: (request, onLog) => ready.request(request, onLog), destroy };
+        const exportDisk = async (dest: string) => {
+          if (gone) throw new Error("The VM is gone");
+          // The guest's page cache to its disk, then the VM stopped with the disk kept.
+          const synced = await ready.request({ op: "run", command: "sync", timeoutSeconds: 120 });
+          if (!synced.ok || synced.exitCode !== 0) throw new Error(`sync in the guest failed: ${String(synced.error ?? synced.exitCode).slice(0, 200)}`);
+          await halt();
+          // Checked (a journal left by the stop is replayed: e2fsck exits 1 when it fixed something), shrunk to its
+          // smallest, and the file cut to the filesystem: the archive carries the data, not the job's empty disk.
+          await exec("e2fsck", ["-fy", disk]).catch((error: { code?: unknown }) => { if (error?.code !== 1) throw error; });
+          await exec("resize2fs", ["-M", disk]);
+          const { stdout } = await exec("dumpe2fs", ["-h", disk]) as { stdout: string };
+          await exec("truncate", ["-s", String(ext4Bytes(String(stdout))), disk]);
+          await pipeline(createReadStream(disk), createGzip({ level: 1 }), createWriteStream(dest));
+        };
+        return { id, request: (request, onLog) => ready.request(request, onLog), destroy, export: exportDisk };
       } catch (error) {
         await destroy().catch(() => {});
         throw error;

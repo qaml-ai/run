@@ -29,6 +29,12 @@ export default {
       const files = body.files && Object.fromEntries(Object.entries(body.files).map(([name, text]) => [name, unbase64(text)]));
       return Response.json(jsonResult(await found.driver.run({ ...body, ...files ? { files } : {} })));
     }
+    // The bucket's keys under a prefix (job host snapshots' tests read what is stored, and what was deleted).
+    if (env.TEST_MODE === "1" && request.method === "GET" && path === "/__test/r2") {
+      const bucket = (env as unknown as { BUCKET: R2Bucket }).BUCKET, prefix = new URL(request.url).searchParams.get("prefix") ?? "";
+      const listed = await bucket.list({ prefix, limit: 1000 });
+      return Response.json(listed.objects.map(object => ({ key: object.key, size: object.size })));
+    }
     return (worker as unknown as { fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> }).fetch(request, env, ctx);
   },
 };
