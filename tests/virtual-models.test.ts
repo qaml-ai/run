@@ -348,3 +348,36 @@ test("strong: Gemini's reasoning from flex is refused on the default tier's othe
   assert.deepEqual(requests.map(request => request.details), requests.map(() => false), JSON.stringify(requests));
   assert.equal(r.logs.filter(line => line.includes('"model_reasoning_replay_dropped"')).length, 1, "no second refusal");
 });
+
+test("strong's members wait for a first token within a budget for their input; other classes and an agent's own limit are unchanged", async () => {
+  const { streamTimeouts } = await import("../src/model-stream.ts");
+  const [flex, standard] = virtualChain("camelrun/strong")!;
+  for (const member of [flex, standard]) assert.deepEqual((member as { firstTokenBudget?: unknown }).firstTokenBudget, { baseMs: 30_000, perKTokensMs: 400 });
+  for (const reference of ["camelrun/fast", "camelrun/default"]) assert.ok(virtualChain(reference)!.every(member => !("firstTokenBudget" in member)), reference);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 12_000).firstTokenMs, 34_800);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 150_000).firstTokenMs, 90_000);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 1_000_000).firstTokenMs, 120_000);
+  assert.equal(streamTimeouts(flex, undefined, { firstTokenSeconds: 200 }, undefined, 12_000).firstTokenMs, 200_000);
+});
+
+test("strong: flex that sends no first token in time is given up on, and the default tier answers the same call", async t => {
+  const requests: (string | undefined)[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    requests.push(body.service_tier);
+    // Flex hangs: headers and nothing more, as a stalled upstream does.
+    if (body.service_tier === "flex") { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders(); return; }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "From the default tier.", annotations: [] }] }]).events)
+      res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: url } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low", runLimits: { firstTokenSeconds: 1 } } })).json.id;
+  const run = await r.prompt(agent, "Say hello");
+  assert.equal(run.outcome.result.reply, "From the default tier.", JSON.stringify(run.outcome));
+  assert.deepEqual(requests, ["flex", "default"]);
+});

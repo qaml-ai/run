@@ -6,6 +6,7 @@ import { getModel, getModels, tierCost, withOpenRouterHosts } from "../src/model
 import { listModels } from "../src/catalog-policy.ts";
 import { platformUsage } from "../src/platform-pricing.ts";
 import { withSettings } from "../src/model-settings.ts";
+import { streamTimeouts } from "../src/model-stream.ts";
 import { FlexWait, flexFallbackDeltaUsd, flexWaitMs } from "../src/model-flex-wait.ts";
 import { callFetch } from "../src/model-call-fetch.ts";
 import { servedTier } from "../src/model-attempt-stream.ts";
@@ -151,7 +152,12 @@ function scriptedProvider(script: Step[] | ((model: Model<Api>) => Step)) {
       calls.push({ model: model.id, tier: tier(model), payload, context });
       const step = typeof script === "function" ? script(model) : script.shift() ?? "unscripted";
       const base = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage: { ...usage(), input: 1_000_000, output: 1_000_000 }, timestamp: Date.now() } as AssistantMessage;
-      if (step === "LENGTH") {
+      if (step === "HANG") {
+        // Sends nothing until the call is given up on (the runtime's first-token watch aborts it).
+        await new Promise<void>(resolve => options.signal?.aborted ? resolve() : options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+        const message = { ...base, content: [], stopReason: "aborted", errorMessage: "aborted" } as AssistantMessage;
+        output.push({ type: "error", reason: "aborted", error: message }); output.end(message);
+      } else if (step === "LENGTH") {
         const message = { ...base, content: [{ type: "thinking", thinking: "" }], stopReason: "length" } as AssistantMessage;
         output.push({ type: "done", reason: "length", message } as never); output.end(message);
       } else if (typeof step === "object") {
@@ -351,4 +357,27 @@ test("Gemini refusing reasoning another provider produced: the same member again
   const twice = await call("camelrun/strong", [REFUSED, REFUSED, REFUSED, REFUSED], {}, { AGENT_FLEX_WAIT_SECONDS: "0" }, history);
   assert.equal(twice.last.type, "error");
   assert.ok(twice.calls.length <= 4, JSON.stringify(twice.calls.map(entry => entry.tier)));
+});
+
+test("camelrun/strong's members wait for a first token within a budget for their input; other classes and an agent's own limit are unchanged", () => {
+  const [flex, standard] = virtualChain("camelrun/strong")!;
+  for (const member of [flex, standard]) assert.deepEqual((member as { firstTokenBudget?: unknown }).firstTokenBudget, { baseMs: 30_000, perKTokensMs: 400 });
+  for (const reference of ["camelrun/fast", "camelrun/default"]) assert.ok(virtualChain(reference)!.every(member => !("firstTokenBudget" in member)), reference);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 12_000).firstTokenMs, 34_800);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 150_000).firstTokenMs, 90_000);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 1_000_000).firstTokenMs, 120_000, "never longer than the general wait");
+  assert.equal(streamTimeouts(flex, "high", undefined, undefined, 60_000).firstTokenMs, 54_000, "thinking hard: still its budget");
+  assert.equal(streamTimeouts(flex, undefined, { firstTokenSeconds: 200 }, undefined, 12_000).firstTokenMs, 200_000, "the agent's own wins");
+  assert.equal(streamTimeouts(flex, undefined, undefined, { firstTokenMs: 10_000 }, 12_000).firstTokenMs, 10_000, "a shorter runtime wait stays");
+  assert.equal(streamTimeouts(flex, undefined).firstTokenMs, 120_000, "no input known: as before");
+  assert.equal(streamTimeouts(virtualChain("camelrun/fast")![0], undefined, undefined, undefined, 12_000).firstTokenMs, 120_000);
+});
+
+test("strong: a member that sends no first token in time is given up on, and the next member takes the call", async t => {
+  const logs: string[] = [];
+  t.mock.method(console, "log", (line: string) => { logs.push(line); });
+  const run = await call("camelrun/strong", model => tier(model) === "flex" ? "HANG" : "on default", { flexWaitSeconds: 0, runLimits: { firstTokenSeconds: 0.2 } });
+  assert.deepEqual(run.calls.map(c => c.tier), ["flex", "default"]);
+  assert.equal(run.last.type, "done");
+  assert.equal(run.last.message.content[0].text, "on default");
 });

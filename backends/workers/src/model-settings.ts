@@ -11,6 +11,7 @@ import { modelOutbound } from "./security-outbound.ts";
 import { gatewayUrl } from "./model-gateway.ts";
 import { FETCH_APIS } from "./model-call-fetch.ts";
 import { streamTimeouts, watchedStream, isStalled, type Stall } from "./model-stream.ts";
+import { estimateModelAttempt } from "./model-estimate.ts";
 import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-options.ts";
 import { PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
 import { modelCallKind } from "./model-call-context.ts";
@@ -156,7 +157,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           const onProviderStreamEvent = prepared.options.onProviderStreamEvent;
           const options = { ...prepared.options, signal, onProviderStreamEvent: (event: unknown) => { activity(event); onProviderStreamEvent?.(event, prepared.model); } };
           return simple ? provider.streamSimple(prepared.model, prepared.context, options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, options);
-        }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits, timeouts), options?.signal,
+        }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits, timeouts, estimateModelAttempt(prepared.model, prepared.context, {}).inputTokens), options?.signal,
         stall => { stalled = Promise.resolve(hooks.onStall?.({ ...stall, provider: prepared.model.provider, model: prepared.model.id })); });
         for await (const event of stream) {
           if (event.type === "error" || event.type === "done") await stalled;

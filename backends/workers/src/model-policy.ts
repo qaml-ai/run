@@ -48,16 +48,24 @@ export const VIRTUAL_PROVIDER = "camelrun";
  * and moves to the default tier when flex has no capacity (model-settings.ts waits a bounded window first on Workers).
  * - `fast` and `strong` are model classes (docs/design/swarm-workflows.md): bulk work and judgment. Decided 2026-11-10.
  */
-type Member = [provider: string, id: string, options?: { serviceTier: ServiceTier }];
+/**
+ * A member's options: the OpenRouter service tier it is asked on, and its first-token budget (model-stream.ts): a member
+ * that sends nothing within it for its input has stalled, and the next member takes the request.
+ */
+type Member = [provider: string, id: string, options?: { serviceTier: ServiceTier; firstTokenBudget?: FirstTokenBudget }];
+/** model-stream.ts `FirstTokenBudget`, restated: the Workers copy of this file is made without its first lines. */
+type FirstTokenBudget = { baseMs: number; perKTokensMs: number };
+/** Gemini 4 Carbon's first token comes within this for its input, with room (measured 2026-11-12, model-stream.ts). */
+const GEMINI_FIRST_TOKEN: FirstTokenBudget = { baseMs: 30_000, perKTokensMs: 400 };
 const VIRTUAL_MODELS: Record<string, { name: string; chain: Member[] }> = {
   default: { name: "camelRun default", chain: [["openrouter", "meta/muse-ember"], ["openrouter", "deepseek/deepseek-v4.1-flash-1017"]] },
   fast: { name: "camelRun fast", chain: [["openrouter", "meta/muse-ember"]] },
-  strong: { name: "camelRun strong", chain: [["openrouter", "google/gemini-4-carbon", { serviceTier: "flex" }], ["openrouter", "google/gemini-4-carbon", { serviceTier: "default" }]] },
+  strong: { name: "camelRun strong", chain: [["openrouter", "google/gemini-4-carbon", { serviceTier: "flex", firstTokenBudget: GEMINI_FIRST_TOKEN }], ["openrouter", "google/gemini-4-carbon", { serviceTier: "default", firstTokenBudget: GEMINI_FIRST_TOKEN }]] },
 };
 
 /** An OpenRouter service tier a virtual model's member is asked on (`service_tier`). */
 export type ServiceTier = "flex" | "default";
-export type VirtualSelection = Model<Api> & { virtual?: string; serviceTier?: ServiceTier };
+export type VirtualSelection = Model<Api> & { virtual?: string; serviceTier?: ServiceTier; firstTokenBudget?: FirstTokenBudget };
 /** Why a request is routed, as Pi says: `user` after a message someone wrote, `continuation` after tool results, `retry` after `failed`, `direct` outside the loop (a summary). */
 export type ModelRouteReason = "user" | "continuation" | "retry" | "direct";
 type Physical = { provider: string; model?: string; id?: string; serviceTier?: string };
@@ -65,7 +73,7 @@ type Physical = { provider: string; model?: string; id?: string; serviceTier?: s
 /** A member as it is called. One OpenRouter serves that the catalog lacks passes through: at its lookup's values when an agent is made on it as the head, else the defaults (openrouter-model.ts). */
 export const virtualMember = ([provider, id, options]: Member): Model<Api> => {
   const model = getModel(provider, id);
-  const tier = options ? { serviceTier: options.serviceTier } : {};
+  const tier = options ? { serviceTier: options.serviceTier, ...(options.firstTokenBudget ? { firstTokenBudget: options.firstTokenBudget } : {}) } : {};
   if (!model && provider === "openrouter") return { ...passthroughModel(id), ...tier };
   if (!model) throw new Error(`Virtual model member ${provider}/${id} is not in the catalog`);
   return provider === "openrouter" ? { ...model, api: openRouterApi(model.api, model), ...tier } as Model<Api> : model;

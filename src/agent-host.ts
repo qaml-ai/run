@@ -954,15 +954,15 @@ export function createAgentHost(hostIO: HostIO) {
         return config.model.virtual && !message.content.length && isModelUnavailable(message) && routeModel(config.model, { reason: "retry", failed: { provider: message.provider, model: message.model, ...askedTier(message) } }) ? "unavailable" as const : undefined;
       };
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
-        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        (model, reasoning, inputTokens) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts, inputTokens),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, io.modelAttempt, creditStop, replaced);
       const viaFallback = explicitKeyStream(() => io.modelAuth(config.contentFilterFallback!.model.provider), () => config.modelHeaders, gate,
-        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        (model, reasoning, inputTokens) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts, inputTokens),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.contentFilterFallback!.model.provider, model: config.contentFilterFallback!.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
       const summaryAttempt: ModelAttemptHook | undefined = io.modelAttempt && (event => io.modelAttempt!(
         event.type === "begin" ? { ...event, kind: "compaction" } : event));
       const summaries = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
-        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        (model, reasoning, inputTokens) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts, inputTokens),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, summaryAttempt, creditStop, replaced);
       // A summary reads the conversation as a turn does: the agent's OpenRouter data policy goes on it too.
       const summaryStream: typeof summaries = (model, context, options) => routedCall("direct", on =>

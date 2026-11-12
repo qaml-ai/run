@@ -35,7 +35,7 @@ if (!fetchApis) throw new Error('Missing source FETCH_APIS');
 const stream = compaction.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'explicitKeyStream');
 const source = stream?.getText(compaction);
 const first = source?.indexOf('    const input = () =>');
-const last = source?.indexOf('\n    const call = ', first);
+const last = source?.indexOf("\n    // A provider's stream that goes quiet", first);
 if (first === undefined || first < 0 || last === undefined || last < 0) throw new Error('Missing source request estimate');
 const extracted = [
   ['model-call-fetch', 'import type { UsageSink } from "./model-attempt-stream.ts";\nimport { network } from "./account-network.ts";\n' + fetchApis.getText(compaction) + '\n' + callFetch.getText(compaction)],
