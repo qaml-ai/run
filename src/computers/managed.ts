@@ -550,7 +550,10 @@ export class ManagedComputers {
       try {
         if (row.platform && row.hold && users) await users.renew(row.tenant, row.end_user, row.hold, now());
         if (!this.options.enabled) continue;
-        const limit = await limitOf(row.tenant);
+        let limit: { spend: boolean; credit: boolean };
+        // Limits that cannot be read stop nothing this pass: said under their own name, and read again at the next.
+        try { limit = await limitOf(row.tenant); }
+        catch { limits.delete(row.tenant); this.log("computer_limits_read_failed", { tenant: row.tenant, computer: row.id }); continue; }
         const reason = limit.spend ? "spend_limit" : row.platform && limit.credit ? "credit" : undefined;
         if (!reason) continue;
         // The agent hears of it at its next computer call: the computer is stopped, and a start is refused with why.

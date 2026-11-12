@@ -94,3 +94,19 @@ test("computer.idle is stop or sleep", () => {
   assert.deepEqual(computerSettingsInput({ idle: "sleep", idleSeconds: 300 }, check, "acme"), { idle: "sleep", idleSeconds: 300 });
   assert.throws(() => computerSettingsInput({ idle: "nap" }, check, "acme"), /computer.idle must be "stop" or "sleep"/);
 });
+
+test("a stop for spend saves a sleeping computer's disk without admitting anything, and halts any other after a last CPU reading", async () => {
+  const sleeping = machine("sleep"), p = sleeping.provider();
+  await operate(p, { op: "write", path: "repo.txt", content: "work" });
+  assert.deepEqual(await p.stopForLimit(), { saved: true });
+  assert.deepEqual(sleeping.snapshots, ["camelrun-sleep"], "the workspace is kept, as the idle sleep keeps it");
+  assert.equal(sleeping.container.running, false);
+  assert.equal((sleeping.data.get("computer:base") as { kind: string }).kind, "sleep");
+  assert.deepEqual(await p.stopForLimit(), { saved: false }, "not running: nothing to do");
+
+  const plain = machine(), q = plain.provider();
+  await operate(q, { op: "write", path: "repo.txt", content: "work" });
+  assert.deepEqual(await q.stopForLimit(), { saved: false });
+  assert.deepEqual(plain.snapshots, []);
+  assert.equal(plain.container.running, false);
+});

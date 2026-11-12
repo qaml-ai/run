@@ -295,3 +295,18 @@ test("a running machine stops at the pass that finds its tenant at its monthly s
   await assert.rejects(f.start(undefined, undefined, "start-again"), (error: unknown) => error instanceof HttpError && error.code === "SPEND_LIMIT");
   f.done();
 });
+
+test("limits that cannot be read stop nothing: said as computer_limits_read_failed, not as a failed charge", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  const spendLimit = f.accounts.spendLimit;
+  f.accounts.spendLimit = async function () { throw new Error("database unavailable"); };
+  f.advance(60_000);
+  await pass(f);
+  f.accounts.spendLimit = spendLimit;
+  assert.equal((await f.row()).ended_at, null, "still running");
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_limits_read_failed").map(line => line.tenant), ["payg"]);
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_charge_failed"), []);
+  f.done();
+});
