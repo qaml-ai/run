@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
+import { STRONG_FLEX_WAIT_CAP_SECONDS } from "./virtual-models.ts";
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { isContentFilterBlock } from "./model-errors.ts";
 
@@ -49,7 +51,7 @@ export async function withModelFallback(first: Streamed, fallback: () => Streame
 
 /**
  * `streamed` with its failure's message rewritten by `say` (a virtual model's last member failing after the others: the
- * request's error then names each member's, agent-host.ts `routedCall`). Every other event passes as it is.
+ * request gets a fixed retryable error, agent-host.ts `routedCall`). Every other event passes as it is.
  */
 export async function withFailureSaid(streamed: Streamed, say: (message: AssistantMessage) => string | undefined): Promise<AssistantMessageEventStream> {
   const stream = await streamed;
@@ -66,4 +68,22 @@ export async function withFailureSaid(streamed: Streamed, say: (message: Assista
     } finally { out.end(); }
   })();
   return out;
+}
+
+/** Flex capacity retries share a wall-clock window, including time spent in provider calls. */
+export class NodeFlexWait {
+  private started?: number;
+  private sleptMs = 0;
+  async retry(signal?: AbortSignal): Promise<boolean> {
+    this.started ??= Date.now();
+    const remaining = STRONG_FLEX_WAIT_CAP_SECONDS * 1000 - (Date.now() - this.started);
+    if (signal?.aborted) throw new Error("aborted");
+    if (remaining <= 0) return false;
+    const delay = Math.min(Math.max(2_000, this.sleptMs), remaining);
+    try { await sleep(delay, undefined, { signal }); }
+    catch (error) { if (!signal?.aborted) throw error; }
+    if (signal?.aborted) throw new Error("aborted");
+    this.sleptMs += delay;
+    return Date.now() - this.started < STRONG_FLEX_WAIT_CAP_SECONDS * 1000;
+  }
 }

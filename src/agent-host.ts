@@ -22,10 +22,10 @@ import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } fro
 import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
-import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
-import { withFailureSaid, withModelFallback } from "./model-fallback.ts";
+import { MODEL_INTERRUPTED, providerStatus, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
+import { NodeFlexWait, withFailureSaid, withModelFallback } from "./model-fallback.ts";
 import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../shared/gemini-reasoning.ts";
-import { askedTier, STRONG_FLEX_WAIT_CAP_SECONDS, routeModel, type ModelRouteReason } from "./virtual-models.ts";
+import { askedTier, STRONG_UNAVAILABLE_MESSAGE, routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, namespaceOf, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
@@ -931,31 +931,31 @@ export function createAgentHost(hostIO: HostIO) {
       const routedCall = (reason: ModelRouteReason, call: (on: AgentConfig["model"]) => ReturnType<typeof stream>, signal: AbortSignal | undefined, selected: AgentConfig["model"], previous?: AssistantMessage): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
         if (!selected.virtual) return call(selected);
         // Each member's failure this request moved past, for the error when the last one fails too.
-        const tried: string[] = [];
-        const attempt = (on: AgentConfig["model"], flexWaitedMs = 0): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
+        const tried: { member: string; error: string }[] = [];
+        const flexWait = new NodeFlexWait();
+        const attempt = (on: AgentConfig["model"]): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
           routed = on;
           const first = call(on);
           const next = routeModel(selected, { reason: "retry", failed: on });
           const member = `${on.provider}/${on.id}${(on as { serviceTier?: string }).serviceTier ? ` (${(on as { serviceTier?: string }).serviceTier})` : ""}`;
-          // A chain with first-token budgets (camelrun/strong) whose last member cannot take it either: the error says so,
-          // naming each member's, with the last one's own first, so it is retried as that error is (Pi's backoff, the pair's).
-          if (!next) return tried.length && (on as { firstTokenBudget?: unknown }).firstTokenBudget ? withFailureSaid(first, message => isModelUnavailable(message)
-            ? `${message.errorMessage ?? "failed"} (${selected.virtual}: no member can take this now; ${[...tried, `${member}: ${(message.errorMessage ?? "failed").slice(0, 120)}`].join("; ")}; it is retried after a backoff)` : undefined) : first;
-          // A member asked on flex with no capacity is asked again with backoff, within STRONG_FLEX_WAIT_CAP_SECONDS, as on the
-          // Workers backend (model-flex-wait.ts); a first-token stall is not (it already waited its budget).
+          // Only strong's budgeted chain replaces the public error; raw details stay in the log.
+          if (!next) return tried.length && (on as { firstTokenBudget?: unknown }).firstTokenBudget ? withFailureSaid(first, message => {
+            if (!isModelUnavailable(message)) return undefined;
+            console.log(JSON.stringify({ type: "virtual_model_chain_failed", tenant: config.tenant, agent: config.id, model: selected.virtual,
+              failures: [...tried, { member, error: (message.errorMessage ?? "failed").slice(0, 300) }] }));
+            return STRONG_UNAVAILABLE_MESSAGE;
+          }) : first;
           let failure: AssistantMessage | undefined;
-          const flexDelay = (on as { serviceTier?: string }).serviceTier === "flex"
-            ? Math.min(Math.max(2_000, flexWaitedMs), STRONG_FLEX_WAIT_CAP_SECONDS * 1_000 - flexWaitedMs) : 0; // 2, 2, 4, then the rest
           return withModelFallback(first, async () => {
-            if (flexDelay > 0 && failure && !isStalled(failure.errorMessage) && !signal?.aborted) {
-              await new Promise<void>(resolve => { const timer = setTimeout(resolve, flexDelay); signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
-              if (!signal?.aborted) return attempt(on, flexWaitedMs + flexDelay);
+            if ((on as { serviceTier?: string }).serviceTier === "flex" && failure && !isStalled(failure.errorMessage)) {
+              if (await flexWait.retry(signal)) return attempt(on);
             }
-            tried.push(`${member}: ${(failure?.errorMessage ?? "failed").slice(0, 120)}`);
+            if (signal?.aborted) throw new Error("aborted");
+            tried.push({ member, error: (failure?.errorMessage ?? "failed").slice(0, 300) });
             recordModelFallback({ tenant: config.tenant, agent: config.id, from: `${on.provider}/${on.id}`, to: `${next.provider}/${next.id}`, reason: "unavailable", errorClass: errorClass(failure?.errorMessage ?? "") });
             return attempt(next);
           }, {
-            moves: (message, partial) => isModelUnavailable(message) && !partial?.content.length,
+            moves: (message, partial) => (isModelUnavailable(message) || !!(on as { firstTokenBudget?: unknown }).firstTokenBudget && providerStatus(message.errorMessage) === 429) && !partial?.content.length,
             blocked: message => { failure = message; },
             unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: `${on.provider}/${on.id}`, fallback: `${next.provider}/${next.id}`, error: safeError(error) })),
             aborted: () => !!signal?.aborted,

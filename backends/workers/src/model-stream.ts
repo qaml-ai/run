@@ -44,7 +44,7 @@ export function streamTimeouts(model: Pick<Model<Api>, "reasoning"> & { firstTok
   let firstTokenMs = own?.firstTokenSeconds !== undefined ? own.firstTokenSeconds * 1000
     : Math.max(runtime?.firstTokenMs ?? STREAM_TIMEOUTS.firstTokenMs, thinkingHard ? STREAM_TIMEOUTS.reasoningFirstTokenMs : 0);
   const budget = model.firstTokenBudget;
-  if (own?.firstTokenSeconds === undefined && budget && inputTokens !== undefined && Number.isFinite(inputTokens))
+  if (reasoning !== "xhigh" && reasoning !== "max" && own?.firstTokenSeconds === undefined && budget && inputTokens !== undefined && Number.isFinite(inputTokens))
     firstTokenMs = Math.min(firstTokenMs, Math.round(budget.baseMs + budget.perKTokensMs * Math.max(0, inputTokens) / 1000));
   return { firstTokenMs, idleMs: own?.idleSeconds !== undefined ? own.idleSeconds * 1000 : runtime?.idleMs ?? STREAM_TIMEOUTS.idleMs };
 }

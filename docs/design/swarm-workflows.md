@@ -419,8 +419,7 @@ sort and breaks the no-sort, no-order rule; routes still use `provider.only` and
 OpenRouter's service-tiers doc, an explicit flex request falls back only to endpoints priced at or below flex, and
 Google's flex is the cheapest Carbon endpoint, so a flex capacity shortage surfaces as an error, not a fallback.
 So the runtime handles it: retry flex with backoff inside a bounded window, then fall back to the default tier for
-that call. The window is a per-workflow setting (`flexWaitSeconds`, default 600: workflows are latency-tolerant;
-an ordinary agent's default is 30). A fallback is logged on the effect and in the ledger with its cost delta
+that call. The window is a per-workflow setting (`flexWaitSeconds`): workflows and ordinary agents both default to 10 seconds and are capped at 10; a workflow can lower it. A fallback is logged on the effect and in the ledger with its cost delta
 (`items[].tier: { requested: "flex", served: "default", deltaUsd }`), and what is recorded is the response's own
 `service_tier` field, which says which tier served, not what was asked. None of this exists yet: phase 1 adds the
 `service_tier` parameter on the OpenRouter provider, the bounded retry, the per-workflow window, and the served

@@ -140,6 +140,8 @@
 | `AGENT_OUTBOUND_ALLOW_ORIGINS` | exact origins (`scheme://host:port`, comma-separated) reachable despite the built-in ranges, over `http` too: an operator's own services, e.g. `http://app:3000` for a self-hosted runtime's application. Only that scheme, host and port; checked at each connection, and `AGENT_OUTBOUND_BLOCK_CIDRS` still applies. MCP servers, HTTP tools, model providers and webhooks may use them; `web_fetch`, `web_search` and renders never do ([Self-hosting](self-host.md#networking)) |
 | `AGENT_SANDBOX_DIR` | set by `agent-launcher`: where it takes requests for confined processes. Without it, the runtime process starts v8-exec and parse jobs as its own children, unconfined, as in development on macOS; the `listening` log line's `sandbox` field says which |
 
+When both strong members fail and the last is unavailable, the error is exactly `503 Service Unavailable: camelrun/strong has no member that can take this request now (flex and the default tier both failed); it is retried after a backoff`. Member names and errors appear only in the `virtual_model_chain_failed` log. The flex capacity window is wall-clock time from the first failure, including provider calls and backoff. A flex stall moves at once; Workers logs `model_flex_fallback` with `reason: "stall"` (capacity moves use `reason: "capacity"`) and `model_flex_fallback_cost` when the default tier answers. Thinking levels `xhigh` and `max` keep the 300-second first-token wait; `high` uses the input budget. An agent's own first-token limit still wins.
+
 Start a runtime on a VM using a trusted terminal. It always reads its tenants
 from `AGENT_TENANTS_FILE` or `AGENT_TENANTS_SECRET_ARN`, and does not start
 without one:

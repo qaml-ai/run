@@ -1,3 +1,7 @@
+import { isModelUnavailable } from "../src/model-errors.ts";
+import { isRetryableAssistantError, isContextOverflow } from "@earendil-works/pi-ai";
+import { errorClass } from "../src/model-error-classification.ts";
+import { STRONG_UNAVAILABLE_MESSAGE } from "../src/model-policy.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
@@ -175,11 +179,11 @@ function scriptedProvider(script: Step[] | ((model: Model<Api>) => Step)) {
   return { calls, provider: { stream, streamSimple: stream } as any };
 }
 
-async function call(model: string, script: Step[] | ((model: Model<Api>) => Step), settings: Record<string, unknown> = {}, env: Record<string, string> = {}, history: unknown[] = []) {
+async function call(model: string, script: Step[] | ((model: Model<Api>) => Step), settings: Record<string, unknown> = {}, env: Record<string, string> = {}, history: unknown[] = [], budget?: { baseMs: number; perKTokensMs: number }) {
   const { calls, provider } = scriptedProvider(script);
   const retries: ModelRetryEvent[] = [];
   const configured = withSettings(provider, {
-    settings: async () => ({ model, ...settings }) as never, credentials: async () => ({ apiKey: "fixture" }), onRetryEvent: event => { retries.push(event); },
+    testFirstTokenBudget: budget, settings: async () => ({ model, ...settings }) as never, credentials: async () => ({ apiKey: "fixture" }), onRetryEvent: event => { retries.push(event); },
   }, env as never);
   const events = [];
   for await (const event of configured.stream(resolveModel(model), { messages: [{ role: "user", content: "hi", timestamp: 1 }, ...history] } as never, {})) events.push(event);
@@ -368,6 +372,8 @@ test("camelrun/strong's members wait for a first token within a budget for their
   for (const member of [flex, standard]) assert.deepEqual((member as { firstTokenBudget?: unknown }).firstTokenBudget, { baseMs: 30_000, perKTokensMs: 400 });
   for (const reference of ["camelrun/fast", "camelrun/default"]) assert.ok(virtualChain(reference)!.every(member => !("firstTokenBudget" in member)), reference);
   assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 12_000).firstTokenMs, 34_800);
+  assert.equal(streamTimeouts(flex, "high", undefined, undefined, 12_000).firstTokenMs, 34_800);
+  for (const level of ["xhigh", "max"]) assert.equal(streamTimeouts(flex, level, undefined, undefined, 12_000).firstTokenMs, 300_000);
   assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 150_000).firstTokenMs, 90_000);
   assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 1_000_000).firstTokenMs, 120_000, "never longer than the general wait");
   assert.equal(streamTimeouts(flex, "high", undefined, undefined, 60_000).firstTokenMs, 54_000, "thinking hard: still its budget");
@@ -380,10 +386,15 @@ test("camelrun/strong's members wait for a first token within a budget for their
 test("strong: a member that sends no first token in time is given up on, and the next member takes the call", async t => {
   const logs: string[] = [];
   t.mock.method(console, "log", (line: string) => { logs.push(line); });
-  const run = await call("camelrun/strong", model => tier(model) === "flex" ? "HANG" : "on default", { flexWaitSeconds: 0, runLimits: { firstTokenSeconds: 0.2 } });
+  const run = await call("camelrun/strong", model => tier(model) === "flex" ? "HANG" : "on default", {}, {}, [], { baseMs: 200, perKTokensMs: 0 });
   assert.deepEqual(run.calls.map(c => c.tier), ["flex", "default"]);
   assert.equal(run.last.type, "done");
   assert.equal(run.last.message.content[0].text, "on default");
+  const move = logs.map(line => JSON.parse(line)).find(event => event.type === "model_flex_fallback");
+  assert.equal(move.reason, "stall");
+  assert.equal(move.waitedMs, 0);
+  assert.equal(move.attempts, 0);
+  assert.ok(logs.some(line => line.includes('"model_flex_fallback_cost"')));
 });
 
 test("strong, with no settings of its own: a stall is not waited on; a flex 429 waits at most the cap; a default-tier 429 fails at once, saying both members' errors; default is unchanged", async t => {
@@ -404,9 +415,23 @@ test("strong, with no settings of its own: a stall is not waited on; a flex 429 
   assert.equal(run.last.type, "error");
   assert.deepEqual([...new Set(run.calls.map(c => c.tier))], ["flex", "default"]);
   assert.equal(run.calls.filter(c => c.tier === "default").length, 1, "the default tier is asked once, never waited on");
-  assert.match(run.last.error.errorMessage, /^429 google\/gemini-4-carbon is temporarily rate-limited upstream \(camelrun\/strong: no member can take this now; /);
+  assert.equal(run.last.error.errorMessage, STRONG_UNAVAILABLE_MESSAGE);
   assert.ok(Date.now() - started < 3_000);
   // camelrun/default failing everywhere keeps the last member's own error as it was.
   run = await call("camelrun/default", () => ({ error: "429 Rate limit exceeded" }));
   assert.equal(run.last.error.errorMessage, "429 Rate limit exceeded");
+});
+
+test("strong both-down error excludes member text from every classifier", async t => {
+  const logs: string[] = [];
+  t.mock.method(console, "log", (line: string) => { logs.push(line); });
+  for (const flexError of ["429 Rate limited; check your billing settings", "429 Too many tokens per minute"]) {
+    const run = await call("camelrun/strong", [{ error: flexError }, { error: "503 default unavailable" }], { flexWaitSeconds: 0 });
+    assert.equal(run.last.error.errorMessage, STRONG_UNAVAILABLE_MESSAGE);
+    assert.equal(errorClass(run.last.error.errorMessage), "provider_5xx");
+    assert.equal(isModelUnavailable(run.last.error), true);
+    assert.equal(isRetryableAssistantError(run.last.error), true);
+    assert.equal(isContextOverflow(run.last.error), false);
+    assert.ok(logs.some(line => line.includes(flexError)));
+  }
 });

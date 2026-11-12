@@ -1,7 +1,7 @@
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEvent, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
 import { getModels, getModel, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
-import { resolveModel, routeModel, virtualChain, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
+import { resolveModel, routeModel, virtualChain, STRONG_UNAVAILABLE_MESSAGE, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext, refusedReasoningReplay } from "./deepseek-policy.ts";
 import { OutputRequest } from "./output-request.ts";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
@@ -16,7 +16,7 @@ import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-opt
 import { PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
 import { modelCallKind } from "./model-call-context.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
-import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
+import { isContentFilterBlock, isModelUnavailable, providerStatus } from "./model-errors.ts";
 import { ModelReplayRetry, type ModelRetryEvent } from "./model-replay-retry.ts";
 import { missingModelKey } from "./selfhost-policy.ts";
 import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../../../shared/gemini-reasoning.ts";
@@ -32,6 +32,8 @@ export type ModelHooks = {
   onDiscardedOutput?: (message: AssistantMessage) => void | Promise<void>;
   onRetryEvent?: (event: ModelRetryEvent) => void | Promise<void>;
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
+  /** Test seam for a short first-token budget without changing the production chain. */
+  testFirstTokenBudget?: { baseMs: number; perKTokensMs: number };
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
   credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
@@ -72,6 +74,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       }
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
+    if (hooks.testFirstTokenBudget) model = { ...model, firstTokenBudget: hooks.testFirstTokenBudget } as Model<Api>;
     const credential = await hooks.credentials?.(model.provider);
     if (hooks.credentials && !credential && config.keyScope)
       throw new Error(`No ${model.provider} API key is configured for key scope ${config.keyScope} or this tenant; set one with PUT /v1/key-scopes/${config.keyScope}/providers/${model.provider}`);
@@ -157,7 +160,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           const onProviderStreamEvent = prepared.options.onProviderStreamEvent;
           const options = { ...prepared.options, signal, onProviderStreamEvent: (event: unknown) => { activity(event); onProviderStreamEvent?.(event, prepared.model); } };
           return simple ? provider.streamSimple(prepared.model, prepared.context, options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, options);
-        }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits, timeouts, estimateModelAttempt(prepared.model, prepared.context, {}).inputTokens), options?.signal,
+        }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits, timeouts, (prepared.model as { firstTokenBudget?: unknown }).firstTokenBudget ? estimateModelAttempt(prepared.model, prepared.context, {}).inputTokens : undefined), options?.signal,
         stall => { stalled = Promise.resolve(hooks.onStall?.({ ...stall, provider: prepared.model.provider, model: prepared.model.id })); });
         for await (const event of stream) {
           if (event.type === "error" || event.type === "done") await stalled;
@@ -186,12 +189,15 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           }
           // Flex with no capacity: asked again within the call's flex wait, then the next member (the default tier) takes it below.
           // A first-token stall is not asked again: it already waited its budget, and the default tier takes it at once.
-          if (event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && isModelUnavailable(event.error) && !isStalled(event.error.errorMessage) && !options?.signal?.aborted) {
+          if (event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && (isModelUnavailable(event.error) || !!(prepared.model as { firstTokenBudget?: unknown }).firstTokenBudget && providerStatus(event.error.errorMessage) === 429) && !options?.signal?.aborted) {
+            const stalled = isStalled(event.error.errorMessage);
+            if (!stalled) {
             flex ??= new FlexWait(flexWaitMs(env, prepared.config.flexWaitSeconds), hooks.onRetryEvent);
             if (await flex.retry(event.error, options?.signal)) { retry = true; continue; }
+            }
             if (prepared.virtualNext) {
-              fellBack = { model: `${prepared.model.provider}/${prepared.model.id}`, waitedMs: flex.waitedMs(), attempts: flex.attempts };
-              console.log(JSON.stringify({ type: "model_flex_fallback", tenant: env.AGENT_TENANT ?? null, agent: await hooks.agentId?.().catch(() => undefined) ?? null, model: fellBack.model,
+              fellBack = { model: `${prepared.model.provider}/${prepared.model.id}`, waitedMs: stalled ? 0 : flex!.waitedMs(), attempts: stalled ? 0 : flex!.attempts };
+              console.log(JSON.stringify({ type: "model_flex_fallback", reason: stalled ? "stall" : "capacity", tenant: env.AGENT_TENANT ?? null, agent: await hooks.agentId?.().catch(() => undefined) ?? null, model: fellBack.model,
                 to: `${prepared.virtualNext.provider}/${prepared.virtualNext.id}`, toTier: (prepared.virtualNext as { serviceTier?: string }).serviceTier ?? null, waitedMs: fellBack.waitedMs, attempts: fellBack.attempts, error: event.error.errorMessage?.slice(0, 300) ?? null }));
             }
           }
@@ -201,7 +207,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             console.log(JSON.stringify({ type: "model_flex_fallback_cost", tenant: env.AGENT_TENANT ?? null, model: fellBack.model, servedTier: (event.message.usage as { serviceTier?: string }).serviceTier ?? null,
               deltaUsd: flexFallbackDeltaUsd(prepared.model, event.message.usage) ?? null, waitedMs: fellBack.waitedMs, attempts: fellBack.attempts }));
           }
-          if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
+          if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && (isModelUnavailable(event.error) || !!(prepared.model as { firstTokenBudget?: unknown }).firstTokenBudget && providerStatus(event.error.errorMessage) === 429) && !options?.signal?.aborted) {
             routing!.failed = prepared.model;
             failed(prepared.model, event.error);
             prepared = await prepare(prepared.virtualNext, history(prepared.virtualNext), options);
@@ -228,14 +234,12 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             routing.failed = prepared.model;
             if (event.reason !== "aborted") {
               failed(prepared.model, event.error);
-              // The chain's last member failed too: what each member answered, so the failure can be read in the logs, and,
-              // when none could take it now, said in the error itself (still the last member's error first, so it is retried
-              // as that error is: Pi's backoff is the pair's, and its retry starts at the head again).
+              // Member details stay in the log; the public error must be safe for Pi's classifiers.
               if (!prepared.virtualNext) {
                 console.log(JSON.stringify({ type: "virtual_model_chain_failed", tenant: env.AGENT_TENANT ?? null, model: prepared.config.model, failures: routing.failures.slice(-8) }));
                 const tried = routing.failures.slice(-(virtualChain(prepared.config.model)?.length ?? 1));
                 if (tried.length > 1 && (prepared.model as { firstTokenBudget?: unknown }).firstTokenBudget && isModelUnavailable(event.error))
-                  event.error.errorMessage = `${event.error.errorMessage ?? "failed"} (${prepared.config.model}: no member can take this now; ${tried.map(failure => `${failure.member}: ${failure.error.slice(0, 120)}`).join("; ")}; it is retried after a backoff)`;
+                  event.error.errorMessage = STRONG_UNAVAILABLE_MESSAGE;
               }
             }
           }

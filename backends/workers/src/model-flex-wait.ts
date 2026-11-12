@@ -10,7 +10,7 @@ import { STRONG_FLEX_WAIT_CAP_SECONDS } from "./model-policy.ts";
  * default. Google's flex endpoint is Gemini 4 Carbon's cheapest, so OpenRouter has nothing to fall back to and answers
  * a capacity error (https://openrouter.ai/docs/guides/features/service-tiers.md): the runtime asks flex again with
  * backoff for this long, then the virtual model's next member (the same model on the default tier) takes the call.
- * An ordinary agent's default; a workflow, which tolerates latency, sets its own (`flexWaitSeconds`).
+ * Both agents and workflows are capped at 10 seconds of wall time; a workflow can only lower it (`flexWaitSeconds`).
  */
 export const FLEX_WAIT_SECONDS = STRONG_FLEX_WAIT_CAP_SECONDS;
 const FIRST_DELAY_MS = 2_000, MAX_DELAY_MS = 15_000;

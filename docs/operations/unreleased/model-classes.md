@@ -16,5 +16,7 @@ Ember, which it priced as an unknown model.
 
 On the Workers backend, when every member of a virtual model fails a request, a retry of it starts again at the first
 member (as on the Node runtime) instead of failing with "Virtual model fallback chain is exhausted"; the request fails
-with the last member's own error, and `virtual_model_chain_failed` / `virtual_model_chain_restart` log each member's
+with the last member's own error except for strong (below), and `virtual_model_chain_failed` / `virtual_model_chain_restart` log each member's
 failure. An answer cut off at its output limit is passed through as truncated and logged (`model_output_cut`).
+
+When both strong members fail and the last is unavailable, the error is exactly `503 Service Unavailable: camelrun/strong has no member that can take this request now (flex and the default tier both failed); it is retried after a backoff`. Member names and errors appear only in the `virtual_model_chain_failed` log. The flex capacity window is wall-clock time from the first failure, including provider calls and backoff. A flex stall moves at once; Workers logs `model_flex_fallback` with `reason: "stall"` (capacity moves use `reason: "capacity"`) and `model_flex_fallback_cost` when the default tier answers. Thinking levels `xhigh` and `max` keep the 300-second first-token wait; `high` uses the input budget. An agent's own first-token limit still wins.

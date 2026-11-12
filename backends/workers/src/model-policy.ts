@@ -45,7 +45,7 @@ export const VIRTUAL_PROVIDER = "camelrun";
 /**
  * Members share a provider: an agent holds one model key. A member may name the OpenRouter service tier it is asked on
  * (`service_tier`, sent by `withOpenRouterHosts`): `strong` asks Gemini 4 Carbon on flex, half the default tier's price,
- * and moves to the default tier when flex has no capacity (model-settings.ts waits a bounded window first on Workers).
+ * and moves to the default tier when flex has no capacity (both backends wait a bounded wall-clock window first).
  * - `fast` and `strong` are model classes (docs/design/swarm-workflows.md): bulk work and judgment. Decided 2026-11-10.
  */
 /**
@@ -60,6 +60,8 @@ type Member = [provider: string, id: string, options?: { serviceTier: ServiceTie
  * wait only delays the default tier. One constant, to change as flex's capacity does.
  */
 export const STRONG_FLEX_WAIT_CAP_SECONDS = 10;
+/** Retry-safe public error; member details belong only in virtual_model_chain_failed logs. */
+export const STRONG_UNAVAILABLE_MESSAGE = "503 Service Unavailable: camelrun/strong has no member that can take this request now (flex and the default tier both failed); it is retried after a backoff";
 /** model-stream.ts `FirstTokenBudget`, restated: the Workers copy of this file is made without its first lines. */
 type FirstTokenBudget = { baseMs: number; perKTokensMs: number };
 /** Gemini 4 Carbon's first token comes within this for its input, with room (measured 2026-11-12, model-stream.ts). */
