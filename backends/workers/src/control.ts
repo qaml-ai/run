@@ -1,4 +1,6 @@
 import { applying, prepareApply } from "../../../shared/apply-scope.ts";
+import { forgetAgentDreaming } from "../../../shared/dreaming.ts";
+import { disableAgentTriggers } from "../../../src/triggers.ts";
 import type { FileBindings } from "./files.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import {
@@ -425,12 +427,16 @@ export class Directory {
     entry.config = {};
     entry.configHash = "";
     entry.key = null;
-    await withSql(this.env, (sql) =>
-      sql.query(
+    await withSql(this.env, async (sql) => {
+      // As Node's purge: its dreaming job goes, and its triggers stay but are disabled (a hook to one answers 202 and
+      // runs nothing, so a sender like Stripe stops instead of retrying a 404).
+      await forgetAgentDreaming((text, values) => sql.query(text, values), entry.id);
+      await disableAgentTriggers(sql, entry.id);
+      await sql.query(
         "update agents set header=$3,purged_at=$4 where id=$1 and tenant=$2",
         [entry.id, this.tenantId, JSON.stringify(entry), Date.now()],
-      ),
-    );
+      );
+    });
     return true;
   }
 }

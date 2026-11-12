@@ -25,6 +25,8 @@ export async function admitDelegateWakeImpl(this: AgentRuntime,
 export async function receiveAgentMessageImpl(this: AgentRuntime,
   request: NoticeRequest,
   notice: RuntimeNotice): Promise<unknown> {
+    // Gone (deleted, expired): `{ gone: true }`, and the sender drops it rather than retrying what can never land.
+    if (await this.gone("receiveAgentMessage", String(notice?.metadata?.kind ?? notice?.source?.kind ?? "message"))) return { gone: true };
     this.invalidateMaintenance();
     return this.notifications.deliverMessage(request, notice);
   }
@@ -32,6 +34,8 @@ export async function receiveAgentMessageImpl(this: AgentRuntime,
 /** A child's progress report, from its outbox. */
 export async function receiveProgressImpl(this: AgentRuntime,
   report: ChildProgressReport): Promise<Receipt> {
+    // A gone owner acknowledges it: its child's outbox drops the row.
+    if (await this.gone("receiveProgress", "child")) return { accepted: true };
     this.invalidateMaintenance();
     return this.delegation.recordProgress(report);
   }
@@ -39,6 +43,8 @@ export async function receiveProgressImpl(this: AgentRuntime,
 /** A child's ending, from its outbox: taken once, however often it is delivered. */
 export async function receiveEndingImpl(this: AgentRuntime,
   ending: ChildEnding): Promise<Receipt> {
+    // A gone owner acknowledges it: its child's outbox drops the row.
+    if (await this.gone("receiveEnding", "child")) return { accepted: true };
     this.invalidateMaintenance();
     const receipt = await this.delegation.receiveEnding(ending);
     // The ending may owe a notification, or free a slot a start waits on: plan the next wake.
@@ -49,6 +55,7 @@ export async function receiveEndingImpl(this: AgentRuntime,
 /** Whether `id` is one of this agent's children (a browser token's `children` scope reads them by id). */
 export async function hasChildImpl(this: AgentRuntime,
   id: string): Promise<boolean> {
+    if (await this.gone("hasChild", "browser")) return false;
     return (await this.delegation.rows.byChild(id)) !== undefined;
   }
 

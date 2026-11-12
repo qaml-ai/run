@@ -101,6 +101,40 @@ test("a deleted agent's wake-ups are dropped", async () => {
   assert.equal((await db.query("select count(*) as count from schedules")).rows[0].count, 0);
 });
 
+const agentRow = (db: { query: (sql: string, params?: unknown[]) => Promise<unknown> }, id: string, revoked: boolean, expiresAt: number | null = null) =>
+  db.query("insert into agents (id, tenant, header, revision, name, type, model, revoked, expires_at) values ($1, 'alice', '{}', 1, 'a', 'general', 'm', $2, $3)", [id, revoked, expiresAt]);
+
+test("a 404 or 410 drops the schedule only when Postgres records its agent as deleted or expired", async () => {
+  for (const [agent, revoked, expiresAt, status] of [["client_revoked", true, null, 410], ["client_expired", false, Date.now() - 1_000, 404]] as const) {
+    const { db, schedulers: [scheduler] } = await nodes(1, () => { throw Object.assign(new Error("gone"), { status }); });
+    await agentRow(db, agent, revoked, expiresAt);
+    await scheduler.create({ agent, tenant: "alice", text: "gone", dueAt: Date.now() - 1, everySeconds: 3600 });
+    await scheduler.scan();
+    assert.equal(Number((await db.query("select count(*) as count from schedules")).rows[0].count), 0, agent);
+  }
+});
+
+test("a 404 that is not its agent's deletion (a fresh run's agent could not be made) is retried with the schedule's backoff, not dropped", async () => {
+  const requests: string[] = [];
+  let failing = true;
+  const { db, schedulers: [scheduler] } = await nodes(1, (_node, _schedule, requestId) => {
+    requests.push(requestId);
+    if (failing) throw Object.assign(new Error("Unknown definition"), { status: 404 });
+  });
+  await agentRow(db, "client_fresh", false, Date.now() + 3_600_000);
+  const created = await scheduler.create({ agent: "client_fresh", tenant: "alice", text: "fresh", dueAt: Date.now() - 1 });
+  await scheduler.scan();
+  const [retrying] = await scheduler.list("client_fresh");
+  assert.equal(retrying?.id, created.id, "kept");
+  assert.equal(retrying.lastError, "HTTP 404: Unknown definition");
+  assert.ok(Math.abs(await backoff(db, created.id) - 60_000) < 5_000, "retried in a minute");
+  failing = false;
+  await lapse(db, created.id);
+  await scheduler.scan();
+  assert.deepEqual(requests, Array(2).fill(`schedule-${created.id}-${created.dueAt}`), "the same request id");
+  assert.deepEqual(await scheduler.list("client_fresh"), [], "a one-off schedule goes once delivered");
+});
+
 test("a failed delivery is retried with a backoff and the same request id; a success clears the failure", async () => {
   const requests: string[] = [];
   let failing = true;

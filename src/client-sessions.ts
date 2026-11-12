@@ -57,6 +57,8 @@ import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
+import { disableAgentTriggers } from "./triggers.ts";
+import { forgetAgentDreaming } from "../shared/dreaming.ts";
 import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
 
 /** How far past its time limit a run may get before it is aborted, and twice this before its agent is stopped (`overrun`). */
@@ -2905,6 +2907,9 @@ export class ClientSessions {
         await sql.query("delete from channel_agents where agent = $1", [id]);
         await sql.query("delete from channel_conversations where agent = $1", [id]);
         await sql.query("delete from volume_watchers where agent = $1", [id]);
+        // Its dreaming job goes; its triggers stay, disabled, so their hooks answer 202 and senders stop retrying.
+        await forgetAgentDreaming((text, values) => sql.query(text, values), id);
+        await disableAgentTriggers(sql, id);
         // The items of a purged agent are not answered: its tenant's inbox hears that they are gone, before the rows go.
         await sql.query("select pg_notify($2, tenant) from agent_inputs where agent = $1 and state = 'pending' group by tenant", [id, INBOX_CHANNEL]);
         await sql.query("delete from agent_inputs where agent = $1", [id]);

@@ -135,6 +135,28 @@ export class AgentRuntime extends AgentContext {
     return admitDelegateWakeImpl.call(this, id);
   }
 
+  /** Per method: when a call to this deleted agent was last logged, and how many came since (deleted_agent_rpc). */
+  goneLogged = new Map<string, { at: number; since: number }>();
+  /**
+   * Whether this agent is gone for good: deleted, or past its expiry. Both are durable facts in its own storage (the
+   * flag is never cleared, the expiry never moves back), so an agent merely evicted, hibernating or busy is never taken
+   * for gone, and a read that fails throws. A call to a gone agent is logged by method and caller kind, at most once a
+   * minute per method (every call in tests), so a sender that keeps calling one shows up.
+   */
+  async gone(method: string, caller: string) {
+    const storage = this.ctx.storage;
+    if (await storage.get("deleted") !== true) {
+      const expiresAt = (await storage.get<Config>("configuration"))?.expiresAt;
+      if (!expiresAt || expiresAt > Date.now()) return false;
+    }
+    const seen = this.goneLogged.get(method), now = Date.now();
+    if (!seen || now - seen.at >= 60_000 || (this.env as { TEST_MODE?: string }).TEST_MODE === "1") {
+      console.warn(JSON.stringify({ type: "deleted_agent_rpc", agent: this.ctx.id.name ?? null, method, caller, suppressed: seen?.since ?? 0 }));
+      this.goneLogged.set(method, { at: now, since: 0 });
+    } else seen.since++;
+    return true;
+  }
+
   receiveAgentMessage(
     request: NoticeRequest,
     notice: RuntimeNotice,

@@ -129,6 +129,24 @@ test('a row from before created_at gets its week from when it is first seen, not
   assert.equal(notices.pending(), 0, 'dropped after it');
 });
 
+test('an owner that is gone (deleted, expired) drops every waiting notice after one answer: nothing is retried', async () => {
+  let calls = 0;
+  const armed: number[] = [];
+  const notices = new WorkflowNotices({
+    sql: sql(), workflowId: 'wf_gone', owner: () => ({ kind: 'agent', id: 'owner' }), name: () => undefined, bucket: () => undefined,
+    send: async () => { calls++; return { gone: true }; }, arm: async at => { armed.push(at); }, now: () => 1_000, random: () => 0,
+  });
+  notices.check({ status: 'running', phase: 'a' });
+  notices.check({ status: 'running', phase: 'b' });
+  notices.check({ status: 'completed', phase: 'b' });
+  assert.equal(notices.pending(), 2);
+  await notices.flush();
+  assert.equal(calls, 1, 'one send learns the owner is gone');
+  assert.equal(notices.pending(), 0);
+  assert.equal(notices.retryAt(), undefined);
+  assert.deepEqual(armed, [], 'no retry is armed');
+});
+
 test("a fault's notice carries its code and message, and every stop says what it waits for, so a fault never reads as a pause", async () => {
   const sent: any[] = [];
   const notices = new WorkflowNotices({

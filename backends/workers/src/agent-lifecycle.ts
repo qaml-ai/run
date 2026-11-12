@@ -1,5 +1,5 @@
-import { ChildOutbox, deletedDeadline } from "./ending-outbox.ts";
-import { stageMissedEndings } from "./agent-endings.ts";
+import { ChildOutbox, deletedDeadline, settleDeleted } from "./ending-outbox.ts";
+import { goneStart, stageMissedEndings } from "./agent-endings.ts";
 import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
@@ -89,9 +89,9 @@ export async function armImpl(this: AgentRuntime,
   retry?: number) {
     this.invalidateMaintenance();
     const generation = this.maintenanceGeneration;
-    const config = await this.ctx.storage.get<Config>("configuration");
-    if (!config) return;
     const deleted = await this.ctx.storage.get("deleted");
+    const config = await this.ctx.storage.get<Config>("configuration");
+    if (!config && !deleted) return;
     const schedules = await this.ctx.storage.list<Schedule>({
       prefix: "schedule:",
       limit: 100,
@@ -112,9 +112,12 @@ export async function armImpl(this: AgentRuntime,
       // unnotified (its notify refused by the deleted agent's own config) would otherwise wake it every second.
       const at = deletedDeadline({ billing: !!pendingBilling, events: !!pendingEvents, outbox: await this.outbox.deadline() });
       if (generation === this.maintenanceGeneration) this.maintenance = { at, tracksRuns: false };
-      if (Number.isFinite(at)) await this.lifecycle.jobs.push({ id: "camel-wake", fn: "camel-wake", time: Math.max(Date.now() + 1, at) });
+      // Owing nothing, it goes quiet: no job, no alarm (settleDeleted re-reads the tombstone before removing either).
+      if (await settleDeleted(this.ctx.storage, at, next => this.lifecycle.jobs.push({ id: "camel-wake", fn: "camel-wake", time: Math.max(Date.now() + 1, next) })) === "quiet")
+        console.log(JSON.stringify({ type: "deleted_agent_quiet", agent: config?.id ?? this.ctx.id.name ?? null }));
       return;
     }
+    if (!config) return;
     const records = await this.records();
     const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
     const children = await this.delegation.children();
@@ -200,6 +203,17 @@ export function startStuck(runtime: AgentRuntime, step: string) {
 export async function restorePendingImpl(this: AgentRuntime) {
     const sinceConstructed = Date.now() - this.constructedAt;
     if (sinceConstructed > SLOW_START_STEP_MS) console.warn(JSON.stringify({ type: "agent_start_slow", step: "before onStart", ms: sinceConstructed, sinceConstructedMs: sinceConstructed }));
+    // A deleted or expired agent restores nothing: none of its work runs again, and each step reads its configuration,
+    // which a gone agent refuses (410). It starts only to finish what it owes (wakeImpl's deleted path, or the expiry
+    // there): billing, terminal events and its outbox, on the alarm arm() plans.
+    const startConfig = await this.ctx.storage.get<Config>("configuration");
+    if (await this.ctx.storage.get("deleted") || (startConfig?.expiresAt && startConfig.expiresAt <= Date.now())) {
+      // Except a run's ending it still owes: one that ended (its record committed) as the object died, before the event
+      // that stages its ending, is staged now and delivered, as for a live agent (stageMissedEndings reads storage, not
+      // the configuration a gone agent refuses).
+      await timed(this, "goneStart", () => goneStart(this));
+      return;
+    }
     this.configurationQueue.kick();
     await timed(this, "promptPreparations.sweep", () => this.promptPreparations.sweep(Date.now(), true));
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
@@ -258,10 +272,13 @@ export async function onJobImpl(this: AgentRuntime,
 
 export async function wakeImpl(this: AgentRuntime) {
     if (await this.ctx.storage.get("deleted")) {
-      await this.flushBilling();
-      await this.flushTerminalEvents();
+      // Each step logs and goes on: whatever fails, arm() below (in deletedWake) still plans the next wake for what is
+      // owed, so a failed billing flush is retried rather than left until the account's purge.
+      await this.flushBilling().catch(error => failure(this.env, "deleted_agent_billing_flush_failed", error));
+      await this.flushTerminalEvents().catch(error => failure(this.env, "deleted_agent_events_flush_failed", error));
+      await stageMissedEndings(this, await this.records()).catch(error => failure(this.env, "deleted_agent_stage_endings_failed", error));
       // A child deleted or expired mid-run staged a failed ending for its owner: deliver it, and keep retrying (the
-      // alarm, re-armed for the outbox's next row) while the owner is unreachable.
+      // alarm, re-armed for the outbox's next row) while the owner is unreachable. A gone owner acknowledges it.
       await ChildOutbox.deletedWake(this);
     this.ctx.waitUntil(flushScheduleOutcomes(this));
       return;
@@ -270,11 +287,15 @@ export async function wakeImpl(this: AgentRuntime) {
       const subscription = socket.deserializeAttachment() as EventSubscription;
       if (subscription.browser && subscription.browser.exp <= Date.now()) this.closeBrowserSocket(socket);
     }
-    this.configurationQueue.kick();
-    await this.promptPreparations.sweep();
-    await this.resumeKeptQueue();
-    await this.restoreCancellations();
     const conf = await this.ctx.storage.get<Config>("configuration");
+    // An expired agent starts no work: it goes straight to its expiry below (each of these reads its configuration,
+    // which an expired agent refuses).
+    if (!conf?.expiresAt || conf.expiresAt > Date.now()) {
+      this.configurationQueue.kick();
+      await this.promptPreparations.sweep();
+      await this.resumeKeptQueue();
+      await this.restoreCancellations();
+    }
     if (conf)
       await this.serializeComputer(() =>
         new ComputerService(this.env, conf.tenantId).sweepAgent(conf.id),
@@ -294,6 +315,7 @@ export async function wakeImpl(this: AgentRuntime) {
       await this.cancelHumanInputs();
       // Unsettled turns are still charged from their durable receipts below.
       await this.flushBilling();
+      await this.arm();
       return;
     }
     await restageInputMirrors(this);

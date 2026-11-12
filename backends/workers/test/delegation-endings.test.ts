@@ -216,3 +216,67 @@ test('outbox rows an earlier build kept in KV move into the table and are delive
   assert.deepEqual(delivered, ['old_run']);
   assert.equal(c.store.values.has('child-outbox:old_run:z'), false);
 });
+
+test('a deleted agent that owes nothing goes quiet (no jobs, no alarm); a live one, or a failed read, is never touched', async () => {
+  const { settleDeleted } = await import('../src/ending-outbox.ts');
+  const make = (values: Record<string, unknown>, failRead = false) => {
+    const state = { alarm: 5_000 as number | null, pushed: [] as number[] };
+    const storage = withSql({
+      async get(key: string) { if (failRead) throw new Error('storage unavailable'); return values[key]; },
+      async deleteAlarm() { state.alarm = null; },
+    }) as unknown as DurableObjectStorage;
+    storage.sql.exec("CREATE TABLE cf_agents_jobs (id TEXT PRIMARY KEY, capability TEXT, time INTEGER)");
+    storage.sql.exec("INSERT INTO cf_agents_jobs VALUES ('camel-wake', 'host', 1), ('pi', 'pi', 2)");
+    const jobs = () => Number(storage.sql.exec<{ n: number }>("SELECT count(*) AS n FROM cf_agents_jobs").one().n);
+    return { storage, state, jobs, push: async (at: number) => { state.pushed.push(at); } };
+  };
+  // A tombstone, nothing owed: every job and the alarm go.
+  const gone = make({ deleted: true });
+  assert.equal(await settleDeleted(gone.storage, Infinity, gone.push), 'quiet');
+  assert.equal(gone.jobs(), 0);
+  assert.equal(gone.state.alarm, null);
+  // A tombstone that still owes a delivery: it wakes for it, its jobs stay.
+  const owing = make({ deleted: true });
+  assert.equal(await settleDeleted(owing.storage, 9_000, owing.push), 'armed');
+  assert.deepEqual(owing.state.pushed, [9_000]);
+  assert.equal(owing.jobs(), 2);
+  assert.equal(owing.state.alarm, 5_000);
+  // No tombstone (its configuration missing for a moment, say): live, untouched.
+  const live = make({});
+  assert.equal(await settleDeleted(live.storage, Infinity, live.push), 'live');
+  assert.equal(live.jobs(), 2);
+  assert.equal(live.state.alarm, 5_000);
+  // A read that fails is not a tombstone: it throws, and nothing is removed.
+  const failing = make({ deleted: true }, true);
+  await assert.rejects(settleDeleted(failing.storage, Infinity, failing.push), /storage unavailable/);
+  assert.equal(failing.jobs(), 2);
+  assert.equal(failing.state.alarm, 5_000);
+});
+
+test('a deleted or expired child that died before staging its run\'s ending stages and delivers it at its next start', async () => {
+  const { goneStart } = await import('../src/agent-endings.ts');
+  // restorePendingImpl takes this path for a deleted or expired agent.
+  assert.match(readFileSync(new URL('../src/agent-lifecycle.ts', import.meta.url), 'utf8'), /startConfig\.expiresAt <= Date\.now\(\)\)\) \{[^}]*goneStart\(this\)/);
+  for (const tombstone of [{ deleted: true }, { expired: true }]) {
+    const values = new Map<string, unknown>([['configuration', { id: 'child', tenantId: 't', config: {}, ...(tombstone.expired ? { expiresAt: 1 } : {}) }]]);
+    if (tombstone.deleted) values.set('deleted', true);
+    // The run's record committed completed, and the object died before the response event (which stages the ending).
+    const record = { id: 'run-1', method: 'prompt', state: 'completed', accepted: true, endedAt: Date.now(), outcome: { result: { text: 'done' } }, delegation: { owner: { kind: 'agent', id: 'owner' }, rootOwner: { kind: 'agent', id: 'owner' }, chain: ['owner'], depth: 1, maxDepth: 3, toolCallId: 'c', ownerRun: 'r' } };
+    values.set('request:run-1', record);
+    const storage = withSql({
+      async get(key: string) { return values.get(key); },
+      async put(key: string, value: unknown) { values.set(key, value); },
+      async list() { return new Map(); },
+      async transaction(work: (tx: unknown) => unknown) { return work({ get: async (key: string) => values.get(key), put: async (key: string, value: unknown) => { values.set(key, value); } }); },
+    }) as unknown as DurableObjectStorage;
+    const delivered: ChildEnding[] = [];
+    let armed = 0;
+    const runtime: any = { ctx: { storage }, records: async () => [values.get('request:run-1')], arm: async () => { armed++; } };
+    runtime.outbox = new ChildOutbox({ storage, receiveEnding: async (_owner: Owner, ending: ChildEnding) => { delivered.push(ending); return { accepted: true }; }, receiveProgress: async () => ({ accepted: true }), arm: async () => {} });
+    await goneStart(runtime);
+    assert.deepEqual(delivered.map(ending => [ending.agentId, ending.requestId]), [['child', 'run-1']], JSON.stringify(tombstone));
+    assert.equal((values.get('request:run-1') as { endingStaged?: boolean }).endingStaged, true);
+    assert.equal(runtime.outbox.size(), 0);
+    assert.equal(armed, 1);
+  }
+});

@@ -9,6 +9,7 @@ import { viaParent } from "./multi-agent.ts";
 import { underClaim, type Claim } from "./ownership.ts";
 import { transaction } from "./db.ts";
 import { safeError } from "./metrics.ts";
+import { agentGone } from "./agent-gone.ts";
 import { beforeCheck, checkKey, checkRequest, checkRequestId, checkResult, monitorInput, newMonitor, settleCheck, wakeRetryable, MONITOR_CAP_ERROR, MONITOR_LIMITS, type Monitor, type MonitorWake } from "../shared/monitors.ts";
 
 /**
@@ -308,13 +309,16 @@ export class Scheduler {
       await this.dispatch(due, id);
     }
     catch (error) {
-      // The agent was deleted or expired: drop its schedule.
       const status = (error as { status?: number }).status;
-      if (status === 404 || status === 410) {
+      // The schedule's agent was deleted, purged or expired, as Postgres records it: drop its schedule. A 404 or 410 that
+      // is not that (a fresh run's agent could not be made from its definition, say) is retried as any failure is.
+      // The schedule names its agent, which existed when it was made: a row gone since counts as gone.
+      const missing = status === 404 || status === 410;
+      if (missing && await agentGone(this.db, due.agent, { missing: true })) {
         await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
         return;
       }
-      await this.failed(due, claim, attempts + 1, status, error);
+      await this.failed(due, claim, attempts + 1, status, error, missing);
       return;
     }
     if (due.everySeconds || due.calendar || due.cron) {
@@ -330,10 +334,10 @@ export class Scheduler {
    * one that reached the agent after all does not run twice; or give the occurrence up, moving a repeating schedule on.
    * Until the retry its claim's expiry holds it, the holder cleared so that it is listed meanwhile.
    */
-  private async failed(due: Schedule, claim: string, attempt: number, status: number | undefined, error: unknown) {
+  private async failed(due: Schedule, claim: string, attempt: number, status: number | undefined, error: unknown, retry404 = false) {
     const now = Date.now();
     const message = `${status !== undefined ? `HTTP ${status}: ` : ""}${error instanceof Error ? error.message : String(error)}`.slice(0, 1000);
-    const delay = retryable(status) ? RETRY_DELAYS_MS[attempt - 1] : undefined;
+    const delay = retry404 || retryable(status) ? RETRY_DELAYS_MS[attempt - 1] : undefined;
     const next = due.everySeconds || due.calendar || due.cron ? nextOccurrence(due, now) : undefined;
     const retry = delay !== undefined && (next === undefined || now + delay < next);
     console.error(JSON.stringify({ type: "schedule_delivery_failed", schedule: due.id, agent: due.agent, tenant: due.tenant, status, attempt, error: message, ...(retry ? { retryInMs: delay } : { gaveUp: true }) }));

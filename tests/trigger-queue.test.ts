@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {testDatabase} from './database.ts';
 import {transaction} from '../src/db.ts';
-import {Triggers, type TriggerHost} from '../src/triggers.ts';
+import {Triggers, disableAgentTriggers, type TriggerHost} from '../src/triggers.ts';
 import {HookAdmission,handleHook} from '../src/core/trigger-ingress.ts';
 import {freshAutomationRun} from '../src/core/fresh-runs.ts';
 
@@ -116,4 +116,26 @@ test('signature rejection updates only its counter, without a delivery transacti
  assert.equal(rejected.code,401);
  assert.equal(Number((await f.db.query('select count(*) as n from trigger_deliveries')).rows[0].n),0);
  assert.equal(Number((await f.db.query('select rejected_count from agent_triggers where id=$1',[signed.id])).rows[0].rejected_count),1);
+});
+
+test('a disabled trigger (its agent purged) answers its hook 202 without recording or dispatching anything, and logs nothing',async()=>{
+ let calls=0;
+ const f=await fixture({submit:async()=>{calls++;return {};}});
+ // Queued before the purge (or by a node that predates disabling): dropped by the scan, never sent.
+ assert.equal((await f.receive('before')).body.status,'queued');
+ await disableAgentTriggers(f.db,'client_hook',1000);
+ await disableAgentTriggers(f.db,'client_hook',2000);
+ assert.equal(Number((await f.db.query('select disabled_at from agent_triggers where id=$1',[f.made.id])).rows[0].disabled_at),1000,'disabled once');
+ const errors:unknown[]=[];const original=console.error;console.error=(line:unknown)=>{errors.push(line);};
+ try {
+  assert.deepEqual(await f.receive('after'),{code:202,body:{status:'disabled',verified:false,deduped:false}});
+  await f.service.scan();
+ } finally {console.error=original;}
+ assert.equal(calls,0);
+ assert.deepEqual(errors,[]);
+ const rows=(await f.db.query('select status,error,data from trigger_deliveries')).rows;
+ assert.equal(rows.length,1,'the hook after disabling recorded no delivery');
+ assert.deepEqual(rows[0],{status:'failed',error:'Trigger disabled: its agent was deleted',data:null});
+ const trigger=(await f.db.query('select rejected_count from agent_triggers where id=$1',[f.made.id])).rows[0];
+ assert.equal(Number(trigger.rejected_count),0);
 });

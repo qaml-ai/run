@@ -46,3 +46,13 @@ export async function stageMissedEndings(runtime: AgentRuntime, records: Request
   });
   await runtime.outbox.flush();
 }
+
+/**
+ * A deleted or expired agent's start (restorePendingImpl): it restores no work, but a run's ending it still owes (one that
+ * ended as the object died, before the event that stages it) is staged and delivered, then its next wake planned.
+ */
+export async function goneStart(runtime: Pick<AgentRuntime, "ctx" | "outbox" | "records" | "arm">) {
+  await stageMissedEndings(runtime as AgentRuntime, await runtime.records());
+  await runtime.outbox.flush();
+  await runtime.arm();
+}
