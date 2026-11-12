@@ -60,3 +60,25 @@ test("a pool with no group does nothing; a host not in the group is never ended"
   const stranger = host("i-00000000000000ffff", { idleSince: NOW - IDLE, draining: true });
   assert.deepEqual(run(demand({ test: { hosts: [stranger], running: 0, waiting: 0 } }), { test: group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "InService" }] }) }), []);
 });
+
+test("a terminating host that blips keeps its hook: completed only once gone five minutes, or idle and already draining", () => {
+  const ending = group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "Terminating:Wait" }] });
+  // Missed a few heartbeats (gone a minute): wait.
+  assert.deepEqual(run(demand({ test: { hosts: [], gone: [{ host: "i-0000000000000000a", lastSeenAt: NOW - 60_000 }], running: 0, waiting: 0 } }), { test: ending }), []);
+  // Gone five minutes: complete.
+  assert.deepEqual(run(demand({ test: { hosts: [], gone: [{ host: "i-0000000000000000a", lastSeenAt: NOW - 5 * 60_000 }], running: 0, waiting: 0 } }), { test: ending }),
+    [{ type: "complete", pool: "test", group: "camelrun-job-hosts-test", instance: "i-0000000000000000a" }]);
+  // Idle but not yet draining when read: drained this minute, completed the next.
+  assert.deepEqual(run(demand({ test: { hosts: [host("i-0000000000000000a")], running: 0, waiting: 0 } }), { test: ending }),
+    [{ type: "drain", pool: "test", host: "i-0000000000000000a" }]);
+});
+
+test("a drain is never one-way: jobs waiting undrain a host still in service, and count it again before growing", () => {
+  const live = group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "InService" }] });
+  const drained = host("i-0000000000000000a", { draining: true, idleSince: NOW - 60_000 });
+  assert.deepEqual(run(demand({ test: { hosts: [drained], running: 0, waiting: 2 } }), { test: live }),
+    [{ type: "undrain", pool: "test", host: "i-0000000000000000a" }], "its 8 slots take the 2 waiting jobs: no new host");
+  // A draining host the group is terminating is not undrained.
+  const ending = group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "Terminating:Wait" }] });
+  assert.ok(!run(demand({ test: { hosts: [host("i-0000000000000000a", { draining: true, running: 1 })], running: 1, waiting: 2 } }), { test: ending }).some((action: { type: string }) => action.type === "undrain"));
+});

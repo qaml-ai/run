@@ -33,6 +33,8 @@ export const HOSTS_PROVIDER = "camelrun-hosts";
 const HOST_STALE_MS = 30_000;
 /** A waiting job not heard from in this long has stopped waiting (its object was evicted, say). */
 const WAITER_STALE_MS = 20_000;
+/** A host not heard from in this long is forgotten (demand prunes it). */
+const HOST_FORGET_MS = 24 * 3600_000;
 /** How long a job waits for a host of its pool (a cold pool's host boots in a few minutes), at most; JOB_HOST_WAIT_SECONDS. */
 export const HOST_WAIT_MS = 10 * 60_000;
 /**
@@ -152,7 +154,7 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     await this.env.JOB_HOSTS?.getByName(name).revoke();
     return { revoked: name };
   }
-  allow(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET revoked = 0 WHERE name = ?", name); return { allowed: name }; }
+  allow(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET revoked = 0, draining = 0 WHERE name = ?", name); return { allowed: name }; }
 
   /**
    * A host's hello (slots, vCPUs, memory) or heartbeat (free slots alone). `pool` is its credential's, which the attested
@@ -220,8 +222,16 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = ? WHERE name = ? AND free = slots AND idle_since IS NULL", Date.now(), name);
   }
   list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked, draining, idle_since AS idleSince FROM hosts ORDER BY name").toArray(); }
-  /** Drain a host (the scaler, before it ends it): no new job is placed on it. */
-  drain(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET draining = 1 WHERE name = ?", name); return { draining: name }; }
+  /** Drain a host (the scaler, before it ends it): no new job is placed on it. Undefined: no such host. */
+  drain(name: string) {
+    const changed = this.ctx.storage.sql.exec("UPDATE hosts SET draining = 1 WHERE name = ?", name).rowsWritten;
+    return changed ? { draining: name } : undefined;
+  }
+  /** Undrain it (jobs wait again, or an operator's `allow`): it takes jobs again. */
+  undrain(name: string) {
+    const changed = this.ctx.storage.sql.exec("UPDATE hosts SET draining = 0 WHERE name = ?", name).rowsWritten;
+    return changed ? { draining: false, host: name } : undefined;
+  }
 
   /**
    * What the scaler sizes the pools by (infra/job-hosts/scaler): per pool, its live hosts and slots, the jobs running
@@ -231,14 +241,20 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
   demand() {
     const sql = this.ctx.storage.sql, now = Date.now();
     sql.exec("DELETE FROM waiting WHERE seen_at <= ?", now - WAITER_STALE_MS);
-    const hosts = sql.exec<{ name: string; pool: string; slots: number; free: number; draining: number; idle_since: number | null }>(
-      "SELECT name, pool, slots, free, draining, idle_since FROM hosts WHERE seen_at > ? AND revoked = 0 ORDER BY name", now - HOST_STALE_MS).toArray();
+    // Hosts not heard from in a day are forgotten (their instances are long gone); a revoked one stays revoked.
+    sql.exec("DELETE FROM hosts WHERE seen_at < ? AND revoked = 0", now - HOST_FORGET_MS);
+    // Every host it knows, with when it was last heard from: the scaler ends a terminating host's hook only once it has
+    // been gone a while, not on one missed heartbeat. Capacity counts only the live ones.
+    const known = sql.exec<{ name: string; pool: string; slots: number; free: number; draining: number; idle_since: number | null; seen_at: number }>(
+      "SELECT name, pool, slots, free, draining, idle_since, seen_at FROM hosts WHERE revoked = 0 ORDER BY name").toArray();
+    const hosts = known.filter(host => host.seen_at > now - HOST_STALE_MS);
     return {
       at: now,
       pools: Object.fromEntries(HOST_POOLS.map(pool => {
         const mine = hosts.filter(host => host.pool === pool), waiting = sql.exec<{ n: number; oldest: number | null }>("SELECT count(*) AS n, MIN(since) AS oldest FROM waiting WHERE pool = ?", pool).one();
         return [pool, {
-          hosts: mine.map(host => ({ host: host.name, slots: host.slots, running: host.slots - host.free, draining: !!host.draining, idleSince: host.idle_since })),
+          hosts: mine.map(host => ({ host: host.name, slots: host.slots, running: host.slots - host.free, draining: !!host.draining, idleSince: host.idle_since, lastSeenAt: host.seen_at })),
+          gone: known.filter(host => host.pool === pool && host.seen_at <= now - HOST_STALE_MS).map(host => ({ host: host.name, lastSeenAt: host.seen_at })),
           slots: mine.filter(host => !host.draining).reduce((sum, host) => sum + host.slots, 0),
           running: mine.reduce((sum, host) => sum + host.slots - host.free, 0),
           waiting: Number(waiting.n), oldestWaitMs: waiting.oldest === null ? 0 : now - Number(waiting.oldest),
@@ -337,7 +353,8 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
 /**
  * The scaler's routes (infra/job-hosts/scaler), with its own credential (JOB_HOST_SCALER_TOKEN, a bearer token checked
  * in constant time): GET /v1/internal/job-hosts/demand reads what each pool needs, POST
- * /v1/internal/job-hosts/<host>/drain stops placing jobs on a host it is about to end. Nothing else: it reads no job,
+ * /v1/internal/job-hosts/<host>/drain stops placing jobs on a host it is about to end, and DELETE on it undoes that (a
+ * drain is never one-way: the scaler undrains when jobs wait, an operator's allow does too). Nothing else: it reads no job,
  * payer or secret. Without the token configured, these paths are unknown.
  */
 export async function scalerRoutes(request: Request, env: JobHostsEnv): Promise<Response | undefined> {
@@ -345,14 +362,20 @@ export async function scalerRoutes(request: Request, env: JobHostsEnv): Promise<
   const match = /^\/v1\/internal\/job-hosts\/(?:demand|([^/]+)\/drain)$/.exec(path);
   if (!match || !env.JOB_HOST_SCALER_TOKEN || !env.JOB_HOST_REGISTRY) return undefined;
   const given = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
-  if (env.JOB_HOST_SCALER_TOKEN.length < 32 || !sameText(given, env.JOB_HOST_SCALER_TOKEN)) return Response.json({ error: "Unauthorized", code: "UNAUTHORIZED" }, { status: 401 });
+  if (env.JOB_HOST_SCALER_TOKEN.length < 32) {
+    // A misconfiguration, refused closed, and said so (the scaler only sees 401s).
+    console.error(JSON.stringify({ type: "jobhost_scaler_token_too_short" }));
+    return Response.json({ error: "Unauthorized", code: "UNAUTHORIZED" }, { status: 401 });
+  }
+  if (!sameText(given, env.JOB_HOST_SCALER_TOKEN)) return Response.json({ error: "Unauthorized", code: "UNAUTHORIZED" }, { status: 401 });
   const hosts = registry(env);
   if (!match[1] && request.method === "GET") return Response.json(await hosts.demand());
-  if (match[1] && request.method === "POST") {
+  if (match[1] && (request.method === "POST" || request.method === "DELETE")) {
     let host = "";
     try { host = decodeURIComponent(match[1]); } catch { /* a malformed escape: refused below */ }
     if (!HOST_NAME.test(host)) return Response.json({ error: "Invalid host id", code: "INVALID_REQUEST" }, { status: 400 });
-    return Response.json(await hosts.drain(host));
+    const done = request.method === "POST" ? await hosts.drain(host) : await hosts.undrain(host);
+    return done ? Response.json(done) : Response.json({ error: "Unknown host", code: "NOT_FOUND" }, { status: 404 });
   }
   return Response.json({ error: "Not found", code: "NOT_FOUND" }, { status: 404 });
 }
@@ -537,19 +560,32 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     try { files = await this.files(spec); }
     catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
     // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
-    const host = await this.waitForHost(spec.id, pool, shape.memoryMiB);
-    if (host === "stopped") return fail("stopped", "The job was stopped");
-    if (!host) return fail("start_failed", `No ${pool} job host was free within ${Math.round(this.waitMs() / 1000)} s`);
+    // Stopped from here until it is dispatched (this.waiting, kept until this.active is set): it ends `stopped`, its
+    // host's slot and its computer slot given back, nothing charged.
+    const waiting = this.waiting = { job: spec.id, stopped: false };
+    const stopped = async (host?: string, slot = false) => {
+      if (host) await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      if (slot) await withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine)).catch(() => {});
+      this.waiting = undefined;
+      return fail("stopped", "The job was stopped");
+    };
+    const host = await this.waitForHost(waiting, pool, shape.memoryMiB);
+    if (host === "stopped") return stopped();
+    if (!host) { this.waiting = undefined; return fail("start_failed", `No ${pool} job host was free within ${Math.round(this.waitMs() / 1000)} s`); }
+    if (waiting.stopped) return stopped(host);
     // The computer slot from here: a job waiting for a host holds none.
     try {
       const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
       await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
     } catch (error) {
       await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      this.waiting = undefined;
       return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused");
     }
+    if (waiting.stopped) return stopped(host, true);
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
     this.active = { host, id: spec.id };
+    this.waiting = undefined;
     let wire: WireResult & { ranFrom?: number; ranUntil?: number } = { ok: false, code: "container_failed", message: "No result" }, costUsd = 0;
     // A session is open from dispatch, at the rate fixed at admission, under the job's own name (a run made again is the
     // same charge): if this object dies mid-job, its alarm charges it, at most to the job's lifetime. Once the result is
@@ -610,18 +646,19 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     return Number.isFinite(seconds) && seconds >= 0 && seconds <= 3600 ? seconds * 1000 : HOST_WAIT_MS;
   }
   /** A host for `job`, its turn in its pool's queue; undefined when none came in time, "stopped" when stopped meanwhile. */
-  private async waitForHost(job: string, pool: HostPool, memoryMiB: number): Promise<string | undefined | "stopped"> {
-    const hosts = registry(this.env), until = Date.now() + this.waitMs(), waiting = this.waiting = { job, stopped: false };
+  private async waitForHost(waiting: { job: string; stopped: boolean }, pool: HostPool, memoryMiB: number): Promise<string | undefined | "stopped"> {
+    const hosts = registry(this.env), until = Date.now() + this.waitMs(), job = waiting.job;
     try {
       for (let pause = 250; ; pause = Math.min(3_000, pause * 2)) {
         if (waiting.stopped) return "stopped";
         const host = await hosts.want(job, pool, memoryMiB);
+        // A stop that landed while it asked: the host it got goes back.
+        if (host && waiting.stopped) { await hosts.release(host, memoryMiB).catch(() => {}); return "stopped"; }
         if (host) return host;
         if (Date.now() + pause > until) return undefined;
         await new Promise(resolve => setTimeout(resolve, pause));
       }
     } finally {
-      this.waiting = undefined;
       await hosts.unwant(job).catch(() => {});
     }
   }

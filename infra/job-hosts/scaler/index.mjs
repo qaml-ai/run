@@ -32,6 +32,7 @@ export async function handler() {
   for (const action of actions) {
     try {
       if (action.type === "drain") await call(`/v1/internal/job-hosts/${encodeURIComponent(action.host)}/drain`, "POST");
+      else if (action.type === "undrain") await call(`/v1/internal/job-hosts/${encodeURIComponent(action.host)}/drain`, "DELETE");
       else if (action.type === "desired") await autoscaling.send(new SetDesiredCapacityCommand({ AutoScalingGroupName: action.group, DesiredCapacity: action.desired, HonorCooldown: false }));
       else if (action.type === "terminate") await autoscaling.send(new TerminateInstanceInAutoScalingGroupCommand({ InstanceId: action.instance, ShouldDecrementDesiredCapacity: true }));
       else if (action.type === "complete") await autoscaling.send(new CompleteLifecycleActionCommand({ AutoScalingGroupName: action.group, LifecycleHookName: HOOK, InstanceId: action.instance, LifecycleActionResult: "CONTINUE" }));

@@ -197,6 +197,13 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   await until(async () => { const value = await call(`/v1/workflows/${drained.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the job with only a drained host", 60_000);
   const drainedItem = ((await call(`/v1/workflows/${drained.id}/items`)).items as { key: string; reason?: string }[]).find(entry => entry.key === "drained")!;
   assert.match(drainedItem.reason ?? "", /^start_failed: No test job host was free within 8 s/);
+  // A drain is undone (the scaler, when jobs wait): host-1 takes jobs again. An unknown host is a 404.
+  assert.equal((await scaler("i-00000000000000000/drain", "POST")).status, 404);
+  assert.equal((await scaler("host-1/drain", "DELETE")).status, 200);
+  const undrained = await (await scaler("demand")).json() as { pools: { test: { hosts: { host: string; draining: boolean; lastSeenAt: number }[] } } };
+  const back = undrained.pools.test.hosts.find(entry => entry.host === "host-1")!;
+  assert.equal(back.draining, false);
+  assert.ok(back.lastSeenAt > Date.now() - 30_000);
 
   // A host that dies mid-job: the job ends container_failed once the host has been gone HOST_STALE_MS (30 s), not at
   // its deadline, and is charged only for the time its VM ran until the host was last heard from.

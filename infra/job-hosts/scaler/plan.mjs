@@ -8,8 +8,11 @@
 //   nothing more on it), and the next minute, if it is still idle, terminate it, lowering the desired count, never
 //   below the group's minimum.
 // - Termination hooks: a host the group is terminating (scale-in, health, rebalance) is drained, and its hook is
-//   completed once the host runs nothing or has gone (disconnected), so a terminating host never cuts off a job and
-//   never waits out the full hook for nothing.
+//   completed once it runs nothing and was already draining when read (the minute after its drain, so no job placed in
+//   between is cut off), or once it has been gone ABSENT_MS (a reconnect of a few seconds is not "gone"). The hook's
+//   own timeout is the backstop.
+// - Drains are never one-way: while jobs wait, a draining host still in service is undrained and counted again, rather
+//   than idling beside a new host booting.
 // Every decision is from this minute's view alone; a call that fails is made again next minute.
 
 /**
@@ -17,19 +20,35 @@
  * @param {Record<string, { name: string; min: number; max: number; desired: number; instances: { id: string; state: string }[]; slots: number } | undefined>} groups
  * @param {{ now: number; idleMs: number }} options
  */
+/** How long a terminating host must have been gone (no heartbeat) before its hook is completed without it. */
+export const ABSENT_MS = 5 * 60_000;
+
 export function plan(demand, groups, { now, idleMs }) {
   const actions = [];
   for (const [pool, group] of Object.entries(groups)) {
     if (!group) continue;
-    const need = demand.pools?.[pool] ?? { hosts: [], running: 0, waiting: 0 };
+    const need = demand.pools?.[pool] ?? { hosts: [], gone: [], running: 0, waiting: 0 };
     const live = new Map(need.hosts.map(host => [host.host, host]));
+    const gone = new Map((need.gone ?? []).map(host => [host.host, host]));
     const inGroup = new Set(group.instances.map(instance => instance.id));
 
     // Termination hooks: drain what the group is ending; complete the hook once nothing runs there.
     for (const instance of group.instances.filter(instance => instance.state === "Terminating:Wait")) {
       const host = live.get(instance.id);
-      if (host && !host.draining) actions.push({ type: "drain", pool, host: instance.id });
-      if (!host || host.running === 0) actions.push({ type: "complete", pool, group: group.name, instance: instance.id });
+      if (host) {
+        if (!host.draining) actions.push({ type: "drain", pool, host: instance.id });
+        else if (host.running === 0) actions.push({ type: "complete", pool, group: group.name, instance: instance.id });
+      } else {
+        // Not live: complete once it has been gone ABSENT_MS, or if the runtime has never heard of it (it never enrolled).
+        const last = gone.get(instance.id)?.lastSeenAt;
+        if (last === undefined || now - last >= ABSENT_MS) actions.push({ type: "complete", pool, group: group.name, instance: instance.id });
+      }
+    }
+    // Jobs wait: a draining host still in service takes jobs again (counted below as not draining).
+    const inService = new Set(group.instances.filter(instance => instance.state === "InService").map(instance => instance.id));
+    if (need.waiting > 0) for (const host of need.hosts) if (host.draining && inService.has(host.host)) {
+      actions.push({ type: "undrain", pool, host: host.host });
+      host.draining = false;
     }
 
     // Hosts the group counts toward its capacity: in service or still booting.
