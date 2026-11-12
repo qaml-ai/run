@@ -1,0 +1,18 @@
+[Unit]
+Description=camelRun job host agent
+After=network-online.target camel-host-prep.service camel-egress-proxy.service nftables.service
+Wants=network-online.target
+Requires=camel-host-prep.service camel-egress-proxy.service nftables.service
+
+[Service]
+EnvironmentFile=/etc/camel-jobhost.env
+# Root: it makes taps, runs Firecracker and writes the proxy's policies. RUNTIME_URL comes from the launch template's
+# user data (infra/job-hosts/terraform), appended to /etc/camel-jobhost.env.
+ExecStart=/bin/bash -c 'exec /usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/jobhost/agent.ts --firecracker --attestor aws --runtime "$RUNTIME_URL" --slots "$SLOTS" --vcpus "$(nproc)" --memory "$(( $(awk "/MemTotal/ {print \\$2}" /proc/meminfo) / 1024 ))" $( [ "$POOL" = build ] && echo --build )'
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=900
+
+[Install]
+WantedBy=multi-user.target

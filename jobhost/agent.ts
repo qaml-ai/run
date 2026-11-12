@@ -5,12 +5,13 @@
 // (guest.ts), its outputs collected and sent back, the VM destroyed. A job the runtime cancels is destroyed at once.
 // While the socket is down, jobs keep running and their results wait to be sent when it is back.
 //
-//   node --experimental-strip-types jobhost/agent.ts --runtime https://run.example --attestor aws --slots 8 --fake
+//   node --experimental-strip-types jobhost/agent.ts --runtime https://run.example --attestor aws --slots 8 --firecracker
 //   node … --attestor test --name host-1 --fake      (JOB_HOST_TEST_SECRET from the environment: tests only)
 import { hostname } from "node:os";
 import { frames, Frames, type HostMessage, type RuntimeMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
 import { signGetCallerIdentity, type Attestation } from "../shared/job-host-attest.ts";
 import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
+import { firecrackerLauncher } from "./firecracker.ts";
 
 export const AGENT_VERSION = "0.1.0";
 /** Less free disk than this before the command fails the job `disk_low`, as a container job does. */
@@ -131,7 +132,7 @@ export class HostAgent {
     let result: WireResult;
     try {
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
-      const vm = job.vm = await this.options.launcher.boot(id, shape);
+      const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet });
       if (job.cancelled) throw new Stopped();
       this.send({ type: "started", id, at: Date.now() });
       const startMs = Date.now() - began;
@@ -185,13 +186,21 @@ export function awsAttestor(imds = "http://169.254.169.254") {
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const arg = (name: string) => { const at = process.argv.indexOf(`--${name}`); return at > 0 ? process.argv[at + 1] : undefined; };
-  if (!process.argv.includes("--fake")) throw new Error("Only --fake runs today: Firecracker needs the host image (docs/design/job-hosts-plan.md, slice 1)");
+  const fake = process.argv.includes("--fake");
+  if (!fake && !process.argv.includes("--firecracker")) throw new Error("Choose --firecracker (a host built from infra/job-hosts/image) or --fake (tests)");
   const kind = arg("attestor") ?? "aws", secret = process.env.JOB_HOST_TEST_SECRET, name = arg("name") ?? hostname();
   if (kind === "test" && !secret) throw new Error("Set JOB_HOST_TEST_SECRET for the test attestor");
   const attest = kind === "test" ? async (): Promise<Attestation> => ({ kind: "test", host: name, secret: secret! }) : awsAttestor();
   const agent = new HostAgent({
     runtime: arg("runtime") ?? "http://127.0.0.1:8787", attest, slots: Number(arg("slots") ?? 4),
-    vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192), launcher: fakeLauncher({ base: arg("base") }),
+    vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
+    // A real host's paths are the image's (infra/job-hosts/image/files/jobhost.env).
+    launcher: fake ? fakeLauncher({ base: arg("base") }) : firecrackerLauncher({
+      firecracker: arg("firecracker-bin") ?? "/usr/local/bin/firecracker", kernel: arg("kernel") ?? "/var/lib/camel/guest/vmlinux",
+      initrd: arg("initrd") ?? "/var/lib/camel/guest/initrd.img", image: arg("image") ?? "/var/lib/camel/nvme/base.ext4",
+      work: arg("work") ?? "/var/lib/camel/nvme/jobs", policyDir: arg("policies") ?? "/run/camel/egress", build: process.argv.includes("--build"),
+      runtimeHost: new URL(arg("runtime") ?? "http://127.0.0.1:8787").hostname,
+    }),
     diskLowBytes: Number(arg("disk-low") ?? DISK_LOW_BYTES),
   });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { void agent.close().then(() => process.exit(0)); });

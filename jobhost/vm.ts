@@ -3,8 +3,8 @@
 //
 // - FakeVm (tests, sprites): the "disk" is a directory cloned from a base directory (cp --reflink=auto), and the guest
 //   runs as a local process over stdio. No isolation: for the runtime's end-to-end tests only.
-// - Firecracker (`firecrackerConfig`): the configuration a real host boots with, in Nitro Sandboxes direct mode. It is
-//   written and tested as data here; booting it needs the host image (slice 1) and AWS, after the go-ahead.
+// - Firecracker (`firecrackerConfig`, and firecracker.ts's launcher): the configuration a real host boots with, in Nitro
+//   Sandboxes direct mode, on the host image infra/job-hosts/image builds.
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -26,7 +26,8 @@ export interface Vm extends GuestChannel {
 export type VmShape = { vcpus: number; memoryMiB: number; diskMiB: number };
 export interface VmLauncher {
   readonly kind: "fake" | "firecracker";
-  boot(id: string, shape: VmShape): Promise<Vm>;
+  /** `internet`: the job may reach its egress allowlist (a real host's proxy); without it, nothing. */
+  boot(id: string, shape: VmShape, options?: { internet?: boolean }): Promise<Vm>;
 }
 
 /** A guest channel over a child's stdio (newline-delimited JSON, guest.ts). */
