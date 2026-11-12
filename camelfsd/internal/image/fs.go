@@ -3,9 +3,12 @@ package image
 import (
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"golang.org/x/sys/unix"
 	"io"
 	"os"
+	"sort"
+	"strconv"
 	"unsafe"
 )
 
@@ -71,7 +74,10 @@ type fiemap struct {
 	Extents                        [256]extent
 }
 
-func extents(f *os.File) ([]extent, error) {
+// extents is replaceable in tests to count FIEMAP calls.
+var extents = readExtents
+
+func readExtents(f *os.File) ([]extent, error) {
 	var all []extent
 	start := uint64(0)
 	for {
@@ -102,7 +108,7 @@ func extents(f *os.File) ([]extent, error) {
 
 // Collect private extents BEFORE reflinking: afterwards the new snapshot itself
 // is a sharing partner. Include holes to detect punched-out parent chunks.
-func changedRanges(f *os.File, size int64) ([]chunk.Range, error) {
+func changedRanges(f *os.File, size int64, parent map[string]string) ([]chunk.Range, error) {
 	if os.Getenv("CAMELFSD_TEST_NO_REFLINK") == "1" {
 		return []chunk.Range{{Offset: 0, Length: size}}, nil
 	}
@@ -110,13 +116,34 @@ func changedRanges(f *os.File, size int64) ([]chunk.Range, error) {
 	if e != nil {
 		return nil, e
 	}
+	return rangesFromExtents(es, size, parent), nil
+}
+func rangesFromExtents(es []extent, size int64, parent map[string]string) []chunk.Range {
 	var out []chunk.Range
+	// Only parent chunks intersecting a hole need to be read to detect deletion.
+	offsets := make([]int64, 0, len(parent))
+	for key := range parent {
+		offset, e := strconv.ParseInt(key, 10, 64)
+		if e == nil {
+			offsets = append(offsets, offset)
+		}
+	}
+	sort.Slice(offsets, func(i, j int) bool { return offsets[i] < offsets[j] })
+	hole := func(start, end int64) {
+		i := sort.Search(len(offsets), func(i int) bool { return offsets[i]+root.ChunkSize > start })
+		for ; i < len(offsets) && offsets[i] < end; i++ {
+			a, b := max(start, offsets[i]), min(end, offsets[i]+root.ChunkSize)
+			if b > a {
+				out = append(out, chunk.Range{Offset: a, Length: b - a})
+			}
+		}
+	}
 	pos := int64(0)
 	for _, x := range es {
 		a := int64(x.Logical)
 		end := min(size, a+int64(x.Length))
 		if a > pos {
-			out = append(out, chunk.Range{Offset: pos, Length: a - pos})
+			hole(pos, a)
 		}
 		if x.Flags&0x2000 == 0 && end > a {
 			out = append(out, chunk.Range{Offset: a, Length: end - a})
@@ -124,7 +151,7 @@ func changedRanges(f *os.File, size int64) ([]chunk.Range, error) {
 		pos = end
 	}
 	if pos < size {
-		out = append(out, chunk.Range{Offset: pos, Length: size - pos})
+		hole(pos, size)
 	}
-	return out, nil
+	return out
 }

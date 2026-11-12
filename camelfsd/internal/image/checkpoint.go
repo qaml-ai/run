@@ -89,7 +89,7 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, er
 		return out, e
 	}
 	ft := time.Now()
-	ranges, e := changedRanges(f, r.VirtualSize)
+	ranges, e := changedRanges(f, r.VirtualSize, r.Chunks)
 	if e != nil {
 		return out, e
 	}
@@ -106,13 +106,6 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, er
 		return out, e
 	}
 	defer sf.Close()
-	ft = time.Now()
-	if os.Getenv("CAMELFSD_TEST_NO_REFLINK") != "1" {
-		if _, e = extents(sf); e != nil {
-			return out, e
-		}
-	}
-	out.FiemapMs += ms(ft)
 	for _, rg := range ranges {
 		out.ChangedBytes += rg.Length
 	}

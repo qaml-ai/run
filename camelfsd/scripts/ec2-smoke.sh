@@ -66,7 +66,8 @@ mount -o loop "$(field image <<<"$MOUNT")" "$W/mnt"
 node /nvme/bench/gen.mjs "$W/mnt" medium change
 sync; umount "$W/mnt"
 CP=$(client checkpoint --job j1)
-assert '10 <= j["changedChunks"] <= 40' <<<"$CP"
+assert '1 <= j["changedChunks"] <= 40' <<<"$CP"
+assert 'j["changedBytes"] < 64 * 1024 * 1024' <<<"$CP"
 NEW=$(field root <<<"$CP")
 [[ $NEW != "$ROOT" ]]
 rec "checkpoint $CP"

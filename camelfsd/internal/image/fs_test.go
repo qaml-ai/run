@@ -18,6 +18,10 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 	if e := Probe(data); e != nil {
 		t.Skipf("filesystem does not support reflink: %v", e)
 	}
+	calls := 0
+	original := extents
+	extents = func(f *os.File) ([]extent, error) { calls++; return original(f) }
+	defer func() { extents = original }()
 	s := store.Local{Dir: t.TempDir()}
 	db, e := refs.Open(filepath.Join(data, "refs.db"))
 	if e != nil {
@@ -67,8 +71,9 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 	if e != nil || r.Chunks["524288"] != "" {
 		t.Fatal(r, e)
 	}
+	calls = 0
 	cp3, e := m.Checkpoint(ctx, "job")
-	if e != nil || cp3.ChangedChunks != 0 {
+	if e != nil || cp3.ChangedChunks != 0 || cp3.ChangedBytes != 0 || calls != 1 {
 		t.Fatal(cp3, e)
 	}
 }

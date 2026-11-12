@@ -127,6 +127,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if m.mounts[q.JobID] != nil {
 		return nil, fmt.Errorf("job already mounted")
 	}
+	var treeRoot string
 	if q.Tree != "" {
 		id, e := m.Refs.TreeRoot(q.Lineage, q.Tree)
 		if errors.Is(e, sql.ErrNoRows) {
@@ -139,17 +140,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		if e = m.Refs.Ensure(q.Lineage, q.Ref); e != nil {
 			return nil, e
 		}
-		prev, e := m.Refs.Get(q.Lineage, q.Ref)
-		if e != nil {
-			return nil, e
-		}
-		set := refs.Value{Tree: q.Tree, Root: id, Owner: "job:" + q.JobID}
-		if prev.Owner != "" && prev.Owner != set.Owner {
-			return nil, refs.ErrFenced
-		}
-		if e = m.Refs.CAS(q.Lineage, q.Ref, prev.Value, set, refs.Fence{}); e != nil {
-			return nil, e
-		}
+		treeRoot = id
 	}
 	v := &Mount{Request: q}
 	if q.Ref != "" {
@@ -165,6 +156,19 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		if e != nil {
 			_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch})
 			return nil, e
+		}
+		if treeRoot != "" {
+			set := refs.Value{Tree: q.Tree, Root: treeRoot, Owner: "job:" + q.JobID}
+			fence := refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
+			if p.Owner != "" && p.Owner != set.Owner {
+				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, fence)
+				return nil, refs.ErrFenced
+			}
+			if e = m.Refs.CAS(q.Lineage, q.Ref, p.Value, set, fence); e != nil {
+				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, fence)
+				return nil, e
+			}
+			p.Value = set
 		}
 		v.Fence = refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
 		v.stopRenew = make(chan struct{})
