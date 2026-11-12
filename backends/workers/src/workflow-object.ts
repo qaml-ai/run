@@ -133,6 +133,11 @@ export function byKind(executors: Record<string, ChildEffects>): ChildEffects {
   };
 }
 
+/** The one alarm: the earlier of the runner's and another's (a notice's retry), or none. */
+export function alarmAt(runner: number | null, other: number | undefined): number | undefined {
+  return runner === null ? other : other === undefined ? runner : Math.min(runner, other);
+}
+
 /** What a workflow is started with beside its script, kept by its object (runner.ts has the script and budget). */
 export interface WorkflowSettings {
   name?: string;
@@ -191,13 +196,21 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       sql: ctx.storage.sql, workflowId: name ?? "",
       owner: () => self.settings().owner, name: () => self.settings().name, bucket: () => self.runner.identity().bucket,
       send: (owner, request, notice) => (env as unknown as Env).AGENTS.getByName(owner).receiveAgentMessage(request, notice),
-      later: (afterMs, task) => ctx.waitUntil(new Promise(resolve => setTimeout(resolve, afterMs)).then(task).catch(error => console.error(JSON.stringify({ type: "workflow_notice_retry_failed", workflow: name, error: String(error) })))),
+      arm: async at => {
+        const current = await ctx.storage.getAlarm();
+        if (current === null || current > at || current <= Date.now()) await ctx.storage.setAlarm(Math.max(at, Date.now() + 1));
+      },
     });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
       {
-        alarm: { set: at => at === null ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(at) },
+        // The runner's alarm, or a notice's retry when it comes first: one alarm for both, so a notice whose delivery
+        // failed is retried even once the workflow has ended and its runner arms nothing.
+        alarm: { set: async at => {
+          const next = alarmAt(at, this.notices.retryAt());
+          await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
+        } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
       },
     );
@@ -268,9 +281,9 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
   async wake() { await this.runner.wake(); this.told(undefined); }
 
-  override async alarm() { await this.runner.alarm(); this.told(undefined); }
+  override async alarm() { await this.runner.alarm(); this.told(undefined); await this.notices.flush(); }
   /** TEST_MODE: what the alarm does, now. */
-  async fireAlarm() { await this.runner.alarm(); this.told(undefined); }
+  async fireAlarm() { await this.runner.alarm(); this.told(undefined); await this.notices.flush(); }
 }
 
 /**
