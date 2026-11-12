@@ -6,9 +6,8 @@
 // attempt) and lands it as a <workflow_notification> through its notification outbox, as any child's ending.
 //
 // A stop ends the row's current attempt (`<workflow id>_a<n>`); whatever the workflow does next is attempt n+1. An
-// ending the owner has no row for (every workflow started before this build) is answered `accepted: false`: for that
-// answer only, it is sent once the old way (workflow-notices.ts fallback), then dropped. An API-started workflow has
-// no owner and stages nothing.
+// ending the owner has no row for is answered `accepted: false` and dropped. An API-started workflow has no owner and
+// stages nothing.
 import type { Owner } from "../../../shared/owner.ts";
 import { ChildOutbox, type ChildEnding, type Receipt } from "./ending-outbox.ts";
 import type { ChildRun } from "./delegation.ts";
@@ -75,13 +74,6 @@ export interface EndingsHost {
   name(): string | undefined;
   /** The owner agent's receiveEnding (binding). */
   receiveEnding(owner: string, ending: ChildEnding): Promise<Receipt>;
-  /**
-   * An ending the owner refused (`accepted: false`: no row for it), sent once the old way (workflow-notices.ts). A throw
-   * is a failed delivery: the ending stays in the outbox and is retried.
-   */
-  fallback(owner: string, ending: ChildEnding): Promise<void>;
-  /** The status an earlier build last told the owner of (workflow-notices.ts told), if it told it anything. */
-  legacyTold(): string | undefined;
   arm(at: number): Promise<void>;
   now?(): number;
 }
@@ -100,7 +92,7 @@ export class WorkflowEndings {
       storage: host.storage,
       receiveEnding: async (owner, ending) => {
         const receipt = await host.receiveEnding(owner.id, ending);
-        if (!receipt.accepted) await host.fallback(owner.id, ending);
+        if (!receipt.accepted) console.error(JSON.stringify({ type: "workflow_ending_unknown", workflow: host.workflowId, owner: owner.id, requestId: ending.requestId }));
         return receipt;
       },
       receiveProgress: async () => ({ accepted: true }),
@@ -113,15 +105,14 @@ export class WorkflowEndings {
   private get sql() {
     const sql = this.host.storage.sql;
     if (!this.ready) {
-      sql.exec("CREATE TABLE IF NOT EXISTS workflow_owner_row (id INTEGER PRIMARY KEY CHECK (id = 1), attempt INTEGER NOT NULL, ended_staged INTEGER NOT NULL DEFAULT 0)");
-      sql.exec("INSERT OR IGNORE INTO workflow_owner_row (id, attempt, ended_staged) VALUES (1, 1, 0)");
+      sql.exec("CREATE TABLE IF NOT EXISTS workflow_owner_row (id INTEGER PRIMARY KEY CHECK (id = 1), attempt INTEGER NOT NULL)");
+      sql.exec("INSERT OR IGNORE INTO workflow_owner_row (id, attempt) VALUES (1, 1)");
       this.ready = true;
     }
     return sql;
   }
-  private row() { return this.sql.exec<{ attempt: number; ended_staged: number }>("SELECT attempt, ended_staged FROM workflow_owner_row WHERE id = 1").one(); }
   /** The attempt the owner's row is on: its next ending is that attempt's. */
-  attempt(): number { return Number(this.row().attempt); }
+  attempt(): number { return Number(this.sql.exec<{ attempt: number }>("SELECT attempt FROM workflow_owner_row WHERE id = 1").one().attempt); }
 
   /**
    * A status was written (the runner's `onStatus`, inside its transaction): stage what the owner hears of it, in the
@@ -136,22 +127,6 @@ export class WorkflowEndings {
     const attempt = this.attempt();
     void this.outbox.stageEnding(undefined, owner, { agentId: this.host.workflowId, requestId: workflowRunId(this.host.workflowId, attempt), record });
     if (record.status === "stopped") this.sql.exec("UPDATE workflow_owner_row SET attempt = ? WHERE id = 1", attempt + 1);
-    else this.sql.exec("UPDATE workflow_owner_row SET ended_staged = 1 WHERE id = 1");
-  }
-
-  /**
-   * After anything that may have moved the workflow: one that ended without its ending staged (it ended under an
-   * earlier build, or a migration wrote its status rather than the runner's setStatus) has it staged now, unless that
-   * earlier build told the owner already. One read when there is nothing to do; `summary` is read only when there is.
-   */
-  catchUp(summary: () => EndingSummary) {
-    if (this.host.owner()?.kind !== "agent" || Number(this.row().ended_staged)) return;
-    const now = summary();
-    if (!ENDED.has(now.status)) return;
-    this.host.storage.transactionSync(() => {
-      if (this.host.legacyTold() === now.status) this.sql.exec("UPDATE workflow_owner_row SET ended_staged = 1 WHERE id = 1");
-      else this.statusWritten(now);
-    });
   }
 
   /** Endings not yet taken by the owner. */

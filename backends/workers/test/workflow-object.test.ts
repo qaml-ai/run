@@ -717,7 +717,7 @@ test("the owner's ending is staged in the transaction that writes the status: ac
     const h = harness({ crashAt, onStatus: (status, runner) => { if (status !== "running" && status !== "waiting") endings!.statusWritten(runner.get()); } });
     endings = new WorkflowEndings({
       storage: { sql: h.store.sql, transactionSync: h.store.transactionSync, list: async () => new Map() } as unknown as DurableObjectStorage,
-      workflowId: "wf_1", owner: () => ({ kind: "agent", id: "owner" }), name: () => "two", receiveEnding: async () => ({ accepted: true }), fallback: async () => {}, legacyTold: () => undefined, arm: async () => {},
+      workflowId: "wf_1", owner: () => ({ kind: "agent", id: "owner" }), name: () => "two", receiveEnding: async () => ({ accepted: true }), arm: async () => {},
     });
     h.world.cost = 1;
     h.init({ code: `const a = await agent("one"); const b = await agent("two"); return [a.answer, b.answer];`, budgetUsd: 1 });
@@ -736,24 +736,4 @@ test("the owner's ending is staged in the transaction that writes the status: ac
   };
   const ops = await run();
   for (let crashAt = 1; crashAt <= ops; crashAt++) await run(crashAt);
-});
-
-test("an ending written by a migration (raw SQL inside the runner's wake, not setStatus) is staged by the told() after it, once", { timeout: 60_000 }, async () => {
-  let endings: WorkflowEndings | undefined;
-  const h = harness({ onStatus: (status, runner) => { if (status !== "running" && status !== "waiting") endings!.statusWritten(runner.get()); } });
-  endings = new WorkflowEndings({
-    storage: { sql: h.store.sql, transactionSync: h.store.transactionSync, list: async () => new Map() } as unknown as DurableObjectStorage,
-    workflowId: "wf_m", owner: () => ({ kind: "agent", id: "owner" }), name: () => "m", receiveEnding: async () => ({ accepted: true }), fallback: async () => {}, legacyTold: () => undefined, arm: async () => {},
-  });
-  h.init({ code: `const a = await agent("one"); return a.answer;` });
-  await h.wake();
-  assert.equal(at(h).status, "running");
-  // What a migration does inside runner.wake(): ends it in place, with no setStatus and so no onStatus.
-  h.store.transactionSync(() => h.store.sql.exec("UPDATE workflow_state SET status = 'failed', error = 'edit_retired: editing was removed' WHERE id = 1"));
-  assert.equal(endings.pending(), 0);
-  // WorkflowObject.told() runs after every operation (wake, alarm, land, the tools' calls): it catches up.
-  endings.catchUp(() => h.runner.get());
-  endings.catchUp(() => h.runner.get());
-  const staged = h.store.sql.exec("SELECT key, body FROM child_outbox").toArray().map((row: any) => [row.key, JSON.parse(row.body).ending.record.status]);
-  assert.deepEqual(staged, [["wf_m_a000001:z", "failed"]]);
 });

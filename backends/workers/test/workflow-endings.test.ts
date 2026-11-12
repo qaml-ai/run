@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { Delegation, type DelegationHost } from '../src/delegation.ts';
 import { WorkflowEndings, endingRecord, ENDING_RESULT_CHARS, type EndingSummary } from '../src/workflow-endings.ts';
 import { workflowNext } from '../src/workflow-tools.ts';
-import { WorkflowNotices } from '../src/workflow-notices.ts';
 import { openRequest } from '../src/agent-types.ts';
 import type { ChildEnding } from '../src/ending-outbox.ts';
 import { withSql } from './sql-storage.ts';
@@ -45,15 +44,13 @@ function owner(options: { abort?: (id: string) => Promise<boolean> } = {}) {
 }
 
 /** The workflow object's side, over `storage` (a second instance over the same storage is the object after a crash). */
-function workflow(deliver: (ending: ChildEnding) => Promise<{ accepted: boolean }>, storage = memory(), options: { fallback?: (ending: ChildEnding) => Promise<void>; legacyTold?: string } = {}) {
-  const armed: number[] = [], fellBack: string[] = [];
+function workflow(deliver: (ending: ChildEnding) => Promise<{ accepted: boolean }>, storage = memory()) {
+  const armed: number[] = [];
   const endings = new WorkflowEndings({
     storage, workflowId: 'wf_1', owner: () => ({ kind: 'agent', id: 'owner' }), name: () => 'review',
-    receiveEnding: async (_owner, ending) => deliver(ending),
-    fallback: async (_owner, ending) => { if (options.fallback) await options.fallback(ending); fellBack.push(ending.requestId); },
-    legacyTold: () => options.legacyTold, arm: async at => { armed.push(at); },
+    receiveEnding: async (_owner, ending) => deliver(ending), arm: async at => { armed.push(at); },
   });
-  return { storage, endings, armed, fellBack };
+  return { storage, endings, armed };
 }
 
 const summary = (status: string, extra: Partial<EndingSummary> = {}): EndingSummary => ({ status, counts: { done: 2 }, spent: { usd: 0.4 }, budget: { usd: 1 }, ...extra });
@@ -156,34 +153,6 @@ test('a payer stop that resumes by itself: the next attempt\'s ending opens its 
   assert.deepEqual(await o.delegation.receiveEnding({ ...held[0]!, agentId: 'wf_other' }), { accepted: false });
 });
 
-test('an ending the owner has no row for (a workflow from before the deploy) is sent once the old way, then dropped; a gone owner\'s answer drops it', async () => {
-  const o = owner();
-  let down = true;
-  const w = workflow(ending => o.delegation.receiveEnding(ending), memory(), { fallback: async () => { if (down) throw new Error('owner unavailable'); } });
-  w.endings.statusWritten(summary('completed'));
-  // The old way failed: the ending stays in the outbox and is retried, refused again, and sent the old way again.
-  await w.endings.outbox.flush();
-  assert.equal(w.endings.pending(), 1);
-  down = false;
-  await w.endings.outbox.flush().catch(() => {});
-  const due = await w.endings.outbox.deadline();
-  assert.ok(due !== undefined);
-  const later = workflow(ending => o.delegation.receiveEnding(ending), w.storage);
-  // (A new instance, at the retry's time: its clock is real, so the row is made due now.)
-  w.storage.sql.exec("UPDATE child_outbox SET next_at = 0");
-  await later.endings.outbox.flush();
-  assert.deepEqual(later.fellBack, ['wf_1_a000001'], 'sent the old way once it could be');
-  assert.equal(later.endings.pending(), 0, 'then dropped, never retried');
-  const gone = workflow(async () => ({ accepted: true }));
-  gone.endings.statusWritten(summary('failed', { error: 'x' }));
-  await gone.endings.outbox.flush();
-  assert.equal(gone.endings.pending(), 0);
-  // No owner (an API-started workflow): nothing is staged.
-  const ownerless = new WorkflowEndings({ storage: memory(), workflowId: 'wf_2', owner: () => undefined, name: () => undefined, receiveEnding: async () => assert.fail('no owner'), adopt: async () => assert.fail('no owner'), arm: async () => {} });
-  ownerless.statusWritten(summary('completed'));
-  assert.equal(ownerless.pending(), 0);
-});
-
 test('a workflow child outlives its owner\'s stop and deletion; a cancel of its row aborts the workflow, not an agent', async () => {
   const o = owner();
   await o.delegation.registerWorkflow({ id: 'wf_1', name: 'review', callId: 'c' });
@@ -204,57 +173,11 @@ test('a workflow child outlives its owner\'s stop and deletion; a cancel of its 
   assert.deepEqual([bad.status, bad.notified], ['failed', true]);
 });
 
-test('after any operation: an ending whose status was written without setStatus (an earlier build, a migration) is staged once, unless the earlier build told the owner', async () => {
-  const quiet = workflow(async () => ({ accepted: true }));
-  quiet.endings.catchUp(() => summary('running'));
-  assert.equal(quiet.endings.pending(), 0, 'a running workflow has nothing to stage');
-  const ended = workflow(async () => ({ accepted: true }));
-  ended.endings.catchUp(() => summary('completed'));
-  ended.endings.catchUp(() => summary('completed'));
-  assert.equal(ended.endings.pending(), 1, 'staged once');
-  // Staged by the runner with its status: a wake stages nothing more.
-  const normal = workflow(async () => ({ accepted: true }));
-  normal.endings.statusWritten(summary('failed', { error: 'x' }));
-  await normal.endings.outbox.flush();
-  normal.endings.catchUp(() => summary('failed', { error: 'x' }));
-  assert.equal(normal.endings.pending(), 0);
-  // The earlier build's notice told the owner it completed: not told again.
-  const told = workflow(async () => assert.fail('told already'), memory(), { legacyTold: 'completed' });
-  told.endings.catchUp(() => summary('completed'));
-  assert.equal(told.endings.pending(), 0);
-});
-
-test('the old notices, kept as the fallback: an earlier build\'s ending is delivered as before, a phase or gate dropped; a fallback is one fixed request', async () => {
-  const storage = memory();
-  storage.sql.exec("CREATE TABLE workflow_notices (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)");
-  storage.sql.exec("INSERT INTO workflow_notices (event, body, status) VALUES ('phase', '{}', 'running'), ('gate_opened', '{}', 'waiting'), ('completed', '{\"status\":\"completed\"}', 'completed')");
-  const sent: { id: string; metadata: unknown }[] = [];
-  const notices = new WorkflowNotices({
-    sql: storage.sql, workflowId: 'wf_1', owner: () => ({ kind: 'agent', id: 'owner' }), name: () => 'review', bucket: () => undefined,
-    send: async (_owner, request, notice) => { sent.push({ id: request.id, metadata: notice.metadata }); }, arm: async () => {},
-  });
-  assert.equal(notices.pending(), 3);
-  await notices.flush();
-  assert.deepEqual(sent, [{ id: 'wf_1_n3', metadata: { kind: 'workflow', workflowId: 'wf_1', status: 'completed', event: 'completed' } }]);
-  assert.equal(notices.pending(), 0);
-  // A workflow made under this build has no table, and nothing makes one.
-  const fresh = memory();
-  const none = new WorkflowNotices({ sql: fresh.sql, workflowId: 'wf_2', owner: () => undefined, name: () => undefined, bucket: () => undefined, send: async () => assert.fail('nothing'), arm: async () => {} });
-  assert.deepEqual([none.pending(), none.retryAt(), none.told()], [0, undefined, undefined]);
-  assert.equal(fresh.sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE name = 'workflow_notices'").one().n, 0);
-  // The fallback: the ending as an old notice, its request id fixed by the workflow and the attempt.
-  const ending: ChildEnding = { agentId: 'wf_1', requestId: 'wf_1_a000002', record: endingRecord('wf_1', 'review', summary('budget_exhausted'))! };
-  await notices.fallback('owner', ending);
-  await notices.fallback('owner', ending);
-  assert.deepEqual(sent.slice(1).map(entry => [entry.id, (entry.metadata as { event: string }).event]), [['wf_1_a000002_notice', 'budget_exhausted'], ['wf_1_a000002_notice', 'budget_exhausted']], 'the same request both times: the owner takes it once');
-});
-
-test('a skipped attempt: a stop retried after a later attempt\'s ending landed still lands on its own row, never the old way', async () => {
+test('a skipped attempt: a stop retried after a later attempt\'s ending landed still lands on its own row', async () => {
   const o = owner();
   await o.delegation.registerWorkflow({ id: 'wf_1', name: 'review', callId: 'c' });
-  const fellBack: string[] = [];
   const held: ChildEnding[] = [];
-  const w = workflow(async ending => { held.push(ending); return { accepted: true }; }, memory(), { fallback: async ending => { fellBack.push(ending.requestId); } });
+  const w = workflow(async ending => { held.push(ending); return { accepted: true }; });
   w.endings.statusWritten(summary('budget_exhausted'));
   w.endings.statusWritten(summary('paused', { pauseReason: 'payer_exhausted' }));
   w.endings.statusWritten(summary('completed'));
@@ -263,21 +186,38 @@ test('a skipped attempt: a stop retried after a later attempt\'s ending landed s
   for (const index of [0, 2, 1]) assert.deepEqual(await o.delegation.receiveEnding(held[index]!), { accepted: true });
   await o.settle();
   assert.deepEqual((await o.delegation.children()).map(row => [row.requestId, row.status]).sort(), [['wf_1_a000001', 'paused'], ['wf_1_a000002', 'paused'], ['wf_1_a000003', 'completed']]);
-  assert.deepEqual(fellBack, []);
-});
-
-test('a workflow row whose workflow was never made (its start failed past the row) ends when interrupted or cancelled', async () => {
-  const o = owner({ abort: async () => false });
-  await o.delegation.registerWorkflow({ id: 'wf_gone', name: 'gone', callId: 'c' });
-  const [row] = await o.delegation.children();
-  await o.delegation.rows.put({ ...row!, cancelRequested: true });
-  await o.delegation.recover();
-  const ended = (await o.delegation.children())[0]!;
-  assert.deepEqual([ended.status, ended.notified], ['failed', true]);
 });
 
 test('runtime notices staged while the owner is busy take no request slot', () => {
   assert.equal(openRequest({ state: 'running' }), true);
   assert.equal(openRequest({ state: 'running', noticeQueued: true }), false);
   assert.equal(openRequest({ state: 'completed' }), false);
+});
+
+test('an ending the owner has no row for is refused and dropped, never retried; a gone owner\'s answer drops it too; no owner stages nothing', async () => {
+  const o = owner();
+  const w = workflow(ending => o.delegation.receiveEnding(ending));
+  w.endings.statusWritten(summary('completed'));
+  await w.endings.outbox.flush();
+  assert.equal(w.endings.pending(), 0);
+  const gone = workflow(async () => ({ accepted: true }));
+  gone.endings.statusWritten(summary('failed', { error: 'x' }));
+  await gone.endings.outbox.flush();
+  assert.equal(gone.endings.pending(), 0);
+  const ownerless = new WorkflowEndings({ storage: memory(), workflowId: 'wf_2', owner: () => undefined, name: () => undefined, receiveEnding: async () => assert.fail('no owner'), arm: async () => {} });
+  ownerless.statusWritten(summary('completed'));
+  assert.equal(ownerless.pending(), 0);
+});
+
+test('interrupt_agent on a workflow aborts it; on a row whose workflow was never made (its start failed past the row) it ends the row', async () => {
+  const exists = new Set(['wf_live']), aborted: string[] = [];
+  const o = owner({ abort: async id => { if (!exists.has(id)) return false; aborted.push(id); return true; } });
+  await o.delegation.registerWorkflow({ id: 'wf_live', name: 'live', callId: 'c1' });
+  await o.delegation.registerWorkflow({ id: 'wf_gone', name: 'gone', callId: 'c2' });
+  const interrupt = o.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'interrupt_agent') as any;
+  assert.ok(interrupt, 'interrupt_agent is a tool');
+  for (const agent of ['live', 'gone']) await interrupt.execute({ agent }, { callId: `i-${agent}`, taskId: 't', getTask: async () => undefined }, {});
+  assert.deepEqual(aborted, ['wf_live']);
+  const rows = Object.fromEntries((await o.delegation.children()).map(row => [row.id, [row.status, row.notified]]));
+  assert.deepEqual(rows, { wf_live: ['running', undefined], wf_gone: ['failed', true] });
 });

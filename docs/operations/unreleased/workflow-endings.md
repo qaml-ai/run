@@ -19,9 +19,7 @@ outbox and notification path as a sub-agent's:
 - `workflow_status` gives `next` only for a spent budget ("raise it with workflow_budget") and for a fault ("abort it and
   start a new workflow: finished results are reused").
 
-At the deploy: a workflow started before it has no child row on its owner, so the owner refuses its ending. For that
-answer only, the workflow sends the ending once the old way (a `<workflow_notification>` message with an `event`
-attribute). Notices the earlier build had not delivered still go: endings and budget or payer stops are delivered,
-and phases, gates and other pauses are dropped and logged `workflow_notice_dropped reason=retired`. A workflow that
-ended before the deploy, and whose owner was never told, is told on its next wake. The old notice code, its
-`workflow_notice_state` and `workflow_notices` tables, and the old block are removed in the next release.
+At the deploy, the old notice code (`workflow-notices.ts`) is removed, with no fallback: no agent was running
+workflows. A workflow started before the deploy has no row on its owner. Its ending is refused and dropped, logged
+`workflow_ending_unknown`. The old `workflow_notice_state` and `workflow_notices` tables are left unread in existing
+workflow objects.
