@@ -2436,10 +2436,6 @@ blocking inputs and decisions settle independently. One agent's decision answers
 arrive together in one notice. The supplied agent routes each answer to its authority;
 the inbox mirror does not authorize or settle answers.
 
-A workflow's [`gate()`](https://run.camelai.com/docs/guides/workflows.md) is an inbox item too, a decision whose
-`agent` is the workflow's id (`wf_…`): answer it the same way, with that id as
-`agent`. The answer goes to the workflow, which hands it to the script.
-
 TypeScript: `runtime.answerInbox(answers, requestId)`. Python, async or sync:
 `runtime.answer_inbox(answers, request_id="review-1")`. CLI:
 `camelrun inbox-answer '{"requestId":"review-1","answers":[{"agent":"client_...","id":"inp_...","version":1,"action":"accept","content":{"answers":{"Which region?":"EU"}},"actor":"alice"}]}'`.
@@ -7478,22 +7474,19 @@ Its globals:
 | `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
 | `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow; a workflow started with an API key is paid by its account, and its usage shows under the workflow's id. A job the account's credit or monthly spend limit refuses pauses the workflow (`payer_exhausted`) until it is raised. Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
 | `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
-| `gate(opts)` | A decision for a person, in the account's [inbox](https://run.camelai.com/docs/guides/human-input.md): `{ title (or question), body?, options? (2 to 4 labels), recommended?, reason?, priority?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. The workflow waits, durably, and `gate()` returns what they chose (an option's label, or their own words); a decline returns `null`. Past its expiry it takes `recommended` when `onExpire` is `"recommended"`, else the workflow pauses (`waiting_on_gate`) and the item stays answerable: the answer lands and a resume goes on. Who may answer is as for the owning agent's own decisions (its `humanInput.approvers`); with no owning agent, anyone with the account's key. |
-| `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
-| `phase(name)` | Names the stage the workflow is in (`phase` on its summary, items and log lines) |
 | `log(...parts)` | A line in the workflow's log |
 | `args` | What it was started with (`args` in the start), frozen |
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
 | `toBase64(value)`, `fromBase64(text, opts?)` | Base64 of any text (as UTF-8) or bytes, and back: text, or a `Uint8Array` with `{ as: "bytes" }`. `btoa`/`atob` take Latin-1 only. `TextEncoder` and `TextDecoder` (UTF-8) are there too |
 
-A workflow's forks are deleted when it ends, once its commits have landed.
+A workflow's forks are deleted when it ends, once its commits have landed. One whose result is cached (below) is kept by the cache instead, for as long as the result is.
 
-A script is compiled before it starts and before an edit lands: a syntax error is refused as `script_error`, with
+A script is compiled before it starts: a syntax error is refused as `script_error`, with
 its line and column, and nothing runs.
 
 A `key` names an effect across replays. Outside `parallel()` one may be left
 out (the call gets a counted key, `agent#2`); inside, give one. The same key
-with different arguments is a `key_conflict` fault.
+with different arguments is a `key_conflict` fault, which ends the workflow.
 
 The script must be a pure function of `args` and the journal: no raw clock,
 no imports, no state kept outside it. Each **step** replays the script with
@@ -7502,11 +7495,9 @@ stored answer, a new one starts an effect. The runner stops at the first call
 it cannot answer yet.
 
 ```js
-phase("port");
 const ported = await parallel(args.files.map(file => () =>
   agent(`Port ${file} from Bun to Node. Keep behaviour identical.`, { key: `port:${file}`, type: "worker" })));
 
-phase("review");
 const findings = await parallel(args.files.map(file => () =>
   agent(`Review the port of ${file}. List problems.`, {
     key: `review:${file}`, type: "critic",
@@ -7516,7 +7507,6 @@ const findings = await parallel(args.files.map(file => () =>
 const bad = findings.filter(Boolean).flatMap(finding => finding.problems);
 log(`${bad.length} problems in ${args.files.length} files`);
 
-phase("report");
 return agent(`Write the port report. Problems: ${JSON.stringify(bad)}`, { key: "report", type: "lead" });
 ```
 
@@ -7554,28 +7544,55 @@ A workflow that stops without ending is `paused`, and `pauseReason` says why:
 | `pauseReason` | |
 | --- | --- |
 | `user` | You paused it. Running sub-agents finish unless the pause said `children: "abort"` |
-| `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resume re-issues it under a new attempt** |
-| `confirm_rerun` | An edit would rerun more than `rerunConfirmPercent` of the finished effects: new effects while finished results go unused (their keys dropped). New effects beside finished ones do not count once the script has asked for those (a new effect it waits on before asking for them still does). Resume to confirm, or edit again (with `confirm: true` to go ahead) |
-| `waiting_on_gate` | A gate passed its expiry without an answer and without `onExpire: "recommended"`. It can still be answered in the inbox; resume after it is |
-| `capacity_refused` | The account is at its running-workflows limit |
-| a fault code | The script itself went wrong: `key_required`, `key_conflict`, `step_budget`, a thrown error. `fault` on the summary has the message; edit the script and resume |
+| `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resuming re-issues it under a new attempt**. It tries again by itself (after 5 minutes, doubling to 30) with one of the refused effects; once that one gets through, the rest follow. Resume it to try them all now. A week without credit ends it `failed` (`payer_gave_up`) |
+| `capacity_refused` | The account is at its running-workflows limit. It tries again by itself every minute |
 
-`resume` runs the next step. With `rerun: ["review:a.ts"]` it re-issues those
-effects first, under a new attempt, which is how you redo work after an edit
-without touching what was fine. `abort` ends it for good: its running
-sub-agents stop and the journal stays readable.
+`resume` runs the next step. `abort` ends it for good: its running sub-agents
+stop and the journal stays readable.
+
+When the script itself goes wrong (`key_required`, `key_conflict`,
+`step_budget`, `stalled`, a thrown error), the workflow ends `failed`, with
+`fault: { code, message }` on the summary; what was still running is stopped.
+
+## Changing a workflow: start a new one
+
+A workflow's script is not edited. To change one, abort it (or let it end) and
+start a new one with the fixed script. Its `agent()` and `job()` calls whose
+arguments match a result an earlier workflow of the same owner finished are
+answered from that result, at no cost: no sub-agent or container runs. Such an
+item has `origin: "cache"` and `cachedFrom` (`workflowId:key:attempt`), and the
+summary's `counts.cached` counts them.
+
+- The owner is the agent that started it (its `workflows` builtin), or the
+  account for a workflow started with an API key; workflows of other owners
+  never share results.
+- Only results that finished (`done`) are reused: never a failed, refused or
+  aborted one, and never a `commit()` or `push()` (they change a volume or a
+  branch).
+- `agent(prompt, { repo })` and `job({ at })` are reused only while that
+  volume is unchanged since the earlier call started. A reused agent's answer
+  has a fork of its own: a copy of the earlier one, which `commit()` lands as
+  before. A result with a fork is reused for at most 3 days.
+- An `agent()` is also keyed by the model it resolves to (its `class` or
+  `model`, or the workflow's `classes` pin) and by the named `definition`'s
+  revision: a restart with a stronger class, or an edited definition, runs
+  again.
+- Two identical calls (same arguments, different keys) in one workflow share a
+  result too: the second is answered from the first once it finished. Pass
+  `nocache: true` to an `agent()` or `job()` to run it regardless.
+- A result is kept for 7 days from the last time it was reused; an owner keeps
+  at most 2,000 results and 64 MiB (the least recently used go first), and a
+  result over 1 MiB is not kept.
 
 ## The API
 
 ```
 POST /v1/workflows                       { script, args?, budget: { usd }, concurrency?, classes?, name?, allowFastJudgment? } -> 201
-GET  /v1/workflows/{id}                  status, pauseReason?, phase?, revision, step, budget, spent, counts, result?, error?
-GET  /v1/workflows/{id}/items            ?after=&limit=&status=&phase=&kind=   -> { items, next? }
+GET  /v1/workflows/{id}                  status, pauseReason?, step, budget, spent, counts, result?, error?, fault?
+GET  /v1/workflows/{id}/items            ?after=&limit=&status=&kind=          -> { items, next? }
 GET  /v1/workflows/{id}/events           ?after=&limit=                        -> { events }
-GET  /v1/workflows/{id}/diff             ?revision=                            -> { revision, reason?, kept, issued, unseen }
-PUT  /v1/workflows/{id}/script           { script, reason, rerunConfirmPercent?, confirm? } -> { revision, workflow }
 POST /v1/workflows/{id}/pause            { children?: "abort" }
-POST /v1/workflows/{id}/resume           { rerun?: [keys] }
+POST /v1/workflows/{id}/resume
 POST /v1/workflows/{id}/abort
 POST /v1/workflows/{id}/budget           { usd: number | null }
 ```
@@ -7587,33 +7604,21 @@ same workflow (the key names it for your account).
 curl -X POST $CAMELRUN_URL/v1/workflows \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" -H "Idempotency-Key: port-2026-11" \
   -d '{ "name": "port", "script": "...", "args": { "files": ["a.ts", "b.ts"] }, "budget": { "usd": 20 }, "concurrency": 8 }'
-# { "id": "wf_…", "status": "running", "revision": 1, "step": 1, "budget": { "usd": 20 }, "spent": { "usd": 0, … }, "counts": { "running": 2 }, … }
+# { "id": "wf_…", "status": "running", "step": 1, "budget": { "usd": 20 }, "spent": { "usd": 0, … }, "counts": { "running": 2 }, … }
 
 curl $CAMELRUN_URL/v1/workflows/wf_…/items?status=failed -H "Authorization: Bearer $CAMELAI_API_KEY"
 ```
 
-`items` is the journal: one row per effect (`kind` `agent`, `gate` or
-`timer`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
+`items` is the journal: one row per effect (`kind` `agent`, `job`,
+`commit` or `push`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
 `failed`, `refused`, `aborted`), `args`, `result`, `reason`, `costUsd` and
-`model`, in the order they were issued; pass `next` back as `after`.
-`counts` on the summary is the same by status. `events` is what happened
-(`created`, steps, pauses, edits, the ending), by `seq`.
-
-Edit the script while it runs: a new revision, replayed at the next step.
-Effects whose keys and arguments are unchanged keep their results; new or
-changed ones run. `reason` is kept with the revision, and `diff` shows what
-the revision kept, issued and has not reached.
-
-```bash
-curl -X PUT $CAMELRUN_URL/v1/workflows/wf_…/script \
-  -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
-  -d '{ "script": "...", "reason": "critics accepted stubs; ask for a diff per finding" }'
-curl -X POST $CAMELRUN_URL/v1/workflows/wf_…/resume -H "Authorization: Bearer $CAMELAI_API_KEY" \
-  -H "Content-Type: application/json" -d '{ "rerun": ["review:a.ts"] }'
-```
+`model`, its `origin` (`script`, `reissue`, or `cache` with `cachedFrom`), in
+the order they were issued; pass `next` back as `after`. `counts` on the
+summary is the same by status, plus `cached`. `events` is what happened
+(`created`, steps, pauses, `effect_cached`, the ending), by `seq`.
 
 A bad request is 400 `INVALID_REQUEST` naming the field; a refusal of the
-workflow's own (resuming one that ended, an edit that needs a confirm) is 409
+workflow's own (resuming one that ended) is 409
 `WORKFLOW_CONFLICT`; another account's workflow is 404.
 
 ## In the SDKs
@@ -7629,10 +7634,12 @@ if (done.status === "budget_exhausted") {
   await agents.workflows.budget(wf.id, 40); // above what was spent: it runs again by itself
   done = await agents.workflows.wait(wf.id);
 }
-const failed = await agents.workflows.items(wf.id, { status: "failed" });
-await agents.workflows.edit(wf.id, { script: script2, reason: "critics accepted stubs" });
-await agents.workflows.resume(wf.id, { rerun: failed.items.map(item => item.key) });
-console.log((await agents.workflows.wait(wf.id)).result);
+if (done.status === "failed") {
+  // Fix the script and start again: the sub-agents that finished are not run (or paid for) again.
+  const again = await agents.workflows.start({ script: script2, args: { files }, budget: { usd: 20 }, name: "port" });
+  done = await agents.workflows.wait(again.id);
+}
+console.log(done.result);
 ```
 
 ```python
@@ -7641,10 +7648,11 @@ done = await agents.workflows.wait(wf["id"])
 if done["status"] == "budget_exhausted":
     await agents.workflows.budget(wf["id"], 40)  # above what was spent: it runs again by itself
     done = await agents.workflows.wait(wf["id"])
-failed = await agents.workflows.items(wf["id"], status="failed")
-await agents.workflows.edit(wf["id"], script2, reason="critics accepted stubs")
-await agents.workflows.resume(wf["id"], rerun=[item["key"] for item in failed["items"]])
-print((await agents.workflows.wait(wf["id"]))["result"])
+if done["status"] == "failed":
+    # Fix the script and start again: the sub-agents that finished are not run (or paid for) again.
+    again = await agents.workflows.start(script2, args={"files": files}, budget_usd=20, name="port")
+    done = await agents.workflows.wait(again["id"])
+print(done["result"])
 ```
 
 `wait` takes `timeoutMs` and `pollMs` (`timeout` and `poll` seconds in
@@ -7658,8 +7666,8 @@ The main way a workflow starts is not a person writing a script: an agent is
 given a task, decides it warrants many sub-agents, writes the workflow, and
 steers it. Every agent with [`delegate` settings](https://run.camelai.com/docs/guides/multi-agent.md) on a runtime
 with workflows enabled has the `workflows` builtin: `workflow_start`,
-`workflow_status` (with a `waitSeconds`), `workflow_items`, `workflow_edit`,
-`workflow_pause`, `workflow_resume`, `workflow_abort` and `workflow_budget`.
+`workflow_status` (with a `waitSeconds`), `workflow_items`, `workflow_pause`,
+`workflow_resume`, `workflow_abort` and `workflow_budget`.
 The agent that starts a workflow owns it: only its tools reach it. To its owner a
 workflow is a background child, like one `spawn_agent` starts: it is in the agent's
 `list_agents`, and its ending comes the way a sub-agent's does. It need not poll:
@@ -7675,8 +7683,9 @@ Workflow port completed.
 ```
 
 A failure reads `Workflow port failed (<code>): <message>`. A stop has `status="paused"`
-and says what it waits for: a spent budget waits for `workflow_budget`, and a payer out
-of credit waits for credit and `workflow_resume`. Each stop and the ending that follows
+and says what it waits for: a spent budget waits for `workflow_budget`; a payer out of
+credit is tried again by itself (`workflow_resume` tries at once), and the agent hears it
+once, not at every retry. Each stop and the ending that follows
 it are separate attempts of the same child, so the agent hears each once. A person's
 pause, and a wait for the account's capacity, tell the agent nothing. A result longer
 than 16,000 characters is cut; `workflow_status` has it whole.

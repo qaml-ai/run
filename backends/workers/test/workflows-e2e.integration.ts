@@ -44,16 +44,12 @@ async function until<T>(check: () => Promise<T | undefined | false>, description
 }
 
 const SCRIPT = `
-phase("review");
 const reviews = await parallel(["a", "b", "c"], file => agent("REVIEW " + file, { key: "review:" + file, type: "worker" }));
-phase("judge");
 const verdict = await agent("CRITIC: check " + JSON.stringify(reviews), { key: "critic", type: "critic", output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } });
 return { reviews, verdict, files: args.files };`;
 
-const GATE_SCRIPT = `const go = await gate({ key: "go", question: "Ship it?", options: ["ship", "hold"], recommended: "ship", reason: "Reviews passed" }); return { go };`;
-
 test("an agent starts a workflow of keyed workers and a critic, owned by the workflow, and reports its result; a spent budget pauses one until a raise", { timeout: 600_000 }, async t => {
-  let workflowId: string | undefined, gatedWorkflowId: string | undefined, budgetWorkflowId: string | undefined;
+  let workflowId: string | undefined, budgetWorkflowId: string | undefined;
   const model = provider(body => {
     const system = systemOf(body), user = lastUser(body), last = body.messages.at(-1);
     if (system.includes("You are a worker in a workflow")) return { content: `reviewed ${user.replace("REVIEW ", "")}` };
@@ -73,8 +69,6 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
     }
     if (user.includes("BUDGETED") && last.role === "tool") { budgetWorkflowId = JSON.parse(textOf(last)).workflowId; return { content: "started" }; }
     if (user.includes("BUDGETED")) return { tool: { name: "workflow_start", args: { script: `const a = await agent("EXPENSIVE one", { key: "one", class: "fast" }); const b = await agent("cheap two", { key: "two", class: "fast" }); return [a, b];`, budgetUsd: 0.5, concurrency: 1, name: "budgeted" }, id: "start-budgeted" } };
-    if (user.includes("GATED") && last.role === "tool") { gatedWorkflowId = JSON.parse(textOf(last)).workflowId; return { content: "started" }; }
-    if (user.includes("GATED")) return { tool: { name: "workflow_start", args: { script: GATE_SCRIPT, budgetUsd: 1, name: "gated" }, id: "start-gated" } };
     if (last.role === "tool") { workflowId = JSON.parse(textOf(last)).workflowId; return { content: "started" }; }
     return { tool: { name: "workflow_start", args: { script: SCRIPT, args: { files: 3 }, budgetUsd: 1, name: "review three" }, id: "start" } };
   });
@@ -163,33 +157,6 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   const finished = await until(async () => { const value = await ok(`/v1/workflows/${small.id}`); return value.status === "completed" && value; }, "the resumed workflow", 90_000,
     async () => ({ workflow: await ok(`/v1/workflows/${small.id}`), items: await ok(`/v1/workflows/${small.id}/items`) }));
   assert.deepEqual(finished.result, ["costly answer", "plain answer to cheap two"]);
-
-  // gate(): an agent's workflow asks a person in the account's inbox. The owner hears the gate opened, the person
-  // answers through POST /v1/inbox/answers, the answer lands on the gate once, and the workflow finishes with it.
-  const gateAgent = await ok("/v1/agents", { model: "wf-fixture/wf-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
-  await ok(`/v1/agents/${gateAgent.id}/prompt`, { text: "GATED go" });
-  const gatedId = await until(async () => gatedWorkflowId, "the gated workflow's start");
-  const gateItem = await until(async () => ((await ok(`/v1/inbox?root=${gatedId}`)).items as { id: string; agent: string; kind: string; version: number; message: string; recommendation?: unknown }[]).find(item => item.agent === gatedId) ?? false,
-    "the gate's inbox item", 60_000, async () => ({ workflow: await ok(`/v1/workflows/${gatedId}`), items: await ok(`/v1/workflows/${gatedId}/items`) }));
-  assert.equal(gateItem.kind, "decision");
-  assert.equal(gateItem.message, "Ship it?");
-  assert.equal((await ok(`/v1/workflows/${gatedId}`)).status, "waiting", "only the gate is open");
-  const answer = { agent: gatedId, id: gateItem.id, version: gateItem.version, action: "accept", content: "hold" };
-  const answered = await ok("/v1/inbox/answers", { requestId: `answer-${gatedId}`, answers: [answer] });
-  assert.equal(answered.outcomes[0].outcome, "answered", JSON.stringify(answered));
-  const gateDone = await until(async () => { const value = await ok(`/v1/workflows/${gatedId}`); return value.status === "completed" && value; }, "the gated workflow", 60_000,
-    async () => ({ workflow: await ok(`/v1/workflows/${gatedId}`), items: await ok(`/v1/workflows/${gatedId}/items`) }));
-  assert.deepEqual(gateDone.result, { go: "hold" });
-  // The same answer again is the same; another, under a new request, finds it settled. It left the inbox.
-  const again = await ok("/v1/inbox/answers", { requestId: `again-${gatedId}`, answers: [{ ...answer, content: "ship" }] });
-  assert.equal(again.outcomes[0].outcome, "conflict", JSON.stringify(again));
-  assert.equal(((await ok(`/v1/inbox?root=${gatedId}`)).items as unknown[]).length, 0);
-  const gateRow = (await fixture.db.query("select owner_kind, owner_id, state from agent_inputs where id = $1", [gateItem.id])).rows[0];
-  assert.deepEqual(gateRow, { owner_kind: "workflow", owner_id: gatedId, state: "answered" });
-  await until(async () => ((await ok(`/v1/agents/${gateAgent.id}`)).requests as { id: string; outcome?: { result?: { reply?: string } } }[])
-    .some(request => request.id === `child_${gatedId}_a000001` && String(request.outcome?.result?.reply ?? "").startsWith("REPORT ")), "the owner's report of the gated workflow");
-
-
   // An agent's workflow that stops for its budget: the owner hears the stop (its row's first attempt, status paused),
   // raises the budget with workflow_budget, and hears the ending as the row's second attempt. Two turns, in order.
   const budgetAgent = await ok("/v1/agents", { model: "wf-fixture/wf-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });

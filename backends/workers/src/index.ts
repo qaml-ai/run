@@ -95,6 +95,7 @@ import {
 export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
+export { WorkflowResults } from "./workflow-results.ts";
 export { Volume } from "./volume.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
@@ -412,12 +413,6 @@ const worker = {
             const outcomes: (InboxOutcome & { agent: string })[] = [];
             for (const [agent, answers] of groups) {
               try {
-                // A workflow's gates (workflow-gates.ts): their items name the workflow where an agent's name the agent.
-                if (/^wf_[A-Za-z0-9_-]{1,80}$/.test(agent)) {
-                  const result = await (env as unknown as { WORKFLOWS: { getByName(name: string): { answerGates(tenant: string, answers: unknown[]): Promise<InboxOutcome[]> } } }).WORKFLOWS.getByName(agent).answerGates(auth.tenantId, answers);
-                  outcomes.push(...result.map(outcome => ({ ...outcome, agent })));
-                  continue;
-                }
                 const target = await new Directory(env, auth.tenantId).get(agent);
                 if (!target || target.deleted || (target.expiresAt !== null && target.expiresAt <= Date.now())) throw new ApiError(404, "Unknown agent");
                 if (!target.initialized) throw new ApiError(503, "Agent initialization is pending");

@@ -71,7 +71,7 @@ test("the script's job(), commit() and push() check their arguments", { timeout:
   }
 });
 
-test("byKind sends agents and gates to the children, job/commit/push to the jobs, polls by kind, and recovers both", async () => {
+test("byKind sends agents to the children, job/commit/push to the jobs, polls by kind, and recovers both", async () => {
   const calls: string[] = [];
   const executor = (name: string) => ({
     start: async (effect: StartedEffect) => { calls.push(`${name} start ${effect.kind}`); },
@@ -80,14 +80,14 @@ test("byKind sends agents and gates to the children, job/commit/push to the jobs
     abort: async () => { calls.push(`${name} abort`); },
   });
   const children = executor("children"), jobs = { ...executor("jobs"), poll: async (effect: StartedEffect) => { calls.push(`jobs poll ${effect.kind}`); return undefined; } };
-  const both = byKind({ agent: children, gate: children, job: jobs, commit: jobs, push: jobs });
-  const effect = (kind: string) => ({ key: kind, attempt: 1, kind, args: {}, options: undefined, phase: undefined });
-  for (const kind of ["agent", "gate", "job", "commit", "push"]) await both.start(effect(kind));
+  const both = byKind({ agent: children, job: jobs, commit: jobs, push: jobs });
+  const effect = (kind: string) => ({ key: kind, attempt: 1, kind, args: {} });
+  for (const kind of ["agent", "job", "commit", "push"]) await both.start(effect(kind));
   await both.cancel!(effect("job"));
   await both.poll!(effect("commit"));
   await both.recover!();
   await both.abort!();
-  assert.deepEqual(calls, ["children start agent", "children start gate", "jobs start job", "jobs start commit", "jobs start push", "jobs cancel job", "jobs poll commit", "children recover", "jobs recover", "children abort", "jobs abort"]);
+  assert.deepEqual(calls, ["children start agent", "jobs start job", "jobs start commit", "jobs start push", "jobs cancel job", "jobs poll commit", "children recover", "jobs recover", "children abort", "jobs abort"]);
 });
 
 /** WorkflowJobs over a fake driver and storage: what it lands. */
@@ -108,7 +108,7 @@ function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, availab
   }, () => available ? { ok: true, driver } : { ok: false, code: "JOBS_UNAVAILABLE", message: "Jobs need Cloudflare Containers" });
   return { executor, landed, specs, rows, stopped, settled: async () => { while (pending.length) await pending.shift(); } };
 }
-const effect = (key: string, args: Record<string, unknown>, kind = "job"): StartedEffect => ({ key, attempt: 1, kind, args, options: undefined, phase: undefined });
+const effect = (key: string, args: Record<string, unknown>, kind = "job"): StartedEffect => ({ key, attempt: 1, kind, args });
 const timings = { startedAt: 0, endedAt: 1, startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 1 };
 
 test("WorkflowJobs: refusals and failures land as values; a job is paid by the workflow; a restart runs it again", async () => {
@@ -295,6 +295,28 @@ test("a workflow's forks are deleted once it ends; a failed delete is tried agai
   assert.equal(deleted.length, 3);
 });
 
+test("at the end, a fork the result cache adopts is handed over, not deleted; the rest are deleted; one it cannot tell about waits", async () => {
+  const rows = new Map<string, unknown>();
+  const storage = {
+    get: async (key: string) => rows.get(key),
+    put: async (key: string, value: unknown) => { rows.set(key, value); },
+    delete: async (key: string) => rows.delete(key),
+    list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
+  };
+  const deleted: string[] = [];
+  let unsure = true;
+  const forks = new ForkJanitor({ storage: storage as never, now: () => 1_000, deleteFork: async id => { deleted.push(id); },
+    adopt: async id => { if (id === "vol_unsure" && unsure) throw new Error("the cache is down"); return id === "vol_kept"; } });
+  await forks.made("vol_kept");
+  await forks.made("vol_free");
+  await forks.made("vol_unsure");
+  assert.equal(await forks.ended(), 1_000 + 60_000, "tried again later");
+  assert.deepEqual(deleted, ["vol_free"]);
+  assert.deepEqual([...rows.keys()].filter(key => key.startsWith("workflow-fork:")), ["workflow-fork:vol_unsure"], "the cache's fork is forgotten here");
+  unsure = false;
+  assert.equal(await forks.ended(), undefined);
+  assert.deepEqual(deleted, ["vol_free", "vol_unsure"]);
+});
 test("a job, commit or push whose landing a crash lost is found by the alarm's sweep, with no capacity alarm to wake it", { timeout: 60_000 }, async () => {
   for (const kind of ["job", "commit", "push"] as const) {
     const h = harness();

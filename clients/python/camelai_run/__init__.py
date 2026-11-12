@@ -1407,44 +1407,31 @@ class Workflows:
         return self._runtime._rest("POST", "/v1/workflows", body, retry=bool(idempotency_key), headers={"Idempotency-Key": idempotency_key} if idempotency_key else None)
 
     def get(self, workflow_id):
-        """Its status, counts, spend, phase and, once it ends, its "result" (or "error")."""
+        """Its status, counts, spend and, once it ends, its "result" (or "error")."""
         return self._runtime._rest("GET", self._path(workflow_id))
 
-    def items(self, workflow_id, *, after=None, limit=None, status=None, phase=None, kind=None):
-        """Its effects (agents, gates, timers) in journal order, a page at a time: {"items": [{"key", "attempt", "kind", "status",
+    def items(self, workflow_id, *, after=None, limit=None, status=None, kind=None):
+        """Its effects (agents, jobs, commits, pushes) in journal order, a page at a time: {"items": [{"key", "attempt", "kind", "status",
         "args", "result"?, "reason"?, "costUsd"?, "ord", ...}], "next"?}; pass next as `after`. `status`: pending, running, done,
-        failed, refused or aborted; `kind`: agent, gate or timer; `limit` at most 500."""
-        query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("status", status), ("phase", phase), ("kind", kind)) if value is not None})
+        failed, refused or aborted; `kind`: agent, job, commit or push; `limit` at most 500."""
+        query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("status", status), ("kind", kind)) if value is not None})
         return self._runtime._rest("GET", self._path(workflow_id, "/items") + (f"?{query}" if query else ""))
 
     def events(self, workflow_id, *, after=None, limit=None):
-        """Its events (created, steps, pauses, edits, its ending) after `after`: {"events": [{"seq", "at", "type", "data"?}]}."""
+        """Its events (created, steps, pauses, cached results, its ending) after `after`: {"events": [{"seq", "at", "type", "data"?}]}."""
         query = urlencode({key: value for key, value in (("after", after), ("limit", limit)) if value is not None})
         return self._runtime._rest("GET", self._path(workflow_id, "/events") + (f"?{query}" if query else ""))
-
-    def diff(self, workflow_id, revision=None):
-        """What a revision (default: the current one) kept from the journal, issued new, and has not reached yet:
-        {"revision", "reason"?, "kept", "issued", "unseen"}."""
-        return self._runtime._rest("GET", self._path(workflow_id, "/diff") + (f"?revision={revision}" if revision is not None else ""))
-
-    def edit(self, workflow_id, script, *, reason, rerun_confirm_percent=None, confirm=None):
-        """Replace its script: a new revision, replayed at the next step. Effects whose keys and arguments are unchanged keep
-        their results; new or changed ones run. `reason` is kept with the revision. An edit that re-issues more than
-        `rerun_confirm_percent` of the finished effects (default 25) pauses for a confirm; `confirm=True` goes ahead (and
-        replaces an edit held for one). {"revision", "workflow"}."""
-        body = {"script": script, "reason": reason, **({"rerunConfirmPercent": rerun_confirm_percent} if rerun_confirm_percent is not None else {}), **({"confirm": True} if confirm else {})}
-        return self._runtime._rest("PUT", self._path(workflow_id, "/script"), body, retry=False)
 
     def pause(self, workflow_id, *, children=None):
         """Pause it: nothing new starts. Running sub-agents finish, unless children="abort" stops them (they run again on resume)."""
         return self._runtime._rest("POST", self._path(workflow_id, "/pause"), {"children": children} if children else {})
 
-    def resume(self, workflow_id, *, rerun=None):
-        """Resume a paused one. `rerun` lists effect keys to run again (a new attempt each)."""
-        return self._runtime._rest("POST", self._path(workflow_id, "/resume"), {"rerun": list(rerun)} if rerun else {}, retry=False)
+    def resume(self, workflow_id):
+        """Resume one you paused. To change a workflow, abort it and start a new one: finished results are reused."""
+        return self._runtime._rest("POST", self._path(workflow_id, "/resume"), {}, retry=False)
 
     def abort(self, workflow_id):
-        """Stop it for good: its running sub-agents stop, the journal stays readable."""
+        """Stop it for good: its running sub-agents stop, the journal stays readable, and its finished results stay reusable by a new workflow."""
         return self._runtime._rest("POST", self._path(workflow_id, "/abort"), {})
 
     def budget(self, workflow_id, usd):

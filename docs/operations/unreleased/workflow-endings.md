@@ -12,7 +12,8 @@ outbox and notification path as a sub-agent's:
   `event` attribute.
 - These notifications batch with sub-agent endings in one turn. They charge nothing, because the workflow's own children
   already billed what it spent.
-- A stop and the ending after it are two attempts of one child. A person's pause, a capacity wait, finished phases and
+- A stop and the ending after it are two attempts of one child. A payer stop retries by itself, and the owner hears it
+  once, not at every retry. A person's pause, a capacity wait, finished phases and
   opened gates no longer send a notification; `workflow_status` shows them.
 - A workflow keeps running when its owner's turn is stopped or the owner is deleted. `workflow_abort` (or
   `interrupt_agent` on the workflow) stops it.

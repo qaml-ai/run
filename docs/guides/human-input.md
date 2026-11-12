@@ -213,10 +213,6 @@ blocking inputs and decisions settle independently. One agent's decision answers
 arrive together in one notice. The supplied agent routes each answer to its authority;
 the inbox mirror does not authorize or settle answers.
 
-A workflow's [`gate()`](workflows.md) is an inbox item too, a decision whose
-`agent` is the workflow's id (`wf_…`): answer it the same way, with that id as
-`agent`. The answer goes to the workflow, which hands it to the script.
-
 TypeScript: `runtime.answerInbox(answers, requestId)`. Python, async or sync:
 `runtime.answer_inbox(answers, request_id="review-1")`. CLI:
 `camelrun inbox-answer '{"requestId":"review-1","answers":[{"agent":"client_...","id":"inp_...","version":1,"action":"accept","content":{"answers":{"Which region?":"EU"}},"actor":"alice"}]}'`.

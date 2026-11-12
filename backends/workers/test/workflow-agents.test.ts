@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkflowAgents, workflowRun, type EffectUsage, type LandedOutcome, type WorkflowChildren } from '../src/workflow-agents.ts';
+import { agentCacheSalt, WorkflowAgents, workflowRun, type EffectUsage, type LandedOutcome, type WorkflowChildren } from '../src/workflow-agents.ts';
 import type { Placement } from '../../../shared/owner.ts';
 import { withSql } from './sql-storage.ts';
 
@@ -56,7 +56,7 @@ function world(options: { budget?: number | undefined; concurrency?: number; con
     failLands: (n: number) => { landFails = n; }, cancelling: (fn: (childId: string) => Promise<void>) => { onCancel = fn; }, holdCreate: (gate: Promise<void>) => { createGate = gate; }, failCreate: (error: unknown) => { createThrows = error; } };
 }
 
-const effect = (key: string, args: Record<string, unknown> = { prompt: `do ${key}` }, attempt = 1) => ({ key, attempt, kind: 'agent', args, phase: undefined });
+const effect = (key: string, args: Record<string, unknown> = { prompt: `do ${key}` }, attempt = 1) => ({ key, attempt, kind: 'agent', args });
 const completed = (submitted: Submitted, result: Record<string, unknown>) => ({ agentId: submitted.childId, requestId: submitted.request.id, record: { state: 'completed', status: 'completed', outcome: { result } } });
 
 test('a child per key:attempt, owned by the workflow, billed to its tenant and bucket within its budget, started once', async () => {
@@ -175,7 +175,7 @@ test('agent() options a workflow child cannot have are refused on the effect', a
   const w = world();
   await w.agents.start(effect('c', { prompt: 'x', computer: 'fork' }));
   assert.match(String((w.landed[0]!.outcome as { error: string }).error), /no computer/);
-  await assert.rejects(w.agents.start({ key: 's', attempt: 1, kind: 'sleep', args: { ms: 1 }, phase: undefined }), /agent\(\) effects/);
+  await assert.rejects(w.agents.start({ key: 's', attempt: 1, kind: 'job', args: { command: 'true' } }), /agent\(\) effects/);
 });
 
 test('a definition cannot bill a workflow child to an end user: its subject (and agent spend limit) are not taken', async () => {
@@ -296,7 +296,7 @@ test('a landing from inside a start never waits on the step that called the star
     // The first deferred landing is lost to a crash; recover() lands it again.
     defer: task => { if (crash) { crash = false; deferred.push(task); return; } void task(); },
   });
-  await Promise.race([serial(() => agents.start({ key: 'a', attempt: 1, kind: 'agent', args: { prompt: 'x' }, options: {}, phase: undefined })), new Promise((_, reject) => setTimeout(() => reject(new Error('deadlock')), 2000))]);
+  await Promise.race([serial(() => agents.start({ key: 'a', attempt: 1, kind: 'agent', args: { prompt: 'x' } })), new Promise((_, reject) => setTimeout(() => reject(new Error('deadlock')), 2000))]);
   assert.equal(landed.length, 0, 'the landing was lost to the crash');
   await agents.recover();
   await queue;
@@ -305,4 +305,14 @@ test('a landing from inside a start never waits on the step that called the star
   await agents.recover();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(landed.length, 1, 'landed once marked, recover leaves it');
+});
+
+test("the result cache's salt for an agent() changes with the model its class resolves to under the workflow's classes, and with its type", async () => {
+  const env = { AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "a/fast", strong: "a/strong", max: "a/max" }) } as never;
+  const salt = (args: Record<string, unknown>, classes?: Record<string, string>) => agentCacheSalt(env, "t", { prompt: "p", ...args } as never, classes ? { classes: classes as never } : {});
+  assert.equal(await salt({ type: "worker" }), await salt({ type: "worker" }));
+  assert.notEqual(await salt({ type: "worker" }, { worker: "fast" }), await salt({ type: "worker" }, { worker: "max" }), "a restart with a stronger class misses");
+  assert.notEqual(await salt({ type: "worker" }), await salt({ type: "critic", output: {} }));
+  assert.notEqual(await salt({}), await salt({ type: "worker" }));
+  assert.equal(await salt({ class: "max", type: "worker" }, { worker: "fast" }), await salt({ class: "max", type: "worker" }), "the call's own class wins over the pin");
 });

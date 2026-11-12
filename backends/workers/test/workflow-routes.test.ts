@@ -45,21 +45,19 @@ test('types and classes: defaults, pins, the judgment guard and the critic schem
   assert.equal(classModel({ AGENT_WORKFLOW_CLASS_MODELS: '{"fast":"a/b"}' }, 'fast'), 'a/b');
 });
 
-test('a script edit refuses a non-integer rerunConfirmPercent with 400, before the runner sees it', async () => {
-  const edits: unknown[] = [];
-  const stub = { get: async () => ({ tenant: 'acme' }), view: async () => ({}), edit: async (options: unknown) => { edits.push(options); return { revision: 2 }; } };
+test('no edit, diff or rerun: PUT script and GET diff are gone, and resume takes no options', async () => {
+  const resumes: unknown[] = [];
+  const stub = { get: async () => ({ tenant: 'acme' }), view: async () => ({}), resume: async (...args: unknown[]) => { resumes.push(args); return {}; } };
   const env = { AGENT_WORKFLOW_TENANTS: 'acme', WORKFLOWS: { getByName: () => stub } } as never;
-  const edit = (body: unknown) => workflowRoutes(new Request('https://run/v1/workflows/wf_1/script', { method: 'PUT', body: JSON.stringify(body) }), env, 'acme');
-  const refused = await edit({ script: 'x', reason: 'r', rerunConfirmPercent: 12.5 });
-  assert.equal(refused?.status, 400);
-  assert.match(((await refused!.json()) as { error: string }).error, /integer/);
-  assert.equal(edits.length, 0);
-  assert.equal((await edit({ script: 'x', reason: 'r', rerunConfirmPercent: 30 }))?.status, 200);
-  assert.deepEqual(edits, [{ code: 'x', reason: 'r', rerunConfirmPercent: 30 }]);
-  // confirm is true or false.
-  assert.equal((await edit({ script: 'x', reason: 'r', confirm: 'yes' }))?.status, 400);
-  assert.equal((await edit({ script: 'x', reason: 'r', confirm: true }))?.status, 200);
-  assert.deepEqual(edits.at(-1), { code: 'x', reason: 'r', confirm: true });
+  const call = (path: string, init?: RequestInit) => workflowRoutes(new Request(`https://run/v1/workflows/wf_1${path}`, init), env, 'acme');
+  assert.equal((await call('/script', { method: 'PUT', body: JSON.stringify({ script: 'x', reason: 'r' }) }))?.status, 405);
+  assert.equal((await call('/diff'))?.status, 404);
+  const rerun = await call('/resume', { method: 'POST', body: JSON.stringify({ rerun: ['a'] }) });
+  assert.equal(rerun?.status, 400);
+  assert.match(((await rerun!.json()) as { error: string }).error, /abort it and start a new one/);
+  assert.equal(resumes.length, 0);
+  assert.equal((await call('/resume', { method: 'POST', body: '{}' }))?.status, 200);
+  assert.deepEqual(resumes, [[]]);
   // Another tenant's workflow is not found.
   assert.equal((await workflowRoutes(new Request('https://run/v1/workflows/wf_1'), { AGENT_WORKFLOW_TENANTS: '*', WORKFLOWS: { getByName: () => stub } } as never, 'other'))?.status, 404);
 });

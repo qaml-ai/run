@@ -55,6 +55,10 @@
         "class_name": "WorkflowObject"
       },
       {
+        "name": "WORKFLOW_RESULTS",
+        "class_name": "WorkflowResults"
+      },
+      {
         "name": "CODEMODE_SANDBOX",
         "class_name": "CodemodeSandbox",
         "script_name": "camelrun-pilot-codemode"
@@ -90,6 +94,12 @@
       "tag": "workflow-object",
       "new_sqlite_classes": [
         "WorkflowObject"
+      ]
+    },
+    {
+      "tag": "workflow-results",
+      "new_sqlite_classes": [
+        "WorkflowResults"
       ]
     }
   ],

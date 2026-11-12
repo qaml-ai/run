@@ -24,12 +24,10 @@ export const ENDING_RESULT_CHARS = 16_000;
 export type EndingSummary = { status: string; pauseReason?: string; result?: unknown; error?: string; fault?: { code: string; message: string }; counts?: Record<string, number>; spent?: { usd: number }; budget?: { usd: number | null } };
 const ENDED = new Set(["completed", "failed", "aborted"]);
 
-/** Why a workflow stopped such that its owner hears it, or undefined: budget and payer stops (and a fault, until faults end a workflow). */
-export function stopReason(summary: Pick<EndingSummary, "status" | "pauseReason" | "fault">): string | undefined {
+/** Why a workflow stopped such that its owner hears it, or undefined: its budget, or its payer's credit. */
+export function stopReason(summary: Pick<EndingSummary, "status" | "pauseReason">): string | undefined {
   if (summary.status === "budget_exhausted") return "budget_exhausted";
-  if (summary.status !== "paused") return undefined;
-  if (summary.pauseReason === "payer_exhausted") return "payer_exhausted";
-  if (summary.fault) return summary.fault.code;
+  if (summary.status === "paused" && summary.pauseReason === "payer_exhausted") return "payer_exhausted";
   return undefined;
 }
 
@@ -52,8 +50,7 @@ export function endingRecord(workflowId: string, name: string, summary: EndingSu
     : summary.status === "aborted" ? `Workflow ${name} was aborted.`
     : summary.status === "failed" ? `Workflow ${name} failed (${failure?.code ?? "error"}): ${String(cut(failure?.message ?? "no message"))}`
     : stopped === "budget_exhausted" ? `Workflow ${name} stopped: its budget is spent. Raise it with workflow_budget to go on.`
-    : stopped === "payer_exhausted" ? `Workflow ${name} stopped: the account is out of credit. Once there is credit, resume it with workflow_resume.`
-    : `Workflow ${name} stopped (${fault!.code}): ${fault!.message}`;
+    : `Workflow ${name} stopped: a sub-agent or job was refused for credit. It tries again by itself; workflow_resume tries now.`;
   const output = {
     workflowId, status: summary.status, ...(summary.result !== undefined ? { result: cut(summary.result) } : {}),
     ...(summary.error && !fault ? { error: cut(summary.error) } : {}), ...(fault ? { fault } : {}),
@@ -105,7 +102,8 @@ export class WorkflowEndings {
   private get sql() {
     const sql = this.host.storage.sql;
     if (!this.ready) {
-      sql.exec("CREATE TABLE IF NOT EXISTS workflow_owner_row (id INTEGER PRIMARY KEY CHECK (id = 1), attempt INTEGER NOT NULL)");
+      // `stopped`: the stop the owner last heard, while nothing else has happened since (see statusWritten).
+      sql.exec("CREATE TABLE IF NOT EXISTS workflow_owner_row (id INTEGER PRIMARY KEY CHECK (id = 1), attempt INTEGER NOT NULL, stopped TEXT)");
       sql.exec("INSERT OR IGNORE INTO workflow_owner_row (id, attempt) VALUES (1, 1)");
       this.ready = true;
     }
@@ -124,9 +122,14 @@ export class WorkflowEndings {
     if (owner?.kind !== "agent") return;
     const record = endingRecord(this.host.workflowId, this.host.name() ?? this.host.workflowId, summary);
     if (!record) return;
+    const stopped = record.outcome?.result?.stopped;
+    // A payer stop retries by itself, and each retry the payer refuses again stops it again: the owner hears the first,
+    // and again only after another stop or an ending, not every retry for days.
+    if (stopped === "payer_exhausted" && this.sql.exec<{ stopped: string | null }>("SELECT stopped FROM workflow_owner_row WHERE id = 1").one().stopped === stopped) return;
     const attempt = this.attempt();
     void this.outbox.stageEnding(undefined, owner, { agentId: this.host.workflowId, requestId: workflowRunId(this.host.workflowId, attempt), record });
-    if (record.status === "stopped") this.sql.exec("UPDATE workflow_owner_row SET attempt = ? WHERE id = 1", attempt + 1);
+    if (record.status === "stopped") this.sql.exec("UPDATE workflow_owner_row SET attempt = ?, stopped = ? WHERE id = 1", attempt + 1, stopped ?? null);
+    else this.sql.exec("UPDATE workflow_owner_row SET stopped = NULL WHERE id = 1");
   }
 
   /** Endings not yet taken by the owner. */

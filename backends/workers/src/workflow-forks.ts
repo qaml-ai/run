@@ -2,7 +2,8 @@
 // A workflow that ended has no use for them: its commits landed or never will. So the object records each fork it makes
 // and deletes them all once the workflow has ended (completed, failed or aborted), which releases their pins. A delete
 // that fails (storage down) is tried again on the object's alarm, later each time, and a crash in between loses nothing:
-// a fork's record goes only after its volume is deleted, and deleting one twice is harmless.
+// a fork's record goes only after its volume is deleted, and deleting one twice is harmless. A fork whose child's result
+// the owner's result cache keeps is handed to the cache instead (workflow-results.ts `adopt`), which deletes it later.
 
 const ROW = "workflow-fork:";
 const RETRY = "workflow-fork-retry";
@@ -14,6 +15,11 @@ export interface ForkJanitorHost {
   storage: Pick<DurableObjectStorage, "get" | "put" | "delete" | "list">;
   /** Delete fork `volume` (its row, then its object, which lets go of its base's pins). Throws when it could not. */
   deleteFork(volume: string): Promise<void>;
+  /**
+   * Whether the owner's result cache takes fork `volume` over (an entry of its names it): then the cache deletes it when
+   * the entry goes, and this workflow forgets it. Throws when it could not tell: the fork stays, tried again later.
+   */
+  adopt?(volume: string): Promise<boolean>;
   now?: () => number;
 }
 
@@ -39,7 +45,8 @@ export class ForkJanitor {
     let failed = committing;
     if (!committing) for (const key of forks) {
       try {
-        await this.host.deleteFork(key.slice(ROW.length));
+        // Handed to the result cache, which deletes it when its entry goes; or deleted now.
+        if (!await this.host.adopt?.(key.slice(ROW.length))) await this.host.deleteFork(key.slice(ROW.length));
         await this.host.storage.delete(key);
       } catch (error) {
         failed = true;

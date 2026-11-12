@@ -7,14 +7,14 @@
 // results in their original batches, which a deterministic VM turns into the same state.
 //
 // This is our own driver, not pi-codemode's: its VM driver keeps its state in closures that cannot be snapshotted,
-// and workflow scripts see their own globals (agent, job, commit, push, gate, parallel, sleep, log, phase, now, random), not code mode's tools.
+// and workflow scripts see their own globals (agent, job, commit, push, parallel, log, now, random), not code mode's tools.
 import { EvalFlags, Intrinsics, JSException, QuickJS, type JSValueHandle } from "quickjs-wasi";
 import {
   WORKFLOW_STEP_PROTOCOL, type IssuedEffect, type WorkflowBatch, type WorkflowFaultCode, type WorkflowStepOutcome, type WorkflowStepRequest,
 } from "./workflow-protocol.ts";
 
 /** Bumped whenever this driver or its prelude changes what a snapshot holds or what a script observes. */
-export const WORKFLOW_DRIVER_VERSION = 2;
+export const WORKFLOW_DRIVER_VERSION = 3;
 /**
  * sha256 of `quickjs-wasi/quickjs.wasm` as this package pins it. Wrangler compiles the module at build time, so its
  * bytes cannot be read at runtime; a test checks this against the installed file, so a dependency bump fails until it
@@ -59,8 +59,7 @@ export function canonicalJson(value: unknown): string {
 
 /**
  * The guest's prelude: the workflow globals over one host function, `bridge(kind, ...)` with kind "effect" (key, kind,
- * args JSON, phase, options JSON, reused), "log" (text, phase), "phase" (name), "fault" (code, message) or "done" (ok,
- * value or error JSON). Evaluates to `{ settle(key, ok, json), adopt(tableJson), run(fn), status() }`. Its references to built-ins are taken before the script
+ * args JSON, reused), "log" (text), "fault" (code, message) or "done" (ok, value or error JSON). Evaluates to `{ settle(key, ok, json), adopt(tableJson), run(fn), status() }`. Its references to built-ins are taken before the script
  * runs, so a script that patches one changes only its own values, never what is reported.
  */
 export const WORKFLOW_PRELUDE = `(function (bridge) {
@@ -69,7 +68,7 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
   const PromiseCtor = Promise, all = Promise.allSettled.bind(Promise), resolved = Promise.resolve.bind(Promise);
   const ErrorCtor = Error, TypeErrorCtor = TypeError, now = Date.now, random = Math.random;
   const pending = new Map(), settled = new Map(), known = new Map(), occurrences = new Map();
-  let parallelDepth = 0, finished = false, phase = "";
+  let parallelDepth = 0, finished = false;
 
   function canonical(value) {
     if (value === null || typeof value !== "object") { const json = stringify(value); return json === undefined ? "null" : json; }
@@ -102,7 +101,7 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
   }
   // A failed effect gives the script null (its item records why), so .filter(Boolean) drops it.
   const outcome = done => done.ok ? done.value : null;
-  function effect(kind, args, options, extra) {
+  function effect(kind, args, options) {
     if (finished) return new PromiseCtor(() => {});
     const json = canonical(args);
     let key;
@@ -131,9 +130,9 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     if (adopted !== undefined && adopted.args !== undefined && (adopted.args !== json || adopted.kind !== kind)) { table.delete(key); adopted = undefined; }
     if (adopted !== undefined) {
       table.delete(key);
-      bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), true);
+      bridge("effect", key, kind, json, true);
       if (adopted.value !== undefined) { const done = { ok: adopted.ok, value: parse(adopted.value) }; settled.set(key, done); return resolved(outcome(done)); }
-    } else bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), false);
+    } else bridge("effect", key, kind, json, false);
     let resolve;
     const promise = new PromiseCtor(yes => { resolve = yes; });
     pending.set(key, { promise, resolve });
@@ -280,22 +279,6 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("push", args, opts);
     },
-    sleep(seconds, opts) {
-      if (typeof seconds !== "number" || !(seconds >= 0) || seconds === Infinity) throw new TypeErrorCtor("sleep(seconds) needs a number of seconds");
-      return effect("sleep", { seconds }, options(opts, "sleep"));
-    },
-    // A decision for a person. Answers with what they chose; expires after expiresInSeconds (7 days), then takes
-    // the recommendation when onExpire is "recommended", or pauses the workflow.
-    gate(opts) {
-      options(opts, "gate");
-      if (opts && opts.title === undefined && typeof opts.question === "string") { opts = { ...opts, title: opts.question }; delete opts.question; }
-      if (!opts || typeof opts.title !== "string" || opts.title === "") throw new TypeErrorCtor("gate({ title }) needs a title (or a question)");
-      const args = {};
-      for (const name of keysOf(opts)) if (name !== "key" && name !== "expiresInSeconds" && name !== "onExpire") args[name] = opts[name];
-      const extra = { expiresInSeconds: opts.expiresInSeconds === undefined ? 604800 : opts.expiresInSeconds, onExpire: opts.onExpire === "recommended" ? "recommended" : "pause" };
-      if (typeof extra.expiresInSeconds !== "number" || !(extra.expiresInSeconds > 0)) throw new TypeErrorCtor("gate() expiresInSeconds must be a positive number");
-      return effect("gate", args, opts, extra);
-    },
     // Waits for every branch, even after one fails, so no branch is still issuing effects outside parallel().
     async parallel(items, fn) {
       if (!isArray(items)) throw new TypeErrorCtor("parallel() takes an array of functions, or an array and a function");
@@ -314,12 +297,7 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     },
     log(...parts) {
       const text = parts.map(part => typeof part === "string" ? part : (() => { try { return stringify(part); } catch { return String(part); } })()).join(" ");
-      bridge("log", text, phase);
-    },
-    phase(name) {
-      if (typeof name !== "string" || name === "") throw new TypeErrorCtor("phase(name) needs a name");
-      phase = name;
-      bridge("phase", name);
+      bridge("log", text);
     },
     now() { return now(); },
     random() { return random(); },
@@ -426,9 +404,8 @@ class WorkflowVm {
   api!: JSValueHandle;
   settleFn!: JSValueHandle;
   statusFn!: JSValueHandle;
-  phase: string | undefined;
   readonly issued: IssuedEffect[] = [];
-  readonly logs: { phase: string | undefined; text: string }[] = [];
+  readonly logs: { text: string }[] = [];
   done?: { ok: true; value: string | undefined } | { ok: false; error: string };
   fault?: { code: WorkflowFaultCode; message: string };
   state: DriverState;
@@ -471,18 +448,14 @@ class WorkflowVm {
     };
   }
 
-  bridge = (kind: JSValueHandle, a: JSValueHandle, b: JSValueHandle, c: JSValueHandle, d: JSValueHandle, e?: JSValueHandle, f?: JSValueHandle) => {
+  bridge = (kind: JSValueHandle, a: JSValueHandle, b: JSValueHandle, c: JSValueHandle, d?: JSValueHandle) => {
     const text = (handle: JSValueHandle | undefined) => handle === undefined || handle.isUndefined ? undefined : handle.toString();
     switch (kind.toString()) {
       case "effect": {
-        const phase = text(d), options = text(e);
-        const effect: IssuedEffect = { key: a.toString(), kind: b.toString(), args: c.toString(), phase: phase || undefined, replayed: this.replaying, reused: f !== undefined && f.toBoolean() };
-        if (options !== undefined) effect.options = options;
-        this.issued.push(effect);
+        this.issued.push({ key: a.toString(), kind: b.toString(), args: c.toString(), replayed: this.replaying, reused: d !== undefined && d.toBoolean() });
         break;
       }
-      case "log": if (!this.replaying) this.logs.push({ phase: text(b) || undefined, text: a.toString() }); break;
-      case "phase": this.phase = a.toString(); break;
+      case "log": if (!this.replaying) this.logs.push({ text: a.toString() }); break;
       case "fault": this.fault ??= { code: a.toString() as WorkflowFaultCode, message: b.toString() }; break;
       case "done": this.done ??= a.toBoolean() ? { ok: true, value: text(b) } : { ok: false, error: b.toString() }; break;
     }
@@ -669,7 +642,7 @@ export async function serveWorkflowStep(request: WorkflowStepRequest, wasm: WebA
       if (snapshotBytes <= request.snapshotCap) snapshot = bytes;
     }
     return {
-      kind: "ran", fingerprint, replayed, issued: vm.issued, logs: vm.logs, phase: vm.phase, done: vm.done, fault: vm.fault,
+      kind: "ran", fingerprint, replayed, issued: vm.issued, logs: vm.logs, done: vm.done, fault: vm.fault,
       snapshot, snapshotBytes, snapshotRawBytes: rawBytes, polls: vm.polls, heapBytes,
     };
   } finally { if (!disposed) vm.dispose(); }

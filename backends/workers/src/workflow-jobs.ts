@@ -184,7 +184,7 @@ export class WorkflowJobs implements EffectExecutor {
 
   /** A script's job() as a JobSpec: paid by `payer()`, its container in that payer's computer tree. */
   private async jobSpec(id: string, args: JobArgs): Promise<JobSpec> {
-    const known = ["command", "timeoutSeconds", "outputs", "limits", "internet", "at", "files"];
+    const known = ["command", "timeoutSeconds", "outputs", "limits", "internet", "at", "files", "nocache"];
     const extra = Object.keys(args ?? {}).find(name => !known.includes(name));
     if (extra) throw new JobSpecError(`job() has no option ${extra}: it takes ${known.join(", ")}`);
     if (args.at !== undefined && args.files !== undefined) throw new JobSpecError("job() takes at or files, not both");

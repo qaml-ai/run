@@ -7959,7 +7959,6 @@
             "type": "string",
             "enum": [
               "running",
-              "waiting",
               "paused",
               "completed",
               "failed",
@@ -7969,16 +7968,26 @@
           },
           "pauseReason": {
             "type": "string",
-            "description": "Why it paused: user, payer_exhausted, confirm_rerun, waiting_on_gate, capacity_refused, or a script fault"
-          },
-          "revision": {
-            "type": "integer"
+            "description": "Why it paused: user, or payer_exhausted or capacity_refused (both resume by themselves). A script's fault ends it failed, with fault"
           },
           "step": {
             "type": "integer"
           },
-          "phase": {
-            "type": "string"
+          "fault": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "description": "Why the script stopped it (failed): start a new workflow to go on; finished results are reused"
           },
           "result": {
             "description": "What the script returned, once completed"
@@ -8074,7 +8083,6 @@
         "required": [
           "id",
           "status",
-          "revision",
           "step",
           "budget",
           "concurrency",
@@ -8090,7 +8098,7 @@
         "properties": {
           "script": {
             "type": "string",
-            "description": "The workflow's JavaScript: an async function body using agent(), parallel(), gate(), sleep(), log(), phase() and `args`"
+            "description": "The workflow's JavaScript: an async function body using agent(), parallel(), job(), commit(), push(), log() and `args`"
           },
           "args": {
             "description": "JSON the script reads as `args`"
@@ -8189,31 +8197,6 @@
         },
         "required": [
           "events"
-        ]
-      },
-      "WorkflowEdit": {
-        "type": "object",
-        "properties": {
-          "script": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string",
-            "description": "Why it changed; kept with the revision"
-          },
-          "rerunConfirmPercent": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100
-          },
-          "confirm": {
-            "type": "boolean",
-            "description": "Go ahead even if the edit reruns many finished effects (also replaces an edit held at confirm_rerun)"
-          }
-        },
-        "required": [
-          "script",
-          "reason"
         ]
       },
       "Decisions": {
@@ -21716,7 +21699,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Its status, phase, revision, counts by effect status, spend and, once it ends, its result",
+            "description": "Its status, counts by effect status (counts.cached: results reused from an earlier workflow), spend and, once it ends, its result",
             "content": {
               "application/json": {
                 "schema": {
@@ -21778,21 +21761,13 @@
               "type": "string"
             },
             "required": false,
-            "name": "phase",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
             "name": "kind",
             "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "Its effects (agents, gates, timers) with their keys, attempts, status, results and costs",
+            "description": "Its effects (agents, jobs, commits, pushes) with their keys, attempts, status, results and costs",
             "content": {
               "application/json": {
                 "schema": {
@@ -21844,102 +21819,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Its events (created, phase, paused, completed …), oldest first",
+            "description": "Its events (created, paused, completed …), oldest first",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WorkflowEvents"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workflows/{id}/diff": {
-      "get": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "revision",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "What a revision of its script kept, issued and dropped, and why it changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workflows/{id}/script": {
-      "put": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkflowEdit"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "The new revision: effects whose keys and arguments are unchanged keep their results",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
                 }
               }
             }
@@ -22029,7 +21913,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Resumed; { rerun: [keys] } runs those effects again. Effects refused for money are issued again under a new attempt",
+            "description": "Resumed (a workflow you paused); effects refused for money are issued again under a new attempt. To change a workflow, abort it and start a new one: finished agent() and job() results are reused",
             "content": {
               "application/json": {
                 "schema": {
@@ -22076,7 +21960,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Aborted for good: its running sub-agents stop",
+            "description": "Aborted for good: its running sub-agents stop; its finished results stay reusable by a new workflow of the same owner",
             "content": {
               "application/json": {
                 "schema": {

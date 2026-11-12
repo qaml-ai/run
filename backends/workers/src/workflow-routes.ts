@@ -1,9 +1,9 @@
 // The public workflow API (docs/design/swarm-workflows.md, "API and SDK"), Workers only, gated per tenant:
 //   POST /v1/workflows                      { script, args?, budget: { usd: number | null }, concurrency?, classes?, name? } -> 201
-//   GET  /v1/workflows/{id}                 status, counts, spent, phase, revision
-//   GET  /v1/workflows/{id}/items|events|diff
-//   PUT  /v1/workflows/{id}/script          { script, reason, rerunConfirmPercent?, confirm? }
+//   GET  /v1/workflows/{id}                 status, counts (counts.cached: results reused from the owner's cache), spent
+//   GET  /v1/workflows/{id}/items|events
 //   POST /v1/workflows/{id}/pause|resume|abort|budget
+// A workflow is not edited: to change one, abort it and start a new one (finished results are reused).
 import { digest } from "./api-contract.ts";
 import { AgentOptionsError, classesInput } from "./workflow-types.ts";
 import type { WorkflowEnv, WorkflowSettings } from "./workflow-object.ts";
@@ -56,15 +56,13 @@ export interface WorkflowStub {
   create(init: Record<string, unknown>, settings: WorkflowSettings): Promise<unknown>;
   items(query: Record<string, unknown>): Promise<unknown>;
   events(query: Record<string, unknown>): Promise<unknown>;
-  diff(revision?: number): Promise<unknown>;
-  edit(options: { code: string; reason?: string; rerunConfirmPercent?: number; confirm?: boolean }): Promise<Record<string, unknown>>;
   pause(options: { children?: "abort" }): Promise<unknown>;
-  resume(options: { rerun?: string[] }): Promise<unknown>;
+  resume(): Promise<unknown>;
   abort(): Promise<unknown>;
   setBudget(usd: number | null): Promise<unknown>;
 }
 type Stub = WorkflowStub;
-const METHODS = ["get", "view", "create", "items", "events", "diff", "edit", "pause", "resume", "abort", "setBudget"] as const;
+const METHODS = ["get", "view", "create", "items", "events", "pause", "resume", "abort", "setBudget"] as const;
 /**
  * The workflow `id`'s object, its refusals thrown again here as `WorkflowError`s: the object answers them as values
  * (refusable) so they are not logged as its uncaught errors.
@@ -118,20 +116,9 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
     const view = async () => ({ id, ...(await stub.view()) });
     if (request.method === "GET") {
       if (!action) return json(await view());
-      if (action === "items") return json(await stub.items({ after: number("after"), limit: number("limit"), ...(query.get("status") ? { status: query.get("status")! } : {}), ...(query.get("phase") ? { phase: query.get("phase")! } : {}), ...(query.get("kind") ? { kind: query.get("kind")! } : {}) }));
+      if (action === "items") return json(await stub.items({ after: number("after"), limit: number("limit"), ...(query.get("status") ? { status: query.get("status")! } : {}), ...(query.get("kind") ? { kind: query.get("kind")! } : {}) }));
       if (action === "events") return json({ events: await stub.events({ after: number("after"), limit: number("limit") }) });
-      if (action === "diff") return json(await stub.diff(number("revision")));
       return refuse(404, "Not found", "NOT_FOUND");
-    }
-    if (request.method === "PUT" && action === "script") {
-      const { script, reason, rerunConfirmPercent, confirm, ...rest } = await body() as Record<string, unknown>;
-      if (Object.keys(rest).length) throw new WorkflowInputError(`Unknown field ${Object.keys(rest)[0]}`);
-      if (typeof script !== "string" || !script.trim() || script.length > WORKFLOW_SCRIPT_CHARS) throw new WorkflowInputError("script is the workflow's new JavaScript");
-      if (typeof reason !== "string" || !reason.trim()) throw new WorkflowInputError("reason says why the script changed: it is kept with the revision");
-      if (rerunConfirmPercent !== undefined && (!Number.isInteger(rerunConfirmPercent) || (rerunConfirmPercent as number) < 0 || (rerunConfirmPercent as number) > 100)) throw new WorkflowInputError("rerunConfirmPercent is an integer from 0 to 100");
-      if (confirm !== undefined && typeof confirm !== "boolean") throw new WorkflowInputError("confirm is true or false");
-      const edited = await stub.edit({ code: script, reason, ...(rerunConfirmPercent !== undefined ? { rerunConfirmPercent: rerunConfirmPercent as number } : {}), ...(confirm ? { confirm: true } : {}) }) as { workflow?: unknown };
-      return json({ ...edited, workflow: await view() });
     }
     if (request.method !== "POST") return refuse(405, "Method not allowed", "METHOD_NOT_ALLOWED");
     const input = await request.text().then(text => text ? JSON.parse(text) as Record<string, unknown> : {}).catch(() => { throw new WorkflowInputError("Expected a JSON body"); });
@@ -139,8 +126,8 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
       if (input.children !== undefined && input.children !== "abort") throw new WorkflowInputError('children is "abort" (stop running children), or absent to let them finish');
       await stub.pause(input.children ? { children: "abort" } : {});
     } else if (action === "resume") {
-      if (input.rerun !== undefined && (!Array.isArray(input.rerun) || input.rerun.some(key => typeof key !== "string"))) throw new WorkflowInputError("rerun is a list of effect keys to run again");
-      await stub.resume(input.rerun ? { rerun: input.rerun as string[] } : {});
+      if (Object.keys(input).length) throw new WorkflowInputError(`Unknown field ${Object.keys(input)[0]}: resume takes no options (to change a workflow, abort it and start a new one)`);
+      await stub.resume();
     } else if (action === "abort") await stub.abort();
     else if (action === "budget") {
       const usd = input.usd;
