@@ -533,7 +533,7 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 	return nil
 }
 func (m *Manager) status(ctx context.Context, v *Mount) error {
-	if v.DM == "" {
+	if v.DM == "" || v.State == "hydrated" || v.State == "released" {
 		return nil
 	}
 	s, e := run(ctx, "dmsetup", "status", v.DM)

@@ -92,31 +92,54 @@ func (m *Manager) earlyWrites(ctx context.Context, p, id string, before ...[]ext
 	})
 	return out, e
 }
-func (m *Manager) poll(v *Mount, stop <-chan struct{}) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+func hydrationInterval(elapsed time.Duration) time.Duration {
+	if elapsed >= time.Second {
+		return time.Second
+	}
+	return 100 * time.Millisecond
+}
+func pollHydration(stop, hostStop <-chan struct{}, ticks <-chan time.Time, reset func(time.Duration), start time.Time, check func() bool) {
+	interval := 100 * time.Millisecond
 	for {
 		select {
 		case <-stop:
 			return
-		case <-m.stop:
+		case <-hostStop:
 			return
-		case <-ticker.C:
-			v.mu.Lock()
-			if v.State == "released" {
-				v.mu.Unlock()
+		case now := <-ticks:
+			select {
+			case <-stop:
+				return
+			case <-hostStop:
+				return
+			default:
+			}
+			if check() {
 				return
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			e := m.status(ctx, v)
-			cancel()
-			done := v.early != nil
-			v.mu.Unlock()
-			if e == nil && done {
-				return
+			next := hydrationInterval(now.Sub(start))
+			if next != interval {
+				reset(next)
+				interval = next
 			}
 		}
 	}
+}
+func (m *Manager) poll(v *Mount, stop <-chan struct{}) {
+	start := time.Now()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	pollHydration(stop, m.stop, ticker.C, ticker.Reset, start, func() bool {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		if v.State == "released" {
+			return true
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		e := m.status(ctx, v)
+		return e == nil && v.early != nil
+	})
 }
 
 // Parent chunks may have changed or become holes. Private non-parent extents

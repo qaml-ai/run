@@ -68,7 +68,8 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 				return out, e
 			}
 		}
-		deadline := time.Now().Add(5 * time.Minute)
+		pollStart := time.Now()
+		deadline := pollStart.Add(5 * time.Minute)
 		for {
 			if e = m.status(ctx, v); e != nil {
 				return out, e
@@ -82,7 +83,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 			select {
 			case <-ctx.Done():
 				return out, ctx.Err()
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(hydrationInterval(time.Since(pollStart))):
 			}
 		}
 		if v.early != nil && !v.earlyConsumed {

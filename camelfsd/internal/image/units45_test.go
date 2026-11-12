@@ -180,3 +180,44 @@ func TestEarlyRangesSkipHoles(t *testing.T) {
 	}
 	t.Logf("1 TiB sparse image: hash %d parent chunks; mark %d new chunks without hashing", len(hashes), len(changed))
 }
+
+func TestHydrationPollBackoffAndStop(t *testing.T) {
+	for _, release := range []bool{false, true} {
+		ticks := make(chan time.Time, 20)
+		stop := make(chan struct{})
+		host := make(chan struct{})
+		start := time.Unix(100, 0)
+		checks, resets := 0, 0
+		for i := 1; i <= 12; i++ {
+			ticks <- start.Add(time.Duration(i) * 100 * time.Millisecond)
+		}
+		done := make(chan struct{})
+		go func() {
+			pollHydration(stop, host, ticks, func(d time.Duration) {
+				if d != time.Second {
+					t.Error(d)
+				}
+				resets++
+			}, start, func() bool {
+				checks++
+				if checks == 11 {
+					if release {
+						close(stop)
+						return false
+					}
+					return true
+				}
+				return false
+			})
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("poll did not stop")
+		}
+		if checks != 11 || resets != 1 {
+			t.Fatal(checks, resets)
+		}
+	}
+}
