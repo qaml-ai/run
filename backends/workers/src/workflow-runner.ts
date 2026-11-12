@@ -401,7 +401,8 @@ export class WorkflowRunner {
     const now = this.now();
     let failed = true;
     try {
-      if (recover) await this.executor.recover?.();
+      // An ended workflow has nothing to recover: its executor was aborted, and a recover would start children again.
+      if (recover && !TERMINAL.has(this.state().status as WorkflowStatus)) await this.executor.recover?.();
       await this.capacityHousekeeping();
       // Effects held from before (a resume, a raised budget, a failed start, a slot granted) first; then each step's new ones.
       await this.startHeld();
@@ -925,6 +926,26 @@ export class WorkflowRunner {
   }
 
   /** Stop the workflow for good: running effects are cancelled, the journal and ledger stay readable. */
+  /**
+   * End the workflow as failed for a reason outside its script (it cannot run where it is): what is still out is
+   * cancelled, and it ends once, with `error`, rather than retrying on every alarm.
+   */
+  fail(error: string, code: string): Promise<void> {
+    return this.serial(async () => {
+      const status = this.state().status as WorkflowStatus;
+      if (TERMINAL.has(status)) return;
+      this.storage.transactionSync(() => {
+        this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = ?, due_at = NULL, ended_at = ? WHERE current = 1 AND status = 'pending'", error, this.now());
+        this.dropSnapshot();
+        this.sql.exec("UPDATE workflow_state SET error = ?, fault_code = NULL WHERE id = 1", error);
+        this.setStatus("failed");
+        this.event("failed", { code, error });
+      });
+      await this.advance();
+      await this.executor.abort?.();
+    });
+  }
+
   abort(): Promise<void> {
     return this.serial(async () => {
       const status = this.state().status as WorkflowStatus;

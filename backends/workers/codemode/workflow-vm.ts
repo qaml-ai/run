@@ -8,7 +8,7 @@
 //
 // This is our own driver, not pi-codemode's: its VM driver keeps its state in closures that cannot be snapshotted,
 // and workflow scripts see their own globals (agent, job, commit, push, gate, parallel, sleep, log, phase, now, random), not code mode's tools.
-import { Intrinsics, QuickJS, type JSValueHandle } from "quickjs-wasi";
+import { EvalFlags, Intrinsics, JSException, QuickJS, type JSValueHandle } from "quickjs-wasi";
 import {
   WORKFLOW_STEP_PROTOCOL, type IssuedEffect, type WorkflowBatch, type WorkflowFaultCode, type WorkflowStepOutcome, type WorkflowStepRequest,
 } from "./workflow-protocol.ts";
@@ -154,6 +154,86 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     if (value !== undefined && (value === null || typeof value !== "object" || isArray(value))) throw new TypeErrorCtor(name + "() options must be an object");
     return value;
   }
+  // UTF-8 and base64, as small pure functions over the script's own strings and Uint8Arrays.
+  function utf8Encode(text) {
+    const out = [];
+    for (let i = 0; i < text.length; i++) {
+      let c = text.charCodeAt(i);
+      if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length) {
+        const d = text.charCodeAt(i + 1);
+        if (d >= 0xdc00 && d < 0xe000) { c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00); i++; }
+      }
+      if (c >= 0xd800 && c < 0xe000) c = 0xfffd; // a lone surrogate, as TextEncoder writes it
+      if (c < 0x80) out.push(c);
+      else if (c < 0x800) out.push(0xc0 | c >> 6, 0x80 | c & 63);
+      else if (c < 0x10000) out.push(0xe0 | c >> 12, 0x80 | c >> 6 & 63, 0x80 | c & 63);
+      else out.push(0xf0 | c >> 18, 0x80 | c >> 12 & 63, 0x80 | c >> 6 & 63, 0x80 | c & 63);
+    }
+    return new Uint8Array(out);
+  }
+  function utf8Decode(bytes) {
+    let text = "";
+    for (let i = 0; i < bytes.length;) {
+      const b = bytes[i];
+      let c = 0xfffd, n = 1;
+      if (b < 0x80) c = b;
+      else if (b >= 0xc2 && b < 0xe0 && i + 1 < bytes.length && (bytes[i + 1] & 0xc0) === 0x80) { c = (b & 31) << 6 | bytes[i + 1] & 63; n = 2; }
+      else if (b >= 0xe0 && b < 0xf0 && i + 2 < bytes.length && (bytes[i + 1] & 0xc0) === 0x80 && (bytes[i + 2] & 0xc0) === 0x80) {
+        const v = (b & 15) << 12 | (bytes[i + 1] & 63) << 6 | bytes[i + 2] & 63;
+        if (v >= 0x800 && (v < 0xd800 || v >= 0xe000)) { c = v; n = 3; }
+      } else if (b >= 0xf0 && b < 0xf5 && i + 3 < bytes.length && (bytes[i + 1] & 0xc0) === 0x80 && (bytes[i + 2] & 0xc0) === 0x80 && (bytes[i + 3] & 0xc0) === 0x80) {
+        const v = (b & 7) << 18 | (bytes[i + 1] & 63) << 12 | (bytes[i + 2] & 63) << 6 | bytes[i + 3] & 63;
+        if (v >= 0x10000 && v < 0x110000) { c = v; n = 4; }
+      }
+      text += c >= 0x10000 ? String.fromCharCode(0xd800 + (c - 0x10000 >> 10), 0xdc00 + (c - 0x10000 & 1023)) : String.fromCharCode(c);
+      i += n;
+    }
+    return text;
+  }
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  function base64Encode(bytes) {
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 3) {
+      const n = bytes[i] << 16 | (bytes[i + 1] ?? 0) << 8 | (bytes[i + 2] ?? 0);
+      out += ALPHABET[n >> 18 & 63] + ALPHABET[n >> 12 & 63] + (i + 1 < bytes.length ? ALPHABET[n >> 6 & 63] : "=") + (i + 2 < bytes.length ? ALPHABET[n & 63] : "=");
+    }
+    return out;
+  }
+  function base64Decode(text) {
+    if (typeof text !== "string") throw new TypeErrorCtor("fromBase64() needs a string");
+    const clean = text.replace(/[\\s=]/g, "").replace(/-/g, "+").replace(/_/g, "/");
+    if (/[^A-Za-z0-9+/]/.test(clean) || clean.length % 4 === 1) throw new TypeErrorCtor("fromBase64() was given text that is not base64");
+    const out = new Uint8Array(Math.floor(clean.length * 3 / 4));
+    let bits = 0, value = 0, at = 0;
+    for (let i = 0; i < clean.length; i++) {
+      value = value << 6 | ALPHABET.indexOf(clean[i]);
+      bits += 6;
+      if (bits >= 8) { bits -= 8; out[at++] = value >> bits & 255; }
+    }
+    return out;
+  }
+  function bytesOf(value, name) {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    throw new TypeErrorCtor(name + "() takes a string or bytes (a Uint8Array or ArrayBuffer)");
+  }
+  class TextEncoderShim {
+    get encoding() { return "utf-8"; }
+    encode(text = "") { return utf8Encode(String(text)); }
+  }
+  class TextDecoderShim {
+    constructor(label = "utf-8") {
+      if (!/^utf-?8$/i.test(String(label))) throw new RangeError("TextDecoder here decodes UTF-8 only, not " + label);
+    }
+    get encoding() { return "utf-8"; }
+    decode(input) {
+      if (input === undefined) return "";
+      let bytes = bytesOf(input, "TextDecoder.decode");
+      if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) bytes = bytes.subarray(3);
+      return utf8Decode(bytes);
+    }
+  }
   const globals = {
     agent(prompt, opts) {
       if (typeof prompt !== "string" || prompt === "") throw new TypeErrorCtor("agent(prompt) needs a prompt string");
@@ -236,8 +316,17 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     },
     now() { return now(); },
     random() { return random(); },
+    // Text and base64, deterministic and in the VM's own heap (so they survive snapshots). btoa/atob take Latin-1 only;
+    // these take any text, as UTF-8.
+    toBase64(value) { return base64Encode(typeof value === "string" ? utf8Encode(value) : bytesOf(value, "toBase64")); },
+    fromBase64(text, opts) {
+      const bytes = base64Decode(text);
+      return opts && opts.as === "bytes" ? bytes : utf8Decode(bytes);
+    },
   };
   for (const name of keysOf(globals)) defineProperty(globalThis, name, { value: globals[name], enumerable: true });
+  if (typeof globalThis.TextEncoder === "undefined") defineProperty(globalThis, "TextEncoder", { value: TextEncoderShim, writable: true, configurable: true });
+  if (typeof globalThis.TextDecoder === "undefined") defineProperty(globalThis, "TextDecoder", { value: TextDecoderShim, writable: true, configurable: true });
   return {
     settle,
     adopt,
@@ -272,6 +361,38 @@ interface DriverState {
 }
 
 class Interrupted extends Error {}
+
+/** The script's wrapper on its first line: a column there is the script's own minus this. */
+const SCRIPT_PREFIX = "(async () => {";
+
+/**
+ * A SyntaxError in the script, where it is (1-based, in the script as written), or undefined for any other error.
+ * `lineOffset` is how many lines the caller put before the script (a workflow's `args` line).
+ */
+export function scriptError(error: unknown, lineOffset = 0): { message: string; line: number; column: number } | undefined {
+  if (!(error instanceof JSException) || error.name !== "SyntaxError") return undefined;
+  const at = /workflow\.js:(\d+):(\d+)/.exec(error.stack ?? "");
+  const rawLine = at ? Number(at[1]) : 1, rawColumn = at ? Number(at[2]) : 1;
+  const line = Math.max(1, rawLine - lineOffset), column = rawLine === 1 ? Math.max(1, rawColumn - SCRIPT_PREFIX.length) : rawColumn;
+  return { message: `SyntaxError at line ${line}, column ${column}: ${error.message}`, line, column };
+}
+
+/** Compile `code` as a workflow script, without running it: a script error, where it is, or ok. */
+export async function checkWorkflowScript(code: string, wasm: WebAssembly.Module): Promise<{ ok: true } | { ok: false; message: string; line: number; column: number }> {
+  if (typeof code !== "string") return { ok: false, message: "A workflow script is text", line: 1, column: 1 };
+  // Compiled only, never run: a script can close the wrapper (`})(); for (;;) {} (async () => {`), and nothing it
+  // writes may execute here. The poll budget is a backstop all the same, so a check can never hold its slot.
+  let polls = 0;
+  const vm = await QuickJS.create({ wasm, memoryLimit: WORKFLOW_HEAP_BYTES, maxStackSize: WORKFLOW_STACK_BYTES, interruptHandler: () => ++polls > WORKFLOW_POLL_BUDGET } as never);
+  try {
+    vm.evalCode(`${SCRIPT_PREFIX}${code}\n})`, "workflow.js", EvalFlags.COMPILE_ONLY).dispose();
+    return { ok: true };
+  } catch (error) {
+    const syntax = scriptError(error);
+    if (syntax) return { ok: false, ...syntax };
+    throw error;
+  } finally { vm.dispose(); }
+}
 
 /**
  * What an uncatchable VM error was: the step's poll budget used up, the heap full (QuickJS fails a promise job it
@@ -397,7 +518,15 @@ class WorkflowVm {
         adopt.dispose();
       }
       const run = this.api.getProp("run");
-      const fn = vm.evalCode(`(async () => {${code}\n})`, "workflow.js");
+      let fn: JSValueHandle;
+      try { fn = vm.evalCode(`(async () => {${code}\n})`, "workflow.js"); }
+      catch (error) {
+        run.dispose();
+        // A workflow's script follows the line its start's `args` take (withArgs, workflow-object.ts).
+        const syntax = scriptError(error, code.startsWith("const args = Object.freeze(") ? 1 : 0);
+        if (syntax) { this.fault ??= { code: "script_error", message: syntax.message }; return; }
+        throw error;
+      }
       vm.callFunction(run, this.api, fn).dispose();
       fn.dispose(); run.dispose();
       this.drain();

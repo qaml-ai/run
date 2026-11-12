@@ -552,3 +552,21 @@ test("a cancel that always fails backs off per effect, doubling, and is given up
   assert.deepEqual(h.runner.events().filter(event => event.type.startsWith("cancel_")).map(event => event.type), ["cancel_failed", "cancel_gave_up"]);
   assert.match(h.runner.items().items.find(item => item.key === "slow")!.reason ?? "", /cancel gave up after 8 attempts/);
 });
+
+test("fail() ends a workflow once: what is out is cancelled, the executor aborted, and a later wake recovers nothing", { timeout: 30_000 }, async () => {
+  const h = harness();
+  let recovers = 0, aborts = 0;
+  h.world.recover = async () => { recovers++; };
+  h.world.abort = async () => { aborts++; };
+  h.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await h.wake();
+  assert.equal(recovers, 1);
+  await h.runner.fail("no origin", "missing_origin");
+  await h.runner.fail("no origin", "missing_origin");
+  assert.deepEqual([at(h).status, at(h).error], ["failed", "no origin"]);
+  assert.equal(h.runner.events().filter(event => event.type === "failed").length, 1, "once");
+  assert.deepEqual(h.world.cancelled, ["a:1"]);
+  assert.equal(aborts, 1);
+  await h.runner.wake();
+  assert.equal(recovers, 1, "an ended workflow does not recover its executor");
+});

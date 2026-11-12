@@ -262,13 +262,55 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   create(init: Omit<WorkflowInit, "seed" | "startedAt">, settings: WorkflowSettings = {}) { return refusable(() => this.created(init, settings)); }
   private async created(init: Omit<WorkflowInit, "seed" | "startedAt">, settings: WorkflowSettings) {
     if (!this.ctx.id.name) throw new WorkflowError("A WorkflowObject is addressed by its workflow id (getByName)", 500);
+    if (!this.exists()) await this.checkScript(init.code);
     this.settingsTable();
     this.ctx.storage.sql.exec("INSERT OR IGNORE INTO workflow_settings (id, body) VALUES (1, ?)", JSON.stringify(settings));
     this.runner.init({ ...init, code: withArgs(init.code, this.settings().args), seed: crypto.getRandomValues(new Uint32Array(1))[0]!, startedAt: Date.now() });
     // Where the owner's notices start from: the workflow as created, before its first step.
     this.notices.check(this.runner.get());
     await this.runner.wake();
+    await this.failWithoutOrigin();
     return this.told(this.runner.get());
+  }
+
+  /** Whether this object holds a workflow already (a repeated create returns it unchanged). */
+  private exists() {
+    return this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_state'").toArray().length > 0
+      && this.ctx.storage.sql.exec("SELECT 1 FROM workflow_state WHERE id = 1").toArray().length > 0;
+  }
+
+  /**
+   * Compile the script in the sandbox before anything runs: a syntax error is refused here, as `script_error` with
+   * its line and column in the script as written, so the author fixes it before a workflow starts or an edit lands.
+   */
+  private async checkScript(code: unknown) {
+    if (typeof code !== "string") return; // the runner refuses a missing script with its own message
+    const sandbox = this.env.CODEMODE_SANDBOX.getByName(this.ctx.id.toString()) as unknown as { checkScript(code: string): Promise<{ ok: true } | { ok: false; message: string; line: number; column: number }> };
+    let checked;
+    try { checked = await sandbox.checkScript(code); }
+    catch (error) {
+      if (error instanceof Error && /checkScript/.test(error.message) && /(not a function|does not (implement|have)|no such method)/i.test(error.message))
+        throw new WorkflowError("The sandbox Worker cannot check workflow scripts yet: the workflow runner and the sandbox Worker run different versions", 503);
+      throw error;
+    }
+    if (!checked.ok) throw Object.assign(new WorkflowError(`script_error: ${checked.message}`, 400), { code: "script_error", line: checked.line, column: checked.column });
+  }
+
+  /**
+   * Where its children are configured from: AGENT_PUBLIC_URL, else the origin it was started at. A workflow started
+   * before origins were stored (#818), where AGENT_PUBLIC_URL is not set either, cannot start a child: it fails once,
+   * saying so, instead of retrying every child on every alarm.
+   */
+  private async failWithoutOrigin() {
+    if ((this.env as { AGENT_PUBLIC_URL?: string }).AGENT_PUBLIC_URL || this.settings().runtimeOrigin) return;
+    if (!this.exists()) return;
+    const summary = this.runner.get();
+    if (ENDED.has(summary.status)) return;
+    const waiting = this.runner.items({ kind: "agent", status: "pending", limit: 1 }).items.length + this.runner.items({ kind: "agent", status: "running", limit: 1 }).items.length;
+    if (!waiting) return;
+    await this.runner.fail("This workflow was started before its origin was recorded, and AGENT_PUBLIC_URL is not set, so its agents cannot be configured. Start it again.", "missing_origin");
+    await this.ended();
+    this.told(undefined);
   }
 
   /**
@@ -301,11 +343,11 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   events(query: Parameters<WorkflowRunner["events"]>[0]) { return refusable(() => this.runner.events(query)); }
   pause(options: Parameters<WorkflowRunner["pause"]>[0]) { return refusable(async () => { await this.runner.pause(options); return this.told(this.runner.get()); }); }
   resume(options: Parameters<WorkflowRunner["resume"]>[0]) { return refusable(async () => { await this.runner.resume(options); return this.told(this.runner.get()); }); }
-  edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return refusable(async () => { const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }); }
+  edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return refusable(async () => { await this.checkScript(options.code); const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }); }
   abort() { return refusable(async () => { await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }); }
   setBudget(usd: number | null) { return refusable(async () => { await this.runner.setBudget(usd); return this.told(this.runner.get()); }); }
   /** An executor's landing of effect `key:attempt`. */
-  async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.runner.land(key, attempt, outcome, usage); await this.ended(); this.told(undefined); }
+  async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.failWithoutOrigin(); await this.runner.land(key, attempt, outcome, usage); await this.ended(); this.told(undefined); }
   /** `POST /v1/inbox/answers` for this workflow's gates, from `tenant` (another tenant's answers find nothing). */
   async answerGates(tenant: string, answers: InboxAnswer[]): Promise<InboxOutcome[]> {
     if (this.runner.identity().tenant !== tenant) return answers.map(answer => ({ id: answer.id, outcome: "unknown", status: 404, error: "Unknown input" }));
@@ -335,7 +377,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     this.told(undefined);
   }
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
-  async wake() { await this.runner.wake(); await this.ended(); this.told(undefined); }
+  async wake() { await this.failWithoutOrigin(); await this.runner.wake(); await this.ended(); this.told(undefined); }
 
   override async alarm() { await this.alarmed(); }
 
@@ -349,6 +391,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     const workflow = this.ctx.id.name;
     await runAlarm({
       concerns: [
+        ["origin", () => this.failWithoutOrigin()],
         // The runner isolates its own concerns; one that failed (a cancel left for later, a renew) is reported here too,
         // so the alarm's failure floor applies rather than a second's re-arm.
         ["runner", async () => { if ((await this.runner.alarm()).failed) throw new Error("a runner concern failed and was left for later (see its alarm_failed or cancel events)"); }],
