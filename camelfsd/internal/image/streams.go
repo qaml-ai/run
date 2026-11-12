@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -58,6 +59,8 @@ func (m *Manager) entries(ctx context.Context, t string) ([]objects.Entry, error
 	}
 	return m.objects().Entries(ctx, t)
 }
+
+// v0-limitation: L53
 func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error {
 	old, e := m.entries(ctx, from)
 	if e != nil {
@@ -174,15 +177,14 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 	return nil
 }
 func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.Entry, ops []wire.Op) error {
+	// v0-limitation: L52
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Minute))
 	defer cancel()
 	if e := wire.Send(c, wire.Header{V: 1, Kind: "apply", JobID: job, FromTree: a.FromTree, ToTree: a.ToTree}); e != nil {
 		return e
 	}
-	for _, f := range entries {
-		if e := wire.Send(c, map[string]any{"index": []objects.Entry{f}}); e != nil {
-			return e
-		}
+	if e := sendIndex(c, entries); e != nil {
+		return e
 	}
 	if e := wire.Send(c, map[string]any{"indexEnd": true, "count": len(entries)}); e != nil {
 		return e
@@ -192,38 +194,39 @@ func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.E
 		byPath[f.Path] = f
 	}
 
-	for start := 0; start < len(ops); start += store.Depth(m.Store) {
-		batch := ops[start:min(len(ops), start+store.Depth(m.Store))]
-		keys := []string{}
-		for _, op := range batch {
-			if op.Op == "put" {
-				keys = append(keys, op.Path)
-			}
+	// Each batch has both a count and a byte bound. Completed fetches stream
+	// immediately, releasing their buffer without waiting for slower peers.
+	for start := 0; start < len(ops); {
+		end := applyBatchEnd(ops, start, store.Depth(m.Store))
+		var writeMu sync.Mutex
+		keys := make([]string, end-start)
+		byKey := map[string]wire.Op{}
+		for i, op := range ops[start:end] {
+			keys[i] = op.Path
+			byKey[op.Path] = op
 		}
-		fetched := map[string][]byte{}
-		var mu sync.Mutex
 		e := store.Parallel(ctx, store.Depth(m.Store), keys, func(p string) error {
-			f := byPath[p]
-			b, e := m.Store.Get(ctx, "o/"+f.SHA1)
-			if e != nil {
-				return e
+			op := byKey[p]
+			var b []byte
+			if op.Op == "put" {
+				f := byPath[p]
+				if f.Size > applyByteLimit {
+					return fmt.Errorf("apply blob exceeds byte limit")
+				}
+				var e error
+				b, e = m.Store.Get(ctx, "o/"+f.SHA1)
+				if e != nil {
+					return e
+				}
+				if int64(len(b)) != f.Size || store.GitHash("blob", b) != f.SHA1 {
+					return fmt.Errorf("corrupt blob")
+				}
 			}
-			if int64(len(b)) != f.Size || store.GitHash("blob", b) != f.SHA1 {
-				return fmt.Errorf("corrupt blob")
-			}
-			mu.Lock()
-			fetched[p] = b
-			mu.Unlock()
-			return nil
-		})
-		if e != nil {
-			return e
-		}
-		for _, op := range batch {
+			writeMu.Lock()
+			defer writeMu.Unlock()
 			if e := wire.Send(c, op); e != nil {
 				return e
 			}
-			b := fetched[op.Path]
 			for len(b) > 0 {
 				n := min(len(b), wire.DataMax)
 				if e := wire.Write(c, b[:n]); e != nil {
@@ -231,7 +234,12 @@ func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.E
 				}
 				b = b[n:]
 			}
+			return nil
+		})
+		if e != nil {
+			return e
 		}
+		start = end
 	}
 
 	return wire.Send(c, wire.Op{End: true, Files: a.Files, Bytes: a.Bytes})
@@ -250,7 +258,7 @@ type received struct {
 	dir                  string
 }
 
-func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn) (out received, err error) {
+func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared receiveBase) (out received, err error) {
 	start := time.Now()
 	out.dir, err = os.MkdirTemp(m.Data, "checkpoint-")
 	if err != nil {
@@ -261,25 +269,10 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn) (out receiv
 			os.RemoveAll(out.dir)
 		}
 	}()
-	quotaRoot, e := m.mountRoot(ctx, v.Root)
-	if e != nil {
-		return out, e
-	}
-	quota := quotaRoot.VirtualSize
-	out.files = map[string]objects.File{}
-	repo := m.objects()
-	entries, e := m.entries(ctx, v.Tree)
-	if e != nil {
-		return out, e
-	}
-	for _, f := range entries {
-		var sha string
-		e = repo.DB.DB.QueryRowContext(ctx, "SELECT sha256 FROM lineage_blobs WHERE sha1=? LIMIT 1", f.SHA1).Scan(&sha)
-		if e != nil {
-			return out, e
-		}
-		out.files[f.Path] = objects.File{SHA256: sha, Mode: f.Mode}
-	}
+	// v0-limitation: L50
+	quota := prepared.quota
+	out.files = prepared.files
+	var e error
 	var h wire.Header
 	if e = wire.JSON(c, &h); e != nil {
 		return out, e
@@ -368,10 +361,10 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn) (out receiv
 				left -= int64(len(b))
 			}
 		}
+		ce := f.Close()
 		if e == nil {
-			e = f.Sync()
+			e = ce
 		}
-		f.Close()
 		if e != nil {
 			return out, e
 		}
@@ -381,16 +374,14 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn) (out receiv
 	}
 	// Enforce the mount quota on the final listing as well as incoming bytes.
 	var total int64
-	sizes := map[string]int64{}
+	sizes := prepared.sizes
 	for _, b := range out.blobs {
 		sizes[b.sha256] = b.size
 	}
 	for _, f := range out.files {
 		size, found := sizes[f.SHA256]
 		if !found {
-			if e := repo.DB.DB.QueryRowContext(ctx, "SELECT size FROM lineage_blobs WHERE lineage=? AND sha256=?", v.Lineage, f.SHA256).Scan(&size); e != nil {
-				return out, e
-			}
+			return out, fmt.Errorf("missing blob size")
 		}
 		if f.Mode == "120000" && size > 4096 {
 			return out, fmt.Errorf("link size cap")
@@ -416,15 +407,6 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn) (out receiv
 				return out, fmt.Errorf("file/directory conflict")
 			}
 		}
-	}
-	dir, e := os.Open(out.dir)
-	if e != nil {
-		return out, e
-	}
-	e = dir.Sync()
-	dir.Close()
-	if e != nil {
-		return out, e
 	}
 	out.stream = ms(start)
 	return out, nil
@@ -485,10 +467,14 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	defer stopCancel()
 	deadline, _ := ctx.Deadline()
 	c.SetDeadline(deadline.Add(-time.Millisecond))
+	prepared, e := m.prepareReceive(ctx, v)
+	if e != nil {
+		return out, e
+	}
 	if err = wire.Send(c, map[string]bool{"ready": true}); err != nil {
 		return out, ErrStreamTimeout
 	}
-	r, e := m.receive(ctx, v, c)
+	r, e := m.receive(ctx, v, c, prepared)
 	if e != nil {
 		wire.Send(c, map[string]any{"ack": false, "error": e.Error()})
 		if ctx.Err() != nil || time.Until(deadline) < 2*time.Millisecond {
@@ -529,6 +515,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	if e != nil {
 		return out, e
 	}
+	// v0-limitation: L51
 	tree, e := repo.Import(ctx, objects.Request{Lineage: v.Lineage, ParentTree: v.Tree, Files: r.files})
 	if e != nil {
 		return out, e
@@ -541,4 +528,101 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	out.FreezeMs = r.freeze
 	out.PublishMs = ms(publish)
 	return
+}
+
+const applyByteLimit int64 = 256 << 20
+
+func applyBatchEnd(ops []wire.Op, start, depth int) int {
+	var bytes int64
+	end := start
+	for end < len(ops) && end-start < depth {
+		if end > start && (ops[end].Op == "del") != (ops[start].Op == "del") {
+			break
+		}
+		size := ops[end].Size
+		if end > start && size > applyByteLimit-bytes {
+			break
+		}
+		bytes += size
+		end++
+	}
+	return end
+}
+func sendIndex(w io.Writer, entries []objects.Entry) error {
+	batch := []objects.Entry{}
+	size := len(`{"index":[]}`)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		e := wire.Send(w, map[string]any{"index": batch})
+		batch = nil
+		size = len(`{"index":[]}`)
+		return e
+	}
+	for _, f := range entries {
+		b, e := json.Marshal(f)
+		if e != nil {
+			return e
+		}
+		extra := len(b)
+		if len(batch) > 0 {
+			extra++
+		}
+		if size+extra > wire.JSONMax {
+			if e := flush(); e != nil {
+				return e
+			}
+			extra = len(b)
+		}
+		batch = append(batch, f)
+		size += extra
+	}
+	return flush()
+}
+
+type receiveBase struct {
+	quota int64
+	files map[string]objects.File
+	sizes map[string]int64
+}
+
+func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase, err error) {
+	r, err := m.mountRoot(ctx, v.Root)
+	if err != nil {
+		return out, err
+	}
+	out.quota = r.VirtualSize
+	entries, err := m.entries(ctx, v.Tree)
+	if err != nil {
+		return out, err
+	}
+	out.files = map[string]objects.File{}
+	out.sizes = map[string]int64{}
+	hashes := map[string]string{}
+	rows, err := m.objects().DB.DB.QueryContext(ctx, "SELECT sha1,sha256,size FROM lineage_blobs WHERE lineage=?", v.Lineage)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sha1, sha256 string
+		var size int64
+		if err = rows.Scan(&sha1, &sha256, &size); err != nil {
+			return out, err
+		}
+		hashes[sha1] = sha256
+		out.sizes[sha256] = size
+	}
+	if err = rows.Err(); err != nil {
+		return out, err
+	}
+	for _, f := range entries {
+		sha, ok := hashes[f.SHA1]
+		if !ok {
+			return out, fmt.Errorf("missing lineage blob")
+		}
+		out.files[f.Path] = objects.File{SHA256: sha, Mode: f.Mode}
+	}
+	return out, nil
 }
