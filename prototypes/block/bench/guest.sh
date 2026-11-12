@@ -65,12 +65,12 @@ bench)
   LABEL=$2; DEV=$3
   cd $CH; rm -f /tmp/ch.sock; cp --reflink=always noble-base.raw noble-run.raw
   t0=$(now)
-  ./cloud-hypervisor --api-socket /tmp/ch.sock --kernel /boot/vmlinuz-$(uname -r) --initramfs /boot/initrd.img-$(uname -r) --cmdline "console=ttyS0 root=/dev/vda1 rw" --cpus boot=4 --memory size=4G \
+  ./cloud-hypervisor --api-socket /tmp/ch.sock --kernel /boot/vmlinuz-$(uname -r) --initramfs /boot/initrd.img-$(uname -r) --cmdline "console=ttyS0 root=/dev/vda1 rw" --cpus boot=${GUEST_CPUS:-2} --memory size=${GUEST_MEM:-2G} \
     --disk path=noble-run.raw,image_type=raw --disk path=seed.iso,readonly=on,image_type=raw --disk path=$DEV,image_type=raw \
     --net tap=tap0,mac=12:34:56:78:90:ab --serial file=/tmp/ch-serial.log --console off > /tmp/ch.log 2>&1 &
   CHPID=$!
   until gssh true 2>/dev/null; do sleep 0.5; [ -d /proc/$CHPID ] || { echo "guest died"; tail -5 /tmp/ch.log; exit 1; }; done
-  rec "[$LABEL] guest_boot_to_ssh_ms=$(ms $t0) (Cloud Hypervisor $(./cloud-hypervisor --version | cut -d' ' -f2), direct boot of the host kernel $(uname -r), 4 vCPU, 4 GiB, nested KVM)"
+  rec "[$LABEL] guest_boot_to_ssh_ms=$(ms $t0) (Cloud Hypervisor $(./cloud-hypervisor --version | cut -d' ' -f2), direct boot of the host kernel $(uname -r), ${GUEST_CPUS:-2} vCPU, ${GUEST_MEM:-2G}, nested KVM)"
   scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i guest_key $BIN ubuntu@$GIP:/tmp/lazyblk
   gssh 'sudo mkdir -p /mnt/v && sudo mount /dev/vdc /mnt/v && sudo chown ubuntu /mnt/v/. 2>/dev/null; ls /mnt/v | head -3' >/dev/null
   gssh "sudo sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null; t0=\$(date +%s%N); sudo cat /mnt/v/src/m0/d0/f0.ts >/dev/null; echo \$(( (\$(date +%s%N)-t0)/1000000 ))" | sed "s/^/[$LABEL] guest_first_file_cold_ms=/" | tee -a $R
