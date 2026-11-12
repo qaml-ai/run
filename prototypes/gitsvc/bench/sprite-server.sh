@@ -13,7 +13,7 @@ if ! docker run -d --name gitsvc-minio --network host -e MINIO_ROOT_USER -e MINI
   quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >/dev/null; then
   # Fallback stand-in: SeaweedFS's S3 gateway (no identities configured = accepts any signed request).
   docker rm -f gitsvc-minio >/dev/null 2>&1 || true
-  docker run -d --name gitsvc-minio --network host chrislusf/seaweedfs:3.80 server -dir=/data -ip=127.0.0.1 -s3 -s3.port=9000 >/dev/null
+  docker run -d --name gitsvc-minio --network host chrislusf/seaweedfs:3.80 server -dir=/data -ip=127.0.0.1 -volume.port=8081 -s3 -s3.port=9000 >/dev/null
   echo "S3 stand-in: SeaweedFS"
 else echo "S3 stand-in: MinIO"; fi
 trap 'docker rm -f gitsvc-minio >/dev/null 2>&1' EXIT
