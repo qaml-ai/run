@@ -129,6 +129,14 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
     assert.deepEqual(child.owner, { kind: "workflow", id: workflowId });
     assert.deepEqual(child.root, { kind: "workflow", id: workflowId });
   }
+  // The children's usage rolls up into the agent that owns the workflow (the workflow stays their owner).
+  const rolled = await until(async () => {
+    const usage = await ok(`/v1/agents/${agent.id}/usage?rollup=true&groupBy=agent`);
+    const rows = (usage.rows ?? usage.groups ?? usage.usage ?? []) as { agent?: string; responses?: number; usd?: number; costUsd?: number }[];
+    const own = (await fixture.db.query("select count(*)::int as n from usage_details where root_agent = $1 and agent <> $1", [agent.id])).rows[0].n;
+    return own >= 4 && { usage, own };
+  }, "the children's usage in the owner's rollup", 60_000, async () => (await fixture.db.query("select agent, root_agent from usage_details")).rows);
+  assert.ok(rolled.own >= 4, JSON.stringify(rolled));
   // An ended workflow is not aborted: a 409 the object answers as a refusal, not an error it throws.
   const late = await call(`/v1/workflows/${workflowId}/abort`, {});
   assert.equal(late.status, 409, JSON.stringify(late.value));

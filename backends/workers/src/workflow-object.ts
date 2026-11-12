@@ -200,6 +200,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       get concurrency() { return self.runner.get().concurrency; },
       land: (key, attempt, outcome, usage) => self.land(key, attempt, outcome, usage),
       defer: task => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) })))),
+      usageRoot: () => { const owner = self.settings().owner; return owner?.kind === "agent" ? owner.id : undefined; },
       classes: () => { const settings = self.settings(); return { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) }; },
       // A child of a repo (`agent(..., { repo })`) edits a fork of it at /repo, and answers with the fork, for commit().
       childVolume: async (effect, args) => {

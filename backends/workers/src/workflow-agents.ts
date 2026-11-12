@@ -62,6 +62,8 @@ export interface WorkflowAgentsHost {
   defer?(task: () => Promise<void>): void;
   /** The workflow's class pins and whether judgment may run on the fast class (workflow-types.ts). */
   classes?(): { classes?: Partial<Record<AgentType, ModelClass>>; allowFastJudgment?: boolean };
+  /** The agent its children's usage rolls up into: the workflow's owner agent, if one started it. */
+  usageRoot?(): string | undefined;
   /**
    * A volume the child works in (`agent(task, { repo })`, the jobs lane's volume forks): called once before the child
    * is made, idempotent per `key:attempt` on the host's side. `mounts` join the child's configuration; `result` joins
@@ -231,7 +233,8 @@ export class WorkflowAgents implements EffectExecutor {
       }
     }
     const args = row.args!;
-    const place: ChildPlace & { ownerRun: string } = { depth: row.depth, maxDepth: row.maxDepth!, chain: row.chain!, owner: row.owner, rootOwner: row.rootOwner, ownerRun: row.parentRequestId };
+    const usageRoot = this.host.usageRoot?.();
+    const place: ChildPlace & { ownerRun: string } = { depth: row.depth, maxDepth: row.maxDepth!, chain: row.chain!, owner: row.owner, rootOwner: row.rootOwner, ownerRun: row.parentRequestId, ...(usageRoot ? { usageRoot } : {}) };
     try {
       if (!row.id) {
         const config = await this.host.children.config(args, row.resolved);
