@@ -389,7 +389,7 @@ export class WorkflowAgents implements EffectExecutor {
  * directory under the effect's key, placed under the workflow (their header's `owner`, `rootOwner`; recordChildParent),
  * and started through `admitDelegated`. `defaults.model` is the workflow's default model for inline children.
  */
-export function workflowChildren(env: Env & { AGENT_WORKFLOW_CLASS_MODELS?: string }, workflow: () => { id: string; tenant: string }, defaults: { model?: unknown; runtimeOrigin?: string } = {}): WorkflowChildren {
+export function workflowChildren(env: Env & { AGENT_WORKFLOW_CLASS_MODELS?: string }, workflow: () => { id: string; tenant: string }, defaults: { model?: unknown; runtimeOrigin?: () => string | undefined } = {}): WorkflowChildren {
   return {
     async config(args, resolved = {}) {
       const { tenant } = workflow();
@@ -409,7 +409,7 @@ export function workflowChildren(env: Env & { AGENT_WORKFLOW_CLASS_MODELS?: stri
     },
     async create(config, key, place) {
       const { id, tenant } = workflow();
-      const entry = await new Directory(env, tenant).upsert(config, key, defaults.runtimeOrigin);
+      const entry = await new Directory(env, tenant).upsert(config, key, defaults.runtimeOrigin?.());
       if ("failed" in entry) throw Object.assign(new Error(entry.error), { status: entry.status ?? 400 });
       await recordChildParent(env, tenant, entry.id, id, place.ownerRun, place);
       return { id: entry.id };

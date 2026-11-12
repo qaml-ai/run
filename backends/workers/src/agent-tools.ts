@@ -494,6 +494,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         if (conf.config.delegate && workflowSettings !== false && conf.config.type !== "subagent" && workflowsEnabled(this.env as never, conf.tenantId)) {
           registry.install({ name: "camel.workflows", tools: workflowTools({
             env: this.env as unknown as WorkflowEnv, tenant: conf.tenantId, agentId: conf.id,
+            ...(conf.runtimeOrigin ? { runtimeOrigin: conf.runtimeOrigin } : {}),
             ...(conf.config.bucket ? { bucket: conf.config.bucket as string } : {}),
             ...(typeof workflowSettings === "object" && workflowSettings?.maxBudgetUsd !== undefined ? { maxBudgetUsd: workflowSettings.maxBudgetUsd } : {}),
             remaining: async () => { const spend = await this.agentSpend(await this.config()); return spend ? Math.max(0, spend.usd - spend.spent) : Infinity; },

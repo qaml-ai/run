@@ -141,6 +141,21 @@ export class WorkflowError extends Error {
   constructor(message: string, status = 409) { super(message); this.status = status; }
 }
 
+/**
+ * A `WorkflowError` as the workflow object's RPC methods answer it: a value, not a throw, so a caller's mistake (an
+ * ended workflow aborted, an unknown workflow read) is not logged as the object's uncaught error. `refusedOf` turns it
+ * back into the `WorkflowError` on the caller's side.
+ */
+export type WorkflowRefusal = { refused: { error: string; status: number } };
+export async function refusable<T>(run: () => T | Promise<T>): Promise<T | WorkflowRefusal> {
+  try { return await run(); }
+  catch (error) { if (error instanceof WorkflowError) return { refused: { error: error.message, status: error.status } }; throw error; }
+}
+export function refusedOf<T>(value: T | WorkflowRefusal): T {
+  if (value && typeof value === "object" && "refused" in value && value.refused && typeof value.refused === "object") throw new WorkflowError(value.refused.error, value.refused.status);
+  return value as T;
+}
+
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS workflow_state (
     id INTEGER PRIMARY KEY CHECK (id = 1), seed INTEGER NOT NULL, started_at INTEGER NOT NULL,

@@ -7,6 +7,7 @@
 import { digest } from "./api-contract.ts";
 import { AgentOptionsError, classesInput } from "./workflow-types.ts";
 import type { WorkflowEnv, WorkflowSettings } from "./workflow-object.ts";
+import { refusedOf, WorkflowError } from "./workflow-runner.ts";
 import type { Owner } from "../../../shared/owner.ts";
 
 /** Who has workflows: `AGENT_WORKFLOW_TENANTS`, a comma-separated list of tenant ids, or `*` for every tenant. */
@@ -63,24 +64,34 @@ export interface WorkflowStub {
   setBudget(usd: number | null): Promise<unknown>;
 }
 type Stub = WorkflowStub;
-const workflows = (env: WorkflowEnv) => env.WORKFLOWS as unknown as { getByName(name: string): WorkflowStub };
+const METHODS = ["get", "view", "create", "items", "events", "diff", "edit", "pause", "resume", "abort", "setBudget"] as const;
+/**
+ * The workflow `id`'s object, its refusals thrown again here as `WorkflowError`s: the object answers them as values
+ * (refusable) so they are not logged as its uncaught errors.
+ */
+export function workflowStub(env: WorkflowEnv, id: string): WorkflowStub {
+  const stub = (env.WORKFLOWS as unknown as { getByName(name: string): Record<string, (...args: unknown[]) => Promise<unknown>> }).getByName(id);
+  return Object.fromEntries(METHODS.map(method => [method, async (...args: unknown[]) => refusedOf(await stub[method]!(...args))])) as unknown as WorkflowStub;
+}
+/** The workflow's summary, or undefined when there is none yet. */
+const existing = (stub: WorkflowStub) => stub.get().catch(error => { if (error instanceof WorkflowError && error.status === 404) return undefined; throw error; });
 
 /** Start a workflow for `tenant` (an account's start, or an agent's through the builtin, which then owns it). */
-export async function startWorkflow(env: WorkflowEnv, tenant: string, input: ReturnType<typeof startInput>, options: { owner?: Owner; bucket?: string; idempotencyKey?: string | null } = {}) {
+export async function startWorkflow(env: WorkflowEnv, tenant: string, input: ReturnType<typeof startInput>, options: { owner?: Owner; bucket?: string; idempotencyKey?: string | null; runtimeOrigin?: string } = {}) {
   const id = await workflowId(tenant, options.idempotencyKey);
-  const stub = workflows(env).getByName(id);
-  const existing = await stub.get().catch(() => undefined) as { tenant?: string } | undefined;
-  if (existing && existing.tenant !== tenant) throw new WorkflowInputError("That idempotency key names another workflow");
+  const stub = workflowStub(env, id);
+  const found = await existing(stub);
+  if (found && found.tenant !== tenant) throw new WorkflowInputError("That idempotency key names another workflow");
   await stub.create({ code: input.script, budgetUsd: input.budgetUsd, ...(input.concurrency ? { concurrency: input.concurrency } : {}), tenant, ...(options.bucket ? { bucket: options.bucket } : {}) },
-    { ...input.settings, ...(options.owner ? { owner: options.owner } : {}) });
+    { ...input.settings, ...(options.owner ? { owner: options.owner } : {}), ...(options.runtimeOrigin ? { runtimeOrigin: options.runtimeOrigin } : {}) });
   return { id, ...(await stub.view()) };
 }
 
 /** The workflow `id` of `tenant`, or undefined: another tenant's workflow is not found, as an unknown one is. */
 export async function ownWorkflow(env: WorkflowEnv, tenant: string, id: string): Promise<Stub | undefined> {
   if (!/^wf_[A-Za-z0-9_-]{1,80}$/.test(id)) return undefined;
-  const stub = workflows(env).getByName(id);
-  const summary = await stub.get().catch(() => undefined) as { tenant?: string } | undefined;
+  const stub = workflowStub(env, id);
+  const summary = await existing(stub);
   return summary?.tenant === tenant ? stub : undefined;
 }
 
@@ -97,7 +108,7 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
   try {
     if (!id) {
       if (request.method !== "POST") return refuse(405, "Start a workflow with POST /v1/workflows", "METHOD_NOT_ALLOWED");
-      return json(await startWorkflow(env, tenant, startInput(await body()), { idempotencyKey: request.headers.get("Idempotency-Key") }), 201);
+      return json(await startWorkflow(env, tenant, startInput(await body()), { idempotencyKey: request.headers.get("Idempotency-Key"), runtimeOrigin: url.origin }), 201);
     }
     const stub = await ownWorkflow(env, tenant, decodeURIComponent(id));
     if (!stub) return refuse(404, "Unknown workflow", "NOT_FOUND");
@@ -136,7 +147,7 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
     return json(await view());
   } catch (error) {
     if (error instanceof WorkflowInputError || error instanceof SyntaxError) return refuse(400, error.message, "INVALID_REQUEST");
-    // The workflow's own refusals (an aborted workflow resumed, a confirm needed) come back over RPC as messages.
+    // The workflow's own refusals (an aborted workflow resumed, a confirm needed), answered by the object as values.
     return refuse(409, error instanceof Error ? error.message : String(error), "WORKFLOW_CONFLICT");
   }
 }

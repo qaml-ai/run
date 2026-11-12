@@ -30,6 +30,8 @@ export interface WorkflowToolsHost {
   tenant: string;
   agentId: string;
   bucket?: string;
+  /** The agent's runtime origin: its workflows' children are configured with it. */
+  runtimeOrigin?: string;
   /** What the agent may still spend (USD), Infinity without a spend limit. */
   remaining(): Promise<number>;
   maxBudgetUsd?: number;
@@ -68,7 +70,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       if (typeof args.budgetUsd === "number" && args.budgetUsd > cap) throw new WorkflowInputError(`A budget above $${cap.toFixed(2)} is more than you may give a workflow: ask the person you work for to start it, or use a smaller budget`);
       const input = startInput({ script: args.script, budget: { usd: args.budgetUsd }, ...(args.args !== undefined ? { args: args.args } : {}), ...(args.name !== undefined ? { name: args.name } : {}), ...(args.concurrency !== undefined ? { concurrency: args.concurrency } : {}), ...(args.classes !== undefined ? { classes: args.classes } : {}) });
       // Keyed by the call: a replay of this call (after a restart) finds the same workflow.
-      const started = await startWorkflow(host.env, host.tenant, input, { owner: agentOwner(host.agentId), ...(host.bucket ? { bucket: host.bucket } : {}), idempotencyKey: `agent:${host.agentId}:${callId}` });
+      const started = await startWorkflow(host.env, host.tenant, input, { owner: agentOwner(host.agentId), ...(host.bucket ? { bucket: host.bucket } : {}), ...(host.runtimeOrigin ? { runtimeOrigin: host.runtimeOrigin } : {}), idempotencyKey: `agent:${host.agentId}:${callId}` });
       return brief(started.id, started);
     }),
     tool("workflow_status", "A workflow's status, counts, spend and, once it ends, its result. With waitSeconds, waits until it ends, pauses or that time passes.", {
