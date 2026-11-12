@@ -207,7 +207,9 @@ export function jobSpec(value: unknown): JobSpec & { image: string; outputs: str
   if (v.saveSnapshot !== undefined && (typeof v.saveSnapshot !== "string" || !SNAPSHOT_NAME.test(v.saveSnapshot))) throw bad("Invalid saveSnapshot name");
   // Every job has a payer: it is metered, holds a computer slot, and reads volumes of the payer's tenant only.
   if (!v.payer || typeof v.payer.tenant !== "string" || !v.payer.tenant || typeof v.payer.agent !== "string" || !v.payer.agent) throw bad("A job needs a payer: { tenant, agent }");
-  const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent };
+  // A workflow payer is a workflow's id (wf_…): its tenant pays, recorded under the workflow.
+  if (v.payer.kind !== undefined && (v.payer.kind !== "workflow" || !/^wf_[A-Za-z0-9_-]{1,80}$/.test(v.payer.agent))) throw bad('A job\'s payer kind is "workflow", with the workflow\'s id as its agent');
+  const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent, ...(v.payer.kind ? { kind: v.payer.kind } : {}) };
   if (volume && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
   let secretEnv: Record<string, string> | undefined;
   if (v.secretEnv !== undefined) {
