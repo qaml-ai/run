@@ -1427,11 +1427,12 @@ class Workflows:
         {"revision", "reason"?, "kept", "issued", "unseen"}."""
         return self._runtime._rest("GET", self._path(workflow_id, "/diff") + (f"?revision={revision}" if revision is not None else ""))
 
-    def edit(self, workflow_id, script, *, reason, rerun_confirm_percent=None):
+    def edit(self, workflow_id, script, *, reason, rerun_confirm_percent=None, confirm=None):
         """Replace its script: a new revision, replayed at the next step. Effects whose keys and arguments are unchanged keep
         their results; new or changed ones run. `reason` is kept with the revision. An edit that re-issues more than
-        `rerun_confirm_percent` of the finished effects (default 25) pauses for a confirm. {"revision", "workflow"}."""
-        body = {"script": script, "reason": reason, **({"rerunConfirmPercent": rerun_confirm_percent} if rerun_confirm_percent is not None else {})}
+        `rerun_confirm_percent` of the finished effects (default 25) pauses for a confirm; `confirm=True` goes ahead (and
+        replaces an edit held for one). {"revision", "workflow"}."""
+        body = {"script": script, "reason": reason, **({"rerunConfirmPercent": rerun_confirm_percent} if rerun_confirm_percent is not None else {}), **({"confirm": True} if confirm else {})}
         return self._runtime._rest("PUT", self._path(workflow_id, "/script"), body, retry=False)
 
     def pause(self, workflow_id, *, children=None):

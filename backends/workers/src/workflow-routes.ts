@@ -2,7 +2,7 @@
 //   POST /v1/workflows                      { script, args?, budget: { usd: number | null }, concurrency?, classes?, name? } -> 201
 //   GET  /v1/workflows/{id}                 status, counts, spent, phase, revision
 //   GET  /v1/workflows/{id}/items|events|diff
-//   PUT  /v1/workflows/{id}/script          { script, reason, rerunConfirmPercent? }
+//   PUT  /v1/workflows/{id}/script          { script, reason, rerunConfirmPercent?, confirm? }
 //   POST /v1/workflows/{id}/pause|resume|abort|budget
 import { digest } from "./api-contract.ts";
 import { AgentOptionsError, classesInput } from "./workflow-types.ts";
@@ -57,7 +57,7 @@ export interface WorkflowStub {
   items(query: Record<string, unknown>): Promise<unknown>;
   events(query: Record<string, unknown>): Promise<unknown>;
   diff(revision?: number): Promise<unknown>;
-  edit(options: { code: string; reason?: string; rerunConfirmPercent?: number }): Promise<Record<string, unknown>>;
+  edit(options: { code: string; reason?: string; rerunConfirmPercent?: number; confirm?: boolean }): Promise<Record<string, unknown>>;
   pause(options: { children?: "abort" }): Promise<unknown>;
   resume(options: { rerun?: string[] }): Promise<unknown>;
   abort(): Promise<unknown>;
@@ -122,12 +122,13 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
       return refuse(404, "Not found", "NOT_FOUND");
     }
     if (request.method === "PUT" && action === "script") {
-      const { script, reason, rerunConfirmPercent, ...rest } = await body() as Record<string, unknown>;
+      const { script, reason, rerunConfirmPercent, confirm, ...rest } = await body() as Record<string, unknown>;
       if (Object.keys(rest).length) throw new WorkflowInputError(`Unknown field ${Object.keys(rest)[0]}`);
       if (typeof script !== "string" || !script.trim() || script.length > WORKFLOW_SCRIPT_CHARS) throw new WorkflowInputError("script is the workflow's new JavaScript");
       if (typeof reason !== "string" || !reason.trim()) throw new WorkflowInputError("reason says why the script changed: it is kept with the revision");
       if (rerunConfirmPercent !== undefined && (!Number.isInteger(rerunConfirmPercent) || (rerunConfirmPercent as number) < 0 || (rerunConfirmPercent as number) > 100)) throw new WorkflowInputError("rerunConfirmPercent is an integer from 0 to 100");
-      const edited = await stub.edit({ code: script, reason, ...(rerunConfirmPercent !== undefined ? { rerunConfirmPercent: rerunConfirmPercent as number } : {}) }) as { workflow?: unknown };
+      if (confirm !== undefined && typeof confirm !== "boolean") throw new WorkflowInputError("confirm is true or false");
+      const edited = await stub.edit({ code: script, reason, ...(rerunConfirmPercent !== undefined ? { rerunConfirmPercent: rerunConfirmPercent as number } : {}), ...(confirm ? { confirm: true } : {}) }) as { workflow?: unknown };
       return json({ ...edited, workflow: await view() });
     }
     if (request.method !== "POST") return refuse(405, "Method not allowed", "METHOD_NOT_ALLOWED");

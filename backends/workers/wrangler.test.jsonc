@@ -35,6 +35,18 @@
         "class_name": "WorkflowCapacity"
       },
       {
+        "name": "JOB_HOSTS",
+        "class_name": "JobHost"
+      },
+      {
+        "name": "HOST_JOBS",
+        "class_name": "HostJob"
+      },
+      {
+        "name": "JOB_HOST_REGISTRY",
+        "class_name": "JobHostRegistry"
+      },
+      {
         "name": "WORKFLOWS",
         "class_name": "WorkflowObject"
       },
@@ -64,6 +76,14 @@
       "tag": "workflow-object",
       "new_sqlite_classes": [
         "WorkflowObject"
+      ]
+    },
+    {
+      "tag": "job-hosts",
+      "new_sqlite_classes": [
+        "JobHost",
+        "HostJob",
+        "JobHostRegistry"
       ]
     }
   ],

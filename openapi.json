@@ -8205,6 +8205,10 @@
             "type": "number",
             "minimum": 0,
             "maximum": 100
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Go ahead even if the edit reruns many finished effects (also replaces an edit held at confirm_rerun)"
           }
         },
         "required": [

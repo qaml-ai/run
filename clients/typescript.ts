@@ -1837,6 +1837,8 @@ export interface WorkflowEdit {
   reason: string;
   /** An edit that re-issues more than this share (percent) of the finished effects pauses for a confirm (default 25; 100 never does). */
   rerunConfirmPercent?: number;
+  /** Go ahead even if the edit reruns many finished effects (an edit held at confirm_rerun is replaced by this one). */
+  confirm?: boolean;
 }
 /** The statuses `workflows.wait` ends on: the workflow ended, or needs someone (a resume, a budget, a gate). */
 const WORKFLOW_SETTLED: ReadonlySet<WorkflowStatus> = new Set(["completed", "failed", "aborted", "paused", "budget_exhausted"]);
