@@ -2,6 +2,7 @@ package image
 
 import (
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"golang.org/x/sys/unix"
@@ -90,7 +91,7 @@ func readExtents(f *os.File) ([]extent, error) {
 			break
 		}
 		if m.Mapped > 256 {
-			return nil, fmt.Errorf("invalid FIEMAP count")
+			return nil, apierr.Invalid("invalid FIEMAP count")
 		}
 		all = append(all, m.Extents[:m.Mapped]...)
 		last := all[len(all)-1]

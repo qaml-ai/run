@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"regexp"
 	"strings"
@@ -28,19 +29,19 @@ type CheckpointRequest struct {
 
 func (q CheckpointRequest) Validate() error {
 	if q.TimeoutMs < 0 || q.TimeoutMs > 600000 {
-		return fmt.Errorf("invalid timeoutMs")
+		return apierr.Invalid("invalid timeoutMs")
 	}
 	if q.Message != nil && (!utf8.ValidString(*q.Message) || len(*q.Message) > 4096 || strings.ContainsRune(*q.Message, 0)) {
-		return fmt.Errorf("invalid message")
+		return apierr.Invalid("invalid message")
 	}
 	if t := q.Trailers; t != nil {
 		if t.Kind != "auto" && t.Kind != "manual" && t.Kind != "job" {
-			return fmt.Errorf("invalid trailer kind")
+			return apierr.Invalid("invalid trailer kind")
 		}
 		re := regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 		for _, s := range []string{t.Agent, t.Run, t.Turn, t.Job} {
 			if s != "" && !re.MatchString(s) {
-				return fmt.Errorf("invalid trailer")
+				return apierr.Invalid("invalid trailer")
 			}
 		}
 	}
@@ -131,13 +132,13 @@ func (t *Trailers) UnmarshalJSON(b []byte) error {
 	for k, raw := range fields {
 		if k == "exitCode" {
 			if string(raw) == "null" {
-				return fmt.Errorf("invalid exitCode")
+				return apierr.Invalid("invalid exitCode")
 			}
 			continue
 		}
 		var value string
 		if e := json.Unmarshal(raw, &value); e != nil || value == "" {
-			return fmt.Errorf("invalid trailer %s", k)
+			return apierr.Invalid("invalid trailer %s", k)
 		}
 	}
 	*t = Trailers(v)
@@ -158,7 +159,7 @@ func (q *CheckpointRequest) UnmarshalJSON(b []byte) error {
 	}
 	for k, raw := range fields {
 		if string(raw) == "null" {
-			return fmt.Errorf("invalid null %s", k)
+			return apierr.Invalid("invalid null %s", k)
 		}
 	}
 	*q = CheckpointRequest(v)

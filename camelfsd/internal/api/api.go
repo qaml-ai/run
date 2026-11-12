@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"io"
@@ -31,35 +31,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	reply := func(status int, v any) { w.WriteHeader(status); _ = json.NewEncoder(w).Encode(v) }
 	fail := func(e error) {
-		status := 500
-		code := "internal"
-		// v0-limitation: L21
-		if strings.Contains(e.Error(), "invalid") || strings.Contains(e.Error(), "not allowed") || strings.Contains(e.Error(), "already mounted") || strings.Contains(e.Error(), "unknown field") || strings.Contains(e.Error(), "JSON") || errors.Is(e, io.EOF) {
-			status = 400
-			code = "invalid-request"
-		}
-		if errors.Is(e, refs.ErrFenced) {
-			status = 409
-			code = "fenced"
-		} else if errors.Is(e, image.ErrNoRoot) {
-			status = 404
-			code = "no-root-for-tree"
-		} else if errors.Is(e, os.ErrNotExist) || errors.Is(e, sql.ErrNoRows) {
-			status = 404
-			code = "not-found"
-		}
-		if errors.Is(e, image.ErrBadStream) {
-			status = 422
-			code = "bad-stream"
-		}
-		if errors.Is(e, image.ErrStreamTimeout) {
-			status = 504
-			code = "stream-timeout"
-		}
-		if errors.Is(e, image.ErrHeld) {
-			status = 409
-			code = "held"
-		}
+		status, code := errorStatus(e)
 		reply(status, map[string]any{"error": code, "detail": e.Error()})
 	}
 	decode := func(v any) error {
@@ -68,16 +40,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return e
 		}
 		if !utf8.Valid(raw) {
-			return fmt.Errorf("invalid UTF-8 JSON")
+			return apierr.Invalid("invalid UTF-8 JSON")
 		}
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.DisallowUnknownFields()
 		if e := d.Decode(v); e != nil {
-			return fmt.Errorf("invalid JSON: %w", e)
+			return apierr.Invalid("invalid JSON: %w", e)
 		}
 		var extra any
 		if e := d.Decode(&extra); e != io.EOF {
-			return fmt.Errorf("extra JSON")
+			return apierr.Invalid("extra JSON")
 		}
 		return nil
 	}
@@ -137,7 +109,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v0/mounts/"), "/")
 		id = parts[0]
 		if !image.JobID.MatchString(id) || id == "." || id == ".." {
-			fail(fmt.Errorf("invalid job id"))
+			fail(apierr.Invalid("invalid job id"))
 			return
 		}
 		if len(parts) == 2 && parts[1] == "checkpoint" && r.Method == "POST" {
@@ -176,4 +148,38 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		reply(404, map[string]string{"error": "not-found"})
 	}
+}
+
+func errorStatus(e error) (int, string) {
+	status := 500
+	code := "internal"
+	var typed *apierr.Error
+	if errors.As(e, &typed) {
+		status = typed.Status
+		code = typed.Code
+	}
+
+	if errors.Is(e, refs.ErrFenced) {
+		status = 409
+		code = "fenced"
+	} else if errors.Is(e, image.ErrNoRoot) {
+		status = 404
+		code = "no-root-for-tree"
+	} else if errors.Is(e, os.ErrNotExist) || errors.Is(e, sql.ErrNoRows) {
+		status = 404
+		code = "not-found"
+	}
+	if errors.Is(e, image.ErrBadStream) {
+		status = 422
+		code = "bad-stream"
+	}
+	if errors.Is(e, image.ErrStreamTimeout) {
+		status = 504
+		code = "stream-timeout"
+	}
+	if errors.Is(e, image.ErrHeld) {
+		status = 409
+		code = "held"
+	}
+	return status, code
 }

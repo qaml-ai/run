@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -256,7 +257,7 @@ type ImportResult struct {
 func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult, err error) {
 	t := time.Now()
 	if q.Lineage == "" || q.Name == "" || q.Tree != "" && !root.Hex(q.Tree, 40) || !filepath.IsAbs(q.Path) {
-		return out, fmt.Errorf("invalid import request")
+		return out, apierr.Invalid("invalid import request")
 	}
 	p, e := filepath.EvalSymlinks(q.Path)
 	if e != nil {
@@ -276,7 +277,7 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 		}
 	}
 	if !ok {
-		return out, fmt.Errorf("import path not allowed")
+		return out, apierr.Invalid("import path not allowed")
 	}
 	prev, e := m.Refs.Get(q.Lineage, q.Name)
 	if errors.Is(e, sql.ErrNoRows) {
@@ -297,7 +298,7 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 		return out, e
 	}
 	if !st.Mode().IsRegular() || st.Size() == 0 || st.Size()%512 != 0 {
-		return out, fmt.Errorf("invalid image size or type")
+		return out, apierr.Invalid("invalid image size or type")
 	}
 	r := root.Root{V: 1, Tree: q.Tree, FSType: "ext4", VirtualSize: st.Size(), Chunks: map[string]string{}}
 	pending := map[string][]byte{}

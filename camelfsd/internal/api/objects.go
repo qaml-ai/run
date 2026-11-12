@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"io"
 	"net/http"
 	"strings"
@@ -49,7 +50,7 @@ func (s *Server) objects(w http.ResponseWriter, r *http.Request, reply func(int,
 	switch {
 	case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/v0/blobs/"):
 		if r.Header.Get("Content-Length") == "" {
-			handle(fmt.Errorf("invalid missing content length"))
+			handle(apierr.Invalid("invalid missing content length"))
 			return
 		}
 		b, e := repo.Upload(r.Context(), r.URL.Query().Get("lineage"), strings.TrimPrefix(r.URL.Path, "/v0/blobs/"), r.ContentLength, r.Body)
@@ -97,7 +98,7 @@ func (s *Server) objects(w http.ResponseWriter, r *http.Request, reply func(int,
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v0/blobs/"):
 		id := strings.TrimPrefix(r.URL.Path, "/v0/blobs/")
 		if !root.Hex(id, 40) {
-			handle(fmt.Errorf("invalid blob id"))
+			handle(apierr.Invalid("invalid blob id"))
 			return
 		}
 		send(id, "")

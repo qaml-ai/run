@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -416,7 +417,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 		timeout = 120000
 	}
 	if timeout < 1 || timeout > 600000 {
-		return out, fmt.Errorf("invalid timeoutMs")
+		return out, apierr.Invalid("invalid timeoutMs")
 	}
 	// v0-limitation: L52
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
@@ -439,7 +440,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 		return out, refs.ErrFenced
 	}
 	if v.streams == nil {
-		return out, fmt.Errorf("invalid missing vsock")
+		return out, apierr.Invalid("invalid missing vsock")
 	}
 	if err = m.Refs.Check(v.Lineage, v.Ref, v.Fence); err != nil {
 		return

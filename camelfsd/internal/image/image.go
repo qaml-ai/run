@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/nbd"
@@ -102,7 +103,7 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 }
 func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
 	if c.Cold != "clone" && c.Cold != "prehydrate" {
-		return nil, fmt.Errorf("invalid cold mode")
+		return nil, apierr.Invalid("invalid cold mode")
 	}
 	for _, d := range []string{c.Data, filepath.Join(c.Data, "images"), filepath.Join(c.Data, "mounts")} {
 		if e := os.MkdirAll(d, 0700); e != nil {
@@ -136,7 +137,7 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 		c.MaxPathsBytes = 64 << 20
 	}
 	if c.VirtualSize < 1 || c.VirtualSize%512 != 0 || c.MaxFiles < 1 || c.MaxBytes < 1 || c.MaxPathsBytes < 1 {
-		return nil, fmt.Errorf("invalid size or checkpoint caps")
+		return nil, apierr.Invalid("invalid size or checkpoint caps")
 	}
 	if e := blank(c); e != nil {
 		return nil, e
@@ -145,7 +146,7 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 		c.HydrationPackSize = 4 << 20
 	}
 	if c.HydrationPackSize < chunk.Size || c.HydrationPackSize%chunk.Size != 0 {
-		return nil, fmt.Errorf("invalid hydration pack size")
+		return nil, apierr.Invalid("invalid hydration pack size")
 	}
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
@@ -185,12 +186,12 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		}
 	}
 	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || q.Lineage == "" || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
-		return nil, fmt.Errorf("invalid mount request")
+		return nil, apierr.Invalid("invalid mount request")
 	}
 	m.mu.Lock()
 	if _, exists := m.mounts[q.JobID]; exists {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("job already mounted")
+		return nil, apierr.Invalid("job already mounted")
 	}
 	if m.mounts == nil {
 		m.mounts = map[string]*Mount{}
@@ -501,11 +502,11 @@ func (m *Manager) status(ctx context.Context, v *Mount) error {
 	}
 	fields := strings.Fields(s)
 	if len(fields) < 7 {
-		return fmt.Errorf("invalid clone status: %s", s)
+		return apierr.Invalid("invalid clone status: %s", s)
 	}
 	a, b, ok := strings.Cut(fields[6], "/")
 	if !ok {
-		return fmt.Errorf("invalid hydration status")
+		return apierr.Invalid("invalid hydration status")
 	}
 	v.HydratedRegions, e = strconv.ParseInt(a, 10, 64)
 	if e != nil {

@@ -175,3 +175,9 @@ hydration, cold demand-only reads, two edited checkpoints, release, and an
 isolated eviction timing. The 5k-file loop test prints `freeze_window_ms` through
 ack and thaw. Both privileged tests and performance targets remain unverified
 when `/nvme/host-free` or loop/reflink support is absent.
+
+API errors use typed errors through wrapping, never message matching. Codes are
+`invalid-request` (400), `ignored-path` (400), `hash-mismatch` (400),
+`not-found` (404), `no-root-for-tree` (404), `fenced` (409),
+`held` (409), `missing-blobs` (409), `bad-stream` (422),
+`stream-timeout` (504), and `internal` (500).

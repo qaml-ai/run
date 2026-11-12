@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"io"
 	"os"
 	"sort"
@@ -66,14 +67,14 @@ func (m *Missing) Error() string { return "missing-blobs" }
 
 func Path(p string) error {
 	if !utf8.ValidString(p) || len(p) == 0 || len(p) > 4096 || strings.ContainsRune(p, 0) {
-		return fmt.Errorf("invalid path")
+		return apierr.Invalid("invalid path")
 	}
 	for _, part := range strings.Split(p, "/") {
 		if part == ".git" {
 			return ErrIgnored
 		}
 		if len(part) > 255 || part == "" || part == "." || part == ".." {
-			return fmt.Errorf("invalid path")
+			return apierr.Invalid("invalid path")
 		}
 	}
 	return nil
@@ -82,7 +83,7 @@ func Path(p string) error {
 func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int64, body io.Reader) (Blob, error) {
 	b := Blob{SHA256: hash, Size: size}
 	if lineage == "" || !root.Hex(hash, 64) || size < 0 || size > MaxBlob {
-		return b, fmt.Errorf("invalid blob request")
+		return b, apierr.Invalid("invalid blob request")
 	}
 	f, e := os.CreateTemp(r.TempDir, "camelfsd-blob-")
 	if e != nil {
@@ -97,7 +98,7 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 		return b, e
 	}
 	if n != size {
-		return b, fmt.Errorf("invalid content length")
+		return b, apierr.Invalid("invalid content length")
 	}
 	if fmt.Sprintf("%x", h256.Sum(nil)) != hash {
 		return b, ErrHash
@@ -129,7 +130,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	start := time.Now()
 	out := Result{}
 	if q.Lineage == "" || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
-		return out, fmt.Errorf("invalid tree request")
+		return out, apierr.Invalid("invalid tree request")
 	}
 	// Validate the complete listing before consulting blob availability.
 	for p, f := range q.Files {
@@ -137,7 +138,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 			return out, e
 		}
 		if !root.Hex(f.SHA256, 64) || f.Mode != "" && f.Mode != "100644" && f.Mode != "100755" && f.Mode != "120000" {
-			return out, fmt.Errorf("invalid file mode or hash")
+			return out, apierr.Invalid("invalid file mode or hash")
 		}
 	}
 	blobs := map[string]Blob{}
@@ -173,7 +174,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 		n := top
 		for _, part := range parts[:len(parts)-1] {
 			if _, ok := n.files[part]; ok {
-				return out, fmt.Errorf("invalid path conflict")
+				return out, apierr.Invalid("invalid path conflict")
 			}
 			if n.dirs[part] == nil {
 				n.dirs[part] = newNode()
@@ -182,7 +183,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 		}
 		name := parts[len(parts)-1]
 		if n.dirs[name] != nil {
-			return out, fmt.Errorf("invalid path conflict")
+			return out, apierr.Invalid("invalid path conflict")
 		}
 		n.files[name] = Entry{p, f.Mode, b.SHA1, b.Size}
 	}
@@ -320,7 +321,7 @@ func (r *Repository) observe(query string) {
 func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
 	var b []byte
 	if !root.Hex(id, 40) {
-		return nil, fmt.Errorf("invalid tree id")
+		return nil, apierr.Invalid("invalid tree id")
 	}
 	r.observe("tree")
 	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='tree'", id).Scan(&b)

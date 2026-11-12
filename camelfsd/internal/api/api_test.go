@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -114,4 +116,22 @@ func TestLifecycleAndTree(t *testing.T) {
 		t.Fatal(e)
 	}
 	call("DELETE", "/v0/mounts/cold", nil, 200)
+}
+
+func TestErrorStatusUsesTypes(t *testing.T) {
+	for _, q := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{fmt.Errorf("invalid disk JSON not allowed"), 500, "internal"},
+		{fmt.Errorf("context: %w", apierr.Invalid("bad input")), 400, "invalid-request"},
+		{fmt.Errorf("context: %w", refs.ErrFenced), 409, "fenced"},
+		{fmt.Errorf("context: %w", os.ErrNotExist), 404, "not-found"},
+	} {
+		status, code := errorStatus(q.err)
+		if status != q.status || code != q.code {
+			t.Fatalf("%v: %d %s", q.err, status, code)
+		}
+	}
 }

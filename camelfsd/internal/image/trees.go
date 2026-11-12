@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -98,7 +99,7 @@ type ForkRequest struct {
 
 func (m *Manager) Fork(ctx context.Context, q ForkRequest) (map[string]string, error) {
 	if q.Lineage == "" || q.Name == "" || (q.FromRef == "") == (q.FromTree == "") {
-		return nil, fmt.Errorf("invalid fork")
+		return nil, apierr.Invalid("invalid fork")
 	}
 	db, ok := m.Refs.(*refs.DB)
 	if !ok {
@@ -127,7 +128,7 @@ func (m *Manager) Fork(ctx context.Context, q ForkRequest) (map[string]string, e
 			return nil, e
 		}
 		if !root.Hex(tree, 40) {
-			return nil, fmt.Errorf("invalid tree")
+			return nil, apierr.Invalid("invalid tree")
 		}
 		e = tx.QueryRowContext(ctx, "SELECT root FROM tree_roots WHERE lineage=? AND tree=? ORDER BY created_at DESC LIMIT 1", q.Lineage, tree).Scan(&rt)
 		if e != nil && !errors.Is(e, sql.ErrNoRows) {
