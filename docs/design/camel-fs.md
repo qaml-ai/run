@@ -213,14 +213,29 @@ the dm-clone device for this mount. If dm-clone fails on the real host (it is de
 kernel 7.0 has it), the fallback is full pre-hydration into the file before boot: a 500 MB image at S3 throughput is
 a few seconds, and only cold hosts pay it.
 
-**Measured on `proto/block`** (NBD + dm-thin on a sprite whose local disk read at ~90 MB/s; no NVMe, no KVM): per-op
-latency on 2,000 small files equal to local ext4 on that disk (create 33 vs 34 µs, stat 9.0 vs 9.3 µs, warm read
-10.3 vs 10.3 µs); a cold full read of the 500 MB tree 3.0 s at 15 ms *injected* per chunk GET with prefetch (that
-disk's own cold read was 5.5 s); mount cold 130 ms (small) to 1.9 s (large); first file 26–79 ms; metadata-random
-reads with a cold page cache ~3× slower through the userspace device than local (`grep -r` 33 s vs 11 s on the
-large tree), which is what kernel-served hydration is for. Real S3 first-byte is 20–40 ms p50 with a p99 past
-100 ms, so cold `ls -R` of the large tree is 10–15 s rather than the measured 7.8 s until the access-pattern prefetch
-covers it; a warm host pays none of it. Against real NVMe the "equal to local" claim is a v0 measurement (§4).
+**Measured on `proto/block`, on the v0 host** (`m8id.4xlarge`, real S3 in us-west-2, NVMe chunk cache, NBD lazy
+device → dm-clone → dm-thin external origin → ext4; `prototypes/block/RESULTS.md` at `acc0f73a`):
+
+| | number |
+|---|---:|
+| one 256 KiB chunk GET from S3 | 30–39 ms |
+| mount cold / first file cold | 45–80 ms / 67–323 ms (one GET) |
+| cold full read of the 500 MB tree, 4-deep prefetch | 40 s: 2,438 GETs nearly serialized; a parameter, not a limit (32–64 in flight is S3-throughput bound) |
+| **dm-clone hydration** | 2 GiB in 1.8 s, 4 GiB in 6.4 s |
+| full read after hydration vs plain local | **7.35 s vs 7.20 s**; `grep -r` 822 vs 745 ms |
+| the same through NBD with the chunk cache warm (userspace on every request) | 13.0 s vs 7.2 s (1.8×); fio 4 KiB QD1 44 vs 16 µs, QD16 102k vs 449k IOPS |
+| per-op medians, host: local NVMe / lazy stack / FUSE / FUSE passthrough | create 8.4 / 8.4 / 156 / 136 µs; stat cold 3.3 / 2.5 / 34 / 37; open+read warm 2.9 / 2.9 / 96 / 65 |
+| fork: `create_snap` + mount + first file | 20–127 ms + 8–9 ms + 1–2 ms |
+| checkpoint of a 3-file edit on a 1 / 2 / 4 GiB image | 6 / 17 / 124 chunks = 1 / 4 / 31 MiB (ext4 metadata and journal; grows with image size) |
+| index: full walk + hash + FIEMAP 5k / 50k files; incremental | 124 ms / 1.1 s; 32 / 300 ms |
+
+The load-bearing result: **once hydrated, the path is kernel-only and equals local NVMe**, and hydration runs at
+S3 throughput (~1 GB/s), so a cold host makes a 500 MB image local in about a second rather than paying 40 s of
+serialized demand misses. Hence the cold policy: hydrate in the background by default (computers, hot images), with
+deep-prefetch demand reads only for one-off jobs that touch a corner of a large image. FUSE is 10–40× on metadata
+and open, and passthrough trims only the warm read. The per-checkpoint chunk floor grows with the image's virtual
+size (31 MiB at 4 GiB), which is why roots publish on the coalesced cadence, the journal is pinned to its own region,
+and v0 item 4 measures the floor with the journal pinned.
 
 **The checkpoint contract: the tree and the root are the same state, always.** A checkpoint of a held branch:
 
@@ -296,10 +311,13 @@ So: Nitro Sandboxes support exactly the block device this design needs (a dm-clo
 supported "in direct and confidential modes"), and nothing else it wants: no memory snapshots (a computer's wake is
 always a boot), no unplug, no overcommit, no balloon. Nested KVM gives memory snapshot/restore (a sleeping computer
 wakes in tens of milliseconds, better than Cloudflare's p50 and without its 30 s tails), overcommit, and the same
-Firecracker we already drive, at the price of a second virtualization layer whose overhead is **unmeasured by us**:
-published nested-KVM numbers put compute-bound overhead in the low single-digit percent (VMCS shadowing, EPT) and
-I/O-heavy workloads higher because every virtio exit crosses two hypervisors; the spike's x86 build never completed
-(`nasm` missing), so Prototype v0 measures a Bun build, the fsbench table and virtio-blk IOPS under nested KVM against
+Firecracker we already drive, at the price of a second virtualization layer. Its file-level cost is now measured on
+the v0 host (`proto/block`, a Cloud Hypervisor guest with 4 vCPUs and virtio-blk over the lazy stack): **inside the
+guest every warm op equals a plain raw file on NVMe** (stat 2.5 µs, open+read 2.9 µs, create 8.3 µs, unlink 5.3 µs;
+guest 2.9 µs = host 2.9 µs), and only a cold I/O pays the double exit (+15–30 µs); a 50 MB tree reads in 3.33 s
+cold from S3, 826 ms warm, 823 ms hydrated, 680 ms from a plain file. What is still unmeasured is the compute tax
+on a build (published nested-KVM numbers put it in the low single-digit percent; the spike's x86 build never
+completed for want of `nasm`), so Prototype v0 measures a Bun build and virtio-blk IOPS under nested KVM against
 the host (§4), and those numbers set the metal trigger. The supported-family list is checked with
 `aws ec2 describe-instance-types` and its nested-virtualization filter before any launch template is written.
 
@@ -782,7 +800,9 @@ no lost write, no stale read anyone noticed, and jobs that start faster than tod
 1. job placement → first command, warm host and cold host, by tree size (today: a tar of the whole tree, seconds to
    minutes; the hosts plan's bar is ≤ 2.5 s cold at 32 in parallel);
 2. the fsbench per-op table (create, stat, open+read, overwrite, unlink) in a Firecracker guest over a reflinked
-   file on NVMe vs the host's own ext4 on the same NVMe, and again over dm-clone during and after hydration;
+   file on NVMe vs the host's own ext4 on the same NVMe, and again over dm-clone during and after hydration
+   (**done for the dm-clone stack under a Cloud Hypervisor guest**: guest equals host and hydrated equals local,
+   §1.3; the reflinked-file and Firecracker variants remain);
 3. checkpoint by step (walk, stream, fsync, reflink, publish, root) for a 3-file change, a 500-file change and a
    `git add` of the whole tree, on the medium and large trees; freeze duration as its own number;
 4. the ext4 chunk floor per checkpoint at 1, 4 and 16 GiB virtual sizes, journal pinned and not;
@@ -790,8 +810,8 @@ no lost write, no stale read anyone noticed, and jobs that start faster than tod
    that decides whether dm-clone is only for cold hosts);
 6. nested-KVM overhead: a Bun build and a Rust test shard in the guest vs on the host; virtio-blk IOPS and bandwidth
    in the guest over the file and over the dm device; memory snapshot restore time for a 2 GiB and an 8 GiB guest;
-7. S3 real latency per chunk GET (p50, p99) from the host, and the cold full-read of the large tree with and without
-   the access-pattern prefetch;
+7. S3 real latency per chunk GET (p50, p99) from the host (**done**: 30–39 ms), and the cold full-read of the large
+   tree with deep prefetch and with background hydration (the 4-deep number, 40 s, is the one to beat);
 8. API latency from a Worker on the pilot for `read`, `write`, `checkpoint`, `fork`, `merge`, `grep`;
 9. search: index time per checkpoint, index size vs text, query latency vs `rg` warm;
 10. the mark's cost and output on a week of lineages (what it would delete; any false positive is a stop-ship for
@@ -862,12 +882,14 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 
 ## 6. Risks and open questions for Miguel
 
-1. **ublk and dm-clone are designed, not run.** The sprite kernels lack both; the m8id's kernel 7.0 has them. v0
-   measures them first (§4, items 2 and 5); NBD and full pre-hydration are measured fallbacks, so nothing blocks.
-2. **Nested-KVM overhead is unmeasured by us.** v0 item 6 gives the build and I/O tax; it also sets the metal trigger.
-   If the build tax is past ~10 %, the build pool goes to metal first.
-3. **The checkpoint floor.** 4.5 MiB of changed chunks for a 15 KB edit on a 1 GiB image; v0 item 4 measures it at
-   realistic sizes. If it is worse, roots are published less often, never the trees.
+1. **ublk is designed, not run** (the module loads on the m8id; it replaces NBD in phase 2). dm-clone is now
+   measured and is the cold path; NBD is the measured lazy origin until ublk is; nothing blocks.
+2. **Nested-KVM compute overhead is unmeasured by us.** File ops in the guest equal the host (measured); v0 item 6
+   gives the build and IOPS tax and sets the metal trigger. If the build tax is past ~10 %, the build pool goes to
+   metal first.
+3. **The checkpoint floor.** 1 / 4 / 31 MiB of changed chunks for a 3-file edit on 1 / 2 / 4 GiB images, from ext4
+   metadata and the journal, growing with virtual size; v0 item 4 measures it with the journal pinned and at 16 GiB.
+   If it stays large, roots publish less often (never the trees), and sparse images stay small by `fstrim`.
 4. **The freeze window.** A `git add`-sized change streams under the freeze for seconds, with the agent's writers
    blocked. Acceptable at per-turn cadence? The later fix is a memory-safe userspace ext4 reader in a sandboxed,
    unprivileged process reading the snapshot, which removes the window and keeps the no-host-parsing rule (it is not
@@ -906,7 +928,9 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 
 | question | answer | from |
 |---|---|---|
-| Is in-VM block access native? | yes on the sprite's disk: every op within noise of local ext4; NVMe is v0's measurement | `proto/block` fsbench |
+| Is in-VM block access native? | yes, on the v0 host: in a nested-KVM guest every warm op equals a raw file on NVMe (stat 2.5 µs, open+read 2.9 µs); hydrated full reads 7.35 s vs 7.20 s local | `proto/block` on `m8id.4xlarge` |
+| Does nested KVM cost file ops? | no: guest 2.9 µs = host 2.9 µs; only cold I/O pays +15–30 µs per exit; the build tax is v0's measurement | same |
+| Does dm-clone make the cold path native? | yes: hydration at ~1 GB/s from S3 (2 GiB in 1.8 s), then kernel-only; NBD-in-path stays 1.8× on metadata-heavy reads | same |
 | Is FUSE acceptable in the hot path? | no: 5–10× on every metadata op and open; passthrough fixes reads only | `proto/block`, `proto/mount` |
 | Can a tree be the version while blocks are the transport? | yes, and it must be: block maps differ per materialization | `proto/block` |
 | Which VM substrates take a host block device as virtio-blk? | all three: Nitro Sandboxes (direct and confidential), Firecracker on KVM, Cloud Hypervisor | Firecracker `docs/nitro-sandboxes/`, CH docs, via `proto-block` |
@@ -920,5 +944,5 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 | Index in a database, bytes in object storage? | yes: 5 s → 65 ms on a large-tree commit | `artifacts-volumes` |
 | Is Artifacts the answer? | no: 1 GB/repo, 32 MiB/file, 33× price, no server-side writes | `artifacts-volumes` |
 | Is a stateful git fleet the answer? | not as truth: 6/10, a fleet to page on; as a cache at the edge, yes | `gitsvc` |
-| Does lazy mounting pay on cold full reads? | yes with prefetch (3.0 s vs 5.5 s local cold for 500 MB at 15 ms injected latency); it is the chunk GETs and nothing else | `proto/block` |
+| Does lazy demand reading pay on cold full reads? | only with deep prefetch: a real S3 GET is 30–39 ms and 4-deep prefetch serialized 2,438 of them into 40 s; background hydration is the cold default | `proto/block` on the v0 host |
 | Search over snapshots? | trigrams per content-addressed shard: 11–13 % of source, 10–30 ms p50 warm, ~4 ms per changed file to index, forks free; 10–30× warm ripgrep | `proto/search` |
