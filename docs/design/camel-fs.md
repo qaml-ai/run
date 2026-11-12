@@ -1,6 +1,6 @@
 # camelFS: the file system for agents, on our own AWS machines
 
-Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions. Docs
+Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions; merged in #874; §6 records the v0 defaults he approved (questions 8, 9, 10, 12). Docs
 only; nothing here creates AWS resources (Miguel applies every AWS change himself). It supersedes the file half of
 [swarm-workflows.md](swarm-workflows.md) Part 2 (the repository object, layers, search, git without a VM,
 `camel-sync`), the disk half of [job-hosts-plan.md](job-hosts-plan.md) (S3 snapshots, host-side sync) and #869
@@ -946,19 +946,23 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 7. **DynamoDB write cost at 100×** (~$75k/month of the ~$100k). Tree segments and a single-item working layer cut it
    ~3× and are mechanical; not a v0–phase 2 concern.
 8. **Go for the device daemon.** No mature ublk library in Go today; NBD is fine and measured; Rust's `libublk` is
-   maintained by ublk's author. Decision asked: Go with NBD now and ublk through a thin cgo or Rust sidecar later,
-   or Rust for the device daemon from the start.
+   maintained by ublk's author. **Decided (Miguel, 2026-11-12): Go.** NBD is the lazy origin now; ublk comes
+   through a thin cgo binding or a Rust sidecar when it is measured to matter.
 9. **Default durability cadence.** Per turn (or 30 s) is ~$365/month of versions at the baseline; per tool call for
-   the file tier is ~5× that. Recommendation: per call for interactive computers, per turn for workflow children and
-   jobs. Decision asked: is per call the default for everything?
+   the file tier is ~5× that. **Decided (Miguel, 2026-11-12): an automatic checkpoint per turn is the v0 default.**
+   `durability: "call"` stays a per-lineage setting. Still open: whether agents also get an explicit, named
+   checkpoint of their own (automatic only, or automatic plus agent-controlled); the recommendation on the table is
+   both, with `restore` able to target a named point, and that part of the design waits for his answer.
 10. **History horizon and retention.** Reachability keeps everything a `main` ever was unless a lineage sets a
-    horizon; with generation packing it costs S3 prices. Default: unlimited. Decision asked: a tenant-facing retention
-    knob at all, or only an operator one?
+    horizon; with generation packing it costs S3 prices. **Decided (Miguel, 2026-11-12): keep history indefinitely
+    for now.** No retention knob in v0; a horizon stays a later, operator-side policy.
 11. **Self-host.** The design runs on a directory and SQLite in place of S3 and DynamoDB (the Go interfaces are four
     calls each), but the image tier needs root, KVM, XFS reflink and a kernel with NBD or ublk; self-hosters without
     them get the API and copy-mode jobs only. Acceptable for the self-host product line?
 12. **Fallback providers.** Boat and Lambda stay only while the fleet proves itself; Cloudflare containers go at the
-    end of phase 2. Confirm, or keep one managed fallback indefinitely?
+    end of phase 2. **Decided (Miguel, 2026-11-12): keep a managed fallback during the transition.** The
+    `ComputerProvider` and `JobDriver` seams keep one managed provider selectable until the fleet has carried
+    production for a month; retiring it is a later, separate decision.
 13. **Idle computers on our hosts.** A sleeping computer is a memory snapshot on NVMe and costs nothing; a running
     idle one holds memory. Recommendation: idle timeout 5 minutes, then sleep, since wake is tens of milliseconds.
 14. **Git features the tree store refuses.** Submodules are refused at import rather than flattened; LFS pointers are
