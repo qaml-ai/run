@@ -36,7 +36,7 @@ Its globals:
 | `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
 | `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow; a workflow started with an API key is paid by its account, and its usage shows under the workflow's id. A job the account's credit or monthly spend limit refuses pauses the workflow (`payer_exhausted`) until it is raised. Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
 | `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
-| `gate(opts)` | A decision for a person, in the account's [inbox](human-input.md): `{ title (or question), body?, options? (2 to 4 labels), recommended?, reason?, priority?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. The workflow waits, durably, and `gate()` returns what they chose (an option's label, or their own words); a decline returns `null`. Past its expiry it takes `recommended` when `onExpire` is `"recommended"`, else the workflow pauses (`waiting_on_gate`) and the item stays answerable: the answer lands and a resume goes on. Who may answer is as for the owning agent's own decisions (its `humanInput.approvers`); with no owning agent, anyone with the account's key. The agent that owns the workflow hears it open (event `gate_opened`) |
+| `gate(opts)` | A decision for a person, in the account's [inbox](human-input.md): `{ title (or question), body?, options? (2 to 4 labels), recommended?, reason?, priority?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. The workflow waits, durably, and `gate()` returns what they chose (an option's label, or their own words); a decline returns `null`. Past its expiry it takes `recommended` when `onExpire` is `"recommended"`, else the workflow pauses (`waiting_on_gate`) and the item stays answerable: the answer lands and a resume goes on. Who may answer is as for the owning agent's own decisions (its `humanInput.approvers`); with no owning agent, anyone with the account's key. |
 | `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
 | `phase(name)` | Names the stage the workflow is in (`phase` on its summary, items and log lines) |
 | `log(...parts)` | A line in the workflow's log |
@@ -218,25 +218,34 @@ steers it. Every agent with [`delegate` settings](multi-agent.md) on a runtime
 with workflows enabled has the `workflows` builtin: `workflow_start`,
 `workflow_status` (with a `waitSeconds`), `workflow_items`, `workflow_edit`,
 `workflow_pause`, `workflow_resume`, `workflow_abort` and `workflow_budget`.
-The agent that starts a workflow owns it: only its tools reach it. It need
-not poll: when the workflow ends (`completed`, `failed`, `aborted`), stops
-(`budget_exhausted`, or paused for its payer, capacity, a fault or a rerun
-confirm), finishes a phase or opens a `gate()` for a person (`gate_opened`,
-with the gate's key, inbox item id, title and expiry), the agent gets a
-message of its own, a turn, with a block only the runtime writes:
+The agent that starts a workflow owns it: only its tools reach it. To its owner a
+workflow is a background child, like one `spawn_agent` starts: it is in the agent's
+`list_agents`, and its ending comes the way a sub-agent's does. It need not poll:
+when the workflow ends (`completed`, `failed`, `aborted`) or stops for its budget
+or its payer's credit, the agent gets a message of its own, a turn, with a block
+only the runtime writes: a line, then the workflow's facts.
 
 ```
-<workflow_notification workflow="wf_…" name="port" status="completed" event="completed">
-{"workflowId":"wf_…","status":"completed","phase":"report","counts":{"done":41},"spentUsd":12.4,"budgetUsd":20,"result":…}
+<workflow_notification workflow="wf_…" name="port" status="completed">
+Workflow port completed.
+{"workflowId":"wf_…","status":"completed","result":…,"counts":{"done":41},"spentUsd":12.4,"budgetUsd":20}
 </workflow_notification>
 ```
 
-Notifications take turns from the agent's wake budget, as its sub-agents'
-notifications do. They never fill the agent's request queue: while the agent
-is busy they wait in its own outbox, and the next one to land brings the
-others with it, one block per workflow (that workflow's latest notice; an
-earlier one it replaces is folded in), up to 20 workflows a turn. `workflow_status` and `workflow_items` read more when it
-needs to. Its budget may
+A failure reads `Workflow port failed (<code>): <message>`. A stop has `status="paused"`
+and says what it waits for: a spent budget waits for `workflow_budget`, and a payer out
+of credit goes on by itself once there is credit. Each stop and the ending that follows
+it are separate attempts of the same child, so the agent hears each once. A person's
+pause, and a wait for the account's capacity, tell the agent nothing. A result longer
+than 16,000 characters is cut; `workflow_status` has it whole.
+
+Endings are durable: the workflow writes its ending with its status and delivers it
+until the agent takes it. The agent takes it once, however often it comes. Notifications
+take turns from the agent's wake budget, and while the agent is busy they wait and then
+land together with its sub-agents' endings, as [sub-agent notifications](multi-agent.md)
+do. A workflow is not stopped when its owner's turn is stopped: `workflow_abort` (or
+`interrupt_agent` on it) stops it. `send_message` cannot reach one. `workflow_status`
+and `workflow_items` read more when the agent needs to. Its budget may
 not exceed the least of the agent's remaining spend limit and `maxBudgetUsd`
 (default $100); above that, a person starts it through the API.
 

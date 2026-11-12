@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { WORKFLOW_LIMITS } from "../src/workflow-runner.ts";
 import { harness } from "./workflow-harness.ts";
+import { WorkflowEndings } from "../src/workflow-endings.ts";
 
 const at = (h: ReturnType<typeof harness>) => h.runner.get();
 
@@ -708,4 +709,31 @@ test("a result for the old arguments that lands after the edit never answers the
   await h.run();
   assert.deepEqual([at(h).status, at(h).result], ["completed", "re: fast one"]);
   assert.deepEqual(h.runner.items({ attempts: true }).items.filter(item => item.key === "one").map(item => [item.attempt, item.current]), [[1, false], [2, true]]);
+});
+
+test("the owner's ending is staged in the transaction that writes the status: across a crash at every point, each attempt's once", { timeout: 120_000 }, async () => {
+  const run = async (crashAt?: number) => {
+    let endings: WorkflowEndings | undefined;
+    const h = harness({ crashAt, onStatus: (status, runner) => { if (status !== "running" && status !== "waiting") endings!.statusWritten(runner.get()); } });
+    endings = new WorkflowEndings({
+      storage: { sql: h.store.sql, transactionSync: h.store.transactionSync, list: async () => new Map() } as unknown as DurableObjectStorage,
+      workflowId: "wf_1", owner: () => ({ kind: "agent", id: "owner" }), name: () => "two", receiveEnding: async () => ({ accepted: true }), fallback: async () => {}, legacyTold: () => undefined, arm: async () => {},
+    });
+    h.world.cost = 1;
+    h.init({ code: `const a = await agent("one"); const b = await agent("two"); return [a.answer, b.answer];`, budgetUsd: 1 });
+    await h.attempt(() => h.wake());
+    await h.run();
+    const staged = () => h.store.sql.exec("SELECT key, body FROM child_outbox ORDER BY key").toArray().map((row: any) => [row.key, JSON.parse(row.body).ending.record.status]);
+    // Whatever committed, committed together: a stop is staged exactly when the status says it stopped.
+    assert.equal(at(h).status, "budget_exhausted", `crash at ${crashAt}`);
+    assert.deepEqual(staged(), [["wf_1_a000001:z", "stopped"]], `crash at ${crashAt}`);
+    await h.attempt(() => h.runner.setBudget(10));
+    await h.run();
+    if (at(h).status === "budget_exhausted") { await h.attempt(() => h.runner.setBudget(10)); await h.run(); }
+    assert.equal(at(h).status, "completed", `crash at ${crashAt}`);
+    assert.deepEqual(staged(), [["wf_1_a000001:z", "stopped"], ["wf_1_a000002:z", "completed"]], `crash at ${crashAt}`);
+    return h.ops;
+  };
+  const ops = await run();
+  for (let crashAt = 1; crashAt <= ops; crashAt++) await run(crashAt);
 });

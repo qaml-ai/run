@@ -20,6 +20,7 @@ const ENDED = new Set(["completed", "failed", "aborted"]);
 
 /** Where a child of a repo edits its fork. */
 export const FORK_MOUNT_PATH = "/repo";
+import { WorkflowEndings } from "./workflow-endings.ts";
 import { WorkflowNotices } from "./workflow-notices.ts";
 import { WorkflowGates } from "./workflow-gates.ts";
 import { database, type PostgresEnv } from "./postgres.ts";
@@ -176,8 +177,12 @@ function testExecutor(land: (key: string, attempt: number, outcome: EffectOutcom
 export class WorkflowObject extends DurableObject<WorkflowEnv> {
   private readonly runner: WorkflowRunner;
   private readonly executor: ChildEffects;
-  /** What the owner agent hears (workflow-notices.ts): endings, stops and finished phases. */
+  /** What the owner agent hears (workflow-endings.ts): its endings and its budget or payer stops, as a child's. */
+  private readonly endings: WorkflowEndings;
+  /** The old notices, kept this release as the rolling deploy's fallback only (workflow-notices.ts). */
   private readonly notices: WorkflowNotices;
+  /** This instance staged an ending an earlier build left unstaged (workflow-endings.ts catchUp). */
+  private caught = false;
   readonly agents: WorkflowAgents;
   private readonly forks: ForkJanitor;
   /** Its gates: decisions in the account's inbox (workflow-gates.ts). */
@@ -231,7 +236,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         if (owner?.kind !== "agent") return {};
         return await (env as unknown as { AGENTS: { getByName(name: string): { inboxAudience(): Promise<{ approvers?: string[]; subject?: string }> } } }).AGENTS.getByName(owner.id).inboxAudience();
       },
-      opened: gate => { self.notices.stage("gate_opened", { gate }, self.runner.get().status); self.told(undefined); },
+      opened: () => { self.told(undefined); },
     });
     const stub = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : undefined;
     this.executor = byKind({ agent: stub ?? this.agents, gate: stub ?? this.gates, job: jobs, commit: jobs, push: jobs });
@@ -241,17 +246,27 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       send: (owner, request, notice) => (env as unknown as Env).AGENTS.getByName(owner).receiveAgentMessage(request, notice),
       arm: at => self.armBy(at),
     });
+    this.endings = new WorkflowEndings({
+      storage: ctx.storage, workflowId: name ?? "",
+      owner: () => self.settings().owner, name: () => self.settings().name,
+      receiveEnding: (owner, ending) => (env as unknown as Env).AGENTS.getByName(owner).receiveEnding(ending),
+      fallback: (owner, ending) => self.notices.fallback(owner, ending),
+      legacyTold: () => self.notices.told(),
+      arm: at => self.armBy(at),
+    });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
       {
-        // One alarm for the runner, a notice's retry and the forks' cleanup retry, whichever is due first: a notice whose
-        // delivery failed, or a fork delete that failed, is retried even once the workflow has ended.
+        // One alarm for the runner, the owner's endings and the forks' cleanup retry, whichever is due first: an ending
+        // whose delivery failed, or a fork delete that failed, is retried even once the workflow has ended.
         alarm: { set: async at => {
-          const next = alarmAt(at, this.notices.retryAt(), await this.forks.retryAt());
+          const next = alarmAt(at, await this.endings.outbox.deadline(), this.notices.retryAt(), await this.forks.retryAt());
           await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
         } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
+        // In the status's own transaction: an ending (or a budget or payer stop) is staged for the owner with it.
+        onStatus: status => { if (status !== "running" && status !== "waiting") this.endings.statusWritten(this.runner.get()); },
       },
     );
   }
@@ -267,8 +282,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     this.settingsTable();
     this.ctx.storage.sql.exec("INSERT OR IGNORE INTO workflow_settings (id, body) VALUES (1, ?)", JSON.stringify(settings));
     this.runner.init({ ...init, code: withArgs(init.code, this.settings().args), seed: crypto.getRandomValues(new Uint32Array(1))[0]!, startedAt: Date.now() });
-    // Where the owner's notices start from: the workflow as created, before its first step.
-    this.notices.check(this.runner.get());
+    await this.migrated();
     await this.runner.wake();
     await this.failWithoutOrigin();
     return this.told(this.runner.get());
@@ -315,17 +329,29 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   }
 
   /**
-   * After anything that may have moved the workflow: stage what the owner should hear about it and deliver it (in the
-   * background; a delivery that fails is tried again later, and on the next wake). Returns `value`.
+   * After anything that may have moved the workflow: deliver what was staged for the owner (in the background; the
+   * ending was staged with its status, and the alarm delivers whatever this does not). Returns `value`.
    */
   private told<T>(value: T): T {
-    try { this.notices.check(this.runner.get()); }
-    catch (error) { console.error(JSON.stringify({ type: "workflow_notice_check_failed", workflow: this.ctx.id.name, error: String(error) })); }
-    // The alarm is armed for the first retry before the background send: an isolate that dies mid-send leaves a notice
-    // due and nothing else that would arm the alarm for it.
-    if (this.notices.pending()) this.ctx.waitUntil((async () => { await this.notices.guard(); await this.notices.flush(); })()
-      .catch(error => console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.ctx.id.name, error: String(error) }))));
+    if (this.endings.pending()) this.ctx.waitUntil((async () => {
+      // The alarm is armed for the first retry before the send: an isolate that dies mid-send leaves the ending due and
+      // nothing else that would arm the alarm for it.
+      const due = await this.endings.outbox.deadline();
+      if (due !== undefined) await this.armBy(Math.max(due, Date.now() + 1000));
+      await this.endings.outbox.flush();
+    })().catch(error => console.error(JSON.stringify({ type: "workflow_ending_failed", workflow: this.ctx.id.name, error: String(error) }))));
     return value;
+  }
+
+  /**
+   * Once per instance: an ending an earlier build (or a migration) left unstaged is staged now (workflow-endings.ts
+   * catchUp), and what that build left in its own outbox is delivered.
+   */
+  private async migrated() {
+    if (this.caught || !this.exists()) return;
+    this.endings.catchUp(this.runner.get());
+    this.caught = true;
+    if (this.notices.pending()) this.ctx.waitUntil(this.notices.flush().catch(error => console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.ctx.id.name, error: String(error) }))));
   }
 
   get() { return refusable(() => this.runner.get()); }
@@ -342,16 +368,17 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   items(query: Parameters<WorkflowRunner["items"]>[0]) { return refusable(() => this.runner.items(query)); }
   diff(revision?: number) { return refusable(() => this.runner.diff(revision)); }
   events(query: Parameters<WorkflowRunner["events"]>[0]) { return refusable(() => this.runner.events(query)); }
-  pause(options: Parameters<WorkflowRunner["pause"]>[0]) { return refusable(async () => { await this.runner.pause(options); return this.told(this.runner.get()); }); }
-  resume(options: Parameters<WorkflowRunner["resume"]>[0]) { return refusable(async () => { await this.runner.resume(options); return this.told(this.runner.get()); }); }
-  edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return refusable(async () => { await this.checkScript(options.code); const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }); }
-  abort() { return refusable(async () => { await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }); }
-  setBudget(usd: number | null) { return refusable(async () => { await this.runner.setBudget(usd); return this.told(this.runner.get()); }); }
+  pause(options: Parameters<WorkflowRunner["pause"]>[0]) { return refusable(async () => { await this.migrated(); await this.runner.pause(options); return this.told(this.runner.get()); }); }
+  resume(options: Parameters<WorkflowRunner["resume"]>[0]) { return refusable(async () => { await this.migrated(); await this.runner.resume(options); return this.told(this.runner.get()); }); }
+  edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return refusable(async () => { await this.migrated(); await this.checkScript(options.code); const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }); }
+  abort() { return refusable(async () => { await this.migrated(); await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }); }
+  setBudget(usd: number | null) { return refusable(async () => { await this.migrated(); await this.runner.setBudget(usd); return this.told(this.runner.get()); }); }
   /** An executor's landing of effect `key:attempt`. */
-  async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.failWithoutOrigin(); await this.runner.land(key, attempt, outcome, usage); await this.ended(); this.told(undefined); }
+  async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.migrated(); await this.failWithoutOrigin(); await this.runner.land(key, attempt, outcome, usage); await this.ended(); this.told(undefined); }
   /** `POST /v1/inbox/answers` for this workflow's gates, from `tenant` (another tenant's answers find nothing). */
   async answerGates(tenant: string, answers: InboxAnswer[]): Promise<InboxOutcome[]> {
     if (this.runner.identity().tenant !== tenant) return answers.map(answer => ({ id: answer.id, outcome: "unknown", status: 404, error: "Unknown input" }));
+    await this.migrated();
     const outcomes = await this.gates.answer(answers);
     await this.ended();
     this.told(undefined);
@@ -369,6 +396,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   }
   /** The capacity limiter's wake: slots granted to this workflow's waiting children. A grant from another tenant is ignored. */
   async capacityGranted(tenant: string, grants: CapacityGrant[]) {
+    await this.migrated();
     const own = this.runner.identity().tenant;
     if (!own || tenant !== own) { console.error(JSON.stringify({ type: "workflow_capacity_grant_ignored", workflow: this.ctx.id.name, tenant })); return; }
     await this.runner.capacityGranted(grants.filter(grant => (grant.kind === "child" || grant.kind === "job") && grant.workflow === this.ctx.id.name)
@@ -378,12 +406,12 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     this.told(undefined);
   }
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
-  async wake() { await this.failWithoutOrigin(); await this.runner.wake(); await this.ended(); this.told(undefined); }
+  async wake() { await this.migrated(); await this.failWithoutOrigin(); await this.runner.wake(); await this.ended(); this.told(undefined); }
 
   override async alarm() { await this.alarmed(); }
 
   /**
-   * The alarm: the runner, then its children's fork cleanup, then what the owner hears and the notices that are due.
+   * The alarm: the runner, then its children's fork cleanup, then the owner's endings that are due.
    * Each is isolated (one that throws is logged and the others still run), and the alarm is armed again whatever
    * happens, for the earliest any of them needs: a concern that keeps failing never costs the notices their retries,
    * and the alarm never relies on the platform's own few retries of a handler that threw.
@@ -392,18 +420,20 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     const workflow = this.ctx.id.name;
     await runAlarm({
       concerns: [
+        ["migrate", () => this.migrated()],
         ["origin", () => this.failWithoutOrigin()],
         // The runner isolates its own concerns; one that failed (a cancel left for later, a renew) is reported here too,
         // so the alarm's failure floor applies rather than a second's re-arm.
         ["runner", async () => { if ((await this.runner.alarm()).failed) throw new Error("a runner concern failed and was left for later (see its alarm_failed or cancel events)"); }],
         ["forks", () => this.ended()],
-        ["notices", async () => { this.told(undefined); await this.notices.flush(); }],
+        ["endings", () => this.endings.outbox.flush()],
+        ["notices", () => this.notices.flush()],
       ],
       next: async () => {
         let runner: number | null = null;
         try { runner = this.runner.nextAlarm(); }
         catch (error) { console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern: "runner next", error: String(error) })); }
-        return alarmAt(runner, this.notices.retryAt(), await this.forks.retryAt());
+        return alarmAt(runner, await this.endings.outbox.deadline(), this.notices.retryAt(), await this.forks.retryAt());
       },
       arm: at => this.armBy(at),
       log: (concern, error) => console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern, error: String(error) })),

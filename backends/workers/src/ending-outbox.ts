@@ -80,7 +80,12 @@ export class ChildOutbox {
   private flushing?: Promise<number | undefined>;
   private created = false;
   private kvImported = false;
-  constructor(host: OutboxHost) { this.host = host; }
+  constructor(host: OutboxHost) {
+    this.host = host;
+    // Made here, outside any transaction: made first inside one that then rolled back, the table would be gone while
+    // `created` said it was there.
+    void this.sql;
+  }
   private now() { return this.host.now?.() ?? Date.now(); }
   private get sql() {
     const sql = this.host.storage.sql;

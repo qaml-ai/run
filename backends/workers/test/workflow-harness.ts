@@ -158,7 +158,7 @@ export class FakeCapacity {
   }
 }
 
-export function harness(options: { crashAt?: number; snapshotCap?: number; rewrite?: (request: WorkflowStepRequest) => Promise<WorkflowStepRequest>; db?: DatabaseSync; capacity?: FakeCapacity } = {}) {
+export function harness(options: { crashAt?: number; snapshotCap?: number; rewrite?: (request: WorkflowStepRequest) => Promise<WorkflowStepRequest>; db?: DatabaseSync; capacity?: FakeCapacity; onStatus?: (status: string, runner: WorkflowRunner) => void } = {}) {
   let ops = 0;
   const self = {
     crashes: 0, crashed: undefined as string | undefined, clock: 5_000, alarmAt: null as number | null,
@@ -171,7 +171,7 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
   world.crash = crash;
   // Every harness watches its runner's alarm for hot loops (test/alarm-watch.ts).
   const watch = new AlarmWatch("WorkflowRunner");
-  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { watch.armed(at); self.alarmAt = at; } }, capacity: options.capacity?.seam() });
+  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { watch.armed(at); self.alarmAt = at; } }, capacity: options.capacity?.seam(), ...(options.onStatus ? { onStatus: status => options.onStatus!(status, runner) } : {}) });
   let runner = make();
   if (options.capacity) options.capacity.wake = grants => runner.capacityGranted(grants);
   /** Run `work`; a crash drops the runner, and a new one over the same storage wakes up. */

@@ -30,7 +30,7 @@ export interface WorkflowGatesHost {
   defer(task: () => Promise<void>): void;
   /** Who may answer besides anyone the account vouches for (the owner agent's `humanInput.approvers`), and its subject. */
   audience(): Promise<{ approvers?: string[]; subject?: string }>;
-  /** A gate opened: the owner hears of it (a <workflow_notification>, `gate_opened`). */
+  /** A gate opened (the object delivers anything staged; the owner is not told of a gate). */
   opened(gate: { key: string; inputId: string; title: string; expiresAt: number }): void;
 }
 

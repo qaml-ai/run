@@ -77,11 +77,13 @@ export function workflowStub(env: WorkflowEnv, id: string): WorkflowStub {
 const existing = (stub: WorkflowStub) => stub.get().catch(error => { if (error instanceof WorkflowError && error.status === 404) return undefined; throw error; });
 
 /** Start a workflow for `tenant` (an account's start, or an agent's through the builtin, which then owns it). */
-export async function startWorkflow(env: WorkflowEnv, tenant: string, input: ReturnType<typeof startInput>, options: { owner?: Owner; bucket?: string; idempotencyKey?: string | null; runtimeOrigin?: string } = {}) {
+export async function startWorkflow(env: WorkflowEnv, tenant: string, input: ReturnType<typeof startInput>, options: { owner?: Owner; bucket?: string; idempotencyKey?: string | null; runtimeOrigin?: string; beforeCreate?(id: string): Promise<void> } = {}) {
   const id = await workflowId(tenant, options.idempotencyKey);
   const stub = workflowStub(env, id);
   const found = await existing(stub);
   if (found && found.tenant !== tenant) throw new WorkflowInputError("That idempotency key names another workflow");
+  // The owner's row for it (workflow_start), written before the workflow exists, so no ending can come before it.
+  await options.beforeCreate?.(id);
   await stub.create({ code: input.script, budgetUsd: input.budgetUsd, ...(input.concurrency ? { concurrency: input.concurrency } : {}), tenant, ...(options.bucket ? { bucket: options.bucket } : {}) },
     { ...input.settings, ...(options.owner ? { owner: options.owner } : {}), ...(options.runtimeOrigin ? { runtimeOrigin: options.runtimeOrigin } : {}) });
   return { id, ...(await stub.view()) };

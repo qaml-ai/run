@@ -23,16 +23,6 @@ type PendingNotice = { request: NoticeRequest; notice: RuntimeNotice; childKey?:
 const prefix = 'delegation-notice:';
 /** What a carried notice's own request answers (as Node's landNotice says it). */
 const CARRIED = "this sub-agent's ending reached the agent already, with another one's notification";
-/** The same, for a workflow's notice: carried in another notice's turn, or folded into its workflow's later one. */
-const CARRIED_WORKFLOW = "this workflow notice reached the agent already, in another notice's turn or folded into its workflow's later notice";
-/** At most this many other workflows' notices ride in one workflow notice's turn; the rest land in the next. */
-export const WORKFLOW_NOTICE_BATCH = 20;
-/** A workflow's notice, as its object sends it (workflow-notices.ts): one held in the outbox, not a request of its own. */
-const workflowNotice = (pending: PendingNotice) => pending.notice.metadata.kind === 'workflow' && !pending.delivery;
-/** A workflow's ending (workflow-notices.ts noticeEvent): never folded into a later notice of the same workflow. */
-const ENDINGS = new Set(['completed', 'failed', 'aborted']);
-/** A workflow notice's sequence (its request id is `<workflow>_n<seq>`), to keep a workflow's latest. */
-const noticeSeq = (pending: PendingNotice) => Number(/_n(\d+)$/.exec(pending.request.id)?.[1] ?? 0);
 
 /** The chain root owns this counter. Repeating an admitted request never takes another wake. */
 export class DelegationWakeBudget {
@@ -76,8 +66,19 @@ export interface NotificationHost {
 
 /** A child's ending as an outbox entry: built from its record alone, so every builder (deliver, a batch) writes the same. */
 function outboxEntry(child: DelegatedChild): PendingNotice {
-  const { text, notice } = childNotice({ agentId: child.id, name: child.name, root: child.root ?? child.id }, child, { startedAt: child.createdAt, endedAt: child.endedAt });
-  notice.costUsd = child.spent ?? childUsageCost(child.outcome?.result?.usage);
+  const ended = childNotice({ agentId: child.id, name: child.name, root: child.root ?? child.id }, child, { startedAt: child.createdAt, endedAt: child.endedAt });
+  const { notice } = ended;
+  let { text } = ended;
+  // A workflow child (workflow_start) renders as a <workflow_notification> (sender.ts) and charges nothing: its own
+  // children billed what it spent.
+  if (child.workflow) {
+    Object.assign(notice.metadata, { workflow: true, workflowId: child.id });
+    notice.costUsd = 0;
+    // Its line ("Workflow x completed.") and then its facts (status, result or fault, counts, spend), as the object sent them.
+    const result = (child.outcome?.result ?? {}) as { reply?: string; output?: unknown };
+    if (result.reply) text = `${result.reply}${result.output !== undefined ? `\n${JSON.stringify(result.output)}` : ""}`;
+  }
+  else notice.costUsd = child.spent ?? childUsageCost(child.outcome?.result?.usage);
   return { request: { id: `child_${child.requestId}`, method: 'prompt', params: { text, endUser: child.payer, bucket: child.bucket, allowDisconnected: true, whileRunning: 'followUp' } }, notice, childKey: child.key };
 }
 
@@ -113,10 +114,6 @@ export class DelegationNotifications {
     }
     try {
       if (!pending.delivery && await this.host.humanPending?.()) { await this.host.retry(Date.now() + MULTI_AGENT_LIMITS.sweepMs); return; }
-      // A workflow's notice waits here, in the owner's own outbox, until the owner is between turns: it takes no slot in
-      // the owner's request queue (many workflows would fill it, and a notice refused there is lost to its turn). When it
-      // lands it carries every other workflow notice waiting (below), so many workflows cost the owner one turn.
-      if (workflowNotice(pending) && this.host.canLand && !await this.host.canLand()) { await this.host.retry(Date.now() + 1000); return; }
       let steer = !!pending.steer;
       if (!pending.delivery && pending.childKey && !steer && this.host.canLand && !await this.host.canLand()) {
         // An agent set to hear endings at once (delegate.notify "asap"), with no wait_agent in flight, gets this one at its
@@ -142,41 +139,6 @@ export class DelegationNotifications {
         // once, in this transaction: each carried one is claimed for it (landedBy, as a wait_agent's take) and marked
         // delivered here, and the batch is stored with this notice, so a send tried again after a crash sends exactly
         // this. Agents' messages, and notices bound to land without a turn (`delivery`), keep their own.
-        if (workflowNotice(current) && current.batch === undefined) {
-          // Every other workflow notice waiting rides along, a workflow's latest only (it says where that workflow is
-          // now; the earlier ones are folded into it), up to WORKFLOW_NOTICE_BATCH workflows.
-          const waiting: [string, PendingNotice][] = [];
-          for (const [otherKey, other] of await tx.list<PendingNotice>({ prefix, noCache: true }))
-            if (otherKey !== key && !other.delivered && workflowNotice(other) && (other.request.params.endUser ?? null) === (current.request.params.endUser ?? null) && (other.request.params.bucket ?? null) === (current.request.params.bucket ?? null)) waiting.push([otherKey, other]);
-          const own = current.notice.metadata.workflowId, groups = new Map<unknown, [string, PendingNotice][]>();
-          for (const entry of waiting) groups.set(entry[1].notice.metadata.workflowId, [...groups.get(entry[1].notice.metadata.workflowId) ?? [], entry]);
-          const batch: BatchedEnding[] = [], carried: NoticeRequest[] = [];
-          let shownCount = 0, landing = current;
-          for (const [workflow, entries] of groups) {
-            entries.sort((a, b) => noticeSeq(a[1]) - noticeSeq(b[1]));
-            const [, latest] = entries.at(-1)!;
-            const newer = (entry: PendingNotice) => workflow !== own || noticeSeq(entry) > noticeSeq(current);
-            // This notice's own workflow sent newer ones while it waited: it lands saying the latest (its text and event,
-            // under its own request id), unless it is itself an ending, which is never folded away.
-            const swap = workflow === own && newer(latest) && !ENDINGS.has(String(current.notice.metadata.event));
-            if (swap) landing = { ...current, request: { ...current.request, params: { ...current.request.params, text: latest.request.params.text } }, notice: { ...current.notice, metadata: { ...latest.notice.metadata } } };
-            // Shown besides: the workflow's latest (unless it became the landing's) and any ending (completed, failed,
-            // aborted) a later notice came after, so an ending is never folded away.
-            const shown = entries.map(([, entry]) => entry).filter(entry => newer(entry) && !(swap && entry === latest) && (entry === latest || ENDINGS.has(String(entry.notice.metadata.event))));
-            if (shown.length && !swap && shownCount >= WORKFLOW_NOTICE_BATCH) continue;
-            for (const [otherKey, other] of entries) {
-              await tx.put(otherKey, { ...other, delivered: true, batchedInto: key }, { noCache: true });
-              carried.push(other.request);
-            }
-            if (!shown.length) continue;
-            shownCount++;
-            for (const entry of shown) batch.push({ ...entry.notice.metadata, agentId: String(workflow ?? ''), name: entry.notice.source.name, status: String(entry.notice.metadata.status ?? ''), text: entry.request.params.text, costUsd: 0, requestId: entry.request.id });
-          }
-          batch.sort((a, b) => a.requestId < b.requestId ? -1 : 1);
-          const next: PendingNotice = { ...landing, batch };
-          await tx.put(key, next, { noCache: true });
-          return { state: 'claimed' as const, pending: next, carried };
-        }
         if (!current.childKey || current.delivery || current.batch !== undefined) {
           const kept: PendingNotice = steer && !current.steer && current.childKey && !current.delivery ? { ...current, steer: true } : current;
           if (kept !== current) await tx.put(key, kept, { noCache: true });
@@ -274,7 +236,7 @@ export class DelegationNotifications {
   }
   /** A carried notice's staged copy, if any, answers as carried; recorded, so a drain need not ask again. */
   private async discardCarried(key: string, entry: PendingNotice) {
-    await this.host.discard?.(entry.request, workflowNotice(entry) ? CARRIED_WORKFLOW : CARRIED, true);
+    await this.host.discard?.(entry.request, CARRIED, true);
     if (!entry.discarded) await this.host.storage.put(key, { ...entry, discarded: true }, { noCache: true });
   }
   async pending() {

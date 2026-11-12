@@ -232,6 +232,11 @@ export interface RunnerOptions {
   now?: () => number;
   /** The object's one alarm: `set(at)` arms it, `set(null)` clears it. */
   alarm?: { set(at: number | null): void | Promise<void> };
+  /**
+   * A status was written, inside the transaction that wrote it (synchronous; it must not await): the object stages what
+   * the owner hears of it there, so the status and its ending commit together (workflow-endings.ts).
+   */
+  onStatus?(status: WorkflowStatus): void;
 }
 
 export class WorkflowRunner {
@@ -375,6 +380,7 @@ export class WorkflowRunner {
 
   private setStatus(status: WorkflowStatus, reason: PauseReason | null = null) {
     this.sql.exec("UPDATE workflow_state SET status = ?, pause_reason = ?, updated_at = ? WHERE id = 1", status, reason, this.now());
+    this.options.onStatus?.(status);
   }
 
   private serial<T>(work: () => Promise<T>): Promise<T> {

@@ -32,7 +32,12 @@ export function childUsageCost(usage?: ChildUsage) {
 /** A child's progress report as a parent's tool result shows it (`agentUpdates`), with what marks it shown. */
 export type ShownProgress = { key: string; name: string; text: string; at: number; sequence: number };
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
-export type DelegatedChild = { attempt?: number; outbox?: boolean; owner?: Owner; rootOwner?: Owner; payer?: string; bucket?: string; id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task?: string; payloadBytes?: number; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+/**
+ * A child of this agent's: a sub-agent it started, or (`workflow`) a workflow it started with workflow_start. A
+ * workflow's endings come through the same outbox and notification path as a sub-agent's (docs/design/
+ * workflow-simplification.md, cut 3); `workflow` keeps the agent-only paths (cancel, interrupt, legacy recovery) off it.
+ */
+export type DelegatedChild = { workflow?: boolean; attempt?: number; outbox?: boolean; owner?: Owner; rootOwner?: Owner; payer?: string; bucket?: string; id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task?: string; payloadBytes?: number; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 /** How many children `GET /v1/agents/{id}/children` lists, newest first (as Node's CHILDREN_LISTED). */
 export const CHILDREN_LISTED = 200;
 /**
@@ -105,6 +110,8 @@ export interface DelegationHost {
   sendMessage?(targetId: string, request: NoticeRequest, notice: RuntimeNotice): Promise<unknown>;
   /** Send a progress report to this run's owner through this agent's outbox (ending-outbox.ts). */
   reportProgress?(owner: Owner, report: ChildProgressReport): Promise<Receipt>;
+  /** Stop a workflow this agent owns (its `WORKFLOWS` object's abort): a workflow child's cancel. */
+  abortWorkflow?(workflowId: string): Promise<unknown>;
 }
 /** What a fork gives a child: a seed for its computer connection, and the native computer's snapshot. */
 export type ChildComputerFork = { connection?: { seed: string; connection?: string; provider?: string; at?: number }; native?: { snapshot: ComputerSnapshot; origin: NativeForkOrigin } };
@@ -135,6 +142,17 @@ const resumeRequestId = async (paused: DelegatedChild) => `resume_${(await diges
 function resumeRow(paused: DelegatedChild, requestId: string): DelegatedChild {
   return { ...paused, outbox: true, key: `${paused.key}:resume`, requestId, payloadBytes: undefined, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
 }
+
+/**
+ * A workflow child's run ids, one per attempt: `<workflow id>_a000001`, then `_a000002`… Its own id in each, as an agent
+ * child's run id is unique to it: the owner's notification of it is the request `child_<run id>`. Zero-padded, so the
+ * workflow's outbox, which sends in key order, delivers them in order.
+ */
+export const workflowRunId = (workflowId: string, attempt: number) => `${workflowId}_a${String(attempt).padStart(6, '0')}`;
+const workflowAttemptOf = (ending: ChildEnding) => {
+  const match = /^(.+)_a(\d{6,})$/.exec(ending.requestId);
+  return match && match[1] === ending.agentId ? Number(match[2]) : undefined;
+};
 
 /** The digest a call's child is keyed by: its owner run and its attempted call id (`callId`, then `callId:2`, …). */
 export function callIdentity(runId: string, callId: string, attempt = 1) {
@@ -351,7 +369,7 @@ export class Delegation {
       const admitted = resumed ?? await this.host.storage.transaction(async tx => {
         // Indexed reads: this run's children, the running ones, and (for a budget) those not yet charged.
         const children = await this.rows.ofRun(run.id);
-        const scope = background ? (await this.rows.running()).filter(child => child.background) : children;
+        const scope = background ? (await this.rows.running()).filter(child => child.background && !child.workflow) : children.filter(child => !child.workflow);
         const running = scope.filter(child => child.status === 'running');
         if (running.length >= maxParallel) {
           if (background) throw new HttpError(400, `${running.length} sub-agents are running, this agent's most at once: wait for one to finish (wait_agent) before starting another`);
@@ -470,7 +488,8 @@ export class Delegation {
       if (current.status !== 'running') return { child: current, changed: false };
       const usage = record.outcome?.result?.usage;
       const folded = !!(record.steeredInto || record.outcome?.result?.steeredInto);
-      let value: DelegatedChild = { ...current, folded, ...(folded ? { notified: true } : {}), status: childStatus(record), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: folded ? 0 : childUsageCost(usage), held: undefined };
+      // A workflow's own children bill themselves (under its owner); its ending says what it spent but charges nothing.
+      let value: DelegatedChild = { ...current, folded, ...(folded ? { notified: true } : {}), status: childStatus(record), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: folded || current.workflow ? 0 : childUsageCost(usage), held: undefined };
       value = await this.putChild(tx, value);
       if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
       return { child: value, changed: !folded };
@@ -501,7 +520,8 @@ export class Delegation {
   answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, name: child.name, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.outcome?.result?.stopped ? { stopped: child.outcome.result.stopped } : {}), ...(child.error ? { error: child.error } : {}) }; }
   async cancel(requestId?: string, callPrefix?: string, key?: string) {
     const children = await this.host.storage.transaction(async tx => {
-      const children = (await this.rows.running()).filter(child => (!requestId || child.parentRequestId === requestId) && (!callPrefix || child.toolCallId.startsWith(callPrefix)) && (!key || child.key === key));
+      // A workflow outlives the turn that started it: only workflow_abort (or its own end) stops it.
+      const children = (await this.rows.running()).filter(child => !child.workflow && (!requestId || child.parentRequestId === requestId) && (!callPrefix || child.toolCallId.startsWith(callPrefix)) && (!key || child.key === key));
       for (const child of children) await this.putChild(tx, { ...child, cancelRequested: true });
       return children;
     });
@@ -518,11 +538,12 @@ export class Delegation {
   }
   async destroy() {
     await this.cancel();
-    const made = new Set((await this.children()).filter(child => child.made).map(child => child.id));
+    const made = new Set((await this.children()).filter(child => child.made && !child.workflow).map(child => child.id));
     for (const id of made) if (id) await this.host.remove?.(id);
   }
   private async cancelRemote(child: DelegatedChild) {
       if (!child.id) return;
+      if (child.workflow) { await this.host.abortWorkflow?.(child.id); return; }
       if (this.host.cancelRequest) { await this.host.cancelRequest(child.id, child.requestId); return; }
       if (!child.made) {
         const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
@@ -616,6 +637,7 @@ export class Delegation {
     const children = await this.children();
     const child = [...children].reverse().find(child => child.id === args.to || child.name === args.to);
     if (!child) throw new HttpError(404, 'Unknown sub-agent');
+    if (child.workflow) throw new HttpError(400, `${child.name} is a workflow, which can't receive messages: to change it, abort it and start a new one`);
     // A spawn accepted beside this call may not have started its model turn yet.
     // Let it begin so the message joins that turn instead of waiting behind it.
     if (child.status === 'running') for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
@@ -697,6 +719,7 @@ export class Delegation {
    * lives a day).
    */
   private async reconcileLegacy(child: DelegatedChild) {
+    if (child.workflow) return;
     try {
       const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
       if (!response.ok && ![404, 410].includes(response.status)) return;
@@ -711,12 +734,71 @@ export class Delegation {
    * when the parent sees it begin (resumePaused, on a wake) or, at the latest, when its ending arrives here.
    */
   private async resumedRun(ending: ChildEnding): Promise<DelegatedChild | undefined> {
+    if (workflowAttemptOf(ending) !== undefined) return this.workflowAttempt(ending);
     if (!ending.requestId.startsWith('resume_')) return;
     for (const paused of await this.rows.ofChild(ending.agentId)) {
       if (paused.status !== 'input_required' || !paused.background || paused.cancelRequested) continue;
       if (ending.requestId !== await resumeRequestId(paused)) continue;
       return await this.rows.get(`${paused.key}:resume`) ?? await this.putChild(this.host.storage, resumeRow(paused, ending.requestId));
     }
+  }
+  /**
+   * A workflow's later attempt (`<workflow id>_a<n>`): it stopped (its budget, its payer) and went on, so its next ending is a
+   * new run of the same child. The row is made from the latest one of that workflow when this ending arrives; an ending
+   * of an attempt older than the latest row's is unknown (that attempt ended already).
+   */
+  private async workflowAttempt(ending: ChildEnding): Promise<DelegatedChild | undefined> {
+    const latest = await this.latestWorkflowRow(ending.agentId);
+    const attempt = workflowAttemptOf(ending)!;
+    if (!latest || attempt <= (latest.attempt ?? 1)) return;
+    return this.openWorkflowAttempt(latest, attempt);
+  }
+  private async latestWorkflowRow(workflowId: string) {
+    const rows = (await this.rows.ofChild(workflowId)).filter(row => row.workflow);
+    return rows.length ? rows.reduce((a, b) => (a.attempt ?? 1) >= (b.attempt ?? 1) ? a : b) : undefined;
+  }
+  private async openWorkflowAttempt(latest: DelegatedChild, attempt: number) {
+    const key = `workflow-${latest.id}:${attempt}`;
+    return this.host.storage.transaction(async tx => await this.rows.get(key) ?? await this.putChild(tx, {
+      ...latest, key, requestId: workflowRunId(latest.id, attempt), attempt, payloadBytes: undefined, createdAt: Date.now(), status: 'running',
+      endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined,
+      cancelRequested: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined,
+    }));
+  }
+  /**
+   * workflow_budget or workflow_resume let a workflow stopped for its budget or its payer go on: its row opens its next
+   * attempt now, so it lists as running again. (Its next ending opens it too, if this is missed.)
+   */
+  async reopenWorkflow(workflowId: string) {
+    const latest = await this.latestWorkflowRow(workflowId);
+    if (!latest || latest.status !== 'paused') return;
+    await this.openWorkflowAttempt(latest, (latest.attempt ?? 1) + 1);
+  }
+  /** workflow_start's workflow was refused (its script, its input): its row ends at once, quietly. */
+  async forgetWorkflow(workflowId: string) {
+    const latest = await this.latestWorkflowRow(workflowId);
+    if (latest?.status === 'running') await this.update(latest, { status: 'failed', endedAt: Date.now(), notified: true, error: 'The workflow was not started' });
+  }
+  /**
+   * A workflow this agent started (workflow_start): its row, a background child, written before the workflow is made so
+   * its endings find it. Written again (the call replayed), it is the same row.
+   */
+  async registerWorkflow(workflow: { id: string; name: string; callId: string; payer?: string; bucket?: string }, api?: ToolExecutionApi): Promise<DelegatedChild> {
+    const { id, run } = await this.host.context(api);
+    const lineage = await this.lineage(id, run);
+    return this.putWorkflowRow({ ...workflow, parentRequestId: run.id, depth: (lineage?.depth ?? 0) + 1, root: lineage?.root ?? id, owner: agentOwner(id) });
+  }
+  private async putWorkflowRow(workflow: { id: string; name: string; callId: string; parentRequestId: string; depth: number; root: string; owner: Owner; payer?: string; bucket?: string; attempt?: number }) {
+    const attempt = workflow.attempt ?? 1, base = `workflow-${workflow.id}`, key = attempt === 1 ? base : `${base}:${attempt}`;
+    return this.host.storage.transaction(async tx => {
+      const existing = await this.rows.get(key);
+      if (existing) return existing;
+      return this.putChild(tx, {
+        id: workflow.id, key, requestId: workflowRunId(workflow.id, attempt), parentRequestId: workflow.parentRequestId, toolCallId: workflow.callId, name: workflow.name,
+        depth: workflow.depth, chain: [workflow.root], root: workflow.root, owner: workflow.owner, background: true, made: true, workflow: true, outbox: true,
+        accepted: true, attempt, createdAt: Date.now(), status: 'running', ...(workflow.payer ? { payer: workflow.payer } : {}), ...(workflow.bucket ? { bucket: workflow.bucket } : {}),
+      });
+    });
   }
   /** A paused background child's resume, if it has begun: its row, so it lists as running. Its ending comes by itself. */
   private async resumePaused(child: DelegatedChild) {
@@ -842,6 +924,7 @@ export class Delegation {
       }
       const child = children.find(child => child.id === args.agent || child.name === args.agent || child.id === args.to || child.name === args.to);
       if (!child) throw new HttpError(404, 'Unknown sub-agent');
+      if (definition.name === 'interrupt_agent' && child.workflow) { await this.host.abortWorkflow?.(child.id); return this.toolResult({ agentId: child.id, interrupted: true }, api); }
       if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${api.callId}`, method: 'abort', params: {} }) })); return this.toolResult({ agentId: child.id, interrupted: true }, api); }
       throw new HttpError(400, 'Unknown delegation tool');
     } }));

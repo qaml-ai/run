@@ -6,6 +6,8 @@ import { Directory } from "./control.ts";
 import { attachChildComputers, forkChildComputers, releaseChildComputers } from "./computers/child-fork.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { Delegation } from "./delegation.ts";
+import { ownWorkflow } from "./workflow-routes.ts";
+import type { WorkflowEnv } from "./workflow-object.ts";
 import { resolveDefinition, provisionDefinition } from "./definitions.ts";
 import { DelegationNotifications, type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
 import type { ChildProgressReport } from "./delegation.ts";
@@ -207,6 +209,12 @@ export function createDelegation(this: AgentRuntime): Delegation {
     submitChild: (id, request, placement) => this.env.AGENTS.getByName(id).admitDelegated(request, placement),
     cancelRequest: (id, requestId) =>
       this.env.AGENTS.getByName(id).cancelRequest(requestId),
+    // A workflow child's cancel: its object, found only in this agent's tenant.
+    abortWorkflow: async (workflowId) => {
+      const conf = await this.config();
+      const stub = await ownWorkflow(this.env as unknown as WorkflowEnv, conf.tenantId, workflowId);
+      await stub?.abort();
+    },
     inheritComputer: async (parent, child, computer) => {
       const conf = await this.config();
       await attachChildComputers(this.env, conf.tenantId, parent, child, computer);
