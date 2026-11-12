@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { WorkflowNotices, noticeEvent } from '../src/workflow-notices.ts';
+import { WorkflowNotices, noticeEvent, workflowNext } from '../src/workflow-notices.ts';
 
 function sql(db = new DatabaseSync(':memory:')) {
   return { exec(query: string, ...args: any[]) { const rows = db.prepare(query).all(...args) as any[]; return Object.assign(rows[Symbol.iterator](), { toArray: () => rows, one: () => rows[0] }); } } as unknown as SqlStorage;
@@ -127,4 +127,23 @@ test('a row from before created_at gets its week from when it is first seen, not
   now += 2 + 300_000 * 2;
   await notices.flush();
   assert.equal(notices.pending(), 0, 'dropped after it');
+});
+
+test("a fault's notice carries its code and message, and every stop says what it waits for, so a fault never reads as a pause", async () => {
+  const sent: any[] = [];
+  const notices = new WorkflowNotices({
+    sql: sql(), workflowId: 'wf_f', owner: () => ({ kind: 'agent', id: 'owner' }), name: () => 'port', bucket: () => undefined,
+    send: async (_owner, request) => { sent.push(JSON.parse(request.params.text)); }, arm: async () => {}, now: () => 1_000, random: () => 0,
+  });
+  notices.check({ status: 'running' });
+  notices.check({ status: 'paused', pauseReason: 'key_required', fault: { code: 'key_required', message: 'commit() inside parallel() needs a key' } });
+  notices.check({ status: 'running' });
+  notices.check({ status: 'paused', pauseReason: 'confirm_rerun' });
+  await notices.flush();
+  assert.deepEqual(sent[0].fault, { code: 'key_required', message: 'commit() inside parallel() needs a key' });
+  assert.match(sent[0].next, /^The script failed \(key_required\): fix it with workflow_edit/);
+  assert.equal(sent[1].fault, undefined);
+  assert.match(sent[1].next, /confirm with workflow_resume, or workflow_edit with confirm: true/);
+  assert.equal(workflowNext({ status: 'running' }), undefined);
+  assert.match(workflowNext({ status: 'budget_exhausted' })!, /workflow_budget/);
 });
