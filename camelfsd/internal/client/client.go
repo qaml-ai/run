@@ -23,6 +23,9 @@ func Run(args []string, out io.Writer) error {
 		return fmt.Errorf("missing client command")
 	}
 	cmd := f.Arg(0)
+	if cmd == "import-tree" || cmd == "tree" || cmd == "cat" {
+		return treeCommand(*socket, cmd, f.Args()[1:], out)
+	}
 	g := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	job := g.String("job", "", "job id")
 	lineage := g.String("lineage", "", "lineage")

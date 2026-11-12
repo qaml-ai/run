@@ -254,7 +254,7 @@ func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error 
 	for o := range r.Chunks {
 		keys = append(keys, o)
 	}
-	e = store.Parallel(ctx, 16, keys, func(o string) error {
+	e = store.Parallel(ctx, store.Depth(m.Store), keys, func(o string) error {
 		b, e := m.Store.Get(ctx, "c/"+r.Chunks[o])
 		if e != nil {
 			return e

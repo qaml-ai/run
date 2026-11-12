@@ -1,0 +1,5 @@
+unit 2 — 2026-11-12
+EC2/S3 timings skipped: no EC2 SSH target was supplied or found.
+The workspace has no /nvme/host-free; the remote host gate could not be checked.
+Git tree and blob equality passed against system git in the unit tests.
+Real FICLONE checkpoint regression skipped on Sprites (operation not supported).

@@ -66,13 +66,14 @@ func host(args []string) error {
 	region := f.String("region", "us-west-2", "AWS region")
 	cold := f.String("cold", "clone", "clone or prehydrate")
 	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
-	depth := f.Int("prefetch-depth", 4, "prefetch depth")
+	depth := f.Int("prefetch-depth", 4, "prefetch lookahead")
+	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
 		return e
 	}
-	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 {
+	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 || *fetchDepth < 1 {
 		return fmt.Errorf("invalid host flags")
 	}
 	if e := os.MkdirAll(*data, 0700); e != nil {
@@ -88,7 +89,7 @@ func host(args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	s, e := store.Open(ctx, *url, *region)
+	s, e := store.Open(ctx, *url, *region, *fetchDepth)
 	if e != nil {
 		return e
 	}
@@ -102,7 +103,7 @@ func host(args []string) error {
 		return e
 	}
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
-	c := cache.New(filepath.Join(*data, "cache"), s, *depth)
+	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	m, e := image.New(image.Config{Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e

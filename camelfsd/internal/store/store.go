@@ -11,10 +11,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Store interface {
@@ -26,7 +28,7 @@ type Local struct{ Dir string }
 
 func valid(k string) bool {
 	p, h, ok := strings.Cut(k, "/")
-	return ok && (p == "c" || p == "r") && root.Hex(h, 64) || ok && p == "o" && root.Hex(h, 40)
+	return ok && (p == "c" || p == "r") && root.Hex(h, 64) || ok && (p == "o" || p == "t") && root.Hex(h, 40)
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
@@ -34,8 +36,12 @@ func verify(k string, b []byte) error {
 	}
 	p, h, _ := strings.Cut(k, "/")
 	actual := root.Hash(b)
-	if p == "o" {
-		actual = fmt.Sprintf("%x", sha1.Sum(b))
+	if p == "o" || p == "t" {
+		kind := "blob"
+		if p == "t" {
+			kind = "tree"
+		}
+		actual = GitHash(kind, b)
 	}
 	if actual != h {
 		return fmt.Errorf("hash mismatch")
@@ -57,7 +63,63 @@ func verify(k string, b []byte) error {
 	}
 	return nil
 }
-func BlobKey(b []byte) string { return fmt.Sprintf("o/%x", sha1.Sum(b)) }
+func GitHash(kind string, b []byte) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "%s %d\x00", kind, len(b))
+	h.Write(b)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+func BlobKey(b []byte) string { return "o/" + GitHash("blob", b) }
+
+// PutBlobFile publishes an already verified blob without buffering it in memory.
+func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
+	if !valid(key) || !strings.HasPrefix(key, "o/") {
+		return fmt.Errorf("invalid blob key")
+	}
+	if _, e := f.Seek(0, 0); e != nil {
+		return e
+	}
+	switch v := s.(type) {
+	case *limited:
+		if e := v.acquire(ctx); e != nil {
+			return e
+		}
+		defer v.release()
+		return PutBlobFile(ctx, v.Store, key, f)
+	case Local:
+		dst := filepath.Join(v.Dir, key)
+		if e := os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
+			return e
+		}
+		tmp, e := os.CreateTemp(filepath.Dir(dst), ".tmp-")
+		if e != nil {
+			return e
+		}
+		defer os.Remove(tmp.Name())
+		_, e = io.Copy(tmp, f)
+		if e == nil {
+			e = tmp.Sync()
+		}
+		ce := tmp.Close()
+		if e == nil {
+			e = ce
+		}
+		if e != nil {
+			return e
+		}
+		return os.Rename(tmp.Name(), dst)
+	case *S3:
+		k := v.key(key)
+		_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f})
+		return e
+	default:
+		b, e := io.ReadAll(f)
+		if e != nil {
+			return e
+		}
+		return s.Put(ctx, key, b)
+	}
+}
 func (l Local) Get(c context.Context, k string) ([]byte, error) {
 	if !valid(k) {
 		return nil, fmt.Errorf("invalid key")
@@ -107,22 +169,35 @@ type S3 struct {
 	Bucket, Prefix string
 }
 
-func Open(ctx context.Context, url, region string) (Store, error) {
+func Open(ctx context.Context, url, region string, depths ...int) (Store, error) {
+	depth := DefaultDepth
+	if len(depths) > 0 {
+		depth = depths[0]
+	}
+	if depth < 1 {
+		return nil, fmt.Errorf("invalid fetch depth")
+	}
 	if !strings.HasPrefix(url, "s3://") {
 		if !filepath.IsAbs(url) {
 			return nil, fmt.Errorf("store must be absolute")
 		}
-		return Local{url}, nil
+		return WithDepth(Local{url}, depth), nil
 	}
 	bucket, prefix, _ := strings.Cut(strings.TrimPrefix(url, "s3://"), "/")
 	if bucket == "" {
 		return nil, fmt.Errorf("empty bucket")
 	}
-	cfg, e := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = depth
+	transport.MaxIdleConnsPerHost = depth
+	transport.MaxConnsPerHost = depth
+	transport.DisableKeepAlives = false
+	transport.IdleConnTimeout = 5 * time.Minute
+	cfg, e := config.LoadDefaultConfig(ctx, config.WithRegion(region), config.WithHTTPClient(&http.Client{Transport: transport}))
 	if e != nil {
 		return nil, e
 	}
-	return &S3{s3.NewFromConfig(cfg), bucket, strings.Trim(prefix, "/")}, nil
+	return WithDepth(&S3{s3.NewFromConfig(cfg), bucket, strings.Trim(prefix, "/")}, depth), nil
 }
 func (s *S3) key(k string) string {
 	if s.Prefix == "" {
@@ -136,6 +211,10 @@ func (s *S3) Get(c context.Context, k string) ([]byte, error) {
 	}
 	key := s.key(k)
 	o, e := s.Client.GetObject(c, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &key})
+	var missing *types.NoSuchKey
+	if errors.As(e, &missing) {
+		return nil, os.ErrNotExist
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -203,7 +282,7 @@ func PutChunks(ctx context.Context, s Store, b map[string][]byte) (int, error) {
 	}
 	var mu sync.Mutex
 	n := 0
-	e := Parallel(ctx, 16, keys, func(h string) error {
+	e := Parallel(ctx, Depth(s), keys, func(h string) error {
 		ok, e := s.Has(ctx, "c/"+h)
 		if e != nil || ok {
 			return e
@@ -216,4 +295,55 @@ func PutChunks(ctx context.Context, s Store, b map[string][]byte) (int, error) {
 		return e
 	})
 	return n, e
+}
+
+const DefaultDepth = 64
+
+// One shared budget covers foreground reads, prefetch, hydration and uploads.
+type limited struct {
+	Store
+	slots chan struct{}
+}
+
+func WithDepth(s Store, n int) Store {
+	if n < 1 {
+		n = DefaultDepth
+	}
+	return &limited{s, make(chan struct{}, n)}
+}
+func Depth(s Store) int {
+	if v, ok := s.(*limited); ok {
+		return cap(v.slots)
+	}
+	return DefaultDepth
+}
+func (s *limited) acquire(ctx context.Context) error {
+	select {
+	case s.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (s *limited) release() { <-s.slots }
+func (s *limited) Get(ctx context.Context, k string) ([]byte, error) {
+	if e := s.acquire(ctx); e != nil {
+		return nil, e
+	}
+	defer s.release()
+	return s.Store.Get(ctx, k)
+}
+func (s *limited) Put(ctx context.Context, k string, b []byte) error {
+	if e := s.acquire(ctx); e != nil {
+		return e
+	}
+	defer s.release()
+	return s.Store.Put(ctx, k, b)
+}
+func (s *limited) Has(ctx context.Context, k string) (bool, error) {
+	if e := s.acquire(ctx); e != nil {
+		return false, e
+	}
+	defer s.release()
+	return s.Store.Has(ctx, k)
 }

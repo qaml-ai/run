@@ -44,7 +44,10 @@ func Open(path string) (*DB, error) {
 		return nil, e
 	}
 	d.SetMaxOpenConns(1)
-	_, e = d.Exec(`CREATE TABLE IF NOT EXISTS refs(lineage TEXT,name TEXT,"commit" TEXT NOT NULL DEFAULT '',tree TEXT NOT NULL DEFAULT '',root TEXT NOT NULL DEFAULT '',owner TEXT NOT NULL DEFAULT '',holder TEXT,lease_epoch INTEGER NOT NULL DEFAULT 0,lease_deadline INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER,PRIMARY KEY(lineage,name)); CREATE TABLE IF NOT EXISTS mounts(job_id TEXT PRIMARY KEY,lineage TEXT,name TEXT,root TEXT,tree TEXT,image TEXT,warm INTEGER,state TEXT,lease_epoch INTEGER,created_at INTEGER); CREATE TABLE IF NOT EXISTS tree_roots(lineage TEXT,tree TEXT,root TEXT,created_at INTEGER); CREATE INDEX IF NOT EXISTS tree_lookup ON tree_roots(lineage,tree,created_at);`)
+	_, e = d.Exec(`CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,kind TEXT,bytes BLOB,size INT,created_at INTEGER);
+ CREATE TABLE IF NOT EXISTS lineage_blobs(lineage TEXT,sha256 TEXT,sha1 TEXT,size INT,created_at INTEGER,PRIMARY KEY(lineage,sha256));
+ CREATE INDEX IF NOT EXISTS blob_sha1 ON lineage_blobs(sha1);
+ CREATE TABLE IF NOT EXISTS refs(lineage TEXT,name TEXT,"commit" TEXT NOT NULL DEFAULT '',tree TEXT NOT NULL DEFAULT '',root TEXT NOT NULL DEFAULT '',owner TEXT NOT NULL DEFAULT '',holder TEXT,lease_epoch INTEGER NOT NULL DEFAULT 0,lease_deadline INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER,PRIMARY KEY(lineage,name)); CREATE TABLE IF NOT EXISTS mounts(job_id TEXT PRIMARY KEY,lineage TEXT,name TEXT,root TEXT,tree TEXT,image TEXT,warm INTEGER,state TEXT,lease_epoch INTEGER,created_at INTEGER); CREATE TABLE IF NOT EXISTS tree_roots(lineage TEXT,tree TEXT,root TEXT,created_at INTEGER); CREATE INDEX IF NOT EXISTS tree_lookup ON tree_roots(lineage,tree,created_at);`)
 	if e != nil {
 		d.Close()
 		return nil, e

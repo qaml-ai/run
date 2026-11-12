@@ -1,6 +1,6 @@
 # camelfsd
 
-A Linux host storage daemon promoted from `prototypes/block/lazyblk`. It stores sparse ext4 images as content-addressed 256 KiB chunks, reflinks warm images, serves cold origins over read-only NBD, and publishes checkpoints with fenced SQLite refs. It never mounts or parses guest filesystems. `tree` is an optional 40-character Git tree SHA; unit 1 preserves it without interpreting it.
+A Linux host storage daemon promoted from `prototypes/block/lazyblk`. It stores sparse ext4 images as content-addressed 256 KiB chunks, reflinks warm images, serves cold origins over read-only NBD, and publishes checkpoints with fenced SQLite refs. It never mounts or parses guest filesystems. `tree` is an optional 40-character Git tree SHA; tree imports use Git-exact objects; unit 3 will materialize them as images.
 
 Build with Go 1.24+, a C compiler (SQLite), and Linux headers: `go build -o camelfsd ./cmd/camelfsd`. Run `go test ./...` and `go vet ./...`. The daemon requires FICLONE support under `--data` (XFS reflink on the target host). Clone mode also needs loaded NBD/dm-clone modules, `nbd-client`, `losetup`, `dmsetup`, and root privileges. It changes only its own devices. Do not attach guest writers during checkpoint; the caller must freeze or unmount the guest filesystem first.
 
@@ -15,7 +15,7 @@ Build with Go 1.24+, a C compiler (SQLite), and Linux headers: `go build -o came
 ./camelfsd version
 ```
 
-`--store /absolute/directory` substitutes a local store. S3 uses the SDK default credential chain. Objects are `c/<sha256>` (chunks), `r/<sha256>` (canonical roots), and `o/<sha1>` (reserved blobs). `--cold prehydrate` downloads all chunks with 16 workers and returns a complete warm image. Default clone mode returns `/dev/mapper/camelfs-<jobId>` immediately; `--hydrate` enables background hydration. `--nbd-listen` defaults to `127.0.0.1:10809`; `--prefetch-depth` defaults to 4. One listener serves all root exports. Keep this listener private to the host.
+`--store /absolute/directory` substitutes a local store. S3 uses the SDK default credential chain. Objects are `c/<sha256>` (chunks), `r/<sha256>` (canonical roots), `o/<sha1>` (raw blobs), and `t/<sha1>` (trees over 400 KiB). `--cold prehydrate` downloads all chunks with 64 workers by default and returns a complete warm image. Default clone mode returns `/dev/mapper/camelfs-<jobId>` immediately; `--hydrate` enables background hydration. `--nbd-listen` defaults to `127.0.0.1:10809`; `--prefetch-depth` defaults to 4. One listener serves all root exports. Keep this listener private to the host.
 
 The HTTP/1.1 JSON API is restricted by a mode-0600 Unix socket. Examples use shell variables `S=/run/camelfsd/api.sock`, `R=<64-hex-root>` and `T=<40-hex-tree>`:
 
@@ -29,13 +29,31 @@ The HTTP/1.1 JSON API is restricted by a mode-0600 Unix socket. Examples use she
 | `GET /v0/mounts/:jobId` | State, image, root, hydration region counts and leaseEpoch. `curl --unix-socket "$S" http://localhost/v0/mounts/j1` |
 | `POST /v0/mounts/:jobId/checkpoint` | Publish a root, fenced CAS, cache complete snapshot and record the tree/root mapping. Returns root, tree, parentRoot, changedChunks, uploadedChunks, changedBytes and step timings. `curl --unix-socket "$S" -d '{}' http://localhost/v0/mounts/j1/checkpoint` |
 | `DELETE /v0/mounts/:jobId` | Detach devices, remove mount files, release lease; returns released/promoted. `curl --unix-socket "$S" -X DELETE http://localhost/v0/mounts/j1` |
-| `POST /v0/trees` | 501 `unit 2`. `curl --unix-socket "$S" -d '{}' http://localhost/v0/trees` |
-| `PUT /v0/blobs/:sha256` | 501 `unit 2`. `curl --unix-socket "$S" -X PUT -d '{}' "http://localhost/v0/blobs/$R"` |
+| `POST /v0/trees` | Complete file listing; returns tree, new tree count, blob count and importMs. Missing lineage uploads return 409 with up to 10,000 sorted SHA-256s. `curl --unix-socket "$S" -d '{"lineage":"test","files":{}}' http://localhost/v0/trees` |
+| `PUT /v0/blobs/:sha256?lineage=L` | Stream a blob, Content-Length required, at most 256 MiB; returns sha256, Git sha1 and size. `curl --unix-socket "$S" -X PUT --data-binary @file "http://localhost/v0/blobs/$R?lineage=test"` |
+| `GET /v0/trees/:tree` | Flattened paths, modes, blob SHA-1s and sizes. `curl --unix-socket "$S" "http://localhost/v0/trees/$T"` |
+| `GET /v0/trees/:tree/files/*path` | Raw bytes; symlinks return their target with X-Camelfs-Mode: 120000. `curl --unix-socket "$S" "http://localhost/v0/trees/$T/files/src/main.go"` |
+| `GET /v0/blobs/:sha1` | Raw blob bytes. `curl --unix-socket "$S" "http://localhost/v0/blobs/$B"` |
 
 Errors are JSON `{error, detail}`; a missing lease or failed CAS returns 409 `fenced`. The client prints the response and exits 1 for non-2xx. Import paths must resolve beneath `--data`, `/nvme`, or a repeatable `--import-allow /absolute/dir`; symlinks are resolved. Job IDs match `[A-Za-z0-9._:-]{1,64}` except `.` and `..`. Mount responses include image, warm, root, tree, mountMs and hydrating; `vsock` is accepted for later units.
 
-Checkpoint syncs the destination and reflinks a snapshot. **FIEMAP correction:** reflinking makes the snapshot share with the source, so private extents must be collected on the source *before* reflinking; the snapshot is also FIEMAPed with sync, then those ranges are hashed from it. Holes are included to detect zeroed/punched-out parent chunks. Timings include both FIEMAP walks. Cold checkpoint first waits for complete hydration (up to five minutes) and suspends dm-clone while snapshotting; this avoids publishing an incomplete destination. Release promotes a hydrated origin only after verifying it still matches its root; edited destinations are promoted by checkpoint under their new root.
+Checkpoint syncs the destination and reflinks a snapshot. **FIEMAP correction:** reflinking makes the snapshot share with the source, so private extents must be collected on the source *before* reflinking; those ranges are then hashed from the snapshot. Holes are included to detect zeroed/punched-out parent chunks. fiemapMs measures only the live-image walk. Holes are read only where the parent has a stored chunk. Cold checkpoint first waits for complete hydration (up to five minutes) and suspends dm-clone while snapshotting; this avoids publishing an incomplete destination. Release promotes a hydrated origin only after verifying it still matches its root; edited destinations are promoted by checkpoint under their new root.
 
 State lives in `images/`, `mounts/<jobId>/state.json`, `cache/<aa>/<hash>`, and `refs.db`. A data-directory lock prevents concurrent daemons. Graceful SIGTERM releases mounts. Startup refuses leftover mount state after a crash: stop guest users and manually detach the devices recorded in state before removing that mount directory. Automatic recovery is a later unit.
 
 For unprivileged tests only, `CAMELFSD_TEST_NO_REFLINK=1` skips the probe, copies instead of reflinking and hashes the whole image during checkpoint; a log line identifies this mode. Root-mount file permissions are read-only; privileged consumers must honor that contract. Run `sudo scripts/ec2-smoke.sh clone` and `sudo scripts/ec2-smoke.sh prehydrate` only after the host availability gate. The script writes its report under `/nvme/camelfs/`, uses a fresh S3 prefix, verifies round trips and cleans up its devices. S3 objects remain for inspection.
+
+
+Tree import walks directories without following symlinks, skips `.git`, uploads missing blobs with 64 workers by default, and retries the complete listing. Missing results are lineage-scoped even when another lineage already uploaded the bytes. The client reports uploadedBlobs and uploadMs alongside the import result; an unchanged second import uploads zero blobs.
+
+```sh
+./camelfsd client --socket "$S" import-tree --lineage test --dir ./project
+./camelfsd client --socket "$S" import-tree --lineage test --dir ./project --parent "$T"
+./camelfsd client --socket "$S" tree "$T"
+./camelfsd client --socket "$S" cat "$T" src/main.go
+```
+
+Tree paths are relative and slash-separated, at most 4096 bytes, with no empty, dot, dot-dot, NUL or `.git` segment. Modes are 100644 (default), 100755 and 120000; gitlinks are refused. Listings accept at most 200,000 files and 64 MiB of JSON. Empty directories are dropped. Absent paths are removed; parentTree is only a reuse hint. Imported trees without a tree/root mapping still return 404 no-root-for-tree when mounted. Trees use Git's header-prefixed SHA-1, exact binary entry encoding and directory sorting rule. SQLite stores small trees inline and large trees as stub rows referencing the store. New tree rows commit together. Set B to a 40-character blob SHA-1 for the raw-blob example above.
+
+
+The s3speed defaults are 64 concurrent blob/chunk fetches and uploads per host (`host --fetch-depth 64`) and 64 blob uploads per import client (`import-tree --fetch-depth 64`). A shared store budget covers foreground reads, prefetch and hydration. S3 keeps connections alive, with MaxIdleConnsPerHost and MaxConnsPerHost set to the host fetch depth (64 by default). Prefetch lookahead remains separate at `--prefetch-depth 4`. Chunk size stays 256 KiB. Bulk hydration packs are not implemented here.

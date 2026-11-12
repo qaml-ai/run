@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
-	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"io"
 	"log"
 	"net/http"
@@ -60,6 +59,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
+	if strings.HasPrefix(r.URL.Path, "/v0/trees") || strings.HasPrefix(r.URL.Path, "/v0/blobs/") {
+		s.objects(w, r, reply, fail)
+		return
+	}
 	m := s.Manager
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/v0/health":
@@ -89,14 +92,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(200, v)
-	case r.Method == "POST" && r.URL.Path == "/v0/trees":
-		reply(501, map[string]string{"error": "unit 2"})
-	case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/v0/blobs/"):
-		if !root.Hex(strings.TrimPrefix(r.URL.Path, "/v0/blobs/"), 64) {
-			fail(fmt.Errorf("invalid blob id"))
-			return
-		}
-		reply(501, map[string]string{"error": "unit 2"})
 	case strings.HasPrefix(r.URL.Path, "/v0/mounts/"):
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v0/mounts/"), "/")
 		id = parts[0]
