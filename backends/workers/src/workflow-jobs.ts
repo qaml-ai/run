@@ -9,6 +9,7 @@
 import { createVolume } from "./file-mounts.ts";
 import { volume, type FileBindings } from "./files.ts";
 import { workerGitHubApps, type GitHubAppsEnv } from "./github-apps.ts";
+import { camelfsConfigured, type CamelfsEnv } from "./jobs/camelfs.ts";
 import { jobDriver, type JobDriver, type JobDriverEnv } from "./jobs/driver.ts";
 import { JOB_LIMITS, JobSpecError, jobVolume, type JobResult, type JobSpec, type JobStream } from "./jobs/job.ts";
 import { assertStorageWrite } from "./storage-quota.ts";
@@ -16,7 +17,7 @@ import { digest } from "./volume.ts";
 import { commitFork } from "./workflow-volumes.ts";
 import { WORKFLOW_LIMITS, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect } from "./workflow-runner.ts";
 
-export type WorkflowJobsEnv = FileBindings & JobDriverEnv & GitHubAppsEnv;
+export type WorkflowJobsEnv = FileBindings & JobDriverEnv & GitHubAppsEnv & CamelfsEnv;
 
 export interface WorkflowJobsHost {
   workflow: { id: string; tenant: string };
@@ -167,7 +168,11 @@ export class WorkflowJobs implements EffectExecutor {
         return done({ ok: false, error: error instanceof Error ? error.message : String(error) });
       throw error;
     }
-    const result = await found.driver.run(spec);
+    let result: JobResult;
+    // A spec only the driver can judge (commit on a driver without camelFS) is the script's error, landed like any bad
+    // argument; left to throw, the row would be run again by every sweep.
+    try { result = await found.driver.run(spec); }
+    catch (error) { if (error instanceof JobSpecError) return done({ ok: false, error: error.message }); throw error; }
     if (!result.ok) {
       if (result.code === "job_running") return; // an earlier run of this job still holds its container: its landing comes from there
       if (result.code === "admission_refused") return done({ refused: result.message, code: "payer_exhausted" });
@@ -191,6 +196,7 @@ export class WorkflowJobs implements EffectExecutor {
     if (extra) throw new JobSpecError(`job() has no option ${extra}: it takes ${known.join(", ")}`);
     if (args.commit !== undefined && typeof args.commit !== "boolean") throw new JobSpecError("job() commit is true or false");
     if (args.commit && args.at === undefined) throw new JobSpecError("job() commit needs at: the volume whose tree it checkpoints");
+    if (args.commit && !camelfsConfigured(this.env)) throw new JobSpecError("job() commit needs camelFS job hosts, which this deployment does not have");
     if (args.at !== undefined && args.files !== undefined) throw new JobSpecError("job() takes at or files, not both");
     if (args.files !== undefined && (!args.files || typeof args.files !== "object" || Object.values(args.files).some(text => typeof text !== "string")))
       throw new JobSpecError("job() files maps paths to text");

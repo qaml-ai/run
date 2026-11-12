@@ -25,7 +25,7 @@ import type { WebhookEnv } from "../webhooks.ts";
 import { camelfsConfigured, importTree, volumeLineage, type CamelfsEnv } from "./camelfs.ts";
 import type { Volume } from "../volume.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
-import { JobSpecError, jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
+import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
 import { HostSyncStore } from "./host-sync-store.ts";
 import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
@@ -628,10 +628,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     if (waiting.stopped) return fail("stopped", "The job was stopped");
     let files: WireFile[], sync: WireJob["sync"], camelfs: WireJob["camelfs"];
     try { ({ files, sync, camelfs } = await this.files(spec)); }
-    catch (error) {
-      if (error instanceof JobSpecError) throw error;
-      return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read");
-    }
+    catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
     if (waiting.stopped) return fail("stopped", "The job was stopped");
     // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
     const stopped = async (host?: string, slot = false) => {
@@ -722,7 +719,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
    * gets a manifest and a token for this job's files only, valid for its lifetime, kept here hashed.
    */
   private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"]; camelfs?: WireJob["camelfs"] }> {
-    if (spec.commit && !camelfsConfigured(this.env)) throw new JobSpecError("commit needs camelFS, which this deployment does not have");
+    // A result, not a throw: a JobSpecError loses its class across this object's RPC, and the caller must land it.
+    if (spec.commit && !camelfsConfigured(this.env)) throw new Error("commit needs camelFS, which this deployment does not have");
     const out: WireFile[] = [];
     let bytes = 0;
     const add = (path: string, data: Uint8Array) => {

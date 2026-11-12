@@ -9,7 +9,7 @@ import { registerHooks } from "node:module";
 import { applyScope } from "../../../shared/apply-scope.ts";
 import type { WorkflowJobsEnv } from "../src/workflow-jobs.ts";
 import type { StartedEffect, EffectOutcome } from "../src/workflow-runner.ts";
-import type { JobResult, JobSpec } from "../src/jobs/job.ts";
+import { JobSpecError, type JobResult, type JobSpec } from "../src/jobs/job.ts";
 import { harness, FakeCapacity } from "./workflow-harness.ts";
 
 // The job and volume modules reach Durable Objects; a stand-in base class lets them load in Node.
@@ -218,7 +218,7 @@ test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", as
   const step = { warm: true, mountMs: 2, applyMs: 3, checkpointMs: 4, checkpoint };
   for (const fields of [{ commit: "c".repeat(40), tree: "b".repeat(40), root: "r" }, { checkpointError: "checkpoint failed" }]) {
     const written: string[] = [];
-    const env = { VOLUMES: { getByName: () => ({
+    const env = { CAMELFS_API_URL: "http://camelfs.invalid", CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
       initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
       write: async (path: string) => { written.push(path); return { path }; },
     }) } } as unknown as WorkflowJobsEnv;
@@ -245,6 +245,27 @@ test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", as
       assert.equal(written.length, 2);
     });
   }
+});
+
+test("WorkflowJobs: commit without camelFS, or refused by the driver, lands as the script's error and is not retried", async () => {
+  const without = jobs(() => assert.fail("no job runs"));
+  await without.executor.start(effect("nofs", { command: "true", timeoutSeconds: 5, at: "vol_source", commit: true }));
+  await without.settled();
+  assert.deepEqual(without.landed[0]![2], { ok: false, error: "job() commit needs camelFS job hosts, which this deployment does not have" });
+  const env = { CAMELFS_API_URL: "http://camelfs.invalid", CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
+    initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
+  }) } } as unknown as WorkflowJobsEnv;
+  const sql = { query: async (text: string) => {
+    if (text.startsWith("SELECT name,created_at")) return { rows: [{ name: "test", created_at: 0, tenant: "t1", deleted_at: null }], rowCount: 1 };
+    throw new Error(`Unexpected SQL: ${text}`);
+  } };
+  await applyScope.run({ sql: sql as never }, async () => {
+    const refused = jobs(() => { throw new JobSpecError("commit needs camelFS job hosts; Cloudflare containers cannot checkpoint a job's tree"); }, true, "agent_owner", env);
+    await refused.executor.start(effect("containers", { command: "true", timeoutSeconds: 5, at: "vol_source", commit: true }));
+    await refused.settled();
+    assert.deepEqual(refused.landed[0]![2], { ok: false, error: "commit needs camelFS job hosts; Cloudflare containers cannot checkpoint a job's tree" });
+    assert.equal([...refused.rows.keys()].filter(key => key.startsWith("workflow-job:")).length, 0, "its row is gone: no sweep runs it again");
+  });
 });
 
 test("a fork's changes: written paths are those whose content differs from the base it was made from; removed ones", () => {
