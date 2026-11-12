@@ -16,7 +16,7 @@ import { rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { frames, Frames, type HostMessage, type RuntimeMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
 import { signGetCallerIdentity, type Attestation } from "../shared/job-host-attest.ts";
-import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
+import { fakeLauncher, type Vm, type VmLauncher, type VmShape } from "./vm.ts";
 import { firecrackerLauncher } from "./firecracker.ts";
 import { SnapshotCache, uploadSnapshot, SNAPSHOT_CACHE_BYTES } from "./snapshots.ts";
 
@@ -29,6 +29,12 @@ export type AgentOptions = {
   runtime: string; attest: (audience: string) => Promise<Attestation>; slots: number; vcpus: number; memoryMiB: number;
   /** The pool this host serves (build or test: the image's POOL); placement sends it only that pool's jobs. */
   pool?: "build" | "test";
+  /**
+   * A build host's pre-started sandbox: one VM of this shape kept booted while the host is idle, so a build job starts
+   * in the time it takes to hand it over rather than to boot (the design's ≤ 7 s). A job that fits it, from no
+   * snapshot, takes it; the next is started once the host is idle again.
+   */
+  prestart?: VmShape;
   launcher: VmLauncher; heartbeatMs?: number; diskLowBytes?: number; log?: (line: Record<string, unknown>) => void;
   /** The snapshots this host holds (snapshots.ts); a temporary directory by default. */
   cache?: SnapshotCache;
@@ -68,10 +74,48 @@ export class HostAgent {
   private log(line: Record<string, unknown>) { (this.options.log ?? (value => console.log(JSON.stringify(value))))(line); }
 
   /** Connect, and keep connecting until `close()`. Resolves once the runtime has registered this host. */
-  start() { void this.connectLoop(); return this.registered.promise; }
+  start() { void this.connectLoop(); this.prestartNext(); return this.registered.promise; }
+
+  /** The pre-started VM, booting or booted; undefined when there is none (no prestart, taken, or failed). */
+  private warm?: Promise<Vm | undefined>;
+  private warmCount = 0;
+  /** Boot the next pre-started VM, when this host prestarts, runs nothing, and has none. */
+  private prestartNext() {
+    if (!this.options.prestart || this.closed || this.warm || this.running.size > 0) return;
+    const id = `warm-${process.pid}-${++this.warmCount}`, began = Date.now();
+    this.warm = this.options.launcher.boot(id, this.options.prestart, { warm: true }).then(vm => {
+      this.log({ type: "jobhost_warm_ready", vm: id, bootMs: Date.now() - began });
+      return vm;
+    }, error => {
+      this.log({ type: "jobhost_warm_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
+      this.warm = undefined;
+      return undefined;
+    });
+  }
+  /** The pre-started VM for a job that fits it (no snapshot, its shape within the warm one's), its egress made the job's. */
+  private async takeWarm(id: string, spec: WireJob, shape: VmShape): Promise<Vm | undefined> {
+    const prestart = this.options.prestart;
+    if (!prestart || !this.warm) return undefined;
+    const pending = this.warm;
+    this.warm = undefined;
+    const vm = await pending;
+    if (!vm) return undefined;
+    // One that does not fit it gives it up: a build host runs one sandbox, the job's.
+    if (spec.snapshot || shape.vcpus > prestart.vcpus || shape.memoryMiB > prestart.memoryMiB || shape.diskMiB > prestart.diskMiB) {
+      await vm.destroy().catch(() => {});
+      return undefined;
+    }
+    try { await vm.egress?.(id, spec.internet); }
+    catch (error) { await vm.destroy().catch(() => {}); throw error; }
+    this.log({ type: "jobhost_warm_taken", job: id, vm: vm.id });
+    return vm;
+  }
   async close() {
     this.closed = true;
     this.socket?.close();
+    const warm = this.warm;
+    this.warm = undefined;
+    await warm?.then(vm => vm?.destroy()).catch(() => {});
     await Promise.all([...this.running.values()].map(job => job.vm?.destroy()));
   }
 
@@ -162,7 +206,11 @@ export class HostAgent {
         catch (error) { result = { ok: false, code: "start_failed", message: `Snapshot: ${error instanceof Error ? error.message.slice(0, 300) : "it could not be read"}` }; return; }
       }
       let vm: Vm;
-      try { vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet, ...(base ? { from: base.path } : {}) }); }
+      try {
+        // The pre-started VM when it fits, else one booted for this job (the warm one given up first).
+        const warm = await this.takeWarm(id, spec, shape);
+        vm = job.vm = warm ?? await this.options.launcher.boot(id, shape, { internet: spec.internet, ...(base ? { from: base.path } : {}) });
+      }
       finally { base?.release(); }
       if (job.cancelled) throw new Stopped();
       this.send({ type: "started", id, at: Date.now() });
@@ -203,6 +251,8 @@ export class HostAgent {
       // Its slot, and what this host now holds, before its result: the next job (one from its snapshot) is placed on that.
       this.send(this.heartbeat());
       this.send({ type: "result", id, result: !final.ok && startMs !== undefined ? { ...final, timings: { startMs, totalMs: Date.now() - began } } : final });
+      // Idle again: the next pre-started VM (a build host's only sandbox is either a job's or the warm one).
+      this.prestartNext();
     }
   }
 
@@ -310,6 +360,9 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const agent = new HostAgent({
     runtime: arg("runtime") ?? "http://127.0.0.1:8787", attest, slots: Number(arg("slots") ?? 4),
     ...(arg("pool") === "build" || arg("pool") === "test" ? { pool: arg("pool") as "build" | "test" } : {}),
+    // A build host's pre-started sandbox (backends/workers/src/jobs/host-pricing.ts BUILD_SANDBOX, the shape a build job
+    // is sent with).
+    ...(process.argv.includes("--prestart") ? { prestart: { vcpus: Number(arg("prestart-vcpus") ?? 16), memoryMiB: Number(arg("prestart-memory") ?? 98304), diskMiB: Number(arg("prestart-disk") ?? 65536) } } : {}),
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
     // A real host's paths are the image's (infra/job-hosts/image/files/jobhost.env).
     launcher: fake ? fakeLauncher({ base: arg("base"), ...(arg("work") ? { work: arg("work") } : {}) }) : firecrackerLauncher({

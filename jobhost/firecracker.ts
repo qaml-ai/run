@@ -119,12 +119,13 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
   });
   return {
     kind: "firecracker",
-    async boot(id: string, shape: VmShape, boot: { internet?: boolean; from?: string } = {}): Promise<Vm> {
+    async boot(id: string, shape: VmShape, boot: { internet?: boolean; from?: string; warm?: boolean } = {}): Promise<Vm> {
       if (!/^[A-Za-z0-9._-]{1,96}$/.test(id)) throw new Error("Invalid job id");
       const slot = [...free][0];
       if (slot === undefined) throw new Error("No free job slot on this host");
       free.delete(slot);
-      const address = jobAddress(slot), internet = !!boot.internet;
+      // A warm VM boots with the proxy in its network (a job with internet may take it) and a policy allowing nothing.
+      const address = jobAddress(slot), internet = !!boot.internet || !!boot.warm;
       const disk = join(options.work, `${id}.ext4`), vsock = join(options.work, `${id}.vsock`), config = join(options.work, `${id}.json`), log = join(options.work, `${id}.log`);
       let child: ChildProcess | undefined, channel: VsockChannel | undefined, gone = false;
       // Stop the VM; its disk stays (destroy removes it).
@@ -154,8 +155,8 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
         await tapUp(address, exec);
         // Its egress: the allowlist and the runtime with internet; nothing without (the proxy refuses a guest with no policy
         // entry it allows, and the host's rules give it no other way out).
-        const allow = internet ? [...(options.egress ?? DEFAULT_EGRESS), ...(options.runtimeHost ? [options.runtimeHost] : [])] : [];
-        await writePolicy(options.policyDir, address.guestIp, { job: id, allow });
+        const allowFor = (online: boolean) => online ? [...(options.egress ?? DEFAULT_EGRESS), ...(options.runtimeHost ? [options.runtimeHost] : [])] : [];
+        await writePolicy(options.policyDir, address.guestIp, { job: id, allow: boot.warm ? [] : allowFor(internet) });
         const base = firecrackerConfig({ id, kernel: options.kernel, initrd: options.initrd, disk, vsockPath: vsock, tap: address.tap, mac: address.mac }, shape, options.build);
         base["boot-source"].boot_args += ` root=/dev/vda rw ${guestNetArgs(address, internet)}`;
         await writeFile(config, JSON.stringify(base));
@@ -179,7 +180,8 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
           await exec("truncate", ["-s", String(ext4Bytes(String(stdout))), disk]);
           await pipeline(createReadStream(disk), createGzip({ level: 1 }), createWriteStream(dest));
         };
-        return { id, request: (request, onLog) => ready.request(request, onLog), destroy, export: exportDisk };
+        const egress = (job: string, online: boolean) => writePolicy(options.policyDir, address.guestIp, { job, allow: allowFor(online) });
+        return { id, request: (request, onLog) => ready.request(request, onLog), destroy, export: exportDisk, egress };
       } catch (error) {
         await destroy().catch(() => {});
         throw error;

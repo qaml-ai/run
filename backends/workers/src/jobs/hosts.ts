@@ -30,7 +30,7 @@ import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSp
 import { checkComplete, checkPart, hostSnapshotPlan, HostSnapshotStore, snapshotPartBytes, snapshotResult, snapshotTtlMs, snapshotWire, type HostSnapshotEnv } from "./host-snapshots.ts";
 import { HostSyncStore } from "./host-sync-store.ts";
 import { jobObjectName } from "./driver.ts";
-import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
+import { buildSandboxShape, HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
 /** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
 export const HOSTS_PROVIDER = "camelrun-hosts";
@@ -730,7 +730,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     // The VM the host boots is the one priced: its shape (the job's limits, else its instance type's), and the pool that
     // shape goes to. A pricing setting that does not parse refuses the job before anything starts.
     // Its rate is fixed here, once: a setting changed (or broken) while it runs cannot change or strand its charge.
-    const shape = hostShape(spec), pool = hostPool(shape);
+    // A build job gets its host's whole sandbox (it is charged the whole host): the shape its pre-started VM has.
+    const asked = hostShape(spec), pool = hostPool(asked), shape = pool === "build" ? buildSandboxShape(asked) : asked;
     let rate: number;
     try { rate = hostSecondRate(pool, shape, this.env); }
     catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Pricing is misconfigured"); }

@@ -154,3 +154,10 @@ test("the charged span: a job whose result says it ran is never charged nothing,
   // Its host went away: from its start to when the host was last heard from.
   assert.deepEqual(chargedSpan({ ok: false, ranFrom: 1_002_000, ranUntil: 1_010_000 }, dispatched, result), { from: 1_002_000, until: 1_010_000 });
 });
+
+test("a build job gets the build host's whole sandbox, a bigger disk if it asks", async () => {
+  const { buildSandboxShape, BUILD_SANDBOX } = await import("../src/jobs/host-pricing.ts");
+  assert.deepEqual(buildSandboxShape({ vcpus: 12, memoryMiB: 20_000, diskMiB: 1_000 }), { ...BUILD_SANDBOX });
+  assert.equal(buildSandboxShape({ vcpus: 16, memoryMiB: 98_304, diskMiB: 200_000 }).diskMiB, 200_000);
+  assert.ok(BUILD_SANDBOX.memoryMiB <= HOST_POOL_PRICES.build.memoryGiB * 1024, "within the build pool's sandbox memory");
+});

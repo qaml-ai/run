@@ -283,3 +283,42 @@ test("an upload goes in parts from disk, a lost part tried again, a refusal fina
   await assert.rejects(uploadSnapshot(file, { url: "https://run/s/j", token: "t", partBytes: 10 }, { fetcher, failAfterParts: 1 }), /stopped after 1 parts/);
   assert.deepEqual(seen, ["PUT /parts/1 10"], "no completion");
 });
+
+test("a build host keeps one pre-started VM: a job that fits takes it at once, the next is started when idle", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "jobhost-warm-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // The fake launcher, counting boots and egress changes.
+  const real = fakeLauncher({ work: dir }), boots: { id: string; warm: boolean }[] = [], egress: { vm: string; job: string; internet: boolean }[] = [], destroyed: string[] = [];
+  const launcher: VmLauncher = {
+    kind: "fake",
+    async boot(id, shape, options = {}) {
+      boots.push({ id, warm: !!options.warm });
+      const vm = await real.boot(id, shape, options);
+      return { ...vm, request: vm.request.bind(vm), destroy: async () => { destroyed.push(id); await vm.destroy(); }, egress: async (job: string, internet: boolean) => { egress.push({ vm: id, job, internet }); } };
+    },
+  };
+  const agent = new HostAgent({ runtime: "http://127.0.0.1:1", attest: async () => { throw new Error("offline"); }, slots: 1, vcpus: 16, memoryMiB: 98304, launcher,
+    prestart: { vcpus: 16, memoryMiB: 98304, diskMiB: 65536 }, cache: new SnapshotCache({ dir: join(dir, "cache"), kind: "fake" }) });
+  const outbox: HostMessage[] = [];
+  (agent as unknown as { send(message: HostMessage): void }).send = message => { outbox.push(message); };
+  const resultOf = (id: string) => outbox.find((message): message is Extract<HostMessage, { type: "result" }> => message.type === "result" && message.id === id)?.result;
+  t.after(() => agent.close());
+  // Started as it starts (no runtime here: start() also dials, which fails quietly and retries).
+  (agent as unknown as { prestartNext(): void }).prestartNext();
+  const warmReady = async () => { for (let i = 0; i < 100 && !(await (agent as unknown as { warm?: Promise<Vm | undefined> }).warm); i++) await new Promise(resolve => setTimeout(resolve, 20)); };
+  await warmReady();
+  assert.deepEqual(boots.map(boot => boot.warm), [true]);
+  // A build job within the warm shape: it takes the warm VM (no boot of its own), with its own egress.
+  await agent.run("build-1", { command: "echo built", timeoutSeconds: 10, outputs: [], limits: { cpus: 16, memoryMiB: 98304, diskMiB: 65536 }, internet: true, files: [] });
+  assert.equal(resultOf("build-1")?.ok, true, JSON.stringify(resultOf("build-1")));
+  assert.deepEqual(egress, [{ vm: boots[0]!.id, job: "build-1", internet: true }]);
+  assert.equal(boots.filter(boot => !boot.warm).length, 0, "the job booted nothing of its own");
+  // Idle again: the next warm VM.
+  await warmReady();
+  assert.deepEqual(boots.map(boot => boot.warm), [true, true]);
+  // One that does not fit (a bigger disk) gives the warm VM up and boots its own: one sandbox at a time.
+  await agent.run("build-2", { command: "true", timeoutSeconds: 10, outputs: [], limits: { cpus: 16, memoryMiB: 98304, diskMiB: 200_000 }, internet: false, files: [] });
+  assert.equal(resultOf("build-2")?.ok, true);
+  assert.ok(destroyed.includes(boots[1]!.id), "the unused warm VM was destroyed before the job's own booted");
+  assert.deepEqual(boots.slice(2, 3), [{ id: "build-2", warm: false }]);
+});

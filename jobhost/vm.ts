@@ -22,6 +22,8 @@ export interface Vm extends GuestChannel {
   readonly id: string;
   /** Stop the VM and drop its disk clone. Safe to call more than once. */
   destroy(): Promise<void>;
+  /** A warm VM taken by a job: its egress becomes the job's (its allowlist with internet, nothing without). */
+  egress?(job: string, internet: boolean): Promise<void>;
   /**
    * Save its disk (slice 5): stop the VM, keeping the disk, and write the disk to `dest` as one gzip archive (a
    * Firecracker VM's ext4, synced and shrunk first; a fake VM's directory as a tar). The VM takes no request after it;
@@ -36,7 +38,11 @@ export interface VmLauncher {
    * `internet`: the job may reach its egress allowlist (a real host's proxy); without it, nothing. `from`: a snapshot's
    * unpacked base (snapshots.ts) to clone instead of the base image.
    */
-  boot(id: string, shape: VmShape, options?: { internet?: boolean; from?: string }): Promise<Vm>;
+  /**
+   * `warm`: booted before any job (a build host's pre-started sandbox): its network is wired for the proxy but its egress
+   * allows nothing until a job takes it (Vm.egress).
+   */
+  boot(id: string, shape: VmShape, options?: { internet?: boolean; from?: string; warm?: boolean }): Promise<Vm>;
 }
 
 /**
