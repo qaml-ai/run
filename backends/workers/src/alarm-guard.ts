@@ -51,7 +51,10 @@ export function guardAlarms(object: Host, ctx: State, name: string, options: { t
               console.error(JSON.stringify({ type: "alarm_hot_loop", object: name, id: ctx.id?.toString() ?? null, fires: fires.length, windowMs: ALARM_HOT_LOOP.windowMs, next, floored }));
             }
           } else if (options.test && next !== null && next <= end) {
-            console.error(JSON.stringify({ type: "alarm_rearm_due", object: name, id: ctx.id?.toString() ?? null, next, at: end }));
+            // Which lifecycle jobs are due (an agents-SDK object's queue), to find who re-armed it for now.
+            let due: unknown;
+            try { due = (ctx.storage as { sql?: SqlStorage }).sql?.exec("SELECT id, capability, fn, time FROM cf_agents_jobs WHERE time <= ? ORDER BY time LIMIT 5", end + 2).toArray(); } catch { /* no queue */ }
+            console.error(JSON.stringify({ type: "alarm_rearm_due", object: name, id: ctx.id?.toString() ?? null, next, at: end, ...(due ? { due } : {}) }));
           }
         } catch (error) {
           console.error(JSON.stringify({ type: "alarm_guard_failed", object: name, error: error instanceof Error ? error.name : "unknown" }));
