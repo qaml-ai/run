@@ -1,6 +1,6 @@
 {
   "id": "s-ts-port",
-  "version": 1,
+  "version": 2,
   "tier": "S",
   "title": "Port a 16-file JavaScript library to TypeScript",
   "status": "ready",
@@ -34,5 +34,5 @@
     ],
     "instructions": "Port this file of strkit (/workspace) from JavaScript to TypeScript: write the .ts file beside it with the same behaviour, strict types, erasable syntax only and .ts import extensions, then delete the .js file. Tests keep every case."
   },
-  "workflowNote": "A workflow's job() containers have Node 24 and Python, and no network."
+  "workflowNote": "job_run and a workflow's job() run in containers with Node 24 and Python, and no network."
 }

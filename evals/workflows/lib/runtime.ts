@@ -428,14 +428,28 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
 
   const children = await runtime.children(agent.id);
   const own = await runtime.usage(agent.id, types.ids);
-  // Workflow mode's total is the tenant's spend across the run; types come from the agent's rollup and the ledger.
-  const cost = workflowStats ? withTotal(mergeCost(own, workflowStats.cost), spendBefore!, await runtime.tenantSpend()) : own;
+  // Workflow mode: the total is the tenant's spend across the run. Since #846 a workflow's children roll up into its
+  // owner, as inline children with no definition, so by type: the owner's own usage (no rollup) is the orchestrator's,
+  // the ledger's items give the workflow children's types, and what is left is delegate children (by definition).
+  let cost = own;
+  if (workflowStats) {
+    const alone = await runtime.usage(agent.id, types.ids, false);
+    const ledgerUsd = Object.values(workflowStats.cost.byType).reduce((sum, usd) => sum + (usd ?? 0), 0);
+    const delegated: CostBreakdown["byType"] = {};
+    for (const [type, usd] of Object.entries(own.byType) as [AgentType, number][]) if (type !== "orchestrator") delegated[type] = usd;
+    const byType: CostBreakdown["byType"] = { orchestrator: alone.totalUsd };
+    for (const source of [delegated, workflowStats.cost.byType]) for (const [type, usd] of Object.entries(source) as [AgentType, number][]) byType[type] = (byType[type] ?? 0) + usd;
+    const merged = withTotal(mergeCost(own, workflowStats.cost), spendBefore!, await runtime.tenantSpend());
+    cost = { ...merged, byType, outputByType: own.outputByType };
+    log({ costSplit: { owner: alone.totalUsd, ledger: ledgerUsd, rollup: own.totalUsd, tenant: merged.totalUsd } });
+  }
   return {
     ...base, agentId: agent.id, status: runStatus, error: runError, reply, wallMs: Date.now() - started, volumeId, cleanup,
     cost, effects: workflowStats ? { ...workflowStats.effects, children: workflowStats.effects.children + children.children, grandchildren: children.grandchildren, jobs: (workflowStats.effects.jobs ?? 0) + jobs.count } : { ...children, ...(jobs.count ? { jobs: jobs.count } : {}) },
     conflicts: children.conflicts + (workflowStats?.conflicts ?? 0), retries: workflowStats ? workflowStats.retries : null,
     choice: { delegated: children.children > 0 || delegateCalls > 0, delegateCalls: Math.max(delegateCalls, children.children), workflowStarted: workflowIds.size > 0 || !!toolCalls.workflow_start, workflowIds: [...workflowIds], toolCalls,
-      ...(workflowStats ? { workflowAgents: workflowStats.effects.children, workflowJobs: workflowStats.effects.jobs ?? 0 } : {}) },
+      ...(workflowStats ? { workflowAgents: workflowStats.effects.children, workflowJobs: workflowStats.effects.jobs ?? 0 } : {}),
+      jobRuns: (toolCalls.job_run ?? 0) + (toolCalls["codemode:job_run"] ?? 0) },
     failures, ...(notified ? { notifications: notified } : {}),
   };
 }
