@@ -18,7 +18,8 @@ scripts/sprite-ci.mjs --list              # the gates and what each runs
 ```
 
 - **Target:** a PR number or a commit. For a PR number it reads the head commit with `gh pr view` and fetches
-  `pull/<n>/head`. When GitHub is unreachable, fetch the branch some other way and pass its commit instead.
+  `pull/<n>/head`. GitHub takes a few seconds after a push to move a PR's head, so check the commit the script
+  prints first; right after a push, pass the commit itself. When GitHub is unreachable, fetch the branch some other way and pass its commit instead.
 - **Gates:** they run at the same time, each through `scripts/sprite-test` at that commit. The full suite takes 8
   sprites and Workers integration takes 3; the others take one each, so a whole run leases 16 sprites from the pool.
   A run takes about as long as its slowest gate, usually Workers integration's third shard (10 to 25 minutes).
