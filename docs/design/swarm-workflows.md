@@ -950,7 +950,8 @@ workflow's budget or the agent's payer at the provider's price.
 
 ### Our own job hosts
 
-Decided: we run the VMs ourselves. Jobs run on microVMs on hosts we own; Cloudflare Containers (phase 1's only
+Decided: we run the VMs ourselves. The implementation plan, in PR slices with the AWS resources it needs, is
+[job-hosts-plan.md](job-hosts-plan.md). Jobs run on microVMs on hosts we own; Cloudflare Containers (phase 1's only
 driver), Boat and Lambda MicroVMs sit behind the same `JobDriver` seam (`snapshot`, `create({ from })`, `run`,
 `collect`, `destroy`) as bridges until the hosts land and as fallbacks after, not as the plan. The reasons are the
 ones that made jobs the primitive: a Bun-class build wants 16 vCPU, 128 GiB and a `target/` past 20 GB, which no
