@@ -79,6 +79,13 @@ export class World implements EffectExecutor {
     const index = this.queue.findIndex(item => item.key === effect.key && item.attempt === effect.attempt);
     if (index >= 0) this.queue.splice(index, 1);
   }
+  /** A gate at its deadline (EffectExecutor.expire): by default nobody answered; a test may say otherwise, or throw. */
+  expireHook?: (effect: StartedEffect, take: boolean) => Promise<{ outcome: EffectOutcome } | undefined>;
+  readonly expired: { key: string; take: boolean; dueAt?: number }[] = [];
+  async expire(effect: StartedEffect, take: boolean) {
+    this.expired.push({ key: effect.key, take, dueAt: effect.dueAt });
+    return this.expireHook?.(effect, take);
+  }
   /** An ending the runner did not record (a crash while landing it) is found by the alarm's sweep, as an outbox redelivers. */
   async poll(effect: StartedEffect) {
     if (this.queue.some(item => item.key === effect.key && item.attempt === effect.attempt)) return undefined;

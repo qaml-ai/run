@@ -91,6 +91,12 @@ export class WorkflowNotices {
     sql.exec("INSERT INTO workflow_notices (event, body, status, next_at, created_at) VALUES (?, ?, ?, ?, ?)", event, text, summary.status, this.now(), this.now());
   }
 
+  /** Stage a notice of an event that is not a change of status (a gate opened), in order with the others. */
+  stage(event: string, body: Record<string, unknown>, status: string) {
+    if (this.deps.owner()?.kind !== "agent") return;
+    this.deps.sql.exec("INSERT INTO workflow_notices (event, body, status, next_at, created_at) VALUES (?, ?, ?, ?, ?)", event, JSON.stringify({ workflowId: this.deps.workflowId, event, status, ...body }), status, this.now(), this.now());
+  }
+
   /**
    * Deliver staged notices in order, those that are due; one that fails stops the rest (they keep their order) and is
    * tried again from the alarm, with backoff, for at most a week.
