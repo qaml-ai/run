@@ -95,7 +95,8 @@ export type JobResult =
       stdout: JobStream; stderr: JobStream;
       outputs: Record<string, JobOutput>; missing: string[];
       /** Whether `limits.pids` was applied through the container's cgroup (pids.max). */
-      pids?: "cgroup" | "unenforced";
+      /** How `limits.pids` was applied: the container's cgroup (pids.max), the job VM guest's ulimit, or not at all. */
+      pids?: "cgroup" | "ulimit" | "unenforced";
       snapshot?: ComputerSnapshot;
       /** saveSnapshot was asked for and failed; the result stands. */
       snapshotError?: string;
