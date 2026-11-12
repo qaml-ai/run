@@ -20,6 +20,9 @@ export interface Task {
   workflowArgs?: Record<string, unknown>;
   /** The task's own judge image directory (a Dockerfile with pinned toolchains), for judges `node:22` cannot run; such a task scores only in docker. */
   judgeImage?: string;
+  /** A sentence added to the prompt in workflow mode (e.g. what job() containers have), and in dry mode (its stand-in tools). Model-facing. */
+  workflowNote?: string;
+  dryNote?: string;
   /** Dry mode's stand-in for `job()`: harness-served build tools for the orchestrator ("go": go_build and go_decode in the judge image). */
   jobs?: string[];
   /** Planned tasks: where the input comes from and how the judge runs. */
@@ -57,6 +60,7 @@ export interface CostBreakdown {
   cacheShare: number;
   responses: number;
 }
+export interface RunFailure { source: string; message: string; recovered?: boolean }
 export interface RunResult {
   schema: 1;
   label: string;
@@ -84,8 +88,13 @@ export interface RunResult {
   conflicts: number;
   retries: number | null;
   /** Whether the orchestrator split the work at all, and how. */
-  choice: { delegated: boolean; delegateCalls: number; workflowStarted: boolean; workflowIds: string[]; toolCalls: Record<string, number> };
+  /** workflowAgents and workflowJobs: the agent() and job() effects across its workflows; a workflow with jobs and no agents was used to run commands, not to split the work. */
+  choice: { delegated: boolean; delegateCalls: number; workflowStarted: boolean; workflowIds: string[]; toolCalls: Record<string, number>; workflowAgents?: number; workflowJobs?: number };
   reply?: string;
+  /** Runtime failures seen in the run: model errors and retries, failed sub-agents, failed or refused workflow effects, faults. `recovered`: the runtime retried past it. */
+  failures?: RunFailure[];
+  /** Workflow mode: the <workflow_notification>s the owner got, whether it said something after the last one, and how often it called workflow_status (polling). */
+  notifications?: { received: number; events: string[]; replyAfterLast: boolean; statusPolls: number; workflowIds?: string[] };
   /** Set when `run.ts rescore` scored the saved output again with a later judge. */
   rescoredAt?: string;
   /** The orchestrator agent's id (dry and workflow modes), to read its usage and history while the runtime keeps them. */

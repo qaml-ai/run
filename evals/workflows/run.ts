@@ -6,7 +6,7 @@
 //   … run.ts score <task> <dir> [--sandbox host]                  score a tree you have
 //   AGENT_URL=https://run-pilot.camelai.dev AGENT_RUNTIME_TOKEN=… \
 //   … run.ts run [--tasks s-ts-port,s-esm-refactor] [--modes dry] [--workers fast,strong] [--runs 1] [--label name] [--max-usd 5]
-//               [--orchestrator camelrun/strong] [--classes critic=camelrun/fast,lead=camelrun/fast] [--budget-usd n] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
+//               [--orchestrator camelrun/strong] [--classes critic=camelrun/fast,lead=camelrun/fast] [--budget-usd n] [--runtime-log file] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
 //   … run.ts summary .agent-runtime/eval/workflows-<label>.jsonl [more.jsonl]
 //   … run.ts rescore .agent-runtime/eval/workflows-<label>.jsonl   score saved outputs again after a judge fix
 //   AGENT_URL=… AGENT_RUNTIME_TOKEN=… \
@@ -16,7 +16,7 @@
 // `run` appends one JSON line per run to .agent-runtime/eval/workflows-<label>.jsonl, writes
 // .agent-runtime/eval/workflows-<label>/<task>-<mode>-<workers>-<n>/ (result.json, events.jsonl, output/), and the
 // markdown summary to .agent-runtime/eval/workflows-<label>.md. Model calls cost money: not part of CI.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { choiceSummary, choose, loadPrompts } from "./lib/choice.ts";
 import { CLASS_MODELS, guardUrl, orchestrate, Runtime } from "./lib/runtime.ts";
@@ -108,6 +108,8 @@ async function main() {
     const classes: Classes = { orchestrator: arg("orchestrator") ?? CLASS_MODELS.strong, worker: CLASS_MODELS[workerClass], critic: CLASS_MODELS.strong, lead: CLASS_MODELS.strong, ...overrides };
     const dir = join(out, `${task.id}-${mode}-${workerClass}-${run}`);
     let result: RunResult;
+    // --runtime-log: the local runtime's log (local-runtime.ts's output); its new error lines join the run's failures.
+    const runtimeLog = arg("runtime-log"), logFrom = runtimeLog && existsSync(runtimeLog) ? statSync(runtimeLog).size : 0;
     try {
       const ran = await orchestrate(runtime, task, { label, mode, workerClass, classes, run, dir, budgetUsd, split, workflowApi: (arg("workflow-api") ?? "auto") as "auto" | "public" | "test-hook" });
       const { cleanup, volumeId, ...rest } = ran;
@@ -122,6 +124,11 @@ async function main() {
       result = { schema: 1, label, split, task: task.id, taskVersion: task.version, tier: task.tier, mode, workerClass, classes, run, runtime: new URL(url).host, startedAt: new Date().toISOString(), wallMs: 0,
         status: "error", error: (error as Error).stack?.slice(0, 2000) ?? String(error), score: null, integrity: null, cost: null, budgetUsd,
         effects: { children: 0, grandchildren: 0, failedChildren: 0, byStatus: {} }, conflicts: 0, retries: null, choice: { delegated: false, delegateCalls: 0, workflowStarted: false, workflowIds: [], toolCalls: {} }, artifacts: dir };
+    }
+    if (runtimeLog && existsSync(runtimeLog)) {
+      const added = readFileSync(runtimeLog).subarray(logFrom).toString("utf8").replace(/\x1b\[[0-9;]*m/g, "");
+      const errors = [...new Set(added.split("\n").filter(line => /\bERROR\b|Uncaught|✘/.test(line)).map(line => line.replace(/^.*?(?:ERROR\]|✘)\s*/, "").trim().slice(0, 300)))];
+      result.failures = [...(result.failures ?? []), ...errors.slice(0, 30).map(message => ({ source: "runtime log", message }))];
     }
     spent += result.cost?.totalUsd ?? 0;
     mkdirSync(dir, { recursive: true });

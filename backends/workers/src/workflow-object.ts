@@ -23,6 +23,7 @@ import { WorkflowNotices } from "./workflow-notices.ts";
 import { WorkflowGates } from "./workflow-gates.ts";
 import { database, type PostgresEnv } from "./postgres.ts";
 import type { InboxAnswer, InboxOutcome } from "../../../shared/inbox-answers.ts";
+import { alarmAt, runAlarm } from "./workflow-alarm.ts";
 import { workflowStub } from "./workflow-routes.ts";
 import type { AgentType, ModelClass } from "./workflow-types.ts";
 import type { Owner } from "../../../shared/owner.ts";
@@ -137,6 +138,7 @@ export function byKind(executors: Record<string, ChildEffects>): ChildEffects {
   };
 }
 
+
 /** What a workflow is started with beside its script, kept by its object (runner.ts has the script and budget). */
 export interface WorkflowSettings {
   name?: string;
@@ -234,16 +236,16 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       sql: ctx.storage.sql, workflowId: name ?? "",
       owner: () => self.settings().owner, name: () => self.settings().name, bucket: () => self.runner.identity().bucket,
       send: (owner, request, notice) => (env as unknown as Env).AGENTS.getByName(owner).receiveAgentMessage(request, notice),
-      later: (afterMs, task) => ctx.waitUntil(new Promise(resolve => setTimeout(resolve, afterMs)).then(task).catch(error => console.error(JSON.stringify({ type: "workflow_notice_retry_failed", workflow: name, error: String(error) })))),
+      arm: at => self.armBy(at),
     });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
       {
-        // The runner's alarm, or the forks' cleanup retry when it comes first: one alarm for both.
+        // One alarm for the runner, a notice's retry and the forks' cleanup retry, whichever is due first: a notice whose
+        // delivery failed, or a fork delete that failed, is retried even once the workflow has ended.
         alarm: { set: async at => {
-          const retry = await this.forks.retryAt();
-          const next = at === null ? retry : retry === undefined ? at : Math.min(at, retry);
+          const next = alarmAt(at, this.notices.retryAt(), await this.forks.retryAt());
           await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
         } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
@@ -274,7 +276,10 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   private told<T>(value: T): T {
     try { this.notices.check(this.runner.get()); }
     catch (error) { console.error(JSON.stringify({ type: "workflow_notice_check_failed", workflow: this.ctx.id.name, error: String(error) })); }
-    if (this.notices.pending()) this.ctx.waitUntil(this.notices.flush().catch(error => console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.ctx.id.name, error: String(error) }))));
+    // The alarm is armed for the first retry before the background send: an isolate that dies mid-send leaves a notice
+    // due and nothing else that would arm the alarm for it.
+    if (this.notices.pending()) this.ctx.waitUntil((async () => { await this.notices.guard(); await this.notices.flush(); })()
+      .catch(error => console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.ctx.id.name, error: String(error) }))));
     return value;
   }
 
@@ -330,18 +335,51 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
   async wake() { await this.runner.wake(); await this.ended(); this.told(undefined); }
 
-  override async alarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
+  override async alarm() { await this.alarmed(); }
+
+  /**
+   * The alarm: the runner, then its children's fork cleanup, then what the owner hears and the notices that are due.
+   * Each is isolated (one that throws is logged and the others still run), and the alarm is armed again whatever
+   * happens, for the earliest any of them needs: a concern that keeps failing never costs the notices their retries,
+   * and the alarm never relies on the platform's own few retries of a handler that threw.
+   */
+  private async alarmed() {
+    const workflow = this.ctx.id.name;
+    await runAlarm({
+      concerns: [
+        ["runner", () => this.runner.alarm()],
+        ["forks", () => this.ended()],
+        ["notices", async () => { this.told(undefined); await this.notices.flush(); }],
+      ],
+      next: async () => {
+        let runner: number | null = null;
+        try { runner = this.runner.nextAlarm(); }
+        catch (error) { console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern: "runner next", error: String(error) })); }
+        return alarmAt(runner, this.notices.retryAt(), await this.forks.retryAt());
+      },
+      arm: at => this.armBy(at),
+      log: (concern, error) => console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern, error: String(error) })),
+    });
+  }
+
+  /**
+   * Make sure the alarm fires by `at`, strictly in the future: an alarm already set no later stays. One set in the
+   * past and not yet fired is kept too: it fires at once. (Inside the alarm handler the firing alarm reads as none.)
+   */
+  private async armBy(at: number) {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(Math.max(at, Date.now() + 1));
+  }
 
   /** Once the workflow has ended: delete its children's forks, and keep the alarm for a retry if any delete failed. */
   private async ended() {
     if (!ENDED.has(this.runner.get().status)) return;
     const retry = await this.forks.ended();
     if (retry === undefined) return;
-    const current = await this.ctx.storage.getAlarm();
-    if (current === null || current > retry || current <= Date.now()) await this.ctx.storage.setAlarm(retry);
+    await this.armBy(retry);
   }
   /** TEST_MODE: what the alarm does, now. */
-  async fireAlarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
+  async fireAlarm() { await this.alarmed(); }
 }
 
 /**

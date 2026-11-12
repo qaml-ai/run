@@ -1,10 +1,10 @@
 {
   "id": "m-toml-go",
-  "version": 1,
+  "version": 2,
   "tier": "M",
   "title": "Port smol-toml (TypeScript, 1.6k lines) to Go, judged by toml-test",
   "status": "ready",
-  "prompt": "/workspace holds smol-toml, a TOML 1.0 parser and serializer in TypeScript (src/, about 1,600 lines; toml-test-parse.mjs and toml-test-encode.mjs show how it maps to toml-test's JSON). Port it to Go in /workspace/go: package toml at the module root (go.mod is given: module smoltoml, Go 1.24, standard library only, no third-party modules), with the same behaviour, plus two commands, cmd/toml-decoder and cmd/toml-encoder, that follow the toml-test protocol in PROTOCOL.md for TOML 1.0: the decoder reads TOML on stdin and prints its JSON description, or exits 1 on invalid TOML; the encoder reads a JSON description and prints TOML. Do not change the TypeScript. You have go_build and go_decode tools that build /workspace/go in a fresh container (sub-agents do not have them), so build after each round of changes. Reply with a short summary when done.",
+  "prompt": "/workspace holds smol-toml, a TOML 1.0 parser and serializer in TypeScript (src/, about 1,600 lines; toml-test-parse.mjs and toml-test-encode.mjs show how it maps to toml-test's JSON). Port it to Go in /workspace/go: package toml at the module root (go.mod is given: module smoltoml, Go 1.24, standard library only, no third-party modules), with the same behaviour, plus two commands, cmd/toml-decoder and cmd/toml-encoder, that follow the toml-test protocol in PROTOCOL.md for TOML 1.0: the decoder reads TOML on stdin and prints its JSON description, or exits 1 on invalid TOML; the encoder reads a JSON description and prints TOML. Do not change the TypeScript. Reply with a short summary when done.",
   "budget": {
     "usd": 7,
     "wallMinutes": 90
@@ -52,5 +52,7 @@
   },
   "jobs": [
     "go"
-  ]
+  ],
+  "dryNote": "You have go_build and go_decode tools that build /workspace/go in a fresh container (sub-agents do not have them), so build after each round of changes.",
+  "workflowNote": "A workflow's job() containers have Go 1.27.3, Node 24 and Python, and no network: build and check the port there."
 }
