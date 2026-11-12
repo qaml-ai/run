@@ -125,16 +125,33 @@ export function jobPath(value: unknown, what = "path"): string {
   return path;
 }
 
-/** The smallest job instance that has the asked-for vCPUs, memory and disk; none is a spec error. */
-export function jobInstance(limits: JobLimits = {}): InstanceType {
+/**
+ * The largest job anywhere: a build host's sandbox (jobs/host-pricing.ts: an r8gd.4xlarge's 16 vCPUs and the memory
+ * pool its image reserves, and room on its NVMe). Only our own hosts take a job past a container's limits.
+ */
+export const HOST_JOB_MAX = Object.freeze({ cpus: 16, memoryMiB: 96 * 1024, diskMiB: 400 * 1024 });
+/** Whether a container has room for these limits (the smallest one that does is the job's instance). */
+export function fitsContainer(limits: JobLimits = {}) {
+  try { jobInstance(limits); return true; } catch { return false; }
+}
+
+/**
+ * The smallest job instance that has the asked-for vCPUs, memory and disk; none is a spec error. With `beyondContainers`
+ * (a job our own hosts may take) limits past the largest container, up to HOST_JOB_MAX, are the largest instance: the
+ * host boots the job's limits, not the instance.
+ */
+export function jobInstance(limits: JobLimits = {}, options: { beyondContainers?: boolean } = {}): InstanceType {
   const cpus = limits.cpus ?? 0, memoryMiB = limits.memoryMiB ?? 0, diskMiB = limits.diskMiB ?? 0;
   const fit = JOB_INSTANCES.find(type => {
     const r = INSTANCE_RESOURCES[type];
     // Cloudflare sizes disk in GB (10^9 bytes) and memory in GiB.
     return r.vcpu >= cpus && r.memoryGiB * 1024 >= memoryMiB && r.diskGB * 1e9 >= diskMiB * 1024 * 1024;
   });
+  if (!fit && options.beyondContainers && cpus <= HOST_JOB_MAX.cpus && memoryMiB <= HOST_JOB_MAX.memoryMiB && diskMiB <= HOST_JOB_MAX.diskMiB)
+    return JOB_INSTANCES.at(-1)!;
   if (!fit) {
     const top = INSTANCE_RESOURCES[JOB_INSTANCES.at(-1)!];
+    if (options.beyondContainers) throw bad(`No job host has these limits; the largest job has ${HOST_JOB_MAX.cpus} vCPUs, ${HOST_JOB_MAX.memoryMiB} MiB of memory and ${HOST_JOB_MAX.diskMiB} MiB of disk`);
     throw bad(`No job instance has these limits; the largest has ${top.vcpu} vCPUs, ${top.memoryGiB * 1024} MiB of memory and ${top.diskGB} GB of disk`);
   }
   return fit;
@@ -148,7 +165,7 @@ const positive = (value: unknown, name: string, max: number, integer = false) =>
 };
 
 /** Check a job spec and return it with its defaults; anything wrong is a JobSpecError, before any compute starts. */
-export function jobSpec(value: unknown): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
+export function jobSpec(value: unknown, options: { beyondContainers?: boolean } = {}): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
   const v = value as Partial<JobSpec> | null;
   if (!v || typeof v !== "object") throw bad("A job is an object");
   const known = ["id", "image", "snapshot", "files", "volume", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
@@ -220,7 +237,7 @@ export function jobSpec(value: unknown): JobSpec & { image: string; outputs: str
     secretEnv = Object.fromEntries(entries);
   }
   // A checked spec is checked again where it runs (ContainerComputer.runJob): its derived instance must be the one its limits give.
-  const instance = jobInstance(limits);
+  const instance = jobInstance(limits, options);
   const given = (v as { instance?: unknown }).instance;
   if (given !== undefined && given !== instance) throw bad(`instance is derived from limits (${instance}), not set`);
   return {
