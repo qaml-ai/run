@@ -52,6 +52,8 @@ chown -R root:root /opt/camel
 getent passwd camel-proxy >/dev/null || useradd --system --uid 940 --user-group --no-create-home --shell /sbin/nologin camel-proxy
 install -m 0644 "$src/files/jobhost.env" /etc/camel-jobhost.env
 sed -i "s/^POOL=.*/POOL=$pool/" /etc/camel-jobhost.env
+# A build host runs one build sandbox and nothing else (it is priced as the whole host: backends/workers/src/jobs/host-pricing.ts).
+if [[ $pool == build ]]; then sed -i "s/^SLOTS=.*/SLOTS=1/" /etc/camel-jobhost.env; fi
 
 echo "==> Network rules, units, and Nitro Sandboxes"
 install -m 0644 "$src/files/camel-host.nft" /etc/nftables/camel-host.nft

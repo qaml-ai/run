@@ -10,7 +10,7 @@ EnvironmentFile=/etc/camel-jobhost.env
 # (infra/job-hosts/terraform/user-data.sh.tftpl). Required: without it the agent does not start.
 EnvironmentFile=/etc/camelrun/job-host.env
 # Root: it makes taps, runs Firecracker and writes the proxy's policies.
-ExecStart=/bin/bash -c 'exec /usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/jobhost/agent.ts --firecracker --attestor aws --runtime "$CAMELRUN_RUNTIME_URL" --slots "$SLOTS" --vcpus "$(nproc)" --memory "$(( $(awk "/MemTotal/ {print \\$2}" /proc/meminfo) / 1024 ))" $( [ "$POOL" = build ] && echo --build )'
+ExecStart=/bin/bash -c 'exec /usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/jobhost/agent.ts --firecracker --attestor aws --runtime "$CAMELRUN_RUNTIME_URL" --pool "$POOL" --slots "$SLOTS" --vcpus "$(nproc)" --memory "$(( $(awk "/MemTotal/ {print \\$2}" /proc/meminfo) / 1024 ))" $( [ "$POOL" = build ] && echo --build )'
 Restart=always
 RestartSec=5
 KillMode=mixed

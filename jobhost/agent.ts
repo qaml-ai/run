@@ -20,6 +20,8 @@ const DISK_LOW_BYTES = 2 * 1024 * 1024 * 1024;
 export type AgentOptions = {
   /** Proves who this host is, for each enrollment: AWS (awsAttestor) on a real host, a test secret in tests. */
   runtime: string; attest: (audience: string) => Promise<Attestation>; slots: number; vcpus: number; memoryMiB: number;
+  /** The pool this host serves (build or test: the image's POOL); placement sends it only that pool's jobs. */
+  pool?: "build" | "test";
   launcher: VmLauncher; heartbeatMs?: number; diskLowBytes?: number; log?: (line: Record<string, unknown>) => void;
 };
 
@@ -78,7 +80,7 @@ export class HostAgent {
         // The credential is the first message, not part of the URL: a URL lands in access logs.
         socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
         // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
-        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION });
+        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.pool ? { pool: this.options.pool } : {}) });
         heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {
@@ -99,8 +101,9 @@ export class HostAgent {
 
   private send(message: HostMessage) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      // Results wait for the next connection; heartbeats and hellos are made again then.
-      if (message.type === "result") this.outbox.push(message);
+      // Results and starts wait for the next connection (a start is when a job's charge begins); heartbeats and hellos
+      // are made again then.
+      if (message.type === "result" || message.type === "started") this.outbox.push(message);
       return;
     }
     for (const frame of frames(message)) this.socket.send(frame);
@@ -193,6 +196,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const attest = kind === "test" ? async (): Promise<Attestation> => ({ kind: "test", host: name, secret: secret! }) : awsAttestor();
   const agent = new HostAgent({
     runtime: arg("runtime") ?? "http://127.0.0.1:8787", attest, slots: Number(arg("slots") ?? 4),
+    ...(arg("pool") === "build" || arg("pool") === "test" ? { pool: arg("pool") as "build" | "test" } : {}),
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
     // A real host's paths are the image's (infra/job-hosts/image/files/jobhost.env).
     launcher: fake ? fakeLauncher({ base: arg("base") }) : firecrackerLauncher({

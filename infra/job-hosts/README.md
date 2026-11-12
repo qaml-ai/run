@@ -14,7 +14,7 @@ It only reads the runtime's resources: the default VPC and its internet gateway,
 |---|---|
 | `bucket.tf` | S3 bucket `camelrun-job-images-prod`: SSE-KMS with its own KMS key (rotation on, S3 bucket keys), public access blocked, owner-enforced, versioned, TLS-only bucket policy. Lifecycle: `outputs/` deleted after 7 days; `snapshots/` tagged `unreferenced=true` (by the runtime's GC, slice 5) deleted 30 days after they were written; noncurrent versions everywhere after 30 days; incomplete uploads after 2 days |
 | `network.tf` | Three dedicated **public** subnets in the default VPC (`172.31.128.0/20`, `.144.0/20`, `.160.0/20` in us-west-2a/b/c), a route table sending 0.0.0.0/0 to the VPC's existing internet gateway (looked up, not created), an S3 gateway endpoint on that route table (none exists; set `s3_gateway_endpoint_id` to reuse one), a network ACL on the three subnets, and the hosts' security group: no inbound rule, egress TCP 443 only. **No NAT gateway** (see "Network" below) |
-| `iam.tf` | The host role and instance profile (below) |
+| `iam.tf` | One host role and instance profile per pool, `camelrun-job-hosts-build-prod` and `camelrun-job-hosts-test-prod` (below); both exist before any AMI is set |
 | `ssm.tf` | `/camelrun/job-hosts/prod/runtime-url` and `/camelrun/job-hosts/prod/enrollment-audience` (`camelrun-job-host:<runtime URL>`) |
 | `pools.tf` | Per pool, once its AMI is set: a launch template (arm64 AMI, IMDSv2 required with hop limit 1, Nitro Enclaves on, NVMe instance store mapped, the host profile, no key pair, a public IPv4 address, encrypted gp3 root) and an Auto Scaling group across the pool subnets with a 15-minute termination lifecycle hook for draining |
 | `alarms.tf` | Per pool: "fewer hosts in service than desired for 15 minutes" and "a host failing EC2 status checks for 10 minutes", to `camelai-agent-runtime-alerts` (us-west-2), which emails Miguel like the runtime's alarms |
@@ -80,14 +80,20 @@ Sources:
 - AWS EC2 Nitro Sandboxes (modes, supported types, IMDS and hibernation caveats):
   https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html
 
-### The host role
+### The host roles
+
+Each pool has its own role and instance profile, `camelrun-job-hosts-build-prod` and `camelrun-job-hosts-test-prod`,
+and each launch template uses its own pool's profile. The runtime takes a host's pool from the role it attests with
+(`JOB_HOST_ROLE_ARNS` maps each role to its pool), never from what the host says, so a test host cannot claim to be
+a build host. Both roles carry the same permissions:
 
 - **Trust: `ec2.amazonaws.com` only.** See the invariant below.
 - `AmazonSSMManagedInstanceCore` (Session Manager; there is no SSH).
 - Read `images/*` and `snapshots/*` in the bucket, list those prefixes, and `kms:Decrypt` on the bucket's key through
   S3 only. No writes: snapshots and outputs go up through URLs the runtime presigns (slice 5).
-- Read its own two SSM parameters. An explicit deny on every other parameter, because the SSM core policy allows
-  reading all of them.
+- Read its two SSM parameters (`runtime-url`, `enrollment-audience`) by exact name. An explicit deny on every other
+  parameter, because the SSM core policy allows reading all of them; anything else later put under the same prefix
+  stays out of reach too.
 - `autoscaling:CompleteLifecycleAction` / `RecordLifecycleActionHeartbeat` on the pools' ASGs, so a drained host ends
   its own termination wait. (No condition key names the instance: a host could end another host's wait, which only
   terminates that host sooner.)
@@ -96,21 +102,24 @@ Sources:
 
 ## The trust-policy invariant
 
-The runtime takes a host's id from the role session name of its signed `sts:GetCallerIdentity`, and whoever assumes
-the role picks that name. EC2 sets it to the instance id; any other principal able to assume the role could name a
-running instance and take its jobs and their secrets. So:
+It holds for **both** roles, build and test. The runtime takes a host's id from the role session name of its signed
+`sts:GetCallerIdentity`, and its pool from the role; whoever assumes a role picks the session name. EC2 sets it to
+the instance id; any other principal able to assume a role could name a running instance and take its jobs and
+their secrets. So:
 
-- **The role trusts only the service principal `ec2.amazonaws.com`.** No user, role, account, or the role itself.
-- **Nobody is ever given `sts:AssumeRole` on it**, in this module or anywhere else. (With a trust policy naming only
-  EC2, an identity policy alone cannot let an IAM principal assume it; keep it that way.)
-- **`iam:PassRole` on it is as good as enrolling a host**: whoever may pass it to `ec2:RunInstances` (or
-  `ec2:AssociateIamInstanceProfile`) starts a real instance that enrolls as a real host. Only the operator who
-  applies this module should have it.
+- **Each role trusts only the service principal `ec2.amazonaws.com`.** No user, role, account, or a role itself (nor
+  the other pool's role).
+- **Nobody is ever given `sts:AssumeRole` on either**, in this module or anywhere else. (With a trust policy naming
+  only EC2, an identity policy alone cannot let an IAM principal assume it; keep it that way.)
+- **`iam:PassRole` on a role is as good as enrolling a host of that pool**: whoever may pass it to
+  `ec2:RunInstances` (or `ec2:AssociateIamInstanceProfile`) starts a real instance that enrolls as a real host.
+  Only the operator who applies this module should have it.
 
-Guards that fail the plan: a precondition on `aws_iam_role.host` (the policy as written), a postcondition on it (the
-policy as AWS returns it after a refresh), `check "host_role_trust"` (reads the live role on every plan and warns on
-drift; on the very first plan the role does not exist yet, so that check warns once), a precondition that the inline
-policy allows no `sts:` action, and `terraform/tests/job-hosts.tftest.hcl`.
+Guards that fail the plan, for each role: a precondition on `aws_iam_role.host` (the policy as written), a
+postcondition on it (the policy as AWS returns it after a refresh), `check "host_role_trust_build"` and
+`check "host_role_trust_test"` (read the live roles on every plan and warn on drift; on the very first plan the roles
+do not exist yet, so each warns once), a precondition that the inline policy allows no `sts:` action, and
+`terraform/tests/job-hosts.tftest.hcl`.
 
 ## Cost (estimates)
 
@@ -154,7 +163,7 @@ Needs AWS credentials for `904534089871`, `tofu` (>= 1.10) and `jq`. No Cloudfla
 1. **Foundation** (bucket, key, network, role, SSM parameters, no pools). Nothing else must exist first.
 
    ```bash
-   PLAN_ONLY=1 infra/job-hosts/apply.sh     # review: only creates; the trust check warns once (role not there yet)
+   PLAN_ONLY=1 infra/job-hosts/apply.sh     # review: only creates; the trust checks warn once (roles not there yet)
    infra/job-hosts/apply.sh                 # same plan; type "apply"
    ```
 
@@ -169,10 +178,10 @@ Needs AWS credentials for `904534089871`, `tofu` (>= 1.10) and `jq`. No Cloudfla
    Both pools start empty and scale from zero. To keep two build hosts warm (~$1,730/month), add
    `build_warm_size=2`.
 
-3. **Runtime config** (Cloudflare; this module does not touch it). Read the role ARN:
+3. **Runtime config** (Cloudflare; this module does not touch it). Read `JOB_HOST_ROLE_ARNS`, ready to paste:
 
    ```bash
-   tofu -chdir=infra/job-hosts/terraform output -raw host_role_arn
+   tofu -chdir=infra/job-hosts/terraform output -raw job_host_role_arns
    ```
 
    Then add to `backends/workers/wrangler.pilot.jsonc` (the runtime's `AGENT_PUBLIC_URL` there,
@@ -195,7 +204,8 @@ Needs AWS credentials for `904534089871`, `tofu` (>= 1.10) and `jq`. No Cloudfla
 
    // vars: add
    "JOB_HOST_ATTESTORS": "aws",
-   "JOB_HOST_ROLE_ARNS": "arn:aws:iam::904534089871:role/camelrun-job-hosts-prod",
+   // pool=arn pairs, comma-separated: the runtime takes each host's pool from the role it attests with.
+   "JOB_HOST_ROLE_ARNS": "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod",
    ```
 
    The aws attestor refuses to run without `JOB_HOST_ROLE_ARNS`, `AGENT_PUBLIC_URL` and the rate limit, so all three

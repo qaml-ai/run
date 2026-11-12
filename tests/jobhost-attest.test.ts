@@ -51,9 +51,11 @@ test("the runtime refuses an attestation that is not a fresh GetCallerIdentity s
 });
 
 test("STS's answer: an allowed assumed role, the host id its EC2 instance's; anything else is refused", () => {
-  assert.deepEqual(awsCaller(STS_ANSWER, ["arn:aws:iam::123456789012:role/camelrun-job-host"]), { host: "i-0abc123def4567890", roleArn: "arn:aws:iam::123456789012:role/camelrun-job-host" });
+  assert.deepEqual(awsCaller(STS_ANSWER, ["arn:aws:iam::123456789012:role/camelrun-job-host"]), { host: "i-0abc123def4567890", roleArn: "arn:aws:iam::123456789012:role/camelrun-job-host", allowed: "arn:aws:iam::123456789012:role/camelrun-job-host" });
   // An allowed ARN with a path matches the assumed role's name (its ARN carries no path).
   assert.equal(awsCaller(STS_ANSWER, ["arn:aws:iam::123456789012:role/hosts/camelrun-job-host"]).host, "i-0abc123def4567890");
+  // Which allowed entry matched: the runtime maps it to the host's pool.
+  assert.equal(awsCaller(STS_ANSWER, ["arn:aws:iam::123456789012:role/other", "arn:aws:iam::123456789012:role/hosts/camelrun-job-host"]).allowed, "arn:aws:iam::123456789012:role/hosts/camelrun-job-host");
   assert.throws(() => awsCaller(STS_ANSWER, ["arn:aws:iam::123456789012:role/other"]), /not allowed/);
   assert.throws(() => awsCaller(STS_ANSWER, ["arn:aws:iam::999999999999:role/camelrun-job-host"]), /not allowed/);
   assert.throws(() => awsCaller(STS_ANSWER.replace("assumed-role/camelrun-job-host/i-0abc123def4567890", "user/alice"), ["arn:aws:iam::123456789012:role/camelrun-job-host"]), /Not an assumed role/);

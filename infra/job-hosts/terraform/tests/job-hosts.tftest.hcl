@@ -23,7 +23,7 @@ mock_provider "aws" {
     defaults = { arn = "arn:aws:kms:us-west-2:904534089871:key/11111111-2222-3333-4444-555555555555" }
   }
   mock_resource "aws_iam_instance_profile" {
-    defaults = { arn = "arn:aws:iam::904534089871:instance-profile/camelrun-job-hosts-prod" }
+    defaults = { arn = "arn:aws:iam::904534089871:instance-profile/mocked" }
   }
   mock_resource "aws_launch_template" {
     defaults = { id = "lt-0123456789abcdef0", latest_version = 1 }
@@ -35,10 +35,14 @@ variables {
   test_ami_id  = "ami-0fedcba9876543210"
 }
 
-run "role_trusts_only_ec2" {
+run "roles_trust_only_ec2" {
   command = apply
   assert {
-    condition = jsondecode(aws_iam_role.host.assume_role_policy) == {
+    condition     = { for pool, role in aws_iam_role.host : pool => role.name } == { build = "camelrun-job-hosts-build-prod", test = "camelrun-job-hosts-test-prod" }
+    error_message = "One host role per pool: camelrun-job-hosts-build-prod and camelrun-job-hosts-test-prod."
+  }
+  assert {
+    condition = alltrue([for role in aws_iam_role.host : jsondecode(role.assume_role_policy) == {
       Version = "2012-10-17"
       Statement = [{
         Sid       = "EC2Only"
@@ -46,71 +50,111 @@ run "role_trusts_only_ec2" {
         Principal = { Service = "ec2.amazonaws.com" }
         Action    = "sts:AssumeRole"
       }]
-    }
-    error_message = "The job-host role must trust exactly ec2.amazonaws.com and nothing else (docs/design/job-hosts-plan.md, \"Required trust policy\")."
+    }])
+    error_message = "Each job-host role must trust exactly ec2.amazonaws.com and nothing else (docs/design/job-hosts-plan.md, \"Required trust policy\")."
   }
   assert {
-    condition     = output.host_role_arn == aws_iam_role.host.arn
-    error_message = "host_role_arn is the role JOB_HOST_ROLE_ARNS lists."
+    condition     = output.job_host_role_arns == "build=${aws_iam_role.host["build"].arn},test=${aws_iam_role.host["test"].arn}"
+    error_message = "job_host_role_arns is JOB_HOST_ROLE_ARNS exactly: pool=arn pairs, comma-separated."
+  }
+  assert {
+    condition     = { for pool, profile in aws_iam_instance_profile.host : pool => profile.role } == { build = "camelrun-job-hosts-build-prod", test = "camelrun-job-hosts-test-prod" }
+    error_message = "Each pool has its own instance profile for its own role."
+  }
+}
+
+# The roles exist without AMIs too: JOB_HOST_ROLE_ARNS does not change when an AMI is set.
+run "roles_exist_before_the_pools" {
+  command = plan
+  variables {
+    build_ami_id = ""
+    test_ami_id  = ""
+  }
+  assert {
+    condition     = toset(keys(aws_iam_role.host)) == toset(["build", "test"]) && length(aws_iam_instance_profile.host) == 2
+    error_message = "Both pools' roles and profiles exist whether or not a pool does."
   }
 }
 
 run "role_permissions_are_exactly_these" {
   command = apply
   assert {
-    condition     = [for attachment in aws_iam_role_policy_attachment.host : attachment.policy_arn] == ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
-    error_message = "The only managed policy is AmazonSSMManagedInstanceCore."
+    condition     = [for attachment in aws_iam_role_policy_attachment.host : attachment.policy_arn] == ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore", "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"] && toset([for attachment in aws_iam_role_policy_attachment.host : attachment.role]) == toset(["camelrun-job-hosts-build-prod", "camelrun-job-hosts-test-prod"])
+    error_message = "Each role's only managed policy is AmazonSSMManagedInstanceCore."
   }
   assert {
-    condition = [for statement in jsondecode(aws_iam_role_policy.host.policy).Statement : statement.Sid] == [
+    condition     = aws_iam_role_policy.host["build"].policy == aws_iam_role_policy.host["test"].policy && toset([for policy in aws_iam_role_policy.host : policy.role]) == toset([for role in aws_iam_role.host : role.id])
+    error_message = "Both roles carry the same host policy."
+  }
+  assert {
+    condition = [for statement in jsondecode(aws_iam_role_policy.host["build"].policy).Statement : statement.Sid] == [
       "ReadImagesAndSnapshots", "ListImagesAndSnapshots", "DecryptImagesThroughS3", "ReadOwnParameters", "CompleteOwnDrain", "NoOtherParameters", "NoAssumeRole",
     ]
     error_message = "The inline policy's statements changed; review them against the role's rule (no secrets, no database, no STS)."
   }
   assert {
-    condition = alltrue([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement :
+    condition = alltrue([for statement in jsondecode(aws_iam_role_policy.host["build"].policy).Statement :
       statement.Effect == "Deny" || alltrue([for action in flatten([statement.Action]) :
         !startswith(action, "sts:") && !startswith(action, "secretsmanager:") && !startswith(action, "rds") && !startswith(action, "iam:") && action != "*"
     ])])
     error_message = "No Allow may grant STS, Secrets Manager, RDS, IAM or *."
   }
   assert {
-    condition = alltrue([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement :
+    condition = alltrue([for statement in jsondecode(aws_iam_role_policy.host["build"].policy).Statement :
       statement.Effect == "Deny" || !contains(flatten([statement.Action]), "s3:PutObject")
     ])
     error_message = "Hosts write to the bucket only through presigned URLs."
   }
   assert {
-    condition     = one([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement : statement if statement.Sid == "NoAssumeRole"]).Effect == "Deny"
+    condition = one([for statement in jsondecode(aws_iam_role_policy.host["build"].policy).Statement : statement if statement.Sid == "ReadOwnParameters"]).Resource == [
+      "arn:aws:ssm:us-west-2:904534089871:parameter/camelrun/job-hosts/prod/runtime-url",
+      "arn:aws:ssm:us-west-2:904534089871:parameter/camelrun/job-hosts/prod/enrollment-audience",
+    ] && one([for statement in jsondecode(aws_iam_role_policy.host["build"].policy).Statement : statement if statement.Sid == "NoOtherParameters"]).NotResource == one([for statement in jsondecode(aws_iam_role_policy.host["build"].policy).Statement : statement if statement.Sid == "ReadOwnParameters"]).Resource
+    error_message = "A host reads exactly its two parameters, by name, not the whole prefix."
+  }
+  assert {
+    condition     = one([for statement in jsondecode(aws_iam_role_policy.host["build"].policy).Statement : statement if statement.Sid == "NoAssumeRole"]).Effect == "Deny"
     error_message = "The role denies itself sts:AssumeRole."
   }
 }
 
-# A trust policy changed outside Terraform (here, also trusting an account) fails the check against the live role.
-run "live_trust_drift_fails_the_check" {
+# A trust policy changed outside Terraform (here, also trusting an account) fails the check against the live role,
+# for either pool.
+run "live_trust_drift_fails_the_build_check" {
   command = plan
   override_data {
-    target = data.aws_iam_role.host_live
+    target = data.aws_iam_role.host_live_build
     values = {
       assume_role_policy = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ec2.amazonaws.com\",\"AWS\":\"arn:aws:iam::904534089871:root\"},\"Action\":\"sts:AssumeRole\"}]}"
     }
   }
-  expect_failures = [check.host_role_trust]
+  expect_failures = [check.host_role_trust_build]
+}
+
+run "live_trust_drift_fails_the_test_check" {
+  command = plan
+  override_data {
+    target = data.aws_iam_role.host_live_test
+    values = {
+      assume_role_policy = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod\"},\"Action\":\"sts:AssumeRole\"}]}"
+    }
+  }
+  expect_failures = [check.host_role_trust_test]
 }
 
 run "launch_templates_harden_the_host" {
   command = apply
   assert {
-    condition = alltrue([for template in aws_launch_template.pool :
+    condition = alltrue([for pool, template in aws_launch_template.pool :
       template.metadata_options[0].http_tokens == "required"
       && template.metadata_options[0].http_put_response_hop_limit == 1
       && template.enclave_options[0].enabled
       && template.key_name == null
       && template.network_interfaces[0].associate_public_ip_address == "true"
-      && template.iam_instance_profile[0].arn == aws_iam_instance_profile.host.arn
+      && template.iam_instance_profile[0].name == "camelrun-job-hosts-${pool}-prod"
       && anytrue([for mapping in template.block_device_mappings : mapping.virtual_name == "ephemeral0"])
     ])
-    error_message = "Both launch templates need IMDSv2 with hop limit 1, Nitro Enclaves, no key pair, a public IP (no NAT), the host profile and the instance store."
+    error_message = "Both launch templates need IMDSv2 with hop limit 1, Nitro Enclaves, no key pair, a public IP (no NAT), its own pool's host profile and the instance store."
   }
   assert {
     condition     = aws_launch_template.pool["build"].instance_type == "r8gd.4xlarge" && aws_launch_template.pool["test"].instance_type == "c8gd.4xlarge"

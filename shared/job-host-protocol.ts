@@ -19,7 +19,7 @@ export type RuntimeMessage =
   | { type: "cancel"; id: string };
 /** Host → runtime. */
 export type HostMessage =
-  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string }
+  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; pool?: "build" | "test" }
   | { type: "heartbeat"; running: string[]; free: number }
   | { type: "started"; id: string; at: number }
   | { type: "result"; id: string; result: WireResult };
