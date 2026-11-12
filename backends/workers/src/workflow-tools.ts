@@ -16,17 +16,25 @@ export const DEFAULT_MAX_BUDGET_USD = 100;
 export const STATUS_WAIT_SECONDS = 120;
 const SETTLED = new Set(["completed", "failed", "aborted", "paused", "budget_exhausted"]);
 
-/** The builtin's description of when to write a workflow (the design's agreed text). */
-export const WORKFLOW_START_DESCRIPTION =
-  "Start a workflow: a JavaScript script that runs sub-agents (agent(prompt, { key, type, class, output })), waits on them (parallel(items, fn)), and returns a result. " +
-  "Write a workflow when a task is many independent or repeated units of work (per file, per table, per source), needs more than a few sub-agents at once, must keep running after your turn ends, or needs a person's approval or a budget along the way; use `delegate` for a few sub-agents whose answers you need in this turn. " +
+/**
+ * The builtin's description. When to write a workflow is the wording the choice eval chose (evals/workflows, #847):
+ * concrete triggers and "you plan, agents do the units" took should-split prompts from 1 of 6 to 6 of 6 with no false
+ * splits. The job_run sentence is there only where the agent has job_run (agent-jobs.ts).
+ */
+export function workflowStartDescription(jobRun: boolean) {
+  return "Start a workflow: a JavaScript script that runs sub-agents (agent(prompt, { key, type, class, output })), waits on them (parallel(items, fn)), and returns a result. " +
+  "Write a workflow when a task covers more than about 10 files, tables, documents or sources, or is a port, migration, audit or research sweep: list its units, give each to its own agent(), and keep yourself to planning, checking and reporting. " +
+  "When the units edit files, pass repo: your volume and commit() each fork. Do not do the units yourself. " +
+  (jobRun ? "Run a single command with job_run, not a workflow. " : "") +
+  "Use delegate for a few sub-agents whose answers you need in this turn. " +
   "A workflow outlives your turn and reports back as it goes: when it ends, pauses, finishes a phase or opens a gate you get a <workflow_notification> message, which only the runtime writes, so you need not poll it. You own it: you can edit its script and stop it. " +
   "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`. " +
   "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them. " +
   "job({ command, timeoutSeconds, at: volumeId, outputs }) runs one shell command on a copy of the volume in a container of its own and answers its exit code and output. " +
   "gate({ question, options, recommended, reason, key }) asks a person in the inbox and waits for the answer (the chosen label, their own words, or null if declined); unanswered after expiresInSeconds (default 7 days), the workflow pauses, unless onExpire: \"recommended\" takes the recommended answer.";
-/** Where the agent also has job_run (agent-jobs.ts): a single command is not a workflow. */
-export const WORKFLOW_START_JOB_RUN = " To run a command yourself, use job_run, not a workflow.";
+}
+/** The description where the agent has no job_run. */
+export const WORKFLOW_START_DESCRIPTION = workflowStartDescription(false);
 
 export interface WorkflowToolsHost {
   env: WorkflowEnv;
@@ -64,7 +72,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       execute: async (args: Record<string, unknown>, api) => text(await run(args, api.callId)) });
 
   return [
-    tool("workflow_start", WORKFLOW_START_DESCRIPTION + (host.jobRun ? WORKFLOW_START_JOB_RUN : ""), {
+    tool("workflow_start", workflowStartDescription(!!host.jobRun), {
       script: { type: "string", description: `The workflow's JavaScript: its body runs as an async function (await and return at the top level), at most ${WORKFLOW_SCRIPT_CHARS} characters` },
       args: { description: "JSON the script reads as `args`" },
       budgetUsd: { type: "number", description: "The most the workflow may spend in USD; it pauses when that is spent" },
@@ -79,7 +87,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       const started = await startWorkflow(host.env, host.tenant, input, { owner: agentOwner(host.agentId), ...(host.bucket ? { bucket: host.bucket } : {}), ...(host.runtimeOrigin ? { runtimeOrigin: host.runtimeOrigin } : {}), idempotencyKey: `agent:${host.agentId}:${callId}` });
       return brief(started.id, started);
     }),
-    tool("workflow_status", "A workflow's status, counts, spend and, once it ends, its result. With waitSeconds, waits until it ends, pauses or that time passes.", {
+    tool("workflow_status", "A workflow's status, counts, spend and, once it ends, its result. With waitSeconds, waits until it ends, pauses or that time passes. You need not call this to wait: a <workflow_notification> tells you when a workflow finishes or stops, so end your turn instead.", {
       workflowId: id, waitSeconds: { type: "integer", description: `Wait up to this long (at most ${STATUS_WAIT_SECONDS}) for it to end or pause` },
     }, ["workflowId"], async args => {
       const stub = await own(args.workflowId);
