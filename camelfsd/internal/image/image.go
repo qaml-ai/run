@@ -538,6 +538,11 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 		return e
 	}
 	v.Image = "/dev/mapper/" + dm
+	for _, device := range []string{v.NBD, v.Image} {
+		if _, e = run(ctx, "blockdev", "--setra", "8192", device); e != nil {
+			return e
+		}
+	}
 	v.State = "cold"
 	v.TotalRegions = (r.VirtualSize + chunk.Size - 1) / chunk.Size
 	if v.Hydrate {
