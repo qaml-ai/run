@@ -104,15 +104,11 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 	}
 	b.SHA1 = fmt.Sprintf("%x", h1.Sum(nil))
 	key := "o/" + b.SHA1
-	has, e := r.Store.Has(ctx, key)
-	if e != nil {
+
+	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f); e != nil {
 		return b, e
 	}
-	if !has {
-		if e = store.PutBlobFile(ctx, r.Store, key, f); e != nil {
-			return b, e
-		}
-	}
+
 	_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", lineage, hash, b.SHA1, size, time.Now().UnixMilli())
 	return b, e
 }
@@ -277,15 +273,11 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	// harmless content-addressed objects, never a row referring to absent bytes.
 	for _, obj := range pending {
 		if len(obj.bytes) > InlineTree {
-			has, err := r.Store.Has(ctx, "t/"+obj.id)
-			if err != nil {
+
+			if err := (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, "t/"+obj.id, obj.bytes); err != nil {
 				return out, err
 			}
-			if !has {
-				if err = r.Store.Put(ctx, "t/"+obj.id, obj.bytes); err != nil {
-					return out, err
-				}
-			}
+
 		}
 	}
 	tx, e := r.DB.DB.BeginTx(ctx, nil)

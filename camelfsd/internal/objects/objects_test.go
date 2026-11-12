@@ -250,3 +250,31 @@ func TestEntriesQueryBudget(t *testing.T) {
 	}
 	t.Logf("2000 files: %d queries", count)
 }
+
+type uploadSpy struct {
+	store.Store
+	puts, heads int
+}
+
+func (s *uploadSpy) Has(context.Context, string) (bool, error) {
+	s.heads++
+	return false, fmt.Errorf("unexpected HEAD")
+}
+func (s *uploadSpy) Put(c context.Context, k string, b []byte) error {
+	s.puts++
+	return s.Store.Put(c, k, b)
+}
+func TestUploadedPersists(t *testing.T) {
+	r := repository(t)
+	spy := &uploadSpy{Store: r.Store}
+	r.Store = spy
+	for i := 0; i < 2; i++ {
+		_, e := r.Upload(context.Background(), "l", root.Hash([]byte("x")), 1, strings.NewReader("x"))
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	if spy.puts != 1 || spy.heads != 0 {
+		t.Fatalf("puts=%d heads=%d", spy.puts, spy.heads)
+	}
+}

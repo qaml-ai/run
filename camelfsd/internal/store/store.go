@@ -80,6 +80,8 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
 		return e
 	}
 	switch v := s.(type) {
+	case *Uploaded:
+		return v.putFile(ctx, key, f)
 	case *limited:
 		if e := v.acquire(ctx); e != nil {
 			return e
@@ -283,10 +285,13 @@ func PutChunks(ctx context.Context, s Store, b map[string][]byte) (int, error) {
 	var mu sync.Mutex
 	n := 0
 	e := Parallel(ctx, Depth(s), keys, func(h string) error {
-		ok, e := s.Has(ctx, "c/"+h)
-		if e != nil || ok {
-			return e
+		if uploaded, ok := s.(*Uploaded); ok {
+			known, e := uploaded.known(ctx, "c/"+h)
+			if e != nil || known {
+				return e
+			}
 		}
+		var e error
 		if e = s.Put(ctx, "c/"+h, b[h]); e == nil {
 			mu.Lock()
 			n++
@@ -312,6 +317,9 @@ func WithDepth(s Store, n int) Store {
 	return &limited{s, make(chan struct{}, n)}
 }
 func Depth(s Store) int {
+	if v, ok := s.(*Uploaded); ok {
+		return Depth(v.Store)
+	}
 	if v, ok := s.(*limited); ok {
 		return cap(v.slots)
 	}

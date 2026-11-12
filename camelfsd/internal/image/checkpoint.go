@@ -178,14 +178,19 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e != nil {
 		return out, e
 	}
-	b, e := root.Encode(r)
-	if e != nil {
-		return out, e
+	if out.ChangedChunks == 0 && tree == v.Tree && v.Root != "" {
+		out.Root = v.Root
+	} else {
+		b, e := root.Encode(r)
+		if e != nil {
+			return out, e
+		}
+		out.Root = root.Hash(b)
+		if e = m.Store.Put(ctx, "r/"+out.Root, b); e != nil {
+			return out, e
+		}
 	}
-	out.Root = root.Hash(b)
-	if e = m.Store.Put(ctx, "r/"+out.Root, b); e != nil {
-		return out, e
-	}
+
 	out.UploadMs = ms(ut)
 	set := v.Parent
 	set.Root = out.Root

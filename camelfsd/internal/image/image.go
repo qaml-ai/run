@@ -147,6 +147,9 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if c.HydrationPackSize < chunk.Size || c.HydrationPackSize%chunk.Size != 0 {
 		return nil, fmt.Errorf("invalid hydration pack size")
 	}
+	if db, ok := r.(*refs.DB); ok {
+		s = &store.Uploaded{Store: s, DB: db.DB}
+	}
 	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{})}
 	go m.maintain()
 	return m, nil
