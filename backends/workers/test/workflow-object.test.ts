@@ -693,3 +693,19 @@ test("an edit's first step cancels the backlog it no longer asks for: queued eff
   assert.deepEqual(h.runner.items({ attempts: true }).items.filter(item => item.key !== "work:a").map(item => item.status), ["cancelled", "cancelled", "cancelled", "cancelled"]);
   assert.equal(h.runner.events().findLast(event => event.type === "edited")!.data.confirm, false);
 });
+
+test("a result for the old arguments that lands after the edit never answers the effect with the new ones", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.init({ code: `const one = await agent("slow one", { key: "one" }); return one.answer;` });
+  await h.wake();
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["one"]);
+  // Edited while paused: the old attempt still runs, and its result lands before the revision's first step.
+  await h.runner.pause();
+  await h.runner.edit({ code: `const one = await agent("fast one", { key: "one" }); return one.answer;`, reason: "faster" });
+  await h.runner.land("one", 1, { ok: true, value: { answer: "re: slow one" } });
+  h.world.queue.splice(0);
+  await h.runner.resume();
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).result], ["completed", "re: fast one"]);
+  assert.deepEqual(h.runner.items({ attempts: true }).items.filter(item => item.key === "one").map(item => [item.attempt, item.current]), [[1, false], [2, true]]);
+});

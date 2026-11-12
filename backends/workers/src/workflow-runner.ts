@@ -571,6 +571,10 @@ export class WorkflowRunner {
   private async startHeld() {
     const row = this.state();
     if (row.status !== "running" && row.status !== "waiting") return;
+    // A revision that has not had its first step yet has not said what it still asks for (that step cancels the rest):
+    // nothing starts before it, so a slot freed meanwhile never starts dropped work.
+    const firstStep = Number(this.sql.exec("SELECT start_step FROM workflow_revisions WHERE revision = ?", row.revision).one().start_step);
+    if (Number(row.step) < firstStep) return;
     const held = this.sql.exec("SELECT key, attempt, kind, args, options, phase, lease, start_failures, due_at FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
     if (!held.length) return;
     const budget = row.budget_usd === null ? null : Number(row.budget_usd);
@@ -632,7 +636,7 @@ export class WorkflowRunner {
     const revision = this.sql.exec("SELECT * FROM workflow_revisions WHERE revision = ?", state.revision).one();
     const rebuild = Number(revision.start_step) === step;
     const results = this.sql.exec(
-      "SELECT key, attempt, ok, result FROM workflow_effects WHERE current = 1 AND delivered_step IS NULL AND landed IS NOT NULL ORDER BY landed",
+      "SELECT key, attempt, ok, result, kind, args FROM workflow_effects WHERE current = 1 AND delivered_step IS NULL AND landed IS NOT NULL ORDER BY landed",
     ).toArray();
     if (!rebuild && results.length === 0) return false;
     const recent = this.sql.exec("SELECT COUNT(*) AS n, MIN(at) AS first FROM workflow_steps WHERE at > ?", at - 3_600_000).one();
@@ -650,7 +654,7 @@ export class WorkflowRunner {
       return false;
     }
     const started = performance.now();
-    const deliver: WorkflowBatch | undefined = results.length ? { at, results: results.map(row => ({ key: row.key as string, ok: row.ok === 1, value: row.result as string })) } : undefined;
+    const deliver: WorkflowBatch | undefined = results.length ? { at, results: results.map(row => ({ key: row.key as string, ok: row.ok === 1, value: row.result as string, kind: row.kind as string, args: row.args as string })) } : undefined;
     const request: WorkflowStepRequest = {
       protocol: WORKFLOW_STEP_PROTOCOL, code: revision.code as string, seed: Number(state.seed), startedAt: Number(state.started_at),
       snapshotCap: this.options.snapshotCap ?? WORKFLOW_LIMITS.snapshotCapBytes, deliver,
@@ -800,9 +804,9 @@ export class WorkflowRunner {
   /** The batches of steps `from` through `through`, as first delivered. */
   private batches(from: number, through: number): WorkflowBatch[] {
     const steps = this.sql.exec("SELECT step, at FROM workflow_steps WHERE step >= ? AND step <= ? AND results > 0 ORDER BY step", from, through).toArray();
-    const rows = this.sql.exec("SELECT key, ok, result, delivered_step FROM workflow_effects WHERE delivered_step >= ? AND delivered_step <= ? ORDER BY delivered_step, landed", from, through).toArray();
+    const rows = this.sql.exec("SELECT key, ok, result, kind, args, delivered_step FROM workflow_effects WHERE delivered_step >= ? AND delivered_step <= ? ORDER BY delivered_step, landed", from, through).toArray();
     const byStep = new Map<number, WorkflowBatch>(steps.map(row => [Number(row.step), { at: Number(row.at), results: [] }]));
-    for (const row of rows) byStep.get(Number(row.delivered_step))?.results.push({ key: row.key as string, ok: row.ok === 1, value: row.result as string });
+    for (const row of rows) byStep.get(Number(row.delivered_step))?.results.push({ key: row.key as string, ok: row.ok === 1, value: row.result as string, kind: row.kind as string, args: row.args as string });
     return [...byStep.values()];
   }
 

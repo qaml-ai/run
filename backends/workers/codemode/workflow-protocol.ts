@@ -14,7 +14,8 @@ export const WORKFLOW_STEP_PROTOCOL = 3;
 /** One step's results, applied in this order, while the VM's clock reads `at`. `value` is the result's JSON. */
 export interface WorkflowBatch {
   at: number;
-  results: { key: string; ok: boolean; value: string }[];
+  /** `kind`/`args`: the effect the result is for; a result for other arguments than the script now asks under its key is dropped. */
+  results: { key: string; ok: boolean; value: string; kind?: string; args?: string }[];
 }
 
 export interface WorkflowStepRequest {
