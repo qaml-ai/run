@@ -35,6 +35,8 @@ const HOST_STALE_MS = 30_000;
 const WAITER_STALE_MS = 20_000;
 /** A host not heard from in this long is forgotten (demand prunes it). */
 const HOST_FORGET_MS = 24 * 3600_000;
+/** A placement this recent counts though the host's heartbeat does not list it yet (it was in flight). */
+const PLACEMENT_GRACE_MS = 60_000;
 /** How long a job waits for a host of its pool (a cold pool's host boots in a few minutes), at most; JOB_HOST_WAIT_SECONDS. */
 export const HOST_WAIT_MS = 10 * 60_000;
 /**
@@ -100,6 +102,8 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     if (!columns.includes("idle_since")) sql.exec("ALTER TABLE hosts ADD COLUMN idle_since INTEGER");
     // Jobs waiting for a host of their pool, oldest first; a waiter not heard from in WAITER_STALE_MS has gone.
     sql.exec("CREATE TABLE IF NOT EXISTS waiting (job TEXT PRIMARY KEY, pool TEXT NOT NULL, since INTEGER NOT NULL, seen_at INTEGER NOT NULL)");
+    // Each placed job's memory, so a host's used_mib is reconciled from the jobs its heartbeat says it runs.
+    sql.exec("CREATE TABLE IF NOT EXISTS placements (job TEXT PRIMARY KEY, host TEXT NOT NULL, mib INTEGER NOT NULL, at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS host_credentials (hash TEXT PRIMARY KEY, host TEXT NOT NULL, expires_at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS host_attestations (signature TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     sql.exec("CREATE INDEX IF NOT EXISTS host_attestations_at ON host_attestations (at)");
@@ -160,7 +164,7 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
    * A host's hello (slots, vCPUs, memory) or heartbeat (free slots alone). `pool` is its credential's, which the attested
    * role decides (enrollHost), never the host's own word. A build host runs one job: one that says otherwise is refused.
    */
-  seen(name: string, slots: number | undefined, free: number, pool?: HostPool, machine?: { vcpus?: unknown; memoryMiB?: unknown }) {
+  seen(name: string, slots: number | undefined, free: number, pool?: HostPool, machine?: { vcpus?: unknown; memoryMiB?: unknown }, running?: unknown) {
     // A code in the message: an error's class does not survive Durable Object RPC (JobHost matches on it).
     if (this.revoked(name)) throw new Error(`${HOST_REVOKED}: this host is revoked`);
     // What a host reports is checked: whole numbers, free within its slots (a host cannot claim more than it has).
@@ -179,26 +183,30 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
       const known = this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0];
       if (!known || free > known.slots) throw new Error("Invalid host capacity");
     }
-    // A host with every slot free runs nothing: whatever memory its row still counts (a job object that died before it
-    // released its placement) is let go.
-    if (slots !== undefined ? free === slots : free === this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0]?.slots)
-      this.ctx.storage.sql.exec("UPDATE hosts SET used_mib = 0 WHERE name = ?", name);
     this.ctx.storage.sql.exec(`INSERT INTO hosts (name, slots, free, seen_at, pool) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
       name, slots ?? free, free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
     this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = CASE WHEN free < slots THEN NULL ELSE COALESCE(idle_since, ?) END WHERE name = ?", Date.now(), name);
+    if (Array.isArray(running) && running.length <= 1024 && running.every(id => typeof id === "string")) {
+      // The memory its VMs hold is what its placed jobs that still run (or were placed too recently to show up in a
+      // heartbeat) asked for: a job object that died before it released its placement stops counting.
+      const sql = this.ctx.storage.sql, recent = Date.now() - PLACEMENT_GRACE_MS, ids = JSON.stringify(running);
+      sql.exec("DELETE FROM placements WHERE host = ? AND at <= ? AND job NOT IN (SELECT value FROM json_each(?))", name, recent, ids);
+      sql.exec("UPDATE hosts SET used_mib = (SELECT COALESCE(SUM(mib), 0) FROM placements WHERE host = ?) WHERE name = ?", name, name);
+    }
   }
   /**
    * A fresh, allowed, undrained host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox
    * memory, which are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed
    * boot).
    */
-  place(pool: HostPool = "test", memoryMiB = 0): string | undefined {
+  place(pool: HostPool = "test", memoryMiB = 0, job?: string): string | undefined {
     const room = HOST_POOL_PRICES[pool].memoryGiB * 1024 - memoryMiB;
     if (room < 0) return undefined;
     const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND draining = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
     if (!row) return undefined;
     this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1, used_mib = used_mib + ?, idle_since = NULL WHERE name = ?", memoryMiB, row.name);
+    if (job) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO placements (job, host, mib, at) VALUES (?, ?, ?, ?)", job, row.name, memoryMiB, Date.now());
     return row.name;
   }
   /**
@@ -211,13 +219,14 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     sql.exec("INSERT INTO waiting (job, pool, since, seen_at) VALUES (?, ?, ?, ?) ON CONFLICT(job) DO UPDATE SET seen_at = excluded.seen_at", job, pool, now, now);
     const first = sql.exec<{ job: string }>("SELECT job FROM waiting WHERE pool = ? ORDER BY since, job LIMIT 1", pool).toArray()[0];
     if (first?.job !== job) return undefined;
-    const host = this.place(pool, memoryMiB);
+    const host = this.place(pool, memoryMiB, job);
     if (host) sql.exec("DELETE FROM waiting WHERE job = ?", job);
     return host;
   }
   /** A waiting job that stopped waiting (it gave up, or was stopped). */
   unwant(job: string) { this.ctx.storage.sql.exec("DELETE FROM waiting WHERE job = ?", job); }
-  release(name: string, memoryMiB = 0) {
+  release(name: string, memoryMiB = 0, job?: string) {
+    if (job) this.ctx.storage.sql.exec("DELETE FROM placements WHERE job = ?", job);
     this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1), used_mib = MAX(0, used_mib - ?) WHERE name = ? AND revoked = 0", memoryMiB, name);
     this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = ? WHERE name = ? AND free = slots AND idle_since IS NULL", Date.now(), name);
   }
@@ -497,7 +506,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
       // Its free slots as it reports them: a reconnecting host's jobs in flight keep theirs. Its pool is its credential's.
       await registry(this.env).seen(name, message.slots, message.free, this.pool ?? "test", { vcpus: message.vcpus, memoryMiB: message.memoryMiB });
       this.send({ type: "registered", host: name });
-    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test");
+    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test", undefined, message.running);
     else if (message.type === "started") { if (this.pending.has(message.id)) this.startedAt.set(message.id, Date.now()); }
     else if (message.type === "result") { const done = this.pending.get(message.id); this.pending.delete(message.id); done?.(message.result); }
   }
@@ -564,7 +573,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     // host's slot and its computer slot given back, nothing charged.
     const waiting = this.waiting = { job: spec.id, stopped: false };
     const stopped = async (host?: string, slot = false) => {
-      if (host) await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      if (host) await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
       if (slot) await withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine)).catch(() => {});
       this.waiting = undefined;
       return fail("stopped", "The job was stopped");
@@ -578,7 +587,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
       await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
     } catch (error) {
-      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
       this.waiting = undefined;
       return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused");
     }
@@ -593,7 +602,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     try { await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, `job:${spec.id}`, { rate }); }
     catch (error) {
       await release().catch(() => {});
-      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
       this.active = undefined;
       return fail("start_failed", error instanceof Error ? error.message.slice(0, 300) : "The job could not be metered");
     }
@@ -615,7 +624,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
       costUsd = meter.spentUsd();
       await release().catch(() => {});
-      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
       this.active = undefined;
     }
     if (!wire.ok) return fail(wire.code, wire.message, costUsd);
@@ -653,7 +662,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         if (waiting.stopped) return "stopped";
         const host = await hosts.want(job, pool, memoryMiB);
         // A stop that landed while it asked: the host it got goes back.
-        if (host && waiting.stopped) { await hosts.release(host, memoryMiB).catch(() => {}); return "stopped"; }
+        if (host && waiting.stopped) { await hosts.release(host, memoryMiB, job).catch(() => {}); return "stopped"; }
         if (host) return host;
         if (Date.now() + pause > until) return undefined;
         await new Promise(resolve => setTimeout(resolve, pause));

@@ -34,7 +34,9 @@ export type WireStream = { data: string; size: number; truncated: boolean };
 export type WireResult =
   | { ok: true; exitCode: number | null; timedOut: boolean; stdout: WireStream; stderr: WireStream; outputs: Record<string, WireStream>; missing: string[];
       timings: { startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number }; pids: "enforced" | "unenforced" }
-  | { ok: false; code: "start_failed" | "sync_failed" | "container_failed" | "disk_low" | "stopped"; message: string };
+  | { ok: false; code: "start_failed" | "sync_failed" | "container_failed" | "disk_low" | "stopped"; message: string;
+      /** For a failure after its VM started: when it started (after `startMs`) and ended (`totalMs`), from dispatch. */
+      timings?: { startMs: number; totalMs: number } };
 
 let counter = 0;
 /** One message as the frames to send. */

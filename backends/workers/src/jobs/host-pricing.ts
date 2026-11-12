@@ -127,7 +127,8 @@ export function hostShape(spec: JobSpec & { instance: keyof typeof INSTANCE_RESO
  * A VM that never started (no report, no result that ran) spans nothing; a result that ran spans at least a second.
  */
 export function chargedSpan(wire: { ok: boolean; timings?: { totalMs: number; startMs: number }; ranFrom?: number; ranUntil?: number }, dispatchedAt: number, resultAt: number) {
-  const ranFrom = wire.ranFrom ?? (wire.ok && wire.timings ? resultAt - Math.max(0, wire.timings.totalMs - wire.timings.startMs) : undefined);
+  // Any result that says its VM started carries timings (a failure after boot too): a job that ran is never free.
+  const ranFrom = wire.ranFrom ?? (wire.timings ? resultAt - Math.max(0, wire.timings.totalMs - wire.timings.startMs) : undefined);
   if (ranFrom === undefined && !wire.ok) return { from: resultAt, until: resultAt };
   const until = Math.max(dispatchedAt, Math.min(resultAt, wire.ranUntil ?? resultAt));
   let from = Math.min(until, Math.max(dispatchedAt, ranFrom ?? dispatchedAt));
