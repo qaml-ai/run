@@ -1,0 +1,1 @@
+A port of more than about 10 files is many units of work: write a workflow that gives each file, or a small batch of files, to its own agent() (with repo: your volume, then commit() its fork), and keep yourself to planning, checking and reporting.
