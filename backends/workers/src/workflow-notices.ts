@@ -17,13 +17,13 @@ export type NoticeSummary = { status: string; pauseReason?: string; phase?: stri
  */
 export function workflowNext(summary: Pick<NoticeSummary, "status" | "pauseReason" | "fault">): string | undefined {
   if (summary.fault?.code === "vm_crash") return "The script's VM crashed (not the script's error): start it again with workflow_start; finished agent() and job() results are reused.";
+  if (summary.fault?.code === "runtime_upgraded") return "It was started on an older runtime: start the workflow again.";
   if (summary.fault) return `The script failed (${summary.fault.code}): fix it and start a new workflow; finished agent() and job() results are reused.`;
   if (summary.status === "budget_exhausted") return "Its budget is spent: raise it with workflow_budget to go on.";
   if (summary.status !== "paused") return undefined;
   switch (summary.pauseReason) {
     case "user": return "Paused: workflow_resume goes on.";
     case "payer_exhausted": return "A sub-agent or job was refused for credit (the spend limit): it tries again by itself; workflow_resume tries now.";
-    case "waiting_on_gate": return "A gate expired unanswered: once it is answered in the inbox, workflow_resume goes on.";
     case "capacity_refused": return "The account is at its running-workflows limit: it goes on by itself once another ends.";
     default: return "Paused: workflow_resume goes on.";
   }

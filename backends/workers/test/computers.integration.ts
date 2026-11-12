@@ -998,18 +998,15 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   await call(`/v1/volumes/${repo.id}/files/check.sh`, undefined,
     'a=$(cat src/a.txt); b=$(cat src/b.txt); echo "a=$a b=$b" | tee "$JOB_OUT/report.txt"; test "$a" = one && test "$b" = two && echo PASS');
   script = `
-    phase("edit");
     // Three workers fork the repo as it is now and edit it with their write tool; the third edits the file the first does.
     const [a, b, c] = await parallel([
       () => agent("EDIT /repo/src/a.txt one", { key: "edit:a", repo: args.repo, type: "worker" }),
       () => agent("EDIT /repo/src/b.txt two", { key: "edit:b", repo: args.repo, type: "worker" }),
       () => agent("EDIT /repo/src/a.txt uno", { key: "edit:c", repo: args.repo, type: "worker" }),
     ]);
-    phase("commit");
     const landedA = await commit(a.fork, { key: "commit:a" });
     const landedB = await commit(b.fork, { key: "commit:b" });
     const landedC = await commit(c.fork, { key: "commit:c" });
-    phase("test");
     const checked = await job({ key: "check", command: "bash check.sh", timeoutSeconds: 120, at: args.repo, outputs: ["report.txt"] });
     return { said: [a.text, b.text, c.text], landedA, landedB, landedC, checked };`;
   // An agent starts the workflow and owns it: it is the payer of the workflow's jobs.

@@ -46,15 +46,15 @@ export interface WorkflowStepRequest {
 }
 
 /**
- * An effect the script asked for. `args` is its canonical JSON and `options` the effect's own options (a gate's expiry).
+ * An effect the script asked for. `args` is its canonical JSON.
  * `replayed` ones were issued by a replay; `reused` ones were answered from the revision's table, not issued.
  */
-export interface IssuedEffect { key: string; kind: string; args: string; options?: string; phase: string | undefined; replayed: boolean; reused: boolean }
+export interface IssuedEffect { key: string; kind: string; args: string; replayed: boolean; reused: boolean }
 
 /** What the host must handle as a workflow fault: the script cannot go on as written. */
 export type WorkflowFaultCode =
-  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "out_of_memory" | "vm_crash" | "effect_limit" | "script_error" | "missing_origin"
-  // A workflow held for an edit's confirm when edits were removed (runner version 2) ends with it.
+  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "out_of_memory" | "vm_crash" | "effect_limit" | "script_error" | "missing_origin" | "runtime_upgraded"
+  // A payer that stayed without credit for a week ends its workflow.
   | "payer_gave_up";
 
 export type WorkflowStepOutcome =
@@ -72,9 +72,7 @@ export type WorkflowStepOutcome =
     replayed: boolean;
     issued: IssuedEffect[];
     /** Logged during this step's new work (not during a replay). */
-    logs: { phase: string | undefined; text: string }[];
-    /** The phase the script is in when it waits again. */
-    phase: string | undefined;
+    logs: { text: string }[];
     done?: { ok: true; value: string | undefined } | { ok: false; error: string };
     fault?: { code: WorkflowFaultCode; message: string };
     /** The new gzipped snapshot: absent once the script ended or faulted, or past `snapshotCap`. */

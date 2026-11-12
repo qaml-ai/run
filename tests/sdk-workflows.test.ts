@@ -39,8 +39,8 @@ test('start posts the script, budget and the rest, with the Idempotency-Key head
 });
 
 test('reads: get, items with its filters, events after a cursor', async () => {
-  const { runtime, requests } = fakeRuntime(seen => seen.path.endsWith('/items') ? { items: [], next: 7 } : seen.path.endsWith('/events') ? { events: [] } : summary('waiting', { phase: 'review' }));
-  assert.equal((await runtime.workflows.get('wf_abc')).phase, 'review');
+  const { runtime, requests } = fakeRuntime(seen => seen.path.endsWith('/items') ? { items: [], next: 7 } : seen.path.endsWith('/events') ? { events: [] } : summary('running', { step: 4 }));
+  assert.equal((await runtime.workflows.get('wf_abc')).step, 4);
   assert.deepEqual(await runtime.workflows.items('wf_abc', { after: 3, limit: 50, status: 'failed', kind: 'agent' }), { items: [], next: 7 });
   await runtime.workflows.items('wf_abc');
   assert.deepEqual(await runtime.workflows.events('wf_abc', { after: 12 }), { events: [] });

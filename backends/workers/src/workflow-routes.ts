@@ -114,7 +114,7 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
     const view = async () => ({ id, ...(await stub.view()) });
     if (request.method === "GET") {
       if (!action) return json(await view());
-      if (action === "items") return json(await stub.items({ after: number("after"), limit: number("limit"), ...(query.get("status") ? { status: query.get("status")! } : {}), ...(query.get("phase") ? { phase: query.get("phase")! } : {}), ...(query.get("kind") ? { kind: query.get("kind")! } : {}) }));
+      if (action === "items") return json(await stub.items({ after: number("after"), limit: number("limit"), ...(query.get("status") ? { status: query.get("status")! } : {}), ...(query.get("kind") ? { kind: query.get("kind")! } : {}) }));
       if (action === "events") return json({ events: await stub.events({ after: number("after"), limit: number("limit") }) });
       return refuse(404, "Not found", "NOT_FOUND");
     }

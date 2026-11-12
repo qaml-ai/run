@@ -35,7 +35,7 @@ test("each reference workflow script runs against stand-in globals: every agent(
     const globals = {
       agent: async (_prompt: string, options: { key?: string; definition?: string; type?: string; output?: unknown }) => { calls.push(options); return options.output ? { findings: calls.length % 3 ? [] : [{ file: "lib/m01.js", problem: "p", table: "t", column: "c", kind: "k", rows: [1] }] } : "done"; },
       parallel: (thunks: (() => unknown)[]) => Promise.all(thunks.map(thunk => thunk())),
-      job: async () => ({ exitCode: 0, outputs: {} }), phase: () => {}, log: () => {},
+      job: async () => ({ exitCode: 0, outputs: {} }), log: () => {},
     };
     const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
     await new AsyncFunction(...Object.keys(globals), code)(...Object.values(globals));

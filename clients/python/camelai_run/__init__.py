@@ -1407,14 +1407,14 @@ class Workflows:
         return self._runtime._rest("POST", "/v1/workflows", body, retry=bool(idempotency_key), headers={"Idempotency-Key": idempotency_key} if idempotency_key else None)
 
     def get(self, workflow_id):
-        """Its status, counts, spend, phase and, once it ends, its "result" (or "error")."""
+        """Its status, counts, spend and, once it ends, its "result" (or "error")."""
         return self._runtime._rest("GET", self._path(workflow_id))
 
-    def items(self, workflow_id, *, after=None, limit=None, status=None, phase=None, kind=None):
-        """Its effects (agents, gates, timers) in journal order, a page at a time: {"items": [{"key", "attempt", "kind", "status",
+    def items(self, workflow_id, *, after=None, limit=None, status=None, kind=None):
+        """Its effects (agents, jobs, commits, pushes) in journal order, a page at a time: {"items": [{"key", "attempt", "kind", "status",
         "args", "result"?, "reason"?, "costUsd"?, "ord", ...}], "next"?}; pass next as `after`. `status`: pending, running, done,
-        failed, refused or aborted; `kind`: agent, gate or timer; `limit` at most 500."""
-        query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("status", status), ("phase", phase), ("kind", kind)) if value is not None})
+        failed, refused or aborted; `kind`: agent, job, commit or push; `limit` at most 500."""
+        query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("status", status), ("kind", kind)) if value is not None})
         return self._runtime._rest("GET", self._path(workflow_id, "/items") + (f"?{query}" if query else ""))
 
     def events(self, workflow_id, *, after=None, limit=None):

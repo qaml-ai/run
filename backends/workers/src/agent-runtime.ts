@@ -318,12 +318,6 @@ export class AgentRuntime extends AgentContext {
     return configImpl.call(this);
   }
 
-  /** Who may answer the inbox items of a workflow this agent owns (workflow-gates.ts): as for its own decisions. */
-  async inboxAudience(): Promise<{ approvers?: string[]; subject?: string }> {
-    const conf = await this.config();
-    const approvers = conf.config.humanInput?.approvers as string[] | undefined, subject = conf.config.subject as string | undefined;
-    return { ...(approvers?.length ? { approvers } : {}), ...(subject ? { subject } : {}) };
-  }
 
   readonly webhooks = new AgentWebhooks(this.ctx.storage, this.env);
   /** A channel agent's typing indicator, replies and send_message (agent-channels.ts). */
