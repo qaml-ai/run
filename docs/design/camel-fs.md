@@ -318,10 +318,10 @@ VM, walk, compare to the tree) catches drift from bugs on our side.
   status in its trailers (`Camel-Job-Exit: 1`) and message, the fork's tree is returned as usual, and the workflow
   decides whether to merge it. An agent can therefore inspect exactly what a failed build or test run left behind
   (logs it wrote into the tree, generated files, a half-applied codemod) instead of losing it with the VM.
-- **Model-facing tool text, draft** (short on purpose; to be reviewed line by line):
-  > `checkpoint(message)`: save a named version of your workspace now. Everything you have written is already saved
-  > automatically at the end of each turn; use this to name a point you may want to come back to, such as "tests
-  > pass before refactor". Returns the version id. Costs nothing if nothing changed.
+- **Model-facing tool text** (reviewed line by line, 2026-11-12):
+  > `checkpoint(message)`: Save a named version of your workspace now, such as "tests pass, before refactor". Your
+  > work is already saved automatically as you go; name a version when you may want to return to it with `restore`.
+  > Returns the version id. Costs nothing if nothing changed.
 - **v0.** The automatic per-turn checkpoint is in v0. The manual tool is a thin layer over the same daemon call (a
   message and one trailer), so it is **in v0 too**; the history and restore pickers that prefer named checkpoints
   come with the console (phase 3).
@@ -818,8 +818,8 @@ What exists today, from the code on `main` (the survey is precise; line referenc
 | `grep` bounded to 1,000 files / 32 MiB (`GREP_BYTES`) | the index; unbounded | the bound |
 
 Agents' tools do not change shape: `read`, `write`, `edit`, `ls`, `glob`, `grep`, `present_file` keep their names
-and the "changed since you read it" check (blob id instead of version). New for agents: `checkpoint(message)` on
-every workspace (§1.3), and `history`, `diff`, `blame`, `restore`, `fork`, `merge` as tools on a repo-kind volume,
+and the "changed since you read it" check (blob id instead of version). New for agents: `checkpoint(message)` and
+`restore` on every workspace (§1.3), `history`, `diff`, `blame`, `fork`, `merge` as tools on a repo-kind volume,
 and `job_run` on any volume. The SDK's `VolumeHandle` keeps its
 surface with `version` meaning a tree id; `Mount` (`{ volumeId, path, mode, subpath }`, ≤ 16 per agent) is unchanged
 and now also means "mounted in the computer".
