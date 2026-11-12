@@ -177,3 +177,65 @@ func (d *DB) Publish(ctx context.Context, l, n string, a, b Value, f Fence) erro
 	}
 	return tx.Commit()
 }
+
+// Packed records accelerator roots even when a ref moved. CAS preserves fencing.
+func (d *DB) Packed(old, next string) error {
+	rows, e := d.DB.Query(`SELECT DISTINCT lineage,tree FROM tree_roots WHERE root=?`, old)
+	if e != nil {
+		return e
+	}
+	type mapping struct{ l, t string }
+	var mappings []mapping
+	for rows.Next() {
+		var v mapping
+		if e = rows.Scan(&v.l, &v.t); e != nil {
+			rows.Close()
+			return e
+		}
+		mappings = append(mappings, v)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return e
+	}
+	for _, v := range mappings {
+		if e = d.RecordTree(v.l, v.t, next); e != nil {
+			return e
+		}
+	}
+	rows, e = d.DB.Query(`SELECT lineage,name FROM refs WHERE root=?`, old)
+	if e != nil {
+		return e
+	}
+	var names []mapping
+	for rows.Next() {
+		var v mapping
+		if e = rows.Scan(&v.l, &v.t); e != nil {
+			rows.Close()
+			return e
+		}
+		names = append(names, v)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return e
+	}
+	for _, v := range names {
+		ref, e := d.Get(v.l, v.t)
+		if e != nil {
+			return e
+		}
+		if ref.Root != old {
+			continue
+		}
+		value := ref.Value
+		value.Root = next
+		e = d.CAS(v.l, v.t, ref.Value, value, Fence{ref.Holder, ref.LeaseEpoch})
+		if e != nil && !errors.Is(e, ErrFenced) {
+			return e
+		}
+	}
+	return nil
+}

@@ -29,6 +29,7 @@ type origin struct {
 	rootOrder   []int64
 	rootNext    int
 	rootStarted bool
+	packPending map[int64]bool
 	pending     map[int64]bool
 	seen        map[int64]bool
 	touches     []int64
@@ -166,6 +167,29 @@ func (p *origin) worker() {
 			p.rootNext++
 		}
 		p.mu.Unlock()
+		w := o / p.root.Window() * p.root.Window()
+		p.mu.Lock()
+		if p.packPending == nil {
+			p.packPending = map[int64]bool{}
+		}
+		id := p.root.Packs[strconv.FormatInt(w, 10)]
+		hs := p.root.WindowHashes(w)
+		missing := 0
+		if p.server.Packs && id != "" && !p.packPending[w] {
+			for _, h := range hs {
+				if p.server.Cache.Missing(h) {
+					missing++
+				}
+			}
+		}
+		usePack := missing >= 8
+		if usePack {
+			p.packPending[w] = true
+		}
+		p.mu.Unlock()
+		if usePack {
+			_ = p.server.Cache.Pack(p.ctx, id, hs)
+		}
 		_, _ = p.server.Cache.EnsureContext(p.ctx, p.root.Chunks[strconv.FormatInt(o, 10)])
 		p.mu.Lock()
 		delete(p.pending, o)

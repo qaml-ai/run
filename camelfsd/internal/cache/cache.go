@@ -19,16 +19,17 @@ type flight struct {
 	err  error
 }
 type Cache struct {
-	verified map[string]time.Time
-	Hashes   atomic.Int64
-	fdMu     sync.Mutex
-	fds      map[string]*list.Element
-	lru      list.List
-	Dir      string
-	Store    store.Store
-	mu       sync.Mutex
-	flights  map[string]*flight
-	slots    chan struct{}
+	verified                    map[string]time.Time
+	Hashes                      atomic.Int64
+	Fetches, Bytes, Packs, Hits atomic.Int64
+	fdMu                        sync.Mutex
+	fds                         map[string]*list.Element
+	lru                         list.List
+	Dir                         string
+	Store                       store.Store
+	mu                          sync.Mutex
+	flights                     map[string]*flight
+	slots                       chan struct{}
 }
 
 func New(dir string, s store.Store, n int) *Cache {
@@ -45,6 +46,7 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 	p := filepath.Join(c.Dir, h[:2], h)
 	c.mu.Lock()
 	if last, ok := c.verified[h]; ok {
+		c.Hits.Add(1)
 		now := time.Now()
 		if now.Sub(last) >= time.Minute {
 			_ = os.Chtimes(p, now, now)
@@ -85,6 +87,8 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 	}
 	defer func() { <-c.slots }()
 	b, e := c.Store.Get(ctx, "c/"+h)
+	c.Fetches.Add(1)
+	c.Bytes.Add(int64(len(b)))
 	if e == nil && (c.hash(b) != h || len(b) != int(root.ChunkSize)) {
 		e = fmt.Errorf("chunk hash mismatch")
 	}

@@ -259,3 +259,42 @@ func TestEvictionInvalidatesVerifiedChunk(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestPackerPublishesAndRecordsRoot(t *testing.T) {
+	m, _ := unit3(t)
+	b := make([]byte, 2*root.ChunkSize)
+	b[0] = 1
+	b[root.ChunkSize] = 2
+	p := filepath.Join(m.Data, "source.img")
+	if e := os.WriteFile(p, b, 0600); e != nil {
+		t.Fatal(e)
+	}
+	// Import without packs emulates a checkpoint promotion.
+	tree := "1111111111111111111111111111111111111111"
+	imp, e := m.Import(context.Background(), ImportRequest{Lineage: "l", Name: "main", Tree: tree, Path: p})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = m.packRoot(imp.Root); e != nil {
+		t.Fatal(e)
+	}
+	ref, e := m.Refs.Get("l", "main")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if ref.Root == imp.Root {
+		t.Fatal("packer did not publish")
+	}
+	id, e := m.Refs.TreeRoot("l", tree)
+	if e != nil || id != ref.Root {
+		t.Fatal(id, e)
+	}
+	data, e := m.Store.Get(context.Background(), "r/"+id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	r, e := root.Decode(data)
+	if e != nil || len(r.Packs) != 1 {
+		t.Fatal(r, e)
+	}
+}
