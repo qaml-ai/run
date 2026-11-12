@@ -98,13 +98,14 @@ const AZURE = "azure";
  * serves. V4.1 Flash asks for 131,072 too: Pi's catalog moved it to 943,718 (2026-10-29), which leaves out Nebius
  * (943,200), one of its five allowed hosts (OPENROUTER_HOSTS), and with a long input asks for more than the window
  * holds. Azure Flash has no separate output cap (measured 2026-10-26), but input plus max_tokens must fit its window;
- * default to 131,072 there too. Gemini 4 Carbon asks for 32,768: its flex endpoint and Vertex's global one serve
- * 943,718, Vertex's US and EU ones 65,536 and AI Studio's default-tier one 32,768, and the default tier
- * `camelrun/strong` falls back to should keep all of them.
+ * default to 131,072 there too. Gemini 4 Carbon asks for 65,536: its flex endpoint and Vertex's global one serve
+ * 943,718, Vertex's US and EU ones 65,536 and AI Studio's default-tier one 32,768. At high effort its reasoning alone
+ * passes 32,768 (measured 2026-11-12: 26,672 and a cut-off at 32,768 on one hard prompt), so AI Studio's default-tier
+ * endpoint is given up for the fallback; Vertex's still serve it.
  */
 const MAX_TOKENS: Record<string, Record<string, number>> = {
   azure: { "deepseek-v4.1-flash": 131_072 },
-  openrouter: { "deepseek/deepseek-v4.1-flash": 131_072, "deepseek/deepseek-v4.1-flash-1017": 131_072, "google/gemini-4-carbon": 32_768 },
+  openrouter: { "deepseek/deepseek-v4.1-flash": 131_072, "deepseek/deepseek-v4.1-flash-1017": 131_072, "google/gemini-4-carbon": 65_536 },
 };
 
 /**

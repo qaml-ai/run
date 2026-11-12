@@ -20,11 +20,12 @@ const ENDED = new Set(["completed", "failed", "aborted"]);
 /** Where a child of a repo edits its fork. */
 export const FORK_MOUNT_PATH = "/repo";
 import { WorkflowNotices } from "./workflow-notices.ts";
+import { workflowStub } from "./workflow-routes.ts";
 import type { AgentType, ModelClass } from "./workflow-types.ts";
 import type { Owner } from "../../../shared/owner.ts";
 import type { Env } from "./agent-types.ts";
 import {
-  WorkflowRunner, WorkflowError, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit,
+  WorkflowRunner, WorkflowError, refusable, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit,
 } from "./workflow-runner.ts";
 
 /** The tenant's capacity limiter (WorkflowCapacity, workflow-capacity-object.ts), as this object calls it over RPC. */
@@ -161,6 +162,11 @@ export interface WorkflowSettings {
   allowFastJudgment?: boolean;
   /** Who started it: an account key, a console user, or an agent (the `workflows` builtin), which then owns it. */
   owner?: Owner;
+  /**
+   * The origin it was started at (the account's request, or its owner agent's), which its children are configured
+   * with, as an agent made at that origin is. AGENT_PUBLIC_URL, when set, wins over it.
+   */
+  runtimeOrigin?: string;
 }
 
 /** The script as the runner runs it: the start's `args` first, as a frozen global the script reads. */
@@ -215,7 +221,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         const fork = await forkForChild(env, identity.tenant!, { workflow: name!, key: effect.key, attempt: effect.attempt, repo: args.repo });
         return { mounts: [{ volumeId: fork.volume, path: FORK_MOUNT_PATH, mode: "rw" }], result: { fork: { volume: fork.volume, base: fork.base } } };
       },
-      children: workflowChildren(env as unknown as Env, () => { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant! }; }, { runtimeOrigin: (env as { AGENT_PUBLIC_URL?: string }).AGENT_PUBLIC_URL }),
+      children: workflowChildren(env as unknown as Env, () => { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant! }; }, { runtimeOrigin: () => (env as { AGENT_PUBLIC_URL?: string }).AGENT_PUBLIC_URL || self.settings().runtimeOrigin }),
     });
     const jobs = new WorkflowJobs(env, {
       get workflow() { return { id: name ?? "", tenant: self.runner.identity().tenant ?? "" }; },
@@ -253,7 +259,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
    * Create the workflow (once; a second create returns it) and run its first step. The object is addressed by name:
    * the workflow's id (`wf_…`), unique across tenants; `tenant` is who it bills, fixed here.
    */
-  async create(init: Omit<WorkflowInit, "seed" | "startedAt">, settings: WorkflowSettings = {}) {
+  create(init: Omit<WorkflowInit, "seed" | "startedAt">, settings: WorkflowSettings = {}) { return refusable(() => this.created(init, settings)); }
+  private async created(init: Omit<WorkflowInit, "seed" | "startedAt">, settings: WorkflowSettings) {
     if (!this.ctx.id.name) throw new WorkflowError("A WorkflowObject is addressed by its workflow id (getByName)", 500);
     this.settingsTable();
     this.ctx.storage.sql.exec("INSERT OR IGNORE INTO workflow_settings (id, body) VALUES (1, ?)", JSON.stringify(settings));
@@ -275,7 +282,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     return value;
   }
 
-  get() { return this.runner.get(); }
+  get() { return refusable(() => this.runner.get()); }
   /** What it was started with besides its script (its args, classes and owner). */
   settings(): WorkflowSettings {
     this.settingsTable();
@@ -284,15 +291,16 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   }
   private settingsTable() { this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS workflow_settings (id INTEGER PRIMARY KEY CHECK (id = 1), body TEXT NOT NULL)"); }
   /** The summary with the settings a client sees: its name, args, classes and owner. */
-  view() { const { name, args, classes, owner } = this.settings(); return { ...this.runner.get(), ...(name ? { name } : {}), ...(args !== undefined ? { args } : {}), ...(classes ? { classes } : {}), ...(owner ? { owner } : {}) }; }
-  items(query: Parameters<WorkflowRunner["items"]>[0]) { return this.runner.items(query); }
-  diff(revision?: number) { return this.runner.diff(revision); }
-  events(query: Parameters<WorkflowRunner["events"]>[0]) { return this.runner.events(query); }
-  async pause(options: Parameters<WorkflowRunner["pause"]>[0]) { await this.runner.pause(options); return this.told(this.runner.get()); }
-  async resume(options: Parameters<WorkflowRunner["resume"]>[0]) { await this.runner.resume(options); return this.told(this.runner.get()); }
-  async edit(options: Parameters<WorkflowRunner["edit"]>[0]) { const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }
-  async abort() { await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }
-  async setBudget(usd: number | null) { await this.runner.setBudget(usd); return this.told(this.runner.get()); }
+  // The RPC surface the API and the builtin use answers a WorkflowError as a refusal (refusable), not a throw.
+  view() { return refusable(() => { const { name, args, classes, owner } = this.settings(); return { ...this.runner.get(), ...(name ? { name } : {}), ...(args !== undefined ? { args } : {}), ...(classes ? { classes } : {}), ...(owner ? { owner } : {}) }; }); }
+  items(query: Parameters<WorkflowRunner["items"]>[0]) { return refusable(() => this.runner.items(query)); }
+  diff(revision?: number) { return refusable(() => this.runner.diff(revision)); }
+  events(query: Parameters<WorkflowRunner["events"]>[0]) { return refusable(() => this.runner.events(query)); }
+  pause(options: Parameters<WorkflowRunner["pause"]>[0]) { return refusable(async () => { await this.runner.pause(options); return this.told(this.runner.get()); }); }
+  resume(options: Parameters<WorkflowRunner["resume"]>[0]) { return refusable(async () => { await this.runner.resume(options); return this.told(this.runner.get()); }); }
+  edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return refusable(async () => { const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }); }
+  abort() { return refusable(async () => { await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }); }
+  setBudget(usd: number | null) { return refusable(async () => { await this.runner.setBudget(usd); return this.told(this.runner.get()); }); }
   /** An executor's landing of effect `key:attempt`. */
   async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.runner.land(key, attempt, outcome, usage); await this.ended(); this.told(undefined); }
   /** A child's ending, delivered by its outbox until acknowledged (owner `{ kind: "workflow", id }`). */
@@ -341,13 +349,14 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
 export async function workflowTestRoute(request: Request, env: WorkflowEnv, path: string, tenant: string): Promise<Response | undefined> {
   const match = /^\/__test\/workflows\/([A-Za-z0-9_-]{1,64})(?:\/([a-z]+))?$/.exec(path);
   if (!match) return undefined;
-  const stub = env.WORKFLOWS.getByName(match[1]!);
+  const object = env.WORKFLOWS.getByName(match[1]!);
+  const stub = Object.assign(workflowStub(env, match[1]!), { fireAlarm: () => object.fireAlarm(), wake: () => object.wake() });
   const action = match[2] ?? "", post = request.method === "POST";
   const input = post ? await request.json().catch(() => ({})) as Record<string, unknown> : {};
   const query = Object.fromEntries(new URL(request.url).searchParams);
   const respond = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
   try {
-    if (!action && post) return respond(await stub.create({ ...input, tenant } as never), 201);
+    if (!action && post) return respond(await stub.create({ ...input, tenant } as never, {}), 201);
     if (!action) return respond(await stub.get());
     if (action === "items" && !post) return respond(await stub.items({ ...query, after: query.after ? Number(query.after) : undefined, limit: query.limit ? Number(query.limit) : undefined }));
     if (action === "events" && !post) return respond(await stub.events({ after: query.after ? Number(query.after) : undefined }));
