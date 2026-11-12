@@ -4,7 +4,7 @@ import type { CodemodeRemoteExchange } from "@earendil-works/pi-codemode/portabl
 import { EXCHANGE_CEILINGS, SANDBOX_HEAP_BYTES, type ExchangeRequest } from "./exchange.ts";
 import { serveExchange } from "./limits.ts";
 import type { WorkflowStepRequest } from "./workflow-protocol.ts";
-import { serveWorkflowStep } from "./workflow-vm.ts";
+import { checkWorkflowScript, serveWorkflowStep } from "./workflow-vm.ts";
 
 export class CodemodeSandbox extends CodemodeSandboxDurableObject {
   // Three independent 24 MiB heaps leave headroom for Wasm and the host in a
@@ -27,6 +27,13 @@ export class CodemodeSandbox extends CodemodeSandboxDurableObject {
     if (this.active >= 3) throw new Error("Agent sandbox concurrency limit (3) reached");
     this.active++;
     try { return await serveWorkflowStep(request, cloudflareQuickJSWasm as WebAssembly.Module); }
+    finally { this.active--; }
+  }
+  /** A workflow script compiled, not run: its syntax error and where it is, before a workflow starts or is edited. */
+  async checkScript(code: string) {
+    if (this.active >= 3) throw new Error("Agent sandbox concurrency limit (3) reached");
+    this.active++;
+    try { return await checkWorkflowScript(code, cloudflareQuickJSWasm as WebAssembly.Module); }
     finally { this.active--; }
   }
 }
