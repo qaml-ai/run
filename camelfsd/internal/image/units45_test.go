@@ -221,3 +221,41 @@ func TestHydrationPollBackoffAndStop(t *testing.T) {
 		}
 	}
 }
+
+// Both maintain and admission call sweep, which delegates all removals here.
+func TestEvictionInvalidatesVerifiedChunk(t *testing.T) {
+	m, _ := unit3(t)
+	b := make([]byte, root.ChunkSize)
+	b[0] = 7
+	h := root.Hash(b)
+	if e := m.Store.Put(context.Background(), "c/"+h, b); e != nil {
+		t.Fatal(e)
+	}
+	p, e := m.Cache.Ensure(h)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = m.Cache.ReadAt(h, make([]byte, 512), 0); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = m.evict(root.ChunkSize, 0); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = os.Stat(p); !os.IsNotExist(e) {
+		t.Fatal("chunk retained", e)
+	}
+	before := m.Cache.Hashes.Load()
+	if _, e = m.Cache.Ensure(h); e != nil {
+		t.Fatal(e)
+	}
+	if m.Cache.Hashes.Load() != before+1 {
+		t.Fatal("chunk was not refetched and verified")
+	}
+	got, e := os.ReadFile(p)
+	if e != nil || !bytes.Equal(got, b) {
+		t.Fatal("refetch", e)
+	}
+	if e = m.Cache.ReadAt(h, make([]byte, 512), 0); e != nil {
+		t.Fatal(e)
+	}
+}
