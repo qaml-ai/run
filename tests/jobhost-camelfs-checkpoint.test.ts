@@ -35,7 +35,7 @@ async function host(t: TestContext, camelfsd?: Camelfsd, launcher = fakeLauncher
 }
 
 const tree = "a".repeat(40), newTree = "b".repeat(40);
-const published = { tree: newTree, root: "new-root", parentRoot: "old-root", checkpointMs: 17,
+const published = { commit: "c".repeat(40), tree: newTree, root: "new-root", parentRoot: "old-root", checkpointMs: 17,
   changedChunks: 2, uploadedChunks: 1, changedBytes: 9, reflinkMs: 1, fiemapMs: 2, hashMs: 3, uploadMs: 4 };
 type Stream = { header: Record<string, unknown>; ops: Record<string, unknown>[]; data: Record<string, string>; trailer: Record<string, unknown> };
 
@@ -137,8 +137,8 @@ test("round trip publishes index, exact operations and metrics; next checkpoint 
   const r = await setup(t, { second: true });
   assert.equal(r.result.ok, true); if (!r.result.ok) return;
   const c = r.result.camelfs!;
-  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, commit: { trailers: { kind: "job", job: "job-1", exitCode: 0 } } }, { timeoutMs: 600_000 }]);
-  assert.equal(c.checkpointError, undefined); assert.equal(c.tree, newTree); assert.equal(c.root, published.root); assert.equal(c.checkpointMs, 17);
+  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, trailers: { kind: "job", job: "job-1", exitCode: 0 } }, { timeoutMs: 600_000 }]);
+  assert.equal(c.checkpointError, undefined); assert.equal(c.commit, published.commit); assert.equal(c.tree, newTree); assert.equal(c.root, published.root); assert.equal(c.checkpointMs, 17);
   for (const key of ["walkMs", "streamMs", "freezeMs", "files", "bytes", "skipped"] as const) assert.equal(typeof c.checkpoint?.[key], "number");
   for (const key of ["changedChunks", "uploadedChunks", "changedBytes", "reflinkMs", "fiemapMs", "hashMs", "uploadMs"] as const) assert.equal(c.checkpoint?.[key], published[key]);
   const s = r.streams[0]!;
@@ -170,7 +170,7 @@ test("nonzero command checkpoints its tree and keeps its exit code", async t => 
   assert.equal(r.result.exitCode, 2); assert.equal(r.posts, 1);
   assert.deepEqual(r.streams[0]!.data, { created: "failed" });
   assert.equal(r.result.camelfs!.checkpointError, undefined); assert.equal(r.result.camelfs!.tree, newTree);
-  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, commit: { trailers: { kind: "job", job: "job-1", exitCode: 2 } } }]);
+  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, trailers: { kind: "job", job: "job-1", exitCode: 2 } }]);
 });
 test("FIFO is counted; git and temporary names are skipped", async t => {
   const r = await setup(t, { command: "mkfifo fifo; mkdir .git; echo x > .git/x; echo x > .camelfs-tmp-9" });
@@ -211,5 +211,5 @@ test("timed out command checkpoints with exitCode -1 in commit trailers", async 
   assert.equal(r.result.timedOut, true); assert.equal(r.result.exitCode, null);
   assert.deepEqual(r.streams[0]!.data, { created: "partial" });
   assert.equal(r.result.camelfs!.checkpointError, undefined); assert.equal(r.result.camelfs!.tree, newTree);
-  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, commit: { trailers: { kind: "job", job: "job-1", exitCode: -1 } } }]);
+  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, trailers: { kind: "job", job: "job-1", exitCode: -1 } }]);
 });

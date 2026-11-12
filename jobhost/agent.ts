@@ -205,7 +205,7 @@ export class HostAgent {
         if (error) cfs.checkpointError = error;
         else if (daemon.status === "fulfilled" && guest.status === "fulfilled") {
           const d = daemon.value, g = guest.value;
-          cfs.tree = d.tree; cfs.root = d.root; cfs.checkpointMs = d.checkpointMs;
+          cfs.commit = d.commit; cfs.tree = d.tree; cfs.root = d.root; cfs.checkpointMs = d.checkpointMs;
           cfs.checkpoint = { walkMs: Number(g.walkMs), streamMs: Number(g.streamMs), freezeMs: Number(g.freezeMs), files: Number(g.files), bytes: Number(g.bytes), skipped: Number(g.skipped),
             changedChunks: d.changedChunks, uploadedChunks: d.uploadedChunks, changedBytes: d.changedBytes, reflinkMs: d.reflinkMs, fiemapMs: d.fiemapMs, hashMs: d.hashMs, uploadMs: d.uploadMs };
         }

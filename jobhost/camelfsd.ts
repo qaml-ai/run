@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Transform } from "node:stream";
 
 export type CamelfsMount = { image: string; warm: boolean; root: string; tree: string; mountMs: number; hydrating: boolean };
-export type CamelfsCheckpoint = { root: string; tree: string; parentRoot: string; changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; checkpointMs: number };
+export type CamelfsCheckpoint = { commit: string; root: string; tree: string; parentRoot: string; changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; checkpointMs: number };
 export type CamelfsCommit = { message?: string; trailers?: { agent?: string; run?: string; turn?: string; job?: string; kind: "auto" | "manual" | "job"; exitCode?: number } };
 export interface Camelfsd {
   // Older daemon adapters can mount and apply without supporting checkpoints.
@@ -52,7 +52,7 @@ export function camelfsdClient(socketPath: string): Camelfsd & Required<Pick<Cam
     return encodeURIComponent(id);
   };
   return {
-    checkpoint: async (id, timeoutMs, commit) => await call("POST", `/v0/mounts/${jobId(id)}/checkpoint`, { timeoutMs, ...(commit === undefined ? {} : { commit }) }, timeoutMs + 30_000) as CamelfsCheckpoint,
+    checkpoint: async (id, timeoutMs, commit) => await call("POST", `/v0/mounts/${jobId(id)}/checkpoint`, { timeoutMs, ...commit }, timeoutMs + 30_000) as CamelfsCheckpoint,
     health: async () => await call("GET", "/v0/health") as { ok: boolean; version: string; data: string; store: string; hostId: string },
     mount: async input => { jobId(input.jobId); return await call("POST", "/v0/mounts", input) as CamelfsMount; },
     release: async id => { await call("DELETE", `/v0/mounts/${jobId(id)}`); },
