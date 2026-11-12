@@ -102,23 +102,27 @@ object by id without bytes only when that object is reachable from the caller's 
 
 | table | key | holds |
 |---|---|---|
-| `refs` | `lineage`, `name` | `commit`, `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `mount:<host>:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`, `createdAt`, `updatedAt` |
-| `leases` | `lineage`, `name` | which host holds the branch live (`host`, `mountId`, `renewedAt`, `deadline`); at most one |
+| `refs` | `lineage`, `name` | `commit`, `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`; the lease, when a VM holds the branch: `holder` (host, mount id), `leaseDeadline`; `dirtyCount`; `createdAt`, `updatedAt` |
 | `dirty` | `lineage#name`, `path` | the working layer of an API-held branch: `blob` (inline ≤ 256 KB, else S3), `mode`, `deleted`, `seq`; cleared by checkpoint |
-| `objects` | `id` | trees and commits (content-addressed, write-if-absent) |
+| `objects` | `id` | trees and commits (content-addressed, write-if-absent), `touchedAt` |
+| `touch` | `id` | an object referenced by id without bytes since the last GC mark began (§1.8) |
 | `warm` | `lineage`, `host` | roots this host holds, for placement |
-| `lineages` | `lineage` | tenant, quota, default branch, created |
+| `lineages` | `lineage` | tenant, quota, default branch, durability cadence, created |
 
 A **lineage** is a volume plus everything made from it (forks, job views, cache entries, mirrors); it is the
 DynamoDB partition key and the unit of chunk sharing. A **ref** is a name → commit inside a lineage. Every ref
 update is a conditional write (`commit = :expected`); a merge that moves one ref and deletes another is one
-`TransactWriteItems`. There are no other locks.
+`TransactWriteItems`. The lease lives on the ref item, so "take the lease" is the same conditional write as
+everything else (`holder` absent and `dirtyCount = 0`), and an API write to a branch is a transaction of its `dirty`
+row and the ref's `dirtyCount` conditioned on `holder` absent. There are no other locks.
 
-**One writer per branch.** A branch is held either by a VM (a `leases` row; the host is the writer) or by nobody
+**One writer per branch.** A branch is held either by a VM (the host named in `holder` is the writer) or by nobody
 (the API is the writer, through `dirty`). A VM-less agent writing to a branch a VM holds has its write forwarded by
-the API tier to that host, whose guest agent writes the file inside the VM; a read is answered from the last published
-version by default (at most one turn stale, usually seconds) or forwarded with `consistency: "live"`. Two VMs never
-hold the same branch: the second mount forks.
+the API tier to that host, whose guest agent writes the file inside the VM (queued while the guest is frozen); a
+read is answered from the last published version by default (at most one turn stale, usually seconds) or forwarded
+with `consistency: "live"`. A mount of a branch with `dirty` rows checkpoints them first. Two VMs never hold the
+same branch: the second mount forks. A lease is renewed by the host's heartbeat; a lapsed lease (host death) is
+taken over only after its deadline, and the dead host's unpublished turn is lost (§1.10).
 
 **Why DynamoDB, not Aurora or a Durable Object.** A DO would put the truth in another cloud from the hosts that need
 it on every checkpoint, and Miguel decided on AWS. Postgres (camelRun's Node backend already has one) would work:
@@ -150,9 +154,11 @@ The stack under a VM, bottom up, all in-tree kernel code plus one daemon:
    `fsfreeze` first the pool's `suspend` is a no-op; without it, 1.1 s to flush ext4). `thin_delta` between the last
    checkpoint's snapshot and the new one lists exactly the changed blocks, so a checkpoint reads O(delta).
 4. **Firecracker virtio-blk** with `io_engine: "Async"` (447k IOPS on a reflinked file in the spike; to be
-   re-measured on a thin). The guest sees `/dev/vdb` and mounts ext4 (`-O ^inline_data`, `data=ordered`, journal in
-   its own chunks so it dirties the same few every time). Nothing to install in the image beyond `camel-guest`, which
-   jobs already have.
+   re-measured on a thin) and `cache_type: "Writeback"`, not the default `Unsafe`: with `Unsafe` the guest's flushes
+   are dropped and a snapshot taken under a frozen guest could miss bytes still in the host's page cache of the
+   device node; with `Writeback` the guest's `fsfreeze` flush reaches the thin before the snapshot. The guest sees
+   `/dev/vdb` and mounts ext4 (`-O ^inline_data`, `data=ordered`, journal in its own chunks so it dirties the same
+   few every time). Nothing to install in the image beyond `camel-guest`, which jobs already have.
 
 Measured on `proto/block` (NBD, no dm-clone, sprite disk): mount cold 130 ms (small) to 1.9 s (large; superblock and
 group descriptors); first file 26–79 ms; a cold full read of the 500 MB tree 3.0 s at 15 ms per chunk GET with
@@ -164,12 +170,19 @@ passthrough recovering reads only. Fork: 61–92 ms for the snapshot plus 45–1
 
 1. the guest's `camel-guest` has collected the dirty path set since the last checkpoint with fanotify
    (`FAN_MARK_FILESYSTEM`, create/modify/delete/move with `FAN_REPORT_DFID_NAME`); a queue overflow marks the set as
-   unknown, and the fallback is a ctime walk (`proto/block` measured an incremental index at 30–80 ms for 5–10k
-   files; a 100k-file walk is ~1–2 s and only runs on overflow);
-2. `fsfreeze` in the guest; `create_snap` on the host; thaw. Milliseconds; the VM keeps running;
-3. the guest streams the dirty files' bytes over vsock; **the host hashes them** (never a guest-supplied hash) and
-   PUTs the blobs S3 lacks. The host never mounts a guest's filesystem: a hostile image would attack the host kernel's
-   ext4 parser, so the only things the host parses are its own blocks and byte streams it hashes;
+   unknown, and the fallback is a walk against the last published tree's path list (changed ctime → modified; absent
+   → deleted; unknown → created). `proto/block` measured an incremental index at 30–80 ms for 5–10k files; a
+   100k-file walk is ~1–2 s and only runs on overflow;
+2. `fsfreeze` in the guest; `create_snap` on the host; the guest streams the dirty files' bytes over vsock **while
+   still frozen** when the set is small (the common case: a tool call touched a few files; milliseconds), then
+   thaws. For a large set (a `git add` of a tree, a build) the guest thaws first, streams, and the host re-freezes,
+   re-snapshots and streams only what changed meanwhile, until the delta is empty (rsync's convergence; the second
+   pass is tiny). Either way the published tree is exactly the contents of the snapshot the root is built from;
+3. **the host hashes what it receives** (never a guest-supplied hash) and PUTs the blobs S3 lacks, touching the ones
+   it skips (§1.8). The host never mounts a guest's filesystem: a hostile image would attack the host kernel's ext4
+   parser, so the only things the host parses are its own blocks and byte streams it hashes. (A memory-safe
+   userspace ext4 reader in a sandboxed process, reading the dirty files straight from the snapshot, is the later
+   option that removes the freeze-while-streaming window entirely.);
 4. the host rewrites the trees on the changed paths (3–5 tree objects for a one-file edit; reads from its tree cache),
    writes one commit with the attribution trailers, and does the ref CAS. This is the **durable version**: every
    later reader, Worker, merge, search and git export sees it;
@@ -181,7 +194,10 @@ Cadence: a **local snapshot per tool call** (free; it is what makes "undo this t
 call" instant on the host), a **durable version per turn, or after 30 s of dirtiness**, whichever first, and always
 before a fork, a job, a merge, a sleep and at mount end. Snapshots between durable versions are published only if
 something references them (a fork, a job). This keeps the durable rate at ~20 commits per agent-hour, not ~100, and
-keeps ext4's metadata amplification (4.5 MiB of changed chunks for a 15 KB edit) out of the per-tool-call path.
+keeps ext4's metadata amplification (4.5 MiB of changed chunks for a 15 KB edit) out of the per-tool-call path. A
+lineage may ask for `durability: "call"` instead: the file tier (blobs, trees, commit) is published at every tool
+call, which is cheap (~5 DynamoDB writes and a few small PUTs), and only the root stays on the turn cadence; it is
+the right default for a paying user's interactive computer and is an open question (§5) for the default.
 
 **Cache.** One NVMe directory per host, keyed by hash, shared by every tenant on the host; eviction is an LRU
 high-watermark sweep (80 % → 60 %) with chunks of live mounts last. Nothing is pinned and nothing is coordinated:
@@ -205,6 +221,8 @@ The **root disk is a lineage too**: a base image (kernel, toolchains) is a tree 
 (`saveSnapshot: "bun-rust-warm"`) is a checkpoint of the job's image lineage. The job-hosts plan's separate
 `job_snapshots` table, S3 snapshot prefix, reflink clones and image LRU collapse into camelFS refs, roots and the
 cache. Placement prefers hosts whose `warm` rows hold the lineage's roots, as the plan already does for snapshots.
+A cold boot reads the same ~50–100 MB of a root image every time, so the lineage's recorded access pattern prefetches
+the whole boot set in parallel on a cold host (about a second from S3) and a warm host boots from NVMe.
 
 **What computers lose by leaving Cloudflare containers:** memory snapshot restore (CF p50 200–350 ms, tails 30 s;
 here 0.8–2.5 s cold boots, no tail), and nothing else. What they gain: a 950 GB NVMe host, 16 vCPU sandboxes, forks
@@ -293,8 +311,11 @@ between any two trees is O(changed paths). A merge's second parent keeps an atte
 
 **GC: reachability, generational, from S3 Inventory.**
 
-- Roots: every unexpired `refs` row's `commit` and `root`, every `dirty` row's blob, every `leases` row's mount
-  snapshot root, and every object younger than the grace (24 h) in case its referencing row is in flight.
+- Roots: every unexpired `refs` row's `commit` and `root`, every `dirty` row's blob, every held lease's mount
+  snapshot root, every object younger than the grace (24 h) in case its referencing row is in flight, and every
+  object in `touch` newer than the mark's start: a write that names an existing object by id without sending its
+  bytes (a checkpoint skipping a blob S3 has, a `{sha}` reference in a commit) touches it, so an object whose last
+  old reference died during the mark cannot be swept out from under a new one.
 - Mark: walk commits → parents (to the lineage's history horizon: all of it by default; a retention policy can
   shorten it, and the `mirror/*` ref keeps exported history reachable), trees → subtrees and blobs, refs → roots →
   chunks. Trees are read from DynamoDB in batches; the mark set is a Bloom filter in memory per lineage, written to
@@ -353,8 +374,10 @@ Through the runtime's existing alarms (CloudWatch, email to Miguel) and dashboar
 
 - per op: count, latency p50/p99, errors, bytes, by role and tenant; the ref CAS conflict rate per lineage;
 - hosts: cache hit rate (chunks, trees, shards), chunk GET latency and tail, ublk queue depth and stalls, dm-clone
-  hydration progress, thin pool free space and metadata space, checkpoint duration by step (freeze, snapshot, stream,
-  hash, publish), fanotify overflows, dirty bytes per mount, mounts per host;
+  hydration progress, thin pool free space and **metadata space** (a full metadata device turns the pool read-only:
+  sized at 1 % of the pool, alarmed at 70 %), checkpoint duration by step (freeze, snapshot, stream, hash, publish),
+  freeze duration, convergence passes, fanotify overflows, dirty bytes per mount, mounts per host; after a host
+  restart the pool is rebuilt (dm state does not survive; the cache directory does) and every lease it held lapses;
 - durable versions per agent-hour, dirty age at checkpoint, forwarded writes and reads (VM-held branches);
 - search: index lag (checkpoint → shard visible), query latency, candidate ratio;
 - GC: live/garbage counts per run, bytes reclaimed, mark duration, audit-mode discrepancies;
@@ -375,7 +398,7 @@ Baseline load ("today", the figure the prototypes share): 1,000 concurrent agent
 | item | baseline | 100× |
 |---|---:|---:|
 | durable versions: 14.6 M/month × (~4 tree + 1 commit DynamoDB writes, ~2 blob PUTs, 1 CAS) | ~$110 DynamoDB + ~$145 S3 | ~$25k |
-| API-held writes: 144 M/month DynamoDB rows | ~$180 | ~$18k |
+| API-held writes: 144 M/month, each a 2-item transaction (`dirty` row + ref counter) | ~$360 | ~$36k |
 | block tier: ~1/3 of versions publish a root, ~20 chunks each | ~$50 | ~$5k |
 | mounts: 1 M/month, cold ≈ 200 chunk GETs, warm ≈ 0 | ~$80 | ~$8k |
 | reads (Workers and API nodes, cache misses) | ~$50 | ~$5k |
@@ -383,13 +406,14 @@ Baseline load ("today", the figure the prototypes share): 1,000 concurrent agent
 | search shards (0.3× of text, rebuilt per commit as deltas) | ~$10 | ~$1k |
 | API tier: 2 × `c8g.large` + ALB | ~$150 | ~$2k (autoscaled) |
 | GC: Inventory + Batch Operations | ~$5 | ~$200 |
-| **camelFS total** | **~$800/month** | **~$65k/month** |
+| **camelFS total** | **~$1,000/month** | **~$85k/month** |
 
 For comparison at the baseline: Artifacts ≈ $2,560, Pierre ≈ $1,800 of storage alone at $3.60/GB-month, the
 `gitsvc` fleet ≈ $800–900 with two stateful hosts to run, the Workers-only git server ≈ $160 but with every job
 paying seconds of clone. The hosts themselves (the compute) dominate everything above: one `r8gd.4xlarge` is ~$860
 a month. At 100× the DynamoDB write lines are the ones to engineer down (tree segments: pack a checkpoint's trees
-into one item, ~3× fewer writes); nothing else is worth touching before then.
+into one item, ~3× fewer writes; a single-item working layer per branch for small dirty sets, halving the write
+line); nothing else is worth touching before then.
 
 ## 2. Choices, made
 
@@ -585,6 +609,13 @@ computer provider and the fallback.
 12. **The pool math for computers.** A long-lived computer holds a VM slot for its idle timeout; today Cloudflare
     bills the sleep as nothing. On our hosts an idle VM holds memory from the sandbox pool. Decision: a short idle
     timeout (5 minutes?) with instant wake, since wake is a boot and the branch is always durable.
+13. **Default durability cadence.** Per turn (or 30 s) is ~$255/month of writes at the baseline; per tool call for
+    the file tier is ~$1.5k. Recommendation: per call for interactive computers, per turn for workflow children and
+    jobs, both as the `durability` field on the lineage. Decision asked: is per call the default for everything?
+14. **Git features at the edge that the tree store refuses.** Submodules (gitlink entries) and symlinks pointing
+    outside the tree are stored as-is and never followed; LFS pointers are kept as pointers; a history with signed
+    commits keeps the signatures (they are bytes). Anything else an import meets is refused loudly, not approximated.
+    Confirm that imports with submodules may fail rather than flatten.
 
 ## Appendix: what the prototypes settled
 
