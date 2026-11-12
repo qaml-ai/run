@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { HostAgent } from "../jobhost/agent.ts";
 import { camelfsdClient, serveImportProxy, type Camelfsd } from "../jobhost/camelfsd.ts";
+import { firecrackerLauncher } from "../jobhost/firecracker.ts";
 import { fakeLauncher, firecrackerConfig, type VmLauncher } from "../jobhost/vm.ts";
 import { Frames, base64Text, type HostMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
 
@@ -60,10 +61,11 @@ async function host(t: TestContext, camelfsd?: Camelfsd, launcher = fakeLauncher
   return { agent, hello: await hello.promise, result: result.promise, logs };
 }
 
-test("hello advertises camelFS only with a daemon", async t => {
+test("hello advertises camelFS only with a daemon and a guest that mounts the repo", async t => {
   const d = await daemon(t);
   assert.deepEqual((await host(t, d.client)).hello.features, ["camelfs"]);
   assert.equal(Object.hasOwn((await host(t)).hello, "features"), false);
+  for (const mountsRepo of [undefined, false]) assert.equal(Object.hasOwn((await host(t, d.client, { ...fakeLauncher(), mountsRepo })).hello, "features"), false);
 });
 
 test("a camelFS job mounts its repo, skips sync, reports timings and releases after VM destruction", async t => {
@@ -90,7 +92,7 @@ test("a camelFS job mounts its repo, skips sync, reports timings and releases af
 for (const [mode, commit, message, methods] of [
   ["ok", true, "camelFS checkpoints are not supported on this host yet", []],
   ["apply", false, "This camelFS tree needs a guest-side apply, not supported on this host yet", ["POST", "DELETE"]],
-  ["fail", false, "camelfsd 500: mount_failed: boom", ["POST"]],
+  ["fail", false, "camelfsd 500: mount_failed: boom", ["POST", "DELETE"]],
 ] as const) test(`camelFS refuses ${commit ? "checkpoints" : mode}`, async t => {
   const d = await daemon(t, mode), h = await host(t, d.client);
   await h.agent.run("job-1", { ...spec, camelfs: { ...spec.camelfs!, commit } });
@@ -106,7 +108,7 @@ test("camelFS requires a daemon", async t => {
 
 test("cancel during mount releases without booting", async t => {
   const d = await daemon(t), entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
-  const h = await host(t, { ...d.client, mount: async input => { entered.resolve(); await resume.promise; return d.client.mount(input); } }, { kind: "fake", boot: async () => { throw new Error("must not boot"); } });
+  const h = await host(t, { ...d.client, mount: async input => { entered.resolve(); await resume.promise; return d.client.mount(input); } }, { kind: "fake", mountsRepo: true, boot: async () => { throw new Error("must not boot"); } });
   const run = h.agent.run("job-1", spec);
   await entered.promise;
   // Drive the same receive path as a runtime cancel while the mount is in flight.
@@ -117,7 +119,7 @@ test("cancel during mount releases without booting", async t => {
 });
 
 test("a boot failure still releases; a release failure is logged without replacing the result", async t => {
-  const d = await daemon(t), h = await host(t, { ...d.client, release: async () => { throw new Error("release failed"); } }, { kind: "fake", boot: async () => { throw new Error("boot failed"); } });
+  const d = await daemon(t), h = await host(t, { ...d.client, release: async () => { throw new Error("release failed"); } }, { kind: "fake", mountsRepo: true, boot: async () => { throw new Error("boot failed"); } });
   await h.agent.run("job-1", spec);
   assert.deepEqual(await h.result, { ok: false, code: "start_failed", message: "boot failed" });
   assert.ok(h.logs.some(line => line.type === "jobhost_camelfs_release_failed" && line.id === "job-1"));
@@ -204,4 +206,26 @@ for (const mode of ["health-false", "health-fail"]) test(`CLI refuses a daemon w
     return true;
   });
   assert.deepEqual(d.calls.map(call => [call.method, call.path]), [["GET", "/v0/health"]]);
+});
+
+
+test("Firecracker repo mounting is disabled until the guest image supports it", () => {
+  const options = { firecracker: "/fc", kernel: "/k", initrd: "/i", image: "/image", work: "/work", policyDir: "/policies" };
+  assert.equal(fakeLauncher().mountsRepo, true);
+  assert.equal(firecrackerLauncher(options).mountsRepo, false);
+  assert.equal(firecrackerLauncher({ ...options, mountsRepo: true }).mountsRepo, true);
+});
+
+for (const mountsRepo of [undefined, false]) test(`a guest with mountsRepo=${mountsRepo} refuses camelFS before mounting or booting`, async t => {
+  const d = await daemon(t), h = await host(t, d.client, { kind: "firecracker", mountsRepo, boot: async () => { assert.fail("must not boot"); } });
+  await h.agent.run("job-1", spec);
+  assert.deepEqual(await h.result, { ok: false, code: "start_failed", message: "This host cannot attach a camelFS repo disk yet" });
+  assert.deepEqual(d.calls, []);
+});
+
+test("a mount that acquired a lease but failed to return is released", async t => {
+  const d = await daemon(t), h = await host(t, { ...d.client, mount: async input => { await d.client.mount(input); throw new Error("mount timed out"); } });
+  await h.agent.run("job-1", spec);
+  assert.deepEqual(await h.result, { ok: false, code: "start_failed", message: "mount timed out" });
+  assert.deepEqual(d.calls.map(call => [call.method, call.path]), [["POST", "/v0/mounts"], ["DELETE", "/v0/mounts/job-1"]]);
 });

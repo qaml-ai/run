@@ -29,6 +29,8 @@ export type FirecrackerOptions = {
   policyDir: string;
   /** Build hosts: dedicated vCPUs (no overcommit). */
   build?: boolean;
+  /** Opt in only for guest images whose init mounts the repo disk. */
+  mountsRepo?: boolean;
   /** Names a job with internet may reach (DEFAULT_EGRESS), and the runtime's own host, always allowed then. */
   egress?: readonly string[];
   runtimeHost?: string;
@@ -108,6 +110,7 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
   });
   return {
     kind: "firecracker",
+    mountsRepo: options.mountsRepo ?? false,
     vsockPath,
     async boot(id: string, shape: VmShape, boot: { internet?: boolean; repo?: string } = {}): Promise<Vm> {
       if (!/^[A-Za-z0-9._-]{1,96}$/.test(id)) throw new Error("Invalid job id");

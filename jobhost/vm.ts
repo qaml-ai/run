@@ -26,6 +26,8 @@ export interface Vm extends GuestChannel {
 export type VmShape = { vcpus: number; memoryMiB: number; diskMiB: number };
 export interface VmLauncher {
   readonly kind: "fake" | "firecracker";
+  /** The guest mounts the repo disk before accepting commands. */
+  readonly mountsRepo?: boolean;
   vsockPath?(id: string): string;
   /** `internet`: the job may reach its egress allowlist (a real host's proxy); without it, nothing. */
   boot(id: string, shape: VmShape, options?: { internet?: boolean; repo?: string }): Promise<Vm>;
@@ -105,6 +107,7 @@ export function fakeLauncher(options: { base?: string; work?: string } = {}): Vm
   const work = options.work ?? join(tmpdir(), `jobhost-${randomUUID()}`);
   return {
     kind: "fake",
+    mountsRepo: true,
     vsockPath: id => join(work, `${id}.vsock`),
     async boot(id, _shape, boot = {}) {
       const root = join(work, id);

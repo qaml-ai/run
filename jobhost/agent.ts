@@ -83,7 +83,7 @@ export class HostAgent {
         // The credential is the first message, not part of the URL: a URL lands in access logs.
         socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
         // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
-        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.camelfsd ? { features: ["camelfs"] } : {}), ...(this.options.pool ? { pool: this.options.pool } : {}) });
+        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.camelfsd && this.options.launcher.mountsRepo ? { features: ["camelfs"] } : {}), ...(this.options.pool ? { pool: this.options.pool } : {}) });
         heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {
@@ -137,12 +137,16 @@ export class HostAgent {
     const began = Date.now();
     let result: WireResult;
     let mounted: CamelfsMount | undefined;
+    let mountAttempted = false;
     // Set once its VM has started: every result from then on says when (its charge, if its `started` report was lost).
     let startMs: number | undefined;
     try {
       if (spec.camelfs) {
         if (!this.options.camelfsd) throw new Error("This host has no camelFS daemon");
+        if (!this.options.launcher.mountsRepo) throw new Error("This host cannot attach a camelFS repo disk yet");
         if (spec.camelfs.commit) throw new Error("camelFS checkpoints are not supported on this host yet");
+        // A failed request may still have created a lease in the daemon.
+        mountAttempted = true;
         mounted = await this.options.camelfsd.mount({ jobId: id, lineage: spec.camelfs.lineage, tree: spec.camelfs.tree, vsock: this.options.launcher.vsockPath?.(id) ?? "" });
         if (job.cancelled) throw new Stopped();
         if (mounted.apply !== undefined) throw new Error("This camelFS tree needs a guest-side apply, not supported on this host yet");
@@ -181,7 +185,7 @@ export class HostAgent {
         : { ok: false, code: job.vm ? "container_failed" : "start_failed", message: error instanceof Error ? error.message.slice(0, 300) : "The VM failed" };
     } finally {
       await job.vm?.destroy().catch(() => {});
-      if (mounted) await this.options.camelfsd!.release(id).catch(() => this.log({ type: "jobhost_camelfs_release_failed", id }));
+      if (mountAttempted) await this.options.camelfsd!.release(id).catch(() => this.log({ type: "jobhost_camelfs_release_failed", id }));
       this.running.delete(id);
       const final: WireResult = result! ?? { ok: false, code: "container_failed", message: "No result" };
       this.send({ type: "result", id, result: !final.ok && startMs !== undefined ? { ...final, timings: { startMs, totalMs: Date.now() - began } } : final });
@@ -287,6 +291,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
     // A real host's paths are the image's (infra/job-hosts/image/files/jobhost.env).
     launcher: fake ? fakeLauncher({ base: arg("base") }) : firecrackerLauncher({
+      mountsRepo: process.argv.includes("--camelfs-repo-mount"),
       firecracker: arg("firecracker-bin") ?? "/usr/local/bin/firecracker", kernel: arg("kernel") ?? "/var/lib/camel/guest/vmlinux",
       initrd: arg("initrd") ?? "/var/lib/camel/guest/initrd.img", image: arg("image") ?? "/var/lib/camel/nvme/base.ext4",
       work: arg("work") ?? "/var/lib/camel/nvme/jobs", policyDir: arg("policies") ?? "/run/camel/egress", build: process.argv.includes("--build"),
