@@ -704,6 +704,7 @@ func (m *Manager) Heartbeat(id string) error {
 }
 
 func (m *Manager) Close() {
+	defer m.Cache.Close()
 	close(m.stop)
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.mounts))

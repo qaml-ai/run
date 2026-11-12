@@ -122,7 +122,11 @@ func (m *Manager) evict(used, low int64, usage ...func() (int64, error)) (freed 
 		if used-freed <= low {
 			break
 		}
-		if e := os.Remove(v.path); e != nil && !os.IsNotExist(e) {
+		remove := os.Remove
+		if filepath.Dir(filepath.Dir(v.path)) == m.Cache.Dir {
+			remove = m.Cache.Remove
+		}
+		if e := remove(v.path); e != nil && !os.IsNotExist(e) {
 			return freed, e
 		}
 		freed += v.bytes

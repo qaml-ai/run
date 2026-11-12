@@ -211,3 +211,9 @@ guest walk. `walkMs` and `freezeMs` are guest-reported. `publishMs` runs
 from ack to done. `imageMs` covers image fsync, reflink, FIEMAP, hashing,
 chunk uploads, root and CAS. For one release `checkpointMs` aliases
 `wallMs` for jobhost compatibility.
+
+The lazy-origin cache verifies fetched chunks before atomic publication and
+verifies existing disk chunks once per daemon lifetime. Trusted hits perform no
+file read, hash or stat. Use timestamps update at most once per minute per hash.
+A 256-entry open-file LRU serves NBD reads; eviction invalidates trusted entries
+and retires descriptors after active readers finish.

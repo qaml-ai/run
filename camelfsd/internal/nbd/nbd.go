@@ -77,19 +77,10 @@ func (d *device) readAt(buf []byte, offset int64) error {
 		if h == "" {
 			clear(buf[:n])
 		} else {
-			p, e := d.s.Cache.Ensure(h)
-			if e != nil {
+			if e := d.s.Cache.ReadAt(h, buf[:n], in); e != nil {
 				return e
 			}
-			f, e := os.Open(p)
-			if e != nil {
-				return e
-			}
-			_, e = f.ReadAt(buf[:n], in)
-			f.Close()
-			if e != nil {
-				return e
-			}
+
 		}
 		if d.p != nil {
 			d.p.ahead(o)
