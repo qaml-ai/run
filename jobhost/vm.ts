@@ -5,12 +5,13 @@
 //   runs as a local process over stdio. No isolation: for the runtime's end-to-end tests only.
 // - Firecracker (`firecrackerConfig`, and firecracker.ts's launcher): the configuration a real host boots with, in Nitro
 //   Sandboxes direct mode, on the host image infra/job-hosts/image builds.
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 export type GuestReply = { ok: boolean; error?: string; [key: string]: unknown };
 export interface GuestChannel {
@@ -21,12 +22,27 @@ export interface Vm extends GuestChannel {
   readonly id: string;
   /** Stop the VM and drop its disk clone. Safe to call more than once. */
   destroy(): Promise<void>;
+  /** A warm VM taken by a job: its egress becomes the job's (its allowlist with internet, nothing without). */
+  egress?(job: string, internet: boolean): Promise<void>;
+  /**
+   * Save its disk (slice 5): stop the VM, keeping the disk, and write the disk to `dest` as one gzip archive (a
+   * Firecracker VM's ext4, synced and shrunk first; a fake VM's directory as a tar). The VM takes no request after it;
+   * destroy() still drops the disk.
+   */
+  export(dest: string): Promise<void>;
 }
 export type VmShape = { vcpus: number; memoryMiB: number; diskMiB: number };
 export interface VmLauncher {
   readonly kind: "fake" | "firecracker";
-  /** `internet`: the job may reach its egress allowlist (a real host's proxy); without it, nothing. */
-  boot(id: string, shape: VmShape, options?: { internet?: boolean }): Promise<Vm>;
+  /**
+   * `internet`: the job may reach its egress allowlist (a real host's proxy); without it, nothing. `from`: a snapshot's
+   * unpacked base (snapshots.ts) to clone instead of the base image.
+   */
+  /**
+   * `warm`: booted before any job (a build host's pre-started sandbox): its network is wired for the proxy but its egress
+   * allows nothing until a job takes it (Vm.egress).
+   */
+  boot(id: string, shape: VmShape, options?: { internet?: boolean; from?: string; warm?: boolean }): Promise<Vm>;
 }
 
 /**
@@ -98,33 +114,46 @@ class StdioChannel implements GuestChannel {
 
 const GUEST = fileURLToPath(new URL("./guest.ts", import.meta.url));
 
-/** The fake launcher: a directory for a disk, the guest as a local process. `base` is cloned for each job when given. */
+/**
+ * The fake launcher: a directory for a disk, the guest as a local process. `base` is cloned for each job when given (a
+ * snapshot's directory, `from`, instead of it).
+ */
 export function fakeLauncher(options: { base?: string; work?: string } = {}): VmLauncher {
   return {
     kind: "fake",
-    async boot(id) {
+    async boot(id, _shape, boot = {}) {
       const work = options.work ?? await mkdtemp(join(tmpdir(), "jobhost-"));
-      const root = join(work, id);
+      const root = join(work, id), from = boot.from ?? options.base;
       await rm(root, { recursive: true, force: true });
-      if (options.base) await cp(options.base, root, { recursive: true, mode: constants.COPYFILE_FICLONE }); // a reflink where the filesystem has one
+      if (from) await cp(from, root, { recursive: true, mode: constants.COPYFILE_FICLONE }); // a reflink where the filesystem has one
       else await mkdir(root, { recursive: true });
       await mkdir(join(root, "repo"), { recursive: true }); await mkdir(join(root, "out"), { recursive: true });
       const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", GUEST, "--root", root], { stdio: ["pipe", "pipe", "inherit"] });
       const channel = new StdioChannel(child);
-      let gone = false;
+      let halted: Promise<void> | undefined, gone = false;
+      // The guest kills its command when its channel closes or it is told to stop; the command's group is also killed
+      // here, from the file the guest wrote, in case the guest itself is already gone. The directory stays.
+      const halt = () => halted ??= (async () => {
+        const group = Number(await readFile(join(root, ".job.pgid"), "utf8").catch(() => ""));
+        child.stdin?.end();
+        child.kill("SIGTERM");
+        if (Number.isInteger(group) && group > 1) try { process.kill(-group, "SIGKILL"); } catch { /* already gone */ }
+        if (child.exitCode === null && child.signalCode == null)
+          await new Promise(resolve => { const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(undefined); }, 2_000); child.once("exit", () => { clearTimeout(timer); resolve(undefined); }); });
+        await rm(join(root, ".job.pgid"), { force: true });
+      })();
       return {
         id,
         request: (request, onLog) => channel.request(request, onLog),
+        async export(dest) {
+          if (gone) throw new Error("The VM is gone");
+          await halt();
+          await promisify(execFile)("tar", ["-czf", dest, "-C", root, "."]);
+        },
         async destroy() {
           if (gone) return;
           gone = true;
-          // The guest kills its command when its channel closes or it is told to stop; the command's group is also
-          // killed here, from the file the guest wrote, in case the guest itself is already gone.
-          const group = Number(await readFile(join(root, ".job.pgid"), "utf8").catch(() => ""));
-          child.stdin?.end();
-          child.kill("SIGTERM");
-          if (Number.isInteger(group) && group > 1) try { process.kill(-group, "SIGKILL"); } catch { /* already gone */ }
-          await new Promise(resolve => { const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(undefined); }, 2_000); child.once("exit", () => { clearTimeout(timer); resolve(undefined); }); });
+          await halt();
           await rm(root, { recursive: true, force: true });
         },
       };

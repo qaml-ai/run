@@ -137,3 +137,13 @@ export function chargedSpan(wire: { ok: boolean; timings?: { totalMs: number; st
   return { from, until };
 }
 
+
+/**
+ * A build host's sandbox, the one VM it runs (a build job pays the whole host): its vCPUs, the memory its image reserves
+ * for sandboxes less room for the sandbox's own overhead, and a 64 GiB disk unless the job asks for more. A build host
+ * pre-starts a VM of this shape (jobhost/agent.ts --prestart), so a build job that asks for no more starts at once.
+ */
+export const BUILD_SANDBOX = Object.freeze({ vcpus: 16, memoryMiB: 96 * 1024, diskMiB: 64 * 1024 });
+export function buildSandboxShape(asked: HostShape): HostShape {
+  return { vcpus: BUILD_SANDBOX.vcpus, memoryMiB: BUILD_SANDBOX.memoryMiB, diskMiB: Math.max(BUILD_SANDBOX.diskMiB, asked.diskMiB) };
+}

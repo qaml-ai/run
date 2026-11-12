@@ -1,5 +1,6 @@
 import type { ContainerComputer } from "../computers/objects.ts";
 import type { HostJob, JobHostsEnv } from "./hosts.ts";
+import type { ComputerSnapshot } from "../computers/provider.ts";
 import { fitsContainer, jobSpec, type JobResult, type JobSpec } from "./job.ts";
 
 /**
@@ -51,18 +52,26 @@ class HostsJobDriver implements JobDriver {
   async stop(id: string) { return await this.namespace.getByName(jobObjectName(id)).stop() as { stopped: boolean }; }
 }
 
-/**
- * What only Cloudflare Containers do for a job today: start from a saved snapshot, save one, or run an image other than
- * the workspace image. Our hosts have one base image and no snapshots yet (slice 5).
- */
-export function needsContainer(spec: Pick<JobSpec, "snapshot" | "saveSnapshot" | "image">) {
-  return !!spec.snapshot || !!spec.saveSnapshot || (spec.image !== undefined && spec.image !== "workspace");
-}
+/** A snapshot saved on our hosts (hosts.ts): its id is `host:<id>:<sha256>`, and only a host starts from it. */
+export const HOST_SNAPSHOT_PREFIX = "host:";
+export const isHostSnapshot = (snapshot: Pick<ComputerSnapshot, "id">) => snapshot.id.startsWith(HOST_SNAPSHOT_PREFIX);
 
 /**
- * Both, each job to the one that suits it (JOB_PROVIDER=auto): a job that fits a container, or needs one (a snapshot, an
- * image), runs in a Cloudflare container; a larger one on our hosts. A container starts in seconds and is billed only
- * while it runs, so it is the better home for anything it can hold while the host pools scale from zero.
+ * What only Cloudflare Containers do for a job: start from a container snapshot, or run an image other than the
+ * workspace image. Our hosts have the one base image and their own snapshots (slice 5).
+ */
+export function needsContainer(spec: Pick<JobSpec, "snapshot" | "image">) {
+  return (!!spec.snapshot && !isHostSnapshot(spec.snapshot)) || (spec.image !== undefined && spec.image !== "workspace");
+}
+/** What only our hosts do: start from a host snapshot. */
+export function needsHost(spec: Pick<JobSpec, "snapshot">) { return !!spec.snapshot && isHostSnapshot(spec.snapshot); }
+
+/**
+ * Both, each job to the one that suits it (JOB_PROVIDER=auto): a job from a host snapshot runs on our hosts; one that
+ * needs a container (a container snapshot, another image) or fits one runs in a Cloudflare container; a larger one on
+ * our hosts. A container starts in seconds and is billed only while it runs, so it is the better home for anything it
+ * can hold while the host pools scale from zero. A job that saves a snapshot goes by its size too, so its snapshot is
+ * of the kind where its size runs: a container snapshot, or a host one.
  */
 class RoutingJobDriver implements JobDriver {
   readonly provider = "cloudflare-containers" as const;
@@ -72,6 +81,8 @@ class RoutingJobDriver implements JobDriver {
   /** Which driver runs `spec`; a spec neither can take throws the spec error, as a single driver's run would. */
   route(spec: JobSpec): JobDriver {
     const checked = jobSpec(spec, { beyondContainers: true });
+    // A host snapshot with another image is the host's to refuse (HostJob), with its reason.
+    if (needsHost(checked)) return this.hosts;
     if (needsContainer(checked)) return this.containers;
     return fitsContainer(checked.limits) ? this.containers : this.hosts;
   }

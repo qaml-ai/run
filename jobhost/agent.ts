@@ -3,18 +3,24 @@
 // the credential as its first message, enrolls again before the credential ends, says how many jobs it takes, and runs the jobs the runtime sends: a VM per job from
 // a copy-on-write clone (vm.ts), the job's files synced in, its command run under its limits by the guest agent
 // (guest.ts), its outputs collected and sent back, the VM destroyed. A job the runtime cancels is destroyed at once.
+// Snapshots (slice 5, snapshots.ts): a job may start from one (downloaded once into the host's cache, checked, and
+// cloned like the base image), and may save its disk as one when its command exits 0 (PUT to a presigned URL). The
+// host reports the snapshots it holds, and placement prefers it for jobs from them.
 // While the socket is down, jobs keep running and their results wait to be sent when it is back.
 //
 //   node --experimental-strip-types jobhost/agent.ts --runtime https://run.example --attestor aws --slots 8 --firecracker
 //   node … --attestor test --name host-1 --fake      (JOB_HOST_TEST_SECRET from the environment: tests only)
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { frames, Frames, type HostMessage, type RuntimeMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
 import { signGetCallerIdentity, type Attestation } from "../shared/job-host-attest.ts";
-import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
+import { fakeLauncher, type Vm, type VmLauncher, type VmShape } from "./vm.ts";
 import { firecrackerLauncher } from "./firecracker.ts";
+import { SnapshotCache, uploadSnapshot, SNAPSHOT_CACHE_BYTES } from "./snapshots.ts";
 
-export const AGENT_VERSION = "0.1.0";
+export const AGENT_VERSION = "0.2.0";
 /** Less free disk than this before the command fails the job `disk_low`, as a container job does. */
 const DISK_LOW_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -23,7 +29,19 @@ export type AgentOptions = {
   runtime: string; attest: (audience: string) => Promise<Attestation>; slots: number; vcpus: number; memoryMiB: number;
   /** The pool this host serves (build or test: the image's POOL); placement sends it only that pool's jobs. */
   pool?: "build" | "test";
+  /**
+   * A build host's pre-started sandbox: one VM of this shape kept booted while the host is idle, so a build job starts
+   * in the time it takes to hand it over rather than to boot (the design's ≤ 7 s). A job that fits it, from no
+   * snapshot, takes it; the next is started once the host is idle again.
+   */
+  prestart?: VmShape;
   launcher: VmLauncher; heartbeatMs?: number; diskLowBytes?: number; log?: (line: Record<string, unknown>) => void;
+  /** The snapshots this host holds (snapshots.ts); a temporary directory by default. */
+  cache?: SnapshotCache;
+  /** How snapshots are uploaded (tests swap it). */
+  fetcher?: typeof fetch;
+  /** Tests only (fake mode): a save stops after this many parts, as a host that dies mid-upload. */
+  testFailAfterParts?: number;
 };
 
 export class HostAgent {
@@ -36,7 +54,12 @@ export class HostAgent {
   private readonly options: AgentOptions;
   /** The host id the runtime bound this host's credential to (the attestation's, not one it chose). */
   name = "";
-  constructor(options: AgentOptions) { this.options = options; }
+  readonly cache: SnapshotCache;
+  constructor(options: AgentOptions) {
+    this.options = options;
+    this.cache = options.cache ?? new SnapshotCache({ dir: join(tmpdir(), `jobhost-snapshots-${process.pid}-${Date.now().toString(36)}`), kind: options.launcher.kind, log: line => this.log(line) });
+  }
+  private heartbeat(): HostMessage { return { type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size, cached: this.cache.ids() }; }
 
   /** Enroll: the attestation for this runtime, a credential back (shared/job-host-attest.ts, hosts.ts). */
   private async enroll() {
@@ -51,10 +74,48 @@ export class HostAgent {
   private log(line: Record<string, unknown>) { (this.options.log ?? (value => console.log(JSON.stringify(value))))(line); }
 
   /** Connect, and keep connecting until `close()`. Resolves once the runtime has registered this host. */
-  start() { void this.connectLoop(); return this.registered.promise; }
+  start() { void this.connectLoop(); this.prestartNext(); return this.registered.promise; }
+
+  /** The pre-started VM, booting or booted; undefined when there is none (no prestart, taken, or failed). */
+  private warm?: Promise<Vm | undefined>;
+  private warmCount = 0;
+  /** Boot the next pre-started VM, when this host prestarts, runs nothing, and has none. */
+  private prestartNext() {
+    if (!this.options.prestart || this.closed || this.warm || this.running.size > 0) return;
+    const id = `warm-${process.pid}-${++this.warmCount}`, began = Date.now();
+    this.warm = this.options.launcher.boot(id, this.options.prestart, { warm: true }).then(vm => {
+      this.log({ type: "jobhost_warm_ready", vm: id, bootMs: Date.now() - began });
+      return vm;
+    }, error => {
+      this.log({ type: "jobhost_warm_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
+      this.warm = undefined;
+      return undefined;
+    });
+  }
+  /** The pre-started VM for a job that fits it (no snapshot, its shape within the warm one's), its egress made the job's. */
+  private async takeWarm(id: string, spec: WireJob, shape: VmShape): Promise<Vm | undefined> {
+    const prestart = this.options.prestart;
+    if (!prestart || !this.warm) return undefined;
+    const pending = this.warm;
+    this.warm = undefined;
+    const vm = await pending;
+    if (!vm) return undefined;
+    // One that does not fit it gives it up: a build host runs one sandbox, the job's.
+    if (spec.snapshot || shape.vcpus > prestart.vcpus || shape.memoryMiB > prestart.memoryMiB || shape.diskMiB > prestart.diskMiB) {
+      await vm.destroy().catch(() => {});
+      return undefined;
+    }
+    try { await vm.egress?.(id, spec.internet); }
+    catch (error) { await vm.destroy().catch(() => {}); throw error; }
+    this.log({ type: "jobhost_warm_taken", job: id, vm: vm.id });
+    return vm;
+  }
   async close() {
     this.closed = true;
     this.socket?.close();
+    const warm = this.warm;
+    this.warm = undefined;
+    await warm?.then(vm => vm?.destroy()).catch(() => {});
     await Promise.all([...this.running.values()].map(job => job.vm?.destroy()));
   }
 
@@ -81,8 +142,8 @@ export class HostAgent {
         // The credential is the first message, not part of the URL: a URL lands in access logs.
         socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
         // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
-        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.pool ? { pool: this.options.pool } : {}) });
-        heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
+        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.pool ? { pool: this.options.pool } : {}), cached: this.cache.ids() });
+        heartbeat = setInterval(() => this.send(this.heartbeat()), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {
         let message: RuntimeMessage | undefined;
@@ -138,7 +199,19 @@ export class HostAgent {
     let startMs: number | undefined;
     try {
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
-      const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet });
+      // From a snapshot: its base from the cache (downloaded and checked on a miss), pinned while the VM clones it.
+      let base: { path: string; release(): void } | undefined;
+      if (spec.snapshot) {
+        try { base = await this.cache.acquire(spec.snapshot); }
+        catch (error) { result = { ok: false, code: "start_failed", message: `Snapshot: ${error instanceof Error ? error.message.slice(0, 300) : "it could not be read"}` }; return; }
+      }
+      let vm: Vm;
+      try {
+        // The pre-started VM when it fits, else one booted for this job (the warm one given up first).
+        const warm = await this.takeWarm(id, spec, shape);
+        vm = job.vm = warm ?? await this.options.launcher.boot(id, shape, { internet: spec.internet, ...(base ? { from: base.path } : {}) });
+      }
+      finally { base?.release(); }
       if (job.cancelled) throw new Stopped();
       this.send({ type: "started", id, at: Date.now() });
       startMs = Date.now() - began;
@@ -159,7 +232,10 @@ export class HostAgent {
       if (job.cancelled) throw new Stopped();
       if (!ran.ok) { result = { ok: false, code: "container_failed", message: String(ran.error ?? "the command could not run") }; return; }
       const collected = await vm.request({ op: "collect", outputs: spec.outputs });
+      // Saved only after a clean exit; a failed save leaves the job's result as it is (a container job's rule).
+      const saved = spec.save && ran.exitCode === 0 && !ran.timedOut && !job.cancelled ? await this.save(vm, spec.save) : {};
       result = {
+        ...saved,
         ok: true, exitCode: ran.exitCode as number | null, timedOut: ran.timedOut as boolean, stdout: ran.stdout as never, stderr: ran.stderr as never,
         outputs: (collected.outputs ?? {}) as never, missing: (collected.missing ?? spec.outputs) as string[],
         timings: { startMs, syncMs: Number(synced.syncMs ?? 0), commandMs: Number(ran.commandMs ?? 0), collectMs: Number(collected.collectMs ?? 0), totalMs: Date.now() - began },
@@ -172,7 +248,26 @@ export class HostAgent {
       await job.vm?.destroy().catch(() => {});
       this.running.delete(id);
       const final: WireResult = result! ?? { ok: false, code: "container_failed", message: "No result" };
+      // Its slot, and what this host now holds, before its result: the next job (one from its snapshot) is placed on that.
+      this.send(this.heartbeat());
       this.send({ type: "result", id, result: !final.ok && startMs !== undefined ? { ...final, timings: { startMs, totalMs: Date.now() - began } } : final });
+      // Idle again: the next pre-started VM (a build host's only sandbox is either a job's or the warm one).
+      this.prestartNext();
+    }
+  }
+
+  /** Save a job's disk: export it, upload it, keep a copy in the cache. Answers the snapshot, or why it was not saved. */
+  private async save(vm: Vm, save: NonNullable<WireJob["save"]>): Promise<{ snapshot?: { id: string; size: number; sha256: string }; snapshotError?: string }> {
+    const archive = await this.cache.scratch(`save-${vm.id}`);
+    try {
+      await vm.export(archive);
+      const uploaded = await uploadSnapshot(archive, save, { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), ...(this.options.testFailAfterParts !== undefined ? { failAfterParts: this.options.testFailAfterParts } : {}), log: line => this.log(line) });
+      await this.cache.adopt(save.id, archive, uploaded.sha256).catch(error => this.log({ type: "jobhost_snapshot_adopt_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+      return { snapshot: { id: save.id, ...uploaded } };
+    } catch (error) {
+      return { snapshotError: `The snapshot was not saved: ${error instanceof Error ? error.message.slice(0, 300) : "unknown"}` };
+    } finally {
+      await rm(archive, { force: true }).catch(() => {});
     }
   }
 }
@@ -265,15 +360,22 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const agent = new HostAgent({
     runtime: arg("runtime") ?? "http://127.0.0.1:8787", attest, slots: Number(arg("slots") ?? 4),
     ...(arg("pool") === "build" || arg("pool") === "test" ? { pool: arg("pool") as "build" | "test" } : {}),
+    // A build host's pre-started sandbox (backends/workers/src/jobs/host-pricing.ts BUILD_SANDBOX, the shape a build job
+    // is sent with).
+    ...(process.argv.includes("--prestart") ? { prestart: { vcpus: Number(arg("prestart-vcpus") ?? 16), memoryMiB: Number(arg("prestart-memory") ?? 98304), diskMiB: Number(arg("prestart-disk") ?? 65536) } } : {}),
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
     // A real host's paths are the image's (infra/job-hosts/image/files/jobhost.env).
-    launcher: fake ? fakeLauncher({ base: arg("base") }) : firecrackerLauncher({
+    launcher: fake ? fakeLauncher({ base: arg("base"), ...(arg("work") ? { work: arg("work") } : {}) }) : firecrackerLauncher({
       firecracker: arg("firecracker-bin") ?? "/usr/local/bin/firecracker", kernel: arg("kernel") ?? "/var/lib/camel/guest/vmlinux",
       initrd: arg("initrd") ?? "/var/lib/camel/guest/initrd.img", image: arg("image") ?? "/var/lib/camel/nvme/base.ext4",
       work: arg("work") ?? "/var/lib/camel/nvme/jobs", policyDir: arg("policies") ?? "/run/camel/egress", build: process.argv.includes("--build"),
       runtimeHost: new URL(arg("runtime") ?? "http://127.0.0.1:8787").hostname,
     }),
     diskLowBytes: Number(arg("disk-low") ?? DISK_LOW_BYTES),
+    // Snapshots are kept on the NVMe next to the job clones (a boot from one is a reflink), bounded by --cache-bytes.
+    ...(fake && !arg("cache") ? {} : { cache: new SnapshotCache({ dir: arg("cache") ?? "/var/lib/camel/nvme/snapshots", kind: fake ? "fake" : "firecracker", maxBytes: Number(arg("cache-bytes") ?? SNAPSHOT_CACHE_BYTES), log: line => console.log(JSON.stringify(line)) }) }),
+    // Tests only, in fake mode: a save that stops part-way (JOBHOST_TEST_SAVE_PARTS, a part count).
+    ...(fake && process.env.JOBHOST_TEST_SAVE_PARTS ? { testFailAfterParts: Number(process.env.JOBHOST_TEST_SAVE_PARTS) } : {}),
   });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { void agent.close().then(() => process.exit(0)); });
   await agent.start();

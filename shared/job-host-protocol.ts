@@ -19,10 +19,18 @@ export type RuntimeMessage =
   | { type: "cancel"; id: string };
 /** Host → runtime. */
 export type HostMessage =
-  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; pool?: "build" | "test" }
-  | { type: "heartbeat"; running: string[]; free: number }
+  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; pool?: "build" | "test"; cached?: string[] }
+  | { type: "heartbeat"; running: string[]; free: number; cached?: string[] }
   | { type: "started"; id: string; at: number }
   | { type: "result"; id: string; result: WireResult };
+
+/** The largest snapshot archive (gzipped) a host saves or loads. */
+export const SNAPSHOT_MAX_BYTES = 64 * 1024 ** 3;
+/** A snapshot upload's part size (the last part may be shorter): R2's multipart parts are all one size but the last. */
+export const SNAPSHOT_PART_BYTES = 64 * 1024 ** 2;
+
+/** The most snapshot ids a host reports holding (hello, heartbeat): the most recently used. */
+export const CACHED_REPORT_MAX = 256;
 
 /** What a host needs to run a job: its command and limits, and its files inline. */
 export type WireJob = {
@@ -36,11 +44,26 @@ export type WireJob = {
   sync?: { url: string; token: string; files: { path: string; size: number; sha256: string }[];
     /** The whole sync must end by then (epoch ms): the job's deadline, which its token does not outlive. */
     until?: number };
+  /**
+   * Start from a saved snapshot (slice 5) instead of the base image: GET `url` with `token` as a bearer (the runtime
+   * streams it from R2), and check it against `size` and `sha256`. `id` names it in the host's cache:
+   * `<tenant>/<snapshot id>`, so one tenant's job never starts from another's cached copy.
+   */
+  snapshot?: { id: string; url: string; token: string; sha256: string; size: number };
+  /**
+   * Save the job's disk when its command exits 0, gzipped, as a multipart upload through the runtime (to R2), with
+   * `token` as a bearer: PUT `url`/parts/<n> (n from 1) for each `partBytes` of it (the last part shorter), then POST
+   * `url`/complete with its size and sha256. `id` is its cache id (as `snapshot.id`): the host keeps a copy, so a job
+   * started from it can skip the download. The token never reaches the VM.
+   */
+  save?: { id: string; url: string; token: string; partBytes: number };
 };
 export type WireStream = { data: string; size: number; truncated: boolean };
 export type WireResult =
   | { ok: true; exitCode: number | null; timedOut: boolean; stdout: WireStream; stderr: WireStream; outputs: Record<string, WireStream>; missing: string[];
-      timings: { startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number }; pids: "enforced" | "unenforced" }
+      timings: { startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number }; pids: "enforced" | "unenforced";
+      /** The saved snapshot (`save`), or why it was not saved: the job's result stands either way. */
+      snapshot?: { id: string; size: number; sha256: string }; snapshotError?: string }
   | { ok: false; code: "start_failed" | "sync_failed" | "container_failed" | "disk_low" | "stopped"; message: string;
       /** For a failure after its VM started: when it started (after `startMs`) and ended (`totalMs`), from dispatch. */
       timings?: { startMs: number; totalMs: number } };
