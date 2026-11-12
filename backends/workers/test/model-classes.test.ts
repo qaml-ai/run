@@ -210,6 +210,7 @@ test("strong asks flex, waits for flex capacity within its window, then the defa
   assert.equal(run.last.type, "done");
   assert.equal(run.last.message.content[0].text, "on default");
   const fallback = JSON.parse(logs.find(line => line.includes('"model_flex_fallback"'))!);
+  assert.equal(fallback.reason, "capacity");
   assert.equal(fallback.to, `openrouter/${CARBON}`);
   assert.equal(fallback.toTier, "default");
   const cost = JSON.parse(logs.find(line => line.includes('"model_flex_fallback_cost"'))!);
@@ -388,7 +389,9 @@ test("camelrun/strong's members wait for a first token within a budget for their
 test("strong: a member that sends no first token in time is given up on, and the next member takes the call", async t => {
   const logs: string[] = [];
   t.mock.method(console, "log", (line: string) => { logs.push(line); });
+  const started = Date.now();
   const run = await call("camelrun/strong", model => tier(model) === "flex" ? "HANG" : "on default", {}, {}, [], { baseMs: 200, perKTokensMs: 0 });
+  assert.ok(Date.now() - started < 3_000, "the budget alone ends the stall; an input estimate must reach streamTimeouts");
   assert.deepEqual(run.calls.map(c => c.tier), ["flex", "default"]);
   assert.equal(run.last.type, "done");
   assert.equal(run.last.message.content[0].text, "on default");
