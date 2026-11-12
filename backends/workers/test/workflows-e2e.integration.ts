@@ -63,8 +63,10 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
     // The orchestrating agent: start the workflow and end its turn; it never polls. Its workflow's notifications
     // come as messages of their own, each a turn: a finished phase is noted, the ending reported.
     if (user.includes("<workflow_notification")) {
-      const notice = /<workflow_notification[^>]*status="([a-z_]+)"[^>]*event="([a-z_]+)"[^>]*>\n([\s\S]*?)\n<\/workflow_notification>/.exec(user);
-      return { content: notice?.[2] === "completed" ? `REPORT ${notice[3]}` : `NOTED ${notice?.[2]}` };
+      // Notices that waited while it was busy come together, a block per workflow: any ending is reported.
+      const notices = [...user.matchAll(/<workflow_notification[^>]*status="([a-z_]+)"[^>]*event="([a-z_]+)"[^>]*>\n([\s\S]*?)\n<\/workflow_notification>/g)];
+      const ending = notices.find(notice => notice[2] === "completed");
+      return { content: ending ? `REPORT ${ending[3]}` : `NOTED ${notices.map(notice => notice[2]).join(",")}` };
     }
     if (user.includes("GATED") && last.role === "tool") { gatedWorkflowId = JSON.parse(textOf(last)).workflowId; return { content: "started" }; }
     if (user.includes("GATED")) return { tool: { name: "workflow_start", args: { script: GATE_SCRIPT, budgetUsd: 1, name: "gated" }, id: "start-gated" } };
@@ -108,7 +110,9 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   const asked = model.bodies.flatMap(body => (body.messages as any[]).flatMap(message => (message.tool_calls ?? []).map((call: any) => call.function?.name)));
   assert.ok(!asked.includes("workflow_status"), JSON.stringify(asked));
   const replies = ((await ok(`/v1/agents/${agent.id}`)).requests as { id: string; outcome?: { result?: { reply?: string } } }[]).filter(request => request.id.startsWith(`${workflowId}_n`)).map(request => request.outcome?.result?.reply);
-  assert.ok(replies.includes("NOTED phase"), JSON.stringify(replies));
+  // A phase notice that came while the agent was still busy folds into the ending's turn (one turn, the latest state).
+  // (A carried or folded notice's own request has no reply: it landed in another one's turn.)
+  assert.ok(replies.every(reply => reply === undefined || /^(NOTED|REPORT) /.test(String(reply))), JSON.stringify(replies));
 
   // The workflow, through the public API: completed, its four effects done, its spend in its ledger.
   const workflow = await ok(`/v1/workflows/${workflowId}`);

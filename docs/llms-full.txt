@@ -7670,7 +7670,10 @@ message of its own, a turn, with a block only the runtime writes:
 ```
 
 Notifications take turns from the agent's wake budget, as its sub-agents'
-notifications do. `workflow_status` and `workflow_items` read more when it
+notifications do. They never fill the agent's request queue: while the agent
+is busy they wait in its own outbox, and the next one to land brings the
+others with it, one block per workflow (that workflow's latest notice; an
+earlier one it replaces is folded in), up to 20 workflows a turn. `workflow_status` and `workflow_items` read more when it
 needs to. Its budget may
 not exceed the least of the agent's remaining spend limit and `maxBudgetUsd`
 (default $100); above that, a person starts it through the API.
