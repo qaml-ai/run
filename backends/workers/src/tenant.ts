@@ -1,3 +1,4 @@
+import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import { TenantWatchers } from "./tenant-watchers.ts";
 import { TenantStorage } from "./tenant-storage.ts";
@@ -9,6 +10,7 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   private readonly files: TenantStorage;
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
+    guardAlarms(this, ctx, "TenantAdmission", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
     this.watchers = new TenantWatchers(ctx.storage.sql, write => ctx.storage.transactionSync(write));
     this.files = new TenantStorage(ctx.storage, env.BUCKET as R2Bucket);
     ctx.storage.sql.exec(

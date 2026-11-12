@@ -24,6 +24,7 @@ import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
 import { withModelFallback } from "./model-fallback.ts";
+import { refusedForeignReasoning, withoutReplayedReasoning } from "../shared/gemini-reasoning.ts";
 import { askedTier, routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, namespaceOf, schemaAccepts } from "./tool-policy.ts";
@@ -990,7 +991,15 @@ export function createAgentHost(hostIO: HostIO) {
           const asked = (on: typeof model, toolChoice = outputChoice(on)) => ({ ...options, ...callSettings(on, config, options?.reasoning), ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
           const messages = context.messages, previous = messages.findLast(message => message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") as AssistantMessage | undefined;
           return routedCall(messages.at(-1)?.role === "toolResult" ? "continuation" : "user", on => {
-            const first = stream(on, context, asked(on));
+            // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same model again, once, with
+            // the history's encrypted reasoning dropped, before Pi sees the refusal.
+            const once = stream(on, context, asked(on));
+            const first = on.provider !== "openrouter" ? once : withModelFallback(once, () => stream(on, withoutReplayedReasoning(context), asked(on)), {
+              moves: (message, partial) => refusedForeignReasoning(message.errorMessage) && !partial?.content.length,
+              blocked: () => console.log(JSON.stringify({ type: "model_reasoning_replay_dropped", tenant: config.tenant, agent: config.id, model: `${on.provider}/${on.id}`, tier: (on as { serviceTier?: string }).serviceTier ?? null })),
+              unavailable: error => console.error(JSON.stringify({ type: "model_reasoning_replay_failed", agent: config.id, model: `${on.provider}/${on.id}`, error: safeError(error) })),
+              aborted: () => !!options?.signal?.aborted,
+            });
             const fallback = config.contentFilterFallback;
             if (!fallback || fallback.from !== `${on.provider}/${on.id}`) return first;
             const to = `${fallback.model.provider}/${fallback.model.id}`;

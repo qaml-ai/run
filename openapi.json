@@ -576,7 +576,11 @@
                   "string",
                   "null"
                 ],
-                "description": "null for a transcription made with POST /v1/transcriptions, images made with POST /v1/images, or decisions made with POST /v1/decisions, which no agent made"
+                "description": "null for a transcription made with POST /v1/transcriptions, images made with POST /v1/images, or decisions made with POST /v1/decisions, which no agent made, and for computer time an API-started workflow's job used (workflowId names it)"
+              },
+              "workflowId": {
+                "type": "string",
+                "description": "For computer time: the workflow whose job it was, paid by your account (a workflow started with an API key, which no agent owns)"
               },
               "requestId": {
                 "type": [
@@ -620,9 +624,10 @@
                   "transcription",
                   "image",
                   "speech",
-                  "decision"
+                  "decision",
+                  "computer"
                 ],
-                "description": "decision: questions answered by a decision model (POST /v1/decisions, the decide builtin; decisions of them); speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
+                "description": "computer: a container's time (an agent's computer, or a workflow's job), once per charged session (a long one is charged every few minutes); seconds of it, model its instance type, no tokens; decision: questions answered by a decision model (POST /v1/decisions, the decide builtin; decisions of them); speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
               },
               "input": {
                 "type": "number"
@@ -650,6 +655,10 @@
               "decisions": {
                 "type": "number",
                 "description": "For decisions: the questions answered"
+              },
+              "seconds": {
+                "type": "number",
+                "description": "For computer time: the seconds this charge covers"
               },
               "cost": {
                 "type": "object",
@@ -707,7 +716,7 @@
           "created",
           "data"
         ],
-        "description": "A model response's usage and cost, a transcription's, images', or decisions'"
+        "description": "A model response's usage and cost, a transcription's, images', decisions', or computer time's"
       },
       "Event_voice_session.started": {
         "type": "object",

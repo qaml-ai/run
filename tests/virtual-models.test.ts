@@ -308,3 +308,36 @@ test("a member the catalog lacks passes through, as any OpenRouter model does; o
   assert.equal(currentModel(looked).contextWindow, 1_048_576);
   assert.equal(currentModel({ ...resolveModel(ALIAS), id: "gone/old" }).id, EMBER);
 });
+
+test("strong: Gemini's reasoning from flex is refused on the default tier's other provider; the call is made again without it", async t => {
+  // Turn 1 calls a tool on flex, with encrypted reasoning. Its continuation finds flex down, moves to the default tier,
+  // and that provider refuses reasoning another provider produced (probed 2026-11-12): made again without it, answered.
+  const requests: { tier?: string; details: boolean }[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    // Carbon is called on Responses: its encrypted reasoning goes back as a reasoning item.
+    const details = body.input.some((item: any) => item.type === "reasoning" && item.encrypted_content);
+    const results = body.input.some((item: any) => item.type === "function_call_output");
+    requests.push({ tier: body.service_tier, details });
+    const fail = (status: number, message: string) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message, code: status } }));
+    if (results && body.service_tier === "flex") return fail(503, "No flex capacity");
+    if (results && details) return fail(400, "Provider returned error: Gemini models require OpenRouter reasoning details to be preserved in each request.");
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const items = results ? [{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Read it: package main.", annotations: [] }] }]
+      : [{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "SIGNED-BY-AI-STUDIO" },
+        { type: "function_call", id: "fc_1", call_id: "call_read", name: "codemode", arguments: JSON.stringify({ code: "return 'package main'" }), status: "completed" }];
+    for (const event of responses(items).events) res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: url } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
+  const run = await r.prompt(agent, "Read the file");
+  assert.equal(run.outcome.result.reply, "Read it: package main.", JSON.stringify(run.outcome));
+  // Turn 1 on flex, signed; the continuation on flex (down); the default tier refusing the other provider's reasoning; made again without it.
+  assert.deepEqual(requests.map(request => request.details), [false, true, true, false], JSON.stringify(requests));
+  assert.deepEqual(requests.map(request => request.tier === "flex"), [true, true, false, false], JSON.stringify(requests));
+  assert.ok(r.logs.some(line => line.includes('"model_reasoning_replay_dropped"')), "logged");
+});
