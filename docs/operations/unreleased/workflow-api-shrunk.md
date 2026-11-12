@@ -11,7 +11,7 @@ fails on that line (`gate is not defined`). Use `log()` to mark a stage.
 - The TypeScript and Python SDKs follow: `WorkflowItem.kind`, no `phase` on `WorkflowSummary`, `WorkflowItem` or the
   items query, and no `waiting` in `WorkflowStatus`.
 
-At the deploy, a workflow still waiting on a gate or a timer ends `failed` with the fault `script_api_retired`
-("gate() and sleep() were removed: start the workflow again without them"); its running sub-agents stop. Migration
-140 closes every open workflow inbox item as `expired`. A workflow that calls one of them later fails on that line when
-it next runs.
+At the deploy, a workflow that has not ended and waits on a gate or a timer, or whose script calls `gate()`, `sleep()`
+or `phase()`, ends `failed` with the fault `script_api_retired` ("gate(), sleep() and phase() were removed: start the
+workflow again without them"); its running sub-agents stop. Migration 140 closes every open workflow inbox item as
+`expired`.
