@@ -140,7 +140,7 @@ test("the vsock channel waits for the guest, asks for its port, then speaks came
   await assert.rejects(vsockChannel(join(dir, "missing.vsock"), 5000, 300), /did not answer on vsock/);
 });
 
-test("the Firecracker launcher clones, wires the tap and policy, boots with the job's network and tears it all down", async t => {
+for (const kvm of [false, true]) test(`the Firecracker launcher clones, wires the tap and policy, boots with the job's network and tears it all down (kvm=${kvm})`, async t => {
   const dir = await mkdtemp(join(tmpdir(), "fc-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const policies = join(dir, "egress"), image = join(dir, "base.ext4");
@@ -150,7 +150,8 @@ test("the Firecracker launcher clones, wires the tap and policy, boots with the 
   const fakes: Awaited<ReturnType<typeof fakeVsock>>[] = [];
   t.after(() => { for (const fake of fakes) fake.server.close(); });
   const launcher = firecrackerLauncher({
-    firecracker: "/usr/local/bin/firecracker", kernel: "/k", initrd: "/i", image, work: dir, policyDir: policies, runtimeHost: "run.example",
+    firecracker: "/usr/local/bin/firecracker", kernel: "/k", image, work: dir, policyDir: policies, runtimeHost: "run.example",
+    ...(kvm ? { kvm: true, reflink: "auto" as const } : { initrd: "/i" }),
     exec: async (file, args) => { commands.push([file, ...args].join(" ")); if (file === "cp") await writeFile(args[2]!, "clone"); },
     start: async (file, args) => {
       config = JSON.parse(await readFile(args[2]!, "utf8"));
@@ -162,11 +163,17 @@ test("the Firecracker launcher clones, wires the tap and policy, boots with the 
     },
   });
   const vm: Vm = await launcher.boot("job-1", { vcpus: 2, memoryMiB: 2048, diskMiB: 8192 }, { internet: true });
-  assert.deepEqual(commands.slice(0, 3), [`cp --reflink=always ${image} ${join(dir, "job-1.ext4")}`, `truncate -s 8192M ${join(dir, "job-1.ext4")}`, `resize2fs -f ${join(dir, "job-1.ext4")}`]);
+  assert.deepEqual(commands.slice(0, 3), [`cp --reflink=${kvm ? "auto" : "always"} ${image} ${join(dir, "job-1.ext4")}`, `truncate -s 8192M ${join(dir, "job-1.ext4")}`, `resize2fs -f ${join(dir, "job-1.ext4")}`]);
   assert.ok(commands.includes("ip tuntap add dev cj0 mode tap"));
-  assert.match(config["boot-source"].boot_args, /root=\/dev\/vda rw camel\.ip=10\.200\.0\.2\/30 camel\.gw=10\.200\.0\.1 camel\.proxy=http:\/\/10\.200\.0\.1:3128$/);
+  assert.match(config["boot-source"].boot_args, /root=\/dev\/vda rw init=\/sbin\/camel-init camel\.ip=10\.200\.0\.2\/30 camel\.gw=10\.200\.0\.1 camel\.proxy=http:\/\/10\.200\.0\.1:3128$/);
   assert.equal(config["network-interfaces"][0].host_dev_name, "cj0");
-  assert.deepEqual(config.enclave, { direct_mode: true, cpu_overcommit: true });
+  if (kvm) {
+    assert.equal(Object.hasOwn(config, "enclave"), false);
+    assert.equal(Object.hasOwn(config["boot-source"], "initrd_path"), false);
+  } else {
+    assert.deepEqual(config.enclave, { direct_mode: true, cpu_overcommit: true });
+    assert.equal(config["boot-source"].initrd_path, "/i");
+  }
   assert.equal(config.drives[0].io_engine, "Async");
   const policy = JSON.parse(await readFile(join(policies, "10.200.0.2.json"), "utf8"));
   assert.deepEqual(policy, { job: "job-1", allow: [...DEFAULT_EGRESS, "run.example"] });
@@ -177,6 +184,7 @@ test("the Firecracker launcher clones, wires the tap and policy, boots with the 
   await otherStart;
   assert.deepEqual(JSON.parse(await readFile(join(policies, "10.200.1.2.json"), "utf8")).allow, []);
   assert.doesNotMatch(config["boot-source"].boot_args, /camel\.proxy/);
+  assert.match(config["boot-source"].boot_args, /root=\/dev\/vda rw init=\/sbin\/camel-init /);
   await vm.destroy(); await vm.destroy();
   await second.destroy();
   assert.ok(commands.includes("ip link del dev cj0"));
@@ -184,6 +192,14 @@ test("the Firecracker launcher clones, wires the tap and policy, boots with the 
   await assert.rejects(stat(join(dir, "job-1.ext4")));
   // A job id that could escape the work directory is refused before anything is made.
   await assert.rejects(launcher.boot("../x", { vcpus: 1, memoryMiB: 1, diskMiB: 1 }), /Invalid job id/);
+});
+
+test("the host CLI rejects invalid or missing --reflink values at startup", () => {
+  for (const values of [["never"], []]) {
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", new URL("../jobhost/agent.ts", import.meta.url).pathname, "--firecracker", "--reflink", ...values], { encoding: "utf8", timeout: 5000 });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--reflink must be auto or always/);
+  }
 });
 
 test("the isolation suite reports each property, and fails one that leaks", async () => {

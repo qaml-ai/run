@@ -1,8 +1,13 @@
-export type CamelfsEnv = { CAMELFS_API_URL?: string; CAMELFS_API_TOKEN?: string };
-export const camelfsConfigured = (env: CamelfsEnv): boolean => !!env.CAMELFS_API_URL && !!env.CAMELFS_API_TOKEN;
+export type CamelfsEnv = { CAMELFS?: { fetch(input: Request | string, init?: RequestInit): Promise<Response> }; CAMELFS_API_TOKEN?: string };
+export const camelfsConfigured = (env: CamelfsEnv): boolean => !!env.CAMELFS && !!env.CAMELFS_API_TOKEN;
 export type CamelfsFile = { path: string; sha256: string; size: number; key: string };
 /** The lineage of a volume is stable across snapshots. */
 export const volumeLineage = (tenant: string, volume: string): string => `${tenant}:${volume}`;
+
+/** A blob upload's deadline (ledger L26): 60 s plus the time to send it at 2 MiB/s, at most 30 minutes. */
+export function uploadTimeoutMs(size: number): number {
+  return Math.min(60_000 + Math.ceil(size / (2 * 2 ** 20)) * 1000, 30 * 60_000);
+}
 
 /** Bound daemon responses without putting their contents or credentials in errors. */
 async function body(response: Response): Promise<unknown> {
@@ -27,18 +32,21 @@ async function body(response: Response): Promise<unknown> {
   finally { reader.releaseLock(); }
 }
 
-/** Import references first; only blobs the lineage lacks cross the network, in bounded batches. */
+/** Import references first; only blobs the lineage lacks cross the network, in bounded batches.
+ * Bounded by the source Volume's own limits (VOLUME_LIMITS: files, fileBytes); camelFS adds none (ledger L28).
+ */
 export async function importTree(env: CamelfsEnv, input: {
   lineage: string; parentTree?: string; files: CamelfsFile[];
   read: (file: CamelfsFile) => Promise<{ body: ReadableStream<Uint8Array> | Uint8Array; size: number }>;
-}, fetcher: typeof fetch = fetch): Promise<{ tree: string; uploaded: number }> {
+}, fetcher?: NonNullable<CamelfsEnv["CAMELFS"]>["fetch"]): Promise<{ tree: string; uploaded: number }> {
   if (!camelfsConfigured(env)) throw new Error("camelFS is not configured");
-  const url = env.CAMELFS_API_URL!.replace(/\/+$/, ""), authorization = `Bearer ${env.CAMELFS_API_TOKEN}`;
+  const request = fetcher ?? ((input, init) => env.CAMELFS!.fetch(input, init));
+  const authorization = `Bearer ${env.CAMELFS_API_TOKEN}`;
   const byHash = new Map(input.files.map(file => [file.sha256, file]));
   const files = Object.fromEntries(input.files.map(file => [file.path, { sha256: file.sha256 }]));
   let uploaded = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const response = await fetcher(`${url}/v0/trees`, {
+    const response = await request("http://camelfs/v0/trees", {
       method: "POST", headers: { authorization, "content-type": "application/json" }, signal: AbortSignal.timeout(60_000),
       body: JSON.stringify({ lineage: input.lineage, ...(input.parentTree ? { parentTree: input.parentTree } : {}), files }),
     });
@@ -54,9 +62,9 @@ export async function importTree(env: CamelfsEnv, input: {
     for (let i = 0; i < missing.length; i += 8) {
       await Promise.all(missing.slice(i, i + 8).map(async hash => {
         const { body, size } = await input.read(byHash.get(hash)!);
-        const put = await fetcher(`${url}/v0/blobs/${hash}?lineage=${encodeURIComponent(input.lineage)}`, {
+        const put = await request(`http://camelfs/v0/blobs/${hash}?lineage=${encodeURIComponent(input.lineage)}`, {
           method: "PUT", headers: { authorization, "content-type": "application/octet-stream", "content-length": String(size) },
-          signal: AbortSignal.timeout(60_000), body,
+          signal: AbortSignal.timeout(uploadTimeoutMs(size)), body,
           ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
         });
         await put.body?.cancel();
