@@ -264,7 +264,12 @@ and v0 item 4 measures the floor with the journal pinned.
    write makes a private one); the host hashes those 256 KiB-aligned ranges from the snapshot file, PUTs the chunks
    S3 lacks (touching the ones it skips), writes a root `{ parentRoot, tree, offsets → hashes }`, and records it on
    the ref with the same fence. A reflink snapshot that fails to publish keeps the branch's previous root; the next
-   checkpoint's delta is taken against the last *published* snapshot, so nothing is skipped.
+   checkpoint's delta is taken against the last *published* snapshot, so nothing is skipped. Two invariants make
+   the FIEMAP delta correct and cheap (`proto-block`): an image is written through **one path only**, the guest's
+   virtio-blk (the host never writes a mounted image; the delta apply of a Workers-written version happens in the
+   guest, §1.3 step 2), so a cleared `FIEMAP_EXTENT_SHARED` means "written since the reflink" and nothing else; and
+   composing the next image is one reflink (O(extents), milliseconds for a few thousand) plus N chunk writes, so the
+   per-checkpoint cost is the ext4 metadata churn measured above (1 / 4 / 31 MiB), never the composition.
 7. Search shards for the changed files are built from the bytes the host already has (§1.7).
 
 Because the tree is walked and streamed under the same freeze the snapshot is taken in, and the root is derived from
