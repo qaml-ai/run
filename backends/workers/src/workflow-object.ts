@@ -392,7 +392,9 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     await runAlarm({
       concerns: [
         ["origin", () => this.failWithoutOrigin()],
-        ["runner", () => this.runner.alarm()],
+        // The runner isolates its own concerns; one that failed (a cancel left for later, a renew) is reported here too,
+        // so the alarm's failure floor applies rather than a second's re-arm.
+        ["runner", async () => { if ((await this.runner.alarm()).failed) throw new Error("a runner concern failed and was left for later (see its alarm_failed or cancel events)"); }],
         ["forks", () => this.ended()],
         ["notices", async () => { this.told(undefined); await this.notices.flush(); }],
       ],

@@ -486,6 +486,73 @@ test("a gate's deadline: the executor closes it first; an answer that won the ra
   assert.deepEqual(at(h).result, { a: "hold", b: "ship" });
 });
 
+test("a cancel that fails at the end is retried by the alarm, with backoff; a failed step on a landing backs off too", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.world.failCancels.set("slow", 1);
+  h.init({ code: `agent("slow", { key: "slow" }); return (await agent("fast", { key: "fast" })).answer;` });
+  await h.wake();
+  const fast = h.world.queue.find(effect => effect.key === "fast")!;
+  await h.runner.land(fast.key, fast.attempt, h.world.answer(fast));
+  assert.equal(at(h).status, "completed");
+  assert.equal(h.world.cancelled.length, 0, "the cancel failed");
+  assert.deepEqual(h.runner.events().filter(event => event.type === "cancel_failed").map(event => event.data.key), ["slow"]);
+  assert.equal(h.alarmAt, h.clock + 60_000, "a completed workflow keeps an alarm while a child is not cancelled, a minute out");
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.deepEqual(h.world.cancelled, ["slow:1"]);
+  assert.equal(h.alarmAt, null, "nothing left: no alarm");
+
+  // A step that fails when a result lands: the alarm retries it no sooner than 30 s later.
+  let failures = 1;
+  const s = harness({ rewrite: async request => { if (request.deliver && failures-- > 0) throw new Error("the sandbox is down"); return request; } });
+  s.init({ code: `return (await agent("a")).answer;` });
+  await s.wake();
+  const a = s.world.queue.shift()!;
+  await assert.rejects(s.runner.land(a.key, a.attempt, s.world.answer(a)), /the sandbox is down/);
+  assert.equal(s.alarmAt, s.clock + 30_000);
+  s.clock = s.alarmAt!;
+  await s.runner.alarm();
+  assert.equal(at(s).result, "re: a");
+});
+
+
+test("a cancel that always fails backs off per effect, doubling, and is given up after its attempts, through the object's alarm", { timeout: 60_000 }, async () => {
+  const { runAlarm, alarmAt } = await import("../src/workflow-alarm.ts");
+  const h = harness();
+  h.world.failCancels.set("slow", 100);
+  h.init({ code: `agent("slow", { key: "slow" }); return (await agent("fast", { key: "fast" })).answer;` });
+  await h.wake();
+  const fast = h.world.queue.find(effect => effect.key === "fast")!;
+  await h.runner.land(fast.key, fast.attempt, h.world.answer(fast));
+  assert.equal(at(h).status, "completed");
+  // The object's alarm: runAlarm over the runner, arming as WorkflowObject.armBy does (only lowering; the alarm that
+  // fired reads as none), never sooner than its floors.
+  let armed: number | null = h.alarmAt;
+  const fire = async () => {
+    h.clock = armed!;
+    armed = null;
+    const result = await runAlarm({
+      concerns: [["runner", async () => { if ((await h.runner.alarm()).failed) throw new Error("left for later"); }]],
+      next: async () => alarmAt(h.runner.nextAlarm()), arm: async at => { if (armed === null || armed > at) armed = at; },
+      log: () => {}, now: () => h.clock,
+    });
+    return result.failed;
+  };
+  const gaps: number[] = [];
+  for (let i = 0; i < 20 && armed !== null; i++) {
+    const before = h.clock;
+    const failed = await fire();
+    gaps.push(h.clock - before);
+    if (armed !== null) assert.deepEqual(failed, ["runner"], "a failed cancel is a failed concern");
+  }
+  assert.equal(armed, null, "given up: no alarm");
+  // The first try was at the landing; the alarm made the other seven, a minute apart and doubling (capped at an hour).
+  assert.deepEqual(gaps, [60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_600_000]);
+  assert.equal(gaps.length, 7);
+  assert.deepEqual(h.runner.events().filter(event => event.type.startsWith("cancel_")).map(event => event.type), ["cancel_failed", "cancel_gave_up"]);
+  assert.match(h.runner.items().items.find(item => item.key === "slow")!.reason ?? "", /cancel gave up after 8 attempts/);
+});
+
 test("fail() ends a workflow once: what is out is cancelled, the executor aborted, and a later wake recovers nothing", { timeout: 30_000 }, async () => {
   const h = harness();
   let recovers = 0, aborts = 0;

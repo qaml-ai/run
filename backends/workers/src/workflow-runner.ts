@@ -175,7 +175,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS workflow_effects (
     key TEXT NOT NULL, attempt INTEGER NOT NULL, current INTEGER NOT NULL, ord INTEGER NOT NULL UNIQUE, origin TEXT NOT NULL,
     revision INTEGER NOT NULL, kind TEXT NOT NULL, args TEXT NOT NULL, options TEXT, phase TEXT, status TEXT NOT NULL,
-    started INTEGER NOT NULL DEFAULT 0, started_at INTEGER, due_at INTEGER, lease TEXT, cancel_sent INTEGER NOT NULL DEFAULT 0, start_failures INTEGER NOT NULL DEFAULT 0, ok INTEGER, result TEXT, reason TEXT, landed INTEGER UNIQUE,
+    started INTEGER NOT NULL DEFAULT 0, started_at INTEGER, due_at INTEGER, lease TEXT, cancel_sent INTEGER NOT NULL DEFAULT 0, cancel_attempts INTEGER NOT NULL DEFAULT 0, cancel_next_at INTEGER, start_failures INTEGER NOT NULL DEFAULT 0, ok INTEGER, result TEXT, reason TEXT, landed INTEGER UNIQUE,
     issued_step INTEGER NOT NULL, delivered_step INTEGER, seen_revision INTEGER NOT NULL, issued_at INTEGER NOT NULL, ended_at INTEGER,
     version INTEGER NOT NULL, PRIMARY KEY (key, attempt))`,
   `CREATE INDEX IF NOT EXISTS workflow_effects_current ON workflow_effects (current, status, kind)`,
@@ -205,6 +205,10 @@ const EXECUTED_SQL = [...EXECUTED].map(kind => `'${kind}'`).join(", ");
 /** The effects that hold a capacity slot while they run, and which kind: an agent a child's, a job or push a job's. */
 const SLOTTED: Record<string, "child" | "job"> = { agent: "child", job: "job", push: "job" };
 export const slotKind = (kind: string) => SLOTTED[kind];
+/** Executed effects that ended without landing whose work has not been told to stop yet. */
+const UNCANCELLED = "status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'gate', 'job', 'push')";
+/** A cancel that keeps failing is tried this many times, a minute apart and doubling to an hour, then given up. */
+const CANCEL_ATTEMPTS = 8, CANCEL_FIRST_RETRY_MS = 60_000, CANCEL_MAX_RETRY_MS = 3_600_000;
 
 /**
  * The tenant's capacity limiter (WorkflowCapacity), as the runner uses it: one slot per running agent, leased and
@@ -248,6 +252,10 @@ export class WorkflowRunner {
     // A workflow made before jobs had no job_concurrency (null reads as the default).
     if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_state') WHERE name = 'job_concurrency'").toArray().length)
       this.sql.exec("ALTER TABLE workflow_state ADD COLUMN job_concurrency INTEGER");
+    // A workflow made before cancels were retried with backoff had neither column (no attempts yet, none scheduled).
+    for (const [column, type] of [["cancel_attempts", "INTEGER NOT NULL DEFAULT 0"], ["cancel_next_at", "INTEGER"]] as const)
+      if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_effects') WHERE name = ?", column).toArray().length)
+        this.sql.exec(`ALTER TABLE workflow_effects ADD COLUMN ${column} ${type}`);
   }
 
   private now() { return (this.options.now ?? Date.now)(); }
@@ -377,7 +385,7 @@ export class WorkflowRunner {
 
   /** After a start or a restart: start what was committed but not started, run due steps, arm the alarm. */
   wake(): Promise<void> {
-    return this.serial(() => this.advance(true));
+    return this.serial(async () => { await this.advance(true); });
   }
 
   /** Who the workflow belongs to, as created. */
@@ -386,7 +394,12 @@ export class WorkflowRunner {
     return { tenant: text(row.tenant), bucket: text(row.bucket), endUser: text(row.end_user) };
   }
 
-  private async advance(recover = false) {
+  /** Returns whether something it tried failed and was left for later (a cancel). */
+  private async advance(recover = false): Promise<boolean> {
+    // The alarm comes no sooner than a second from now, thirty after a failure: a step that keeps failing on every
+    // landing, or a child that will not cancel, is retried with backoff, not at once.
+    const now = this.now();
+    let failed = true;
     try {
       // An ended workflow has nothing to recover: its executor was aborted, and a recover would start children again.
       if (recover && !TERMINAL.has(this.state().status as WorkflowStatus)) await this.executor.recover?.();
@@ -394,9 +407,11 @@ export class WorkflowRunner {
       // Effects held from before (a resume, a raised budget, a failed start, a slot granted) first; then each step's new ones.
       await this.startHeld();
       while (await this.step()) await this.startHeld();
-      await this.cancelEnded();
+      const uncancelled = await this.cancelEnded();
       await this.capacityHousekeeping();
-    } finally { await this.arm(); }
+      failed = uncancelled;
+      return failed;
+    } finally { await this.arm(now + (failed ? 30_000 : 1_000)); }
   }
 
   /** Effect `key:attempt` ended. A second landing, or one for a superseded attempt, is ignored. */
@@ -492,11 +507,35 @@ export class WorkflowRunner {
    * stopped them). Marked in the journal first, stopped after the commit, once each, so a crash between the two
    * stops them on the next advance.
    */
-  private async cancelEnded() {
-    for (const row of this.sql.exec("SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'gate', 'job', 'push')").toArray()) {
-      await this.executor.cancel?.(this.started(row));
-      this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1 WHERE key = ? AND attempt = ?", row.key, row.attempt);
+  private async cancelEnded(): Promise<boolean> {
+    let failed = false;
+    const now = this.now();
+    const due = this.sql.exec(`SELECT key, attempt, kind, args, options, phase, cancel_attempts FROM workflow_effects WHERE ${UNCANCELLED} AND (cancel_next_at IS NULL OR cancel_next_at <= ?) ORDER BY ord`, now).toArray();
+    for (const row of due) {
+      try {
+        await this.executor.cancel?.(this.started(row));
+        this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1, cancel_next_at = NULL WHERE key = ? AND attempt = ?", row.key, row.attempt);
+      } catch (error) {
+        // Tried again later, a minute apart and doubling to an hour, while the others go on; given up after
+        // CANCEL_ATTEMPTS, recorded, so an ended workflow's alarm does not wake for it forever.
+        failed = true;
+        const message = error instanceof Error ? error.message : String(error);
+        const attempts = Number(row.cancel_attempts) + 1;
+        console.error(`Workflow effect ${row.key}:${row.attempt} was not cancelled (attempt ${attempts})`, error);
+        this.storage.transactionSync(() => {
+          if (attempts >= CANCEL_ATTEMPTS) {
+            this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1, cancel_attempts = ?, cancel_next_at = NULL, reason = ? WHERE key = ? AND attempt = ?",
+              attempts, `cancel gave up after ${attempts} attempts: ${message}`, row.key, row.attempt);
+            this.event("cancel_gave_up", { key: row.key, attempt: Number(row.attempt), attempts, error: message });
+            return;
+          }
+          if (attempts === 1) this.event("cancel_failed", { key: row.key, attempt: Number(row.attempt), error: message });
+          this.sql.exec("UPDATE workflow_effects SET cancel_attempts = ?, cancel_next_at = ?, reason = ? WHERE key = ? AND attempt = ?",
+            attempts, now + Math.min(CANCEL_MAX_RETRY_MS, CANCEL_FIRST_RETRY_MS * 2 ** (attempts - 1)), `not cancelled yet: ${message}`, row.key, row.attempt);
+        });
+      }
     }
+    return failed;
   }
 
   /** Slots the limiter granted (a wake, or a renew's `held`): each goes to its effect, or straight back if it has none. */
@@ -955,7 +994,7 @@ export class WorkflowRunner {
    * recorded and the others still run, and the alarm is armed again whatever happens, never sooner than a second from
    * now (thirty after a failure), so a concern that keeps failing cannot spin the object.
    */
-  alarm(): Promise<void> {
+  alarm(): Promise<{ failed: boolean }> {
     return this.serial(async () => {
       const now = this.now();
       let failed = false;
@@ -970,7 +1009,12 @@ export class WorkflowRunner {
       };
       try {
         const state = this.state();
-        if (TERMINAL.has(state.status as WorkflowStatus)) { await isolated("capacity", () => this.capacityHousekeeping()); return; }
+        if (TERMINAL.has(state.status as WorkflowStatus)) {
+          // An ended workflow's alarm finishes what the end left: children not yet cancelled, the capacity lease.
+          await isolated("cancel", async () => { if (await this.cancelEnded()) failed = true; });
+          await isolated("capacity", () => this.capacityHousekeeping());
+          return { failed };
+        }
         for (const row of this.sql.exec("SELECT key, attempt, kind, args, options, phase, due_at FROM workflow_effects WHERE current = 1 AND status = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY due_at, ord", now).toArray()) {
           await isolated(`${row.kind} ${row.key}`, () => this.expire(row));
         }
@@ -1006,7 +1050,8 @@ export class WorkflowRunner {
             }
           }
         }
-        await isolated("steps", () => this.advance(true));
+        await isolated("steps", async () => { if (await this.advance(true)) failed = true; });
+        return { failed };
       } finally {
         await this.arm(now + (failed ? 30_000 : 1_000));
       }
@@ -1043,8 +1088,14 @@ export class WorkflowRunner {
   nextAlarm(): number | null {
     const state = this.state();
     const capacity = this.options.capacity && state.capacity_open ? this.options.capacity : undefined;
-    if (TERMINAL.has(state.status as WorkflowStatus)) return capacity ? this.now() + 30_000 : null;
     const candidates: number[] = [];
+    // A work item the end (or a pause) did not manage to stop yet: when its next cancel is due (its own backoff).
+    const cancel = this.sql.exec(`SELECT MIN(COALESCE(cancel_next_at, 0)) AS at FROM workflow_effects WHERE ${UNCANCELLED}`).one().at;
+    if (cancel !== null) candidates.push(Math.max(Number(cancel), this.now()));
+    if (TERMINAL.has(state.status as WorkflowStatus)) {
+      if (capacity) candidates.push(this.now() + 30_000);
+      return candidates.length ? Math.min(...candidates) : null;
+    }
     const due = this.sql.exec("SELECT MIN(due_at) AS at FROM workflow_effects WHERE current = 1 AND status = 'pending' AND due_at IS NOT NULL").one().at;
     if (due !== null) candidates.push(Number(due));
     if (state.throttled_until !== null) candidates.push(Number(state.throttled_until));
