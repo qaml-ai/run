@@ -7676,7 +7676,7 @@ Workflow port completed.
 
 A failure reads `Workflow port failed (<code>): <message>`. A stop has `status="paused"`
 and says what it waits for: a spent budget waits for `workflow_budget`, and a payer out
-of credit goes on by itself once there is credit. Each stop and the ending that follows
+of credit waits for credit and `workflow_resume`. Each stop and the ending that follows
 it are separate attempts of the same child, so the agent hears each once. A person's
 pause, and a wait for the account's capacity, tell the agent nothing. A result longer
 than 16,000 characters is cut; `workflow_status` has it whole.
