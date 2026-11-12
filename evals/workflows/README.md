@@ -108,11 +108,19 @@ a prompt). The decision is `split` when the agent:
 The summary gives accuracy, how often the agent split when it should, and how often it split when it should not, for
 each wording. The wording the agent decides from is the delegate tool's and the orchestrator's prompt today, and the
 `workflows` builtin's description once PR 7 lands (design open question 13). `--guidance <file>` appends candidate
-wording to the orchestrator's prompt, to compare drafts before one ships. `choice/guidance-design-draft.md` is the
-design's draft, adapted to `delegate`.
+wording to the orchestrator's prompt, to compare drafts before one ships. `choice/guidance/` holds the wordings tried so far (`design-draft.md`, the design's draft adapted to `delegate`;
+`triggers.md`, `example.md`, `cost.md`, `plan-fanout.md`, `combined.md`, for choosing `agent()` workflows; and
+`no-poll.md`, for waiting on notifications). `run.ts run --guidance <file>` gives a task run the same wording, so a
+wording that wins the choice eval can be checked on a real task.
+
+`run.ts polling [--guidance …]` counts how the owner waits (`choice/polling.json`: a one-job workflow, two jobs of
+different lengths, three worker agents). Each prompt runs to its end, and the summary reports `workflow_status`
+calls per workflow against the notifications the owner got, and whether it replied after the last one.
+
+`run.ts run --wall-minutes <n>` tightens a task's wall cap, for runs where splitting the work has to win on time.
 
 ```sh
-… run.ts choice --modes dry --guidance none,evals/workflows/choice/guidance-design-draft.md --label choice-baseline
+… run.ts choice --modes dry --guidance none,evals/workflows/choice/guidance/design-draft.md --label choice-baseline
 … run.ts choice --modes workflow --label choice-builtin        # once the builtin exists
 ```
 

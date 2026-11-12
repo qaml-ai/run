@@ -18,7 +18,7 @@ export function summary(results: RunResult[]): string {
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   // Group by the whole class map, so an all-fast arm is not averaged with a fast-workers one.
   const arm = (result: RunResult) => Object.values(result.classes ?? {}).every(model => model === result.classes.worker) ? `all ${result.workerClass}` : result.workerClass;
-  const groups = Map.groupBy(results, result => [result.task, result.mode + (result.split === "required" ? " (split)" : ""), arm(result)].join("\t"));
+  const groups = Map.groupBy(results, result => [result.task, result.mode + (result.split === "required" ? " (split)" : "") + (result.guidance ? ` +${result.guidance}` : ""), arm(result)].join("\t"));
   for (const [key, runs] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
     const [task, mode, workers] = key.split("\t");
     const scored = runs.filter(run => run.score);

@@ -52,7 +52,7 @@ export interface ChoiceOptions { label: string; mode: "dry" | "workflow"; guidan
 /** Runs one prompt to its first decision and stops the agent there. */
 export async function choose(runtime: Runtime, prompt: ChoicePrompt, options: ChoiceOptions): Promise<ChoiceResult> {
   const started = Date.now(), prefix = `wfchoice-${options.label}-${prompt.id}-${options.run}-${started.toString(36)}`.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 90);
-  const log = join(options.dir, `${prompt.id}-${options.run}.jsonl`);
+  const log = join(options.dir, `${prompt.id}-${options.mode}-${options.guidance?.name ?? "runtime"}-${options.run}.jsonl`);
   mkdirSync(options.dir, { recursive: true });
   writeFileSync(log, "");
   const base = { schema: 1 as const, label: options.label, id: prompt.id, expect: prompt.expect, mode: options.mode, guidance: options.guidance?.name ?? null, run: options.run };
@@ -129,5 +129,63 @@ export function choiceSummary(results: ChoiceResult[]): string {
   }
   lines.push("", "| prompt | expect | mode | wording | decision | sub-agents | first tools | cost | wall |", "|---|---|---|---|---|---|---|---|---|");
   for (const run of results) lines.push(`| ${run.id} | ${run.expect} | ${run.mode} | ${run.guidance ?? "runtime"} | ${run.decision}${run.otherWorkflows ? ` (+${run.otherWorkflows} job/probe workflows)` : ""}${run.correct ? "" : " (wrong)"}${run.capped ? " (cap)" : ""} | ${run.subagents} | ${run.firstTools.slice(0, 5).join(", ")} | $${run.costUsd.toFixed(3)} | ${Math.round(run.wallMs / 1000)} s |`);
+  return lines.join("\n") + "\n";
+}
+
+export interface PollingResult {
+  schema: 1; label: string; id: string; guidance: string | null; run: number;
+  workflows: number; notices: number; replyAfterLast: boolean; statusPolls: number; pollsPerWorkflow: number;
+  costUsd: number; wallMs: number; error?: string;
+}
+export const loadPolling = (): { id: string; prompt: string; files: ChoicePrompt["files"] }[] => JSON.parse(readFileSync(join(dirname(PROMPTS_FILE), "polling.json"), "utf8")).prompts;
+
+/** Runs a prompt that needs a workflow to its end, and counts how the owner waited: workflow_status calls against notices. */
+export async function waitStyle(runtime: Runtime, prompt: { id: string; prompt: string; files: ChoicePrompt["files"] }, options: Omit<ChoiceOptions, "mode">): Promise<PollingResult> {
+  const started = Date.now(), prefix = `wfpoll-${options.label}-${prompt.id}-${options.run}-${started.toString(36)}`.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 90);
+  const base = { schema: 1 as const, label: options.label, id: prompt.id, guidance: options.guidance?.name ?? null, run: options.run };
+  const cleanups: (() => Promise<unknown>)[] = [];
+  try {
+    const volumeId = await runtime.uploadFiles(prefix, files(prompt.files));
+    cleanups.push(() => runtime.client.volume(volumeId).delete());
+    const classes: Classes = { orchestrator: options.orchestrator, worker: CLASS_MODELS.fast, critic: CLASS_MODELS.strong, lead: CLASS_MODELS.strong };
+    const types = await runtime.defineTypes(prefix, volumeId, classes);
+    for (const key of Object.values(types.keys)) cleanups.push(() => runtime.client.deleteDefinition(key));
+    const agent = await runtime.client.createAgent({
+      name: `wf-poll ${prompt.id}`, model: options.orchestrator, systemPrompt: ORCHESTRATOR + (options.guidance ? `\n\n${options.guidance.text.trim()}` : ""), ttlSeconds: 3600,
+      mounts: [{ volumeId, path: "/workspace", mode: "rw" }], spendLimit: { usd: options.capUsd },
+      delegate: { agents: Object.entries(types.keys).map(([name, definition]) => ({ name, definition })), maxParallel: 8, maxDepth: 1 },
+    } as Parameters<AgentRuntime["createAgent"]>[0]);
+    cleanups.push(() => agent.destroy());
+    await agent.prompt(`${prompt.prompt}\n\nYour /workspace is volume ${volumeId}.`, { timeoutMs: options.capMs }).catch(() => {});
+    const deadline = started + options.capMs;
+    // Until every workflow it started has ended and it has had its turns on the notices.
+    for (let pass = 0; pass < 6; pass++) {
+      const before = await runtime.notifications(agent.id);
+      for (const id of before.workflowIds ?? []) await runtime.waitWorkflow("public", id, deadline, 300_000, 5_000).catch(() => {});
+      if (!await runtime.waitIdle(agent.id, deadline)) break;
+      const after = await runtime.notifications(agent.id);
+      if (after.received === before.received) break;
+    }
+    const seen = await runtime.notifications(agent.id);
+    const workflows = Math.max(1, seen.workflowIds?.length ?? 0);
+    for (const id of seen.workflowIds ?? []) await runtime.abortWorkflow("public", id);
+    const costUsd = (await runtime.usage(agent.id, types.ids)).totalUsd;
+    return { ...base, workflows: seen.workflowIds?.length ?? 0, notices: seen.received, replyAfterLast: seen.replyAfterLast, statusPolls: seen.statusPolls, pollsPerWorkflow: +(seen.statusPolls / workflows).toFixed(2), costUsd, wallMs: Date.now() - started };
+  } catch (error) {
+    return { ...base, workflows: 0, notices: 0, replyAfterLast: false, statusPolls: 0, pollsPerWorkflow: 0, costUsd: 0, wallMs: Date.now() - started, error: String((error as Error).stack ?? error).slice(0, 1000) };
+  } finally {
+    for (const step of cleanups.reverse()) await step().catch(() => {});
+  }
+}
+
+export function pollingSummary(results: PollingResult[]): string {
+  const lines = ["# Polling", "", "How the owner waits for its workflows: workflow_status calls against the notices it gets.", "",
+    "| wording | runs | workflows | notices | polls per workflow | replied after the last notice | cost |", "|---|---|---|---|---|---|---|"];
+  for (const [wording, runs] of Map.groupBy(results, result => result.guidance ?? "runtime wording")) {
+    const sum = (key: "workflows" | "notices" | "statusPolls") => runs.reduce((total, run) => total + run[key], 0);
+    lines.push(`| ${wording} | ${runs.length} | ${sum("workflows")} | ${sum("notices")} | ${(sum("statusPolls") / Math.max(1, sum("workflows"))).toFixed(2)} | ${runs.filter(run => run.replyAfterLast).length}/${runs.length} | $${runs.reduce((total, run) => total + run.costUsd, 0).toFixed(3)} |`);
+  }
+  lines.push("", "| prompt | wording | workflows | notices | polls | replied | cost | wall |", "|---|---|---|---|---|---|---|---|");
+  for (const run of results) lines.push(`| ${run.id} | ${run.guidance ?? "runtime"} | ${run.workflows} | ${run.notices} | ${run.statusPolls} | ${run.replyAfterLast ? "yes" : "no"} | $${run.costUsd.toFixed(3)} | ${Math.round(run.wallMs / 1000)} s |${run.error ? ` ${run.error.split("\n")[0]}` : ""}`);
   return lines.join("\n") + "\n";
 }

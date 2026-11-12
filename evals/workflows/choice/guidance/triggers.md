@@ -1,0 +1,1 @@
+When a task covers more than about 10 files, tables, documents or sources, or is a port, migration, audit, review or research sweep, write a workflow in which each agent() call takes one of those units. Do not do the units yourself, and do not use a workflow only to run commands.

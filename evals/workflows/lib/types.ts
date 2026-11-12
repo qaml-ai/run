@@ -66,6 +66,8 @@ export interface RunResult {
   label: string;
   /** "required": the orchestrator was told to do no item work itself (`--split required`); "free": it chose. */
   split: "free" | "required";
+  /** The `--guidance` wording the orchestrator had, by file name; absent: the runtime's own. */
+  guidance?: string;
   task: string; taskVersion: number; tier: Tier;
   mode: Mode;
   workerClass: ModelClass;
