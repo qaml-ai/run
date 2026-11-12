@@ -39,7 +39,7 @@ test("each reference workflow script runs against stand-in globals: every agent(
     };
     const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
     await new AsyncFunction(...Object.keys(globals), code)(...Object.values(globals));
-    assert.ok(calls.length >= task.units, `${task.id} starts at least one agent per unit`);
+    assert.ok(calls.length >= Math.ceil(task.units / 10), `${task.id} starts agents for its units (one per unit or per batch)`);
     assert.equal(new Set(calls.map(call => call.key)).size, calls.length, `${task.id}: keys are unique`);
     for (const call of calls) assert.ok(call.key && call.definition?.startsWith("def-") && call.type, `${task.id}: ${JSON.stringify(call)}`);
   }

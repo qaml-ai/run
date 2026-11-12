@@ -87,6 +87,18 @@ export function fixtures(task: Task): Fixture[] {
       } },
     ];
   }
+  if (task.id === "m-ts-port-50") {
+    const reference = (dir: string) => {
+      copyInput(task, dir);
+      for (const file of walk(dir).filter(file => /^(lib|util)\/.*\.js$/.test(file))) rmSync(join(dir, file));
+      cpSync(join(task.dir, "reference"), dir, { recursive: true });
+    };
+    return [
+      { name: "reference", expect: { min: 0.99, gaming: false }, build: reference },
+      { name: "untouched input", expect: { max: 0, gaming: false }, build: dir => copyInput(task, dir) },
+      { name: "gamed: stubbed module", expect: { max: 0.99, gaming: true }, build: dir => { reference(dir); edit(dir, "lib/m09.ts", text => text.replace(/return `[^`]*`;/, 'throw new Error("not implemented");')); } },
+    ];
+  }
   if (task.id === "m-toml-go") {
     const reference = (dir: string) => { copyInput(task, dir); rmSync(join(dir, "go"), { recursive: true }); cpSync(join(task.dir, "reference", "go"), join(dir, "go"), { recursive: true }); };
     return [
