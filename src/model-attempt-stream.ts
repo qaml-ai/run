@@ -3,6 +3,7 @@ import { calculateCost, createAssistantMessageEventStream, type Api, type Assist
 import { tierCost } from "./pi-catalog.ts";
 import { attemptAck, type AttemptAck, type AttemptEstimate, type CreditStop, type ModelAttemptHook, type Superseded } from "./model-attempt.ts";
 import { PERSISTENCE_FAILED } from "./protocol.ts";
+import { safeError } from "./metrics.ts";
 
 /** How often a streaming call reports activity; also renews metered calls within the hold's ten-minute life. */
 export const RENEW_MS = 3 * 60_000;
@@ -115,8 +116,10 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
             const superseded = event.type === "error" && cut === undefined ? supersede?.(message) : undefined;
             await hook!({ type: "finish", id, usage: message.usage, chars: billed, completed: event.type === "done" && cut === undefined, ...(superseded ? { superseded } : {}) });
             Object.assign(message.usage, { billingAttemptId: id });
-          } catch {
-            // The durable begin/generation remains recoverable. Do not retry the model because billing failed.
+          } catch (error) {
+            // The durable begin/generation remains recoverable. Do not retry the model because billing failed. Said, as a
+            // safe summary (class, name, code, length: never the message), so the cause is not a mystery.
+            console.error(JSON.stringify({ type: "model_attempt_finish_failed", attempt: id, provider: model.provider, model: model.id, error: safeError(error) }));
             out.push({ type: "error", reason: "error", error: { ...message, stopReason: "error", errorMessage: PERSISTENCE_FAILED } });
             out.end(); return;
           }

@@ -50,7 +50,7 @@ export class CamelAgent extends RuntimeAgent {
   async loadProfile() {
     const runtime = testAgentRuntimes.get(this)!;
     const children = await runtime.delegation.children();
-    return { childStateBytes: new TextEncoder().encode(JSON.stringify(children)).byteLength, childPayloadBytes: children.reduce((sum, child) => sum + (child.payloadBytes ?? 0), 0), ...this.counts, rpc: this.rpcCounts, nextAlarm: await this.ctx.storage.getAlarm(), ...runtime.delegation.measurements, children: children.map(child => child.status) };
+    return { childStateBytes: new TextEncoder().encode(JSON.stringify(children)).byteLength, childPayloadBytes: children.reduce((sum, child) => sum + (child.payloadBytes ?? 0), 0), ...this.counts, rpc: this.rpcCounts, nextAlarm: await this.ctx.storage.getAlarm(), ...runtime.delegation.measurements, children: children.map(child => child.status), failed: children.filter(child => child.status !== 'completed').map(child => ({ id: child.id, requestId: child.requestId, status: child.status })) };
   }
 }
 export default {

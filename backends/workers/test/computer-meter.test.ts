@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CHECKPOINT_MS, ComputerMeter, SETTLE_MARGIN_MS, CONTAINER_RATES, holdRate, secondRate, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 import { ContainerProvider, operate, type ProviderMeter } from "../src/computers/provider.ts";
+import { AlarmWatch } from "./alarm-watch.ts";
 
 const payer = { tenant: "t1", agent: "a1" };
 function harness(options: { failCharges?: number; failStatus?: number } = {}) {
-  const data = new Map<string, unknown>(), charges: ComputerCharge[] = [], alarms: number[] = [];
+  const data = new Map<string, unknown>(), charges: ComputerCharge[] = [], alarms: number[] = [], watch = new AlarmWatch("ComputerMeter");
   let now = 1_000_000, failures = options.failCharges ?? 0, refuse = false;
   const store: MeterStore = {
     async get<T>(key: string) { return structuredClone(data.get(key)) as T | undefined; },
@@ -16,7 +17,7 @@ function harness(options: { failCharges?: number; failStatus?: number } = {}) {
     },
   };
   const meter = new ComputerMeter({
-    store, idleMs: 60_000, now: () => now, schedule: async at => { alarms.push(at); },
+    store, idleMs: 60_000, now: () => now, schedule: async at => { watch.armed(at); alarms.push(at); },
     billing: {
       async admit() { if (refuse) throw Object.assign(new Error("credit spent"), { status: 402 }); },
       async charge(charge) {
@@ -26,6 +27,10 @@ function harness(options: { failCharges?: number; failStatus?: number } = {}) {
       },
     },
   });
+  // The meter's alarm, watched for hot loops (test/alarm-watch.ts); anything else the test does is an external event.
+  const alarm = meter.alarm.bind(meter);
+  meter.alarm = (running: boolean) => watch.fire(now, () => alarm(running));
+  for (const name of ["started", "used", "stopped"] as const) { const call = meter[name].bind(meter) as (...args: any[]) => Promise<void>; (meter as any)[name] = (...args: any[]) => { watch.external(); return call(...args); }; }
   return { meter, data, charges, alarms, advance: (ms: number) => { now += ms; }, now: () => now, refuse: () => { refuse = true; } };
 }
 

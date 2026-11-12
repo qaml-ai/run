@@ -745,11 +745,18 @@ export type WebhookEvent = { id: string; created: number } & (
   | { type: "input.requested"; data: { agentId: string; requestId: string; inputId: string; toolCallId: string; kind: AgentInput["kind"]; expiresAt: number } }
   | { type: "input.resolved"; data: { agentId: string; requestId: string; inputId: string; state: Exclude<AgentInput["state"], "pending"> } }
   | { type: "usage.recorded"; data: {
-      /** null for a transcription made with `transcriptions.create`, or images with `images.generate`/`edit`, which no agent made. */
+      /** null for a transcription made with `transcriptions.create`, images with `images.generate`/`edit`, or decisions with `decisions.create`, which no agent made, and for computer time an API-started workflow's job used (`workflowId` names it). */
       agentId: string | null; requestId: string | null; subject: string | null; actor: string | null; context: Record<string, unknown>; keyScope: string | null;
-      /** `transcription`: audio transcribed (`audioSeconds` of it, no tokens); `image`: images made (`images` of them). More kinds may come: treat one you do not know as other usage. */
-      provider: string; model: string; kind: "response" | "compaction" | "transcription" | "image"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
-      audioSeconds?: number; images?: number; cost: { usd: number; source: "provider" | "catalog" }; at: number;
+      /** For computer time: the workflow whose job it was, paid by your account (a workflow started with an API key, which no agent owns). */
+      workflowId?: string;
+      /**
+       * `transcription`: audio transcribed (`audioSeconds` of it, no tokens); `image`: images made (`images` of them); `speech`: speech made
+       * (`audioSeconds` of it); `decision`: questions answered (`decisions` of them); `computer`: a container's time, an agent's computer or a
+       * workflow's job (`seconds` of it, `model` its instance type, no tokens), once per charged session. More kinds may come: treat one you do
+       * not know as other usage.
+       */
+      provider: string; model: string; kind: "response" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
+      audioSeconds?: number; images?: number; decisions?: number; seconds?: number; cost: { usd: number; source: "provider" | "catalog" }; at: number; superseded?: "content_filter" | "unavailable";
     } }
   | { type: "voice.session.started"; data: VoiceFacts }
   | { type: "voice.session.ended"; data: VoiceFacts & {

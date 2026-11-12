@@ -31,9 +31,11 @@ test('an idle alarm waits for the exec deadline without blocking concurrent comm
   }
   class Clock extends Date { static now() { return now; } }
   const Computer = runInNewContext(computerSource(), {
-    DurableObject: Host, Date: Clock, AbortSignal, Promise,
-    COMPUTER_LIMITS: { execMs: 120_000 }, sameComputerNetwork: () => true,
+    DurableObject: Host, guardAlarms: () => {}, Date: Clock, AbortSignal, Promise,
+    COMPUTER_LIMITS: { execMs: 120_000, idleSeconds: { default: 60 } }, sameComputerNetwork: () => true,
     computerToolError: (error: unknown) => error,
+    // No metered session here: the alarm's spend check has nothing to admit.
+    ComputerMeter: class { async openPayer() { return undefined; } async isOpen() { return false; } }, meterBilling: () => ({}),
     operate: async (_provider: unknown, request: { command: string }) => {
       if (request.command === 'hold') await held;
       else release();
@@ -80,7 +82,7 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
   const held = new Promise<void>(resolve => { release = resolve; });
   const runs: { stop: AbortSignal; files?: unknown; meter?: unknown }[] = [];
   const Computer = runInNewContext(computerSource(), {
-    DurableObject: Host, Date: Clock, AbortSignal, AbortController, Promise, Map, JSON, console,
+    DurableObject: Host, guardAlarms: () => {}, Date: Clock, AbortSignal, AbortController, Promise, Map, JSON, console,
     jobSpec: (value: { id: string; timeoutSeconds: number }) => value,
     jobLifetimeMs: (seconds: number) => seconds * 1000 + 720_000,
     inlineFiles: (files: unknown) => ({ inline: files }),
@@ -92,7 +94,7 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
       container.running = false;
       return options.stop.aborted ? { ok: false, id: spec.id, code: 'stopped' } : { ok: true, id: spec.id };
     },
-    ComputerMeter: class { async stopped() {} async alarm() {} },
+    ComputerMeter: class { async stopped() {} async alarm() {} async openPayer() { return undefined; } async isOpen() { return false; } },
     meterBilling: () => ({}),
     COMPUTER_LIMITS: { idleSeconds: { default: 60 } },
   });
@@ -129,4 +131,74 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
   assert.equal(container.running, false);
   assert.equal(data.has('job:deadline'), false);
   assert.equal(data.get('released'), true);
+});
+
+test('a running container whose payer may no longer spend is stopped: at its alarm, and when an operation is refused for spend', async () => {
+  const now = 1000;
+  class Host { ctx: any; env: unknown; constructor(ctx: unknown, env: unknown) { this.ctx = ctx; this.env = env; } }
+  class Clock extends Date { static now() { return now; } }
+  const refusal = Object.assign(new Error('This tenant has reached its monthly spend limit of $1.00'), { status: 402, code: 'SPEND_LIMIT' });
+  let refuse: Error | undefined = refusal, session: { tenant: string; agent: string } | undefined = { tenant: 't', agent: 'a' }, bound: any;
+  const logged: any[] = [], limitStops: number[] = [];
+  const container = { running: true, destroy: async () => { container.running = false; } };
+  const Computer = runInNewContext(computerSource(), {
+    DurableObject: Host, guardAlarms: () => {}, Date: Clock, Promise, JSON, Map, Number, AbortSignal,
+    console: { error: (line: string) => logged.push(JSON.parse(line)) },
+    COMPUTER_LIMITS: { idleSeconds: { default: 60 } }, meterBilling: () => ({}),
+    ComputerMeter: class {
+      async openPayer() { return session; }
+      async isOpen() { return !!session; }
+      async admit() { if (refuse) throw refuse; }
+      async stopped() {}
+      async alarm() {}
+      async started() {}
+    },
+    computerSpec: () => ({ instance: 'standard-1' }),
+    // The provider's own stop (provider.ts stopForLimit: saves a sleeping computer's disk, else halts): seen here as a count.
+    ContainerProvider: class {
+      constructor(...args: any[]) { bound = args[5]; }
+      async stopForLimit() { limitStops.push(now); container.running = false; return { saved: false }; }
+      async sleepIfIdle() { return undefined; } async dropStale() {}
+    },
+  });
+  const data = new Map<string, unknown>([['computer:permit', { tenant: 't', machine: 'native:a' }]]);
+  let alarm: number | null = null;
+  const computer = new Computer({ container, storage: {
+    get: async (key: string) => data.get(key), put: async (key: string, value: unknown) => { data.set(key, value); }, delete: async (key: string) => data.delete(key),
+    getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; },
+  } }, {});
+  let released = 0;
+  computer.releasePermit = async () => { released++; data.delete('computer:permit'); };
+  computer.network = () => ({ key: '', idleMs: 60_000 });
+
+  // At its alarm: refused, so the container is stopped by the provider (charged up to now) and its slot given back.
+  await computer.alarm();
+  assert.equal(limitStops.length, 1);
+  assert.equal(container.running, false);
+  assert.equal(released >= 1, true);
+  assert.deepEqual(logged.filter(line => line.type === 'computer_limit_stop').map(line => [line.tenant, line.status, line.code]), [['t', 402, 'SPEND_LIMIT']]);
+
+  // An operation refused for the session's own payer: it fails, and the container stops at once.
+  container.running = true; logged.length = 0;
+  computer.provider({ settings: {}, identity: { claims: { tenant: 't', agent: 'a' } } });
+  await assert.rejects(bound.admit(), (error: unknown) => error === refusal);
+  assert.equal(limitStops.length, 2, 'stopped rather than idling out');
+
+  // A shared computer: the session bills the owner, and a child at its own spend limit fails only its operation.
+  container.running = true; logged.length = 0;
+  session = { tenant: 't', agent: 'owner' };
+  computer.provider({ settings: {}, shared: true, identity: { claims: { tenant: 't', agent: 'child' } } });
+  await assert.rejects(bound.admit(), (error: unknown) => error === refusal);
+  assert.equal(container.running, true, "the owner's container keeps running");
+  assert.equal(limitStops.length, 2);
+  assert.deepEqual(logged, []);
+
+  // Anything else (the database unreadable) stops nothing: it is said, and the next alarm tries again.
+  session = { tenant: 't', agent: 'a' };
+  refuse = Object.assign(new Error('Query read timeout'), { status: 503 });
+  await computer.alarm();
+  assert.equal(container.running, true);
+  assert.deepEqual(logged.map(line => line.type), ['computer_limits_read_failed']);
+  // Within a minute it is admitted again.
+  assert.equal(alarm !== null && alarm <= now + 60_000, true);
 });
