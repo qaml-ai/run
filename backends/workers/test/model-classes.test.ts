@@ -263,7 +263,7 @@ test("flex asked and not served is logged once as model_flex_unhonored; flex ser
   ]);
 });
 
-test("every member failing: the request fails with the last member's own error, the log names each member's, and Pi's retry starts at the head again", async t => {
+test("every strong member failing: a fixed retryable error, member details in the log, and Pi's retry starts at the head again", async t => {
   const logs: string[] = [];
   t.mock.method(console, "log", (line: string) => { logs.push(line); });
   const { calls, provider } = scriptedProvider(model => tier(model) === "flex" ? { error: "503 flex capacity unavailable" } : { error: "502 Provider returned error: upstream reset" });
@@ -272,9 +272,11 @@ test("every member failing: the request fails with the last member's own error, 
   const ask = async () => { let last: any; for await (const event of configured.stream(resolveModel("camelrun/strong"), context, {})) last = event; return last; };
   const first = await ask();
   assert.equal(first.type, "error");
-  // The last member's own error first (retried as it is), then that no member can take it, naming each one's.
-  assert.ok(first.error.errorMessage.startsWith("502 Provider returned error: upstream reset (camelrun/strong: no member can take this now; "), first.error.errorMessage);
-  assert.match(first.error.errorMessage, /\(flex\): 503 flex capacity unavailable; .*\(default\): 502 Provider returned error: upstream reset; it is retried after a backoff\)$/);
+  assert.equal(first.error.errorMessage, STRONG_UNAVAILABLE_MESSAGE);
+  assert.equal(errorClass(first.error.errorMessage), "provider_5xx");
+  assert.equal(isModelUnavailable(first.error), true);
+  assert.equal(isRetryableAssistantError(first.error), true);
+  assert.equal(isContextOverflow(first.error), false);
   const failed = JSON.parse(logs.find(line => line.includes('"virtual_model_chain_failed"'))!);
   assert.deepEqual(failed.failures, [
     { member: `openrouter/${CARBON} (flex)`, error: "503 flex capacity unavailable" },
