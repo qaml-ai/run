@@ -3,9 +3,9 @@
 set -euo pipefail
 GO_VERSION=1.24.0
 FIRECRACKER_VERSION=v1.13.1
-FIRECRACKER_SHA256=UNPINNED
+FIRECRACKER_SHA256=59450b9171ff2ebdf2f9a25be3a248a7ba79fb6371aec51a9d6d8eefca7b4faf
 GUEST_KERNEL_URL=https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-6.1.141
-GUEST_KERNEL_SHA256=UNPINNED
+GUEST_KERNEL_SHA256=b36a4a1b10f33b9cfdcde3d1a787d9c090556a3edb211cd06d1f3f9a6c7e8724
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 fail() { echo "ERROR: $*" >&2; exit 1; }
 summary() {
@@ -169,16 +169,11 @@ changed=0
 put "$here/systemd/camel-jobhost.service" /etc/systemd/system/camel-jobhost.service
 restart[camel-jobhost]=$((changed | agent_changed | vm_changed))
 changed=0
-put /opt/camel/src/infra/job-hosts/image/files/camel-egress-proxy.service /etc/systemd/system/camel-egress-proxy.service
-# Override only the AL2023 prep dependency. The source unit stays unchanged.
-cat > "$work/proxy.conf" <<'DROPIN'
-[Unit]
-After=
-After=camel-kvm-prep.service nftables.service
-Requires=
-Requires=camel-kvm-prep.service nftables.service
-DROPIN
-put "$work/proxy.conf" /etc/systemd/system/camel-egress-proxy.service.d/kvm.conf
+# The AL2023 unit depends on camel-host-prep (Nitro): install it with that dependency renamed to camel-kvm-prep. A drop-in
+# cannot do this: systemd does not reset dependency lists (After=, Requires=) from a drop-in.
+sed 's/camel-host-prep\.service/camel-kvm-prep.service/g' /opt/camel/src/infra/job-hosts/image/files/camel-egress-proxy.service > "$work/camel-egress-proxy.service"
+put "$work/camel-egress-proxy.service" /etc/systemd/system/camel-egress-proxy.service
+if [[ -e /etc/systemd/system/camel-egress-proxy.service.d/kvm.conf ]]; then rm -f /etc/systemd/system/camel-egress-proxy.service.d/kvm.conf; changed=1; fi
 restart[camel-egress-proxy]=$((changed | agent_changed))
 changed=0
 put /opt/camel/src/infra/job-hosts/image/files/camel-host.nft /etc/nftables.d/camel-host.nft

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 NODE_VERSION=22.21.1
-NODE_SHA256=UNPINNED
+NODE_SHA256=680d3f30b24a7ff24b98db5e96f294c0070f8f9078df658da1bce1b9c9873c88
 src=${1:?usage: guest-rootfs.sh SRC OUT.ext4}
 out=${2:?usage: guest-rootfs.sh SRC OUT.ext4}
 [[ $EUID == 0 ]] || { echo 'Must run as root' >&2; exit 1; }
@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT
 root=$work/root
 echo '== Guest Ubuntu noble minbase'
-debootstrap --variant=minbase --include=bash,coreutils,findutils,grep,sed,gawk,tar,gzip,xz-utils,bzip2,unzip,procps,util-linux,iproute2,ca-certificates,curl,git,make,gcc,g++,python3,python3-pip,socat,e2fsprogs \
+debootstrap --variant=minbase --components=main,universe --include=bash,coreutils,findutils,grep,sed,gawk,tar,gzip,xz-utils,bzip2,unzip,procps,util-linux,iproute2,ca-certificates,curl,git,make,gcc,g++,python3,python3-pip,socat,e2fsprogs \
   noble "$root" "${UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
 echo "== Guest Node $NODE_VERSION"
 curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.xz" -o "$work/node.tar.xz"
