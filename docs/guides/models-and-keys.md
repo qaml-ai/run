@@ -78,7 +78,7 @@ better or cheaper model without touching agents:
   [service tier](https://openrouter.ai/docs/guides/features/service-tiers), half the default
   tier's price ($1/$5 per million tokens in and out, $0.05 cached, against $2/$10) and slower.
   When flex has no capacity, a request waits for it, asking again with backoff for up to 10
-  seconds (on the Workers backend; the Node runtime moves at once), then is made on the default
+  seconds, then is made on the default
   tier; the rest of that turn stays there. `GET /v1/models` lists each route's tier as
   `serviceTiers`. Its members wait for a first token for 30 seconds plus 0.4 seconds per thousand
   input tokens (at most the runtime's usual wait; an agent's own `runLimits.firstTokenSeconds`

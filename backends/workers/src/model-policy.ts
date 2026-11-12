@@ -53,6 +53,13 @@ export const VIRTUAL_PROVIDER = "camelrun";
  * that sends nothing within it for its input has stalled, and the next member takes the request.
  */
 type Member = [provider: string, id: string, options?: { serviceTier: ServiceTier; firstTokenBudget?: FirstTokenBudget }];
+/**
+ * The longest a call asked on flex waits for flex capacity (asking again with backoff) before the default tier takes it,
+ * on both backends. Flex answers a large request with a 429 at once when it has no room (probed 2026-11-12, before and
+ * after our own Google key on OpenRouter: 0 of 10 at 60k tokens), so a long wait only delays the default tier. One
+ * constant, to change as flex's capacity does.
+ */
+export const STRONG_FLEX_WAIT_CAP_SECONDS = 10;
 /** model-stream.ts `FirstTokenBudget`, restated: the Workers copy of this file is made without its first lines. */
 type FirstTokenBudget = { baseMs: number; perKTokensMs: number };
 /** Gemini 4 Carbon's first token comes within this for its input, with room (measured 2026-11-12, model-stream.ts). */

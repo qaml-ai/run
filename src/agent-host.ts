@@ -25,7 +25,7 @@ import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
 import { withFailureSaid, withModelFallback } from "./model-fallback.ts";
 import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../shared/gemini-reasoning.ts";
-import { askedTier, routeModel, type ModelRouteReason } from "./virtual-models.ts";
+import { askedTier, STRONG_FLEX_WAIT_CAP_SECONDS, routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, namespaceOf, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
@@ -932,7 +932,7 @@ export function createAgentHost(hostIO: HostIO) {
         if (!selected.virtual) return call(selected);
         // Each member's failure this request moved past, for the error when the last one fails too.
         const tried: string[] = [];
-        const attempt = (on: AgentConfig["model"]): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
+        const attempt = (on: AgentConfig["model"], flexWaitedMs = 0): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
           routed = on;
           const first = call(on);
           const next = routeModel(selected, { reason: "retry", failed: on });
@@ -941,12 +941,22 @@ export function createAgentHost(hostIO: HostIO) {
           // naming each member's, with the last one's own first, so it is retried as that error is (Pi's backoff, the pair's).
           if (!next) return tried.length && (on as { firstTokenBudget?: unknown }).firstTokenBudget ? withFailureSaid(first, message => isModelUnavailable(message)
             ? `${message.errorMessage ?? "failed"} (${selected.virtual}: no member can take this now; ${[...tried, `${member}: ${(message.errorMessage ?? "failed").slice(0, 120)}`].join("; ")}; it is retried after a backoff)` : undefined) : first;
-          return withModelFallback(first, () => attempt(next), {
+          // A member asked on flex with no capacity is asked again with backoff, within STRONG_FLEX_WAIT_CAP_SECONDS, as on the
+          // Workers backend (model-flex-wait.ts); a first-token stall is not (it already waited its budget).
+          let failure: AssistantMessage | undefined;
+          const flexDelay = (on as { serviceTier?: string }).serviceTier === "flex"
+            ? Math.min(Math.max(2_000, flexWaitedMs), STRONG_FLEX_WAIT_CAP_SECONDS * 1_000 - flexWaitedMs) : 0; // 2, 2, 4, then the rest
+          return withModelFallback(first, async () => {
+            if (flexDelay > 0 && failure && !isStalled(failure.errorMessage) && !signal?.aborted) {
+              await new Promise<void>(resolve => { const timer = setTimeout(resolve, flexDelay); signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
+              if (!signal?.aborted) return attempt(on, flexWaitedMs + flexDelay);
+            }
+            tried.push(`${member}: ${(failure?.errorMessage ?? "failed").slice(0, 120)}`);
+            recordModelFallback({ tenant: config.tenant, agent: config.id, from: `${on.provider}/${on.id}`, to: `${next.provider}/${next.id}`, reason: "unavailable", errorClass: errorClass(failure?.errorMessage ?? "") });
+            return attempt(next);
+          }, {
             moves: (message, partial) => isModelUnavailable(message) && !partial?.content.length,
-            blocked: message => {
-              tried.push(`${member}: ${(message.errorMessage ?? "failed").slice(0, 120)}`);
-              recordModelFallback({ tenant: config.tenant, agent: config.id, from: `${on.provider}/${on.id}`, to: `${next.provider}/${next.id}`, reason: "unavailable", errorClass: errorClass(message.errorMessage ?? "") });
-            },
+            blocked: message => { failure = message; },
             unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: `${on.provider}/${on.id}`, fallback: `${next.provider}/${next.id}`, error: safeError(error) })),
             aborted: () => !!signal?.aborted,
           });

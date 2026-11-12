@@ -4,7 +4,7 @@ Two virtual models name a class of work: `camelrun/fast` (`openrouter/meta/muse-
 `camelrun/strong` (`openrouter/google/gemini-4-carbon` on OpenRouter's flex service tier, half the default tier's
 price), for judgment. A `strong` request sends `service_tier: "flex"`; when flex has no capacity, the Workers backend
 asks again with backoff for up to `AGENT_FLEX_WAIT_SECONDS` (10 by default, and at most 10), then makes it on the default tier for the
-rest of the turn, logged as `model_flex_fallback` and `model_flex_fallback_cost`; the Node runtime moves at once. A
+rest of the turn, logged as `model_flex_fallback` and `model_flex_fallback_cost`; the Node runtime waits the same 10 seconds at most. A
 response that asked flex and was served on another tier with no fallback is logged as `model_flex_unhonored`. The
 tier that served a response is on its usage (`serviceTier`, and `requestedServiceTier` when one was asked), its model
 attempt and its `usage.recorded` event, and the platform's price for it is that tier's. `GET /v1/models` lists each

@@ -336,9 +336,12 @@ test("strong: Gemini's reasoning from flex is refused on the default tier's othe
   const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
   const run = await r.prompt(agent, "Read the file");
   assert.equal(run.outcome.result.reply, "Read it: package main.", JSON.stringify(run.outcome));
-  // Turn 1 on flex, signed; the continuation on flex (down); the default tier refusing the other provider's reasoning; made again without it.
-  assert.deepEqual(requests.map(request => request.details), [false, true, true, false], JSON.stringify(requests));
-  assert.deepEqual(requests.map(request => request.tier === "flex"), [true, true, false, false], JSON.stringify(requests));
+  // Turn 1 on flex, signed; the continuation on flex (down, asked again within the flex wait); the default tier refusing
+  // the other provider's reasoning; made again without it.
+  const moves = requests.filter((request, index) => index === 0 || JSON.stringify(request) !== JSON.stringify(requests[index - 1]));
+  assert.deepEqual(moves.map(request => request.details), [false, true, true, false], JSON.stringify(requests));
+  assert.deepEqual(moves.map(request => request.tier === "flex"), [true, true, false, false], JSON.stringify(requests));
+  assert.ok(requests.filter(request => request.tier === "flex" && request.details).length >= 2, "flex was asked again before the move");
   assert.ok(r.logs.some(line => line.includes('"model_reasoning_replay_dropped"')), "logged");
 
   // Later calls drop it up front: the history keeps the signature, and asking with it first would be refused every call.
@@ -382,33 +385,41 @@ test("strong: flex that sends no first token in time is given up on, and the def
   assert.deepEqual(requests, ["flex", "default"]);
 });
 
-test("strong: a flex 429 moves to the default tier at once; both tiers 429 fails the request naming both, and camelrun/default's error is as it was", async t => {
+test("strong: flex's 429 is asked again within the flex wait, then the default tier takes it; both tiers 429 fails the request naming both", { timeout: 120_000 }, async t => {
   const requests: (string | undefined)[] = [];
-  let defaultDown = false;
+  let flexFailures = 1, defaultDown = false;
   const url = await listen(t, async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
     const body = JSON.parse(text);
     requests.push(body.service_tier);
-    if (body.service_tier === "flex" || defaultDown)
+    if ((body.service_tier === "flex" && flexFailures-- > 0) || (body.service_tier !== "flex" && defaultDown))
       return res.writeHead(429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "google/gemini-4-carbon is temporarily rate-limited upstream", code: 429 } }));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "From the default tier.", annotations: [] }] }]).events)
+    for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: `From ${body.service_tier}.`, annotations: [] }] }]).events)
       res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);
     res.end();
   });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: url } });
   const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
-  const run = await r.prompt(agent, "Say hello");
-  assert.equal(run.outcome.result.reply, "From the default tier.", JSON.stringify(run.outcome));
-  assert.deepEqual(requests, ["flex", "default"], "no wait on flex");
-
+  // Flex full once: asked again on flex, which answers; no move.
+  let run = await r.prompt(agent, "Say hello");
+  assert.equal(run.outcome.result.reply, "From flex.", JSON.stringify(run.outcome));
+  assert.deepEqual(requests, ["flex", "flex"]);
+  // Flex full throughout: asked again for up to STRONG_FLEX_WAIT_CAP_SECONDS, then the default tier answers.
+  flexFailures = 1_000;
+  requests.length = 0;
+  const started = Date.now();
+  run = await r.prompt(agent, "Say hello again");
+  assert.equal(run.outcome.result.reply, "From default.", JSON.stringify(run.outcome));
+  assert.equal(requests.at(-1), "default");
+  assert.ok(requests.slice(0, -1).every(tier => tier === "flex") && requests.length >= 3, JSON.stringify(requests));
+  assert.ok(Date.now() - started >= 9_000 && Date.now() - started < 30_000, `waited ${Date.now() - started} ms`);
+  // Both tiers 429: the error names both members.
   defaultDown = true;
   requests.length = 0;
-  const down = await r.prompt(agent, "Say hello again");
+  const down = await r.prompt(agent, "Once more");
   const error = JSON.stringify(down.outcome);
   assert.match(error, /camelrun\/strong: no member can take this now; openrouter\/google\/gemini-4-carbon \(flex\): .*rate-limited upstream; openrouter\/google\/gemini-4-carbon \(default\): .*rate-limited upstream; it is retried after a backoff/, error);
-  assert.equal(requests[0], "flex");
-  assert.ok(requests.filter(tier => tier === "default").length >= 1);
 });

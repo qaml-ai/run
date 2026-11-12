@@ -3,6 +3,7 @@ import { getModel, tierCost } from "./model-catalog.ts";
 import { costAt } from "./platform-pricing.ts";
 import { modelFailure } from "./model-errors.ts";
 import type { ModelRetryEvent } from "./model-replay-retry.ts";
+import { STRONG_FLEX_WAIT_CAP_SECONDS } from "./model-policy.ts";
 
 /**
  * How long a call asked on OpenRouter's flex tier waits for flex capacity before it moves to the default tier, by
@@ -11,14 +12,7 @@ import type { ModelRetryEvent } from "./model-replay-retry.ts";
  * backoff for this long, then the virtual model's next member (the same model on the default tier) takes the call.
  * An ordinary agent's default; a workflow, which tolerates latency, sets its own (`flexWaitSeconds`).
  */
-export const FLEX_WAIT_SECONDS = 10;
-/**
- * The longest any call waits for flex, whatever asked for more (a workflow's `flexWaitSeconds`, AGENT_FLEX_WAIT_SECONDS).
- * Flex answers a large request with a 429 at once when it has no room (probed 2026-11-12, before and after our own Google
- * key on OpenRouter: 0 of 10 at 60k tokens), so a long wait only delays the default tier, which answers. One constant,
- * to change as flex's capacity does.
- */
-export const STRONG_FLEX_WAIT_CAP_SECONDS = 10;
+export const FLEX_WAIT_SECONDS = STRONG_FLEX_WAIT_CAP_SECONDS;
 const FIRST_DELAY_MS = 2_000, MAX_DELAY_MS = 15_000;
 
 /** The flex wait for a call: the request's `flexWaitSeconds`, else AGENT_FLEX_WAIT_SECONDS, else FLEX_WAIT_SECONDS, at most STRONG_FLEX_WAIT_CAP_SECONDS; 0 moves at once. */
