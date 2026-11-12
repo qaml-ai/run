@@ -17,15 +17,17 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const secret = "jobhost-fixture-secret-with-at-least-32-characters";
   // A fake STS: it answers GetCallerIdentity as STS does for an EC2 instance's role, and counts what it was sent.
   const stsCalls: { authorization?: string; audience?: string }[] = [];
+  let stsDenies = 0;
   const sts = createServer((request, response) => {
     stsCalls.push({ authorization: request.headers.authorization, audience: request.headers["x-camelrun-job-host-audience"] as string });
+    if (stsDenies > 0) { stsDenies--; response.writeHead(403, { "content-type": "text/xml" }); response.end("<ErrorResponse><Error><Code>SignatureDoesNotMatch</Code></Error></ErrorResponse>"); return; }
     response.writeHead(200, { "content-type": "text/xml" });
     response.end(`<GetCallerIdentityResponse><GetCallerIdentityResult><Arn>arn:aws:sts::123456789012:assumed-role/camelrun-job-host/i-0abc123def4567890</Arn><Account>123456789012</Account></GetCallerIdentityResult></GetCallerIdentityResponse>`);
   });
   sts.listen(0, "127.0.0.1"); await once(sts, "listening");
   t.after(() => new Promise<void>(resolve => sts.close(() => resolve())));
   const fixture = await startFixture({ vars: {
-    AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "30",
+    AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "45",
     JOB_HOST_ROLE_ARNS: "arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,
     ADMIN_TENANTS: "camelrun-proto-local",
   } });
@@ -100,6 +102,13 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   // says (the instance's), and the same signed request is accepted once.
   const enroll = (attestation: unknown) => fetch(`${fixture.url}/v1/internal/job-hosts/enroll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ attestation }) });
   const signed = signGetCallerIdentity({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret-example", sessionToken: "token" }, `camelrun-job-host:${fixture.url}`);
+  // STS refusing it: refused, and its claim given back (a forged request leaves nothing), so the same request can be
+  // tried again. The refusal says only that: why is in the log.
+  stsDenies = 1;
+  const denied = await enroll(signed);
+  assert.equal(denied.status, 403);
+  assert.deepEqual(await denied.json(), { error: "Enrollment refused", code: "HOST_REFUSED" });
+  stsCalls.length = 0;
   const aws = await enroll(signed);
   const awsBody = await aws.json() as { host: string; credential: string; expiresAt: number };
   assert.equal(aws.status, 200, JSON.stringify(awsBody));
@@ -110,6 +119,10 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   assert.equal(stsCalls.length, 1, "a replay never reaches STS");
   assert.equal((await enroll(signGetCallerIdentity({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "s" }, "camelrun-job-host:https://another.example"))).status, 403, "one signed for another runtime is refused");
   assert.equal((await enroll({ ...signed, url: "https://evil.example/" })).status, 403, "the runtime sends nothing anywhere but STS");
+  assert.equal((await fetch(`${fixture.url}/v1/internal/job-hosts/enroll`, { method: "POST", body: "x".repeat(17 * 1024) })).status, 413, "a body over 16 KiB is refused unread");
+  // A host keeps its two newest credentials: a third enrollment retires the first.
+  const again = async () => (await (await enroll({ kind: "test", host: "spare-host", secret })).json() as { credential: string }).credential;
+  const [first, second, third] = [await again(), await again(), await again()];
 
   // A credential is bound to its host: one host's credential does not connect as another, and a made-up one fails.
   const socketFor = async (name: string, credential: string) => {
@@ -124,14 +137,20 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   };
   assert.equal((await (await socketFor("host-1", awsBody.credential)).closed).code, 1008, "an instance's credential is not host-1's");
   assert.equal((await (await socketFor("i-0abc123def4567890", `i-0abc123def4567890.${"x".repeat(43)}`)).closed).code, 1008, "a made-up credential is refused");
+  assert.equal((await (await socketFor("spare-host", first)).closed).code, 1008, "a host's third credential retired its first");
+  for (const credential of [second, third]) {
+    const spare = await socketFor("spare-host", credential);
+    await until(async () => spare.messages.some(message => message.includes('"registered"')), "a current credential connects");
+    spare.socket.close();
+  }
   // The right one registers, and its socket closes when the credential ends (30 s here).
   const probe = await socketFor("i-0abc123def4567890", awsBody.credential);
   await until(async () => probe.messages.some(message => message.includes('"registered"')), "the instance's registration");
-  const expired = await Promise.race([probe.closed, new Promise<undefined>(resolve => setTimeout(resolve, 45_000))]);
+  const expired = await Promise.race([probe.closed, new Promise<undefined>(resolve => setTimeout(resolve, 60_000))]);
   assert.deepEqual(expired, { code: 1008, reason: "Credential expired" });
 
   // Revoking a host: its socket closes, it is placed nothing, and it cannot enroll again until allowed. host-1 renews its
-  // credential (every ~24 s here) and kept running its jobs through it; revoked, it is refused.
+  // credential (every ~36 s here) and kept running its jobs through it; revoked, it is refused.
   const admin = (path: string, method: string) => fetch(fixture.url + path, { method, headers: { authorization: `Bearer ${fixture.token}` } });
   assert.equal((await admin("/v1/job-hosts/host-1", "DELETE")).status, 200);
   const listed = await (await admin("/v1/job-hosts", "GET")).json() as { hosts: { name: string; revoked: number }[] };

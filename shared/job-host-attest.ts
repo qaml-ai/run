@@ -12,6 +12,7 @@ import { createHash, createHmac } from "node:crypto";
 
 export const AUDIENCE_HEADER = "x-camelrun-job-host-audience";
 const STS_BODY = "Action=GetCallerIdentity&Version=2011-06-15";
+// The global and regional STS endpoints of the aws and aws-us-gov partitions (awsCaller takes those two).
 const STS_HOST = /^sts(\.[a-z]{2}(-gov)?-[a-z]+-\d)?\.amazonaws\.com$/;
 /** A signed request older (or newer) than this is refused, well inside STS's own 15 minutes. */
 export const AWS_ATTESTATION_SKEW_MS = 5 * 60_000;
@@ -59,7 +60,7 @@ export class AttestationError extends Error {}
 export function checkAwsAttestation(attestation: Extract<Attestation, { kind: "aws" }>, audience: string, now = Date.now()) {
   let url: URL;
   try { url = new URL(attestation.url); } catch { throw new AttestationError("Not a URL"); }
-  if (attestation.method !== "POST" || url.protocol !== "https:" || !STS_HOST.test(url.hostname) || url.pathname !== "/" || url.search || url.port)
+  if (attestation.method !== "POST" || url.protocol !== "https:" || !STS_HOST.test(url.hostname) || url.pathname !== "/" || url.search || url.port || url.username || url.password)
     throw new AttestationError("Not an STS request");
   if (attestation.body !== STS_BODY) throw new AttestationError("Only sts:GetCallerIdentity is accepted");
   const headers = Object.fromEntries(Object.entries(attestation.headers ?? {}).map(([name, value]) => [name.toLowerCase(), String(value)]));
@@ -83,7 +84,7 @@ export function checkAwsAttestation(attestation: Extract<Attestation, { kind: "a
  */
 export function awsCaller(response: string, allowedRoles: string[]) {
   const arn = /<Arn>([^<]+)<\/Arn>/.exec(response)?.[1];
-  const match = arn ? /^arn:(aws|aws-us-gov|aws-cn):sts::(\d{12}):assumed-role\/([^/]+)\/([^/]+)$/.exec(arn) : null;
+  const match = arn ? /^arn:(aws|aws-us-gov):sts::(\d{12}):assumed-role\/([^/]+)\/([^/]+)$/.exec(arn) : null;
   if (!match) throw new AttestationError("Not an assumed role");
   const [, partition, account, role, session] = match;
   const roleArn = `arn:${partition}:iam::${account}:role/${role}`;

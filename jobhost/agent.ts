@@ -71,7 +71,7 @@ export class HostAgent {
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       // Before the credential ends: close, and the loop enrolls again and reconnects (jobs keep running meanwhile).
       const left = enrolled.expiresAt - Date.now();
-      const renew = setTimeout(() => socket.close(1000, "Renewing"), Math.max(1_000, left - Math.min(60_000, left / 5)));
+      const renew = setTimeout(() => socket.close(1000, "Renewing"), Math.max(30_000, left - Math.min(60_000, left / 5)));
       socket.addEventListener("open", () => {
         this.socket = socket;
         // The credential is the first message, not part of the URL: a URL lands in access logs.
@@ -172,7 +172,9 @@ class Stopped extends Error {}
  */
 export function awsAttestor(imds = "http://169.254.169.254") {
   return async (audience: string): Promise<Attestation> => {
-    const token = await (await fetch(`${imds}/latest/api/token`, { method: "PUT", headers: { "x-aws-ec2-metadata-token-ttl-seconds": "300" } })).text();
+    const tokenResponse = await fetch(`${imds}/latest/api/token`, { method: "PUT", headers: { "x-aws-ec2-metadata-token-ttl-seconds": "300" } });
+    if (!tokenResponse.ok) throw new Error(`IMDS token: ${tokenResponse.status}`);
+    const token = await tokenResponse.text();
     const get = async (path: string) => { const response = await fetch(`${imds}${path}`, { headers: { "x-aws-ec2-metadata-token": token } }); if (!response.ok) throw new Error(`IMDS ${path}: ${response.status}`); return response.text(); };
     const role = (await get("/latest/meta-data/iam/security-credentials/")).split("\n")[0]!.trim();
     const credentials = JSON.parse(await get(`/latest/meta-data/iam/security-credentials/${role}`)) as { AccessKeyId: string; SecretAccessKey: string; Token: string };

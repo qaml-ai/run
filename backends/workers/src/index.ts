@@ -101,7 +101,7 @@ import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { JobHost, JobHostRegistry, HostJob } from "./jobs/hosts.ts";
-import { HOST_NAME, jobHostAudience, jobHostRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
+import { HOST_NAME, enrollHost, jobHostRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
@@ -212,14 +212,7 @@ const worker = {
         if (!HOST_NAME.test(name)) return new Response("Invalid host name", { status: 400 });
         return hosts.JOB_HOSTS.getByName(name).fetch(request);
       }
-      if (hostPath === "/v1/internal/job-hosts/enroll" && request.method === "POST") {
-        const input = await request.json().catch(() => undefined) as { attestation?: unknown } | undefined;
-        try {
-          return Response.json(await hosts.JOB_HOST_REGISTRY.getByName("hosts").enroll(input?.attestation as never, jobHostAudience(request, env as { AGENT_PUBLIC_URL?: string })));
-        } catch (error) {
-          return Response.json({ error: error instanceof Error ? error.message : "Refused", code: "HOST_REFUSED" }, { status: 403 });
-        }
-      }
+      if (hostPath === "/v1/internal/job-hosts/enroll" && request.method === "POST") return enrollHost(request, hosts);
       return new Response("Not found", { status: 404 });
     }
     if (hosts.JOB_HOST_REGISTRY && (env as { TEST_MODE?: string }).TEST_MODE === "1" && new URL(request.url).pathname === "/__test/job-hosts")

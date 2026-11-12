@@ -118,6 +118,17 @@ attestation proves:
 - **Revoking:** an admin account revokes a host with `DELETE /v1/job-hosts/:host`. That drops its credentials, closes
   its socket and fails its jobs in flight, and the host can enroll again only after `POST /v1/job-hosts/:host/allow`.
   `GET /v1/job-hosts` lists the hosts.
+- **Unauthenticated enroll:** the Worker runs the attestor's checks and the STS call. The registry object only claims
+  the signed request (once; given back when STS refuses it) and issues the credential, so forged requests can't tie up
+  the one registry object. Bodies over 16 KiB are refused unread, and callers get only a fixed refusal. A host keeps
+  at most its two newest credentials. `JOB_HOST_ENROLL_LIMITER`, a Cloudflare rate limiting binding keyed by the
+  client address, limits enrollments; it is not configured anywhere yet, so add it with the first deployed config.
+- **Required trust policy (slice 7's Terraform must enforce it):** the host id is the role session name, and whoever
+  assumes the role chooses it. EC2 sets it to the instance id, but any other principal allowed to assume an allowlisted
+  role could name a running instance and take its jobs and their secrets. Each role in `JOB_HOST_ROLE_ARNS` must
+  therefore trust only `ec2.amazonaws.com`: no user, role or account holds `sts:AssumeRole` on it, and it does not
+  trust itself. A later hardening could also check the instance with `ec2:DescribeInstances`, or ask for the signed
+  instance identity document.
 
 
 Each slice is reviewable alone. Slices 1–4 need no AWS resources: they test against fakes, and a single host is used
