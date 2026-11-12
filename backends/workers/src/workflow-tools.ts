@@ -8,7 +8,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { agentOwner } from "../../../shared/owner.ts";
 import { startInput, startWorkflow, ownWorkflow, WorkflowInputError, WORKFLOW_SCRIPT_CHARS, type WorkflowStub } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
-import { workflowNext } from "./workflow-notices.ts";
+import { shortFault, workflowNext } from "./workflow-notices.ts";
 
 /** The most a workflow an agent starts may spend, unless its configuration's `workflows.maxBudgetUsd` says otherwise. */
 export const DEFAULT_MAX_BUDGET_USD = 100;
@@ -57,7 +57,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
   const brief = (workflowId: string, view: Record<string, any>) => ({
     workflowId, status: view.status, ...(view.pauseReason ? { pauseReason: view.pauseReason } : {}), phase: view.phase, revision: view.revision,
     counts: view.counts, spent: view.spent?.usd, budget: view.budget?.usd, ...(view.result !== undefined ? { result: view.result } : {}), ...(view.error ? { error: view.error } : {}),
-    ...(view.fault ? { fault: view.fault } : {}), ...(workflowNext(view as never) ? { next: workflowNext(view as never) } : {}),
+    ...(view.fault ? { fault: shortFault(view.fault) } : {}), ...(workflowNext(view as never) ? { next: workflowNext(view as never) } : {}),
   });
   const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[], run: (args: Record<string, any>, callId: string) => Promise<unknown>) =>
     defineTool({ name, description, parameters: { type: "object", properties, required, additionalProperties: false } as never, structuredOutputSchema: {}, replay: "safe",

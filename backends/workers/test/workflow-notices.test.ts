@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { WorkflowNotices, noticeEvent, workflowNext } from '../src/workflow-notices.ts';
+import { WorkflowNotices, noticeEvent, workflowNext, shortFault } from '../src/workflow-notices.ts';
 
 function sql(db = new DatabaseSync(':memory:')) {
   return { exec(query: string, ...args: any[]) { const rows = db.prepare(query).all(...args) as any[]; return Object.assign(rows[Symbol.iterator](), { toArray: () => rows, one: () => rows[0] }); } } as unknown as SqlStorage;
@@ -145,5 +145,10 @@ test("a fault's notice carries its code and message, and every stop says what it
   assert.equal(sent[1].fault, undefined);
   assert.match(sent[1].next, /confirm with workflow_resume, or workflow_edit with confirm: true/);
   assert.equal(workflowNext({ status: 'running' }), undefined);
+  // The runtime's own faults are resumed, not edited; a payer stop names jobs too; a long message is cut.
+  assert.match(workflowNext({ status: 'paused', pauseReason: 'vm_crash', fault: { code: 'vm_crash', message: 'x' } })!, /workflow_resume runs the step again/);
+  assert.match(workflowNext({ status: 'paused', pauseReason: 'journal_version', fault: { code: 'journal_version', message: 'x' } })!, /once that version is deployed/);
+  assert.match(workflowNext({ status: 'paused', pauseReason: 'payer_exhausted' })!, /A sub-agent or job/);
+  assert.equal(shortFault({ code: 'vm_crash', message: 'e'.repeat(2000) }).message.length, 500 + '… (cut)'.length);
   assert.match(workflowNext({ status: 'budget_exhausted' })!, /workflow_budget/);
 });

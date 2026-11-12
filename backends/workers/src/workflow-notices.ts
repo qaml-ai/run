@@ -11,21 +11,30 @@ import type { NoticeRequest, RuntimeNotice } from "./delegation-notifications.ts
 export type NoticeSummary = { status: string; pauseReason?: string; phase?: string; result?: unknown; error?: string; fault?: { code: string; message: string }; counts?: Record<string, number>; spent?: { usd: number }; budget?: { usd: number | null }; revision?: number };
 
 /**
- * What a stopped workflow waits for, as its owner reads it (a notice, workflow_status): a fault is the script's own
- * error, to fix with an edit; every other stop names who goes on and how. Undefined while it runs, waits or has ended.
+ * What a stopped workflow waits for, as its owner reads it (a notice, workflow_status): a script's fault is fixed with an
+ * edit; a fault of the runtime's (the VM crashed, a journal from a newer runner) is resumed; every other stop names who
+ * goes on and how. Undefined while it runs, waits or has ended.
  */
 export function workflowNext(summary: Pick<NoticeSummary, "status" | "pauseReason" | "fault">): string | undefined {
+  if (summary.fault?.code === "vm_crash") return "The script's VM crashed (not the script's error): workflow_resume runs the step again.";
+  if (summary.fault?.code === "journal_version") return "Its journal was written by a newer runtime: once that version is deployed here, workflow_resume goes on.";
   if (summary.fault) return `The script failed (${summary.fault.code}): fix it with workflow_edit; the edit resumes it.`;
   if (summary.status === "budget_exhausted") return "Its budget is spent: raise it with workflow_budget to go on.";
   if (summary.status !== "paused") return undefined;
   switch (summary.pauseReason) {
     case "confirm_rerun": return "Your edit reruns many finished effects: confirm with workflow_resume, or workflow_edit with confirm: true.";
     case "user": return "Paused: workflow_resume goes on.";
-    case "payer_exhausted": return "A sub-agent was refused for credit (the spend limit): workflow_resume once there is credit.";
+    case "payer_exhausted": return "A sub-agent or job was refused for credit (the spend limit): workflow_resume once there is credit.";
     case "waiting_on_gate": return "A gate expired unanswered: once it is answered in the inbox, workflow_resume goes on.";
     case "capacity_refused": return "The account is at its running-workflows limit: workflow_resume once another ends.";
     default: return "Paused: workflow_resume goes on.";
   }
+}
+
+/** A fault as the owner reads it: its message cut to FAULT_MESSAGE_CHARS (a VM crash echoes raw engine text). */
+export const FAULT_MESSAGE_CHARS = 500;
+export function shortFault(fault: { code: string; message: string }) {
+  return fault.message.length > FAULT_MESSAGE_CHARS ? { code: fault.code, message: `${fault.message.slice(0, FAULT_MESSAGE_CHARS)}… (cut)` } : fault;
 }
 
 /** The largest notice body (its JSON); a larger result is cut, saying so (workflow_status has it whole). */
@@ -103,7 +112,7 @@ export class WorkflowNotices {
       ...(event === "phase" ? { finishedPhase: before?.phase, phase: summary.phase } : summary.phase ? { phase: summary.phase } : {}),
       counts: summary.counts, spentUsd: summary.spent?.usd, budgetUsd: summary.budget?.usd,
       ...(summary.result !== undefined ? { result: summary.result } : {}), ...(summary.error ? { error: summary.error } : {}),
-      ...(summary.fault ? { fault: summary.fault } : {}), ...(workflowNext(summary) ? { next: workflowNext(summary) } : {}),
+      ...(summary.fault ? { fault: shortFault(summary.fault) } : {}), ...(workflowNext(summary) ? { next: workflowNext(summary) } : {}),
     };
     let text = JSON.stringify(body);
     if (text.length > NOTICE_BODY_CHARS) text = JSON.stringify({ ...body, result: `(cut: ${text.length} characters; workflow_status has it)` });
