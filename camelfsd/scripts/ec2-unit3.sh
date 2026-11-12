@@ -31,7 +31,7 @@ unit3() {
     wait "$guest"
     "$BIN" testguest checkpointed --tree "$(field tree <<<"$checkpoint")" --index "$W/unit3-$j.idx.json"
     echo "unit3 checkpoint $j $checkpoint" | tee -a "$RESULT" "$report"
-    for key in walkMs streamMs freezeMs reflinkMs fiemapMs uploadMs publishMs checkpointMs; do
+    for key in walkMs streamMs freezeMs reflinkMs fiemapMs uploadMs publishMs imageMs wallMs checkpointMs; do
       echo "unit3 $j $key=$(field "$key" <<<"$checkpoint")" | tee -a "$RESULT" "$report"
     done
     if [[ $j == j1 ]]; then

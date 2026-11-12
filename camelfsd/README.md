@@ -101,7 +101,7 @@ A publish failure leaves the ref and tree/root mappings untouched.
 
 The response contains root, tree, commit, parentRoot, filesChanged, bytesReceived,
 walkMs, streamMs, freezeMs, reflinkMs, fiemapMs, hashMs, uploadMs, publishMs and
-checkpointMs. Mount locking is per job; waiting on one guest does not block
+imageMs, wallMs and checkpointMs. Mount locking is per job; waiting on one guest does not block
 another mount's status, checkpoint or release. The manager lock protects only
 the mount map. Blobs use Git SHA-1 object IDs and SHA-256 lineage records.
 The tree builder reuses unchanged subtrees. One SQLite transaction publishes
@@ -202,3 +202,12 @@ Cleanup takes the same data-directory lock as the daemon.
 Snapshots taken while ext4 is frozen can retain the journal's recovery-needed
 flag. Read-only verification mounts must use `-o loop,ro,noload`; they must not
 replay the journal. A VM's normal read-write mount replays it.
+
+
+Checkpoint timing intervals nest: `wallMs ≈ arm+connect + streamMs + publishMs`;
+`imageMs ⊂ publishMs`. `wallMs` runs from POST arrival to response.
+`streamMs` runs from armed connection handover through ack, including the
+guest walk. `walkMs` and `freezeMs` are guest-reported. `publishMs` runs
+from ack to done. `imageMs` covers image fsync, reflink, FIEMAP, hashing,
+chunk uploads, root and CAS. For one release `checkpointMs` aliases
+`wallMs` for jobhost compatibility.

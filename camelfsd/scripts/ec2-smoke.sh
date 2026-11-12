@@ -161,7 +161,7 @@ PROCS=$(pgrep -x camelfsd || true); rec "camelfsd_pids=${PROCS:-none}"
 for p in /sys/block/nbd*/pid; do [[ ! -e $p ]] || { rec "unexpected_nbd_attachment=$p"; exit 1; }; done
 rec '| step | milliseconds |'
 rec '|---|---:|'
-for pair in "import:importMs:$IMPORT" "warm mount:mountMs:$MOUNT" "checkpoint reflink:reflinkMs:$CP" "checkpoint FIEMAP:fiemapMs:$CP" "checkpoint hash:hashMs:$CP" "checkpoint upload:uploadMs:$CP" "checkpoint total:checkpointMs:$CP" "cold mount:mountMs:$COLD" "promoted checkpoint:checkpointMs:$CP2"; do
+for pair in "import:importMs:$IMPORT" "warm mount:mountMs:$MOUNT" "checkpoint reflink:reflinkMs:$CP" "checkpoint FIEMAP:fiemapMs:$CP" "checkpoint hash:hashMs:$CP" "checkpoint upload:uploadMs:$CP" "checkpoint wall:wallMs:$CP" "cold mount:mountMs:$COLD" "promoted checkpoint:wallMs:$CP2"; do
   LABEL=${pair%%:*}; REST=${pair#*:}; KEY=${REST%%:*}; JSON=${REST#*:}
   rec "| $LABEL | $(field "$KEY" <<<"$JSON") |"
 done

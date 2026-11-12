@@ -35,6 +35,8 @@ type Checkpoint struct {
 	FiemapMs       float64 `json:"fiemapMs"`
 	HashMs         float64 `json:"hashMs"`
 	UploadMs       float64 `json:"uploadMs"`
+	ImageMs        float64 `json:"imageMs"`
+	WallMs         float64 `json:"wallMs"`
 	CheckpointMs   float64 `json:"checkpointMs"`
 }
 
@@ -237,7 +239,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if v.Snapshot > 1 {
 		_ = os.Remove(filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot-1)))
 	}
-	out.CheckpointMs = ms(t)
+	out.ImageMs = ms(t)
 	return out, nil
 }
 

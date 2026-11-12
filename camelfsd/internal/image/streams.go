@@ -483,6 +483,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	defer stopCancel()
 	deadline, _ := ctx.Deadline()
 	c = &wire.DeadlineConn{Conn: raw, Idle: m.StreamIdle, Overall: deadline}
+	streamStart := time.Now()
 	prepared, e := m.prepareReceive(ctx, v)
 	if e != nil {
 		return out, e
@@ -548,7 +549,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	out.FilesChanged = r.count
 	out.BytesReceived = r.bytes
 	out.WalkMs = r.walk
-	out.StreamMs = r.stream
+	out.StreamMs = float64(publish.Sub(streamStart).Microseconds()) / 1000
 	out.FreezeMs = r.freeze
 	out.PublishMs = ms(publish)
 	return

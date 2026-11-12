@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -100,5 +101,66 @@ func TestStreamErrorRoutes(t *testing.T) {
 				t.Fatal("partial mapping")
 			}
 		})
+	}
+}
+
+func TestCheckpointTimingNesting(t *testing.T) {
+	t.Setenv("CAMELFSD_TEST_NO_REFLINK", "1")
+	d := t.TempDir()
+	db, e := refs.Open(filepath.Join(d, "r.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	st := store.Local{Dir: t.TempDir()}
+	m, e := image.New(image.Config{Data: d, Cold: "prehydrate", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 4), db)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer m.Close()
+	tr, e := (&objects.Repository{DB: db, Store: st}).Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	v, e := m.Mount(context.Background(), image.Request{JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(30 * time.Millisecond)
+		for {
+			c, e := net.Dial("unix", v.Vsock+"_5200")
+			if e != nil {
+				return
+			}
+			var ready map[string]bool
+			if wire.JSON(c, &ready) != nil || !ready["ready"] {
+				c.Close()
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			time.Sleep(20 * time.Millisecond)
+			wire.Send(c, wire.Header{V: 1, Kind: "checkpoint", JobID: "j", BaseTree: tr.Tree, WalkMs: 7})
+			wire.Send(c, wire.Op{End: true, FreezeMs: 9})
+			var ack map[string]bool
+			wire.JSON(c, &ack)
+			c.Close()
+			return
+		}
+	}()
+	w := httptest.NewRecorder()
+	(&Server{Manager: m}).ServeHTTP(w, httptest.NewRequest("POST", "/v0/mounts/j/checkpoint", strings.NewReader("{}")))
+	<-done
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var out image.Checkpoint
+	if e = json.Unmarshal(w.Body.Bytes(), &out); e != nil {
+		t.Fatal(e)
+	}
+	if out.CheckpointMs != out.WallMs || out.WallMs < out.StreamMs+out.PublishMs || out.StreamMs < 20 || out.ImageMs > out.PublishMs || out.WalkMs != 7 || out.FreezeMs != 9 {
+		t.Fatalf("%+v", out)
 	}
 }

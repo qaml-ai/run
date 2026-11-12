@@ -127,6 +127,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fail(e)
 				return
 			}
+			v.WallMs = float64(time.Since(t).Microseconds()) / 1000
+			v.CheckpointMs = v.WallMs
 			reply(200, v)
 		} else if len(parts) == 2 && parts[1] == "heartbeat" && r.Method == "POST" {
 			var q struct{}
