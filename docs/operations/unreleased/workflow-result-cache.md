@@ -10,7 +10,7 @@ from that result, at no cost: no sub-agent or container runs. See [Workflows](..
 - **Reuse:** the owner is the agent that started it, or the account for one started with an API key. Only finished
   results are reused, never a `commit()` or `push()`. `agent(…, { repo })` and `job({ at })` are reused only while that
   volume is unchanged since the earlier call started; a reused agent gets its own copy of the earlier fork, and such a
-  result is reused for at most 6 days. An `agent()` is also keyed by the model it resolves to (with the workflow's `classes`) and by its
+  result is reused for at most 3 days. An `agent()` is also keyed by the model it resolves to (with the workflow's `classes`) and by its
   definition's revision. Identical calls within one workflow share a result too. `nocache: true` opts a call out. Results live 7 days from their last use, at most
   2,000 and 64 MiB per owner; one over 1 MiB is not kept.
 - **Shown as:** items with `origin: "cache"` and `cachedFrom`, `counts.cached` on the summary, and the event

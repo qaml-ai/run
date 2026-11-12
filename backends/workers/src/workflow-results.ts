@@ -14,7 +14,7 @@
 // made it owns. When that workflow ends it asks here (`adopt`): if an entry names the fork, this object owns it from then
 // on and deletes it when its last entry goes (retried from the alarm); if not, the workflow deletes it, and an entry that
 // would name it later is refused. A hit never shares the fork: the workflow that got it makes its own copy
-// (WorkflowObject). An entry with a fork lives at most `forkEntryMs`, inside the life of the base snapshot its fork (and
+// (WorkflowObject). An entry with a fork lives at most `forkEntryMs` (3 days), well inside the life of the base snapshot its fork (and
 // a copy of it) commits against (FORK_SNAPSHOT_TTL_MS).
 //
 // The journal is the truth: a hit is journaled with its outcome, so a replay never asks again.
@@ -27,8 +27,11 @@ export const RESULT_CACHE_LIMITS = Object.freeze({
   entries: 2_000,
   bytes: 64 * 1024 * 1024,
   entryBytes: 1024 * 1024,
-  /** An entry naming a fork: at most this long from when it was kept, a day inside its base snapshot's life. */
-  forkEntryMs: FORK_SNAPSHOT_TTL_MS - 86_400_000,
+  /**
+   * An entry naming a fork: at most this long from when it was kept, so a hit's copy still has 4 days of its base
+   * snapshot's life (FORK_SNAPSHOT_TTL_MS) to commit in.
+   */
+  forkEntryMs: FORK_SNAPSHOT_TTL_MS - 4 * 86_400_000,
   /** A fork its workflow kept for itself is refused this long (a put that lost the race with the end). */
   refusedMs: 86_400_000,
   /** A delete that failed is tried again this long after, doubling to an hour. */
@@ -146,8 +149,11 @@ export class WorkflowResults extends DurableObject<FileBindings> {
     const forks = this.sql.exec<{ fork: string | null }>(`SELECT fork FROM results WHERE ${where}`, ...params).toArray()
       .map(row => row.fork).filter((fork): fork is string => fork !== null);
     this.sql.exec(`DELETE FROM results WHERE ${where}`, ...params);
-    for (const fork of forks) if (!this.sql.exec("SELECT 1 FROM results WHERE fork = ? LIMIT 1", fork).toArray().length)
+    for (const fork of forks) if (!this.sql.exec("SELECT 1 FROM results WHERE fork = ? LIMIT 1", fork).toArray().length) {
       this.sql.exec("UPDATE forks SET delete_at = COALESCE(delete_at, ?) WHERE fork = ? AND owned = 1", this.now(), fork);
+      // Not handed over yet: its workflow still owns it (and deletes it at its end, adopt finding no entry).
+      this.sql.exec("DELETE FROM forks WHERE fork = ? AND owned = 0 AND refused_at IS NULL", fork);
+    }
   }
 
   /** Delete the owned forks that are due; one that fails is tried again later. */

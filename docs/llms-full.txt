@@ -7572,7 +7572,7 @@ summary's `counts.cached` counts them.
 - `agent(prompt, { repo })` and `job({ at })` are reused only while that
   volume is unchanged since the earlier call started. A reused agent's answer
   has a fork of its own: a copy of the earlier one, which `commit()` lands as
-  before. A result with a fork is reused for at most 6 days.
+  before. A result with a fork is reused for at most 3 days.
 - An `agent()` is also keyed by the model it resolves to (its `class` or
   `model`, or the workflow's `classes` pin) and by the named `definition`'s
   revision: a restart with a stronger class, or an edited definition, runs

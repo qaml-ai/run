@@ -95,8 +95,8 @@ test("a fork has one owner: its workflow until it ends, then the cache if an ent
   // An entry naming a fork lives at most forkEntryMs, hits or not (its base snapshot's life).
   await object.put({ kind: "agent", key: "n", source: "wf4:n:1", workflow: "wf4", value: 1, fork: { tenant: "acme", volume: "vol_n" } });
   assert.equal(await object.adopt("vol_n", "acme"), true);
-  for (let day = 1; day < 6; day++) { state.clock += 86_400_000; assert.ok(await object.lookup("agent", "n")); }
-  state.clock += 86_400_000;
+  for (let hit = 1; hit < 3; hit++) { state.clock += RESULT_CACHE_LIMITS.forkEntryMs / 3; assert.ok(await object.lookup("agent", "n")); }
+  state.clock += RESULT_CACHE_LIMITS.forkEntryMs / 3;
   await object.alarm();
   assert.equal(await object.lookup("agent", "n"), undefined);
   assert.ok(deleted.includes("acme/vol_n"));
@@ -110,4 +110,13 @@ test("past its caps a scope drops the least recently hit first", async t => {
   state.clock += 1;
   assert.deepEqual(await object.put({ kind: "job", key: "one more", source: "wf2:x:1", workflow: "wf2", value: "x" }), { stored: true });
   assert.equal(await object.lookup("agent", "old"), undefined, "the least recently hit went");
+});
+
+test("an entry that goes before its fork was handed over leaves nothing behind: the workflow still owns the fork", async t => {
+  const { object, state, db } = cache(t);
+  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: 1, fork: { tenant: "acme", volume: "vol_f" } });
+  state.clock += RESULT_CACHE_LIMITS.forkEntryMs;
+  await object.alarm();
+  assert.deepEqual(db.prepare("SELECT fork FROM forks").all(), []);
+  assert.equal(await object.adopt("vol_f", "acme"), false, "its workflow deletes it");
 });
