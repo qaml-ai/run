@@ -58,12 +58,13 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
     if (system.includes("You are a critic in a workflow")) return { tool: { name: "final_output", args: { ok: true }, id: "verdict" } };
     if (user.includes("EXPENSIVE")) return { content: "costly answer", tokens: 600 };
     if (system.includes("You are a sub-agent")) return { content: `plain answer to ${user}` };
-    // The orchestrating agent: start the workflow, wait for it, report.
-    if (last.role === "tool" && !workflowId) {
-      workflowId = JSON.parse(textOf(last)).workflowId;
-      return { tool: { name: "workflow_status", args: { workflowId, waitSeconds: 110 }, id: "status" } };
+    // The orchestrating agent: start the workflow and end its turn; it never polls. Its workflow's notifications
+    // come as messages of their own, each a turn: a finished phase is noted, the ending reported.
+    if (user.includes("<workflow_notification")) {
+      const notice = /<workflow_notification[^>]*status="([a-z_]+)"[^>]*event="([a-z_]+)"[^>]*>\n([\s\S]*?)\n<\/workflow_notification>/.exec(user);
+      return { content: notice?.[2] === "completed" ? `REPORT ${notice[3]}` : `NOTED ${notice?.[2]}` };
     }
-    if (last.role === "tool") return { content: `REPORT ${textOf(last)}` };
+    if (last.role === "tool") { workflowId = JSON.parse(textOf(last)).workflowId; return { content: "started" }; }
     return { tool: { name: "workflow_start", args: { script: SCRIPT, args: { files: 3 }, budgetUsd: 1, name: "review three" }, id: "start" } };
   });
   model.server.listen(0, "127.0.0.1"); await once(model.server, "listening");
@@ -84,13 +85,24 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   // An agent that may delegate has the workflows builtin; it writes and runs one.
   const agent = await ok("/v1/agents", { model: "wf-fixture/wf-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
   const run = await ok(`/v1/agents/${agent.id}/prompt`, { text: "go" });
-  const done = await until(async () => { const record = await ok(`/v1/agents/${agent.id}/requests/${run.id}`); return record.state === "completed" && record; }, "the agent's run");
+  const started = await until(async () => { const record = await ok(`/v1/agents/${agent.id}/requests/${run.id}`); return record.state === "completed" && record; }, "the agent's run");
+  assert.equal(started.outcome?.result?.reply, "started");
   console.log(`E2E agent run done at ${new Date().toISOString()}`);
-  const reply = String(done.outcome?.result?.reply ?? "");
-  assert.match(reply, /^REPORT /, JSON.stringify(done.outcome));
+  // The ending reaches the agent as a <workflow_notification>: a turn of its own, in which it reports the result.
+  const reportRun = await until(async () => {
+    const requests = (await ok(`/v1/agents/${agent.id}`)).requests as { id: string; state: string; outcome?: { result?: { reply?: string } } }[];
+    return requests.find(request => request.state === "completed" && String(request.outcome?.result?.reply ?? "").startsWith("REPORT ")) ?? false;
+  }, "the agent's report from its notification");
+  assert.match(reportRun.id, new RegExp(`^${workflowId}_n\\d+$`), "the notice's request is the workflow's");
+  const reply = String(reportRun.outcome!.result!.reply);
   const reported = JSON.parse(reply.slice("REPORT ".length));
   assert.equal(reported.status, "completed", reply);
   assert.deepEqual(reported.result, { reviews: ["reviewed a", "reviewed b", "reviewed c"], verdict: { ok: true }, files: 3 });
+  // It never asked for the workflow's status: everything it knew came in notifications (a phase, then the ending).
+  const asked = model.bodies.flatMap(body => (body.messages as any[]).flatMap(message => (message.tool_calls ?? []).map((call: any) => call.function?.name)));
+  assert.ok(!asked.includes("workflow_status"), JSON.stringify(asked));
+  const replies = ((await ok(`/v1/agents/${agent.id}`)).requests as { id: string; outcome?: { result?: { reply?: string } } }[]).filter(request => request.id.startsWith(`${workflowId}_n`)).map(request => request.outcome?.result?.reply);
+  assert.ok(replies.includes("NOTED phase"), JSON.stringify(replies));
 
   // The workflow, through the public API: completed, its four effects done, its spend in its ledger.
   const workflow = await ok(`/v1/workflows/${workflowId}`);

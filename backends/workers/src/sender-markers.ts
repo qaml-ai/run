@@ -3,7 +3,7 @@ export const CONTEXT_OPEN = "<<<RUNTIME_CONTEXT>>>";
 export const CONTEXT_CLOSE = "<<<END_RUNTIME_CONTEXT>>>";
 const MARKER = /<<<\s*(?:END_)?RUNTIME_CONTEXT\s*>>>/gi;
 /** The tags of a sub-agent's notification, message and progress blocks, which only the runtime writes either. */
-const AGENT_TAG = /<\s*\/?\s*agent_(?:notification|message|updates)\b/gi;
+const AGENT_TAG = /<\s*\/?\s*(?:agent_(?:notification|message|updates)|workflow_notification)\b/gi;
 /**
  * The marker of a tool result's content part that carries <agent_updates> (multi-agent.ts `agentUpdates`): only the
  * runtime makes it, as a tool's own parts are rebuilt as `{ type, text }` (mcp-results.ts `contentResult`).

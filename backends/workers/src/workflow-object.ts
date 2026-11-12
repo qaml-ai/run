@@ -19,6 +19,7 @@ const ENDED = new Set(["completed", "failed", "aborted"]);
 
 /** Where a child of a repo edits its fork. */
 export const FORK_MOUNT_PATH = "/repo";
+import { WorkflowNotices } from "./workflow-notices.ts";
 import type { AgentType, ModelClass } from "./workflow-types.ts";
 import type { Owner } from "../../../shared/owner.ts";
 import type { Env } from "./agent-types.ts";
@@ -177,6 +178,8 @@ function testExecutor(land: (key: string, attempt: number, outcome: EffectOutcom
 export class WorkflowObject extends DurableObject<WorkflowEnv> {
   private readonly runner: WorkflowRunner;
   private readonly executor: ChildEffects;
+  /** What the owner agent hears (workflow-notices.ts): endings, stops and finished phases. */
+  private readonly notices: WorkflowNotices;
   readonly agents: WorkflowAgents;
   private readonly forks: ForkJanitor;
 
@@ -216,6 +219,12 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     });
     const stub = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : undefined;
     this.executor = byKind({ agent: stub ?? this.agents, gate: stub ?? gateUnavailable((key, attempt, outcome) => this.land(key, attempt, outcome), task => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) }))))), job: jobs, commit: jobs, push: jobs });
+    this.notices = new WorkflowNotices({
+      sql: ctx.storage.sql, workflowId: name ?? "",
+      owner: () => self.settings().owner, name: () => self.settings().name, bucket: () => self.runner.identity().bucket,
+      send: (owner, request, notice) => (env as unknown as Env).AGENTS.getByName(owner).receiveAgentMessage(request, notice),
+      later: (afterMs, task) => ctx.waitUntil(new Promise(resolve => setTimeout(resolve, afterMs)).then(task).catch(error => console.error(JSON.stringify({ type: "workflow_notice_retry_failed", workflow: name, error: String(error) })))),
+    });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
@@ -240,8 +249,21 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     this.settingsTable();
     this.ctx.storage.sql.exec("INSERT OR IGNORE INTO workflow_settings (id, body) VALUES (1, ?)", JSON.stringify(settings));
     this.runner.init({ ...init, code: withArgs(init.code, this.settings().args), seed: crypto.getRandomValues(new Uint32Array(1))[0]!, startedAt: Date.now() });
+    // Where the owner's notices start from: the workflow as created, before its first step.
+    this.notices.check(this.runner.get());
     await this.runner.wake();
-    return this.runner.get();
+    return this.told(this.runner.get());
+  }
+
+  /**
+   * After anything that may have moved the workflow: stage what the owner should hear about it and deliver it (in the
+   * background; a delivery that fails is tried again later, and on the next wake). Returns `value`.
+   */
+  private told<T>(value: T): T {
+    try { this.notices.check(this.runner.get()); }
+    catch (error) { console.error(JSON.stringify({ type: "workflow_notice_check_failed", workflow: this.ctx.id.name, error: String(error) })); }
+    if (this.notices.pending()) this.ctx.waitUntil(this.notices.flush().catch(error => console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.ctx.id.name, error: String(error) }))));
+    return value;
   }
 
   get() { return this.runner.get(); }
@@ -257,13 +279,13 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   items(query: Parameters<WorkflowRunner["items"]>[0]) { return this.runner.items(query); }
   diff(revision?: number) { return this.runner.diff(revision); }
   events(query: Parameters<WorkflowRunner["events"]>[0]) { return this.runner.events(query); }
-  async pause(options: Parameters<WorkflowRunner["pause"]>[0]) { await this.runner.pause(options); return this.runner.get(); }
-  async resume(options: Parameters<WorkflowRunner["resume"]>[0]) { await this.runner.resume(options); return this.runner.get(); }
-  async edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return { ...(await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) })), workflow: this.runner.get() }; }
-  async abort() { await this.runner.abort(); await this.ended(); return this.runner.get(); }
-  async setBudget(usd: number | null) { await this.runner.setBudget(usd); return this.runner.get(); }
+  async pause(options: Parameters<WorkflowRunner["pause"]>[0]) { await this.runner.pause(options); return this.told(this.runner.get()); }
+  async resume(options: Parameters<WorkflowRunner["resume"]>[0]) { await this.runner.resume(options); return this.told(this.runner.get()); }
+  async edit(options: Parameters<WorkflowRunner["edit"]>[0]) { const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }
+  async abort() { await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }
+  async setBudget(usd: number | null) { await this.runner.setBudget(usd); return this.told(this.runner.get()); }
   /** An executor's landing of effect `key:attempt`. */
-  async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.runner.land(key, attempt, outcome, usage); await this.ended(); }
+  async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.runner.land(key, attempt, outcome, usage); await this.ended(); this.told(undefined); }
   /** A child's ending, delivered by its outbox until acknowledged (owner `{ kind: "workflow", id }`). */
   receiveEnding(ending: unknown) {
     if (!this.executor.receiveEnding) throw new WorkflowError("This workflow has no child executor yet", 501);
@@ -282,9 +304,9 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       .map(grant => ({ key: grant.key, lease: grant.id, kind: grant.kind as "child" | "job" })));
   }
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
-  async wake() { await this.runner.wake(); await this.ended(); }
+  async wake() { await this.runner.wake(); await this.ended(); this.told(undefined); }
 
-  override async alarm() { await this.runner.alarm(); await this.ended(); }
+  override async alarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
 
   /** Once the workflow has ended: delete its children's forks, and keep the alarm for a retry if any delete failed. */
   private async ended() {
@@ -295,7 +317,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     if (current === null || current > retry || current <= Date.now()) await this.ctx.storage.setAlarm(retry);
   }
   /** TEST_MODE: what the alarm does, now. */
-  async fireAlarm() { await this.runner.alarm(); await this.ended(); }
+  async fireAlarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
 }
 
 /**
