@@ -426,6 +426,19 @@ is the only thing that makes "instant over any snapshot" true.
 Why not one index per lineage, mutated in place: forks and snapshots would each need a copy or a versioned index;
 content-addressed shards make a fork free and an old snapshot searchable forever.
 
+Three things the prototype makes explicit, and the design's answer to each:
+
+- **Unsaved edits are invisible to the index until a checkpoint.** An API-held branch's `dirty` rows are few and in
+  hand, so `grep` scans them directly and overlays the result on the index (a dirty path masks its indexed blob);
+  a held branch's unpublished turn is reachable only inside the VM, where the agent's own `rg` sees it, or through a
+  forwarded `grep` to the holder; and `durability: "call"` closes the window to one tool call. Before launch the
+  dirty-row overlay is required; the forwarded grep comes with forwarding (phase 2).
+- **A cap of 2,000 matching files** per query, as the prototype has; the answer says it was capped, and the agent
+  narrows with a path filter.
+- **Compaction** runs on the host or API node that made the delta, when a snapshot's delta shards pass a count
+  (the prototype: 21–28 small shards fold into one in 0.16–1.8 s), and is itself just a new content-addressed shard
+  the next manifest names; old shards die by reachability.
+
 Targets, now measured rather than guessed: ≤ 50 ms p50 warm at any tree size; cold ≤ 2 s plus shard GETs; index
 ≤ 0.15× the text it covers; per-commit index cost proportional to changed bytes.
 
@@ -735,6 +748,15 @@ port, no enrollment in v0):
   the mount; `outputs` are read from the image after the run; `commit: true` checkpoints the fork with the §1.3
   contract and returns its tree and root. Idempotent by `id`; a finished result is kept ten minutes for repeats.
 - `POST /v0/jobs/:id/stop` → `{ stopped }`.
+
+**Who boots the VM.** `jobhost/` does, as it does today: the TypeScript host agent (`jobhost/agent.ts`,
+`firecracker.ts`, `network.ts`, the guest protocol) keeps the VM lifecycle, the netns pool, the egress proxy and the
+isolation suite, and serves `POST /v0/jobs` over a new local HTTP listener. `camelfsd` (Go) owns storage only:
+`mount(lineage, tree) → image path`, `fork`, `checkpoint(mount) → { tree, root }`, the `trees` import, the chunk
+cache and the lazy origin, served over a Unix socket on the host that `jobhost/` calls before boot and after the
+run (and over HTTP for `/v0/trees`). The two share nothing but the image file's path. This keeps v0 from rewriting
+the working VM code in another language, and it is the production split too: the job-hosts plan's agent stays the
+host's control plane, camelFS is its storage service.
 
 **What v0 deliberately skips:** HA and a second AZ; more than one host; GC **sweep** (the mark runs and logs what it
 would delete, nothing is deleted); forwarded writes and reads (one writer, refusal otherwise); per-tool-call
