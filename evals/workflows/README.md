@@ -100,7 +100,9 @@ not (a typo, a one-file question, a local rename, a one-doc summary, one table's
 gets generated files, and each run stops at the agent's first decision, so the work is never paid for (about $0.05
 a prompt). The decision is `split` when the agent:
 
-- started a workflow (workflow mode), or
+- started a workflow whose script calls `agent()` (workflow mode). Agents also start workflows to run one command
+  (only `job()`) or to look around (a script that lists its globals); those are counted (`otherWorkflows`) and the run
+  goes on. Splitting with `delegate` instead is reported apart; or
 - started at least two sub-agents in its first turn (dry mode).
 
 The summary gives accuracy, how often the agent split when it should, and how often it split when it should not, for
@@ -113,6 +115,22 @@ design's draft, adapted to `delegate`.
 … run.ts choice --modes dry --guidance none,evals/workflows/choice/guidance-design-draft.md --label choice-baseline
 … run.ts choice --modes workflow --label choice-builtin        # once the builtin exists
 ```
+
+## Workflow mode
+
+The agent gets the task, delegate settings (so the `workflows` builtin is on) and one added sentence: which volume its
+`/workspace` is, since `agent(…, { repo })` and `job({ at })` take a volume id; plus the task's `workflowNote` (what a
+job's container has). Whether it writes a workflow is its own choice. The harness reads each workflow id from
+`workflow_start`'s answer, waits for every workflow to end, then for the agent to go idle, and reads its history:
+
+- `notifications`: the workflow notifications it got (user messages the runtime writes with `metadata.kind:
+  "workflow"`), whether it wrote text after the last one (it reported back), and its `workflow_status` calls (polling);
+- `choice.workflowAgents`, `choice.workflowJobs`: a workflow with jobs and no agents ran commands; it did not split
+  the work;
+- the cost is the tenant's spend across the run (runs are serialized), so children, jobs (`computer:cloudflare/…`)
+  and the owner all count once, however usage rolls up;
+- `failures`: model errors and retries, failed sub-agents, failed or refused effects, faults, and with
+  `--runtime-log` the runtime's own error lines during the run.
 
 ## Comparison runs
 
@@ -152,21 +170,21 @@ know (`--allow-host` for another dev runtime). Keys come from the environment on
 - **The pilot** (`https://run-pilot.camelai.dev`): `AGENT_RUNTIME_TOKEN` is a pilot tenant API key. An operator mints
   one with `node backends/workers/scripts/pilot-admin-key.mjs` in their own terminal (see `backends/workers/PILOT.md`)
   and keeps it in a password manager. The pilot's platform OpenRouter key pays for model calls.
-- **A local Workers dev runtime** (what the first dry runs used):
+- **A local Workers dev runtime** with workflows on and `job()` on local Docker (`local-runtime.ts`):
 
   ```sh
-  (cd backends/workers && npm ci && node scripts/local-postgres.mjs)
-  # backends/workers/.dev.vars (gitignored): a throwaway encryption key, and real models instead of test/echo
-  printf 'AGENT_SECRETS_KEY=%s\nTEST_MODEL=0\nMODEL=camelrun/default\n' "$(openssl rand -hex 32)" > backends/workers/.dev.vars
-  (cd backends/workers && npm run dev)        # prints its port
-  # Store your OpenRouter key on the local tenant from the environment (never on the command line):
-  node -e 'fetch(process.argv[1]+"/v1/providers/openrouter/key",{method:"PUT",headers:{authorization:"Bearer "+process.argv[2],"content-type":"application/json"},body:JSON.stringify({apiKey:process.env.OPENROUTER_API_KEY})}).then(r=>console.log(r.status))' \
-    http://127.0.0.1:8788 local-integration-only-token-with-at-least-32-characters
-  AGENT_URL=http://127.0.0.1:8788 AGENT_RUNTIME_TOKEN=local-integration-only-token-with-at-least-32-characters … run …
+  (cd backends/workers && npm ci)
+  OPENROUTER_API_KEY=… node --experimental-strip-types --disable-warning=ExperimentalWarning evals/workflows/local-runtime.ts > rt.log 2>&1 &
+  AGENT_URL=http://127.0.0.1:8788 AGENT_RUNTIME_TOKEN=local-integration-only-token-with-at-least-32-characters \
+    … run.ts run --modes workflow --runtime-log rt.log …
+  node … evals/workflows/local-runtime.ts --stop        # removes the database, and the key stored in it
   ```
 
-  The token is the local fixture operator token in `wrangler.jsonc`, not a credential. `node scripts/local-postgres.mjs --stop`
-  removes the database and the key stored in it.
+  It derives a config from `wrangler.computers.test.jsonc` (the jobs e2e's) into `backends/workers/.wrangler/evals/`
+  (gitignored): real models, `AGENT_WORKFLOW_TENANTS` for the local tenant, a throwaway `.dev.vars` encryption key, and
+  a job image that adds Go 1.27.3 to the computers image (phase 1's `job()` has one image; the pilot's has no Go yet).
+  It stores `OPENROUTER_API_KEY` on the local tenant through the API. The token is the local fixture operator token,
+  not a credential. `--checkout <dir>` runs another checkout's Workers app, e.g. an unmerged branch.
 
 Judges run model-written code, so by default they run in a throwaway `node:22.21.1-bookworm-slim` container with no
 network, 4 CPUs and 4 GiB (`--sandbox host` only for trees you trust; the CI self-test uses it on fixtures).

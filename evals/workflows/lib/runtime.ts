@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { AgentRuntime, schema, tool, type Tools } from "../../../clients/node.ts";
 import type { AgentEvent } from "../../../clients/types.ts";
 import { execIn, judgeImage, walk } from "./score.ts";
-import type { AgentType, Classes, CostBreakdown, Mode, ModelClass, RunResult, Task } from "./types.ts";
+import type { AgentType, Classes, CostBreakdown, Mode, ModelClass, RunFailure, RunResult, Task } from "./types.ts";
 
 /** Production hosts this harness refuses outright: evals never run on a production tenant. */
 const PRODUCTION = [/(^|\.)run\.camelai\.com$/, /(^|\.)agents\.camelai\.dev$/, /(^|\.)camelai\.com$/];
@@ -57,12 +57,58 @@ export class Runtime {
     return { status: response.status, body };
   }
   /**
+   * The tenant's spend today, by served model: the run's cost is the change across it (runs are serialized), which
+   * counts everything an agent, its workflows' children and their jobs charged, however usage rolls up.
+   */
+  async tenantSpend() {
+    const page = await this.client.usage({ groupBy: ["model"], days: 1, limit: 500 });
+    const byModel: Record<string, { cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; responses: number }> = {};
+    for (const group of page.groups) byModel[String(group.model)] = { cost: Number(group.cost ?? 0), input: Number(group.input ?? 0), output: Number(group.output ?? 0), cacheRead: Number(group.cacheRead ?? 0), cacheWrite: Number(group.cacheWrite ?? 0), responses: Number(group.responses ?? 0) };
+    return byModel;
+  }
+  /** Waits until the agent has no prompt, notification turn or resume queued or running (GET …/state `busy`), twice in a row. */
+  async waitIdle(agentId: string, deadline: number) {
+    let quiet = 0;
+    while (Date.now() < deadline) {
+      const { status, body } = await this.api(`/v1/agents/${encodeURIComponent(agentId)}/state`);
+      quiet = status === 200 && !body.busy ? quiet + 1 : 0;
+      if (quiet >= 2) return true;
+      await new Promise(resolve => setTimeout(resolve, 5_000));
+    }
+    return false;
+  }
+  /**
+   * The agent's history: the workflow notifications it got (user messages the runtime wrote with metadata
+   * `{ kind: "workflow", event }`, which the model sees wrapped in <workflow_notification>), whether it wrote text after
+   * the last one (it reported back), and how many workflow_status calls it made (polling).
+   */
+  async notifications(agentId: string) {
+    const { status, body } = await this.api<{ messages: { role: string; content?: unknown; metadata?: { kind?: string; event?: string; workflowId?: string } }[] }>(`/v1/agents/${encodeURIComponent(agentId)}/history`);
+    if (status !== 200) return { received: 0, events: [] as string[], replyAfterLast: false, statusPolls: 0, workflowIds: [] as string[] };
+    const messages = body.messages ?? [];
+    let last = -1;
+    const events: string[] = [];
+    const workflowIds = new Set<string>();
+    messages.forEach((message, index) => {
+      if (message.role !== "user" || message.metadata?.kind !== "workflow") return;
+      events.push(String(message.metadata.event ?? ""));
+      if (message.metadata.workflowId) workflowIds.add(message.metadata.workflowId);
+      last = index;
+    });
+    const spoke = (message: { content?: unknown }) => Array.isArray(message.content) && message.content.some((part: { type?: string; text?: string }) => part?.type === "text" && (part.text ?? "").trim().length > 0);
+    const replyAfterLast = last >= 0 && messages.slice(last + 1).some(message => message.role === "assistant" && spoke(message));
+    const statusPolls = messages.filter(message => message.role === "assistant" && Array.isArray(message.content))
+      .reduce((sum, message) => sum + (message.content as { type?: string; name?: string }[]).filter(part => part?.type === "toolCall" && part.name === "workflow_status").length, 0);
+    return { received: events.length, events, replyAfterLast, statusPolls, workflowIds: [...workflowIds] };
+  }
+  /**
    * Which workflow API this runtime has: the designed public one (`/v1/workflows`), the TEST_MODE operator hook the
    * internal WorkflowObject ships with before the public route (#806: `/__test/workflows/:name`, a local Workers
    * runtime and the operator token only), or none.
    */
   async workflowApi(prefer: "auto" | WorkflowApiKind = "auto"): Promise<WorkflowApiKind | null> {
-    if (prefer !== "test-hook" && (await this.api("/v1/workflows?limit=1")).status === 200) return "public";
+    // The public collection takes POST only (GET answers 405) and 403 WORKFLOWS_OFF for a tenant without workflows.
+    if (prefer !== "test-hook") { const { status } = await this.api("/v1/workflows"); if (status === 200 || status === 405) return "public"; }
     if (prefer !== "public" && (await this.api("/__test/workflows/wfeval-probe")).status !== 404) return "test-hook";
     return null;
   }
@@ -76,7 +122,12 @@ export class Runtime {
     if (status !== 201 && status !== 200) throw new Error(`starting the workflow: ${status} ${JSON.stringify(body).slice(0, 300)}`);
     return kind === "public" ? String(body.id) : name;
   }
-  abortWorkflow(kind: WorkflowApiKind, id: string) { return this.api(this.workflowPath(kind, id, "abort"), { method: "POST", body: {} }); }
+  /** Aborts a workflow that has not ended (an ended one is left alone: aborting it is a 409 the runtime logs). */
+  async abortWorkflow(kind: WorkflowApiKind, id: string) {
+    const { status, body } = await this.api(this.workflowPath(kind, id));
+    if (status === 200 && ["completed", "failed", "aborted", "budget_exhausted"].includes(body.status)) return { status: 200, body };
+    return this.api(this.workflowPath(kind, id, "abort"), { method: "POST", body: {} });
+  }
 
   async upload(task: Task, name: string) {
     const root = join(task.dir, "input");
@@ -288,16 +339,28 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   const toolCalls: Record<string, number> = {};
   let delegateCalls = 0;
   const jobs = { count: 0, ms: 0 };
+  const failures: RunFailure[] = [];
+  const workflowIds = new Set<string>();
+  const spendBefore = options.mode === "workflow" ? await runtime.tenantSpend() : undefined;
   const agent = await runtime.client.createAgent({
-    tools: jobTools(runtime, task, volumeId, log, jobs),
-    name: `wf-eval ${task.id}`, model: options.classes.orchestrator, systemPrompt: (task.jobs?.length ? ORCHESTRATOR.replace("You cannot run commands.", "You cannot run commands except through the build tools you are given.") : ORCHESTRATOR) + (options.split === "required" ? SPLIT_REQUIRED : ""), ttlSeconds: 86_400,
+    // Dry mode's stand-in build tools; workflow mode has the real job().
+    tools: options.mode === "dry" ? jobTools(runtime, task, volumeId, log, jobs) : {},
+    name: `wf-eval ${task.id}`, model: options.classes.orchestrator, systemPrompt: (options.mode === "dry" && task.jobs?.length ? ORCHESTRATOR.replace("You cannot run commands.", "You cannot run commands except through the build tools you are given.") : ORCHESTRATOR) + (options.split === "required" ? SPLIT_REQUIRED : ""), ttlSeconds: 86_400,
     mounts: [{ volumeId, path: "/workspace", mode: "rw" }], spendLimit: { usd: options.budgetUsd }, subagents: true,
     delegate: { agents: Object.entries(types.keys).map(([name, definition]) => ({ name, definition })), maxParallel: 8, maxDepth: 1 },
     onEvent(event: AgentEvent) {
       if (event.type === "tool_execution_start") { toolCalls[event.toolName] = (toolCalls[event.toolName] ?? 0) + 1; log({ call: event.toolName, args: JSON.stringify(event.args).slice(0, 4000) }); }
-      else if (event.type === "tool_execution_end") log({ result: event.toolName, isError: event.isError, text: JSON.stringify(event.result).slice(0, 2000) });
+      else if (event.type === "tool_execution_end") {
+        const text = JSON.stringify(event.result);
+        log({ result: event.toolName, isError: event.isError, text: text.slice(0, 2000) });
+        // workflow_start answers the id; from code mode it is inside codemode's result.
+        if (event.toolName === "workflow_start" || (event.toolName === "codemode" && text.includes("wf_"))) for (const match of text.matchAll(/\bwf_[A-Za-z0-9_-]{6,}/g)) workflowIds.add(match[0]);
+        if (event.isError && /fallback chain|exhausted|overloaded|rate limit|internal|timed out|5\d\d\b/i.test(text)) failures.push({ source: `tool ${event.toolName}`, message: text.slice(0, 500) });
+      }
       else if (event.type === "subagent_start") { delegateCalls++; log({ subagentStart: event.agentId, name: event.name, depth: event.depth }); }
-      else if (event.type === "subagent_end") log({ subagentEnd: event.agentId, status: event.status, error: event.error });
+      else if (event.type === "subagent_end") { log({ subagentEnd: event.agentId, status: event.status, error: event.error }); if (event.status === "failed" && event.error) failures.push({ source: `sub-agent ${event.name ?? event.agentId}`, message: event.error }); }
+      else if (event.type === "auto_retry_start") { log({ retry: event.attempt, error: event.errorMessage }); failures.push({ source: "model retry (orchestrator)", message: event.errorMessage, recovered: true }); }
+      else if (event.type === "message_end" && event.message?.role === "assistant" && (event.message as { stopReason?: string }).stopReason === "error") failures.push({ source: "model (orchestrator)", message: String((event.message as { errorMessage?: string }).errorMessage ?? JSON.stringify(event.failure ?? "error")) });
       else if (event.type === "message_end" && event.message?.role === "assistant") log({ assistant: (event.message.content as { type: string; text?: string }[]).filter(part => part.type === "text").map(part => part.text).join("\n").slice(0, 4000), stopReason: (event.message as { stopReason?: string }).stopReason });
       else if (event.type === "spend_limit_reached") log({ spendLimit: event.message });
     },
@@ -313,13 +376,15 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   }, 30_000);
   let reply: string | undefined, runError: string | undefined, runStatus: RunResult["status"] = "completed";
   try {
-    const result = await agent.prompt(task.prompt, { timeoutMs: Math.max(60_000, deadline - Date.now()) });
+    // Workflow mode: the agent is told which volume its /workspace is, which agent({ repo }) and job({ at }) take. Model-facing.
+    const prompt = options.mode === "workflow" ? `${task.prompt}${task.workflowNote ? ` ${task.workflowNote}` : ""}\n\nYour /workspace is volume ${volumeId}.` : `${task.prompt}${task.dryNote ? ` ${task.dryNote}` : ""}`;
+    const result = await agent.prompt(prompt, { timeoutMs: Math.max(60_000, deadline - Date.now()) });
     reply = result.reply;
     // toolCalls includes code mode's inner calls, which the event stream does not show as tool calls.
     const calls: { tool: string; innerCallId?: string }[] = result.toolCalls ?? [];
     delegateCalls = Math.max(delegateCalls, calls.filter(call => call.tool === "delegate").length);
     for (const call of calls) if (call.innerCallId) toolCalls[`codemode:${call.tool}`] = (toolCalls[`codemode:${call.tool}`] ?? 0) + 1;
-    if (result.error) { runError = result.error; runStatus = result.stopped === "spend_limit" ? "budget" : "failed"; }
+    if (result.error) { runError = result.error; runStatus = result.stopped === "spend_limit" ? "budget" : "failed"; if (result.stopped !== "spend_limit") failures.push({ source: "orchestrator run", message: result.error }); }
     else if (result.stopped === "spend_limit") runStatus = "budget";
   } catch (error) {
     runError = (error as Error).message;
@@ -328,33 +393,65 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   } finally { clearInterval(watchdog); }
   if (stopped) runStatus = stopped;
 
-  // workflow mode: what the agent started, run to its end.
-  const workflowIds: string[] = [];
+  // workflow mode: what the agent started, run to its end, then the agent's own turns on the notifications.
   let workflowStats: ReturnType<Runtime["workflowStats"]> | undefined;
+  let notified: Awaited<ReturnType<Runtime["notifications"]>> | undefined;
   if (options.mode === "workflow") {
-    const { body } = await runtime.api(`/v1/workflows?owner=${encodeURIComponent(agent.id)}`);
-    for (const workflow of body.workflows ?? body.data ?? []) {
-      workflowIds.push(workflow.id);
-      cleanups.push(() => runtime.abortWorkflow("public", workflow.id));
-      const ended = await runtime.waitWorkflow("public", workflow.id, deadline);
-      const stats = runtime.workflowStats(await runtime.workflowItems("public", workflow.id), ended, types.ids);
-      log({ workflow: ended });
-      workflowStats = workflowStats ? { ...stats, retries: workflowStats.retries + stats.retries, conflicts: workflowStats.conflicts + stats.conflicts } : stats;
-      if (ended.status === "budget_exhausted") runStatus = "budget"; else if (ended.stalled) runStatus = "timeout"; else if (ended.status !== "completed" && runStatus === "completed") runStatus = "failed";
+    // The ids: workflow_start's answers, and the notifications' (a code mode script can start one and print nothing).
+    await runtime.waitIdle(agent.id, Math.min(deadline, Date.now() + 120_000));
+    for (const id of (await runtime.notifications(agent.id)).workflowIds) workflowIds.add(id);
+    const seen = new Set<string>();
+    for (let pass = 0; pass < 5 && [...workflowIds].some(id => !seen.has(id)); pass++) {
+      for (const id of [...workflowIds].filter(id => !seen.has(id))) {
+        seen.add(id);
+        cleanups.push(() => runtime.abortWorkflow("public", id));
+        const ended = await runtime.waitWorkflow("public", id, deadline);
+        const items = await runtime.workflowItems("public", id);
+        const stats = runtime.workflowStats(items, ended, types.ids);
+        log({ workflow: ended });
+        for (const item of items) if (["failed", "refused"].includes(item.status) && item.reason) failures.push({ source: `workflow ${item.kind}`, message: String(item.reason).slice(0, 500) });
+        if (ended.fault || ended.error) failures.push({ source: "workflow", message: String(ended.fault?.message ?? ended.error).slice(0, 500) });
+        workflowStats = workflowStats ? { ...stats, effects: { ...stats.effects, children: stats.effects.children + workflowStats.effects.children, effects: (stats.effects.effects ?? 0) + (workflowStats.effects.effects ?? 0), jobs: (stats.effects.jobs ?? 0) + (workflowStats.effects.jobs ?? 0), failedChildren: stats.effects.failedChildren + workflowStats.effects.failedChildren }, retries: workflowStats.retries + stats.retries, conflicts: workflowStats.conflicts + stats.conflicts, cost: mergeCost(workflowStats.cost, stats.cost) } : stats;
+        if (ended.status === "budget_exhausted") runStatus = "budget"; else if (ended.stalled) runStatus = "timeout";
+      }
+      // The owner's turns on the notifications may start more.
+      if (!await runtime.waitIdle(agent.id, Math.min(deadline, Date.now() + 600_000))) failures.push({ source: "harness", message: "the owner was still busy 10 minutes after its workflows ended" });
+      for (const id of (await runtime.notifications(agent.id)).workflowIds) workflowIds.add(id);
     }
-    // The agent hears each workflow's ending as a notification and may act on it: give that turn time to land.
-    if (workflowIds.length) await new Promise(resolve => setTimeout(resolve, 60_000));
+    notified = await runtime.notifications(agent.id);
+    // Polls: workflow_status calls, direct or from code mode.
+    notified.statusPolls = Math.max(notified.statusPolls, (toolCalls.workflow_status ?? 0) + (toolCalls["codemode:workflow_status"] ?? 0));
+    for (const event of notified.events) if (!["completed", "phase", "paused"].includes(event)) failures.push({ source: "workflow notification", message: `event ${event}` });
   }
 
   const children = await runtime.children(agent.id);
   const own = await runtime.usage(agent.id, types.ids);
-  const cost = workflowStats ? mergeCost(own, workflowStats.cost) : own;
+  // Workflow mode's total is the tenant's spend across the run; types come from the agent's rollup and the ledger.
+  const cost = workflowStats ? withTotal(mergeCost(own, workflowStats.cost), spendBefore!, await runtime.tenantSpend()) : own;
   return {
     ...base, agentId: agent.id, status: runStatus, error: runError, reply, wallMs: Date.now() - started, volumeId, cleanup,
     cost, effects: workflowStats ? { ...workflowStats.effects, children: workflowStats.effects.children + children.children, grandchildren: children.grandchildren, jobs: (workflowStats.effects.jobs ?? 0) + jobs.count } : { ...children, ...(jobs.count ? { jobs: jobs.count } : {}) },
     conflicts: children.conflicts + (workflowStats?.conflicts ?? 0), retries: workflowStats ? workflowStats.retries : null,
-    choice: { delegated: children.children > 0 || delegateCalls > 0, delegateCalls: Math.max(delegateCalls, children.children), workflowStarted: workflowIds.length > 0 || !!toolCalls.workflow_start, workflowIds, toolCalls },
+    choice: { delegated: children.children > 0 || delegateCalls > 0, delegateCalls: Math.max(delegateCalls, children.children), workflowStarted: workflowIds.size > 0 || !!toolCalls.workflow_start, workflowIds: [...workflowIds], toolCalls,
+      ...(workflowStats ? { workflowAgents: workflowStats.effects.children, workflowJobs: workflowStats.effects.jobs ?? 0 } : {}) },
+    failures, ...(notified ? { notifications: notified } : {}),
   };
+}
+
+/** A cost breakdown whose total, tokens and model split are the tenant's spend across the run (by served model). */
+function withTotal(cost: CostBreakdown, before: Awaited<ReturnType<Runtime["tenantSpend"]>>, after: Awaited<ReturnType<Runtime["tenantSpend"]>>): CostBreakdown {
+  type Totals = { cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; responses: number };
+  const delta: Record<string, Totals> = Object.fromEntries(Object.entries(after).map(([model, now]): [string, Totals] => {
+    const was = before[model] ?? { cost: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, responses: 0 };
+    return [model, { cost: now.cost - was.cost, input: now.input - was.input, output: now.output - was.output, cacheRead: now.cacheRead - was.cacheRead, cacheWrite: now.cacheWrite - was.cacheWrite, responses: now.responses - was.responses }];
+  }).filter(([, value]) => value.cost > 1e-9));
+  const sum = (key: keyof Totals) => Object.values(delta).reduce((total, value) => total + value[key], 0);
+  const tokens = { input: sum("input"), output: sum("output"), cacheRead: sum("cacheRead"), cacheWrite: sum("cacheWrite") };
+  const inputs = tokens.input + tokens.cacheRead + tokens.cacheWrite;
+  const byModel = Object.fromEntries(Object.entries(delta).map(([model, value]) => [model, value.cost]));
+  const byClass: CostBreakdown["byClass"] = {};
+  for (const [model, usd] of Object.entries(byModel)) byClass[classOf(model)] = (byClass[classOf(model)] ?? 0) + usd;
+  return { ...cost, totalUsd: sum("cost"), byModel, byClass, tokens, cacheShare: inputs ? +(tokens.cacheRead / inputs).toFixed(4) : 0, responses: sum("responses") };
 }
 
 /** The orchestrator's own usage (rollup) plus a workflow's ledger. If the runtime ever rolls workflow children up under their starting agent, this double counts: check against `GET /v1/usage` when PR 7 lands. */
