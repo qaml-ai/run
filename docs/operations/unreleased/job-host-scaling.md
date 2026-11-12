@@ -2,7 +2,8 @@
 
 A job on our own hosts used to fail at once (`start_failed`) when no host of its pool had a free slot. With pools that
 scale from zero, it now waits its turn:
-- **Waiting:** jobs wait in order of arrival per pool, for up to `JOB_HOST_WAIT_SECONDS` (10 minutes by default), and
+- **Waiting:** jobs wait in order of arrival per pool (the oldest that fits a host's room now goes first; one too big
+  for any host at the moment doesn't hold back smaller jobs), for up to `JOB_HOST_WAIT_SECONDS` (10 minutes by default), and
   fail `start_failed` if no host frees up by then. A waiting job holds no computer slot; it takes one once it has a
   host. Stopping a waiting job ends its wait.
 - **Demand:** waiting jobs are the pool's demand. `GET /v1/internal/job-hosts/demand` reads, per pool:
@@ -15,7 +16,8 @@ scale from zero, it now waits its turn:
 
 The scaler (`infra/job-hosts/scaler`, a Lambda every minute, applied by Miguel with the rest of
 `infra/job-hosts/terraform`) decides from that demand:
-- **Scale out:** it raises a group's desired count when jobs wait and the live and booting hosts can't take them.
+- **Scale out:** it raises a group's desired count when jobs wait and the live and booting hosts can't take them, by
+  slots and by memory as placement counts it. It also adds one host when a job has waited 2 minutes with none booting.
 - **Scale in:** it drains a host that has been idle for 10 minutes, then ends it the next minute if it is still idle,
   never below the group's minimum.
 - **Undraining:** while jobs wait, it undrains a draining host that is still in service, before it grows a pool.

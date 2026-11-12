@@ -22,6 +22,8 @@
  */
 /** How long a terminating host must have been gone (no heartbeat) before its hook is completed without it. */
 export const ABSENT_MS = 5 * 60_000;
+/** How long the oldest waiting job may wait, with no host booting, before the pool grows by one regardless. */
+export const STUCK_MS = 2 * 60_000;
 
 export function plan(demand, groups, { now, idleMs }) {
   const actions = [];
@@ -36,7 +38,8 @@ export function plan(demand, groups, { now, idleMs }) {
     for (const instance of group.instances.filter(instance => instance.state === "Terminating:Wait")) {
       const host = live.get(instance.id);
       if (host) {
-        if (!host.draining) actions.push({ type: "drain", pool, host: instance.id });
+        // Draining from now on: its slots and memory are not counted below this minute.
+        if (!host.draining) { actions.push({ type: "drain", pool, host: instance.id }); host.draining = true; }
         else if (host.running === 0) actions.push({ type: "complete", pool, group: group.name, instance: instance.id });
       } else {
         // Not live: complete once it has been gone ABSENT_MS, or if the runtime has never heard of it (it never enrolled).
@@ -54,11 +57,22 @@ export function plan(demand, groups, { now, idleMs }) {
     // Hosts the group counts toward its capacity: in service or still booting.
     const counted = group.instances.filter(instance => instance.state === "InService" || instance.state.startsWith("Pending"));
     const booting = counted.filter(instance => !live.has(instance.id)).length;
-    const capacity = need.hosts.filter(host => inGroup.has(host.host) && !host.draining).reduce((sum, host) => sum + host.slots, 0) + booting * group.slots;
-    const wanted = need.running + need.waiting;
+    // What the counted hosts (in the group, in service, not draining) and booting ones can still take: slots, and memory
+    // as placement packs it (a host's sandbox memory; a booting host's whole). The jobs they run already count.
+    const usable = need.hosts.filter(host => inGroup.has(host.host) && !host.draining && inService.has(host.host));
+    const hostMiB = need.memoryMiB ?? Infinity;
+    const freeSlots = usable.reduce((sum, host) => sum + host.slots - host.running, 0) + booting * group.slots;
+    const freeMiB = usable.reduce((sum, host) => sum + (host.freeMiB ?? Infinity), 0) + booting * hostMiB;
+    const short = Math.max(
+      Math.ceil(Math.max(0, need.waiting - freeSlots) / group.slots),
+      Number.isFinite(hostMiB) ? Math.ceil(Math.max(0, (need.waitingMiB ?? 0) - freeMiB) / hostMiB) : 0,
+      // A backstop: a job that has waited STUCK_MS with no host booting gets one, whatever the counts say (memory
+      // split across hosts so that no one host has room for it, say).
+      need.waiting > 0 && (need.oldestWaitMs ?? 0) >= STUCK_MS && booting === 0 ? 1 : 0,
+    );
 
-    if (need.waiting > 0 && wanted > capacity) {
-      const desired = Math.min(group.max, Math.max(group.desired, counted.length + Math.ceil((wanted - capacity) / group.slots)));
+    if (need.waiting > 0 && short > 0) {
+      const desired = Math.min(group.max, Math.max(group.desired, counted.length + short));
       if (desired > group.desired) actions.push({ type: "desired", pool, group: group.name, desired, from: group.desired });
       continue;
     }

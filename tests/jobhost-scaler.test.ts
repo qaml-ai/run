@@ -82,3 +82,27 @@ test("a drain is never one-way: jobs waiting undrain a host still in service, an
   const ending = group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "Terminating:Wait" }] });
   assert.ok(!run(demand({ test: { hosts: [host("i-0000000000000000a", { draining: true, running: 1 })], running: 1, waiting: 2 } }), { test: ending }).some((action: { type: string }) => action.type === "undrain"));
 });
+
+test("memory, as placement counts it, grows a pool too: free slots with no room still need a host", () => {
+  const live = group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "InService" }] });
+  // Two 12 GiB jobs fill a host's 24 GiB with six slots still free: a third 12 GiB job needs a new host.
+  const full = host("i-0000000000000000a", { running: 2, freeMiB: 0 });
+  assert.deepEqual(run(demand({ test: { memoryMiB: 24576, hosts: [full], running: 2, waiting: 1, waitingMiB: 12288 } }), { test: live }),
+    [{ type: "desired", pool: "test", group: "camelrun-job-hosts-test", desired: 2, from: 1 }]);
+  // Room for it: nothing.
+  assert.deepEqual(run(demand({ test: { memoryMiB: 24576, hosts: [host("i-0000000000000000a", { running: 1, freeMiB: 12288 })], running: 1, waiting: 1, waitingMiB: 12288 } }), { test: live }), []);
+});
+
+test("a job stuck two minutes with no host booting gets one, whatever the counts say", () => {
+  const live = group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "InService" }] });
+  const roomy = host("i-0000000000000000a", { running: 1, freeMiB: 20_000 });
+  assert.deepEqual(run(demand({ test: { memoryMiB: 24576, hosts: [roomy], running: 1, waiting: 1, waitingMiB: 4096, oldestWaitMs: 60_000 } }), { test: live }), []);
+  assert.deepEqual(run(demand({ test: { memoryMiB: 24576, hosts: [roomy], running: 1, waiting: 1, waitingMiB: 4096, oldestWaitMs: 3 * 60_000 } }), { test: live })[0],
+    { type: "desired", pool: "test", group: "camelrun-job-hosts-test", desired: 2, from: 1 });
+});
+
+test("a terminating host drained this minute is not counted as capacity (its group already lowered desired)", () => {
+  const groupWith = group({ desired: 1, instances: [{ id: "i-0000000000000000a", state: "Terminating:Wait" }, { id: "i-0000000000000000b", state: "InService" }] });
+  const actions = run(demand({ test: { memoryMiB: 24576, hosts: [host("i-0000000000000000a", { running: 0, freeMiB: 24576 }), host("i-0000000000000000b", { running: 8, freeMiB: 0 })], running: 8, waiting: 1, waitingMiB: 4096 } }), { test: groupWith });
+  assert.deepEqual(actions.map((action: { type: string }) => action.type), ["drain", "desired"]);
+});
