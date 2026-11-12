@@ -4,6 +4,11 @@ export type CamelfsFile = { path: string; sha256: string; size: number; key: str
 /** The lineage of a volume is stable across snapshots. */
 export const volumeLineage = (tenant: string, volume: string): string => `${tenant}:${volume}`;
 
+/** A blob upload's deadline (ledger L26): 60 s plus the time to send it at 2 MiB/s, at most 30 minutes. */
+export function uploadTimeoutMs(size: number): number {
+  return Math.min(60_000 + Math.ceil(size / (2 * 2 ** 20)) * 1000, 30 * 60_000);
+}
+
 /** Bound daemon responses without putting their contents or credentials in errors. */
 async function body(response: Response): Promise<unknown> {
   const bad = () => new Error(`camelFS status ${response.status}: malformed or oversized body`);
@@ -27,7 +32,9 @@ async function body(response: Response): Promise<unknown> {
   finally { reader.releaseLock(); }
 }
 
-/** Import references first; only blobs the lineage lacks cross the network, in bounded batches. */
+/** Import references first; only blobs the lineage lacks cross the network, in bounded batches.
+ * Bounded by the source Volume's own limits (VOLUME_LIMITS: files, fileBytes); camelFS adds none (ledger L28).
+ */
 export async function importTree(env: CamelfsEnv, input: {
   lineage: string; parentTree?: string; files: CamelfsFile[];
   read: (file: CamelfsFile) => Promise<{ body: ReadableStream<Uint8Array> | Uint8Array; size: number }>;
@@ -57,7 +64,7 @@ export async function importTree(env: CamelfsEnv, input: {
         const { body, size } = await input.read(byHash.get(hash)!);
         const put = await request(`http://camelfs/v0/blobs/${hash}?lineage=${encodeURIComponent(input.lineage)}`, {
           method: "PUT", headers: { authorization, "content-type": "application/octet-stream", "content-length": String(size) },
-          signal: AbortSignal.timeout(60_000), body,
+          signal: AbortSignal.timeout(uploadTimeoutMs(size)), body,
           ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
         });
         await put.body?.cancel();
