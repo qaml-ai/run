@@ -13,8 +13,9 @@ import { frames, Frames, type HostMessage, type RuntimeMessage, type WireJob, ty
 import { signGetCallerIdentity, type Attestation } from "../shared/job-host-attest.ts";
 import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
 import { firecrackerLauncher } from "./firecracker.ts";
+import { camelfsdClient, serveImportProxy, type Camelfsd, type CamelfsMount } from "./camelfsd.ts";
 
-export const AGENT_VERSION = "0.1.0";
+export const AGENT_VERSION = "0.2.0";
 /** Less free disk than this before the command fails the job `disk_low`, as a container job does. */
 const DISK_LOW_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -23,6 +24,7 @@ export type AgentOptions = {
   runtime: string; attest: (audience: string) => Promise<Attestation>; slots: number; vcpus: number; memoryMiB: number;
   /** The pool this host serves (build or test: the image's POOL); placement sends it only that pool's jobs. */
   pool?: "build" | "test";
+  camelfsd?: Camelfsd;
   launcher: VmLauncher; heartbeatMs?: number; diskLowBytes?: number; log?: (line: Record<string, unknown>) => void;
 };
 
@@ -81,7 +83,7 @@ export class HostAgent {
         // The credential is the first message, not part of the URL: a URL lands in access logs.
         socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
         // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
-        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.pool ? { pool: this.options.pool } : {}) });
+        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.camelfsd ? { features: ["camelfs"] } : {}), ...(this.options.pool ? { pool: this.options.pool } : {}) });
         heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {
@@ -134,17 +136,25 @@ export class HostAgent {
     this.running.set(id, job);
     const began = Date.now();
     let result: WireResult;
+    let mounted: CamelfsMount | undefined;
     // Set once its VM has started: every result from then on says when (its charge, if its `started` report was lost).
     let startMs: number | undefined;
     try {
+      if (spec.camelfs) {
+        if (!this.options.camelfsd) throw new Error("This host has no camelFS daemon");
+        if (spec.camelfs.commit) throw new Error("camelFS checkpoints are not supported on this host yet");
+        mounted = await this.options.camelfsd.mount({ jobId: id, lineage: spec.camelfs.lineage, tree: spec.camelfs.tree, vsock: this.options.launcher.vsockPath?.(id) ?? "" });
+        if (job.cancelled) throw new Stopped();
+        if (mounted.apply !== undefined) throw new Error("This camelFS tree needs a guest-side apply, not supported on this host yet");
+      }
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
-      const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet });
+      const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet, ...(mounted ? { repo: mounted.image } : {}) });
       if (job.cancelled) throw new Stopped();
       this.send({ type: "started", id, at: Date.now() });
       startMs = Date.now() - began;
-      const synced = await vm.request({ op: "files", files: spec.files });
+      const synced = spec.files.length ? await vm.request({ op: "files", files: spec.files }) : { ok: true, syncMs: 0 };
       if (!synced.ok) { result = { ok: false, code: "sync_failed", message: String(synced.error ?? "sync failed") }; return; }
-      if (spec.sync) {
+      if (spec.sync && !spec.camelfs) {
         try { synced.syncMs = Number(synced.syncMs ?? 0) + await pullFiles(vm, spec.sync); }
         catch (error) { result = { ok: false, code: "sync_failed", message: error instanceof Error ? error.message.slice(0, 300) : "sync failed" }; return; }
       }
@@ -164,12 +174,14 @@ export class HostAgent {
         outputs: (collected.outputs ?? {}) as never, missing: (collected.missing ?? spec.outputs) as string[],
         timings: { startMs, syncMs: Number(synced.syncMs ?? 0), commandMs: Number(ran.commandMs ?? 0), collectMs: Number(collected.collectMs ?? 0), totalMs: Date.now() - began },
         pids: pids ? "enforced" : "unenforced",
+        ...(mounted ? { camelfs: { warm: mounted.warm, mountMs: mounted.mountMs, applyMs: 0 } } : {}),
       };
     } catch (error) {
       result = job.cancelled || error instanceof Stopped ? { ok: false, code: "stopped", message: "The job was stopped" }
         : { ok: false, code: job.vm ? "container_failed" : "start_failed", message: error instanceof Error ? error.message.slice(0, 300) : "The VM failed" };
     } finally {
       await job.vm?.destroy().catch(() => {});
+      if (mounted) await this.options.camelfsd!.release(id).catch(() => this.log({ type: "jobhost_camelfs_release_failed", id }));
       this.running.delete(id);
       const final: WireResult = result! ?? { ok: false, code: "container_failed", message: "No result" };
       this.send({ type: "result", id, result: !final.ok && startMs !== undefined ? { ...final, timings: { startMs, totalMs: Date.now() - began } } : final });
@@ -262,7 +274,14 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const kind = arg("attestor") ?? "aws", secret = process.env.JOB_HOST_TEST_SECRET, name = arg("name") ?? hostname();
   if (kind === "test" && !secret) throw new Error("Set JOB_HOST_TEST_SECRET for the test attestor");
   const attest = kind === "test" ? async (): Promise<Attestation> => ({ kind: "test", host: name, secret: secret! }) : awsAttestor();
+  const camelfsSocket = arg("camelfs-socket");
+  const camelfsd = camelfsSocket ? camelfsdClient(camelfsSocket) : undefined;
+  if (camelfsd && !(await camelfsd.health()).ok) throw new Error("camelFS daemon is unhealthy");
+  const apiPort = arg("camelfs-api-port");
+  if (apiPort !== undefined && !process.env.CAMELFS_API_TOKEN) throw new Error("Set CAMELFS_API_TOKEN for --camelfs-api-port");
+  const proxy = apiPort !== undefined ? await serveImportProxy({ socketPath: camelfsSocket ?? "/run/camelfsd/api.sock", token: process.env.CAMELFS_API_TOKEN!, host: "127.0.0.1", port: Number(apiPort) }) : undefined;
   const agent = new HostAgent({
+    ...(camelfsd ? { camelfsd } : {}),
     runtime: arg("runtime") ?? "http://127.0.0.1:8787", attest, slots: Number(arg("slots") ?? 4),
     ...(arg("pool") === "build" || arg("pool") === "test" ? { pool: arg("pool") as "build" | "test" } : {}),
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
@@ -275,6 +294,6 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     }),
     diskLowBytes: Number(arg("disk-low") ?? DISK_LOW_BYTES),
   });
-  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { void agent.close().then(() => process.exit(0)); });
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { void agent.close().then(() => proxy?.close()).then(() => process.exit(0)); });
   await agent.start();
 }

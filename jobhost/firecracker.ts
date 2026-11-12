@@ -98,6 +98,7 @@ export class VsockChannel implements GuestChannel {
 /** The real launcher. Slots are the job taps (network.ts): one VM per slot at a time. */
 export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
   const exec = options.exec ?? run;
+  const vsockPath = (id: string) => join(options.work, `${id}.vsock`);
   const free = new Set(Array.from({ length: MAX_SLOTS }, (_, slot) => slot));
   const start = options.start ?? (async (file, args, log) => {
     const out = await open(log, "a");
@@ -107,13 +108,14 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
   });
   return {
     kind: "firecracker",
-    async boot(id: string, shape: VmShape, boot: { internet?: boolean } = {}): Promise<Vm> {
+    vsockPath,
+    async boot(id: string, shape: VmShape, boot: { internet?: boolean; repo?: string } = {}): Promise<Vm> {
       if (!/^[A-Za-z0-9._-]{1,96}$/.test(id)) throw new Error("Invalid job id");
       const slot = [...free][0];
       if (slot === undefined) throw new Error("No free job slot on this host");
       free.delete(slot);
       const address = jobAddress(slot), internet = !!boot.internet;
-      const disk = join(options.work, `${id}.ext4`), vsock = join(options.work, `${id}.vsock`), config = join(options.work, `${id}.json`), log = join(options.work, `${id}.log`);
+      const disk = join(options.work, `${id}.ext4`), vsock = vsockPath(id), config = join(options.work, `${id}.json`), log = join(options.work, `${id}.log`);
       let child: ChildProcess | undefined, channel: VsockChannel | undefined, gone = false;
       const destroy = async () => {
         if (gone) return;
@@ -138,8 +140,9 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
         // entry it allows, and the host's rules give it no other way out).
         const allow = internet ? [...(options.egress ?? DEFAULT_EGRESS), ...(options.runtimeHost ? [options.runtimeHost] : [])] : [];
         await writePolicy(options.policyDir, address.guestIp, { job: id, allow });
-        const base = firecrackerConfig({ id, kernel: options.kernel, initrd: options.initrd, disk, vsockPath: vsock, tap: address.tap, mac: address.mac }, shape, options.build);
+        const base = firecrackerConfig({ id, kernel: options.kernel, initrd: options.initrd, disk, vsockPath: vsock, tap: address.tap, mac: address.mac }, shape, options.build, boot.repo);
         base["boot-source"].boot_args += ` root=/dev/vda rw ${guestNetArgs(address, internet)}`;
+        if (boot.repo) base["boot-source"].boot_args += " camel.repo=/dev/vdb";
         await writeFile(config, JSON.stringify(base));
         await rm(vsock, { force: true });
         child = await start(options.firecracker, ["--no-api", "--config-file", config, "--id", id.slice(0, 64), "--level", "Warning"], log);

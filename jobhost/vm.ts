@@ -6,8 +6,9 @@
 // - Firecracker (`firecrackerConfig`, and firecracker.ts's launcher): the configuration a real host boots with, in Nitro
 //   Sandboxes direct mode, on the host image infra/job-hosts/image builds.
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,8 +26,9 @@ export interface Vm extends GuestChannel {
 export type VmShape = { vcpus: number; memoryMiB: number; diskMiB: number };
 export interface VmLauncher {
   readonly kind: "fake" | "firecracker";
+  vsockPath?(id: string): string;
   /** `internet`: the job may reach its egress allowlist (a real host's proxy); without it, nothing. */
-  boot(id: string, shape: VmShape, options?: { internet?: boolean }): Promise<Vm>;
+  boot(id: string, shape: VmShape, options?: { internet?: boolean; repo?: string }): Promise<Vm>;
 }
 
 /**
@@ -100,15 +102,20 @@ const GUEST = fileURLToPath(new URL("./guest.ts", import.meta.url));
 
 /** The fake launcher: a directory for a disk, the guest as a local process. `base` is cloned for each job when given. */
 export function fakeLauncher(options: { base?: string; work?: string } = {}): VmLauncher {
+  const work = options.work ?? join(tmpdir(), `jobhost-${randomUUID()}`);
   return {
     kind: "fake",
-    async boot(id) {
-      const work = options.work ?? await mkdtemp(join(tmpdir(), "jobhost-"));
+    vsockPath: id => join(work, `${id}.vsock`),
+    async boot(id, _shape, boot = {}) {
       const root = join(work, id);
       await rm(root, { recursive: true, force: true });
       if (options.base) await cp(options.base, root, { recursive: true, mode: constants.COPYFILE_FICLONE }); // a reflink where the filesystem has one
       else await mkdir(root, { recursive: true });
-      await mkdir(join(root, "repo"), { recursive: true }); await mkdir(join(root, "out"), { recursive: true });
+      if (boot.repo) {
+        await rm(join(root, "repo"), { recursive: true, force: true });
+        await symlink(boot.repo, join(root, "repo"));
+      } else await mkdir(join(root, "repo"), { recursive: true });
+      await mkdir(join(root, "out"), { recursive: true });
       const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", GUEST, "--root", root], { stdio: ["pipe", "pipe", "inherit"] });
       const channel = new StdioChannel(child);
       let gone = false;
@@ -137,10 +144,11 @@ export function fakeLauncher(options: { base?: string; work?: string } = {}): Vm
  * kernel and initrd, its root disk (the job's reflink clone) with the Async I/O engine, its vCPUs and memory, the vsock
  * the guest agent listens on, and its tap. A build sandbox gets no CPU overcommit.
  */
-export function firecrackerConfig(job: { id: string; kernel: string; initrd: string; disk: string; vsockPath: string; tap: string; mac: string }, shape: VmShape, build = false) {
+export function firecrackerConfig(job: { id: string; kernel: string; initrd: string; disk: string; vsockPath: string; tap: string; mac: string }, shape: VmShape, build = false, repo?: string) {
   return {
     "boot-source": { kernel_image_path: job.kernel, initrd_path: job.initrd, boot_args: "console=ttyS0 panic=1 initcall_blacklist=i8042_init quiet" },
-    drives: [{ drive_id: "root", path_on_host: job.disk, is_root_device: true, is_read_only: false, io_engine: "Async" }],
+    drives: [{ drive_id: "root", path_on_host: job.disk, is_root_device: true, is_read_only: false, io_engine: "Async" },
+      ...(repo ? [{ drive_id: "repo", path_on_host: repo, is_root_device: false, is_read_only: false, io_engine: "Async" }] : [])],
     "machine-config": { vcpu_count: shape.vcpus, mem_size_mib: shape.memoryMiB, smt: false },
     vsock: { guest_cid: 3, uds_path: job.vsockPath },
     "network-interfaces": [{ iface_id: "eth0", host_dev_name: job.tap, guest_mac: job.mac }],
