@@ -1,12 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { camelfsConfigured, importTree, volumeLineage } from "../src/jobs/camelfs.ts";
+import { camelfsConfigured, importTree, uploadTimeoutMs, volumeLineage } from "../src/jobs/camelfs.ts";
 
 const env = { CAMELFS: { fetch: async () => { throw new Error("unexpected binding call"); } }, CAMELFS_API_TOKEN: "unit-test-private-token" };
 const tree = "a".repeat(40), lineage = volumeLineage("tenant", "volume");
 const file = (path: string, text: string) => ({ path, key: `files/${path}`, size: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") });
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status });
+
+test("blob upload timeouts scale with size and stop at thirty minutes", () => {
+  assert.equal(uploadTimeoutMs(0), 60_000);
+  assert.equal(uploadTimeoutMs(2 * 2 ** 20), 61_000);
+  assert.equal(uploadTimeoutMs(10 * 2 ** 30), 30 * 60_000);
+});
 
 test("imports missing blobs once, then only a changed blob with its parent tree", async () => {
   assert.equal(camelfsConfigured(env), true);
@@ -85,6 +91,7 @@ test("at most eight uploads are in flight", async () => {
 test("streams missing blobs with their known content length and Node duplex", async () => {
   const f = file("/stream", "streamed bytes"), bytes = Buffer.from("streamed bytes");
   let posts = 0, puts = 0;
+  let putSignal: AbortSignal | null | undefined;
   const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } });
   const result = await importTree(env, { lineage, files: [f], read: async entry => {
     assert.equal(entry.key, f.key);
@@ -92,6 +99,7 @@ test("streams missing blobs with their known content length and Node duplex", as
   } }, async (url, init) => {
     if (init?.method === "POST") return ++posts === 1 ? json(409, { missing: [f.sha256] }) : json(200, { tree });
     puts++;
+    putSignal = init?.signal;
     assert.equal(init?.body, stream, "the body reaches fetch without being buffered");
     assert.equal(stream.locked, false);
     assert.equal(new Headers(init?.headers).get("content-length"), String(bytes.length));
@@ -103,4 +111,6 @@ test("streams missing blobs with their known content length and Node duplex", as
   });
   assert.deepEqual(result, { tree, uploaded: 1 });
   assert.equal(puts, 1);
+  assert.ok(putSignal instanceof AbortSignal);
+  assert.equal(putSignal.aborted, false);
 });
