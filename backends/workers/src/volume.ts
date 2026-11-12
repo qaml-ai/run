@@ -87,6 +87,7 @@ export class Volume extends DurableObject<VolumeBindings> {
   constructor(ctx: DurableObjectState, env: VolumeBindings) {
     super(ctx, env);
     guardAlarms(this, ctx, "Volume", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS camelfs_trees(snapshot TEXT PRIMARY KEY, lineage TEXT NOT NULL, tree TEXT NOT NULL, createdAt INTEGER NOT NULL)");
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, version INTEGER NOT NULL, size INTEGER NOT NULL, key TEXT NOT NULL, contentType TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
     );
@@ -237,6 +238,16 @@ export class Volume extends DurableObject<VolumeBindings> {
             )),
       )
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  }
+  /** Immutable snapshots keep their imported tree so later jobs send only its reference. */
+  camelfsTree(snapshot: string): { tree: string; lineage: string } | null {
+    return this.sql().exec<{ tree: string; lineage: string }>("SELECT tree,lineage FROM camelfs_trees WHERE snapshot=?", snapshot).toArray()[0] ?? null;
+  }
+  setCamelfsTree(snapshot: string, lineage: string, tree: string): void {
+    this.sql().exec("INSERT OR REPLACE INTO camelfs_trees VALUES(?,?,?,?)", snapshot, lineage, tree, Date.now());
+  }
+  latestCamelfsTree(): string | null {
+    return this.sql().exec<{ tree: string }>("SELECT tree FROM camelfs_trees ORDER BY createdAt DESC LIMIT 1").toArray()[0]?.tree ?? null;
   }
   readSet(
     prefix = "/",

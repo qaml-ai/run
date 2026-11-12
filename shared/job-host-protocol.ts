@@ -19,7 +19,7 @@ export type RuntimeMessage =
   | { type: "cancel"; id: string };
 /** Host → runtime. */
 export type HostMessage =
-  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; pool?: "build" | "test" }
+  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; features?: string[]; pool?: "build" | "test" }
   | { type: "heartbeat"; running: string[]; free: number }
   | { type: "started"; id: string; at: number }
   | { type: "result"; id: string; result: WireResult };
@@ -29,6 +29,8 @@ export type WireJob = {
   command: string; timeoutSeconds: number; outputs: string[];
   limits: { cpus?: number; memoryMiB?: number; diskMiB?: number; pids?: number };
   internet: boolean; files: WireFile[]; secretEnv?: Record<string, string>;
+  /** The job's /repo as a camelFS tree: the host mounts a fork of it (no `files`, no `sync`). */
+  camelfs?: { lineage: string; tree: string; commit?: boolean };
   /**
    * A tree too large to send inline: the host fetches each file from the runtime itself (GET `url`/<index>, with
    * `token` as a bearer, one job's only), checks its size and sha256, and writes it into the VM in pieces.
@@ -40,7 +42,8 @@ export type WireJob = {
 export type WireStream = { data: string; size: number; truncated: boolean };
 export type WireResult =
   | { ok: true; exitCode: number | null; timedOut: boolean; stdout: WireStream; stderr: WireStream; outputs: Record<string, WireStream>; missing: string[];
-      timings: { startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number }; pids: "enforced" | "unenforced" }
+      timings: { startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number }; pids: "enforced" | "unenforced";
+      camelfs?: { tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number } }
   | { ok: false; code: "start_failed" | "sync_failed" | "container_failed" | "disk_low" | "stopped"; message: string;
       /** For a failure after its VM started: when it started (after `startMs`) and ended (`totalMs`), from dispatch. */
       timings?: { startMs: number; totalMs: number } };
