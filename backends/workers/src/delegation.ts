@@ -110,8 +110,8 @@ export interface DelegationHost {
   sendMessage?(targetId: string, request: NoticeRequest, notice: RuntimeNotice): Promise<unknown>;
   /** Send a progress report to this run's owner through this agent's outbox (ending-outbox.ts). */
   reportProgress?(owner: Owner, report: ChildProgressReport): Promise<Receipt>;
-  /** Stop a workflow this agent owns (its `WORKFLOWS` object's abort): a workflow child's cancel. */
-  abortWorkflow?(workflowId: string): Promise<unknown>;
+  /** Stop a workflow this agent owns (its `WORKFLOWS` object's abort): a workflow child's cancel. False: there is no such workflow. */
+  abortWorkflow?(workflowId: string): Promise<boolean>;
 }
 /** What a fork gives a child: a seed for its computer connection, and the native computer's snapshot. */
 export type ChildComputerFork = { connection?: { seed: string; connection?: string; provider?: string; at?: number }; native?: { snapshot: ComputerSnapshot; origin: NativeForkOrigin } };
@@ -543,7 +543,7 @@ export class Delegation {
   }
   private async cancelRemote(child: DelegatedChild) {
       if (!child.id) return;
-      if (child.workflow) { await this.host.abortWorkflow?.(child.id); return; }
+      if (child.workflow) { if (await this.host.abortWorkflow?.(child.id) === false) await this.forgetWorkflow(child.id); return; }
       if (this.host.cancelRequest) { await this.host.cancelRequest(child.id, child.requestId); return; }
       if (!child.made) {
         const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
@@ -743,15 +743,15 @@ export class Delegation {
     }
   }
   /**
-   * A workflow's later attempt (`<workflow id>_a<n>`): it stopped (its budget, its payer) and went on, so its next ending is a
-   * new run of the same child. The row is made from the latest one of that workflow when this ending arrives; an ending
-   * of an attempt older than the latest row's is unknown (that attempt ended already).
+   * A workflow's attempt (`<workflow id>_a<n>`) with no row yet: it stopped (its budget, its payer) and went on, so each
+   * later ending is a new run of the same child. Its row is made from the workflow's latest when its ending arrives.
    */
   private async workflowAttempt(ending: ChildEnding): Promise<DelegatedChild | undefined> {
     const latest = await this.latestWorkflowRow(ending.agentId);
-    const attempt = workflowAttemptOf(ending)!;
-    if (!latest || attempt <= (latest.attempt ?? 1)) return;
-    return this.openWorkflowAttempt(latest, attempt);
+    // Any attempt without a row of its own (byRun found none): a later one, or an earlier one whose ending was retried
+    // after a later one's landed. Each lands on its own row, once.
+    if (!latest) return;
+    return this.openWorkflowAttempt(latest, workflowAttemptOf(ending)!);
   }
   private async latestWorkflowRow(workflowId: string) {
     const rows = (await this.rows.ofChild(workflowId)).filter(row => row.workflow);
@@ -774,7 +774,7 @@ export class Delegation {
     if (!latest || latest.status !== 'paused') return;
     await this.openWorkflowAttempt(latest, (latest.attempt ?? 1) + 1);
   }
-  /** workflow_start's workflow was refused (its script, its input): its row ends at once, quietly. */
+  /** workflow_start's workflow was never made (refused, or its start failed): its row ends at once, quietly. */
   async forgetWorkflow(workflowId: string) {
     const latest = await this.latestWorkflowRow(workflowId);
     if (latest?.status === 'running') await this.update(latest, { status: 'failed', endedAt: Date.now(), notified: true, error: 'The workflow was not started' });
@@ -878,7 +878,8 @@ export class Delegation {
         if (args.agents !== undefined && (!Array.isArray(args.agents) || args.agents.some(name => typeof name !== 'string'))) throw new HttpError(400, 'agents is a list of names or agentIds');
         if (args.timeoutMs !== undefined && (!Number.isInteger(args.timeoutMs) || Number(args.timeoutMs) < 1000 || Number(args.timeoutMs) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new HttpError(400, `timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
         const background = [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()];
-        const selected = background.filter(child => Array.isArray(args.agents) ? args.agents.includes(child.id) || args.agents.includes(child.name) : !child.landedBy);
+        // A workflow is waited on only by name: it can run for hours, and its ending comes as a notification by itself.
+        const selected = background.filter(child => Array.isArray(args.agents) ? args.agents.includes(child.id) || args.agents.includes(child.name) : !child.landedBy && !child.workflow);
         if (Array.isArray(args.agents)) for (const name of args.agents) if (!selected.some(child => child.id === name || child.name === name)) throw new HttpError(400, `You have no sub-agent ${name}`);
         if (!selected.length) return this.toolResult({ agents: [] }, api);
         if (args.untilProgress !== undefined && typeof args.untilProgress !== 'boolean') throw new HttpError(400, 'untilProgress is true or false');
@@ -924,7 +925,8 @@ export class Delegation {
       }
       const child = children.find(child => child.id === args.agent || child.name === args.agent || child.id === args.to || child.name === args.to);
       if (!child) throw new HttpError(404, 'Unknown sub-agent');
-      if (definition.name === 'interrupt_agent' && child.workflow) { await this.host.abortWorkflow?.(child.id); return this.toolResult({ agentId: child.id, interrupted: true }, api); }
+      // A workflow row whose workflow does not exist (its start failed after the row was written) just ends.
+      if (definition.name === 'interrupt_agent' && child.workflow) { if (await this.host.abortWorkflow?.(child.id) === false) await this.forgetWorkflow(child.id); return this.toolResult({ agentId: child.id, interrupted: true }, api); }
       if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${api.callId}`, method: 'abort', params: {} }) })); return this.toolResult({ agentId: child.id, interrupted: true }, api); }
       throw new HttpError(400, 'Unknown delegation tool');
     } }));

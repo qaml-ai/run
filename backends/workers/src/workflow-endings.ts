@@ -53,7 +53,7 @@ export function endingRecord(workflowId: string, name: string, summary: EndingSu
     : summary.status === "aborted" ? `Workflow ${name} was aborted.`
     : summary.status === "failed" ? `Workflow ${name} failed (${failure?.code ?? "error"}): ${String(cut(failure?.message ?? "no message"))}`
     : stopped === "budget_exhausted" ? `Workflow ${name} stopped: its budget is spent. Raise it with workflow_budget to go on.`
-    : stopped === "payer_exhausted" ? `Workflow ${name} stopped: the account is out of credit. It goes on by itself once there is credit.`
+    : stopped === "payer_exhausted" ? `Workflow ${name} stopped: the account is out of credit. Once there is credit, resume it with workflow_resume.`
     : `Workflow ${name} stopped (${fault!.code}): ${fault!.message}`;
   const output = {
     workflowId, status: summary.status, ...(summary.result !== undefined ? { result: cut(summary.result) } : {}),
@@ -140,14 +140,17 @@ export class WorkflowEndings {
   }
 
   /**
-   * On a wake: a workflow that ended without its ending staged (it ended under an earlier build, or its status was
-   * written by a migration rather than the runner) has it staged now, unless the earlier build told the owner already.
+   * After anything that may have moved the workflow: one that ended without its ending staged (it ended under an
+   * earlier build, or a migration wrote its status rather than the runner's setStatus) has it staged now, unless that
+   * earlier build told the owner already. One read when there is nothing to do; `summary` is read only when there is.
    */
-  catchUp(summary: EndingSummary) {
-    if (this.host.owner()?.kind !== "agent" || !ENDED.has(summary.status) || Number(this.row().ended_staged)) return;
+  catchUp(summary: () => EndingSummary) {
+    if (this.host.owner()?.kind !== "agent" || Number(this.row().ended_staged)) return;
+    const now = summary();
+    if (!ENDED.has(now.status)) return;
     this.host.storage.transactionSync(() => {
-      if (this.host.legacyTold() === summary.status) this.sql.exec("UPDATE workflow_owner_row SET ended_staged = 1 WHERE id = 1");
-      else this.statusWritten(summary);
+      if (this.host.legacyTold() === now.status) this.sql.exec("UPDATE workflow_owner_row SET ended_staged = 1 WHERE id = 1");
+      else this.statusWritten(now);
     });
   }
 

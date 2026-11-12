@@ -7,7 +7,6 @@
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { agentOwner } from "../../../shared/owner.ts";
 import { startInput, startWorkflow, ownWorkflow, WorkflowInputError, WORKFLOW_SCRIPT_CHARS, type WorkflowStub } from "./workflow-routes.ts";
-import { WorkflowError } from "./workflow-runner.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
 import { shortFault } from "./workflow-endings.ts";
 
@@ -118,8 +117,12 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       try {
         started = await startWorkflow(host.env, host.tenant, input, { owner: agentOwner(host.agentId), ...(host.bucket ? { bucket: host.bucket } : {}), ...(host.runtimeOrigin ? { runtimeOrigin: host.runtimeOrigin } : {}), idempotencyKey: `agent:${host.agentId}:${callId}`, ...(beforeCreate ? { beforeCreate } : {}) });
       } catch (error) {
-        // Refused (its script, its input): no workflow exists, so its row ends now. Any other failure may have made it.
-        if (registered && error instanceof WorkflowError && error.status >= 400 && error.status < 500) await host.children!.forget(registered).catch(() => {});
+        // No workflow was made (refused, or its start failed before it existed): its row ends now. One that cannot be
+        // looked up stays running; interrupt_agent ends it once the workflow is known not to exist.
+        if (registered) {
+          const made = await ownWorkflow(host.env, host.tenant, registered).then(stub => !!stub, () => undefined);
+          if (made === false) await host.children!.forget(registered).catch(() => {});
+        }
         throw error;
       }
       return brief(started.id, started);

@@ -21,6 +21,7 @@ import { replacementConfiguration } from "./replacement-configuration.ts";
 import { digest, configuration } from "./api-contract.ts";
 import { configurationModelError, validateAgentModel } from "./default-model.ts";
 import { MAX_OPEN_REQUESTS } from "./access-policy.ts";
+import { openRequest } from "./agent-types.ts";
 import { configurationPatch, withoutOnExpire, definitionApplication, definitionUpsert, type DefinitionTarget } from "./definitions.ts";
 import { executionParams } from "./host-execution.ts";
 import { outputInput } from "./output-validation.ts";
@@ -103,7 +104,7 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
       } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
     }
     if (!await this.ctx.storage.get(reqKey(id))) {
-      if ((await this.records()).filter(record => record.state !== 'completed').length >= MAX_OPEN_REQUESTS)
+      if ((await this.records()).filter(openRequest).length >= MAX_OPEN_REQUESTS)
         throw Object.assign(new Error('Too many requests queued for this agent'), { status: 429 });
       // Like the source runtime, a new allowance takes effect before queued work.
       // Replaying the request must not reset its already consumed counter.
@@ -491,7 +492,7 @@ export async function admitImpl(this: AgentRuntime,
       if (old) return old;
       throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
     }
-    if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
+    if (!old && request.method !== "steer" && (await this.records()).filter(openRequest).length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
     const actor = params.actor ?? (params.from as { id?: string } | undefined)?.id;

@@ -181,8 +181,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   private readonly endings: WorkflowEndings;
   /** The old notices, kept this release as the rolling deploy's fallback only (workflow-notices.ts). */
   private readonly notices: WorkflowNotices;
-  /** This instance staged an ending an earlier build left unstaged (workflow-endings.ts catchUp). */
-  private caught = false;
+  /** This instance started delivering what an earlier build left in its own outbox (workflow-notices.ts). */
+  private legacyFlushed = false;
   readonly agents: WorkflowAgents;
   private readonly forks: ForkJanitor;
   /** Its gates: decisions in the account's inbox (workflow-gates.ts). */
@@ -333,6 +333,9 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
    * ending was staged with its status, and the alarm delivers whatever this does not). Returns `value`.
    */
   private told<T>(value: T): T {
+    // An ending whose status was written without the runner's setStatus (a migration) is staged here, after it.
+    try { if (this.exists()) this.endings.catchUp(() => this.runner.get()); }
+    catch (error) { console.error(JSON.stringify({ type: "workflow_ending_catch_up_failed", workflow: this.ctx.id.name, error: String(error) })); }
     if (this.endings.pending()) this.ctx.waitUntil((async () => {
       // The alarm is armed for the first retry before the send: an isolate that dies mid-send leaves the ending due and
       // nothing else that would arm the alarm for it.
@@ -343,14 +346,10 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     return value;
   }
 
-  /**
-   * Once per instance: an ending an earlier build (or a migration) left unstaged is staged now (workflow-endings.ts
-   * catchUp), and what that build left in its own outbox is delivered.
-   */
+  /** Once per instance: what an earlier build left in its own outbox (workflow-notices.ts) is delivered. */
   private async migrated() {
-    if (this.caught || !this.exists()) return;
-    this.endings.catchUp(this.runner.get());
-    this.caught = true;
+    if (this.legacyFlushed || !this.exists()) return;
+    this.legacyFlushed = true;
     if (this.notices.pending()) this.ctx.waitUntil(this.notices.flush().catch(error => console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.ctx.id.name, error: String(error) }))));
   }
 
@@ -426,7 +425,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         // so the alarm's failure floor applies rather than a second's re-arm.
         ["runner", async () => { if ((await this.runner.alarm()).failed) throw new Error("a runner concern failed and was left for later (see its alarm_failed or cancel events)"); }],
         ["forks", () => this.ended()],
-        ["endings", () => this.endings.outbox.flush()],
+        ["endings", () => { this.told(undefined); return this.endings.outbox.flush(); }],
         ["notices", () => this.notices.flush()],
       ],
       next: async () => {

@@ -213,7 +213,10 @@ export function createDelegation(this: AgentRuntime): Delegation {
     abortWorkflow: async (workflowId) => {
       const conf = await this.config();
       const stub = await ownWorkflow(this.env as unknown as WorkflowEnv, conf.tenantId, workflowId);
-      await stub?.abort();
+      if (!stub) return false;
+      // An ended one refuses (409): it is there, and has ended by itself.
+      await stub.abort().catch(error => { if ((error as { status?: number }).status !== 409) throw error; });
+      return true;
     },
     inheritComputer: async (parent, child, computer) => {
       const conf = await this.config();
