@@ -127,6 +127,9 @@ async function main() {
     }
     if (runtimeLog && existsSync(runtimeLog)) {
       const added = readFileSync(runtimeLog).subarray(logFrom).toString("utf8").replace(/\x1b\[[0-9;]*m/g, "");
+      // The run's whole slice of the runtime log, kept with its other artifacts.
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "runtime.log"), added);
       const errors = [...new Set(added.split("\n").filter(line => /\bERROR\b|Uncaught|✘/.test(line)).map(line => line.replace(/^.*?(?:ERROR\]|✘)\s*/, "").trim().slice(0, 300)))];
       result.failures = [...(result.failures ?? []), ...errors.slice(0, 30).map(message => ({ source: "runtime log", message }))];
     }
