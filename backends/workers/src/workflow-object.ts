@@ -417,9 +417,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     return value;
   }
 
-  get() { this.nudge(); return refusable(() => this.runner.get()); }
-  /** A read is enough for a self-resuming pause a version-1 node left with no alarm to arm one (`WorkflowRunner.nudge`). */
-  private nudge() { this.ctx.waitUntil(this.runner.nudge().catch(() => {})); }
+  get() { return refusable(() => this.runner.get()); }
   /** What it was started with besides its script (its args, classes and owner). */
   settings(): WorkflowSettings {
     this.settingsTable();
@@ -429,7 +427,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   private settingsTable() { this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS workflow_settings (id INTEGER PRIMARY KEY CHECK (id = 1), body TEXT NOT NULL)"); }
   /** The summary with the settings a client sees: its name, args, classes and owner. */
   // The RPC surface the API and the builtin use answers a WorkflowError as a refusal (refusable), not a throw.
-  view() { this.nudge(); return refusable(() => { const { name, args, classes, owner } = this.settings(); return { ...this.runner.get(), ...(name ? { name } : {}), ...(args !== undefined ? { args } : {}), ...(classes ? { classes } : {}), ...(owner ? { owner } : {}) }; }); }
+  view() { return refusable(() => { const { name, args, classes, owner } = this.settings(); return { ...this.runner.get(), ...(name ? { name } : {}), ...(args !== undefined ? { args } : {}), ...(classes ? { classes } : {}), ...(owner ? { owner } : {}) }; }); }
   items(query: Parameters<WorkflowRunner["items"]>[0]) { return refusable(() => this.runner.items(query)); }
   events(query: Parameters<WorkflowRunner["events"]>[0]) { return refusable(() => this.runner.events(query)); }
   pause(options: Parameters<WorkflowRunner["pause"]>[0]) { return refusable(async () => { await this.runner.pause(options); return this.told(this.runner.get()); }); }

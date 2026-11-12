@@ -162,7 +162,6 @@ test("a fault's notice carries its code and message, and every stop says what it
   assert.equal(workflowNext({ status: 'running' }), undefined);
   // A VM crash ends it too, and says so; a newer journal goes on by itself; a payer stop names jobs too; a long message is cut.
   assert.match(workflowNext({ status: 'failed', fault: { code: 'vm_crash', message: 'x' } })!, /start it again with workflow_start/);
-  assert.match(workflowNext({ status: 'paused', pauseReason: 'journal_version' })!, /goes on by itself once that version runs it/);
   assert.match(workflowNext({ status: 'paused', pauseReason: 'payer_exhausted' })!, /A sub-agent or job/);
   assert.equal(shortFault({ code: 'vm_crash', message: 'e'.repeat(2000) }).message.length, 500 + '… (cut)'.length);
   assert.match(workflowNext({ status: 'budget_exhausted' })!, /workflow_budget/);

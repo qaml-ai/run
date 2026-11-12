@@ -25,7 +25,6 @@ export function workflowNext(summary: Pick<NoticeSummary, "status" | "pauseReaso
     case "payer_exhausted": return "A sub-agent or job was refused for credit (the spend limit): it tries again by itself; workflow_resume tries now.";
     case "waiting_on_gate": return "A gate expired unanswered: once it is answered in the inbox, workflow_resume goes on.";
     case "capacity_refused": return "The account is at its running-workflows limit: it goes on by itself once another ends.";
-    case "journal_version": return "Its journal was written by a newer runtime: it goes on by itself once that version runs it.";
     default: return "Paused: workflow_resume goes on.";
   }
 }

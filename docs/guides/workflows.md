@@ -115,7 +115,6 @@ A workflow that stops without ending is `paused`, and `pauseReason` says why:
 | `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resuming re-issues it under a new attempt**. It tries again by itself (after 5 minutes, doubling to 30) with one of the refused effects; once that one gets through, the rest follow. Resume it to try them all now. A week without credit ends it `failed` (`payer_gave_up`) |
 | `waiting_on_gate` | A gate passed its expiry without an answer and without `onExpire: "recommended"`. It can still be answered in the inbox; resume after it is |
 | `capacity_refused` | The account is at its running-workflows limit. It tries again by itself every minute |
-| `journal_version` | Its journal was written by a newer runtime than the one that woke it (during a deploy). It goes on by itself |
 
 `resume` runs the next step. `abort` ends it for good: its running sub-agents
 stop and the journal stays readable.

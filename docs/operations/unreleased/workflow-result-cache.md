@@ -17,8 +17,7 @@ from that result, at no cost: no sub-agent or container runs. See [Workflows](..
 - **A fault ends the workflow:** `key_required`, `key_conflict`, `step_budget`, a thrown error and the like now end it
   `failed`, with `fault: { code, message }`, instead of pausing it for an edit. What was still running is stopped.
 - **Pauses that end by themselves:** `payer_exhausted` tries again after 5 minutes, doubling to 30, with one refused
-  effect (the rest follow once it gets through), and ends the workflow `failed` (`payer_gave_up`) after 7 days; `capacity_refused`
-  tries again every minute; `journal_version` (a journal written by a newer runtime, during a deploy) is now a pause,
-  not a fault, and goes on once a node that can read it runs it. `workflow_resume` still goes on at once.
-- **Workflows already running at the deploy:** one held at `confirm_rerun` ends `failed` with the fault
-  `edit_retired`; one paused for a fault ends `failed` with it. One paused by an older node for a newer journal, or for its payer or capacity, goes on.
+  effect (the rest follow once it gets through), and ends the workflow `failed` (`payer_gave_up`) after 7 days;
+  `capacity_refused` tries again every minute. `workflow_resume` still goes on at once.
+- **Workflows already running at the deploy:** none are expected; any that is ends `failed` on its first touch (the
+  runner's version upgrade).

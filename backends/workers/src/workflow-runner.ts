@@ -17,8 +17,7 @@
 //
 // A workflow is not edited (docs/design/workflow-simplification.md): to change one, its owner aborts it and starts a new
 // one, and finished agent()/job() results with the same arguments come from the owner's result cache (`ResultCache`,
-// workflow-results.ts) instead of running again. A workflow from before that change may still be on a later revision
-// of its script (the old edit): it replays from that revision's start with its table, read-only, until it ends.
+// workflow-results.ts) instead of running again.
 import type { IssuedEffect, WorkflowBatch, WorkflowFaultCode, WorkflowSandbox, WorkflowStepOutcome, WorkflowStepRequest } from "../codemode/workflow-protocol.ts";
 import { WORKFLOW_STEP_PROTOCOL } from "../codemode/workflow-protocol.ts";
 
@@ -107,13 +106,10 @@ export interface WorkflowStorage {
 
 export type WorkflowStatus = "running" | "waiting" | "paused" | "completed" | "failed" | "aborted" | "budget_exhausted";
 /** Why a workflow is paused. A fault is not one: a faulted workflow has ended `failed`, with `fault`. */
-/**
- * Why a workflow is paused. `journal_version`: its journal has rows from a newer runner (a rolling deploy reached this
- * object on an older node); like the payer's and the capacity pauses it goes on by itself, once a node that can read it
- * runs it. A script's fault is not a pause: it ends the workflow (`fault`).
- */
-export type PauseReason = "user" | "payer_exhausted" | "waiting_on_gate" | "capacity_refused" | "journal_version";
-const SELF_RESUMING = new Set<string>(["payer_exhausted", "capacity_refused", "journal_version"]);
+/** Why a workflow is paused. A script's fault is not a pause: it ends the workflow (`fault`). */
+export type PauseReason = "user" | "payer_exhausted" | "waiting_on_gate" | "capacity_refused";
+/** Pauses that go on by themselves (`resume_at`, the alarm): the payer's credit and the account's workflow limit. */
+const SELF_RESUMING = new Set<string>(["payer_exhausted", "capacity_refused"]);
 const TERMINAL = new Set<WorkflowStatus>(["completed", "failed", "aborted"]);
 
 export interface WorkflowSummary {
@@ -175,12 +171,6 @@ const SCHEMA = [
     result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL, job_concurrency INTEGER,
     throttled_until INTEGER, swept_at INTEGER, tenant TEXT, bucket TEXT, end_user TEXT, capacity_open INTEGER NOT NULL DEFAULT 0, renewed_at INTEGER,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL, code TEXT, resume_at INTEGER, resume_tries INTEGER NOT NULL DEFAULT 0, payer_since INTEGER)`,
-  // A revision is a script and what the journal held when it began (its table): an edit, or a rerun of exact keys.
-  `CREATE TABLE IF NOT EXISTS workflow_revisions (
-    revision INTEGER PRIMARY KEY, kind TEXT NOT NULL, code TEXT NOT NULL, reason TEXT, at INTEGER NOT NULL, start_step INTEGER NOT NULL,
-    rerun_confirm_percent INTEGER NOT NULL, confirmed INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS workflow_revision_table (
-    revision INTEGER NOT NULL, key TEXT NOT NULL, attempt INTEGER NOT NULL, settled INTEGER NOT NULL, PRIMARY KEY (revision, key))`,
   // key/attempt is an effect's identity; `current` marks the attempt that counts. `ord` is the order rows were
   // journaled in; a replay reproduces the order of a revision's `script` rows. `landed` orders results into batches;
   // `delivered_step` is the step whose batch held the result (0: a revision's table took it).
@@ -293,12 +283,11 @@ export class WorkflowRunner {
     for (const [column, type] of [["cancel_attempts", "INTEGER NOT NULL DEFAULT 0"], ["cancel_next_at", "INTEGER"], ["cached_from", "TEXT"], ["cache_key", "TEXT"]] as const)
       if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_effects') WHERE name = ?", column).toArray().length)
         this.sql.exec(`ALTER TABLE workflow_effects ADD COLUMN ${column} ${type}`);
-    // Expand (workflow-simplification.md "Storage"): the script on the state row, and the self-resume of a paused
-    // workflow. A workflow from before has its script in its current revision's row: copied once.
+    // The script on the state row, and the self-resume of a paused workflow (a workflow from before these columns is
+    // ended by the version upgrade on its first touch).
     for (const [column, type] of [["code", "TEXT"], ["resume_at", "INTEGER"], ["resume_tries", "INTEGER NOT NULL DEFAULT 0"], ["payer_since", "INTEGER"]] as const)
       if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_state') WHERE name = ?", column).toArray().length)
         this.sql.exec(`ALTER TABLE workflow_state ADD COLUMN ${column} ${type}`);
-    this.sql.exec("UPDATE workflow_state SET code = (SELECT code FROM workflow_revisions WHERE revision = workflow_state.revision) WHERE id = 1 AND code IS NULL");
   }
 
   private now() { return (this.options.now ?? Date.now)(); }
@@ -321,9 +310,6 @@ export class WorkflowRunner {
          VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, jobConcurrency, workflow.tenant ?? null, workflow.bucket ?? null, workflow.endUser ?? null, at, at, WORKFLOW_RUNNER_VERSION, workflow.code,
       );
-      // Expand/contract: a version-1 node still reads the script from revision 1 during the rollout (until the
-      // contract deploy drops the table), so it is written here too. Version 2 reads `code`.
-      this.sql.exec("INSERT OR IGNORE INTO workflow_revisions (revision, kind, code, at, start_step, rerun_confirm_percent, confirmed) VALUES (1, 'start', ?, ?, 1, 100, 1)", workflow.code, workflow.startedAt);
       this.event("created", { concurrency, jobConcurrency, budgetUsd: workflow.budgetUsd ?? null });
     });
   }
@@ -443,7 +429,6 @@ export class WorkflowRunner {
     const now = this.now();
     let failed = true;
     try {
-      if (recover) this.upgrade();
       // An ended workflow has nothing to recover: its executor was aborted, and a recover would start children again.
       if (recover && !TERMINAL.has(this.state().status as WorkflowStatus)) await this.executor.recover?.();
       await this.capacityHousekeeping();
@@ -455,39 +440,6 @@ export class WorkflowRunner {
       failed = uncancelled;
       return failed;
     } finally { await this.arm(now + (failed ? 30_000 : 1_000)); }
-  }
-
-  /**
-   * A workflow from runner version 1, once, on its first wake under version 2 (workflow-simplification.md "What happens
-   * to in-flight workflows"): one held for an edit's confirm ends (edits are gone); one paused for a fault ends with it
-   * (a fault is an ending now). Either way its pending effects are cancelled, as on any end. Then it is stamped.
-   */
-  private upgrade() {
-    const state = this.state();
-    if (Number(state.version) >= WORKFLOW_RUNNER_VERSION) return;
-    this.storage.transactionSync(() => {
-      const reason = state.pause_reason as string | null;
-      if (state.status === "paused" && reason === "confirm_rerun")
-        this.fault({ code: "edit_retired", message: "Editing was removed: start the workflow again; finished results are reused" });
-      else if (state.status === "paused" && state.fault_code === "journal_version") {
-        // An older node paused it for this node's own rows (the rolling deploy that brought this version): not a fault.
-        this.goOn(false);
-      } else if (state.status === "paused" && state.fault_code !== null)
-        this.fault({ code: state.fault_code as WorkflowFaultCode, message: (state.error as string | null) ?? String(state.fault_code) });
-      this.sql.exec("UPDATE workflow_state SET version = ? WHERE id = 1", WORKFLOW_RUNNER_VERSION);
-      this.event("upgraded", { from: Number(state.version), to: WORKFLOW_RUNNER_VERSION });
-    });
-  }
-
-  /**
-   * Arm the alarm if a self-resuming pause has no time set (one a version-1 node paused, which armed nothing): any call
-   * that reaches the object (a status read) is enough for it to go on.
-   */
-  nudge(): Promise<void> {
-    return this.serial(async () => {
-      const state = this.sql.exec("SELECT status, pause_reason, resume_at FROM workflow_state WHERE id = 1").toArray()[0];
-      if (state?.status === "paused" && SELF_RESUMING.has(state.pause_reason as string) && state.resume_at === null) await this.arm();
-    });
   }
 
   /** Effect `key:attempt` ended. A second landing, or one for a superseded attempt, is ignored. */
@@ -747,7 +699,8 @@ export class WorkflowRunner {
     const at = this.now();
     if (state.throttled_until !== null && Number(state.throttled_until) > at) return false;
     const step = Number(state.step) + 1;
-    const revision = this.revision(state);
+    // One script, from the first step (revisions were removed with editing): 1 is the only revision.
+    const revision = { revision: 1, start_step: 1, at: Number(state.started_at) };
     const rebuild = revision.start_step === step;
     const results = this.sql.exec(
       "SELECT key, attempt, ok, result, kind, args FROM workflow_effects WHERE current = 1 AND delivered_step IS NULL AND landed IS NOT NULL ORDER BY landed",
@@ -764,8 +717,7 @@ export class WorkflowRunner {
     }
     const newest = Number(this.sql.exec("SELECT COALESCE(MAX(version), 0) AS v FROM workflow_effects").one().v);
     if (newest > WORKFLOW_RUNNER_VERSION) {
-      // Not a fault: the journal is fine, this node is behind. It waits for one that is not (self-resumed, alarm).
-      this.storage.transactionSync(() => { this.setStatus("paused", "journal_version"); this.event("paused", { reason: "journal_version", newest, runner: WORKFLOW_RUNNER_VERSION }); });
+      this.storage.transactionSync(() => this.fault({ code: "journal_version", message: `The journal has rows from runner version ${newest}; this runner is version ${WORKFLOW_RUNNER_VERSION}` }));
       return false;
     }
     const started = performance.now();
@@ -776,8 +728,6 @@ export class WorkflowRunner {
     };
     const fromJournal = () => {
       delete request.restore;
-      const table = revision.revision > 1 ? this.table(revision.revision) : [];
-      if (table.length) request.table = table;
       request.beganAt = revision.at;
       if (!rebuild) request.replay = this.batches(revision.start_step, step - 1);
     };
@@ -857,17 +807,6 @@ export class WorkflowRunner {
   }
 
   /**
-   * Where the script's replay starts: a workflow's first step, with no table. One made before edits were removed may
-   * be on a later revision (an old edit): it replays from that revision's start with its table, until it ends.
-   */
-  private revision(state: Row): { revision: number; start_step: number; at: number } {
-    const revision = Number(state.revision);
-    if (revision <= 1) return { revision: 1, start_step: 1, at: Number(state.started_at) };
-    const row = this.sql.exec("SELECT start_step, at FROM workflow_revisions WHERE revision = ?", revision).one();
-    return { revision, start_step: Number(row.start_step), at: Number(row.at) };
-  }
-
-  /**
    * A replay issues exactly the revision's journaled effects, in journal order; a new effect is never one the journal
    * already holds as a live current attempt. Anything else means the script depends on something it did not journal.
    */
@@ -895,14 +834,6 @@ export class WorkflowRunner {
       if (stepUnsupported(error)) throw new Error(`The sandbox Worker does not speak workflow step protocol ${WORKFLOW_STEP_PROTOCOL}: the workflow runner and the sandbox Worker run different versions`);
       throw error;
     }
-  }
-
-  /** An old revision's table (a workflow edited before edits were removed): what the journal held when it began. */
-  private table(revision: number): NonNullable<WorkflowStepRequest["table"]> {
-    return this.sql.exec(
-      "SELECT t.key, t.settled, e.ok, e.result, e.kind, e.args FROM workflow_revision_table t JOIN workflow_effects e ON e.key = t.key AND e.attempt = t.attempt WHERE t.revision = ? ORDER BY e.ord",
-      revision,
-    ).toArray().map(row => ({ key: row.key as string, kind: row.kind as string, args: row.args as string, ...(row.settled === 1 ? { ok: row.ok === 1, value: row.result as string } : {}) }));
   }
 
   /** The batches of steps `from` through `through`, as first delivered. */
@@ -994,8 +925,7 @@ export class WorkflowRunner {
     // (record), so a payer that stays without credit makes one new child (or job snapshot) per try, not one per effect.
     const again = this.sql.exec(`SELECT key FROM workflow_effects WHERE current = 1 AND status IN ('refused', 'aborted') ORDER BY ord${payer ? " LIMIT 1" : ""}`).toArray();
     for (const row of again) this.nextAttempt(row.key as string, "reissue");
-    // Leaving a stop clears what it said (a version-1 fault pause carried here had its code and message set).
-    this.sql.exec("UPDATE workflow_state SET resume_tries = ?, fault_code = NULL, error = NULL WHERE id = 1", selfResumed ? Number(this.state().resume_tries) + 1 : 0);
+    this.sql.exec("UPDATE workflow_state SET resume_tries = ? WHERE id = 1", selfResumed ? Number(this.state().resume_tries) + 1 : 0);
     if (!selfResumed) this.sql.exec("UPDATE workflow_state SET payer_since = NULL WHERE id = 1");
     this.setStatus("running");
     this.refreshLiveness();
@@ -1112,8 +1042,7 @@ export class WorkflowRunner {
         }
         // Paused for the payer's credit or the tenant's workflow limit: it tries again on its own when its time comes.
         // Refused again, it pauses again (later each time for the payer), so nothing waits on a resume nobody sends.
-        // One paused by a version-1 node (or before self-resume) has no time set: it is due now.
-        if (state.status === "paused" && SELF_RESUMING.has(state.pause_reason as string) && (state.resume_at === null || Number(state.resume_at) <= now)) {
+        if (state.status === "paused" && state.resume_at !== null && Number(state.resume_at) <= now && SELF_RESUMING.has(state.pause_reason as string)) {
           await isolated("self-resume", () => {
             this.storage.transactionSync(() => {
               if (state.pause_reason === "payer_exhausted" && state.payer_since !== null && now - Number(state.payer_since) >= WORKFLOW_LIMITS.payerGiveUpMs)
@@ -1197,7 +1126,7 @@ export class WorkflowRunner {
     }
     if (capacity) candidates.push(Number(state.renewed_at ?? this.now()) + capacity.leaseMs / 2);
     // A pause that resumes itself (the payer's credit, the workflow limit): when it tries again.
-    if (state.status === "paused" && SELF_RESUMING.has(state.pause_reason as string)) candidates.push(state.resume_at === null ? this.now() : Number(state.resume_at));
+    if (state.status === "paused" && state.resume_at !== null) candidates.push(Number(state.resume_at));
     return candidates.length ? Math.min(...candidates) : null;
   }
 

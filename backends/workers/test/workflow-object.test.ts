@@ -601,44 +601,6 @@ test("a fault ends the workflow failed with its code, cancelling what is out; a 
   assert.deepEqual([at(fixed).status, at(fixed).result, at(fixed).counts.cached, at(fixed).spent.usd], ["completed", "re: combine 3", 3, 1]);
 });
 
-test("upgrade: a version-1 workflow held at confirm_rerun, or paused for a fault, ends failed on its first wake; one paused for a newer journal, or running, goes on", { timeout: 60_000 }, async () => {
-  const held = harness();
-  held.init({ code: `const a = await agent("a", { key: "a" }); const b = await agent("b", { key: "b" }); return b.answer;` });
-  await held.wake();
-  await held.next();
-  held.store.sql.exec("UPDATE workflow_state SET version = 1, status = 'paused', pause_reason = 'confirm_rerun' WHERE id = 1");
-  await held.wake();
-  assert.deepEqual([at(held).status, at(held).fault?.code], ["failed", "edit_retired"]);
-  assert.ok(held.world.cancelled.includes("b:1"), "what was out is cancelled, as on any end");
-  assert.ok(held.runner.events().some(event => event.type === "upgraded" && event.data.from === 1));
-
-  const faulted = harness();
-  faulted.init({ code: `const a = await agent("a", { key: "a" }); return a.answer;` });
-  await faulted.wake();
-  faulted.store.sql.exec("UPDATE workflow_state SET version = 1, status = 'paused', pause_reason = 'key_conflict', fault_code = 'key_conflict', error = 'Key a is already the key of another agent()' WHERE id = 1");
-  await faulted.wake();
-  assert.deepEqual([at(faulted).status, at(faulted).fault?.code], ["failed", "key_conflict"]);
-
-  // Paused by an older node for this version's own rows (the deploy that brought it): not a fault; it goes on.
-  const behind = harness();
-  behind.init({ code: `const a = await agent("a", { key: "a" }); return a.answer;` });
-  await behind.wake();
-  behind.store.sql.exec("UPDATE workflow_state SET version = 1, status = 'paused', pause_reason = 'journal_version', fault_code = 'journal_version', error = 'newer rows' WHERE id = 1");
-  await behind.wake();
-  assert.deepEqual([at(behind).status, at(behind).fault], ["running", undefined]);
-  await behind.run();
-  assert.deepEqual([at(behind).status, at(behind).result], ["completed", "re: a"]);
-
-  const running = harness();
-  running.init({ code: `const a = await agent("a", { key: "a" }); return a.answer;` });
-  await running.wake();
-  running.store.sql.exec("UPDATE workflow_state SET version = 1 WHERE id = 1");
-  await running.wake();
-  await running.run();
-  assert.deepEqual([at(running).status, at(running).result], ["completed", "re: a"]);
-  assert.equal(running.runner.events().filter(event => event.type === "upgraded").length, 1, "stamped once");
-});
-
 test("a payer's refusals: the alarm re-issues one effect as a probe, the rest follow once it gets through; a week without credit ends it", { timeout: 60_000 }, async () => {
   const h = harness();
   h.init({ code: `const r = await parallel(["a", "b", "c"], k => agent(k, { key: k })); return r.map(x => x.answer);` });
@@ -677,27 +639,6 @@ test("a payer's refusals: the alarm re-issues one effect as a probe, the rest fo
   assert.deepEqual([at(broke).status, at(broke).fault?.code], ["failed", "payer_gave_up"]);
   assert.ok(broke.clock - since >= 7 * 86_400_000 && broke.clock - since < 8 * 86_400_000);
   assert.ok(broke.runner.items({ attempts: true, limit: 500 }).items.length < 7 * 48 + 10, "about one try per half hour, not more");
-});
-
-test("rolling deploy: a self-resuming pause a version-1 node left (no time set, a fault code on it) goes on; v2 writes revision 1 for v1 nodes", { timeout: 60_000 }, async () => {
-  for (const reason of ["journal_version", "payer_exhausted", "capacity_refused"]) {
-    const h = harness();
-    h.init({ code: `const a = await agent("a", { key: "a" }); return a.answer;` });
-    await h.wake();
-    // Stamped version 2 already (a v2 node ran it first), then a v1 node paused it: no resume_at.
-    h.store.sql.exec(`UPDATE workflow_state SET status = 'paused', pause_reason = ?, resume_at = NULL, fault_code = ?, error = ? WHERE id = 1`, reason, reason === "journal_version" ? "journal_version" : null, reason === "journal_version" ? "newer rows" : null);
-    h.alarmAt = null;
-    await h.runner.nudge();
-    assert.ok(h.alarmAt !== null, `${reason}: a read arms it`);
-    h.clock = h.alarmAt!;
-    await h.runner.alarm();
-    assert.deepEqual([at(h).status, at(h).fault], ["running", undefined], reason);
-    await h.run();
-    assert.equal(at(h).status, "completed", reason);
-  }
-  const v = harness();
-  v.init({ code: "return 1;" });
-  assert.equal((v.store.sql.exec("SELECT code FROM workflow_revisions WHERE revision = 1").toArray()[0] as { code: string }).code, "return 1;");
 });
 
 test("a cache hit writes no ledger row: no cost, no call; a late real ending for it is charged in full", { timeout: 60_000 }, async () => {

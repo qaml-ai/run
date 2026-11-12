@@ -115,7 +115,7 @@ test("a crash at every step boundary leaves the same workflow, each effect journ
   t.diagnostic(`${baseline.ops} crash points over ${baseline.runner.get().step} steps`);
 });
 
-test("faults end the workflow failed: keys inside parallel, key conflicts, a stalled script, the step budget; a newer journal only pauses it", { timeout: 60_000 }, async () => {
+test("faults end the workflow failed: keys inside parallel, key conflicts, a stalled script, the step budget, a newer journal", { timeout: 60_000 }, async () => {
   const unkeyed = await drive(`return await parallel([1, 2], i => agent("review " + i));`);
   assert.deepEqual([unkeyed.runner.get().status, unkeyed.runner.get().pauseReason, unkeyed.runner.get().fault?.code], ["failed", undefined, "key_required"]);
   assert.match(unkeyed.runner.get().fault!.message, /inside parallel\(\) needs an explicit key/);
@@ -132,13 +132,7 @@ test("faults end the workflow failed: keys inside parallel, key conflicts, a sta
   await h.wake();
   h.store.db.exec("UPDATE workflow_effects SET version = 3");
   await h.next();
-  // A newer runner's rows: not a fault (this node is behind); it pauses and tries again by itself.
-  assert.deepEqual([h.runner.get().status, h.runner.get().pauseReason, h.runner.get().fault], ["paused", "journal_version", undefined]);
-  assert.ok(h.alarmAt !== null, "armed to try again");
-  h.store.db.exec("UPDATE workflow_effects SET version = 2");
-  await h.next(); // the alarm: it goes on by itself
-  await h.run();
-  assert.deepEqual([h.runner.get().status, h.runner.get().result], ["completed", { answer: "re: b", attempt: 1 }]);
+  assert.deepEqual([h.runner.get().status, h.runner.get().fault?.code], ["failed", "journal_version"]);
 });
 
 test("protocol 3 mismatches fail clearly", async () => {
