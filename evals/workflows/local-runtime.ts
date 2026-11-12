@@ -11,13 +11,13 @@
 // environment on the local tenant (never on a command line or in a file). It prints the URL and token and keeps running.
 //
 //   OPENROUTER_API_KEY=… node --experimental-strip-types --disable-warning=ExperimentalWarning evals/workflows/local-runtime.ts [--checkout <dir>] [--port 8788]
-//   node … evals/workflows/local-runtime.ts --stop [--checkout <dir>]     (removes the database, and the key in it)
+//   node … evals/workflows/local-runtime.ts --stop [--checkout <dir>]     (removes the database, the key in it, and the local Durable Object state)
 //
 // Point --checkout at a worktree nobody edits during the evals: wrangler dev reloads on changes in its checkout, which
 // resets every Durable Object mid-run.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { REPO } from "./lib/score.ts";
 
@@ -29,6 +29,9 @@ const GO = "1.27.3";
 
 if (argv.includes("--stop")) {
   spawnSync(process.execPath, ["scripts/local-postgres.mjs", "--stop"], { cwd: workers, stdio: "inherit" });
+  // The Durable Objects' local storage too: every agent, workflow and computer the runs made. Kept, deleted agents'
+  // alarms go on firing ("Agent deleted") in the next runtime, thousands an hour after a few batches, until it stalls.
+  rmSync(join(out, ".wrangler", "state"), { recursive: true, force: true });
   process.exit(0);
 }
 if (!process.env.OPENROUTER_API_KEY) throw new Error("Set OPENROUTER_API_KEY: it is stored on the local tenant through the API");
