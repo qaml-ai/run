@@ -29,6 +29,13 @@ export type WireJob = {
   command: string; timeoutSeconds: number; outputs: string[];
   limits: { cpus?: number; memoryMiB?: number; diskMiB?: number; pids?: number };
   internet: boolean; files: WireFile[]; secretEnv?: Record<string, string>;
+  /**
+   * A tree too large to send inline: the host fetches each file from the runtime itself (GET `url`/<index>, with
+   * `token` as a bearer, one job's only), checks its size and sha256, and writes it into the VM in pieces.
+   */
+  sync?: { url: string; token: string; files: { path: string; size: number; sha256: string }[];
+    /** The whole sync must end by then (epoch ms): the job's deadline, which its token does not outlive. */
+    until?: number };
 };
 export type WireStream = { data: string; size: number; truncated: boolean };
 export type WireResult =

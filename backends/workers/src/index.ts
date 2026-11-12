@@ -103,6 +103,7 @@ import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { JobHost, JobHostRegistry, HostJob } from "./jobs/hosts.ts";
 import { HOST_NAME, enrollHost, jobHostRoutes, scalerRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
+import { jobObjectName } from "./jobs/driver.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
@@ -214,6 +215,18 @@ const worker = {
         return hosts.JOB_HOSTS.getByName(name).fetch(request);
       }
       if (hostPath === "/v1/internal/job-hosts/enroll" && request.method === "POST") return enrollHost(request, hosts);
+      // Host-side sync: a job's host fetches its large tree's files (HostJob.fetch checks the job's token).
+      const synced = /^\/v1\/internal\/job-hosts\/sync\/([^/]{1,200})\/(\d{1,6})$/.exec(hostPath);
+      if (synced && request.method === "GET" && hosts.HOST_JOBS) {
+        // Unauthenticated until the job object checks its token: limited per client address where the binding is set
+        // (generous: one job's host fetches each of its files once).
+        if (hosts.JOB_HOST_SYNC_LIMITER && !(await hosts.JOB_HOST_SYNC_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") ?? "unknown" })).success)
+          return new Response("Too many requests", { status: 429 });
+        let job = "";
+        try { job = decodeURIComponent(synced[1]!); } catch { /* malformed: refused below */ }
+        if (!/^[A-Za-z0-9_-]{1,100}$/.test(job)) return new Response("Not found", { status: 404 });
+        return hosts.HOST_JOBS.getByName(jobObjectName(job)).fetch(new Request(`https://host-job/sync/${synced[2]}`, { headers: { authorization: request.headers.get("authorization") ?? "" } }));
+      }
       const scaled = await scalerRoutes(request, hosts);
       if (scaled) return scaled;
       return new Response("Not found", { status: 404 });

@@ -3,7 +3,8 @@
 // EXEC:camel-guest); in the host agent's fake mode the host runs it as a local process on a directory standing in for
 // the VM's disk. One request at a time, each answered by one line; while a command runs, `log` lines come first.
 //
-//   { op: "files", files: [{ path, data }] }          → { ok: true, syncMs }                write files under /repo
+//   { op: "files", files: [{ path, data, append? }] }  → { ok: true, syncMs }               write files under /repo
+//                                                         (append: add to the file: a large one comes in pieces)
 //   { op: "free" }                                      → { ok: true, freeBytes }            the disk's free bytes
 //   { op: "run", command, timeoutSeconds, pids?, env? } → { ok: true, exitCode, timedOut, stdout, stderr, commandMs }
 //   { op: "collect", outputs: [name] }                  → { ok: true, outputs, missing, collectMs }  from /out
@@ -67,7 +68,7 @@ export class Guest {
 
   async handle(request: Request): Promise<unknown> {
     switch (request.op) {
-      case "files": return this.files(request.files as { path: string; data: string }[]);
+      case "files": return this.files(request.files as { path: string; data: string; append?: boolean }[]);
       case "free": { const fs = await statfs(this.repo); return { ok: true, freeBytes: Number(fs.bavail) * Number(fs.bsize) }; }
       case "run": return this.run(request as never);
       case "collect": return this.collect(request.outputs as string[]);
@@ -76,13 +77,13 @@ export class Guest {
     }
   }
 
-  private async files(files: { path: string; data: string }[]) {
+  private async files(files: { path: string; data: string; append?: boolean }[]) {
     const started = Date.now();
     await mkdir(this.repo, { recursive: true }); await mkdir(this.out, { recursive: true });
     for (const file of files ?? []) {
       const target = inside(this.repo, file.path);
       await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, Buffer.from(file.data, "base64"));
+      await writeFile(target, Buffer.from(file.data, "base64"), { flag: file.append ? "a" : "w" });
     }
     return { ok: true, syncMs: Date.now() - started };
   }

@@ -8,6 +8,7 @@
 //   node --experimental-strip-types jobhost/agent.ts --runtime https://run.example --attestor aws --slots 8 --firecracker
 //   node … --attestor test --name host-1 --fake      (JOB_HOST_TEST_SECRET from the environment: tests only)
 import { hostname } from "node:os";
+import { createHash } from "node:crypto";
 import { frames, Frames, type HostMessage, type RuntimeMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
 import { signGetCallerIdentity, type Attestation } from "../shared/job-host-attest.ts";
 import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
@@ -143,6 +144,10 @@ export class HostAgent {
       startMs = Date.now() - began;
       const synced = await vm.request({ op: "files", files: spec.files });
       if (!synced.ok) { result = { ok: false, code: "sync_failed", message: String(synced.error ?? "sync failed") }; return; }
+      if (spec.sync) {
+        try { synced.syncMs = Number(synced.syncMs ?? 0) + await pullFiles(vm, spec.sync); }
+        catch (error) { result = { ok: false, code: "sync_failed", message: error instanceof Error ? error.message.slice(0, 300) : "sync failed" }; return; }
+      }
       const free = await vm.request({ op: "free" });
       if (free.ok && Number(free.freeBytes) < (this.options.diskLowBytes ?? DISK_LOW_BYTES)) {
         result = { ok: false, code: "disk_low", message: `Under ${Math.round((this.options.diskLowBytes ?? DISK_LOW_BYTES) / 2 ** 30)} GiB free before the command` };
@@ -171,6 +176,66 @@ export class HostAgent {
     }
   }
 }
+/** A piece of a large file written into the VM per request: under the host's line cap once in base64. */
+export const SYNC_PIECE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Host-side sync (a tree too large to cross inline): each file fetched from the runtime with the job's token, its size
+ * and sha256 checked as it streams, and written into the VM in pieces. The token never reaches the VM. Returns the ms it
+ * took.
+ */
+export async function pullFiles(vm: Pick<Vm, "request">, sync: NonNullable<WireJob["sync"]>, fetcher: typeof fetch = fetch) {
+  const began = Date.now();
+  // The whole sync is bounded by the job's own deadline (`until`): past it, every fetch in flight is aborted.
+  const controller = new AbortController(), signal = controller.signal;
+  let timedOut = false;
+  const deadline = setTimeout(() => { timedOut = true; controller.abort(new Error("Host-side sync ran past the job's deadline")); }, Math.max(1, (sync.until ?? began + 10 * 60_000) - began));
+  const one = async (index: number) => {
+    const file = sync.files[index]!;
+    const response = await fetcher(`${sync.url}/${index}`, { headers: { authorization: `Bearer ${sync.token}` }, signal });
+    if (!response.ok || !response.body) throw new Error(`${file.path}: the runtime answered ${response.status}`);
+    const hash = createHash("sha256"), reader = response.body.getReader();
+    let size = 0, first = true, chunks: Uint8Array[] = [], held = 0;
+    // A piece of at most SYNC_PIECE_BYTES per write (a stream's chunks can be any size), joined once per piece.
+    const write = async (last: boolean) => {
+      while (held >= SYNC_PIECE_BYTES || (last && (held || first))) {
+        const all = Buffer.concat(chunks, held), piece = all.subarray(0, SYNC_PIECE_BYTES), rest = all.subarray(piece.length);
+        chunks = rest.length ? [rest] : []; held = rest.length;
+        const wrote = await vm.request({ op: "files", files: [{ path: file.path, data: piece.toString("base64"), ...(first ? {} : { append: true }) }] });
+        if (!wrote.ok) throw new Error(`${file.path}: ${String(wrote.error ?? "could not be written")}`);
+        first = false;
+      }
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > file.size) { await reader.cancel().catch(() => {}); throw new Error(`${file.path}: larger than its manifest says`); }
+      hash.update(value);
+      chunks.push(value); held += value.byteLength;
+      if (held >= SYNC_PIECE_BYTES) await write(false);
+    }
+    await write(true);
+    if (size !== file.size || hash.digest("hex") !== file.sha256) throw new Error(`${file.path}: file integrity check failed`);
+  };
+  // A few files at a time (many small files are mostly round trips); the first failure ends the sync.
+  let next = 0, failure: unknown;
+  const worker = async () => {
+    while (failure === undefined && next < sync.files.length) {
+      const index = next++;
+      // The first failure ends the sync at once: the fetches still in flight are aborted too.
+      try { await one(index); } catch (error) { if (failure === undefined) { failure = error; controller.abort(error); } }
+    }
+  };
+  try { await Promise.all(Array.from({ length: Math.min(SYNC_PARALLEL, sync.files.length) }, worker)); }
+  finally { clearTimeout(deadline); }
+  if (timedOut) throw new Error("Host-side sync ran past the job's deadline");
+  if (failure !== undefined) throw failure;
+  return Date.now() - began;
+}
+/** Files fetched at once in host-side sync. */
+export const SYNC_PARALLEL = 6;
+
 class Stopped extends Error {}
 
 /**
