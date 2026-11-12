@@ -16,6 +16,8 @@ export interface AgentJobsHost {
   agentId: string;
   /** The agent's storage: a call's result, kept so the call made again (a replay) does not run its command twice. */
   storage: Pick<DurableObjectStorage, "get" | "put" | "list" | "delete">;
+  /** The run a tool call belongs to: a model's call ids repeat across runs (`call_0`), so a call is named by both. */
+  runId(api: unknown): Promise<string>;
 }
 
 /** How long job_run waits; a longer job is refused (a workflow's job() can run up to JOB_LIMITS.timeoutSeconds.max). */
@@ -75,11 +77,11 @@ export function agentJobTools(host: AgentJobsHost): ToolRegistration[] {
       outputs: { type: "array", items: { type: "string" }, description: "Files under $JOB_OUT to return" },
       internet: { type: "boolean", description: "Allow Internet access (off by default)" },
     } } as never,
-    execute: async (args: Record<string, unknown>, api) => text(await runJob(host, api.callId, args)),
+    execute: async (args: Record<string, unknown>, api) => text(await runJob(host, `${await host.runId(api)}:${api.callId}`, args)),
   })];
 }
 
-/** job_run: the call's job, run once (a call made again answers what it answered), its result for the model. */
+/** job_run: the call's job (`callId` names it: the run's id and the model's call id), run once (a call made again answers what it answered), its result for the model. */
 export async function runJob(host: AgentJobsHost, callId: string, args: Record<string, unknown>) {
   const kept = await host.storage.get<Kept>(RESULT + callId);
   if (kept !== undefined) return kept.answer;

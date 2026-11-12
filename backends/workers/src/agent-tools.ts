@@ -509,7 +509,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         // build and test with it.
         const noComputer = await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id));
         if (!noComputer && conf.config.workflows !== false && workflowsEnabled(this.env as never, conf.tenantId)) {
-          const jobs = agentJobTools({ env: this.env as never, tenant: conf.tenantId, agentId: conf.id, storage: this.ctx.storage });
+          const jobs = agentJobTools({ env: this.env as never, tenant: conf.tenantId, agentId: conf.id, storage: this.ctx.storage, runId: async api => (await this.currentRun(api as never)).id });
           if (jobs.length) registry.install({ name: "camel.jobs", tools: jobs });
         }
         registry.install({

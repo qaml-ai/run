@@ -24,7 +24,7 @@ function host(answer: (spec: JobSpec) => JobResult) {
     stopJob: async () => ({ stopped: true }),
   }) } };
   const value: AgentJobsHost = {
-    env: env as never, tenant: "t1", agentId: "client_a",
+    env: env as never, tenant: "t1", agentId: "client_a", runId: async () => "run_1",
     storage: {
       get: async (key: string) => stored.get(key), put: async (key: string, data: unknown) => { stored.set(key, data); },
       list: async ({ prefix }: { prefix: string }) => new Map([...stored].filter(([key]) => key.startsWith(prefix))), delete: async (key: string) => stored.delete(key),
@@ -84,7 +84,7 @@ test("job_run: failures are results, long output is cut to its end, a bad call i
 });
 
 test("the builtin exists only where a job driver does; workflow_start points at it then", () => {
-  assert.equal(agentJobTools({ env: {} as never, tenant: "t", agentId: "a", storage: {} as never }).length, 0);
+  assert.equal(agentJobTools({ env: {} as never, tenant: "t", agentId: "a", storage: {} as never, runId: async () => "r" }).length, 0);
   const tools = agentJobTools(host(spec => ok(spec)).host);
   assert.deepEqual(tools.map(tool => tool.name), ["job_run"]);
   assert.ok(!WORKFLOW_START_DESCRIPTION.includes("job_run"));
