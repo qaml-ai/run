@@ -44,15 +44,16 @@ export async function stageMissedEndings(runtime: AgentRuntime, records: Request
   await runtime.ctx.storage.transaction(async tx => {
     for (const record of missed) await stageEnding(runtime, tx, conf, record, record.outcome);
   });
-  await runtime.outbox.flush();
+  // Delivered by the caller's outbox flush (at start, after startup: agent-lifecycle restorePending).
 }
 
 /**
  * A deleted or expired agent's start (restorePendingImpl): it restores no work, but a run's ending it still owes (one that
  * ended as the object died, before the event that stages it) is staged and delivered, then its next wake planned.
  */
-export async function goneStart(runtime: Pick<AgentRuntime, "ctx" | "outbox" | "records" | "arm">) {
+export async function goneStart(runtime: Pick<AgentRuntime, "ctx" | "outbox" | "records" | "arm">, afterStart: (task: () => Promise<unknown>) => void = task => { void task().catch(error => console.error(JSON.stringify({ type: "agent_start_deferred_failed", step: "goneStart", error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200) }))); }) {
   await stageMissedEndings(runtime as AgentRuntime, await runtime.records());
-  await runtime.outbox.flush();
+  // Delivered after startup: a flush reaches the owners' objects (startup holds this one's input gate).
+  afterStart(() => runtime.outbox.flush());
   await runtime.arm();
 }

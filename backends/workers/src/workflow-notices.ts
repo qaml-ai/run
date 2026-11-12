@@ -169,7 +169,11 @@ export class WorkflowNotices {
         const delay = Math.min(NOTICE_RETRY.maxMs, NOTICE_RETRY.firstMs * 4 ** Math.min(5, attempts - 1));
         const nextAt = this.now() + Math.round(delay * (1 + NOTICE_RETRY.jitter * (this.deps.random?.() ?? Math.random())));
         sql.exec("UPDATE workflow_notices SET attempts = ?, next_at = ? WHERE seq = ?", attempts, nextAt, next.seq);
-        console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.deps.workflowId, seq: next.seq, attempts, error: String(error) }));
+        // Short and searchable: the error's status/code and its first line, the owner, the event and how long it has waited.
+        const failure = error as { status?: unknown; code?: unknown; message?: unknown } | undefined;
+        console.error(JSON.stringify({ type: "workflow_notice_failed", workflow: this.deps.workflowId, owner: owner.id, seq: next.seq, event: next.event, attempts,
+          waitedMs: this.now() - Number(next.created_at ?? this.now()), retryInMs: nextAt - this.now(),
+          status: failure?.status ?? failure?.code ?? null, error: String(failure?.message ?? error).split("\n")[0]!.slice(0, 200) }));
         await this.deps.arm(nextAt);
         return;
       }

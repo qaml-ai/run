@@ -21,6 +21,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
 import { startStuck } from "./agent-lifecycle.ts";
+import { startDeadline } from "./start-deadline.ts";
 import { computerOwner, computerDisabled, hasComputer } from "../../../src/core/computer-share.ts";
 import { withSql as shareSql } from "./postgres.ts";
 import { computerTool } from "./computers/tool.ts";
@@ -264,12 +265,14 @@ export function createHarness(this: AgentRuntime): PiHarness {
         const model = this.models.resolve(
           conf.config.model,
           conf.config.runLimits?.contextTokens,
-          await resolveCustomProviders(
+          // Postgres reads inside startup (which Workers resets after 30 s): each has a deadline, so a slow database
+          // fails this start fast and cleanly (a later wake starts again) instead of resetting it on every wake.
+          await startDeadline("custom providers", resolveCustomProviders(
             this.env,
             conf.tenantId,
             conf.config.keyScope,
-          ),
-          (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
+          )),
+          await startDeadline("model endpoints", (async () => (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId))()),
           conf.resolvedModel,
         );
         lap("harness model (config, custom providers, key services)", "harness tools");

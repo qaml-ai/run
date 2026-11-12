@@ -439,8 +439,8 @@ export class AgentRuntime extends AgentContext {
     return resumeCancellationImpl.call(this, record);
   }
 
-  restoreCancellations() {
-    return restoreCancellationsImpl.call(this);
+  restoreCancellations(later?: (task: () => Promise<unknown>) => void | Promise<unknown>) {
+    return restoreCancellationsImpl.call(this, later);
   }
 
   abortExecutions() {

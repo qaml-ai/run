@@ -165,6 +165,7 @@ export class CamelAgent extends RuntimeAgent {
       const { endingStaged: _staged, ...unstaged } = record;
       await this.ctx.storage.put(`request:${requestId}`, unstaged);
       await stageMissedEndings(runtime, [unstaged as never]);
+      await runtime.outbox.flush();
       return Response.json({ restaged: true });
     }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-inputs-due" && request.method === "POST") {
