@@ -17,14 +17,14 @@ hooks.deregister();
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const timings = { startedAt: 0, endedAt: 1500, startMs: 100, syncMs: 0, commandMs: 1300, collectMs: 100, totalMs: 1500 };
-function host(answer: (spec: JobSpec) => JobResult) {
+function host(answer: (spec: JobSpec) => JobResult, run = "run_1") {
   const runs: JobSpec[] = [], stored = new Map<string, unknown>();
   const env = { COMPUTER_CONTAINERS: { getByName: (name: string) => ({
     runJob: async (spec: JobSpec) => { assert.equal(name, `job:${spec.id}`); runs.push(spec); return answer(spec); },
     stopJob: async () => ({ stopped: true }),
   }) } };
   const value: AgentJobsHost = {
-    env: env as never, tenant: "t1", agentId: "client_a", runId: async () => "run_1",
+    env: env as never, tenant: "t1", agentId: "client_a", runId: async () => run,
     storage: {
       get: async (key: string) => stored.get(key), put: async (key: string, data: unknown) => { stored.set(key, data); },
       list: async ({ prefix }: { prefix: string }) => new Map([...stored].filter(([key]) => key.startsWith(prefix))), delete: async (key: string) => stored.delete(key),
@@ -89,4 +89,16 @@ test("the builtin exists only where a job driver does; workflow_start points at 
   assert.deepEqual(tools.map(tool => tool.name), ["job_run"]);
   assert.ok(!WORKFLOW_START_DESCRIPTION.includes("job_run"));
   assert.match(WORKFLOW_START_JOB_RUN, /use job_run, not a workflow/);
+});
+
+test("job_run in a turn no request started (run id background) is refused and runs nothing", async () => {
+  const h = host(spec => ok(spec), "background");
+  const [tool] = agentJobTools(h.host);
+  const answer = await tool!.execute({ command: "echo hi" } as never, { callId: "call_0" } as never) as { structuredOutput: { ok: boolean; code: string } };
+  assert.deepEqual([answer.structuredOutput.ok, answer.structuredOutput.code], [false, "JOB_UNAVAILABLE"]);
+  assert.equal(h.runs.length, 0);
+  // In a request, the same call id runs, named by the run.
+  const inRun = host(spec => ok(spec), "req_9");
+  await agentJobTools(inRun.host)[0]!.execute({ command: "echo hi" } as never, { callId: "call_0" } as never);
+  assert.equal(inRun.runs[0]!.id, await agentJobId("client_a", "req_9:call_0"));
 });
