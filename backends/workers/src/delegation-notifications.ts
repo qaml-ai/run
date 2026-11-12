@@ -27,6 +27,8 @@ const CARRIED = "this sub-agent's ending reached the agent already, with another
 export const WORKFLOW_NOTICE_BATCH = 20;
 /** A workflow's notice, as its object sends it (workflow-notices.ts): one held in the outbox, not a request of its own. */
 const workflowNotice = (pending: PendingNotice) => pending.notice.metadata.kind === 'workflow' && !pending.delivery;
+/** A workflow's ending (workflow-notices.ts noticeEvent): never folded into a later notice of the same workflow. */
+const ENDINGS = new Set(['completed', 'failed', 'aborted']);
 /** A workflow notice's sequence (its request id is `<workflow>_n<seq>`), to keep a workflow's latest. */
 const noticeSeq = (pending: PendingNotice) => Number(/_n(\d+)$/.exec(pending.request.id)?.[1] ?? 0);
 
@@ -151,16 +153,18 @@ export class DelegationNotifications {
           for (const [workflow, entries] of groups) {
             entries.sort((a, b) => noticeSeq(a[1]) - noticeSeq(b[1]));
             const [, latest] = entries.at(-1)!;
-            // This notice's own workflow shows only a newer notice; its older ones fold into this one.
-            const shown = workflow !== own || noticeSeq(latest) > noticeSeq(current);
-            if (shown && shownCount >= WORKFLOW_NOTICE_BATCH) continue;
+            // Shown: the workflow's latest, and any ending (completed, failed, aborted) even if a later notice came, so an
+            // ending is never folded away. This notice's own workflow shows only what is newer than this one.
+            const newer = (entry: PendingNotice) => workflow !== own || noticeSeq(entry) > noticeSeq(current);
+            const shown = entries.map(([, entry]) => entry).filter(entry => newer(entry) && (entry === latest || ENDINGS.has(String(entry.notice.metadata.event))));
+            if (shown.length && shownCount >= WORKFLOW_NOTICE_BATCH) continue;
             for (const [otherKey, other] of entries) {
               await tx.put(otherKey, { ...other, delivered: true, batchedInto: key }, { noCache: true });
               carried.push(other.request);
             }
-            if (!shown) continue;
+            if (!shown.length) continue;
             shownCount++;
-            batch.push({ ...latest.notice.metadata, agentId: String(workflow ?? ''), name: latest.notice.source.name, status: String(latest.notice.metadata.status ?? ''), text: latest.request.params.text, costUsd: 0, requestId: latest.request.id });
+            for (const entry of shown) batch.push({ ...entry.notice.metadata, agentId: String(workflow ?? ''), name: entry.notice.source.name, status: String(entry.notice.metadata.status ?? ''), text: entry.request.params.text, costUsd: 0, requestId: entry.request.id });
           }
           batch.sort((a, b) => a.requestId < b.requestId ? -1 : 1);
           const next: PendingNotice = { ...current, batch };

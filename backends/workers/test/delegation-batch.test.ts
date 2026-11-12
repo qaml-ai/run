@@ -329,6 +329,14 @@ test("workflow notices wait in the owner's outbox while it is busy, taking no qu
   assert.equal(new Set(shown).size, shown.length, 'none twice');
   assert.ok(shown.includes('wf_1_n3') && !shown.includes('wf_1_n2'), "wf_1's latest is shown; its middle notice folded");
   assert.ok(f.submissions.every(({ notice }) => (notice.metadata.batch ?? []).length <= 20));
+  // An ending is never folded into a later notice of its workflow.
+  const g = fixture();
+  for (const { request, notice } of [workflowNotice('wf_x', 1, 'running', 'phase'), workflowNotice('wf_y', 1, 'failed', 'failed'), workflowNotice('wf_y', 2, 'running', 'phase'), workflowNotice('wf_y', 3, 'running', 'phase')])
+    await g.notifications().deliverMessage(request, notice);
+  g.land();
+  await g.notifications().drain();
+  assert.equal(g.submissions.length, 1, 'one turn, one wake');
+  assert.deepEqual(g.submissions[0]!.notice.metadata.batch.map((item: any) => item.requestId), ['wf_y_n1', 'wf_y_n3'], "wf_y's ending and its latest; its middle phase folded");
   // Sending them again (the workflow's outbox retried) changes nothing.
   for (const { request, notice } of sent) await f.notifications().deliverMessage(request, notice);
   await f.notifications().drain();
