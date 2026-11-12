@@ -1,3 +1,4 @@
+import { guardAlarms } from "../alarm-guard.ts";
 import { HttpError } from "../errors.ts";
 import { keyServices } from "../security-services.ts";
 import { reserveComputer, releaseComputer, computerToolError } from "../../../../src/core/computer-limit.ts";
@@ -55,6 +56,10 @@ const limitRefusal = (error: unknown) => [402, 429].includes(Number((error as { 
 // metered to the payer each call's setup names (computers/meter.ts); a call
 // without one (the cloud probe) runs unmetered.
 export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
+  constructor(ctx: DurableObjectState, env: ComputerObjectEnv) {
+    super(ctx, env);
+    guardAlarms(this, ctx, "ContainerComputer", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
+  }
   private queue: Promise<unknown> = Promise.resolve();
   /** The job this object runs now, when it is a job's object (jobs/driver.ts): its stop. */
   private job?: AbortController;

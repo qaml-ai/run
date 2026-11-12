@@ -31,7 +31,7 @@ test('an idle alarm waits for the exec deadline without blocking concurrent comm
   }
   class Clock extends Date { static now() { return now; } }
   const Computer = runInNewContext(computerSource(), {
-    DurableObject: Host, Date: Clock, AbortSignal, Promise,
+    DurableObject: Host, guardAlarms: () => {}, Date: Clock, AbortSignal, Promise,
     COMPUTER_LIMITS: { execMs: 120_000, idleSeconds: { default: 60 } }, sameComputerNetwork: () => true,
     computerToolError: (error: unknown) => error,
     // No metered session here: the alarm's spend check has nothing to admit.
@@ -82,7 +82,7 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
   const held = new Promise<void>(resolve => { release = resolve; });
   const runs: { stop: AbortSignal; files?: unknown; meter?: unknown }[] = [];
   const Computer = runInNewContext(computerSource(), {
-    DurableObject: Host, Date: Clock, AbortSignal, AbortController, Promise, Map, JSON, console,
+    DurableObject: Host, guardAlarms: () => {}, Date: Clock, AbortSignal, AbortController, Promise, Map, JSON, console,
     jobSpec: (value: { id: string; timeoutSeconds: number }) => value,
     jobLifetimeMs: (seconds: number) => seconds * 1000 + 720_000,
     inlineFiles: (files: unknown) => ({ inline: files }),
@@ -142,7 +142,7 @@ test('a running container whose payer may no longer spend is stopped: at its ala
   const logged: any[] = [], limitStops: number[] = [];
   const container = { running: true, destroy: async () => { container.running = false; } };
   const Computer = runInNewContext(computerSource(), {
-    DurableObject: Host, Date: Clock, Promise, JSON, Map, Number, AbortSignal,
+    DurableObject: Host, guardAlarms: () => {}, Date: Clock, Promise, JSON, Map, Number, AbortSignal,
     console: { error: (line: string) => logged.push(JSON.parse(line)) },
     COMPUTER_LIMITS: { idleSeconds: { default: 60 } }, meterBilling: () => ({}),
     ComputerMeter: class {

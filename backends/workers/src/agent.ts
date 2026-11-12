@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { guardAlarms } from "./alarm-guard.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
 import type { ChildProgressReport } from "./delegation.ts";
@@ -12,6 +13,11 @@ export { json } from "./agent-types.ts";
 /** Durable Object entry points. Runtime internals stay off the RPC surface. */
 export class CamelAgent extends DurableObject<Env> {
   readonly #runtime = new AgentRuntime(this.ctx, this.env, this);
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // After the runtime's lifecycle installed its alarm handler on this instance (field initializers run first).
+    guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
+  }
 
   removeMember(member: string) { return this.#runtime.removeMember(member); }
 

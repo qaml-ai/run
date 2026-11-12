@@ -26,6 +26,8 @@ export class LocalWorker {
   private child?: ChildProcess;
   private output = "";
   logLimit = 16_000;
+  /** src/alarm-guard.ts's lines, all of them. */
+  alarmLines: string[] = [];
   private port: number;
   private inspectorPort = 0;
   private storage: string;
@@ -105,6 +107,8 @@ export class LocalWorker {
     let output = "";
     const save = (data: Buffer) => {
       output = (output + data.toString()).slice(-this.logLimit);
+      // The alarm guard's lines are kept whole, past the log limit: a test fails on one (fixture.ts alarmFindings).
+      for (const line of data.toString().match(/\{"type":"alarm_(?:hot_loop|rearm_due)"[^\n]*/g) ?? []) this.alarmLines.push(line);
       this.output = output;
     };
     child.stdout!.on("data", save);
@@ -224,5 +228,8 @@ export class LocalWorker {
   }
   logs() {
     return this.output;
+  }
+  alarmLogs() {
+    return this.alarmLines.join("\n");
   }
 }

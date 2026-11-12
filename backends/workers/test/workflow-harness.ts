@@ -1,5 +1,6 @@
 // Test harness for the workflow runner: DO SQLite over node:sqlite, the sandbox Worker in process, a fake effect world
 // and a fake clock and alarm. Crash hooks throw `crash:` errors at the boundaries a real process can die at.
+import { AlarmWatch } from "./alarm-watch.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -164,7 +165,9 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
   const box = sandbox(crash, options.rewrite);
   const world = new World();
   world.crash = crash;
-  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { self.alarmAt = at; } }, capacity: options.capacity?.seam() });
+  // Every harness watches its runner's alarm for hot loops (test/alarm-watch.ts).
+  const watch = new AlarmWatch("WorkflowRunner");
+  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { watch.armed(at); self.alarmAt = at; } }, capacity: options.capacity?.seam() });
   let runner = make();
   if (options.capacity) options.capacity.wake = grants => runner.capacityGranted(grants);
   /** Run `work`; a crash drops the runner, and a new one over the same storage wakes up. */
@@ -199,13 +202,14 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
     async next(answer?: (effect: StartedEffect) => EffectOutcome | undefined) {
       const effect = world.queue.shift();
       if (effect) {
+        watch.external();
         const outcome = answer?.(effect) ?? world.answer(effect);
         await attempt(() => runner.land(effect.key, effect.attempt, outcome, world.usage()));
         return true;
       }
       if (self.alarmAt === null) return false;
       self.clock = Math.max(self.clock, self.alarmAt);
-      await attempt(() => runner.alarm());
+      await watch.fire(self.clock, () => attempt(() => runner.alarm()));
       return true;
     },
     /** Land and fire alarms until the workflow is no longer running or waiting. */

@@ -6,6 +6,7 @@
 // "workflow", id }`), whose endings come back by their outboxes to `receiveEnding`. Effects of other kinds are
 // composed in by kind (`byKind`). With TEST_WORKFLOW_EXECUTOR=stub a test gives the object a stand-in executor that
 // answers at once instead.
+import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import type { WorkflowSandbox } from "../codemode/workflow-protocol.ts";
 import { keyServices } from "./security-services.ts";
@@ -184,6 +185,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
 
   constructor(ctx: DurableObjectState, env: WorkflowEnv) {
     super(ctx, env);
+    guardAlarms(this, ctx, "WorkflowObject", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
     const name = ctx.id.name;
     const sandbox: WorkflowSandbox = {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
