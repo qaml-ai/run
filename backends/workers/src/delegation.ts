@@ -144,6 +144,19 @@ function resumeRow(paused: DelegatedChild, requestId: string): DelegatedChild {
 }
 
 /**
+ * One row per child, as list_agents and wait_agent show it: its latest run (rows come in start order), and for a
+ * workflow its highest attempt, whatever order its attempts' endings landed in.
+ */
+function latestPerChild(children: DelegatedChild[]): DelegatedChild[] {
+  const latest = new Map<string, DelegatedChild>();
+  for (const child of children) {
+    const seen = latest.get(child.id);
+    if (!seen || !child.workflow || (child.attempt ?? 1) >= (seen.attempt ?? 1)) latest.set(child.id, child);
+  }
+  return [...latest.values()];
+}
+
+/**
  * A workflow child's run ids, one per attempt: `<workflow id>_a000001`, then `_a000002`… Its own id in each, as an agent
  * child's run id is unique to it: the owner's notification of it is the request `child_<run id>`. Zero-padded, so the
  * workflow's outbox, which sends in key order, delivers them in order.
@@ -543,7 +556,7 @@ export class Delegation {
   }
   private async cancelRemote(child: DelegatedChild) {
       if (!child.id) return;
-      if (child.workflow) { if (await this.host.abortWorkflow?.(child.id) === false) await this.forgetWorkflow(child.id); return; }
+      if (child.workflow) { await this.host.abortWorkflow?.(child.id); return; }
       if (this.host.cancelRequest) { await this.host.cancelRequest(child.id, child.requestId); return; }
       if (!child.made) {
         const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
@@ -774,7 +787,10 @@ export class Delegation {
     if (!latest || latest.status !== 'paused') return;
     await this.openWorkflowAttempt(latest, (latest.attempt ?? 1) + 1);
   }
-  /** workflow_start's workflow was never made (refused, or its start failed): its row ends at once, quietly. */
+  /**
+   * A workflow row whose workflow was never made (refused, or its start failed past the row) ends at once, quietly:
+   * from workflow_start's catch, or interrupt_agent when the workflow is not found.
+   */
   async forgetWorkflow(workflowId: string) {
     const latest = await this.latestWorkflowRow(workflowId);
     if (latest?.status === 'running') await this.update(latest, { status: 'failed', endedAt: Date.now(), notified: true, error: 'The workflow was not started' });
@@ -873,11 +889,11 @@ export class Delegation {
       if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api), api);
       const children = await this.children();
       // The 200 most recently started, oldest first, as on Node: a long-lived lead's list goes on showing its new children.
-      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()].slice(-200).map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: escapeMarkers(child.progress.text), progressAt: child.progress.at } : {}) })) }, api);
+      if (definition.name === 'list_agents') return this.toolResult({ agents: latestPerChild(children.filter(child => child.background && !child.folded)).slice(-200).map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: escapeMarkers(child.progress.text), progressAt: child.progress.at } : {}) })) }, api);
       if (definition.name === 'wait_agent') {
         if (args.agents !== undefined && (!Array.isArray(args.agents) || args.agents.some(name => typeof name !== 'string'))) throw new HttpError(400, 'agents is a list of names or agentIds');
         if (args.timeoutMs !== undefined && (!Number.isInteger(args.timeoutMs) || Number(args.timeoutMs) < 1000 || Number(args.timeoutMs) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new HttpError(400, `timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
-        const background = [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()];
+        const background = latestPerChild(children.filter(child => child.background && !child.folded));
         // A workflow is waited on only by name: it can run for hours, and its ending comes as a notification by itself.
         const selected = background.filter(child => Array.isArray(args.agents) ? args.agents.includes(child.id) || args.agents.includes(child.name) : !child.landedBy && !child.workflow);
         if (Array.isArray(args.agents)) for (const name of args.agents) if (!selected.some(child => child.id === name || child.name === name)) throw new HttpError(400, `You have no sub-agent ${name}`);

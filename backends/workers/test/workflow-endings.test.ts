@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type DelegationHost } from '../src/delegation.ts';
 import { WorkflowEndings, endingRecord, ENDING_RESULT_CHARS, type EndingSummary } from '../src/workflow-endings.ts';
-import { workflowNext } from '../src/workflow-tools.ts';
+import { workflowNext, workflowTools } from '../src/workflow-tools.ts';
 import { openRequest } from '../src/agent-types.ts';
 import type { ChildEnding } from '../src/ending-outbox.ts';
 import { withSql } from './sql-storage.ts';
@@ -153,24 +153,42 @@ test('a payer stop that resumes by itself: the next attempt\'s ending opens its 
   assert.deepEqual(await o.delegation.receiveEnding({ ...held[0]!, agentId: 'wf_other' }), { accepted: false });
 });
 
-test('a workflow child outlives its owner\'s stop and deletion; a cancel of its row aborts the workflow, not an agent', async () => {
+test('a workflow child outlives its owner\'s stop and deletion', async () => {
   const o = owner();
   await o.delegation.registerWorkflow({ id: 'wf_1', name: 'review', callId: 'c' });
   await o.delegation.cancel('parent-run');
   await o.delegation.cancel();
   await o.delegation.destroy();
   assert.deepEqual(o.aborted, [], 'a stop or a deletion leaves the workflow running');
-  assert.equal((await o.delegation.children())[0]!.cancelRequested, undefined);
-  // A row marked for cancel (an earlier build's) is cancelled through WORKFLOWS on recovery.
   const [row] = await o.delegation.children();
-  await o.delegation.rows.put({ ...row!, cancelRequested: true });
-  await o.delegation.recover();
-  assert.deepEqual(o.aborted, ['wf_1']);
-  // A refused start: its row ends quietly, owing no notification.
-  await o.delegation.registerWorkflow({ id: 'wf_bad', name: 'bad', callId: 'c2' });
-  await o.delegation.forgetWorkflow('wf_bad');
-  const bad = (await o.delegation.children()).find(child => child.id === 'wf_bad')!;
-  assert.deepEqual([bad.status, bad.notified], ['failed', true]);
+  assert.deepEqual([row!.status, row!.cancelRequested], ['running', undefined]);
+});
+
+test('workflow_start: a start that fails past the row ends it when the workflow does not exist, and keeps it when it may', async () => {
+  // WORKFLOWS: `made` ids exist; create answers 503 (a sandbox that cannot check scripts) or throws (a transport error).
+  const made = new Set<string>();
+  let failure: 'refused' | 'transport' | 'made-then-lost' = 'refused';
+  const env = { WORKFLOWS: { getByName: (id: string) => ({
+    get: async () => made.has(id) ? { tenant: 't', status: 'running' } : { refused: { error: 'Unknown workflow', status: 404 } },
+    view: async () => ({ tenant: 't', status: 'running', owner: { kind: 'agent', id: 'owner' } }),
+    create: async () => {
+      if (failure === 'refused') return { refused: { error: 'The sandbox Worker cannot check workflow scripts yet', status: 503 } };
+      if (failure === 'made-then-lost') made.add(id);
+      throw new Error('network connection lost');
+    },
+  }) } };
+  const o = owner();
+  const tools = workflowTools({ env: env as never, tenant: 't', agentId: 'owner', remaining: async () => Infinity,
+    children: { register: (workflow, api) => o.delegation.registerWorkflow(workflow, api as never), reopen: id => o.delegation.reopenWorkflow(id), forget: id => o.delegation.forgetWorkflow(id) } });
+  const start = tools.find(tool => tool.name === 'workflow_start') as any;
+  const call = (callId: string) => start.execute({ script: 'return 1;', budgetUsd: 1, name: callId }, { callId }, {});
+  await assert.rejects(call('refused'), /cannot check workflow scripts/);
+  failure = 'transport';
+  await assert.rejects(call('transport'), /network connection lost/);
+  failure = 'made-then-lost';
+  await assert.rejects(call('lost'), /network connection lost/);
+  const rows = Object.fromEntries((await o.delegation.children()).map(row => [row.name, row.status]));
+  assert.deepEqual(rows, { refused: 'failed', transport: 'failed', lost: 'running' }, 'only a workflow known not to exist ends its row');
 });
 
 test('a skipped attempt: a stop retried after a later attempt\'s ending landed still lands on its own row', async () => {
@@ -220,4 +238,23 @@ test('interrupt_agent on a workflow aborts it; on a row whose workflow was never
   assert.deepEqual(aborted, ['wf_live']);
   const rows = Object.fromEntries((await o.delegation.children()).map(row => [row.id, [row.status, row.notified]]));
   assert.deepEqual(rows, { wf_live: ['running', undefined], wf_gone: ['failed', true] });
+});
+
+test('after attempts land out of order, list_agents and wait_agent show the workflow\'s highest attempt', async () => {
+  const o = owner();
+  await o.delegation.registerWorkflow({ id: 'wf_1', name: 'review', callId: 'c' });
+  const held: ChildEnding[] = [];
+  const w = workflow(async ending => { held.push(ending); return { accepted: true }; });
+  w.endings.statusWritten(summary('budget_exhausted'));
+  w.endings.statusWritten(summary('paused', { pauseReason: 'payer_exhausted' }));
+  w.endings.statusWritten(summary('completed'));
+  await w.endings.outbox.flush();
+  for (const index of [0, 2, 1]) await o.delegation.receiveEnding(held[index]!);
+  await o.settle();
+  const tools = o.delegation.tools({ instructions: true }, ['agents']);
+  const api = { callId: 'l', taskId: 't', getTask: async () => undefined };
+  const listed = (await (tools.find(tool => tool.name === 'list_agents') as any).execute({}, api, {})).structuredOutput.agents;
+  assert.deepEqual(listed.map((agent: any) => [agent.agentId, agent.status]), [['wf_1', 'completed']]);
+  const waited = (await (tools.find(tool => tool.name === 'wait_agent') as any).execute({ agents: ['review'] }, { ...api, callId: 'w' }, {})).structuredOutput.agents;
+  assert.deepEqual(waited.map((agent: any) => [agent.agentId, agent.status]), [['wf_1', 'completed']]);
 });
