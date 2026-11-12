@@ -23,7 +23,7 @@ Building the image launches a temporary instance in the camelRun account, so **o
 | Base network rules | `/etc/nftables/camel-host.nft` | `files/camel-host.nft`, generated from `jobhost/network.ts` `baseRules()`; a test checks the two match |
 | Boot preparation | `camel-host-prep.service` | Formats the instance-store NVMe as XFS `reflink=1`, mounts it at `/var/lib/camel/nvme`, copies the base image onto it, and writes `pcie_slots` |
 | Egress proxy | `camel-egress-proxy.service` | Runs as `camel-proxy` (uid 940) |
-| Host agent | `camel-jobhost.service` | `--firecracker --attestor aws`. `RUNTIME_URL` comes from the launch template's user data |
+| Host agent | `camel-jobhost.service` | `--firecracker --attestor aws`. `CAMELRUN_RUNTIME_URL` comes from `/etc/camelrun/job-host.env`, which the launch template's user data writes from SSM |
 | Sandboxes' memory pool | the kernel command line | `nitro_enclaves.mempool=<NE_MEMPOOL_BUILD or NE_MEMPOOL_TEST>@0`, set with grubby |
 | No SSH | `sshd` masked | Operators and Packer use SSM Session Manager |
 
