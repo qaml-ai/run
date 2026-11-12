@@ -1,7 +1,12 @@
 // The workflow object's one alarm (workflow-object.ts): when it is due, and what it runs. Kept apart from the object
 // so it can be tested without the Workers runtime.
 
-/** After a concern failed, the alarm comes back no sooner than this (as the runner's own alarm), so it cannot spin. */
+/**
+ * The alarm comes back no sooner than this, even when a concern says "now" (a landed effect whose step keeps failing
+ * does: the runner's own floor would otherwise be undone here), and no sooner than the failure floor after one threw:
+ * as the runner's own alarm, so nothing spins.
+ */
+export const ALARM_FLOOR_MS = 1_000;
 export const ALARM_FAILURE_FLOOR_MS = 30_000;
 
 /** The one alarm: the earliest of the times given (null or undefined: that one needs none), or none. */
@@ -12,8 +17,8 @@ export function alarmAt(...times: (number | null | undefined)[]): number | undef
 
 /**
  * Run the alarm's concerns in order, each isolated: one that throws is logged and the ones after it still run. Then,
- * whatever happened, `next()` says when the alarm must come back and `arm` sets it (after a failure, no sooner than
- * `ALARM_FAILURE_FLOOR_MS` from `now`). The alarm never rests on the platform's few retries of a handler that threw.
+ * whatever happened, `next()` says when the alarm must come back and `arm` sets it, no sooner than `ALARM_FLOOR_MS`
+ * from `now` (`ALARM_FAILURE_FLOOR_MS` after a failure). The alarm never rests on the platform's few retries of a handler that threw.
  */
 export async function runAlarm(options: {
   concerns: [name: string, work: () => unknown][];
@@ -32,7 +37,7 @@ export async function runAlarm(options: {
     let next: number | undefined;
     try { next = await options.next(); }
     catch (error) { failed.push("next"); options.log("next", error); next = (options.now?.() ?? Date.now()) + ALARM_FAILURE_FLOOR_MS; }
-    if (next !== undefined) await options.arm(failed.length ? Math.max(next, (options.now?.() ?? Date.now()) + ALARM_FAILURE_FLOOR_MS) : next);
+    if (next !== undefined) await options.arm(Math.max(next, (options.now?.() ?? Date.now()) + (failed.length ? ALARM_FAILURE_FLOOR_MS : ALARM_FLOOR_MS)));
   }
   return { failed };
 }

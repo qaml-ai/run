@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { alarmAt, runAlarm, ALARM_FAILURE_FLOOR_MS } from '../src/workflow-alarm.ts';
+import { alarmAt, runAlarm, ALARM_FAILURE_FLOOR_MS, ALARM_FLOOR_MS } from '../src/workflow-alarm.ts';
 
 test('the one alarm is the earliest time any concern needs, or none', () => {
   assert.equal(alarmAt(null, undefined, undefined), undefined);
@@ -25,12 +25,26 @@ test('a concern that throws is logged; the ones after it still run, and the alar
   assert.deepEqual(armed, [1_000 + ALARM_FAILURE_FLOOR_MS], 'after a failure, not sooner than the floor');
 });
 
-test('without a failure the alarm is armed for exactly when it is needed; with nothing needed it is not armed', async () => {
+test('without a failure the alarm is armed for when it is needed, never sooner than a second; with nothing needed it is not armed', async () => {
   const armed: number[] = [];
+  await runAlarm({ concerns: [['notices', () => {}]], next: async () => 5_000, arm: async at => { armed.push(at); }, log: () => {}, now: () => 1_000 });
+  assert.deepEqual(armed, [5_000]);
   await runAlarm({ concerns: [['notices', () => {}]], next: async () => 1_200, arm: async at => { armed.push(at); }, log: () => {}, now: () => 1_000 });
-  assert.deepEqual(armed, [1_200]);
+  assert.deepEqual(armed, [5_000, 1_000 + ALARM_FLOOR_MS]);
+  armed.length = 0;
   await runAlarm({ concerns: [['notices', () => {}]], next: async () => undefined, arm: async at => { armed.push(at); }, log: () => {}, now: () => 1_000 });
-  assert.deepEqual(armed, [1_200]);
+  assert.deepEqual(armed, []);
+});
+
+test('a step that keeps failing (the runner asks for "now" every time, and throws nothing) never re-arms sooner than a second', async () => {
+  let now = 1_000;
+  const armed: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    // The runner isolates the step's failure itself, and its nextAlarm() is "now": a landed effect's step to retry.
+    await runAlarm({ concerns: [['runner', () => {}], ['notices', () => {}]], next: async () => now, arm: async at => { armed.push(at); }, log: () => {}, now: () => now });
+    now = armed.at(-1)!;
+  }
+  assert.deepEqual(armed.map((at, i) => at - (i ? armed[i - 1]! : 1_000)), [1_000, 1_000, 1_000, 1_000, 1_000]);
 });
 
 test('when even the next time cannot be read, the alarm comes back after the floor', async () => {
