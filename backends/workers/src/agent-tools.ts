@@ -1,3 +1,5 @@
+import { jobDriver } from "./jobs/driver.ts";
+import { agentJobTools } from "./agent-jobs.ts";
 import { workflowTools } from "./workflow-tools.ts";
 import { workflowsEnabled } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
@@ -498,11 +500,21 @@ export function createHarness(this: AgentRuntime): PiHarness {
             ...(conf.config.bucket ? { bucket: conf.config.bucket as string } : {}),
             ...(typeof workflowSettings === "object" && workflowSettings?.maxBudgetUsd !== undefined ? { maxBudgetUsd: workflowSettings.maxBudgetUsd } : {}),
             remaining: async () => { const spend = await this.agentSpend(await this.config()); return spend ? Math.max(0, spend.usd - spend.spent) : Infinity; },
+            jobRun: jobDriver(this.env as never).ok,
           }) });
+        }
+        // The jobs builtin (agent-jobs.ts): one command in a container of its own. On the tenants that have workflows and
+        // where a job driver exists (the pilot), for every agent that may use a computer (not one whose computer is
+        // disabled, as camel.linux) unless its configuration says workflows: false. Sub-agents too: a workflow's workers
+        // build and test with it.
+        const noComputer = await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id));
+        if (!noComputer && conf.config.workflows !== false && workflowsEnabled(this.env as never, conf.tenantId)) {
+          const jobs = agentJobTools({ env: this.env as never, tenant: conf.tenantId, agentId: conf.id, storage: this.ctx.storage, runId: async api => (await this.currentRun(api as never)).id });
+          if (jobs.length) registry.install({ name: "camel.jobs", tools: jobs });
         }
         registry.install({
           name: "camel.linux",
-          tools: await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id)) ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
+          tools: noComputer ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
         });
         const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
         registry.install({

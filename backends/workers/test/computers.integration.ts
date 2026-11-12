@@ -1159,6 +1159,99 @@ test("workflows: an API-started workflow's job is paid by its tenant under the w
   assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and expires_at>$2", [poor, Date.now()])).rowCount, 0, "and no computer slot is held");
 });
 
+test("the jobs builtin: an agent runs one command on a volume with job_run, billed as its own computer time", {
+  timeout: 600_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const egressImage = await egressImageWithoutSocketMatch(t);
+  if (egressImage) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+    t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
+  }
+  // The agent's model: "RUN <json>" makes one job_run call with those arguments, then answers with what it returned.
+  const textOf = (message: any) => typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part: any) => part.text ?? "").join("\n");
+  const tools: string[][] = [];
+  const model = createHttpServer(async (request, response) => {
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    tools.push((body.tools ?? []).map((tool: any) => tool.function?.name));
+    const last = body.messages.at(-1), user = textOf(body.messages.filter((message: any) => message.role === "user").at(-1));
+    const delta = last.role === "tool" ? { role: "assistant", content: `RAN ${textOf(last)}` }
+      : { role: "assistant", tool_calls: [{ index: 0, id: "job-1", type: "function", function: { name: "job_run", arguments: user.slice(4) } }] };
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const base = { id: "job-model", object: "chat.completion.chunk", created: 1, model: "job-model" };
+    response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+    response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" in delta ? "tool_calls" : "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  model.listen(0, "127.0.0.1"); await once(model, "listening");
+  t.after(() => { model.closeAllConnections(); return new Promise<void>(resolve => model.close(() => resolve())); });
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*" } });
+  t.after(async () => {
+    const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));
+    await fixture.stop();
+    for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
+  });
+  const call = async (path: string, body?: unknown, raw?: string, method?: string) => {
+    const response = await fetch(fixture.url + path, {
+      method: method ?? (raw !== undefined ? "PUT" : body === undefined ? "GET" : "POST"),
+      headers: { authorization: `Bearer ${fixture.token}`, "content-type": raw !== undefined ? "text/plain" : "application/json" },
+      ...(raw !== undefined ? { body: raw } : body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(300_000),
+    });
+    const text = await response.text();
+    assert.ok(response.ok, `${path}: ${response.status} ${text}\n${fixture.worker.logs().slice(-4000)}`);
+    try { return JSON.parse(text); } catch { return text; }
+  };
+  await call("/v1/providers/job-fixture", { type: "openai-completions", baseUrl: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`, models: [{ id: "job-model", contextWindow: 32768, pricing: { input: 1, output: 1 } }] }, undefined, "PUT");
+  const repo = await call("/v1/volumes", { name: "job-run-repo" });
+  await call(`/v1/volumes/${repo.id}/files/check.sh`, undefined, 'echo "files: $(ls)"; echo checked > "$JOB_OUT/report.txt"; exit 3');
+  // An ordinary agent (no delegate settings): it has job_run, not the workflows builtin.
+  const agent = await call("/v1/agents", { model: "job-fixture/job-model", codeMode: false, fileTools: false });
+  const prompt = await call(`/v1/agents/${agent.id}/prompt`, { text: `RUN ${JSON.stringify({ command: "bash check.sh", at: repo.id, outputs: ["report.txt"], timeoutSeconds: 120 })}` });
+  let record: Record<string, any> = {};
+  for (let i = 0; i < 900 && record.state !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); record = await call(`/v1/agents/${agent.id}/requests/${prompt.id}`); }
+  const reply = String(record.outcome?.result?.reply ?? "");
+  assert.match(reply, /^RAN /, JSON.stringify(record.outcome) + "\n" + fixture.worker.logs().slice(-4000));
+  const ran = JSON.parse(reply.slice(4));
+  assert.equal(ran.ok, true, reply);
+  assert.equal(ran.exitCode, 3);
+  assert.equal(ran.stdout, "files: check.sh\n");
+  assert.deepEqual(ran.outputs, { "report.txt": "checked\n" });
+  assert.ok(tools[0]!.includes("job_run") && !tools[0]!.includes("workflow_start"), JSON.stringify(tools[0]));
+  // Billed once, to the agent, as computer time under the job's own receipt; its slot given back.
+  let receipts: any[] = [];
+  for (let i = 0; i < 50 && !receipts.length; i++) {
+    receipts = (await fixture.db.query("select message->'_workersAuxiliary' as receipt from pi_usage_receipts where tenant=$1 and session_id=$2 and message->'_workersAuxiliary'->>'kind'='computer'", ["camelrun-proto-local", agent.id])).rows;
+    if (!receipts.length) await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.equal(receipts.length, 1, JSON.stringify(receipts));
+  assert.match(receipts[0].receipt.callId, /^computer:job:agent-[0-9a-f]{40}$/);
+  assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine like 'job:agent-%' and expires_at > $2", ["camelrun-proto-local", Date.now()])).rowCount, 0);
+
+  // The runtime restarts mid-job: the call is made again under the same job, its answer is delivered, and the job is
+  // charged once (its receipt is the job's, however often it runs).
+  const slow = await call(`/v1/agents/${agent.id}/prompt`, { text: `RUN ${JSON.stringify({ command: "sleep 6; echo slow-done", timeoutSeconds: 120 })}` });
+  for (let i = 0; i < 300; i++) {
+    if ((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine like 'job:agent-%' and expires_at > $2", ["camelrun-proto-local", Date.now()])).rowCount) break;
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  await fixture.worker.stop(true);
+  await fixture.worker.start();
+  let after: Record<string, any> = {};
+  for (let i = 0; i < 900 && after.state !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); after = await call(`/v1/agents/${agent.id}/requests/${slow.id}`); }
+  const slowReply = String(after.outcome?.result?.reply ?? "");
+  assert.match(slowReply, /^RAN /, JSON.stringify(after.outcome) + "\n" + fixture.worker.logs().slice(-4000));
+  assert.equal(JSON.parse(slowReply.slice(4)).stdout, "slow-done\n");
+  let charged: any[] = [];
+  for (let i = 0; i < 50; i++) {
+    charged = (await fixture.db.query("select distinct message->'_workersAuxiliary'->>'callId' as call from pi_usage_receipts where tenant=$1 and session_id=$2 and message->'_workersAuxiliary'->>'kind'='computer'", ["camelrun-proto-local", agent.id])).rows;
+    if (charged.length >= 2) break;
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.equal(charged.filter(row => !row.call.includes("#")).length, 2, `one receipt per job, two jobs: ${JSON.stringify(charged)}`);
+});
+
 test("an agent's computer time is admitted by its tenant's monthly spend limit, as a fresh run is: a capped tenant's job is refused before it starts", {
   timeout: 300_000, skip: requireDocker ? false : unavailable,
 }, async (t) => {
