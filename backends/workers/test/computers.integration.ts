@@ -1004,11 +1004,13 @@ test("workflows: children edit forks of a repo volume with their file tools, com
       () => agent("EDIT /repo/src/b.txt two", { key: "edit:b", repo: args.repo, type: "worker" }),
       () => agent("EDIT /repo/src/a.txt uno", { key: "edit:c", repo: args.repo, type: "worker" }),
     ]);
+    // A job on a child's fork, while the workflow runs: it sees the child's edit.
+    const peek = await job({ key: "peek", command: "cat src/b.txt", timeoutSeconds: 60, at: b.fork.volume });
     const landedA = await commit(a.fork, { key: "commit:a" });
     const landedB = await commit(b.fork, { key: "commit:b" });
     const landedC = await commit(c.fork, { key: "commit:c" });
     const checked = await job({ key: "check", command: "bash check.sh", timeoutSeconds: 120, at: args.repo, outputs: ["report.txt"] });
-    return { said: [a.text, b.text, c.text], landedA, landedB, landedC, checked };`;
+    return { said: [a.text, b.text, c.text], landedA, landedB, landedC, checked, peek };`;
   // An agent starts the workflow and owns it: it is the payer of the workflow's jobs.
   const owner = await call("/v1/agents", { model: "repo-fixture/repo-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
   const run = await call(`/v1/agents/${owner.id}/prompt`, { text: `START ${JSON.stringify({ repo: repo.id })}` });
@@ -1024,7 +1026,7 @@ test("workflows: children edit forks of a repo volume with their file tools, com
     done = await call(`/v1/workflows/${created.id}`);
   }
   assert.equal(done.status, "completed", JSON.stringify(done) + "\n" + JSON.stringify(await call(`/v1/workflows/${created.id}/items`)) + "\n" + fixture.worker.logs().slice(-4000));
-  const { said, landedA, landedB, landedC, checked } = done.result;
+  const { said, landedA, landedB, landedC, checked, peek } = done.result;
   assert.deepEqual(said, ["edited /repo/src/a.txt", "edited /repo/src/b.txt", "edited /repo/src/a.txt"]);
   assert.equal(landedA.committed, true, JSON.stringify(landedA));
   assert.deepEqual(landedA.files, ["/src/a.txt"]);
@@ -1036,6 +1038,9 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   // The base holds both commits and not the conflicting edit; the job ran against it.
   assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one");
   assert.equal(await call(`/v1/volumes/${repo.id}/files/src/b.txt`), "two");
+  assert.ok(peek, `the job at a child's fork ran: ${JSON.stringify(await call(`/v1/workflows/${created.id}/items`))}`);
+  assert.equal(peek.exitCode, 0, JSON.stringify(peek));
+  assert.match(peek.stdout.tail, /^two/);
   assert.equal(checked.exitCode, 0, JSON.stringify(checked));
   assert.match(checked.stdout.tail, /a=one b=two\nPASS/);
   // Its streams and outputs are kept whole in the workflow's volume.
@@ -1043,7 +1048,7 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   assert.match(await call(`/v1/volumes/${checked.volume}/files${checked.stdout.path}`), /PASS/);
   const items = (await call(`/v1/workflows/${created.id}/items`)).items as { key: string; kind: string; status: string }[];
   assert.deepEqual(items.map(item => [item.key, item.kind, item.status]).sort(),
-    [["check", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"]]);
+    [["check", "job", "done"], ["peek", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"]]);
   // The job's computer slot was given back when it ended.
   assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine like 'job:wf-%' and expires_at > $2", ["camelrun-proto-local", Date.now()])).rowCount, 0);
   // Its container time was metered once, to the owner agent, under the job's own receipt, and counts in the workflow's ledger.
