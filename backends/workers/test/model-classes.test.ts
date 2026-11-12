@@ -325,13 +325,27 @@ test("Gemini refusing reasoning another provider produced: the same member again
       }
       return provider.stream(model, context, options);
     } };
-    const configured = withSettings({ ...refusing, streamSimple: refusing.stream } as never, { settings: async () => ({ model: "openrouter/google/gemini-4-carbon" }) as never, credentials: async () => ({ apiKey: "fixture" }) }, {} as never);
-    const ask = async () => { const events = []; for await (const event of configured.stream(resolveModel("openrouter/google/gemini-4-carbon"), { messages: [{ role: "user", content: "hi", timestamp: 1 }, ...history] } as never, {})) events.push(event); return events.at(-1) as any; };
+    let agentModel = "openrouter/google/gemini-4-carbon";
+    const configured = withSettings({ ...refusing, streamSimple: refusing.stream } as never, { settings: async () => ({ model: agentModel }) as never, credentials: async () => ({ apiKey: "fixture" }) }, {} as never);
+    const gemini = resolveModel("openrouter/google/gemini-4-carbon");
+    const ask = async (model = gemini, more: unknown[] = []) => { const events = []; for await (const event of configured.stream(model, { messages: [{ role: "user", content: "hi", timestamp: 1 }, ...history, ...more] } as never, {})) events.push(event); return events.at(-1) as any; };
+    const signed = (entry: (typeof calls)[number]) => entry.context.messages.filter((message: any) => message.role === "assistant").map((message: any) => message.content.some((block: any) => block.thinkingSignature || block.thoughtSignature));
     assert.equal((await ask()).type, "done");
     assert.equal((await ask()).type, "done");
     assert.equal(calls.length, 2, "the refusal, then one call each");
-    for (const entry of calls) assert.ok(entry.context.messages.find((message: any) => message.role === "assistant").content.every((block: any) => !block.thinkingSignature && !block.thoughtSignature));
+    assert.deepEqual(calls.map(signed), [[false], [false]], "the refused turn's signatures are dropped, up front on the second call");
     assert.equal(logs.filter(line => line.includes('"model_reasoning_replay_dropped"')).length, 2, "the first call's drop above, and this agent's one; none for its second call");
+    // A turn Gemini wrote since keeps its own signature.
+    const later = { ...history[0], timestamp: Date.now() + 60_000 };
+    await ask(gemini, [{ role: "user", content: "more", timestamp: Date.now() + 60_001 }, later]);
+    assert.deepEqual(signed(calls[2]!), [false, true]);
+    // Another model through OpenRouter keeps its reasoning, whatever Gemini refused.
+    await ask({ ...gemini, id: "anthropic/claude-fable-5-1" } as never);
+    assert.deepEqual(signed(calls[3]!), [true]);
+    // A change of the agent's model forgets the refusal: the history goes as it is, until refused again.
+    agentModel = "openrouter/google/gemini-4-argon";
+    await ask();
+    assert.deepEqual(signed(calls[4]!), [true]);
   }
   // Refused again after the drop: a failure of the member like any other, never a loop.
   const twice = await call("camelrun/strong", [REFUSED, REFUSED, REFUSED, REFUSED], {}, { AGENT_FLEX_WAIT_SECONDS: "0" }, history);
