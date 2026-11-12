@@ -8,7 +8,7 @@ import { ARM_AGENT, DUE_HUMAN_INPUTS } from "../src/agent-internals.ts";
 test("the Durable Object preserves its RPC boundary and gates pilot counters", async () => {
   const methods = [
     "removeMember", "databaseProfile",
-    "purgeAccountData", "admitDelegateWake", "receiveAgentMessage", "receiveProgress", "receiveEnding", "admitDelegated",
+    "purgeAccountData", "admitDelegateWake", "inboxAudience", "receiveAgentMessage", "receiveProgress", "receiveEnding", "admitDelegated",
     "hasChild", "cancelRequest", "fetch", "onStart", "onJob",
     "webSocketMessage", "webSocketClose", "webSocketError",
   ];
@@ -41,7 +41,7 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
     constructor(ctx: unknown, env: unknown) { this.ctx = ctx; this.env = env; }
   }
   const script = outputText.replace(/\bexport \{\};?\s*$/, "");
-  const Agent = runInNewContext(`${script}\nCamelAgent`, { DurableObject: Host, AgentRuntime: Runtime, ARM_AGENT, DUE_HUMAN_INPUTS });
+  const Agent = runInNewContext(`${script}\nCamelAgent`, { DurableObject: Host, AgentRuntime: Runtime, ARM_AGENT, DUE_HUMAN_INPUTS, guardAlarms: () => {} });
   const ctx = {}, env = { PILOT_DB_PROFILE: "1" }, agent = new Agent(ctx, env);
   assert.deepEqual(Object.getOwnPropertyNames(Agent.prototype), ["constructor", ...methods]);
   assert.deepEqual(Object.getOwnPropertySymbols(Agent.prototype), [ARM_AGENT, DUE_HUMAN_INPUTS]);

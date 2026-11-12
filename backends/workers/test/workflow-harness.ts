@@ -1,5 +1,6 @@
 // Test harness for the workflow runner: DO SQLite over node:sqlite, the sandbox Worker in process, a fake effect world
 // and a fake clock and alarm. Crash hooks throw `crash:` errors at the boundaries a real process can die at.
+import { AlarmWatch } from "./alarm-watch.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -83,6 +84,13 @@ export class World implements EffectExecutor {
     const index = this.queue.findIndex(item => item.key === effect.key && item.attempt === effect.attempt);
     if (index >= 0) this.queue.splice(index, 1);
   }
+  /** A gate at its deadline (EffectExecutor.expire): by default nobody answered; a test may say otherwise, or throw. */
+  expireHook?: (effect: StartedEffect, take: boolean) => Promise<{ outcome: EffectOutcome } | undefined>;
+  readonly expired: { key: string; take: boolean; dueAt?: number }[] = [];
+  async expire(effect: StartedEffect, take: boolean) {
+    this.expired.push({ key: effect.key, take, dueAt: effect.dueAt });
+    return this.expireHook?.(effect, take);
+  }
   /** An ending the runner did not record (a crash while landing it) is found by the alarm's sweep, as an outbox redelivers. */
   async poll(effect: StartedEffect) {
     if (this.queue.some(item => item.key === effect.key && item.attempt === effect.attempt)) return undefined;
@@ -161,7 +169,9 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
   const box = sandbox(crash, options.rewrite);
   const world = new World();
   world.crash = crash;
-  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { self.alarmAt = at; } }, capacity: options.capacity?.seam() });
+  // Every harness watches its runner's alarm for hot loops (test/alarm-watch.ts).
+  const watch = new AlarmWatch("WorkflowRunner");
+  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { watch.armed(at); self.alarmAt = at; } }, capacity: options.capacity?.seam() });
   let runner = make();
   if (options.capacity) options.capacity.wake = grants => runner.capacityGranted(grants);
   /** Run `work`; a crash drops the runner, and a new one over the same storage wakes up. */
@@ -196,13 +206,14 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
     async next(answer?: (effect: StartedEffect) => EffectOutcome | undefined) {
       const effect = world.queue.shift();
       if (effect) {
+        watch.external();
         const outcome = answer?.(effect) ?? world.answer(effect);
         await attempt(() => runner.land(effect.key, effect.attempt, outcome, world.usage()));
         return true;
       }
       if (self.alarmAt === null) return false;
       self.clock = Math.max(self.clock, self.alarmAt);
-      await attempt(() => runner.alarm());
+      await watch.fire(self.clock, () => attempt(() => runner.alarm()));
       return true;
     },
     /** Land and fire alarms until the workflow is no longer running or waiting. */

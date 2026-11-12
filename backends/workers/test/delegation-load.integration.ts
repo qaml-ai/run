@@ -7,7 +7,7 @@ import { startFixture } from './fixture.ts';
 const CHILDREN = 64;
 
 // Run against real workerd, including SQL, all child DOs, model transport and Pi.
-test('workerd runs 64 concurrent delegated children without relay streams or per-child polling', { timeout: 240_000 }, async t => {
+test('workerd runs 64 concurrent delegated children without relay streams or per-child polling', { timeout: 480_000 }, async t => {
   // Local workerd does not impose the hosted isolate's memory budget. Force
   // normal V8 GC under a conservative old-space budget; no forced collections.
   const priorFlags = process.env.MINIFLARE_WORKERD_V8_FLAGS;
@@ -55,15 +55,17 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
   void samples.catch(() => {});
   const run = await call(`/v1/agents/${parent.id}/prompt`, { text: 'Start all children' });
   try {
-    const startupDeadline = Date.now() + 90_000;
+    // Ceilings, not expectations: 64 child objects start one after another on a local workerd, and a loaded CI runner
+    // has taken 52 s for them; the test waits on the events themselves.
+    const startupDeadline = Date.now() + 180_000;
     while (started < CHILDREN && Date.now() < startupDeadline) await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(started, CHILDREN, fixture.worker.logs());
     assert.equal(peakChildren, CHILDREN);
     console.log('DELEGATION_LOAD_STARTED ' + JSON.stringify({ children: started, elapsedMs: Date.now() - began }));
     // Hold the children a while: the parent polls none of them meanwhile (their endings come by their outboxes).
-    await new Promise(resolve => setTimeout(resolve, 5500));
+    await new Promise(resolve => setTimeout(resolve, Number(process.env.DELEGATION_LOAD_HOLD_MS ?? 5500)));
     gate.resolve();
-    const completionDeadline = Date.now() + 90_000;
+    const completionDeadline = Date.now() + 180_000;
     let record: any;
     do { record = await call(`/v1/agents/${parent.id}/requests/${run.id}`); if (record.state === 'completed') break; await new Promise(resolve => setTimeout(resolve, 250)); } while (Date.now() < completionDeadline);
     assert.equal(record.outcome?.result?.reply, 'all-64-complete', JSON.stringify(record));
@@ -74,7 +76,15 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
     assert.ok(memoryLogs.some(row => row.childCount === CHILDREN && row.heapEstimateBytes > 0), JSON.stringify(memoryLogs));
     assert.ok(memoryLogs.every(row => row.childCount > 32 && row.estimateScope === 'parent_delegation_bookkeeping'));
     console.log('DELEGATION_MEMORY ' + JSON.stringify(memoryLogs.at(-1)));
-    assert.ok(profile.children.every((status: string) => status === 'completed'), JSON.stringify(profile));
+    if (!profile.children.every((status: string) => status === 'completed')) {
+      // Why each child that did not complete ended as it did: its own run's record.
+      const why = await Promise.all(profile.failed.map(async (child: { id: string; requestId: string }) => {
+        const record = await call(`/v1/agents/${child.id}/requests/${child.requestId}`).catch(error => String(error).slice(0, 500));
+        return { ...child, record: typeof record === 'string' ? record : { state: record.state, status: record.status, error: record.outcome?.result?.error ?? record.outcome?.error, startedAt: record.startedAt, endedAt: record.endedAt } };
+      }));
+      const errors = fixture.worker.logs().split('\n').filter(line => /fail|error|Error|persist|reconcil|settle/.test(line)).slice(-60).join('\n');
+      assert.fail(`children did not all complete: ${JSON.stringify(why)}\n${JSON.stringify(profile)}\nworker errors:\n${errors}`);
+    }
     assert.equal(profile.eventStreams, 0);
     assert.ok(profile.rpc.total < 1000, JSON.stringify(profile.rpc));
     // Every ending reached the parent through its child's outbox, taken once; nothing was reconciled by polling.

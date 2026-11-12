@@ -1,3 +1,4 @@
+import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import { CapacityError, CapacityLedger, tenantCaps, type CapacityEnv, type Grant, type SlotKind, type TenantLimits } from "./workflow-capacity.ts";
 
@@ -15,6 +16,7 @@ export class WorkflowCapacity extends DurableObject<Env> {
   private readonly ledger: CapacityLedger;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    guardAlarms(this, ctx, "WorkflowCapacity", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
     this.ledger = new CapacityLedger(ctx.storage.sql, write => ctx.storage.transactionSync(write));
   }
 

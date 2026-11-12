@@ -14,6 +14,19 @@ function stopActiveFixtures() {
     console.error(`Local Worker signal cleanup failed: ${error.message}`);
   });
 }
+/** The alarm guard's lines in a worker's log (src/alarm-guard.ts): hot loops, and immediate re-arms counted per object. */
+export function alarmFindings(logs: string) {
+  const hot: string[] = [], due: Record<string, number> = {};
+  for (const match of logs.matchAll(/\{"type":"alarm_(hot_loop|rearm_due)"[^\n]*?\}(?=\s|$)/g)) {
+    try {
+      const line = JSON.parse(match[0]) as { type: string; object: string; fires?: number };
+      if (line.type === "alarm_hot_loop") hot.push(`${line.object} (${line.fires} fires)`);
+      else due[line.object] = (due[line.object] ?? 0) + 1;
+    } catch { /* a line cut by the log limit */ }
+  }
+  return { hot, due: Object.entries(due).map(([object, count]) => ({ object, count })) };
+}
+
 function registerFixture(stop: () => Promise<void>) {
   if (!activeFixtures.size) {
     process.on("SIGTERM", stopActiveFixtures);
@@ -99,6 +112,11 @@ export async function startFixture(
     const workerStopped = startingWorker?.stop();
     await startupDone;
     if (workerStopped) try { await workerStopped; } catch (error) { failures.push(error); }
+    // A Durable Object whose alarm spun (src/alarm-guard.ts logged alarm_hot_loop) fails the test that ran it; an alarm
+    // left due at once by its own handler (alarm_rearm_due, test mode) is listed, for the guard's report.
+    const findings = alarmFindings(startingWorker?.alarmLogs() ?? "");
+    if (findings.hot.length) failures.push(new Error(`A Durable Object alarm looped (alarm_hot_loop): ${findings.hot.slice(0, 5).join("; ")}`));
+    if (findings.due.length) console.log(`ALARM_REARM_DUE ${JSON.stringify(findings.due)}`);
     try {
       for (const cleanup of cleanups.reverse()) {
         try { await cleanup(); } catch (error) { failures.push(error); }

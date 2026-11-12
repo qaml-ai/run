@@ -21,9 +21,17 @@ export type ModelBillingContext = {
   /** This request's budget; the persistent agent budget lives in Postgres. */
   spendLimit?: number;
 };
+/**
+ * How long an accounting event (a call's begin, progress, finish) is delivered again after the database was unavailable
+ * or the transaction lost a race (ModelAttempts.event retries with the same attempt id, never the provider request).
+ * Settlements of one tenant serialize on its balance row: when many calls end together (64 children released at
+ * once), the last can wait past a query's 10 s timeout. Without a retry that failed the turn ("Session persistence
+ * failed") though the call had been made and its receipt kept; Node retries for its lease TTL.
+ */
+export const MODEL_ATTEMPT_RETRY_MS = 30_000;
 export async function modelAttempts(env: KeyEnv) {
   const { accounts } = await keyServices(env);
-  return new ModelAttempts(accounts.db, accounts, fetch, 0, undefined, new EndUserCredits(accounts.db));
+  return new ModelAttempts(accounts.db, accounts, fetch, MODEL_ATTEMPT_RETRY_MS, undefined, new EndUserCredits(accounts.db));
 }
 export async function applyModelReceipt(env: KeyEnv, receipt: ModelReceipt) {
   return (await modelAttempts(env)).event(receipt.tenant, receipt.agent, receipt.platform, receipt.catalogPriced ?? receipt.platform, receipt.event);

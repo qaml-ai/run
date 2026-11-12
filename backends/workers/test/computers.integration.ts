@@ -1116,6 +1116,8 @@ test("workflows: an API-started workflow's job is paid by its tenant under the w
   };
   const script = `return await job({ key: "check", command: "echo paid > $JOB_OUT/o.txt; echo ran", timeoutSeconds: 60, outputs: ["o.txt"] });`;
 
+  // A webhook endpoint for usage: the account's per-customer signal, computer time included.
+  await call("/v1/webhooks", { url: "http://127.0.0.1:9/usage", events: ["usage.recorded"] });
   // Started with an API key: no owner agent. Its tenant pays, and the workflow completes.
   const started = await call("/v1/workflows", { script, budget: { usd: 1 } });
   assert.equal(started.owner, undefined, "an API start has no owner agent");
@@ -1141,6 +1143,12 @@ test("workflows: an API-started workflow's job is paid by its tenant under the w
   await new Promise(resolve => setTimeout(resolve, 2_000));
   assert.deepEqual((await receipts()).map(row => row.entry_id), first.map(row => row.entry_id), "the rerun's charge is the same receipt");
   assert.equal(await usage(), charged, "and the usage is counted once");
+  // One usage.recorded for the job's time: the workflow named, no agent, its seconds and cost; the rerun adds none.
+  const events = (await fixture.db.query("select body from webhook_deliveries where tenant=$1 and body->>'type'='usage.recorded' and body->'data'->>'kind'='computer'", [tenant])).rows.map(row => row.body.data);
+  assert.equal(events.length, 1, JSON.stringify(events));
+  assert.equal(events[0].workflowId, started.id);
+  assert.equal(events[0].agentId, null);
+  assert.ok(events[0].seconds > 0 && events[0].cost.usd > 0, JSON.stringify(events[0]));
 
   // A tenant with no credit: the job is refused before any compute, and the workflow pauses for its payer.
   const broke = await call("/v1/workflows", { script, budget: { usd: 1 } }, poor);
@@ -1149,4 +1157,28 @@ test("workflows: an API-started workflow's job is paid by its tenant under the w
   assert.equal(paused.pauseReason, "payer_exhausted", JSON.stringify(paused));
   assert.equal((await fixture.db.query("select 1 from pi_usage_receipts where tenant=$1", [poor])).rowCount, 0, "nothing was charged");
   assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and expires_at>$2", [poor, Date.now()])).rowCount, 0, "and no computer slot is held");
+});
+
+test("an agent's computer time is admitted by its tenant's monthly spend limit, as a fresh run is: a capped tenant's job is refused before it starts", {
+  timeout: 300_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const capped = "camelrun-proto-capped", cappedToken = "art_capped-tenant-fixture-token-with-32-characters";
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", entrypoint: join(process.cwd(), "test/jobs-entry.ts"),
+    tenants: [{ id: "camelrun-proto-local", token: "local-integration-only-token-with-at-least-32-characters" }, { id: capped, token: cappedToken }],
+    vars: { AGENT_TENANTS_JSON: JSON.stringify({ tenants: { [capped]: { tokenSha256: createHash("sha256").update(cappedToken).digest("hex"), maxMonthlyCost: 0 } } }) } });
+  t.after(() => fixture.stop());
+  const post = async (path: string, body: unknown) => {
+    const response = await fetch(fixture.url + path, { method: "POST", headers: { authorization: `Bearer ${cappedToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
+    const text = await response.text();
+    assert.ok(response.ok, `${path}: ${response.status} ${text}`);
+    return JSON.parse(text);
+  };
+  const agent = await post("/v1/agents", {});
+  const refused = await post("/__test/jobs", { id: "capped-1", command: "true", timeoutSeconds: 30, payer: { tenant: capped, agent: agent.id } });
+  assert.equal(refused.ok, false, JSON.stringify(refused));
+  assert.equal(refused.code, "admission_refused", JSON.stringify(refused));
+  assert.match(refused.message, /monthly spend limit of \$0\.00/);
+  assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1", [capped])).rowCount, 0, "no slot was taken");
+  assert.equal((await fixture.db.query("select 1 from pi_usage_receipts where tenant=$1", [capped])).rowCount, 0, "and nothing was charged");
 });

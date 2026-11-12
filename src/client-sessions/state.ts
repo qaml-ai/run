@@ -427,6 +427,8 @@ export type UsageRecord = {
   decisions?: number;
   /** Kind `computer`: seconds of it this charges (computers/managed.ts). */
   seconds?: number;
+  /** Kind `computer`: the workflow whose job it was, when its tenant paid for it (an API-started workflow: no agent did). */
+  workflowId?: string;
   /** Already persisted beside a Pi journal response. */
   durableReceipt?: boolean;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
