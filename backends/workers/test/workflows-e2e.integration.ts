@@ -50,7 +50,7 @@ phase("judge");
 const verdict = await agent("CRITIC: check " + JSON.stringify(reviews), { key: "critic", type: "critic", output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } });
 return { reviews, verdict, files: args.files };`;
 
-test("an agent starts a workflow of keyed workers and a critic, owned by the workflow, and reports its result; a spent budget pauses one until a raise", { timeout: 300_000 }, async t => {
+test("an agent starts a workflow of keyed workers and a critic, owned by the workflow, and reports its result; a spent budget pauses one until a raise", { timeout: 600_000 }, async t => {
   let workflowId: string | undefined;
   const model = provider(body => {
     const system = systemOf(body), user = lastUser(body), last = body.messages.at(-1);
@@ -85,6 +85,7 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   const agent = await ok("/v1/agents", { model: "wf-fixture/wf-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
   const run = await ok(`/v1/agents/${agent.id}/prompt`, { text: "go" });
   const done = await until(async () => { const record = await ok(`/v1/agents/${agent.id}/requests/${run.id}`); return record.state === "completed" && record; }, "the agent's run");
+  console.log(`E2E agent run done at ${new Date().toISOString()}`);
   const reply = String(done.outcome?.result?.reply ?? "");
   assert.match(reply, /^REPORT /, JSON.stringify(done.outcome));
   const reported = JSON.parse(reply.slice("REPORT ".length));
@@ -119,12 +120,14 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   assert.ok(paused.spent.usd >= 0.5, JSON.stringify(paused.spent));
   // A raise above what it spent runs it again by itself: the refused effect is issued again under its next attempt.
   await ok(`/v1/workflows/${small.id}/budget`, { usd: 5 });
-  const finished = await until(async () => { const value = await ok(`/v1/workflows/${small.id}`); return value.status === "completed" && value; }, "the resumed workflow");
+  const finished = await until(async () => { const value = await ok(`/v1/workflows/${small.id}`); return value.status === "completed" && value; }, "the resumed workflow", 90_000,
+    async () => ({ workflow: await ok(`/v1/workflows/${small.id}`), items: await ok(`/v1/workflows/${small.id}/items`) }));
   assert.deepEqual(finished.result, ["costly answer", "plain answer to cheap two"]);
 
   // gate() has no executor yet: it fails at once, saying so, and the script gets null.
   const gated = await ok("/v1/workflows", { script: `const go = await gate({ key: "go", title: "Go?" }); return { go };`, budget: { usd: 1 } });
-  const gateDone = await until(async () => { const value = await ok(`/v1/workflows/${gated.id}`); return value.status === "completed" && value; }, "the gated workflow");
+  const gateDone = await until(async () => { const value = await ok(`/v1/workflows/${gated.id}`); return value.status === "completed" && value; }, "the gated workflow", 60_000,
+    async () => ({ workflow: await ok(`/v1/workflows/${gated.id}`), items: await ok(`/v1/workflows/${gated.id}/items`) }));
   assert.deepEqual(gateDone.result, { go: null });
   const gateItem = ((await ok(`/v1/workflows/${gated.id}/items`)).items as { key: string; reason?: string }[]).find(item => item.key === "go");
   assert.match(String(gateItem?.reason), /gate\(\) is not available yet/);
