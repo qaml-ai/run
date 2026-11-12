@@ -1,9 +1,11 @@
 # Block volumes: kernel-level files on our own hosts
 
-The most ambitious arm of the file-model prototypes: what camelRun's volumes should be when a job runs in a
-Firecracker VM on a host we own (EC2 Graviton with local NVMe, [job-hosts-plan](../../docs/design/job-hosts-plan.md)),
-and file access inside the VM has to be the kernel's own, not FUSE's. Numbers are in [RESULTS.md](RESULTS.md); the
-runnable slice is `lazyblk/` (Go, ~900 lines), `fuse-loop/` (the FUSE baseline) and `bench/run.sh`.
+The most ambitious arm of the file-model prototypes: what camelRun's volumes should be when a job runs in a VM on a
+host we own (EC2 with local NVMe and nested KVM now, `.metal` later; the earlier Graviton/Nitro plan is in
+[job-hosts-plan](../../docs/design/job-hosts-plan.md)), and file access inside the VM has to be the kernel's own,
+not FUSE's. Numbers are in [RESULTS.md](RESULTS.md), measured on a real EC2 host against real S3 and inside a
+Cloud Hypervisor guest; the runnable slice is `lazyblk/` (Go, ~1,000 lines), `fuse-loop/` (the FUSE baseline),
+`bench/run.sh` (host) and `bench/guest.sh` (guest).
 
 The brief's hypothesis was: chunks in S3, a version is a block map, a lazy block device on the host with a host-wide
 NVMe chunk cache, dm-thin copy-on-write for writes, ext4 over virtio-blk in the VM, checkpoints that upload new
@@ -16,11 +18,13 @@ agents. Most of it survives; three parts change (the version identity, where Wor
    each checkpoint publishes a tree *and* the block map that materializes it, and a tree may have more than one.
 2. **Workers read files straight from chunks, with no host in the loop.** The index records each file's extents
    (ext4's own FIEMAP at checkpoint), so a Worker reads a file by fetching the chunks under its extents from S3.
-   Measured: one file = one chunk GET (16 ms at 15 ms S3 latency). There is no always-on volume server for reads.
+   Measured: one file = one chunk GET (20–59 ms against real S3 from EC2). There is no always-on volume server for
+   reads.
 3. **Warm reads must not cross into userspace.** A userspace block device (NBD here, ublk in production) is the lazy
    path only. dm-clone hydrates the version into a local NVMe file in the background; once a region is local the
-   kernel serves it without the daemon. Measured on this prototype without dm-clone, the first-touch NBD round trip
-   is the whole overhead; after that the guest page cache and the thin pool answer.
+   kernel serves it without the daemon. Measured on EC2: the NBD round trip is +27 µs per 4 KiB read and 1.8× on a
+   metadata-heavy full read; hydrated, the same reads equal local NVMe (7.35 s vs 7.20 s for 500 MB), and a 4 GiB
+   image hydrates in 6.4 s. Inside a Cloud Hypervisor guest on nested KVM the lazy volume measures as a local disk.
 
 ## The shape
 
@@ -36,8 +40,8 @@ agents. Most of it survives; three parts change (the version identity, where Wor
  │    block map in memory; read miss → chunk GET → host-wide cache (NVMe, by hash)│
  │    → serve + sequential prefetch                                               │
  │        ▲ read-only origin                                                      │
- │  dm-clone (designed, not run here): hydrate the version into a local NVMe file,│
- │    serve hydrated regions in-kernel, detach the daemon when complete           │
+ │  dm-clone (run on EC2): hydrate the version into a local NVMe file in the      │
+ │    background, serve hydrated regions in-kernel, detach the daemon when done   │
  │        ▲ read-only origin                                                      │
  │  dm-thin pool on NVMe: one thin per mounted version, external origin = above;  │
  │    writes are COW'd 256 KiB blocks in the pool; snapshot = fork = checkpoint   │
@@ -61,12 +65,13 @@ agents. Most of it survives; three parts change (the version identity, where Wor
   newstyle handshake, concurrent requests per connection, 4 connections, single-flight per chunk, 4-chunk sequential
   prefetch. ublk is the same shape over io_uring with lower per-request cost and crash recovery (`UBLK_F_USER_RECOVERY`);
   AL2023 6.18 ships it as a module. NBD is a fallback that every kernel has (`-persist` reconnect).
-- **dm-clone.** Not on the sprite kernel (`CONFIG_DM_CLONE` unset), so designed only. It takes a read-only source
+- **dm-clone.** Run on the EC2 host (module `dm-clone`; absent from the sprite kernel). It takes a read-only source
   (the lazy device) and a destination (a sparse file on the NVMe), hydrates regions in the background with a
   configurable region size (256 KiB, aligned with the chunks), serves hydrated regions from the destination in the
   kernel, and can be told to stop hydrating. For a hot volume (a repo every job mounts) the destination becomes a
-  complete local image and the daemon is detached; for a one-off job it hydrates what the job touches. Without it,
-  the NBD round trip (~100 µs on top of a cache-file read) is paid on every first touch of a block per guest.
+  complete local image and the daemon is detached; for a one-off job it hydrates what the job touches. Measured:
+  a 4 GiB image hydrates in 6.4 s from the warm cache (2 GiB in 1.8–2.0 s); hydrated reads equal local NVMe; without
+  it the NBD round trip (+27 µs per 4 KiB, 1.8× on a metadata-heavy tree read) is paid on every first touch.
 - **dm-thin.** The COW and snapshot layer, in every kernel, metadata on NVMe, `create_snap` for forks and checkpoints
   (measured: 11–60 ms create, 1.1 s for the `suspend` that flushes a dirty ext4; with the guest doing `fsfreeze`
   before the snapshot, the suspend is a no-op). `thin_delta` between the last checkpoint's snapshot and the new one
@@ -76,7 +81,8 @@ agents. Most of it survives; three parts change (the version identity, where Wor
   ^inline_data` keeps every file's bytes in extents (needed for the Workers read path) and `tune2fs -U random` was not
   even needed: ext4 mounts a fork with the same UUID beside its origin (measured; XFS needs `nouuid`).
 - **File index.** Walk the mounted snapshot; files whose `(size, ino, mtime, ctime)` match the previous index keep
-  their hash and extents, the rest are hashed and FIEMAP'd. Measured: full 5k-file index 240 ms, incremental 30 ms;
+  their hash and extents, the rest are hashed and FIEMAP'd. Measured on EC2: full index 124 ms for 5k files, 1.1 s
+  for 50k; incremental 32 ms / 300 ms;
   the index is the git tree (sha256 now; a git sha1 column costs one more hash pass at commit).
 - **Workers read path.** `tree` + `root` + chunks. A 10 KB file is one GET; a file spanning chunks is a few, in
   parallel. No daemon, no host, no DO on the path; it works for every version ever checkpointed. The prototype's
@@ -97,8 +103,9 @@ agents. Most of it survives; three parts change (the version identity, where Wor
 - **Block-level dedupe is a lineage property, not a fleet property.** Two volumes with the same tree built separately
   share no chunks. Forks, versions and checkpoints of one volume share nearly everything. That is the dominant case
   (every job of a repo is a fork of its head), and the file view gives the cross-volume dedupe.
-- **ext4 metadata amplifies small checkpoints.** A 3-file (15 KB) change produced 18 changed chunks (4.5 MiB):
-  journal, inode tables, bitmaps, directory blocks. Per-checkpoint cost is dominated by this floor, not by the edit.
+- **ext4 metadata amplifies small checkpoints.** A 3-file (15–30 KB) change produced 6 / 17 / 124 changed chunks
+  (1 / 4 / 31 MiB) on 1 / 2 / 4 GiB images: journal, inode tables, bitmaps, group descriptors, directory blocks, and
+  the floor grows with the image. Per-checkpoint cost is dominated by this floor, not by the edit.
   Mitigations: a journal placed in its own chunks so it is always the same few (`data=ordered` already keeps it
   small), checkpoint batching (every 30 s / at job end, not per write), and the file commit path for tiny Worker
   edits.
@@ -116,12 +123,48 @@ agents. Most of it survives; three parts change (the version identity, where Wor
   guest. ublk's user-recovery mode and NBD's reconnect cover a daemon restart; a host death loses the window since the
   last checkpoint, as it does for any local disk.
 
+## The guest device: Nitro Sandboxes vs Firecracker/Cloud Hypervisor on KVM
+
+Asked by Miguel: the lazy device helps only if the guest can be given it. From Firecracker's `docs/nitro-sandboxes/`
+(`comparison-with-kvm.md`), `docs/block.md`, `docs/api_requests/block-vhost-user.md` and Cloud Hypervisor's
+`docs/device_model.md` / `docs/fs.md` (all read 2026-11-12); the Cloud Hypervisor column was then measured on the
+nested EC2 host (RESULTS.md), the other two are from the docs:
+
+| guest path | Nitro Sandboxes (Firecracker, no KVM) | Firecracker on KVM (nested now, metal later) | Cloud Hypervisor on KVM |
+|---|---|---|---|
+| virtio-blk, `path_on_host` a host **block device** (dm-thin / dm-clone / ublk / NBD) | **yes**: "Each drive is backed by a file (or a block device) on the host"; block devices are "supported on both KVM microVMs and sandboxes, in direct and confidential modes"; `io_engine: Async` (io_uring) applies; Firecracker reads the device's logical sector size from the kernel | yes, same code | yes (`--disk path=/dev/mapper/…`, io_uring backend, multiqueue) |
+| vhost-user-blk straight from a userspace chunk server | **rejected on sandboxes** | developer preview; backends: QEMU, Cloud Hypervisor, crosvm, SPDK or our own; guest memory becomes a shared `memfd` ("page faults … up to 24% longer"); no snapshots with it; no host page cache; backend must be jailed separately | yes (`--disk vhost_user=true,socket=…`), the mature implementation of the three |
+| virtio-fs (+DAX) | not a Firecracker device (block, net, vsock, entropy only) | none | virtio-fs yes (virtiofsd); **DAX "not available in Cloud Hypervisor"** (its docs); a FUSE-class daemon path with the per-op cost measured in RESULTS.md |
+| snapshots / pause | none ("No snapshots and no paused state") | yes, except with vhost-user devices | yes |
+| device reset, hot-unplug | not supported ("can misbehave or cause Firecracker to crash") / rejected | yes | yes |
+
+What that means for the stack in this design:
+
+- **Every target boots the same stack unchanged**: the lazy device is a host block device (`/dev/mapper/vol-<job>`,
+  a thin over dm-clone over ublk/NBD), handed to the guest as a plain `virtio-blk` drive with `io_engine: Async`.
+  No vhost-user, no guest agent, no virtio-fs. This is also the only guest path a Nitro sandbox accepts, so a later
+  move to Nitro (for attestation) costs nothing on the storage side.
+- **vhost-user-blk is the optimization, not the base.** It would let the chunk server be the virtio backend itself
+  (no kernel block device, no dm stack, prefetch logic beside the virtqueue, as Firecracker's own doc suggests:
+  "network-fetched data or smart readahead"), at the price of a userspace backend on *every* request, including
+  warm ones, the `memfd` guest memory, no snapshots, and a second process to jail. The kernel stack keeps warm
+  reads in the kernel (dm-clone's hydrated regions, the thin pool's own blocks, the guest page cache) and crosses
+  to userspace only on a miss. Measure vhost-user-blk on the first KVM host (Cloud Hypervisor's backend, or
+  Firecracker's preview against CH's backend) before considering it; the comparison to make is "warm 4 KiB random
+  read in the guest" against virtio-blk over the dm stack.
+- **virtio-fs+DAX is not an option on either VMM**, and virtio-fs without DAX is the FUSE cost again (5–10× per
+  metadata op, measured). It has one use: sharing a host directory that is not a volume (caches, toolchains).
+- **Nested KVM now, metal later** changes nothing above: virtio-blk over a dm device is the path in both. Measured
+  in a Cloud Hypervisor guest on the nested EC2 host (RESULTS.md, "guest side"): warm file ops in the guest equal
+  the host's (open+read 2.9 µs, stat 2.5 µs, create 8.3 µs), cold I/O pays +15–20 µs per virtio-blk exit, and the
+  lazy volume inside the guest is indistinguishable from a plain raw file once its chunks are local.
+
 ## Alternatives weighed
 
 | | lazy chunks + dm-thin (this) | ZFS/Btrfs per host + send/receive to S3 | file-level mount (FUSE, `proto/mount`) | git clone per job (`proto/gitsvc`, `gitapi`, `artifacts`) |
 |---|---|---|---|---|
 | in-VM file ops | kernel ext4, native (measured = local) | native | FUSE: 5–10× per op on metadata/open; passthrough helps reads only | native after the clone |
-| first access on a cold host | ms (mount 130 ms + one chunk) | full `receive` first | ms | seconds (2–9 s for 50–500 MB) |
+| first access on a cold host | ms (mount 45–80 ms + one chunk GET ≈ 70 ms, EC2) | full `receive` first | ms | seconds (2–9 s for 50–500 MB) |
 | fork | O(1) thin snapshot, shares cache | O(1) clone, one host | metadata copy | ref + index copy |
 | cross-host lazy | yes, any version anywhere | no (a volume lives on one host) | yes | no (copy) |
 | Workers view without a host | yes, by extents | no | yes (manifest + blobs) | yes (trees in DO) |
@@ -193,12 +236,14 @@ ublk/NBD, ext4, FIEMAP, fsfreeze) are in-tree and stable; `thin-provisioning-too
 
 ## Open risks
 
-- **dm-clone and ublk are designed, not run.** The sprite kernel lacks both (`CONFIG_DM_CLONE` unset, ublk a module
-  without a modules tree). AL2023 6.18 has both; verify on the first real host (the job-hosts plan's slice 6 suite is
-  the place). Nitro Sandboxes' Firecracker takes a host block device as a drive, so the stack sits under virtio-blk
-  unchanged, but the `Async` io_engine against a dm device, and the 447k IOPS figure, need re-measuring on a thin.
-- **Checkpoint floor.** 4.5 MiB per checkpoint on a 1 GiB image from ext4 metadata; on a 4 GiB image the inode tables
-  touched grow with the directories changed, not the image. Measure the floor at 4 GiB and with the journal pinned.
+- **ublk is designed, not run** (dm-clone, the thin stack, real S3 and the nested-KVM guest all ran on EC2). The
+  module loads on the EC2 kernel; a ublk server replaces the NBD daemon in phase 2 and the +27 µs per request
+  before hydration is what it should cut. Firecracker's `Async` io_engine against a dm device, and the 447k IOPS
+  figure from the Nitro spike, still need re-measuring on a thin.
+- **Checkpoint floor.** 1 / 4 / 31 MiB per checkpoint on 1 / 2 / 4 GiB images from ext4 metadata and journal, for a
+  3-file edit. Bounded per checkpoint, not per file; batch checkpoints, pin the journal's chunks, use `thin_delta`.
+- **Cold S3 prefetch.** The prototype keeps 4 chunks in flight: a cold 500 MB tree read is 40 s against real S3.
+  32–64 in flight and lineage-level hydration on first mount are the fix; the GET count (2,438) is the invariant.
 - **Index/extent correctness.** Inline data, encrypted or compressed files, and files with unwritten extents would
   break the Workers read path; the mkfs options exclude the first two, and the index verifies the hash on read
   (`lazyblk read` does) so a mismatch is loud. A file written by a Worker and read by a Worker never goes through
@@ -206,8 +251,8 @@ ublk/NBD, ext4, FIEMAP, fsfreeze) are in-tree and stable; `thin-provisioning-too
 - **The two views must agree.** The tree is derived from the block image at checkpoint by walking the mounted
   snapshot; a bug there is a wrong file in the Worker view. The derivation is simple (stat, hash, FIEMAP) and the
   verification is cheap (hash on read).
-- **S3 tail latency.** 15 ms was injected; real S3 first-byte is 10–30 ms with a long tail, and a cold job that reads
-  a tree serially pays it per miss. Prefetch and hydration are the mitigations; the cache makes repeat jobs immune.
+- **S3 latency.** Measured 30–39 ms per 256 KiB chunk GET from the EC2 host (in-region), with a tail; a cold job that
+  reads a tree pays it per miss. Prefetch depth and hydration are the mitigations; the cache makes repeat jobs immune.
 - **Pool and daemon lifecycle on hosts.** Per-job thins, snapshots kept for deltas, cache eviction, and pool sizing are
   new host-agent state that must be reconciled after a host restart (dm state is gone; pools are rebuilt from the
   cache, and in-flight jobs were already lost).

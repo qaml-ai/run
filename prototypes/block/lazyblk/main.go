@@ -17,6 +17,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -38,6 +39,11 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 const chunkSize = 256 << 10 // 256 KiB: the S3 object, the cache unit, and the dm-thin block (512 sectors)
@@ -65,6 +71,8 @@ func main() {
 		err = cmdRead(os.Args[2:])
 	case "diff":
 		err = cmdDiff(os.Args[2:])
+	case "fetch":
+		err = cmdFetch(os.Args[2:])
 	case "fsbench":
 		err = cmdFsbench(os.Args[2:])
 	default:
@@ -119,14 +127,43 @@ func hx(h [32]byte) string      { return hex.EncodeToString(h[:]) }
 type store struct {
 	url    string
 	client *http.Client
+	// real S3 when url is s3://bucket/prefix: the instance role's credentials via the SDK's default chain
+	s3     *s3.Client
+	bucket string
+	prefix string
 }
 
 func newStore(url string) *store {
+	if strings.HasPrefix(url, "s3://") {
+		rest := strings.TrimPrefix(url, "s3://")
+		bucket, prefix, _ := strings.Cut(rest, "/")
+		cfg, err := config.LoadDefaultConfig(context.Background())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "aws config:", err)
+			os.Exit(1)
+		}
+		return &store{url: url, s3: s3.NewFromConfig(cfg), bucket: bucket, prefix: strings.Trim(prefix, "/")}
+	}
 	tr := &http.Transport{MaxIdleConnsPerHost: 64, MaxConnsPerHost: 64}
 	return &store{url: strings.TrimRight(url, "/"), client: &http.Client{Transport: tr}}
 }
 
+func (s *store) key(kind, h string) string {
+	if s.prefix == "" {
+		return kind + "/" + h
+	}
+	return s.prefix + "/" + kind + "/" + h
+}
+
 func (s *store) get(kind, h string) ([]byte, error) {
+	if s.s3 != nil {
+		out, err := s.s3.GetObject(context.Background(), &s3.GetObjectInput{Bucket: &s.bucket, Key: aws.String(s.key(kind, h))})
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %w", kind, h, err)
+		}
+		defer out.Body.Close()
+		return io.ReadAll(out.Body)
+	}
 	r, err := s.client.Get(s.url + "/" + kind + "/" + h)
 	if err != nil {
 		return nil, err
@@ -139,6 +176,17 @@ func (s *store) get(kind, h string) ([]byte, error) {
 }
 
 func (s *store) has(kind, h string) (bool, error) {
+	if s.s3 != nil {
+		_, err := s.s3.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: &s.bucket, Key: aws.String(s.key(kind, h))})
+		if err != nil {
+			var nf *types.NotFound
+			if errors.As(err, &nf) || strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	}
 	r, err := s.client.Head(s.url + "/" + kind + "/" + h)
 	if err != nil {
 		return false, err
@@ -148,6 +196,10 @@ func (s *store) has(kind, h string) (bool, error) {
 }
 
 func (s *store) put(kind, h string, b []byte) error {
+	if s.s3 != nil {
+		_, err := s.s3.PutObject(context.Background(), &s3.PutObjectInput{Bucket: &s.bucket, Key: aws.String(s.key(kind, h)), Body: bytes.NewReader(b), ContentLength: aws.Int64(int64(len(b)))})
+		return err
+	}
 	req, _ := http.NewRequest("PUT", s.url+"/"+kind+"/"+h, bytes.NewReader(b))
 	r, err := s.client.Do(req)
 	if err != nil {
@@ -1100,6 +1152,24 @@ func cmdRead(args []string) error {
 		fmt.Fprintf(os.Stderr, "read %s: %d bytes, %d chunk fetches, hash %s, %v\n", p, len(out), fetches, map[bool]string{true: "ok", false: "MISMATCH"}[got == e.Hash], time.Since(t0).Round(time.Microsecond))
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------- fetch
+
+// cmdFetch writes one store object (root or chunk) to stdout.
+func cmdFetch(args []string) error {
+	fl := flag.NewFlagSet("fetch", flag.ExitOnError)
+	storeURL := fl.String("store", "http://127.0.0.1:9000", "store")
+	fl.Parse(args)
+	if fl.NArg() != 2 {
+		return errors.New("fetch --store S <root|chunk> <hash>")
+	}
+	b, err := newStore(*storeURL).get(fl.Arg(0), fl.Arg(1))
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(b)
+	return err
 }
 
 // ---------------------------------------------------------------- diff
