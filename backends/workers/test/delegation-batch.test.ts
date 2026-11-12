@@ -324,10 +324,11 @@ test("workflow notices wait in the owner's outbox while it is busy, taking no qu
   await f.notifications().drain();
   // One turn per WORKFLOW_NOTICE_BATCH + 1 workflows: the first carries 20 others, the next the rest.
   assert.equal(f.submissions.length, 2);
-  const shown = f.submissions.flatMap(({ request, notice }) => [request.id, ...(notice.metadata.batch ?? []).map((item: any) => item.requestId)]);
-  assert.equal(new Set(shown.map(id => id.replace(/_n\d+$/, ''))).size, 25, 'every workflow heard');
-  assert.equal(new Set(shown).size, shown.length, 'none twice');
-  assert.ok(shown.includes('wf_1_n3') && !shown.includes('wf_1_n2'), "wf_1's latest is shown; its middle notice folded");
+  // The blocks the owner reads: one per workflow, each its latest (wf_1's ending; its phase and gate folded).
+  const blocks = f.submissions.flatMap(({ notice }) => [notice.metadata, ...(notice.metadata.batch ?? [])].map((meta: any) => [meta.workflowId, meta.event]));
+  assert.equal(blocks.length, 25, JSON.stringify(blocks));
+  assert.equal(new Set(blocks.map(([workflow]) => workflow)).size, 25, 'every workflow heard, once');
+  assert.deepEqual(blocks.find(([workflow]) => workflow === 'wf_1'), ['wf_1', 'completed']);
   assert.ok(f.submissions.every(({ notice }) => (notice.metadata.batch ?? []).length <= 20));
   // An ending is never folded into a later notice of its workflow.
   const g = fixture();
@@ -337,6 +338,16 @@ test("workflow notices wait in the owner's outbox while it is busy, taking no qu
   await g.notifications().drain();
   assert.equal(g.submissions.length, 1, 'one turn, one wake');
   assert.deepEqual(g.submissions[0]!.notice.metadata.batch.map((item: any) => item.requestId), ['wf_y_n1', 'wf_y_n3'], "wf_y's ending and its latest; its middle phase folded");
+  // One workflow alone: its first notice lands saying its latest, one block, under the first's request id.
+  const h = fixture();
+  for (const { request, notice } of [workflowNotice('wf_z', 1, 'running', 'phase'), workflowNotice('wf_z', 2, 'waiting', 'gate_opened')]) await h.notifications().deliverMessage(request, notice);
+  h.land();
+  await h.notifications().drain();
+  assert.equal(h.submissions.length, 1);
+  const [{ request: landed, notice: told }] = h.submissions;
+  assert.deepEqual([landed.id, told.metadata.event, told.metadata.batch ?? []], ['wf_z_n1', 'gate_opened', []]);
+  assert.match(landed.params.text, /"seq":2/);
+  assert.match(String(h.discarded.find(entry => entry.id === 'wf_z_n2')?.skipped), /workflow notice reached the agent already/);
   // Sending them again (the workflow's outbox retried) changes nothing.
   for (const { request, notice } of sent) await f.notifications().deliverMessage(request, notice);
   await f.notifications().drain();

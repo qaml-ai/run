@@ -107,7 +107,8 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   assert.ok(!asked.includes("workflow_status"), JSON.stringify(asked));
   const replies = ((await ok(`/v1/agents/${agent.id}`)).requests as { id: string; outcome?: { result?: { reply?: string } } }[]).filter(request => request.id.startsWith(`${workflowId}_n`)).map(request => request.outcome?.result?.reply);
   // A phase notice that came while the agent was still busy folds into the ending's turn (one turn, the latest state).
-  assert.ok(replies.every(reply => /^(NOTED|REPORT) /.test(String(reply))), JSON.stringify(replies));
+  // (A carried or folded notice's own request has no reply: it landed in another one's turn.)
+  assert.ok(replies.every(reply => reply === undefined || /^(NOTED|REPORT) /.test(String(reply))), JSON.stringify(replies));
 
   // The workflow, through the public API: completed, its four effects done, its spend in its ledger.
   const workflow = await ok(`/v1/workflows/${workflowId}`);
