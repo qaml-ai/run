@@ -146,15 +146,16 @@ export function fakeLauncher(options: { base?: string; work?: string } = {}): Vm
  * The Firecracker v1.18 configuration for one job in Nitro Sandboxes direct mode (the 2026-11-11 spike's): the guest
  * kernel and initrd, its root disk (the job's reflink clone) with the Async I/O engine, its vCPUs and memory, the vsock
  * the guest agent listens on, and its tap. A build sandbox gets no CPU overcommit.
+ * Plain KVM, e.g. a nested-virtualization EC2 instance, has no enclave block.
  */
-export function firecrackerConfig(job: { id: string; kernel: string; initrd: string; disk: string; vsockPath: string; tap: string; mac: string }, shape: VmShape, build = false, repo?: string) {
+export function firecrackerConfig(job: { id: string; kernel: string; initrd?: string; disk: string; vsockPath: string; tap: string; mac: string }, shape: VmShape, build = false, repo?: string, kvm = false) {
   return {
-    "boot-source": { kernel_image_path: job.kernel, initrd_path: job.initrd, boot_args: "console=ttyS0 panic=1 initcall_blacklist=i8042_init quiet" },
+    "boot-source": { kernel_image_path: job.kernel, ...(job.initrd ? { initrd_path: job.initrd } : {}), boot_args: "console=ttyS0 panic=1 initcall_blacklist=i8042_init quiet" },
     drives: [{ drive_id: "root", path_on_host: job.disk, is_root_device: true, is_read_only: false, io_engine: "Async" },
       ...(repo ? [{ drive_id: "repo", path_on_host: repo, is_root_device: false, is_read_only: false, io_engine: "Async" }] : [])],
     "machine-config": { vcpu_count: shape.vcpus, mem_size_mib: shape.memoryMiB, smt: false },
     vsock: { guest_cid: 3, uds_path: job.vsockPath },
     "network-interfaces": [{ iface_id: "eth0", host_dev_name: job.tap, guest_mac: job.mac }],
-    enclave: { direct_mode: true, cpu_overcommit: !build },
+    ...(kvm ? {} : { enclave: { direct_mode: true, cpu_overcommit: !build } }),
   };
 }

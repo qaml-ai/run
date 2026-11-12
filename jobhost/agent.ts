@@ -304,6 +304,8 @@ export function awsAttestor(imds = "http://169.254.169.254") {
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const arg = (name: string) => { const at = process.argv.indexOf(`--${name}`); return at > 0 ? process.argv[at + 1] : undefined; };
+  const reflink = process.argv.includes("--reflink") ? arg("reflink") : "always";
+  if (reflink !== "auto" && reflink !== "always") throw new Error("--reflink must be auto or always");
   const fake = process.argv.includes("--fake");
   if (!fake && !process.argv.includes("--firecracker")) throw new Error("Choose --firecracker (a host built from infra/job-hosts/image) or --fake (tests)");
   const kind = arg("attestor") ?? "aws", secret = process.env.JOB_HOST_TEST_SECRET, name = arg("name") ?? hostname();
@@ -322,9 +324,10 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
     // A real host's paths are the image's (infra/job-hosts/image/files/jobhost.env).
     launcher: fake ? fakeLauncher({ base: arg("base") }) : firecrackerLauncher({
+      kvm: process.argv.includes("--kvm"), reflink,
       mountsRepo: process.argv.includes("--camelfs-repo-mount"),
       firecracker: arg("firecracker-bin") ?? "/usr/local/bin/firecracker", kernel: arg("kernel") ?? "/var/lib/camel/guest/vmlinux",
-      initrd: arg("initrd") ?? "/var/lib/camel/guest/initrd.img", image: arg("image") ?? "/var/lib/camel/nvme/base.ext4",
+      initrd: arg("initrd") === "none" ? undefined : arg("initrd") ?? "/var/lib/camel/guest/initrd.img", image: arg("image") ?? "/var/lib/camel/nvme/base.ext4",
       work: arg("work") ?? "/var/lib/camel/nvme/jobs", policyDir: arg("policies") ?? "/run/camel/egress", build: process.argv.includes("--build"),
       runtimeHost: new URL(arg("runtime") ?? "http://127.0.0.1:8787").hostname,
     }),
