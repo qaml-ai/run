@@ -23,7 +23,7 @@ import { keyServices } from "../security-services.ts";
 import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
-import { jobLifetimeMs, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
+import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
 import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
@@ -578,6 +578,10 @@ export class JobHost extends DurableObject<JobHostsEnv> {
 
 const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data), size: wire.size, truncated: wire.truncated });
 
+/** A large tree's host-side sync, for the job's host: its token (hashed), until when, and the files with their keys. */
+type HostSync = { hash: string; expiresAt: number; files: { path: string; size: number; sha256: string; key: string }[] };
+const SYNC_KEY = "host-sync";
+
 /** One job on a host: admission, a slot, placement, the meter, the result. */
 export class HostJob extends DurableObject<JobHostsEnv> {
   private active?: { host: string; id: string; stopped: boolean; sent?: boolean; answered?: boolean };
@@ -614,8 +618,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     try { await meter.admit(spec.payer); }
     catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
     if (waiting.stopped) return fail("stopped", "The job was stopped");
-    let files: WireFile[];
-    try { files = await this.files(spec); }
+    let files: WireFile[], sync: WireJob["sync"];
+    try { ({ files, sync } = await this.files(spec)); }
     catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
     if (waiting.stopped) return fail("stopped", "The job was stopped");
     // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
@@ -668,7 +672,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       // A dispatch that throws (the host object unreachable, the RPC refused) is the job's result, never a throw out of
       // run(): a throw would leave the workflow's row to be run again, and fail again, on every restart.
       wire = await this.env.JOB_HOSTS!.getByName(host).dispatch(spec.id, {
-        command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files,
+        command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files, ...(sync ? { sync } : {}),
         limits: { cpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskMiB: shape.diskMiB, ...(spec.limits?.pids ? { pids: spec.limits.pids } : {}) },
         ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
       }, lifetimeMs).catch((error: unknown): WireResult => ({ ok: false, code: "container_failed", message: `The job could not be sent to its host: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}` }));
@@ -696,21 +700,57 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     } finally {
       // Whatever ended it (a result, a refusal, a throw), it no longer waits: a later run or stop sees that.
       if (this.waiting === waiting) this.waiting = undefined;
+      // Its host-side sync ends with it: the token serves nothing more.
+      await this.ctx.storage.delete(SYNC_KEY).catch(() => {});
     }
   }
-  /** Its files as they cross to the host: inline ones, or a volume snapshot's, up to HOST_SYNC_BYTES. */
-  private async files(spec: JobSpec): Promise<WireFile[]> {
+  /**
+   * Its files as they cross to the host: inline ones, or a volume snapshot's. A tree up to HOST_SYNC_BYTES crosses
+   * inline; a larger one (within the job sync limits) the host fetches itself, file by file (host-side sync): the job
+   * gets a manifest and a token for this job's files only, valid for its lifetime, kept here hashed.
+   */
+  private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"] }> {
     const out: WireFile[] = [];
     let bytes = 0;
     const add = (path: string, data: Uint8Array) => {
       bytes += data.byteLength;
-      if (bytes > HOST_SYNC_BYTES || out.length >= JOB_LIMITS.syncFiles) throw new Error(`A job's files on a host are at most ${HOST_SYNC_BYTES / 2 ** 20} MiB for now`);
+      if (bytes > HOST_SYNC_BYTES || out.length >= JOB_LIMITS.syncFiles) throw new Error(`A job's inline files on a host are at most ${HOST_SYNC_BYTES / 2 ** 20} MiB`);
       out.push({ path, data: toBase64(data) });
     };
-    if (spec.files) for (const [path, data] of Object.entries(spec.files)) add(path, data);
-    else if (spec.volume) for await (const file of volumeFiles(this.env, spec.volume)) add(file.path, file.bytes);
-    return out;
+    if (spec.files) { for (const [path, data] of Object.entries(spec.files)) add(path, data); return { files: out }; }
+    if (!spec.volume) return { files: out };
+    if (!this.env.VOLUMES) throw new Error("Volume storage is not bound here");
+    const { files: entries } = await this.env.VOLUMES.getByName(`${spec.volume.tenant}:${spec.volume.volume}`).readSet("/", spec.volume.snapshot);
+    if (entries.length > JOB_LIMITS.syncFiles) throw new Error(`A job syncs at most ${JOB_LIMITS.syncFiles} files`);
+    const total = entries.reduce((sum, entry) => sum + entry.size, 0);
+    if (total > JOB_LIMITS.syncBytes) throw new Error(`A job syncs at most ${JOB_LIMITS.syncBytes} bytes`);
+    const large = entries.find(entry => entry.size > JOB_LIMITS.syncFileBytes);
+    if (large) throw new Error(`${large.path} is larger than a job syncs (${JOB_LIMITS.syncFileBytes} bytes)`);
+    if (total <= HOST_SYNC_BYTES) { for await (const file of volumeFiles(this.env, spec.volume)) add(file.path, file.bytes); return { files: out }; }
+    const origin = this.env.AGENT_PUBLIC_URL?.replace(/\/+$/, "");
+    if (!origin) throw new Error("Host-side sync needs AGENT_PUBLIC_URL");
+    const token = randomBytes(32).toString("base64url");
+    const manifest = entries.map(entry => ({ path: jobPath(entry.path, "file path"), size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)!, key: entry.key }));
+    await this.ctx.storage.put<HostSync>(SYNC_KEY, { hash: digest(token), expiresAt: Date.now() + jobLifetimeMs(spec.timeoutSeconds) + HOST_WAIT_MS, files: manifest });
+    return { files: out, sync: { url: `${origin}/v1/internal/job-hosts/sync/${encodeURIComponent(spec.id)}`, token, files: manifest.map(({ key: _key, ...file }) => file) } };
   }
+  /**
+   * GET /sync/<index>, from the job's host (host-side sync): one file of its manifest, streamed from storage, for the
+   * job's token. Nothing else is served, and nothing once the job has ended or its token expired.
+   */
+  async fetch(request: Request): Promise<Response> {
+    const match = /^\/sync\/(\d{1,6})$/.exec(new URL(request.url).pathname);
+    if (!match || request.method !== "GET") return new Response("Not found", { status: 404 });
+    const sync = await this.ctx.storage.get<HostSync>(SYNC_KEY);
+    const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+    if (!sync || sync.expiresAt <= Date.now() || !sameText(digest(token), sync.hash)) return new Response("Unauthorized", { status: 401 });
+    const file = sync.files[Number(match[1])];
+    if (!file || !this.env.BUCKET) return new Response("Not found", { status: 404 });
+    const object = await this.env.BUCKET.get(file.key) as { body?: ReadableStream } | null;
+    if (!object?.body) return new Response("File object missing", { status: 404 });
+    return new Response(object.body, { headers: { "content-type": "application/octet-stream", "content-length": String(file.size) } });
+  }
+
   private waiting?: { job: string; stopped: boolean };
   private waitMs() {
     const seconds = Number(this.env.JOB_HOST_WAIT_SECONDS ?? NaN);

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -89,16 +90,23 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
 
   // A tree past what crosses to a host inline (16 MiB): the job fails sync_failed, as a result, not a throw that would
   // leave the effect to fail again on every restart. The workflow ends, and the host is free again.
-  const big = await call("/v1/volumes", { name: "too-big-for-a-host" });
-  const upload = await fetch(`${fixture.url}/v1/volumes/${big.id}/files/big.bin`, { method: "PUT", headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/octet-stream" }, body: new Uint8Array(17 * 1024 * 1024) });
+  // A tree past what crosses inline (16 MiB): the host fetches it itself (host-side sync), file by file, each checked,
+  // with a token for this job's files only. A random file, so a corrupted or reordered piece would not hash the same.
+  const big = await call("/v1/volumes", { name: "bigger-than-inline" });
+  const payload = new Uint8Array(17 * 1024 * 1024);
+  for (let offset = 0; offset < payload.length; offset += 65536) crypto.getRandomValues(payload.subarray(offset, offset + 65536));
+  const upload = await fetch(`${fixture.url}/v1/volumes/${big.id}/files/data/big.bin`, { method: "PUT", headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/octet-stream" }, body: payload });
   assert.ok(upload.ok, `upload: ${upload.status}`);
-  const oversize = await call("/v1/workflows", { script: `return await job({ key: "big", at: ${JSON.stringify(big.id)}, command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });
-  const ended = await until(async () => { const value = await call(`/v1/workflows/${oversize.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the oversize workflow");
-  assert.equal(ended.status, "completed", JSON.stringify(ended));
-  assert.equal(ended.result, null);
-  const item = ((await call(`/v1/workflows/${oversize.id}/items`)).items as { key: string; status: string; reason?: string }[]).find(entry => entry.key === "big")!;
-  assert.equal(item.status, "failed");
-  assert.match(item.reason ?? "", /^sync_failed: .*16 MiB/);
+  const small = await fetch(`${fixture.url}/v1/volumes/${big.id}/files/notes.txt`, { method: "PUT", headers: { authorization: `Bearer ${fixture.token}`, "content-type": "text/plain" }, body: "hi" });
+  assert.ok(small.ok);
+  const digest = createHash("sha256").update(payload).digest("hex");
+  const synced = await call("/v1/workflows", { script: `return await job({ key: "big", at: ${JSON.stringify(big.id)}, command: "sha256sum data/big.bin | cut -c1-64; cat notes.txt", timeoutSeconds: 60 });`, budget: { usd: 1 } });
+  const syncedEnd = await until(async () => { const value = await call(`/v1/workflows/${synced.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the host-side sync workflow");
+  assert.equal(syncedEnd.status, "completed", JSON.stringify(syncedEnd));
+  assert.equal(syncedEnd.result.exitCode, 0, JSON.stringify(syncedEnd.result));
+  assert.equal(syncedEnd.result.stdout.tail, `${digest}\nhi`);
+  // The token is the job's alone, and only while it runs: after it, its files are served to no one.
+  assert.equal((await fetch(`${fixture.url}/v1/internal/job-hosts/sync/whatever/0`, { headers: { authorization: "Bearer guess" } })).status, 401);
   const free = await call("/__test/job-hosts") as { free: number; slots: number }[];
   assert.equal(free[0]!.free, free[0]!.slots);
 

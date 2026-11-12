@@ -244,3 +244,29 @@ test("a guest line past the cap ends the channel instead of growing the host's m
   assert.deepEqual(await read.next(), { value: '{"a":1}', done: false });
   assert.deepEqual(await read.next(), { value: undefined, done: true });
 });
+
+test("host-side sync: each file fetched with the job's token, checked, and written into the VM in pieces", async () => {
+  const { pullFiles, SYNC_PIECE_BYTES } = await import("../jobhost/agent.ts");
+  const { createHash } = await import("node:crypto");
+  const big = new Uint8Array(SYNC_PIECE_BYTES * 2 + 5).fill(7), small = new TextEncoder().encode("hi");
+  const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const served: Record<string, Uint8Array> = { "/0": big, "/1": small };
+  const seen: string[] = [];
+  const fetcher = (async (url: string, init: RequestInit) => {
+    seen.push(String((init.headers as Record<string, string>).authorization));
+    const body = served[new URL(url).pathname.replace("/sync/job", "")];
+    return body ? new Response(body as BodyInit) : new Response("no", { status: 404 });
+  }) as typeof fetch;
+  const writes: { path: string; bytes: number; append?: boolean }[] = [];
+  const vm = { request: async (request: any) => { for (const file of request.files) writes.push({ path: file.path, bytes: Buffer.from(file.data, "base64").length, ...(file.append ? { append: true } : {}) }); return { ok: true }; } };
+  const files = [{ path: "data/big.bin", size: big.length, sha256: sha(big) }, { path: "notes.txt", size: 2, sha256: sha(small) }];
+  await pullFiles(vm, { url: "https://run.example/sync/job", token: "t0ken", files }, fetcher);
+  assert.deepEqual(seen, ["Bearer t0ken", "Bearer t0ken"]);
+  assert.deepEqual(writes.filter(write => write.path === "data/big.bin").map(write => write.append ?? false), [false, true, true]);
+  assert.equal(writes.filter(write => write.path === "data/big.bin").reduce((sum, write) => sum + write.bytes, 0), big.length);
+  assert.deepEqual(writes.at(-1), { path: "notes.txt", bytes: 2 });
+  // A file that does not match its manifest fails the sync: wrong bytes, or more than it says.
+  await assert.rejects(pullFiles(vm, { url: "https://run.example/sync/job", token: "t", files: [{ path: "notes.txt", size: 2, sha256: "0".repeat(64) }] }, (async () => new Response(small as BodyInit)) as typeof fetch), /integrity/);
+  await assert.rejects(pullFiles(vm, { url: "https://run.example/sync/job", token: "t", files: [{ path: "notes.txt", size: 1, sha256: sha(small) }] }, (async () => new Response(small as BodyInit)) as typeof fetch), /larger than its manifest/);
+  await assert.rejects(pullFiles(vm, { url: "https://run.example/sync/job", token: "t", files: [{ path: "x", size: 1, sha256: "" }] }, (async () => new Response("no", { status: 401 })) as typeof fetch), /answered 401/);
+});
