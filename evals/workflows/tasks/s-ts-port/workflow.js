@@ -1,6 +1,6 @@
 // The reference workflow for s-ts-port (workflow-direct mode): a worker per file, a critic per file, a fixer where
 // the critic found something, then one critic over the whole port. Written against the designed phase-1 globals
-// (docs/design/swarm-workflows.md, The script): agent, parallel with explicit keys, log, args.
+// (docs/design/swarm-workflows.md, The script): agent, parallel with explicit keys, phase, log, args.
 // Children are made from the run's worker, critic and lead definitions (`args.definitions`), which mount the task's
 // volume at /workspace and carry the model class; `type` is kept for when PR 8 makes it an option of agent().
 // The harness inlines `args` as a const and strips `export`, as the runner evaluates the script as a function body.

@@ -1,0 +1,6 @@
+[
+ {"class":"symbol","symbol":"kmalloc"},
+ {"class":"symbol","symbol":"nvme_submit_sync_cmd"},
+ {"class":"symbol","symbol":"tcp_v4_"},
+ {"class":"symbol","symbol":"^ext4_.*_inode$","regex":true}
+]

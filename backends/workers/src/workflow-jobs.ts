@@ -10,7 +10,7 @@ import { createVolume } from "./file-mounts.ts";
 import { volume, type FileBindings } from "./files.ts";
 import { workerGitHubApps, type GitHubAppsEnv } from "./github-apps.ts";
 import { jobDriver, type JobDriver, type JobDriverEnv } from "./jobs/driver.ts";
-import { JOB_LIMITS, JobSpecError, jobVolume, type JobResult, type JobSpec, type JobStream } from "./jobs/job.ts";
+import { JOB_LIMITS, JobSpecError, type JobResult, type JobSpec, type JobStream } from "./jobs/job.ts";
 import { assertStorageWrite } from "./storage-quota.ts";
 import { digest } from "./volume.ts";
 import { commitFork } from "./workflow-volumes.ts";
@@ -194,8 +194,7 @@ export class WorkflowJobs implements EffectExecutor {
     let source: Pick<JobSpec, "volume" | "files"> = {};
     if (args.at !== undefined) {
       if (typeof args.at !== "string") throw new JobSpecError("job() at is a volume id");
-      const at = args.at;
-      const base = await jobVolume(() => volume(this.env, tenant, at), at);
+      const base = await volume(this.env, tenant, args.at);
       const snapshot = await base.snapshot(`job ${id}`, { pinned: true, labels: { workflow: this.host.workflow.id }, expiresAt: Date.now() + SYNC_SNAPSHOT_TTL_MS });
       source = { volume: { tenant, volume: args.at, snapshot: snapshot.id } };
     } else if (args.files) source = { files: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, new TextEncoder().encode(text)])) };

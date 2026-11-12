@@ -1,0 +1,22 @@
+[
+ {"class":"literal","q":"NewSharedInformerFactory"},
+ {"class":"literal","q":"klog.Errorf"},
+ {"class":"literal","q":"context.TODO()"},
+ {"class":"literal","q":"if err != nil {"},
+ {"class":"literal","q":"apiVersion: v1"},
+ {"class":"literal","q":"podsecurity","i":true},
+ {"class":"literal","q":"license","i":true},
+ {"class":"regex","q":"func \\(\\w+ \\*\\w+Controller\\) Run\\(", "regex":true},
+ {"class":"regex","q":"func \\w+\\(ctx context\\.Context", "regex":true},
+ {"class":"regex","q":"errors\\.New\\(\"[^\"]*not found", "regex":true},
+ {"class":"regex","q":"(?i)todo|fixme", "regex":true},
+ {"class":"regex","q":"\\b[A-Z][a-z]+[A-Z][a-z]+Reconciler\\b", "regex":true},
+ {"class":"regex","q":"\\bv1beta[0-9]\\b", "regex":true},
+ {"class":"filtered","q":"t.Fatalf","lang":"go","path":"pkg/kubelet/**"},
+ {"class":"filtered","q":"Deployment","file":"*.yaml"},
+ {"class":"filtered","q":"ResourceVersion","file":"types.go"},
+ {"class":"path","path":"pkg/**/types.go"},
+ {"class":"path","path":"staging/**","file":"*_test.go"},
+ {"class":"path","file":"*.proto"},
+ {"class":"path","path":"cmd/**"}
+]

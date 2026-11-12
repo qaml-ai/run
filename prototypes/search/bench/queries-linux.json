@@ -1,0 +1,22 @@
+[
+ {"class":"literal","q":"nvme_submit_sync_cmd"},
+ {"class":"literal","q":"kmem_cache_create"},
+ {"class":"literal","q":"spin_lock_irqsave"},
+ {"class":"literal","q":"EXPORT_SYMBOL_GPL"},
+ {"class":"literal","q":"return 0;"},
+ {"class":"literal","q":"CONFIG_PREEMPT_RT","i":true},
+ {"class":"literal","q":"copyright","i":true},
+ {"class":"regex","q":"^static int \\w+_probe\\(", "regex":true},
+ {"class":"regex","q":"spin_lock\\w*\\(&\\w+->lock", "regex":true},
+ {"class":"regex","q":"kmalloc\\(.*GFP_ATOMIC", "regex":true},
+ {"class":"regex","q":"struct \\w+_ops \\w+ = \\{", "regex":true},
+ {"class":"regex","q":"(?i)todo|fixme", "regex":true},
+ {"class":"regex","q":"\\b[A-Z_]{24,}\\b", "regex":true},
+ {"class":"filtered","q":"mutex_lock","lang":"c","path":"drivers/net/**"},
+ {"class":"filtered","q":"compatible","file":"*.dts","i":true},
+ {"class":"filtered","q":"depends on","file":"Kconfig*"},
+ {"class":"path","path":"drivers/net/**/*.c"},
+ {"class":"path","file":"*.dts"},
+ {"class":"path","path":"**/nvme/**","file":"*.h"},
+ {"class":"path","file":"Kconfig*"}
+]

@@ -1,0 +1,464 @@
+== sprite-test f5fa96f0 proto/search: lazy mount under /tmp; fail fast on rt-pool-1 (20261112-191748-3874358-1): rsync, started in 25s
+== bash prototypes/search/bench/run.sh gen,k8s
+RESULT {"step":"host","cpus":8,"memGB":8,"kernel":"6.12.116-fly","rg":"ripgrep 15.1.0","git":"git version 2.53.0","ctags":"Universal Ctags 6.2.1, Copyright (C) 201"}
+RESULT {"corpus":"gen-small","step":"corpus","files":200,"bytes":1004327,"commit":"cd9ccf0c7a4e854a8da2cf1c38faaaf9cd22b666"}
+RESULT {"corpus":"gen-small","step":"index-base","wallMs":156,"r":{"tree":"b45d27169dfa775acbffdc633767b1eedad9fa2c","files":200,"newBlobs":200,"newBytes":1004327,"newShards":1,"idxBytes":113569,"datBytes":1004327,"symBytes":0,"pathsBytes":8492,"listMs":95.004,"readMs":18.346913,"indexMs":13.86707,"totalMs":128.46,"reused":false,"totalShards":1}}
+RESULT {"corpus":"gen-small","step":"sizes-base","idx":113569,"dat":1004327,"sym":0,"paths":8492}
+RESULT {"corpus":"gen-small","r":{"event":"open","files":200,"heapMB":0,"ms":0.76,"shards":1}}
+RESULT {"corpus":"gen-small","r":{"class":"literal","event":"query","firstMs":0.049,"i":false,"p50":0.018,"p99":0.183,"q":"// file 4242","regex":false,"result":{"candidates":0,"fileHits":0,"top":"","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-small","r":{"class":"literal","event":"query","firstMs":0.51,"i":false,"p50":0.388,"p99":0.642,"q":"finally super readonly","regex":false,"result":{"candidates":158,"fileHits":0,"top":"","truncated":false,"verified":158}}}
+RESULT {"corpus":"gen-small","r":{"class":"literal","event":"query","firstMs":1.263,"i":false,"p50":1.199,"p99":1.992,"q":"return","regex":false,"result":{"candidates":200,"fileHits":200,"top":"src/m0/d2/f139.ts","truncated":false,"verified":200}}}
+RESULT {"corpus":"gen-small","r":{"class":"literal","event":"query","firstMs":1.527,"i":true,"p50":1.352,"p99":2.005,"q":"STATIC READONLY","regex":false,"result":{"candidates":200,"fileHits":107,"top":"src/m0/d0/f17.ts","truncated":false,"verified":200}}}
+RESULT {"corpus":"gen-small","r":{"class":"regex","event":"query","firstMs":0.07,"i":false,"p50":0.043,"p99":0.097,"q":"^// file 1234[0-9]$","regex":true,"result":{"candidates":0,"fileHits":0,"top":"","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-small","r":{"class":"regex","event":"query","firstMs":0.745,"i":false,"p50":0.872,"p99":1.122,"q":"interface \\w+ implements \\w+ \\{","regex":true,"result":{"candidates":200,"fileHits":6,"top":"src/m0/d0/f15.ts","truncated":false,"verified":200}}}
+RESULT {"corpus":"gen-small","r":{"class":"path","event":"query","firstMs":0.02,"i":false,"p50":0.004,"p99":0.005,"q":" path:src/m3/**","regex":false,"result":{"candidates":0,"fileHits":0,"top":"","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-small","r":{"class":"path","event":"query","firstMs":0.01,"i":false,"p50":0.009,"p99":0.011,"q":" file:f4242*.ts","regex":false,"result":{"candidates":0,"fileHits":0,"top":"","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-small","r":{"event":"mem","heapMB":1,"proc":"VmHWM: 15300 kB; RssAnon: 6876 kB; RssFile: 8196 kB; ","sysMB":14}}
+RESULT {"corpus":"gen-small","r":{"class":"literal","event":"class","n":80,"p50":0.984,"p99":1.992}}
+RESULT {"corpus":"gen-small","r":{"class":"regex","event":"class","n":40,"p50":0.611,"p99":1.122}}
+RESULT {"corpus":"gen-small","r":{"class":"path","event":"class","n":40,"p50":0.008,"p99":0.011}}
+RESULT {"corpus":"gen-small","step":"cold-first-query","q":"finally super readonly","wallMs":104,"openMs":2.905,"searchMs":2.516}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-small","step":"top5","r":}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-small","step":"top5","r":}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-small","step":"top5","r":}
+RESULT {"corpus":"gen-small","step":"http-search","q":"finally super readonly","s":0.000884}
+RESULT {"corpus":"gen-small","step":"http-search","q":"finally super readonly","s":0.001078}
+RESULT {"corpus":"gen-small","step":"http-search","q":"finally super readonly","s":0.001227}
+RESULT {"corpus":"gen-small","step":"index-1file","wallMs":242,"r":{"tree":"0f81aa00e74e1f2609f069fc8c021d1d125dd90c","files":200,"newBlobs":1,"newBytes":5034,"newShards":1,"idxBytes":8253,"datBytes":5034,"symBytes":0,"pathsBytes":8492,"listMs":226.123,"readMs":2.752461,"indexMs":1.757872,"totalMs":231.615,"reused":false,"totalShards":2}}
+RESULT {"corpus":"gen-small","step":"index-100files","wallMs":41,"r":{"tree":"041eecbbe04a6afb41bc9ee2b9500037384563d9","files":200,"newBlobs":100,"newBytes":505031,"newShards":1,"idxBytes":67894,"datBytes":505031,"symBytes":0,"pathsBytes":8492,"listMs":9.658,"readMs":12.067978,"indexMs":7.717515,"totalMs":30.287,"reused":false,"totalShards":2}}
+RESULT {"corpus":"gen-small","step":"fork","wallMs":10,"r":{"ms":0.219,"tree":"041eecbbe04a6afb41bc9ee2b9500037384563d9"}}
+RESULT {"corpus":"gen-small","step":"index-fork-1file","wallMs":26,"r":{"tree":"fbed00cd1dabccf44f7f7cb943a66cb10eda7a15","files":200,"newBlobs":1,"newBytes":5083,"newShards":1,"idxBytes":8270,"datBytes":5083,"symBytes":0,"pathsBytes":8492,"listMs":10.644,"readMs":2.509622,"indexMs":1.532191,"totalMs":15.687,"reused":false,"totalShards":3}}
+RESULT {"corpus":"gen-small","snap":"fork1","r":{"class":"literal","event":"class","n":40,"p50":0.945,"p99":2.188}}
+RESULT {"corpus":"gen-small","snap":"fork1","r":{"class":"regex","event":"class","n":20,"p50":0.726,"p99":2.548}}
+RESULT {"corpus":"gen-small","snap":"fork1","r":{"class":"path","event":"class","n":20,"p50":0.008,"p99":0.022}}
+RESULT {"corpus":"gen-small","snap":"chain-23-deltas","r":{"event":"open","files":200,"heapMB":0,"ms":0.989,"shards":4}}
+RESULT {"corpus":"gen-small","snap":"chain-23-deltas","r":{"class":"literal","event":"class","n":40,"p50":0.935,"p99":2.503}}
+RESULT {"corpus":"gen-small","snap":"chain-23-deltas","r":{"class":"regex","event":"class","n":20,"p50":0.67,"p99":1.074}}
+RESULT {"corpus":"gen-small","snap":"chain-23-deltas","r":{"class":"path","event":"class","n":20,"p50":0.004,"p99":0.011}}
+RESULT {"corpus":"gen-small","step":"compact","r":{"blobs":200,"datBytes":1009870,"idxBytes":124015,"merged":4,"ms":14.38,"shards":1}}
+RESULT {"corpus":"gen-small","snap":"chain-compacted","r":{"event":"open","files":200,"heapMB":0,"ms":0.771,"shards":1}}
+RESULT {"corpus":"gen-small","snap":"chain-compacted","r":{"class":"literal","event":"class","n":40,"p50":0.975,"p99":1.805}}
+RESULT {"corpus":"gen-small","snap":"chain-compacted","r":{"class":"regex","event":"class","n":20,"p50":0.879,"p99":1.173}}
+RESULT {"corpus":"gen-small","snap":"chain-compacted","r":{"class":"path","event":"class","n":20,"p50":0.007,"p99":0.019}}
+RESULT {"corpus":"gen-small","step":"sizes-after-chain","idx":644068,"dat":3061923,"sym":0,"paths":203808}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "literal", "q": "// file 4242", "path": null, "file": null, "lang": null, "p50": 6.32, "max": 8.06, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "literal", "q": "// file 4242", "path": null, "file": null, "lang": null, "p50": 15.69, "max": 18.9, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "literal", "q": "finally super readonly", "path": null, "file": null, "lang": null, "p50": 6.19, "max": 6.52, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "literal", "q": "finally super readonly", "path": null, "file": null, "lang": null, "p50": 14.83, "max": 14.87, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "literal", "q": "return", "path": null, "file": null, "lang": null, "p50": 6.3, "max": 7.04, "files": 200}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "literal", "q": "return", "path": null, "file": null, "lang": null, "p50": 16.74, "max": 17.6, "files": 200}}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "literal", "q": "STATIC READONLY", "path": null, "file": null, "lang": null, "p50": 7.49, "max": 10.17, "files": 107}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "literal", "q": "STATIC READONLY", "path": null, "file": null, "lang": null, "p50": 16.57, "max": 17.7, "files": 107}}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "regex", "q": "^// file 1234[0-9]$", "path": null, "file": null, "lang": null, "p50": 6.44, "max": 7.28, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "regex", "q": "^// file 1234[0-9]$", "path": null, "file": null, "lang": null, "p50": 15.16, "max": 17.34, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "regex", "q": "interface \\w+ implements \\w+ \\{", "path": null, "file": null, "lang": null, "p50": 9.77, "max": 10.09, "files": 6}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "regex", "q": "interface \\w+ implements \\w+ \\{", "path": null, "file": null, "lang": null, "p50": 15.77, "max": 16.9, "files": 6}}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "path", "q": "", "path": "src/m3/**", "file": null, "lang": null, "p50": 4.83, "max": 6.04, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "src/m3/**", "file": null, "lang": null, "p50": 1.95, "max": 2.27, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "f4242*.ts", "lang": null, "p50": 4.42, "max": 4.87, "files": 0}}
+RESULT {"corpus":"gen-small","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "f4242*.ts", "lang": null, "p50": 1.93, "max": 2.24, "files": 0}}
+RESULT {"corpus":"gen-small","step":"rg-cold-disk","q":"finally super readonly","ms":594,"files":0}
+RESULT {"corpus":"gen-small","step":"gitgrep-cold","q":"finally super readonly","ms":86,"files":0}
+RESULT {"corpus":"gen-medium","step":"corpus","files":5000,"bytes":50123859,"commit":"e1e23d25990df038a137cfb4fc9185f50fcd2dbb"}
+RESULT {"corpus":"gen-medium","step":"index-base","wallMs":1218,"r":{"tree":"d28450d35338dca4cf8e73f9cc4ff4c0302eda85","files":5000,"newBlobs":5000,"newBytes":50123859,"newShards":1,"idxBytes":2723184,"datBytes":50123859,"symBytes":0,"pathsBytes":223392,"listMs":75.874,"readMs":477.097009,"indexMs":574.967937,"totalMs":1139.869,"reused":false,"totalShards":1}}
+RESULT {"corpus":"gen-medium","step":"sizes-base","idx":2723184,"dat":50123859,"sym":0,"paths":223392}
+RESULT {"corpus":"gen-medium","r":{"event":"open","files":5000,"heapMB":1,"ms":3.989,"shards":1}}
+RESULT {"corpus":"gen-medium","r":{"class":"literal","event":"query","firstMs":0.826,"i":false,"p50":0.511,"p99":1.717,"q":"// file 4242","regex":false,"result":{"candidates":1,"fileHits":1,"top":"src/m1/d84/f4242.ts","truncated":false,"verified":1}}}
+RESULT {"corpus":"gen-medium","r":{"class":"literal","event":"query","firstMs":6.379,"i":false,"p50":7.722,"p99":19.278,"q":"finally super readonly","regex":false,"result":{"candidates":4764,"fileHits":0,"top":"","truncated":false,"verified":4764}}}
+RESULT {"corpus":"gen-medium","r":{"class":"literal","event":"query","firstMs":14.145,"i":false,"p50":13.968,"p99":24.581,"q":"return","regex":false,"result":{"candidates":5000,"fileHits":2007,"top":"src/m1/d77/f3877.ts","truncated":true,"verified":2007}}}
+RESULT {"corpus":"gen-medium","r":{"class":"literal","event":"query","firstMs":18.467,"i":true,"p50":18.164,"p99":23.072,"q":"STATIC READONLY","regex":false,"result":{"candidates":5000,"fileHits":2005,"top":"src/m0/d0/f17.ts","truncated":true,"verified":2494}}}
+RESULT {"corpus":"gen-medium","r":{"class":"regex","event":"query","firstMs":0.421,"i":false,"p50":0.275,"p99":0.621,"q":"^// file 1234[0-9]$","regex":true,"result":{"candidates":0,"fileHits":0,"top":"","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-medium","r":{"class":"regex","event":"query","firstMs":17.609,"i":false,"p50":16.305,"p99":22.17,"q":"interface \\w+ implements \\w+ \\{","regex":true,"result":{"candidates":5000,"fileHits":424,"top":"src/m0/d14/f732.ts","truncated":false,"verified":5000}}}
+RESULT {"corpus":"gen-medium","r":{"class":"path","event":"query","firstMs":0.055,"i":false,"p50":0.052,"p99":0.061,"q":" path:src/m3/**","regex":false,"result":{"candidates":0,"fileHits":0,"top":"","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-medium","r":{"class":"path","event":"query","firstMs":0.167,"i":false,"p50":0.117,"p99":0.164,"q":" file:f4242*.ts","regex":false,"result":{"candidates":0,"fileHits":1,"top":"src/m1/d84/f4242.ts","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-medium","r":{"event":"mem","heapMB":1,"proc":"VmHWM: 74712 kB; RssAnon: 7852 kB; RssFile: 58288 kB; ","sysMB":25}}
+RESULT {"corpus":"gen-medium","r":{"class":"literal","event":"class","n":80,"p50":10.87,"p99":23.072}}
+RESULT {"corpus":"gen-medium","r":{"class":"regex","event":"class","n":40,"p50":14.014,"p99":22.17}}
+RESULT {"corpus":"gen-medium","r":{"class":"path","event":"class","n":40,"p50":0.117,"p99":0.164}}
+RESULT {"corpus":"gen-medium","step":"cold-first-query","q":"finally super readonly","wallMs":892,"openMs":30.653,"searchMs":560.727}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-medium","step":"top5","r":}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-medium","step":"top5","r":}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-medium","step":"top5","r":}
+RESULT {"corpus":"gen-medium","step":"http-search","q":"finally super readonly","s":0.007802}
+RESULT {"corpus":"gen-medium","step":"http-search","q":"finally super readonly","s":0.006695}
+RESULT {"corpus":"gen-medium","step":"http-search","q":"finally super readonly","s":0.007259}
+RESULT {"corpus":"gen-medium","step":"index-1file","wallMs":250,"r":{"tree":"e2d93e927be5902acdab3384b375ae334d18455b","files":5000,"newBlobs":1,"newBytes":10076,"newShards":1,"idxBytes":8984,"datBytes":10076,"symBytes":0,"pathsBytes":223392,"listMs":229.719,"readMs":3.435493,"indexMs":1.23679,"totalMs":238.456,"reused":false,"totalShards":2}}
+RESULT {"corpus":"gen-medium","step":"index-100files","wallMs":66,"r":{"tree":"58370ad8b8ca48f5da65c8594edf273282448d94","files":5000,"newBlobs":100,"newBytes":1005351,"newShards":1,"idxBytes":72981,"datBytes":1005351,"symBytes":0,"pathsBytes":223392,"listMs":21.882,"readMs":12.752569,"indexMs":12.888019,"totalMs":52.448,"reused":false,"totalShards":3}}
+RESULT {"corpus":"gen-medium","step":"fork","wallMs":10,"r":{"ms":0.198,"tree":"58370ad8b8ca48f5da65c8594edf273282448d94"}}
+RESULT {"corpus":"gen-medium","step":"index-fork-1file","wallMs":39,"r":{"tree":"fcce89219b2317d525c5d330183017a5c8a12c78","files":5000,"newBlobs":1,"newBytes":10080,"newShards":1,"idxBytes":8899,"datBytes":10080,"symBytes":0,"pathsBytes":223392,"listMs":21.024,"readMs":2.210071,"indexMs":1.580541,"totalMs":28.544,"reused":false,"totalShards":4}}
+RESULT {"corpus":"gen-medium","snap":"fork1","r":{"class":"literal","event":"class","n":40,"p50":9.346,"p99":16.128}}
+RESULT {"corpus":"gen-medium","snap":"fork1","r":{"class":"regex","event":"class","n":20,"p50":14.18,"p99":18.498}}
+RESULT {"corpus":"gen-medium","snap":"fork1","r":{"class":"path","event":"class","n":20,"p50":0.117,"p99":0.248}}
+RESULT {"corpus":"gen-medium","snap":"chain-23-deltas","r":{"event":"open","files":5000,"heapMB":1,"ms":4.804,"shards":24}}
+RESULT {"corpus":"gen-medium","snap":"chain-23-deltas","r":{"class":"literal","event":"class","n":40,"p50":10.644,"p99":17.875}}
+RESULT {"corpus":"gen-medium","snap":"chain-23-deltas","r":{"class":"regex","event":"class","n":20,"p50":13.175,"p99":16.179}}
+RESULT {"corpus":"gen-medium","snap":"chain-23-deltas","r":{"class":"path","event":"class","n":20,"p50":0.116,"p99":0.123}}
+RESULT {"corpus":"gen-medium","step":"compact","r":{"blobs":128,"datBytes":1288843,"idxBytes":94110,"merged":23,"ms":15.615,"shards":2}}
+RESULT {"corpus":"gen-medium","snap":"chain-compacted","r":{"event":"open","files":5000,"heapMB":1,"ms":2.997,"shards":2}}
+RESULT {"corpus":"gen-medium","snap":"chain-compacted","r":{"class":"literal","event":"class","n":40,"p50":10.413,"p99":21.016}}
+RESULT {"corpus":"gen-medium","snap":"chain-compacted","r":{"class":"regex","event":"class","n":20,"p50":15.525,"p99":26.495}}
+RESULT {"corpus":"gen-medium","snap":"chain-compacted","r":{"class":"path","event":"class","n":20,"p50":0.244,"p99":0.467}}
+RESULT {"corpus":"gen-medium","step":"sizes-after-chain","idx":3211365,"dat":53460113,"sym":0,"paths":5361408}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "literal", "q": "// file 4242", "path": null, "file": null, "lang": null, "p50": 22.37, "max": 22.81, "files": 1}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "literal", "q": "// file 4242", "path": null, "file": null, "lang": null, "p50": 34.1, "max": 44.78, "files": 1}}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "literal", "q": "finally super readonly", "path": null, "file": null, "lang": null, "p50": 22.96, "max": 26.95, "files": 0}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "literal", "q": "finally super readonly", "path": null, "file": null, "lang": null, "p50": 40.44, "max": 45.72, "files": 0}}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "literal", "q": "return", "path": null, "file": null, "lang": null, "p50": 56.46, "max": 69.97, "files": 5000}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "literal", "q": "return", "path": null, "file": null, "lang": null, "p50": 75.02, "max": 83.7, "files": 5000}}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "literal", "q": "STATIC READONLY", "path": null, "file": null, "lang": null, "p50": 47.51, "max": 51.14, "files": 4010}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "literal", "q": "STATIC READONLY", "path": null, "file": null, "lang": null, "p50": 57.67, "max": 77.55, "files": 4010}}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "regex", "q": "^// file 1234[0-9]$", "path": null, "file": null, "lang": null, "p50": 21.74, "max": 23.66, "files": 0}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "regex", "q": "^// file 1234[0-9]$", "path": null, "file": null, "lang": null, "p50": 35.51, "max": 41.38, "files": 0}}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "regex", "q": "interface \\w+ implements \\w+ \\{", "path": null, "file": null, "lang": null, "p50": 31.21, "max": 34.37, "files": 424}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "regex", "q": "interface \\w+ implements \\w+ \\{", "path": null, "file": null, "lang": null, "p50": 48.07, "max": 50.5, "files": 424}}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "path", "q": "", "path": "src/m3/**", "file": null, "lang": null, "p50": 6.0, "max": 6.37, "files": 0}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "src/m3/**", "file": null, "lang": null, "p50": 2.88, "max": 3.71, "files": 0}}
+RESULT {"corpus":"gen-medium","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "f4242*.ts", "lang": null, "p50": 6.37, "max": 8.22, "files": 1}}
+RESULT {"corpus":"gen-medium","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "f4242*.ts", "lang": null, "p50": 3.05, "max": 3.23, "files": 1}}
+RESULT {"corpus":"gen-medium","step":"rg-cold-disk","q":"finally super readonly","ms":6585,"files":0}
+RESULT {"corpus":"gen-medium","step":"gitgrep-cold","q":"finally super readonly","ms":116,"files":0}
+RESULT {"corpus":"gen-medium","step":"rg-mount-lazy","q":"finally super readonly","mountMs":2664,"rgMs":14145,"files":0}
+RESULT {"corpus":"gen-medium","step":"rg-mount-prefetch32","q":"finally super readonly","mountMs":90,"rgMs":2720,"files":0}
+RESULT {"corpus":"gen-medium","step":"rg-mount-warmcache","q":"finally super readonly","mountMs":95,"rgMs":337,"files":0}
+RESULT {"corpus":"gen-large","step":"corpus","files":50000,"bytes":501245728,"commit":"05a7494708b83bc40186230ef7f6a818a8e52d36"}
+RESULT {"corpus":"gen-large","step":"index-base","wallMs":18793,"r":{"tree":"da907c4cdbad6e463f127ee60e93733a8c9359f5","files":50000,"newBlobs":50000,"newBytes":501245728,"newShards":8,"idxBytes":27214135,"datBytes":501245728,"symBytes":0,"pathsBytes":2358393,"listMs":14788.852,"readMs":11488.17013,"indexMs":6769.432942,"totalMs":18507.676,"reused":false,"totalShards":8}}
+RESULT {"corpus":"gen-large","step":"sizes-base","idx":27214135,"dat":501245728,"sym":0,"paths":2358393}
+RESULT {"corpus":"gen-large","r":{"event":"open","files":50000,"heapMB":7,"ms":574.646,"shards":8}}
+RESULT {"corpus":"gen-large","r":{"class":"literal","event":"query","firstMs":1.019,"i":false,"p50":1.087,"p99":3.024,"q":"// file 4242","regex":false,"result":{"candidates":11,"fileHits":11,"top":"src/m1/d84/f4242.ts","truncated":false,"verified":11}}}
+RESULT {"corpus":"gen-large","r":{"class":"literal","event":"query","firstMs":90.699,"i":false,"p50":79.983,"p99":93.364,"q":"finally super readonly","regex":false,"result":{"candidates":47912,"fileHits":0,"top":"","truncated":false,"verified":47912}}}
+RESULT {"corpus":"gen-large","r":{"class":"literal","event":"query","firstMs":13.202,"i":false,"p50":14.126,"p99":17.87,"q":"return","regex":false,"result":{"candidates":50000,"fileHits":2007,"top":"src/m10/d510/f25530.ts","truncated":true,"verified":2007}}}
+RESULT {"corpus":"gen-large","r":{"class":"literal","event":"query","firstMs":23.37,"i":true,"p50":24.969,"p99":32.014,"q":"STATIC READONLY","regex":false,"result":{"candidates":49998,"fileHits":2005,"top":"src/m0/d0/f17.ts","truncated":true,"verified":2482}}}
+RESULT {"corpus":"gen-large","r":{"class":"regex","event":"query","firstMs":1.155,"i":false,"p50":1.009,"p99":1.485,"q":"^// file 1234[0-9]$","regex":true,"result":{"candidates":10,"fileHits":10,"top":"src/m4/d246/f12340.ts","truncated":false,"verified":10}}}
+RESULT {"corpus":"gen-large","r":{"class":"regex","event":"query","firstMs":101.797,"i":false,"p50":98.118,"p99":122.089,"q":"interface \\w+ implements \\w+ \\{","regex":true,"result":{"candidates":50000,"fileHits":2000,"top":"src/m18/d932/f46629.ts","truncated":true,"verified":24606}}}
+RESULT {"corpus":"gen-large","r":{"class":"path","event":"query","firstMs":0.929,"i":false,"p50":1.047,"p99":2.37,"q":" path:src/m3/**","regex":false,"result":{"candidates":0,"fileHits":2500,"top":"src/m3/d150/f7500.ts","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-large","r":{"class":"path","event":"query","firstMs":1.305,"i":false,"p50":1.344,"p99":2.556,"q":" file:f4242*.ts","regex":false,"result":{"candidates":0,"fileHits":11,"top":"src/m1/d84/f4242.ts","truncated":false,"verified":0}}}
+RESULT {"corpus":"gen-large","r":{"event":"mem","heapMB":10,"proc":"VmHWM: 540056 kB; RssAnon: 18828 kB; RssFile: 513684 kB; ","sysMB":38}}
+RESULT {"corpus":"gen-large","r":{"class":"literal","event":"class","n":80,"p50":21.4,"p99":92.263}}
+RESULT {"corpus":"gen-large","r":{"class":"regex","event":"class","n":40,"p50":65.551,"p99":122.089}}
+RESULT {"corpus":"gen-large","r":{"class":"path","event":"class","n":40,"p50":1.321,"p99":2.556}}
+RESULT {"corpus":"gen-large","step":"cold-first-query","q":"finally super readonly","wallMs":10214,"openMs":1557.514,"searchMs":7767.223}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-large","step":"top5","r":}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-large","step":"top5","r":}
+error: no snapshot or ref "base"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; d=json.load(sys.stdin); print(json.dumps({"q": sys.argv[1], "top": [f["path"] for f in d["result"]["files"]]}))
+                       ~~~~~~~~~^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 298, in load
+    return loads(fp.read(),
+        cls=cls, object_hook=object_hook,
+        parse_float=parse_float, parse_int=parse_int,
+        parse_constant=parse_constant, object_pairs_hook=object_pairs_hook, **kw)
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/.sprite/languages/python/pyenv/versions/3.13.17/lib/python3.13/json/decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+RESULT {"corpus":"gen-large","step":"top5","r":}
+RESULT {"corpus":"gen-large","step":"http-search","q":"finally super readonly","s":0.087967}
+RESULT {"corpus":"gen-large","step":"http-search","q":"finally super readonly","s":0.075138}
+RESULT {"corpus":"gen-large","step":"http-search","q":"finally super readonly","s":0.069419}
+RESULT {"corpus":"gen-large","step":"index-1file","wallMs":3644,"r":{"tree":"0bdd26d360e7e70172b601f78b05979e00610a67","files":50000,"newBlobs":1,"newBytes":10030,"newShards":1,"idxBytes":8831,"datBytes":10030,"symBytes":0,"pathsBytes":2358393,"listMs":3588.72,"readMs":3.720463,"indexMs":1.654821,"totalMs":3626.51,"reused":false,"totalShards":9}}
+RESULT {"corpus":"gen-large","step":"index-100files","wallMs":201,"r":{"tree":"5037197e74f119abc04d828b705af4cdcdd7d088","files":50000,"newBlobs":100,"newBytes":1004986,"newShards":1,"idxBytes":72639,"datBytes":1004986,"symBytes":0,"pathsBytes":2358393,"listMs":135.815,"readMs":14.45856,"indexMs":7.973585,"totalMs":187.004,"reused":false,"totalShards":10}}
+RESULT {"corpus":"gen-large","step":"fork","wallMs":35,"r":{"ms":21.61,"tree":"5037197e74f119abc04d828b705af4cdcdd7d088"}}
+RESULT {"corpus":"gen-large","step":"index-fork-1file","wallMs":240,"r":{"tree":"fba0de12a0da71399bb70a410f01ddec048a9984","files":50000,"newBlobs":1,"newBytes":10064,"newShards":1,"idxBytes":8899,"datBytes":10064,"symBytes":0,"pathsBytes":2358393,"listMs":165.089,"readMs":7.391575,"indexMs":0.877181,"totalMs":222.426,"reused":false,"totalShards":11}}
+RESULT {"corpus":"gen-large","snap":"fork1","r":{"class":"literal","event":"class","n":40,"p50":23.064,"p99":122.172}}
+RESULT {"corpus":"gen-large","snap":"fork1","r":{"class":"regex","event":"class","n":20,"p50":77.353,"p99":121.593}}
+RESULT {"corpus":"gen-large","snap":"fork1","r":{"class":"path","event":"class","n":20,"p50":1.457,"p99":3.609}}
+RESULT {"corpus":"gen-large","snap":"chain-23-deltas","r":{"event":"open","files":50000,"heapMB":7,"ms":36.828,"shards":28}}
+RESULT {"corpus":"gen-large","snap":"chain-23-deltas","r":{"class":"literal","event":"class","n":40,"p50":27.253,"p99":97.857}}
+RESULT {"corpus":"gen-large","snap":"chain-23-deltas","r":{"class":"regex","event":"class","n":20,"p50":82.716,"p99":105.561}}
+RESULT {"corpus":"gen-large","snap":"chain-23-deltas","r":{"class":"path","event":"class","n":20,"p50":1.338,"p99":2.145}}
+RESULT {"corpus":"gen-large","step":"compact","r":{"blobs":3262,"datBytes":32706566,"idxBytes":1795577,"merged":21,"ms":438.502,"shards":8}}
+RESULT {"corpus":"gen-large","snap":"chain-compacted","r":{"event":"open","files":50000,"heapMB":7,"ms":40.688,"shards":8}}
+RESULT {"corpus":"gen-large","snap":"chain-compacted","r":{"class":"literal","event":"class","n":40,"p50":20.285,"p99":76.248}}
+RESULT {"corpus":"gen-large","snap":"chain-compacted","r":{"class":"regex","event":"class","n":20,"p50":67.56,"p99":105.433}}
+RESULT {"corpus":"gen-large","snap":"chain-compacted","r":{"class":"path","event":"class","n":20,"p50":1.291,"p99":2.592}}
+RESULT {"corpus":"gen-large","step":"sizes-after-chain","idx":29397822,"dat":535997912,"sym":0,"paths":56601432}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "literal", "q": "// file 4242", "path": null, "file": null, "lang": null, "p50": 180.29, "max": 186.58, "files": 11}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "literal", "q": "// file 4242", "path": null, "file": null, "lang": null, "p50": 392.97, "max": 456.14, "files": 11}}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "literal", "q": "finally super readonly", "path": null, "file": null, "lang": null, "p50": 248.43, "max": 274.32, "files": 0}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "literal", "q": "finally super readonly", "path": null, "file": null, "lang": null, "p50": 419.13, "max": 504.42, "files": 0}}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "literal", "q": "return", "path": null, "file": null, "lang": null, "p50": 648.06, "max": 667.85, "files": 50000}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "literal", "q": "return", "path": null, "file": null, "lang": null, "p50": 1158.08, "max": 1404.39, "files": 50000}}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "literal", "q": "STATIC READONLY", "path": null, "file": null, "lang": null, "p50": 478.26, "max": 560.85, "files": 39893}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "literal", "q": "STATIC READONLY", "path": null, "file": null, "lang": null, "p50": 679.14, "max": 742.01, "files": 39893}}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "regex", "q": "^// file 1234[0-9]$", "path": null, "file": null, "lang": null, "p50": 214.6, "max": 264.97, "files": 10}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "regex", "q": "^// file 1234[0-9]$", "path": null, "file": null, "lang": null, "p50": 516.3, "max": 585.77, "files": 10}}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "regex", "q": "interface \\w+ implements \\w+ \\{", "path": null, "file": null, "lang": null, "p50": 271.43, "max": 294.62, "files": 3961}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "regex", "q": "interface \\w+ implements \\w+ \\{", "path": null, "file": null, "lang": null, "p50": 545.12, "max": 651.57, "files": 3961}}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "path", "q": "", "path": "src/m3/**", "file": null, "lang": null, "p50": 16.98, "max": 19.37, "files": 2500}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "src/m3/**", "file": null, "lang": null, "p50": 10.29, "max": 12.62, "files": 2500}}
+RESULT {"corpus":"gen-large","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "f4242*.ts", "lang": null, "p50": 18.68, "max": 19.82, "files": 11}}
+RESULT {"corpus":"gen-large","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "f4242*.ts", "lang": null, "p50": 16.56, "max": 23.08, "files": 11}}
+RESULT {"corpus":"gen-large","step":"rg-cold-disk","q":"finally super readonly","ms":5084,"files":0}
+RESULT {"corpus":"gen-large","step":"gitgrep-cold","q":"finally super readonly","ms":1432,"files":0}
+RESULT {"corpus":"k8s","step":"corpus","files":31760,"bytes":282869623,"commit":"c80effaef8c4cf7ce6493a186c8abda5b69fcbed"}
+RESULT {"corpus":"k8s","step":"index-base","wallMs":3986,"r":{"tree":"6a3be52b2eeb23c538c8b9112c3be38ac2a56b24","files":31760,"newBlobs":24437,"newBytes":275987522,"newShards":5,"idxBytes":37520634,"datBytes":244300595,"symBytes":0,"pathsBytes":2975648,"listMs":1862.154,"readMs":2107.77298,"indexMs":3984.82858,"totalMs":3487.368,"reused":false,"totalShards":5}}
+RESULT {"corpus":"k8s","step":"sizes-base","idx":37520634,"dat":244300595,"sym":0,"paths":2975648}
+RESULT {"corpus":"k8s","step":"index-base-symbols","wallMs":8506,"r":{"tree":"6a3be52b2eeb23c538c8b9112c3be38ac2a56b24","files":31760,"newBlobs":24437,"newBytes":275987522,"newShards":5,"idxBytes":37520634,"datBytes":244300595,"symBytes":15534081,"pathsBytes":2975648,"listMs":339.887,"readMs":3160.452211,"indexMs":19323.068765,"totalMs":8219.981,"reused":false,"totalShards":5}}
+RESULT {"corpus":"k8s","step":"sizes-symbols","idx":37520634,"dat":244300595,"sym":15534081,"paths":2975648}
+RESULT {"corpus":"k8s","r":{"event":"open","files":31760,"heapMB":6,"ms":28.713,"shards":5}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"query","firstMs":489.153,"i":false,"p50":5.22,"p99":8.159,"q":"NewSharedInformerFactory","regex":false,"result":{"candidates":438,"fileHits":252,"top":"staging/src/k8s.io/client-go/informers/factory.go","truncated":false,"verified":438}}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"query","firstMs":52.521,"i":false,"p50":3.04,"p99":4.195,"q":"klog.Errorf","regex":false,"result":{"candidates":326,"fileHits":166,"top":"pkg/volume/util/atomic_writer.go","truncated":false,"verified":326}}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"query","firstMs":68.362,"i":false,"p50":7.223,"p99":8.985,"q":"context.TODO()","regex":false,"result":{"candidates":595,"fileHits":574,"top":"staging/src/k8s.io/kubectl/pkg/describe/describe.go","truncated":false,"verified":595}}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"query","firstMs":66.759,"i":false,"p50":26.591,"p99":49.453,"q":"if err != nil {","regex":false,"result":{"candidates":7174,"fileHits":2006,"top":"staging/src/k8s.io/apimachinery/pkg/util/strategicpatch/patch.go","truncated":true,"verified":2412}}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"query","firstMs":57.887,"i":false,"p50":42.475,"p99":57.271,"q":"apiVersion: v1","regex":false,"result":{"candidates":1339,"fileHits":942,"top":"staging/src/k8s.io/cli-runtime/artifacts/deeply-nested.yaml","truncated":false,"verified":1339}}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"query","firstMs":77.595,"i":true,"p50":42.997,"p99":56.939,"q":"podsecurity","regex":false,"result":{"candidates":1022,"fileHits":572,"top":"staging/src/k8s.io/client-go/applyconfigurations/core/v1/podsecuritycontext.go","truncated":false,"verified":1022}}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"query","firstMs":43.833,"i":true,"p50":33.334,"p99":42.576,"q":"license","regex":false,"result":{"candidates":17566,"fileHits":2005,"top":"hack/verify-licenses.sh","truncated":true,"verified":2054}}}
+RESULT {"corpus":"k8s","r":{"class":"regex","event":"query","firstMs":17.305,"i":false,"p50":3.712,"p99":5.004,"q":"func \\(\\w+ \\*\\w+Controller\\) Run\\(","regex":true,"result":{"candidates":224,"fileHits":49,"top":"cmd/kube-controller-manager/app/core.go","truncated":false,"verified":224}}}
+RESULT {"corpus":"k8s","r":{"class":"regex","event":"query","firstMs":16.76,"i":false,"p50":11.518,"p99":14.924,"q":"func \\w+\\(ctx context\\.Context","regex":true,"result":{"candidates":2874,"fileHits":826,"top":"staging/src/k8s.io/apiserver/pkg/storage/testing/store_tests.go","truncated":false,"verified":2874}}}
+RESULT {"corpus":"k8s","r":{"class":"regex","event":"query","firstMs":12.294,"i":false,"p50":12.268,"p99":17.59,"q":"errors\\.New\\(\"[^\"]*not found","regex":true,"result":{"candidates":487,"fileHits":40,"top":"pkg/registry/rbac/validation/rule.go","truncated":false,"verified":487}}}
+RESULT {"corpus":"k8s","r":{"class":"regex","event":"query","firstMs":75.426,"i":false,"p50":73.359,"p99":105.249,"q":"(?i)todo|fixme","regex":true,"result":{"candidates":2562,"fileHits":2007,"top":"staging/src/k8s.io/kubectl/pkg/describe/describe.go","truncated":true,"verified":2025}}}
+RESULT {"corpus":"k8s","r":{"class":"regex","event":"query","firstMs":6.121,"i":false,"p50":2.61,"p99":5.385,"q":"\\b[A-Z][a-z]+[A-Z][a-z]+Reconciler\\b","regex":true,"result":{"candidates":435,"fileHits":1,"top":"pkg/controlplane/reconcilers/none.go","truncated":false,"verified":435}}}
+RESULT {"corpus":"k8s","r":{"class":"regex","event":"query","firstMs":74.518,"i":false,"p50":40.964,"p99":51.818,"q":"\\bv1beta[0-9]\\b","regex":true,"result":{"candidates":3006,"fileHits":2007,"top":"staging/src/k8s.io/apiextensions-apiserver/pkg/client/applyconfiguration/apiextensions/v1beta1/v1beta1.go","truncated":true,"verified":2018}}}
+RESULT {"corpus":"k8s","r":{"class":"filtered","event":"query","firstMs":2.32,"i":false,"p50":2.21,"p99":3.784,"q":"t.Fatalf path:pkg/kubelet/** lang:go","regex":false,"result":{"candidates":1694,"fileHits":110,"top":"pkg/kubelet/eviction/eviction_manager_test.go","truncated":false,"verified":112}}}
+RESULT {"corpus":"k8s","r":{"class":"filtered","event":"query","firstMs":3.342,"i":false,"p50":1.55,"p99":2.723,"q":"Deployment file:*.yaml","regex":false,"result":{"candidates":914,"fileHits":80,"top":"test/conformance/testdata/conformance.yaml","truncated":false,"verified":110}}}
+RESULT {"corpus":"k8s","r":{"class":"filtered","event":"query","firstMs":3.506,"i":false,"p50":3.028,"p99":4.264,"q":"ResourceVersion file:types.go","regex":false,"result":{"candidates":2063,"fileHits":13,"top":"staging/src/k8s.io/apiserver/pkg/storage/testing/correctness/types.go","truncated":false,"verified":17}}}
+RESULT {"corpus":"k8s","r":{"class":"path","event":"query","firstMs":3.024,"i":false,"p50":2.399,"p99":3.506,"q":" path:pkg/**/types.go","regex":false,"result":{"candidates":0,"fileHits":85,"top":"pkg/proxy/types.go","truncated":false,"verified":0}}}
+RESULT {"corpus":"k8s","r":{"class":"path","event":"query","firstMs":42.295,"i":false,"p50":34.05,"p99":49.879,"q":" path:staging/** file:*_test.go","regex":false,"result":{"candidates":0,"fileHits":1573,"top":"staging/src/k8s.io/api/roundtrip_test.go","truncated":false,"verified":0}}}
+RESULT {"corpus":"k8s","r":{"class":"path","event":"query","firstMs":32.676,"i":false,"p50":33.825,"p99":50.383,"q":" file:*.proto","regex":false,"result":{"candidates":0,"fileHits":136,"top":"staging/src/k8s.io/kms/apis/v2/api.proto","truncated":false,"verified":0}}}
+RESULT {"corpus":"k8s","r":{"class":"path","event":"query","firstMs":1.896,"i":false,"p50":1.699,"p99":2.646,"q":" path:cmd/**","regex":false,"result":{"candidates":0,"fileHits":645,"top":"cmd/OWNERS","truncated":false,"verified":0}}}
+RESULT {"corpus":"k8s","r":{"event":"mem","heapMB":8,"proc":"VmHWM: 289620 kB; RssAnon: 18696 kB; RssFile: 258048 kB; ","sysMB":46}}
+RESULT {"corpus":"k8s","r":{"class":"literal","event":"class","n":140,"p50":26.591,"p99":56.939}}
+RESULT {"corpus":"k8s","r":{"class":"regex","event":"class","n":120,"p50":11.59,"p99":92.387}}
+RESULT {"corpus":"k8s","r":{"class":"filtered","event":"class","n":60,"p50":2.264,"p99":4.18}}
+RESULT {"corpus":"k8s","r":{"class":"path","event":"class","n":80,"p50":26.805,"p99":49.879}}
+RESULT {"corpus":"k8s","r":{"event":"open","files":31760,"heapMB":6,"ms":26.006,"shards":5}}
+RESULT {"corpus":"k8s","r":{"class":"symbol","event":"query","firstMs":0.581,"i":false,"p50":0.223,"p99":0.298,"q":"sym:NewSharedInformerFactory","regex":false,"result":{"hits":20,"top":"staging/src/k8s.io/apiextensions-api/pkg/client/informers/externalversions/factory.go:121"}}}
+RESULT {"corpus":"k8s","r":{"class":"symbol","event":"query","firstMs":0.873,"i":false,"p50":0.753,"p99":1.158,"q":"sym:Reconcile","regex":false,"result":{"hits":20,"top":"staging/src/k8s.io/endpointslice/reconciler.go:86"}}}
+RESULT {"corpus":"k8s","r":{"class":"symbol","event":"query","firstMs":0.607,"i":false,"p50":0.473,"p99":1.322,"q":"sym:NewController","regex":false,"result":{"hits":20,"top":"pkg/controller/endpointslice/endpointslice_controller.go:83"}}}
+RESULT {"corpus":"k8s","r":{"class":"symbol","event":"query","firstMs":34.69,"i":false,"p50":38.62,"p99":53.729,"q":"sym:^New.*Admission$","regex":true,"result":{"hits":1,"top":"pkg/quota/v1/install/registry.go:32"}}}
+RESULT {"corpus":"k8s","r":{"event":"mem","heapMB":9,"proc":"VmHWM: 43744 kB; RssAnon: 17308 kB; RssFile: 26208 kB; ","sysMB":25}}
+RESULT {"corpus":"k8s","r":{"class":"symbol","event":"class","n":80,"p50":0.668,"p99":52.871}}
+RESULT {"corpus":"k8s","step":"cold-first-query","q":"klog.Errorf","wallMs":1952,"openMs":142.496,"searchMs":1742.017}
+RESULT {"corpus":"k8s","step":"top5","r":{"q": "NewSharedInformerFactory", "top": ["staging/src/k8s.io/client-go/informers/factory.go", "staging/src/k8s.io/apiextensions-api/pkg/client/informers/externalversions/factory.go", "staging/src/k8s.io/code-generator/examples/HyphenGroup/informers/externalversions/factory.go", "staging/src/k8s.io/code-generator/examples/MixedCase/informers/externalversions/factory.go", "staging/src/k8s.io/code-generator/examples/apiserver/informers/externalversions/factory.go"]}}
+RESULT {"corpus":"k8s","step":"top5","r":{"q": "klog.Errorf", "top": ["pkg/volume/util/atomic_writer.go", "staging/src/k8s.io/code-generator/cmd/conversion-gen/generators/conversion.go", "pkg/volume/iscsi/iscsi_util.go", "pkg/volume/downwardapi/downwardapi.go", "pkg/volume/projected/projected.go"]}}
+RESULT {"corpus":"k8s","step":"top5","r":{"q": "context.TODO()", "top": ["staging/src/k8s.io/kubectl/pkg/describe/describe.go", "test/integration/apiserver/apply/apply_test.go", "test/integration/apiserver/cel/validatingadmissionpolicy_test.go", "test/integration/garbagecollector/garbage_collector_test.go", "test/integration/volume/persistent_volumes_test.go"]}}
+RESULT {"corpus":"k8s","step":"http-search","q":"klog.Errorf","s":0.006445}
+RESULT {"corpus":"k8s","step":"http-search","q":"klog.Errorf","s":0.004081}
+RESULT {"corpus":"k8s","step":"http-search","q":"klog.Errorf","s":0.003953}
+RESULT {"corpus":"k8s","step":"index-1file","wallMs":270,"r":{"tree":"4b9ab55c89d0355e1e555e912fc87e88041d93e9","files":31760,"newBlobs":1,"newBytes":2137,"newShards":1,"idxBytes":15274,"datBytes":2137,"symBytes":0,"pathsBytes":2975648,"listMs":219.332,"readMs":3.020632,"indexMs":1.545241,"totalMs":253.136,"reused":false,"totalShards":6}}
+RESULT {"corpus":"k8s","step":"index-100files","wallMs":235,"r":{"tree":"03aa6df4142b6060d11a13d6e07e1d2442fb5d9e","files":31760,"newBlobs":100,"newBytes":992316,"newShards":1,"idxBytes":473526,"datBytes":992316,"symBytes":0,"pathsBytes":2975648,"listMs":150.001,"readMs":19.187553,"indexMs":16.786762,"totalMs":217.508,"reused":false,"totalShards":7}}
+RESULT {"corpus":"k8s","step":"fork","wallMs":14,"r":{"ms":0.29,"tree":"03aa6df4142b6060d11a13d6e07e1d2442fb5d9e"}}
+RESULT {"corpus":"k8s","step":"index-fork-1file","wallMs":219,"r":{"tree":"a83cb953c4ecc481d3aedb2802f26af9f1df0b9a","files":31760,"newBlobs":1,"newBytes":2336,"newShards":1,"idxBytes":13625,"datBytes":2336,"symBytes":0,"pathsBytes":2975648,"listMs":162.541,"readMs":2.821272,"indexMs":0.9167,"totalMs":201.421,"reused":false,"totalShards":8}}
+RESULT {"corpus":"k8s","step":"index-100files-symbols","wallMs":328,"r":{"tree":"03aa6df4142b6060d11a13d6e07e1d2442fb5d9e","files":31760,"newBlobs":101,"newBytes":994453,"newShards":1,"idxBytes":474488,"datBytes":994453,"symBytes":84100,"pathsBytes":2975648,"listMs":150.141,"readMs":15.935251,"indexMs":115.91173,"totalMs":311.841,"reused":false,"totalShards":6}}
+RESULT {"corpus":"k8s","snap":"fork1","r":{"class":"literal","event":"class","n":70,"p50":22.246,"p99":54.033}}
+RESULT {"corpus":"k8s","snap":"fork1","r":{"class":"regex","event":"class","n":60,"p50":10.466,"p99":78.516}}
+RESULT {"corpus":"k8s","snap":"fork1","r":{"class":"filtered","event":"class","n":30,"p50":2.879,"p99":4.114}}
+RESULT {"corpus":"k8s","snap":"fork1","r":{"class":"path","event":"class","n":40,"p50":27.276,"p99":48.853}}
+RESULT {"corpus":"k8s","snap":"chain-23-deltas","r":{"event":"open","files":31760,"heapMB":6,"ms":30.834,"shards":25}}
+RESULT {"corpus":"k8s","snap":"chain-23-deltas","r":{"class":"literal","event":"class","n":70,"p50":24.775,"p99":56.375}}
+RESULT {"corpus":"k8s","snap":"chain-23-deltas","r":{"class":"regex","event":"class","n":60,"p50":10.509,"p99":77.87}}
+RESULT {"corpus":"k8s","snap":"chain-23-deltas","r":{"class":"filtered","event":"class","n":30,"p50":1.791,"p99":3.016}}
+RESULT {"corpus":"k8s","snap":"chain-23-deltas","r":{"class":"path","event":"class","n":40,"p50":24.36,"p99":36.476}}
+RESULT {"corpus":"k8s","step":"compact","r":{"blobs":1077,"datBytes":6954096,"idxBytes":2077286,"merged":21,"ms":156.465,"shards":5}}
+RESULT {"corpus":"k8s","snap":"chain-compacted","r":{"event":"open","files":31760,"heapMB":6,"ms":20.938,"shards":5}}
+RESULT {"corpus":"k8s","snap":"chain-compacted","r":{"class":"literal","event":"class","n":70,"p50":25.525,"p99":57.836}}
+RESULT {"corpus":"k8s","snap":"chain-compacted","r":{"class":"regex","event":"class","n":60,"p50":9.046,"p99":59.898}}
+RESULT {"corpus":"k8s","snap":"chain-compacted","r":{"class":"filtered","event":"class","n":30,"p50":2.208,"p99":2.993}}
+RESULT {"corpus":"k8s","snap":"chain-compacted","r":{"class":"path","event":"class","n":40,"p50":23.963,"p99":31.434}}
+RESULT {"corpus":"k8s","step":"sizes-after-chain","idx":41849048,"dat":253475701,"sym":0,"paths":71415552}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "literal", "q": "NewSharedInformerFactory", "path": null, "file": null, "lang": null, "p50": 155.66, "max": 170.72, "files": 252}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "literal", "q": "NewSharedInformerFactory", "path": null, "file": null, "lang": null, "p50": 568.53, "max": 646.75, "files": 252}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "literal", "q": "klog.Errorf", "path": null, "file": null, "lang": null, "p50": 157.11, "max": 181.53, "files": 166}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "literal", "q": "klog.Errorf", "path": null, "file": null, "lang": null, "p50": 686.8, "max": 704.6, "files": 166}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "literal", "q": "context.TODO()", "path": null, "file": null, "lang": null, "p50": 203.52, "max": 250.93, "files": 574}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "literal", "q": "context.TODO()", "path": null, "file": null, "lang": null, "p50": 591.87, "max": 639.68, "files": 574}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "literal", "q": "if err != nil {", "path": null, "file": null, "lang": null, "p50": 208.8, "max": 218.33, "files": 6150}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "literal", "q": "if err != nil {", "path": null, "file": null, "lang": null, "p50": 623.5, "max": 641.57, "files": 6150}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "literal", "q": "apiVersion: v1", "path": null, "file": null, "lang": null, "p50": 225.45, "max": 226.85, "files": 5422}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "literal", "q": "apiVersion: v1", "path": null, "file": null, "lang": null, "p50": 710.85, "max": 772.95, "files": 5422}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "literal", "q": "podsecurity", "path": null, "file": null, "lang": null, "p50": 187.29, "max": 202.96, "files": 583}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "literal", "q": "podsecurity", "path": null, "file": null, "lang": null, "p50": 646.91, "max": 677.99, "files": 583}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "literal", "q": "license", "path": null, "file": null, "lang": null, "p50": 487.27, "max": 564.52, "files": 17911}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "literal", "q": "license", "path": null, "file": null, "lang": null, "p50": 756.78, "max": 792.49, "files": 17911}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "regex", "q": "func \\(\\w+ \\*\\w+Controller\\) Run\\(", "path": null, "file": null, "lang": null, "p50": 176.56, "max": 198.92, "files": 49}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "regex", "q": "func \\(\\w+ \\*\\w+Controller\\) Run\\(", "path": null, "file": null, "lang": null, "p50": 603.26, "max": 641.29, "files": 49}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "regex", "q": "func \\w+\\(ctx context\\.Context", "path": null, "file": null, "lang": null, "p50": 173.44, "max": 193.05, "files": 826}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "regex", "q": "func \\w+\\(ctx context\\.Context", "path": null, "file": null, "lang": null, "p50": 598.13, "max": 605.51, "files": 826}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "regex", "q": "errors\\.New\\(\"[^\"]*not found", "path": null, "file": null, "lang": null, "p50": 144.61, "max": 150.5, "files": 40}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "regex", "q": "errors\\.New\\(\"[^\"]*not found", "path": null, "file": null, "lang": null, "p50": 629.72, "max": 654.64, "files": 40}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "regex", "q": "(?i)todo|fixme", "path": null, "file": null, "lang": null, "p50": 182.86, "max": 207.06, "files": 2548}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "regex", "q": "(?i)todo|fixme", "path": null, "file": null, "lang": null, "p50": 645.77, "max": 663.83, "files": 2548}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "regex", "q": "\\b[A-Z][a-z]+[A-Z][a-z]+Reconciler\\b", "path": null, "file": null, "lang": null, "p50": 154.9, "max": 164.87, "files": 1}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "regex", "q": "\\b[A-Z][a-z]+[A-Z][a-z]+Reconciler\\b", "path": null, "file": null, "lang": null, "p50": 700.25, "max": 708.06, "files": 1}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "regex", "q": "\\bv1beta[0-9]\\b", "path": null, "file": null, "lang": null, "p50": 185.39, "max": 204.89, "files": 3534}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "regex", "q": "\\bv1beta[0-9]\\b", "path": null, "file": null, "lang": null, "p50": 592.85, "max": 598.75, "files": 3534}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "filtered", "q": "t.Fatalf", "path": "pkg/kubelet/**", "file": null, "lang": "go", "p50": 30.78, "max": 32.13, "files": 110}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "filtered", "q": "t.Fatalf", "path": "pkg/kubelet/**", "file": null, "lang": "go", "p50": 15.81, "max": 18.27, "files": 110}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "filtered", "q": "Deployment", "path": null, "file": "*.yaml", "lang": null, "p50": 54.58, "max": 56.98, "files": 90}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "filtered", "q": "Deployment", "path": null, "file": "*.yaml", "lang": null, "p50": 147.52, "max": 170.81, "files": 90}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "filtered", "q": "ResourceVersion", "path": null, "file": "types.go", "lang": null, "p50": 30.42, "max": 32.05, "files": 13}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "filtered", "q": "ResourceVersion", "path": null, "file": "types.go", "lang": null, "p50": 41.71, "max": 50.25, "files": 13}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "path", "q": "", "path": "pkg/**/types.go", "file": null, "lang": null, "p50": 29.92, "max": 30.74, "files": 85}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "pkg/**/types.go", "file": null, "lang": null, "p50": 11.52, "max": 13.55, "files": 85}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "path", "q": "", "path": "staging/**", "file": "*_test.go", "lang": null, "p50": 30.75, "max": 32.21, "files": 1573}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "staging/**", "file": "*_test.go", "lang": null, "p50": 24.25, "max": 25.12, "files": 1573}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "*.proto", "lang": null, "p50": 30.64, "max": 31.06, "files": 136}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "*.proto", "lang": null, "p50": 30.42, "max": 34.34, "files": 136}}
+RESULT {"corpus":"k8s","r":{"tool": "rg", "class": "path", "q": "", "path": "cmd/**", "file": null, "lang": null, "p50": 34.91, "max": 36.73, "files": 645}}
+RESULT {"corpus":"k8s","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "cmd/**", "file": null, "lang": null, "p50": 9.89, "max": 12.93, "files": 645}}
+RESULT {"corpus":"k8s","step":"rg-cold-disk","q":"klog.Errorf","ms":8006,"files":166}
+RESULT {"corpus":"k8s","step":"gitgrep-cold","q":"klog.Errorf","ms":2753,"files":166}
+RESULT {"corpus":"k8s","step":"rg-mount-lazy","q":"NewSharedInformerFactory","mountMs":3271,"rgMs":72450,"files":252}
+RESULT {"corpus":"k8s","step":"rg-mount-prefetch32","q":"NewSharedInformerFactory","mountMs":200,"rgMs":13532,"files":252}
+RESULT {"corpus":"k8s","step":"rg-mount-warmcache","q":"NewSharedInformerFactory","mountMs":244,"rgMs":2527,"files":252}
+== done
+== exit 0 in 747s on rt-pool-1; log ~/runs/20261112-191748-3874358-1.log there

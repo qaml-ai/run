@@ -4,7 +4,7 @@
 // on its spend limit, its computer tree's slot. On the tenants that have workflows, where a job driver exists (the pilot).
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { jobDriver, type JobDriverEnv } from "./jobs/driver.ts";
-import { JOB_LIMITS, JobSpecError, jobVolume, type JobResult, type JobSpec } from "./jobs/job.ts";
+import { JOB_LIMITS, JobSpecError, type JobResult, type JobSpec } from "./jobs/job.ts";
 import { volume, type FileBindings } from "./files.ts";
 import { digest } from "./volume.ts";
 
@@ -121,8 +121,7 @@ export async function jobRunSpec(host: Pick<AgentJobsHost, "env" | "tenant" | "a
   let source: Pick<JobSpec, "volume" | "files"> = {};
   if (args.at !== undefined) {
     if (typeof args.at !== "string") throw new JobSpecError("at is a volume id");
-    const at = args.at;
-    const base = await jobVolume(() => volume(host.env, host.tenant, at), at);
+    const base = await volume(host.env, host.tenant, args.at);
     const snapshot = await base.snapshot(`job ${id}`, { pinned: true, labels: { agent: host.agentId }, expiresAt: Date.now() + 2 * JOB_RUN_MAX_SECONDS * 1000 + 3_600_000 });
     source = { volume: { tenant: host.tenant, volume: args.at, snapshot: snapshot.id } };
   } else if (args.files) source = { files: Object.fromEntries(Object.entries(args.files as Record<string, string>).map(([path, value]) => [path, new TextEncoder().encode(value)])) };

@@ -109,18 +109,6 @@ export type JobResult =
 export class JobSpecError extends Error {
   readonly code = "JOB_INVALID";
 }
-
-/**
- * The volume a job starts from (`at`), or a JobSpecError that says why there is none: a workflow's forks are deleted
- * when the workflow ends, which an agent reading a finished workflow's result may not know.
- */
-export async function jobVolume<T>(open: () => Promise<T>, id: string): Promise<T> {
-  try { return await open(); }
-  catch (error) {
-    if ((error as { status?: number }).status !== 404) throw error;
-    throw new JobSpecError(`No volume ${id}: it does not exist or was deleted (a workflow's forks are deleted when the workflow ends; start from the volume they were committed to)`);
-  }
-}
 const bad = (message: string) => new JobSpecError(message);
 const encoder = new TextEncoder();
 export const JOB_ID = /^[A-Za-z0-9_-]{1,100}$/;

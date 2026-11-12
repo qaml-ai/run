@@ -1,0 +1,117 @@
+== sprite-test f5fa96f0 proto/search: lazy mount under /tmp; fail fast on rt-pool-3 (20261112-191748-3874360-1): rsync, started in 14s
+== bash prototypes/search/bench/run.sh linux
+RESULT {"step":"host","cpus":8,"memGB":8,"kernel":"6.12.116-fly","rg":"ripgrep 15.1.0","git":"git version 2.53.0","ctags":"Universal Ctags 6.2.1, Copyright (C) 201"}
+RESULT {"step":"clone-linux","ms":72564}
+RESULT {"corpus":"linux","step":"corpus","files":97362,"bytes":1675788539,"commit":"ee83899302a0457a3ba47464a13e8682bd7ba27d"}
+RESULT {"corpus":"linux","step":"index-base","wallMs":22556,"r":{"tree":"23ea307d09fa84d4c606ff33e07f2bf1edc92ee7","files":97362,"newBlobs":96612,"newBytes":1672153727,"newShards":25,"idxBytes":178190404,"datBytes":1192509579,"symBytes":0,"pathsBytes":6387414,"listMs":10557.047,"readMs":12949.709748,"indexMs":52707.422969,"totalMs":22103.132,"reused":false,"totalShards":25}}
+RESULT {"corpus":"linux","step":"sizes-base","idx":178190404,"dat":1192509579,"sym":0,"paths":6387414}
+RESULT {"corpus":"linux","step":"index-base-symbols","wallMs":44491,"r":{"tree":"23ea307d09fa84d4c606ff33e07f2bf1edc92ee7","files":97362,"newBlobs":96612,"newBytes":1672153727,"newShards":25,"idxBytes":178190404,"datBytes":1192509579,"symBytes":184994314,"pathsBytes":6387414,"listMs":12805.413,"readMs":40300.607873,"indexMs":170859.4156,"totalMs":43976.23,"reused":false,"totalShards":25}}
+RESULT {"corpus":"linux","step":"sizes-symbols","idx":178190404,"dat":1192509579,"sym":184994314,"paths":6387414}
+RESULT {"corpus":"linux","r":{"event":"open","files":97362,"heapMB":17,"ms":557.497,"shards":25}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":3193.208,"i":false,"p50":3.379,"p99":5.402,"q":"nvme_submit_sync_cmd","regex":false,"result":{"candidates":39,"fileHits":8,"top":"drivers/nvme/host/core.c","truncated":false,"verified":39}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":1466.527,"i":false,"p50":8.439,"p99":14.328,"q":"kmem_cache_create","regex":false,"result":{"candidates":531,"fileHits":317,"top":"fs/xfs/xfs_super.c","truncated":false,"verified":531}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":206.321,"i":false,"p50":17.152,"p99":24.219,"q":"spin_lock_irqsave","regex":false,"result":{"candidates":3798,"fileHits":2007,"top":"arch/parisc/kernel/firmware.c","truncated":true,"verified":2140}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":107.817,"i":false,"p50":13.974,"p99":40.664,"q":"EXPORT_SYMBOL_GPL","regex":false,"result":{"candidates":3805,"fileHits":2004,"top":"drivers/gpio/gpiolib.c","truncated":true,"verified":2081}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":107.117,"i":false,"p50":12.836,"p99":16.519,"q":"return 0;","regex":false,"result":{"candidates":30208,"fileHits":2003,"top":"drivers/accel/habanalabs/gaudi2/gaudi2.c","truncated":true,"verified":2044}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":121.868,"i":true,"p50":23.305,"p99":34.93,"q":"CONFIG_PREEMPT_RT","regex":false,"result":{"candidates":322,"fileHits":126,"top":"kernel/softirq.c","truncated":false,"verified":322}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":42.237,"i":true,"p50":16.647,"p99":23.836,"q":"copyright","regex":false,"result":{"candidates":59276,"fileHits":2004,"top":"LICENSES/dual/CC-BY-4.0","truncated":true,"verified":2008}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":276.742,"i":false,"p50":23.336,"p99":42.055,"q":"^static int \\w+_probe\\(","regex":true,"result":{"candidates":11108,"fileHits":2005,"top":"drivers/hid/hid-wiimote-modules.c","truncated":true,"verified":2538}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":393.829,"i":false,"p50":24.501,"p99":28.839,"q":"spin_lock\\w*\\(\u0026\\w+-\u003elock","regex":true,"result":{"candidates":3770,"fileHits":2006,"top":"drivers/net/ethernet/nvidia/forcedeth.c","truncated":true,"verified":3101}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":46.189,"i":false,"p50":5.774,"p99":7.646,"q":"kmalloc\\(.*GFP_ATOMIC","regex":true,"result":{"candidates":1034,"fileHits":121,"top":"net/bluetooth/mgmt.c","truncated":false,"verified":1034}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":93.36,"i":false,"p50":42.532,"p99":99.317,"q":"struct \\w+_ops \\w+ = \\{","regex":true,"result":{"candidates":13217,"fileHits":2005,"top":"arch/x86/events/intel/uncore_snbep.c","truncated":true,"verified":3504}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":51.777,"i":false,"p50":39.724,"p99":60.994,"q":"(?i)todo|fixme","regex":true,"result":{"candidates":5345,"fileHits":2007,"top":"drivers/gpib/TODO","truncated":true,"verified":2024}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":455.246,"i":false,"p50":461.572,"p99":552.04,"q":"\\b[A-Z_]{24,}\\b","regex":true,"result":{"candidates":96612,"fileHits":2003,"top":"arch/arm64/configs/defconfig","truncated":true,"verified":19691}}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"query","firstMs":18.921,"i":false,"p50":10.087,"p99":14.443,"q":"mutex_lock path:drivers/net/** lang:c","regex":false,"result":{"candidates":6052,"fileHits":813,"top":"drivers/net/wireless/intel/ipw2x00/ipw2200.c","truncated":false,"verified":926}}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"query","firstMs":23.264,"i":true,"p50":24.11,"p99":37.23,"q":"compatible file:*.dts","regex":false,"result":{"candidates":23027,"fileHits":2005,"top":"arch/arm/boot/dts/aspeed/aspeed-bmc-ibm-everest.dts","truncated":true,"verified":2005}}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"query","firstMs":51.189,"i":false,"p50":10.129,"p99":22.204,"q":"depends on file:Kconfig*","regex":false,"result":{"candidates":6108,"fileHits":1758,"top":"lib/Kconfig.debug","truncated":false,"verified":1759}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":9.714,"i":false,"p50":9.255,"p99":10.83,"q":" path:drivers/net/**/*.c","regex":false,"result":{"candidates":0,"fileHits":3644,"top":"drivers/net/amt.c","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":47.256,"i":false,"p50":47.508,"p99":57.749,"q":" file:*.dts","regex":false,"result":{"candidates":0,"fileHits":3782,"top":"arch/arc/boot/dts/hsdk.dts","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":2.079,"i":false,"p50":1.793,"p99":2.094,"q":" path:**/nvme/** file:*.h","regex":false,"result":{"candidates":0,"fileHits":8,"top":"drivers/nvme/host/fc.h","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":10.63,"i":false,"p50":9.011,"p99":11.83,"q":" file:Kconfig*","regex":false,"result":{"candidates":0,"fileHits":1964,"top":"Kconfig","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"event":"mem","heapMB":17,"proc":"VmHWM: 951616 kB; RssAnon: 37972 kB; RssFile: 908904 kB; ","sysMB":62}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"class","n":140,"p50":14.306,"p99":34.93}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"class","n":120,"p50":33.975,"p99":497.825}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"class","n":60,"p50":10.86,"p99":34.014}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"class","n":80,"p50":9.241,"p99":53.148}}
+RESULT {"corpus":"linux","r":{"event":"open","files":97362,"heapMB":17,"ms":324.751,"shards":25}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":57.556,"i":false,"p50":0.397,"p99":0.6,"q":"sym:kmalloc","regex":false,"result":{"hits":20,"top":"tools/lib/slab.c:14"}}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":40.103,"i":false,"p50":0.06,"p99":0.192,"q":"sym:nvme_submit_sync_cmd","regex":false,"result":{"hits":1,"top":"drivers/nvme/host/core.c:1224"}}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":18.641,"i":false,"p50":0.47,"p99":0.645,"q":"sym:tcp_v4_","regex":false,"result":{"hits":20,"top":"net/ipv4/tcp_ipv4.c:2075"}}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":403.258,"i":false,"p50":340.046,"p99":376,"q":"sym:^ext4_.*_inode$","regex":true,"result":{"hits":20,"top":"fs/ext4/fast_commit.h:62"}}}
+RESULT {"corpus":"linux","r":{"event":"mem","heapMB":22,"proc":"VmHWM: 231164 kB; RssAnon: 36648 kB; RssFile: 194516 kB; ","sysMB":47}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"class","n":80,"p50":0.446,"p99":367.017}}
+RESULT {"corpus":"linux","step":"cold-first-query","q":"kmem_cache_create","wallMs":1807,"openMs":123.652,"searchMs":1645.085}
+RESULT {"corpus":"linux","step":"top5","r":{"q": "nvme_submit_sync_cmd", "top": ["drivers/nvme/host/core.c", "drivers/nvme/host/fabrics.c", "drivers/nvme/host/pci.c", "drivers/nvme/host/apple.c", "drivers/nvme/host/nvme.h"]}}
+RESULT {"corpus":"linux","step":"top5","r":{"q": "kmem_cache_create", "top": ["include/linux/slab.h", "tools/include/linux/slab.h", "fs/xfs/xfs_super.c", "drivers/target/target_core_transport.c", "mm/slab_common.c"]}}
+RESULT {"corpus":"linux","step":"top5","r":{"q": "spin_lock_irqsave", "top": ["arch/parisc/kernel/firmware.c", "drivers/net/ethernet/brocade/bna/bnad.c", "drivers/ata/libata-scsi.c", "drivers/ata/libata-eh.c", "drivers/gpu/drm/i915/gt/uc/intel_guc_submission.c"]}}
+RESULT {"corpus":"linux","step":"http-search","q":"kmem_cache_create","s":0.011557}
+RESULT {"corpus":"linux","step":"http-search","q":"kmem_cache_create","s":0.010115}
+RESULT {"corpus":"linux","step":"http-search","q":"kmem_cache_create","s":0.008136}
+RESULT {"corpus":"linux","step":"index-1file","wallMs":7403,"r":{"tree":"b47d901f94120592bb8e7583b52cd6717a28318d","files":97362,"newBlobs":1,"newBytes":39527,"newShards":1,"idxBytes":69504,"datBytes":39527,"symBytes":0,"pathsBytes":6387414,"listMs":7340.352,"readMs":2.91109,"indexMs":0.70795,"totalMs":7389.916,"reused":false,"totalShards":26}}
+RESULT {"corpus":"linux","step":"index-100files","wallMs":449,"r":{"tree":"054faa92b2ab38efb77d9435d71ef548b91ed68b","files":97362,"newBlobs":100,"newBytes":2435475,"newShards":1,"idxBytes":742690,"datBytes":2435475,"symBytes":0,"pathsBytes":6387414,"listMs":332.526,"readMs":20.01781,"indexMs":18.07695,"totalMs":435.8,"reused":false,"totalShards":27}}
+RESULT {"corpus":"linux","step":"fork","wallMs":9,"r":{"ms":0.182,"tree":"054faa92b2ab38efb77d9435d71ef548b91ed68b"}}
+RESULT {"corpus":"linux","step":"index-fork-1file","wallMs":386,"r":{"tree":"0346c5069a0886c5a4494a16da82751139618d6d","files":97362,"newBlobs":1,"newBytes":28848,"newShards":1,"idxBytes":51569,"datBytes":28848,"symBytes":0,"pathsBytes":6387414,"listMs":324.744,"readMs":2.40661,"indexMs":0.63252,"totalMs":370.614,"reused":false,"totalShards":28}}
+RESULT {"corpus":"linux","step":"index-100files-symbols","wallMs":771,"r":{"tree":"054faa92b2ab38efb77d9435d71ef548b91ed68b","files":97362,"newBlobs":101,"newBytes":2475002,"newShards":1,"idxBytes":751210,"datBytes":2475002,"symBytes":140479,"pathsBytes":6387414,"listMs":274.865,"readMs":16.910441,"indexMs":414.343569,"totalMs":757.032,"reused":false,"totalShards":26}}
+RESULT {"corpus":"linux","snap":"fork1","r":{"class":"literal","event":"class","n":70,"p50":13.376,"p99":24.112}}
+RESULT {"corpus":"linux","snap":"fork1","r":{"class":"regex","event":"class","n":60,"p50":32.465,"p99":434.046}}
+RESULT {"corpus":"linux","snap":"fork1","r":{"class":"filtered","event":"class","n":30,"p50":9.523,"p99":22.068}}
+RESULT {"corpus":"linux","snap":"fork1","r":{"class":"path","event":"class","n":40,"p50":9.091,"p99":46.869}}
+RESULT {"corpus":"linux","snap":"chain-23-deltas","r":{"event":"open","files":97362,"heapMB":17,"ms":54.692,"shards":45}}
+RESULT {"corpus":"linux","snap":"chain-23-deltas","r":{"class":"literal","event":"class","n":70,"p50":12.64,"p99":22.7}}
+RESULT {"corpus":"linux","snap":"chain-23-deltas","r":{"class":"regex","event":"class","n":60,"p50":32.018,"p99":390.788}}
+RESULT {"corpus":"linux","snap":"chain-23-deltas","r":{"class":"filtered","event":"class","n":30,"p50":10.205,"p99":22.825}}
+RESULT {"corpus":"linux","snap":"chain-23-deltas","r":{"class":"path","event":"class","n":40,"p50":9.392,"p99":46.476}}
+RESULT {"corpus":"linux","step":"compact","r":{"blobs":5703,"datBytes":75158576,"idxBytes":7750486,"merged":28,"ms":1770.318,"shards":18}}
+RESULT {"corpus":"linux","snap":"chain-compacted","r":{"event":"open","files":97362,"heapMB":17,"ms":54.427,"shards":18}}
+RESULT {"corpus":"linux","snap":"chain-compacted","r":{"class":"literal","event":"class","n":70,"p50":12.258,"p99":28.172}}
+RESULT {"corpus":"linux","snap":"chain-compacted","r":{"class":"regex","event":"class","n":60,"p50":32.707,"p99":535.923}}
+RESULT {"corpus":"linux","snap":"chain-compacted","r":{"class":"filtered","event":"class","n":30,"p50":10.212,"p99":22.08}}
+RESULT {"corpus":"linux","snap":"chain-compacted","r":{"class":"path","event":"class","n":40,"p50":9.363,"p99":55.426}}
+RESULT {"corpus":"linux","step":"sizes-after-chain","idx":189611375,"dat":1273198265,"sym":0,"paths":153297936}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "nvme_submit_sync_cmd", "path": null, "file": null, "lang": null, "p50": 341.77, "max": 7436.65, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "nvme_submit_sync_cmd", "path": null, "file": null, "lang": null, "p50": 1260.18, "max": 1286.58, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "kmem_cache_create", "path": null, "file": null, "lang": null, "p50": 318.63, "max": 323.82, "files": 317}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "kmem_cache_create", "path": null, "file": null, "lang": null, "p50": 1243.83, "max": 1278.1, "files": 317}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "spin_lock_irqsave", "path": null, "file": null, "lang": null, "p50": 338.04, "max": 345.81, "files": 3435}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "spin_lock_irqsave", "path": null, "file": null, "lang": null, "p50": 1270.79, "max": 1351.0, "files": 3435}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "EXPORT_SYMBOL_GPL", "path": null, "file": null, "lang": null, "p50": 342.84, "max": 348.25, "files": 3681}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "EXPORT_SYMBOL_GPL", "path": null, "file": null, "lang": null, "p50": 1262.85, "max": 1365.14, "files": 3681}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "return 0;", "path": null, "file": null, "lang": null, "p50": 480.59, "max": 503.95, "files": 29903}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "return 0;", "path": null, "file": null, "lang": null, "p50": 1415.81, "max": 1432.03, "files": 29903}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "CONFIG_PREEMPT_RT", "path": null, "file": null, "lang": null, "p50": 340.67, "max": 358.26, "files": 126}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "CONFIG_PREEMPT_RT", "path": null, "file": null, "lang": null, "p50": 1236.11, "max": 1254.56, "files": 126}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "copyright", "path": null, "file": null, "lang": null, "p50": 658.56, "max": 669.3, "files": 59424}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "copyright", "path": null, "file": null, "lang": null, "p50": 1431.1, "max": 1489.77, "files": 59424}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "^static int \\w+_probe\\(", "path": null, "file": null, "lang": null, "p50": 493.92, "max": 496.42, "files": 9385}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "^static int \\w+_probe\\(", "path": null, "file": null, "lang": null, "p50": 1282.81, "max": 1288.34, "files": 9385}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "spin_lock\\w*\\(&\\w+->lock", "path": null, "file": null, "lang": null, "p50": 354.69, "max": 357.85, "files": 2391}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "spin_lock\\w*\\(&\\w+->lock", "path": null, "file": null, "lang": null, "p50": 1245.05, "max": 1262.79, "files": 2391}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "kmalloc\\(.*GFP_ATOMIC", "path": null, "file": null, "lang": null, "p50": 334.23, "max": 340.5, "files": 121}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "kmalloc\\(.*GFP_ATOMIC", "path": null, "file": null, "lang": null, "p50": 1232.62, "max": 1238.31, "files": 121}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "struct \\w+_ops \\w+ = \\{", "path": null, "file": null, "lang": null, "p50": 394.95, "max": 399.82, "files": 8927}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "struct \\w+_ops \\w+ = \\{", "path": null, "file": null, "lang": null, "p50": 1301.66, "max": 1354.24, "files": 8927}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "(?i)todo|fixme", "path": null, "file": null, "lang": null, "p50": 356.52, "max": 368.76, "files": 5316}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "(?i)todo|fixme", "path": null, "file": null, "lang": null, "p50": 1451.5, "max": 1471.13, "files": 5316}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "\\b[A-Z_]{24,}\\b", "path": null, "file": null, "lang": null, "p50": 1010.06, "max": 1216.97, "files": 34430}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "\\b[A-Z_]{24,}\\b", "path": null, "file": null, "lang": null, "p50": 2015.33, "max": 2091.53, "files": 34430}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "filtered", "q": "mutex_lock", "path": "drivers/net/**", "file": null, "lang": "c", "p50": 57.31, "max": 57.85, "files": 813}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "filtered", "q": "mutex_lock", "path": "drivers/net/**", "file": null, "lang": "c", "p50": 93.37, "max": 94.16, "files": 813}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "filtered", "q": "compatible", "path": null, "file": "*.dts", "lang": null, "p50": 68.93, "max": 70.68, "files": 3672}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "filtered", "q": "compatible", "path": null, "file": "*.dts", "lang": null, "p50": 114.06, "max": 119.62, "files": 3672}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "filtered", "q": "depends on", "path": null, "file": "Kconfig*", "lang": null, "p50": 49.53, "max": 51.99, "files": 1758}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "filtered", "q": "depends on", "path": null, "file": "Kconfig*", "lang": null, "p50": 100.3, "max": 105.16, "files": 1758}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": "drivers/net/**/*.c", "file": null, "lang": null, "p50": 32.07, "max": 33.98, "files": 3644}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "drivers/net/**/*.c", "file": null, "lang": null, "p50": 19.56, "max": 26.25, "files": 3644}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "*.dts", "lang": null, "p50": 32.6, "max": 34.42, "files": 3778}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "*.dts", "lang": null, "p50": 36.77, "max": 37.53, "files": 3782}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": "**/nvme/**", "file": "*.h", "lang": null, "p50": 31.61, "max": 32.21, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "**/nvme/**", "file": "*.h", "lang": null, "p50": 29.24, "max": 30.04, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "Kconfig*", "lang": null, "p50": 36.35, "max": 39.49, "files": 1964}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "Kconfig*", "lang": null, "p50": 30.93, "max": 32.35, "files": 1964}}
+RESULT {"corpus":"linux","step":"rg-cold-disk","q":"kmem_cache_create","ms":15800,"files":317}
+RESULT {"corpus":"linux","step":"gitgrep-cold","q":"kmem_cache_create","ms":3029,"files":317}
+RESULT {"corpus":"linux","step":"rg-mount-lazy","q":"kmem_cache_create","mountMs":2839,"rgMs":262351,"files":317}
+RESULT {"corpus":"linux","step":"rg-mount-prefetch32","q":"kmem_cache_create","mountMs":310,"rgMs":59750,"files":317}
+RESULT {"corpus":"linux","step":"rg-mount-warmcache","q":"kmem_cache_create","mountMs":278,"rgMs":13852,"files":317}
+== done
+== exit 0 in 1272s on rt-pool-3; log ~/runs/20261112-191748-3874360-1.log there

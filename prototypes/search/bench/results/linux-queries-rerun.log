@@ -1,0 +1,73 @@
+== sprite-test b7537c66 proto/search: basename literal precheck on rt-pool-3 (20261112-193922-3916883-1): rsync, started in 43s
+== bash -lc cd prototypes/search && go build -o ~/search-bench/cs2 . && ~/search-bench/cs2 bench -store ~/search-bench/store-linux -snap base -queries bench/queries-linux.json -n 20 | sed "s/^/RESULT {\"corpus\":\"linux\",\"r\":/; s/\$/}/"
+RESULT {"corpus":"linux","r":{"event":"open","files":97362,"heapMB":17,"ms":11508.988,"shards":25}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":8892.003,"i":false,"p50":3.32,"p99":5.053,"q":"nvme_submit_sync_cmd","regex":false,"result":{"candidates":39,"fileHits":8,"top":"drivers/nvme/host/core.c","truncated":false,"verified":39}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":8411.487,"i":false,"p50":6.317,"p99":9.176,"q":"kmem_cache_create","regex":false,"result":{"candidates":531,"fileHits":317,"top":"fs/xfs/xfs_super.c","truncated":false,"verified":531}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":238.731,"i":false,"p50":18.943,"p99":24.868,"q":"spin_lock_irqsave","regex":false,"result":{"candidates":3798,"fileHits":2007,"top":"arch/parisc/kernel/firmware.c","truncated":true,"verified":2143}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":443.862,"i":false,"p50":17.984,"p99":63.661,"q":"EXPORT_SYMBOL_GPL","regex":false,"result":{"candidates":3805,"fileHits":2006,"top":"drivers/gpio/gpiolib.c","truncated":true,"verified":2082}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":357.895,"i":false,"p50":14.076,"p99":17.072,"q":"return 0;","regex":false,"result":{"candidates":30208,"fileHits":2006,"top":"arch/x86/kvm/x86.c","truncated":true,"verified":2047}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":329.586,"i":true,"p50":25.726,"p99":36.962,"q":"CONFIG_PREEMPT_RT","regex":false,"result":{"candidates":322,"fileHits":126,"top":"kernel/softirq.c","truncated":false,"verified":322}}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"query","firstMs":33.803,"i":true,"p50":16.995,"p99":23.102,"q":"copyright","regex":false,"result":{"candidates":59276,"fileHits":2006,"top":"LICENSES/dual/CC-BY-4.0","truncated":true,"verified":2010}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":46.732,"i":false,"p50":20.77,"p99":25.62,"q":"^static int \\w+_probe\\(","regex":true,"result":{"candidates":11108,"fileHits":2005,"top":"drivers/hid/hid-wiimote-modules.c","truncated":true,"verified":2540}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":91.654,"i":false,"p50":25.305,"p99":30.371,"q":"spin_lock\\w*\\(\u0026\\w+-\u003elock","regex":true,"result":{"candidates":3770,"fileHits":2003,"top":"drivers/net/ethernet/nvidia/forcedeth.c","truncated":true,"verified":3098}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":120.295,"i":false,"p50":5.811,"p99":8.736,"q":"kmalloc\\(.*GFP_ATOMIC","regex":true,"result":{"candidates":1034,"fileHits":121,"top":"net/bluetooth/mgmt.c","truncated":false,"verified":1034}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":68.416,"i":false,"p50":47.159,"p99":63.14,"q":"struct \\w+_ops \\w+ = \\{","regex":true,"result":{"candidates":13217,"fileHits":2005,"top":"arch/x86/events/intel/uncore_snbep.c","truncated":true,"verified":3503}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":1707.803,"i":false,"p50":39.743,"p99":82.09,"q":"(?i)todo|fixme","regex":true,"result":{"candidates":5345,"fileHits":2006,"top":"drivers/gpib/TODO","truncated":true,"verified":2024}}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"query","firstMs":469.712,"i":false,"p50":461.478,"p99":606.672,"q":"\\b[A-Z_]{24,}\\b","regex":true,"result":{"candidates":96612,"fileHits":2001,"top":"arch/arm64/configs/defconfig","truncated":true,"verified":19680}}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"query","firstMs":46.622,"i":false,"p50":8.683,"p99":10.932,"q":"mutex_lock path:drivers/net/** lang:c","regex":false,"result":{"candidates":6052,"fileHits":813,"top":"drivers/net/wireless/intel/ipw2x00/ipw2200.c","truncated":false,"verified":926}}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"query","firstMs":32.743,"i":true,"p50":22.124,"p99":29.008,"q":"compatible file:*.dts","regex":false,"result":{"candidates":23027,"fileHits":2005,"top":"arch/arm/boot/dts/aspeed/aspeed-bmc-ibm-everest.dts","truncated":true,"verified":2005}}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"query","firstMs":821.098,"i":false,"p50":11.679,"p99":16.557,"q":"depends on file:Kconfig*","regex":false,"result":{"candidates":6108,"fileHits":1758,"top":"lib/Kconfig.debug","truncated":false,"verified":1759}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":11.88,"i":false,"p50":9.664,"p99":17.162,"q":" path:drivers/net/**/*.c","regex":false,"result":{"candidates":0,"fileHits":3644,"top":"drivers/net/amt.c","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":14.284,"i":false,"p50":9.396,"p99":10.526,"q":" file:*.dts","regex":false,"result":{"candidates":0,"fileHits":3782,"top":"arch/arc/boot/dts/hsdk.dts","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":1.837,"i":false,"p50":1.812,"p99":2.721,"q":" path:**/nvme/** file:*.h","regex":false,"result":{"candidates":0,"fileHits":8,"top":"drivers/nvme/host/fc.h","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"query","firstMs":3.939,"i":false,"p50":4.064,"p99":7.264,"q":" file:Kconfig*","regex":false,"result":{"candidates":0,"fileHits":1964,"top":"Kconfig","truncated":false,"verified":0}}}
+RESULT {"corpus":"linux","r":{"event":"mem","heapMB":18,"proc":"VmHWM: 955244 kB; RssAnon: 38548 kB; RssFile: 908956 kB; ","sysMB":66}}
+RESULT {"corpus":"linux","r":{"class":"literal","event":"class","n":140,"p50":16.278,"p99":38.399}}
+RESULT {"corpus":"linux","r":{"class":"regex","event":"class","n":120,"p50":32.33,"p99":505.681}}
+RESULT {"corpus":"linux","r":{"class":"filtered","event":"class","n":60,"p50":11.679,"p99":24.187}}
+RESULT {"corpus":"linux","r":{"class":"path","event":"class","n":80,"p50":8.955,"p99":11.295}}
+== exit 0 in 158s on rt-pool-3; log ~/runs/20261112-193922-3916883-1.log there
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "nvme_submit_sync_cmd", "path": null, "file": null, "lang": null, "p50": 341.77, "max": 7436.65, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "nvme_submit_sync_cmd", "path": null, "file": null, "lang": null, "p50": 1260.18, "max": 1286.58, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "kmem_cache_create", "path": null, "file": null, "lang": null, "p50": 318.63, "max": 323.82, "files": 317}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "kmem_cache_create", "path": null, "file": null, "lang": null, "p50": 1243.83, "max": 1278.1, "files": 317}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "spin_lock_irqsave", "path": null, "file": null, "lang": null, "p50": 338.04, "max": 345.81, "files": 3435}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "spin_lock_irqsave", "path": null, "file": null, "lang": null, "p50": 1270.79, "max": 1351.0, "files": 3435}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "EXPORT_SYMBOL_GPL", "path": null, "file": null, "lang": null, "p50": 342.84, "max": 348.25, "files": 3681}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "EXPORT_SYMBOL_GPL", "path": null, "file": null, "lang": null, "p50": 1262.85, "max": 1365.14, "files": 3681}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "return 0;", "path": null, "file": null, "lang": null, "p50": 480.59, "max": 503.95, "files": 29903}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "return 0;", "path": null, "file": null, "lang": null, "p50": 1415.81, "max": 1432.03, "files": 29903}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "CONFIG_PREEMPT_RT", "path": null, "file": null, "lang": null, "p50": 340.67, "max": 358.26, "files": 126}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "CONFIG_PREEMPT_RT", "path": null, "file": null, "lang": null, "p50": 1236.11, "max": 1254.56, "files": 126}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "literal", "q": "copyright", "path": null, "file": null, "lang": null, "p50": 658.56, "max": 669.3, "files": 59424}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "literal", "q": "copyright", "path": null, "file": null, "lang": null, "p50": 1431.1, "max": 1489.77, "files": 59424}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "^static int \\w+_probe\\(", "path": null, "file": null, "lang": null, "p50": 493.92, "max": 496.42, "files": 9385}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "^static int \\w+_probe\\(", "path": null, "file": null, "lang": null, "p50": 1282.81, "max": 1288.34, "files": 9385}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "spin_lock\\w*\\(&\\w+->lock", "path": null, "file": null, "lang": null, "p50": 354.69, "max": 357.85, "files": 2391}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "spin_lock\\w*\\(&\\w+->lock", "path": null, "file": null, "lang": null, "p50": 1245.05, "max": 1262.79, "files": 2391}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "kmalloc\\(.*GFP_ATOMIC", "path": null, "file": null, "lang": null, "p50": 334.23, "max": 340.5, "files": 121}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "kmalloc\\(.*GFP_ATOMIC", "path": null, "file": null, "lang": null, "p50": 1232.62, "max": 1238.31, "files": 121}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "struct \\w+_ops \\w+ = \\{", "path": null, "file": null, "lang": null, "p50": 394.95, "max": 399.82, "files": 8927}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "struct \\w+_ops \\w+ = \\{", "path": null, "file": null, "lang": null, "p50": 1301.66, "max": 1354.24, "files": 8927}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "(?i)todo|fixme", "path": null, "file": null, "lang": null, "p50": 356.52, "max": 368.76, "files": 5316}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "(?i)todo|fixme", "path": null, "file": null, "lang": null, "p50": 1451.5, "max": 1471.13, "files": 5316}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "regex", "q": "\\b[A-Z_]{24,}\\b", "path": null, "file": null, "lang": null, "p50": 1010.06, "max": 1216.97, "files": 34430}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "regex", "q": "\\b[A-Z_]{24,}\\b", "path": null, "file": null, "lang": null, "p50": 2015.33, "max": 2091.53, "files": 34430}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "filtered", "q": "mutex_lock", "path": "drivers/net/**", "file": null, "lang": "c", "p50": 57.31, "max": 57.85, "files": 813}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "filtered", "q": "mutex_lock", "path": "drivers/net/**", "file": null, "lang": "c", "p50": 93.37, "max": 94.16, "files": 813}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "filtered", "q": "compatible", "path": null, "file": "*.dts", "lang": null, "p50": 68.93, "max": 70.68, "files": 3672}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "filtered", "q": "compatible", "path": null, "file": "*.dts", "lang": null, "p50": 114.06, "max": 119.62, "files": 3672}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "filtered", "q": "depends on", "path": null, "file": "Kconfig*", "lang": null, "p50": 49.53, "max": 51.99, "files": 1758}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "filtered", "q": "depends on", "path": null, "file": "Kconfig*", "lang": null, "p50": 100.3, "max": 105.16, "files": 1758}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": "drivers/net/**/*.c", "file": null, "lang": null, "p50": 32.07, "max": 33.98, "files": 3644}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "drivers/net/**/*.c", "file": null, "lang": null, "p50": 19.56, "max": 26.25, "files": 3644}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "*.dts", "lang": null, "p50": 32.6, "max": 34.42, "files": 3778}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "*.dts", "lang": null, "p50": 36.77, "max": 37.53, "files": 3782}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": "**/nvme/**", "file": "*.h", "lang": null, "p50": 31.61, "max": 32.21, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": "**/nvme/**", "file": "*.h", "lang": null, "p50": 29.24, "max": 30.04, "files": 8}}
+RESULT {"corpus":"linux","r":{"tool": "rg", "class": "path", "q": "", "path": null, "file": "Kconfig*", "lang": null, "p50": 36.35, "max": 39.49, "files": 1964}}
+RESULT {"corpus":"linux","r":{"tool": "gitgrep", "class": "path", "q": "", "path": null, "file": "Kconfig*", "lang": null, "p50": 30.93, "max": 32.35, "files": 1964}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":57.556,"i":false,"p50":0.397,"p99":0.6,"q":"sym:kmalloc","regex":false,"result":{"hits":20,"top":"tools/lib/slab.c:14"}}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":40.103,"i":false,"p50":0.06,"p99":0.192,"q":"sym:nvme_submit_sync_cmd","regex":false,"result":{"hits":1,"top":"drivers/nvme/host/core.c:1224"}}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":18.641,"i":false,"p50":0.47,"p99":0.645,"q":"sym:tcp_v4_","regex":false,"result":{"hits":20,"top":"net/ipv4/tcp_ipv4.c:2075"}}}
+RESULT {"corpus":"linux","r":{"class":"symbol","event":"query","firstMs":403.258,"i":false,"p50":340.046,"p99":376,"q":"sym:^ext4_.*_inode$","regex":true,"result":{"hits":20,"top":"fs/ext4/fast_commit.h:62"}}}

@@ -1,0 +1,10 @@
+[
+ {"class":"literal","q":"// file 4242"},
+ {"class":"literal","q":"finally super readonly"},
+ {"class":"literal","q":"return"},
+ {"class":"literal","q":"STATIC READONLY","i":true},
+ {"class":"regex","q":"^// file 1234[0-9]$","regex":true},
+ {"class":"regex","q":"interface \\w+ implements \\w+ \\{","regex":true},
+ {"class":"path","path":"src/m3/**"},
+ {"class":"path","file":"f4242*.ts"}
+]
