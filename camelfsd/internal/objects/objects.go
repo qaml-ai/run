@@ -31,6 +31,8 @@ type Repository struct {
 	DB      *refs.DB
 	Store   store.Store
 	TempDir string
+	// Query observes repository reads for diagnostics and query-budget tests.
+	Query func(string)
 }
 type File struct {
 	SHA256 string `json:"sha256"`
@@ -317,11 +319,18 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	return out, nil
 }
 
+func (r *Repository) observe(query string) {
+	if r.Query != nil {
+		r.Query(query)
+	}
+}
+
 func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
 	var b []byte
 	if !root.Hex(id, 40) {
 		return nil, fmt.Errorf("invalid tree id")
 	}
+	r.observe("tree")
 	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='tree'", id).Scan(&b)
 	if e != nil {
 		return nil, e
@@ -379,14 +388,15 @@ func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
 	// Bounded IN batches avoid one size query per file without depending on
 	// SQLite's host-parameter limit for large trees.
 	sizes := map[string]int64{}
-	for start := 0; start < len(out); start += 512 {
-		batch := out[start:min(start+512, len(out))]
+	for start := 0; start < len(out); start += 500 {
+		batch := out[start:min(start+500, len(out))]
 		args := make([]any, len(batch))
 		marks := make([]string, len(batch))
 		for i, f := range batch {
 			args[i] = f.SHA1
 			marks[i] = "?"
 		}
+		r.observe("sizes")
 		rows, err := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE sha1 IN ("+strings.Join(marks, ",")+") GROUP BY sha1", args...)
 		if err != nil {
 			return nil, err

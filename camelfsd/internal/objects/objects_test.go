@@ -219,3 +219,34 @@ func TestMissingCap(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestEntriesQueryBudget(t *testing.T) {
+	r := repository(t)
+	ctx := context.Background()
+	q := Request{Lineage: "l", Files: map[string]File{}}
+	for i := 0; i < 2000; i++ {
+		b := []byte(fmt.Sprint(i))
+		h := root.Hash(b)
+		sha := store.GitHash("blob", b)
+		if _, e := r.DB.DB.Exec("INSERT INTO lineage_blobs VALUES(?,?,?,?,0)", "l", h, sha, len(b)); e != nil {
+			t.Fatal(e)
+		}
+		q.Files[fmt.Sprintf("f%04d", i)] = File{SHA256: h}
+	}
+	tree, e := r.Import(ctx, q)
+	if e != nil {
+		t.Fatal(e)
+	}
+	count := 0
+	r.Query = func(string) { count++ }
+	entries, e := r.Entries(ctx, tree.Tree)
+	if e != nil || len(entries) != 2000 || count > 5 {
+		t.Fatalf("entries=%d queries=%d error=%v", len(entries), count, e)
+	}
+	for i, f := range entries {
+		if f.Size != int64(len(fmt.Sprint(i))) {
+			t.Fatal(f)
+		}
+	}
+	t.Logf("2000 files: %d queries", count)
+}
