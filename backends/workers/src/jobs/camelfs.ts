@@ -1,6 +1,6 @@
 export type CamelfsEnv = { CAMELFS_API_URL?: string; CAMELFS_API_TOKEN?: string };
 export const camelfsConfigured = (env: CamelfsEnv): boolean => !!env.CAMELFS_API_URL && !!env.CAMELFS_API_TOKEN;
-export type CamelfsFile = { path: string; sha256: string; size: number };
+export type CamelfsFile = { path: string; sha256: string; size: number; key: string };
 /** The lineage of a volume is stable across snapshots. */
 export const volumeLineage = (tenant: string, volume: string): string => `${tenant}:${volume}`;
 
@@ -30,7 +30,7 @@ async function body(response: Response): Promise<unknown> {
 /** Import references first; only blobs the lineage lacks cross the network, in bounded batches. */
 export async function importTree(env: CamelfsEnv, input: {
   lineage: string; parentTree?: string; files: CamelfsFile[];
-  read: (file: CamelfsFile) => Promise<Uint8Array>;
+  read: (file: CamelfsFile) => Promise<{ body: ReadableStream<Uint8Array> | Uint8Array; size: number }>;
 }, fetcher: typeof fetch = fetch): Promise<{ tree: string; uploaded: number }> {
   if (!camelfsConfigured(env)) throw new Error("camelFS is not configured");
   const url = env.CAMELFS_API_URL!.replace(/\/+$/, ""), authorization = `Bearer ${env.CAMELFS_API_TOKEN}`;
@@ -53,10 +53,11 @@ export async function importTree(env: CamelfsEnv, input: {
     if (missing.some(hash => typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash) || !byHash.has(hash))) throw bad();
     for (let i = 0; i < missing.length; i += 8) {
       await Promise.all(missing.slice(i, i + 8).map(async hash => {
-        const bytes = await input.read(byHash.get(hash)!);
+        const { body, size } = await input.read(byHash.get(hash)!);
         const put = await fetcher(`${url}/v0/blobs/${hash}?lineage=${encodeURIComponent(input.lineage)}`, {
-          method: "PUT", headers: { authorization, "content-type": "application/octet-stream" },
-          signal: AbortSignal.timeout(60_000), body: bytes,
+          method: "PUT", headers: { authorization, "content-type": "application/octet-stream", "content-length": String(size) },
+          signal: AbortSignal.timeout(60_000), body,
+          ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
         });
         await put.body?.cancel();
         if (put.status !== 200 && put.status !== 201) throw new Error(`camelFS status ${put.status}: blob upload failed`);

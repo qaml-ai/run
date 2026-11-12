@@ -5,7 +5,7 @@ import { camelfsConfigured, importTree, volumeLineage } from "../src/jobs/camelf
 
 const env = { CAMELFS_API_URL: "https://camelfs.invalid/", CAMELFS_API_TOKEN: "unit-test-private-token" };
 const tree = "a".repeat(40), lineage = volumeLineage("tenant", "volume");
-const file = (path: string, text: string) => ({ path, size: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") });
+const file = (path: string, text: string) => ({ path, key: `files/${path}`, size: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") });
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status });
 
 test("imports missing blobs once, then only a changed blob with its parent tree", async () => {
@@ -27,11 +27,12 @@ test("imports missing blobs once, then only a changed blob with its parent tree"
     const parsed = new URL(String(url)), hash = parsed.pathname.split("/").at(-1)!;
     assert.equal(parsed.searchParams.get("lineage"), lineage);
     assert.equal(new Headers(init?.headers).get("content-type"), "application/octet-stream");
+    assert.equal(new Headers(init?.headers).get("content-length"), String((init?.body as Uint8Array).byteLength));
     assert.equal(createHash("sha256").update(init?.body as Uint8Array).digest("hex"), hash);
     puts.push(hash); stored.add(hash);
     return new Response(null, { status: 201 });
   };
-  const read = async (f: { path: string }) => Buffer.from(bytes.get(f.path)!);
+  const read = async (f: { path: string }) => { const body = Buffer.from(bytes.get(f.path)!); return { body, size: body.length }; };
   const files = [...bytes].map(([path, text]) => file(path, text));
   assert.deepEqual(await importTree(env, { lineage, files, read }, fetcher), { tree, uploaded: 2 });
   bytes.set("/b", "changed");
@@ -42,7 +43,7 @@ test("imports missing blobs once, then only a changed blob with its parent tree"
 });
 
 test("rejects repeated conflicts, invalid hashes, unknown blobs, bad trees and errors without credentials", async () => {
-  const f = file("a", "a"), input = { lineage, files: [f], read: async () => Buffer.from("a") };
+  const f = file("a", "a"), input = { lineage, files: [f], read: async () => ({ body: Buffer.from("a"), size: 1 }) };
   let posts = 0;
   await assert.rejects(importTree(env, input, async (_url, init) => {
     if (init?.method === "PUT") return new Response(null, { status: 200 });
@@ -63,7 +64,7 @@ test("rejects repeated conflicts, invalid hashes, unknown blobs, bad trees and e
 test("at most eight uploads are in flight", async () => {
   const files = Array.from({ length: 25 }, (_, i) => file(String(i), String(i)));
   let active = 0, peak = 0, posts = 0;
-  const result = await importTree(env, { lineage, files, read: async f => Buffer.from(f.path) }, async (_url, init) => {
+  const result = await importTree(env, { lineage, files, read: async f => ({ body: Buffer.from(f.path), size: Buffer.byteLength(f.path) }) }, async (_url, init) => {
     if (init?.method === "POST") return ++posts === 1 ? json(409, { missing: files.map(f => f.sha256) }) : json(200, { tree });
     peak = Math.max(peak, ++active);
     await new Promise(resolve => setTimeout(resolve, 2)); active--;
@@ -71,4 +72,27 @@ test("at most eight uploads are in flight", async () => {
   });
   assert.equal(peak, 8);
   assert.equal(result.uploaded, 25);
+});
+
+test("streams missing blobs with their known content length and Node duplex", async () => {
+  const f = file("/stream", "streamed bytes"), bytes = Buffer.from("streamed bytes");
+  let posts = 0, puts = 0;
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } });
+  const result = await importTree(env, { lineage, files: [f], read: async entry => {
+    assert.equal(entry.key, f.key);
+    return { body: stream, size: bytes.length };
+  } }, async (url, init) => {
+    if (init?.method === "POST") return ++posts === 1 ? json(409, { missing: [f.sha256] }) : json(200, { tree });
+    puts++;
+    assert.equal(init?.body, stream, "the body reaches fetch without being buffered");
+    assert.equal(stream.locked, false);
+    assert.equal(new Headers(init?.headers).get("content-length"), String(bytes.length));
+    assert.equal((init as RequestInit & { duplex?: string }).duplex, "half");
+    // Node validates duplex when constructing a Request with a streamed body.
+    const request = new Request(url, init);
+    assert.deepEqual(Buffer.from(await request.arrayBuffer()), bytes);
+    return new Response(null, { status: 201 });
+  });
+  assert.deepEqual(result, { tree, uploaded: 1 });
+  assert.equal(puts, 1);
 });
