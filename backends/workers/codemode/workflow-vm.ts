@@ -8,7 +8,7 @@
 //
 // This is our own driver, not pi-codemode's: its VM driver keeps its state in closures that cannot be snapshotted,
 // and workflow scripts see their own globals (agent, job, commit, push, gate, parallel, sleep, log, phase, now, random), not code mode's tools.
-import { Intrinsics, JSException, QuickJS, type JSValueHandle } from "quickjs-wasi";
+import { EvalFlags, Intrinsics, JSException, QuickJS, type JSValueHandle } from "quickjs-wasi";
 import {
   WORKFLOW_STEP_PROTOCOL, type IssuedEffect, type WorkflowBatch, type WorkflowFaultCode, type WorkflowStepOutcome, type WorkflowStepRequest,
 } from "./workflow-protocol.ts";
@@ -201,7 +201,7 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
   }
   function base64Decode(text) {
     if (typeof text !== "string") throw new TypeErrorCtor("fromBase64() needs a string");
-    const clean = text.replace(/[\s=]/g, "").replace(/-/g, "+").replace(/_/g, "/");
+    const clean = text.replace(/[\\s=]/g, "").replace(/-/g, "+").replace(/_/g, "/");
     if (/[^A-Za-z0-9+/]/.test(clean) || clean.length % 4 === 1) throw new TypeErrorCtor("fromBase64() was given text that is not base64");
     const out = new Uint8Array(Math.floor(clean.length * 3 / 4));
     let bits = 0, value = 0, at = 0;
@@ -379,9 +379,12 @@ export function scriptError(error: unknown, lineOffset = 0): { message: string; 
 /** Compile `code` as a workflow script, without running it: a script error, where it is, or ok. */
 export async function checkWorkflowScript(code: string, wasm: WebAssembly.Module): Promise<{ ok: true } | { ok: false; message: string; line: number; column: number }> {
   if (typeof code !== "string") return { ok: false, message: "A workflow script is text", line: 1, column: 1 };
-  const vm = await QuickJS.create({ wasm, memoryLimit: WORKFLOW_HEAP_BYTES, maxStackSize: WORKFLOW_STACK_BYTES } as never);
+  // Compiled only, never run: a script can close the wrapper (`})(); for (;;) {} (async () => {`), and nothing it
+  // writes may execute here. The poll budget is a backstop all the same, so a check can never hold its slot.
+  let polls = 0;
+  const vm = await QuickJS.create({ wasm, memoryLimit: WORKFLOW_HEAP_BYTES, maxStackSize: WORKFLOW_STACK_BYTES, interruptHandler: () => ++polls > WORKFLOW_POLL_BUDGET } as never);
   try {
-    vm.evalCode(`${SCRIPT_PREFIX}${code}\n})`, "workflow.js").dispose();
+    vm.evalCode(`${SCRIPT_PREFIX}${code}\n})`, "workflow.js", EvalFlags.COMPILE_ONLY).dispose();
     return { ok: true };
   } catch (error) {
     const syntax = scriptError(error);

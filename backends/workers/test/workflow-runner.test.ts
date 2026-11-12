@@ -188,3 +188,13 @@ test("the guest has TextEncoder, TextDecoder and Unicode-safe base64, determinis
   const bad = await drive(`try { fromBase64("!!!"); } catch (error) { return String(error); }`);
   assert.match(String(bad.runner.get().result), /not base64/);
 });
+
+test("the script check only compiles: a script that closes its wrapper does not run or hang it; fromBase64 keeps every s", { timeout: 30_000 }, async () => {
+  const { checkWorkflowScript } = await import("../codemode/workflow-vm.ts");
+  const started = Date.now();
+  assert.deepEqual(await checkWorkflowScript(`})(); for (;;) {} ;(async () => {`, WASM), { ok: true }, "valid syntax, and never executed");
+  assert.deepEqual(await checkWorkflowScript(`})(); globalThis.ran = 1; while (true) {} ;(async () => {`, WASM), { ok: true });
+  assert.ok(Date.now() - started < 5_000, "the check returned at once");
+  const h = await drive(`return { sw: fromBase64("sw=="), round: fromBase64(toBase64("ss saas \\u{1F42A}s")), spaced: fromBase64("c3 Nz\\nc3M=") };`);
+  assert.deepEqual(h.runner.get().result, { sw: Buffer.from("sw==", "base64").toString(), round: "ss saas \u{1F42A}s", spaced: "sssss" });
+});
