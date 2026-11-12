@@ -3,7 +3,8 @@ import { MULTI_AGENT_LIMITS } from './multi-agent-policy.ts';
 import { agentOwner, ownerOf, type Owner } from '../../../shared/owner.ts';
 
 /** A sub-agent's place in its chain as its parent made it: its depth, its chain's limit and its chain (its parent last). */
-export type ChildPlace = { payer?: string; depth: number; maxDepth: number; chain: string[]; owner?: Owner; rootOwner?: Owner };
+/** `usageRoot`: the agent a workflow's child's usage rolls up into (the workflow's owner agent); the workflow stays its owner. */
+export type ChildPlace = { payer?: string; depth: number; maxDepth: number; chain: string[]; owner?: Owner; rootOwner?: Owner; usageRoot?: string };
 
 /**
  * The runtime writes this relation; public configuration cannot choose a parent. With it the child's owner and its
