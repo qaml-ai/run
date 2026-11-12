@@ -19,12 +19,13 @@ import (
 )
 
 type Server struct {
-	Store    store.Store
-	Cache    *cache.Cache
-	Prefetch int
-	Patterns string
-	mu       sync.Mutex
-	origins  map[string]*origin
+	Store      store.Store
+	Cache      *cache.Cache
+	Prefetch   int
+	FetchDepth int
+	Patterns   string
+	mu         sync.Mutex
+	origins    map[string]*origin
 }
 type device struct {
 	r       root.Root

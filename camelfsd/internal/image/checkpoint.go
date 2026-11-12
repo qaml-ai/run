@@ -63,7 +63,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		return out, e
 	}
 	if v.DM != "" {
-		for _, msg := range []string{"hydration_batch_size 64", "hydration_threshold 64", "enable_hydration"} {
+		for _, msg := range []string{"hydration_batch_size 256", "hydration_threshold 256", "enable_hydration"} {
 			if _, e = run(ctx, "dmsetup", "message", v.DM, "0", msg); e != nil {
 				return out, e
 			}
