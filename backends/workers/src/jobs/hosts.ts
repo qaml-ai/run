@@ -24,6 +24,7 @@ import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
+import { needsContainer } from "./driver.ts";
 import { HOST_POOLS, hostInstance, hostPool, hostSessionCost, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 import { INSTANCE_RESOURCES } from "../computers/meter.ts";
 
@@ -389,11 +390,14 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       price: (instance, seconds) => hostSessionCost(instance, seconds, this.env) });
   }
   async run(value: unknown): Promise<JobResult> {
-    const spec = jobSpec(value);
+    const spec = jobSpec(value, { beyondContainers: true });
     const at = Date.now();
     const timings = () => ({ startedAt: at, endedAt: Date.now(), startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: Date.now() - at });
     const fail = (code: Extract<JobResult, { ok: false }>["code"], message: string, costUsd?: number): JobResult => ({ ok: false, id: spec.id, code, message, timings: timings(), ...(costUsd !== undefined ? { costUsd } : {}) });
     if (this.active) return fail("job_running", `Job ${spec.id} is running`);
+    // Snapshots and other images are Cloudflare containers' alone so far (driver.ts needsContainer): refused, never
+    // run without them.
+    if (needsContainer(spec)) return fail("start_failed", "Job hosts run the workspace image only, without snapshots, so far: run this job on Cloudflare Containers (JOB_PROVIDER=auto routes it there)");
     const lifetimeMs = jobLifetimeMs(spec.timeoutSeconds), meter = this.meter(lifetimeMs), machine = `job:${spec.id}`;
     // The VM the host boots is the one priced: its shape (the job's limits, else its instance type's), and the pool that
     // shape goes to. A pricing setting that does not parse refuses the job before anything starts.
