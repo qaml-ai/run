@@ -62,6 +62,8 @@ export class WorkflowNotices {
     const columns = deps.sql.exec<{ name: string }>("PRAGMA table_info(workflow_notices)").toArray().map(column => column.name);
     if (!columns.includes("next_at")) deps.sql.exec("ALTER TABLE workflow_notices ADD COLUMN next_at INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("created_at")) deps.sql.exec("ALTER TABLE workflow_notices ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
+    // A row from before created_at was made now, as far as giving up goes: seen first here, it gets its week from now.
+    deps.sql.exec("UPDATE workflow_notices SET created_at = ? WHERE created_at = 0", this.now());
   }
   private now() { return this.deps.now?.() ?? Date.now(); }
 
@@ -107,7 +109,7 @@ export class WorkflowNotices {
       if (!next) return;
       // Not due yet: the alarm comes back for it (arming again costs nothing when it is already set earlier).
       if (Number(next.next_at) > this.now()) { await this.deps.arm(Number(next.next_at)); return; }
-      if (Number(next.created_at) && this.now() - Number(next.created_at) > NOTICE_GIVE_UP_MS) {
+      if (this.now() - Number(next.created_at) > NOTICE_GIVE_UP_MS) {
         console.error(JSON.stringify({ type: "workflow_notice_dropped", workflow: this.deps.workflowId, seq: next.seq, event: next.event, attempts: next.attempts }));
         sql.exec("DELETE FROM workflow_notices WHERE seq = ?", next.seq);
         continue;
@@ -141,5 +143,11 @@ export class WorkflowNotices {
   }
 
   /** Notices not yet taken by the owner. */
+  /**
+   * Before a first send that runs in the background: arm the alarm for the first retry, so a send the isolate dies in
+   * the middle of (nothing recorded its failure, and nothing else may arm the alarm) is still retried.
+   */
+  async guard() { if (this.pending()) await this.deps.arm(this.now() + NOTICE_RETRY.firstMs); }
+
   pending(): number { return Number(this.deps.sql.exec<{ n: number }>("SELECT count(*) AS n FROM workflow_notices").one().n); }
 }
