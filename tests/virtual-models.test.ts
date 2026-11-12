@@ -504,3 +504,31 @@ test("Node passes an input estimate to the first-token budget without runLimits"
   assert.match((events.at(-1) as any).error.errorMessage, /stalled/);
   assert.ok(Date.now() - started < 3_000);
 });
+
+test("Node abort during routedCall's flex wait makes no default request or fallback record", async t => {
+  const tiers: unknown[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    tiers.push(JSON.parse(text).service_tier);
+    res.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "503 flex unavailable", code: 503 } }));
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "fixture", baseUrl: url } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
+  const request = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "hello" } });
+  assert.equal(request.status, 202);
+  const started = Date.now();
+  while (!tiers.length) {
+    assert.ok(Date.now() - started < 10_000);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await r.call(`/v1/agents/${agent}/abort`, { method: "POST" })).status, 200);
+  while ((await r.call(`/v1/agents/${agent}/requests/${request.json.id}`)).json.state !== "completed") {
+    assert.ok(Date.now() - started < 10_000);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.deepEqual(tiers, ["flex"]);
+  assert.ok(!r.logs.some(line => line.includes('"type":"model_fallback"')), "no recordModelFallback after abort");
+});
