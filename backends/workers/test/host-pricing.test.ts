@@ -1,30 +1,53 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostSessionCost, parseHostInstance, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
+import { readFileSync } from "node:fs";
+import { DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostSessionCost, hostShare, parseHostInstance, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
+import { hostRoles, hostShape } from "../src/jobs/host-pricing.ts";
+import { jobSpec } from "../src/jobs/job.ts";
 import { ComputerMeter, CONTAINER_RATES, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 
 const close = (a: number, b: number, what: string) => assert.ok(Math.abs(a - b) <= Math.abs(b) * 1e-9, `${what}: ${a} vs ${b}`);
 
-test("a fully sold host recovers its cost times the markup: a build host whole, a test host by vCPU and memory", () => {
-  for (const pool of ["build", "test"] as const) {
-    const base = HOST_POOL_PRICES[pool], rates = hostRates(pool);
-    close(rates.hostSecond * 3600, base.hostUsdPerHour * DEFAULT_HOST_MARKUP, `${pool} host hour`);
-    close((rates.vcpuSecond * base.vcpus + rates.memoryGiBSecond * base.memoryGiB) * 3600, base.hostUsdPerHour * DEFAULT_HOST_MARKUP, `${pool} sold out`);
-  }
-  // A build job has the whole host, whatever its shape.
+test("a host recovers its cost times the markup when sold out on its dominant resource; a build job pays the whole host", () => {
+  for (const pool of ["build", "test"] as const) close(hostRates(pool).hostSecond * 3600, HOST_POOL_PRICES[pool].hostUsdPerHour * DEFAULT_HOST_MARKUP, `${pool} host hour`);
+  const full = hostRates("test").hostSecond;
+  // Test hosts fill on memory (24 GiB of sandbox memory; vCPUs are shared): six 1 vCPU / 4 GiB jobs are the whole host.
+  close(6 * hostSecondRate("test", { vcpus: 1, memoryMiB: 4096, diskMiB: 0 }), full, "memory-full host");
+  // CPU-heavy jobs pay by vCPU: four 4 vCPU / 2 GiB jobs are the whole host's vCPUs.
+  close(4 * hostSecondRate("test", { vcpus: 4, memoryMiB: 2048, diskMiB: 0 }), full, "vCPU-full host");
+  // The design doc's 4 vCPU / 8 GiB shard: a third of the host by memory.
+  close(hostSecondRate("test", { vcpus: 4, memoryMiB: 8192, diskMiB: 0 }), full / 3, "a shard");
   close(hostSecondRate("build", { vcpus: 2, memoryMiB: 4096, diskMiB: 0 }), hostRates("build").hostSecond, "build job");
-  // A test job pays for its VM: twice the vCPUs and memory, twice the price.
-  const small = hostSecondRate("test", { vcpus: 2, memoryMiB: 4096, diskMiB: 0 }), large = hostSecondRate("test", { vcpus: 4, memoryMiB: 8192, diskMiB: 0 });
-  close(large, 2 * small, "test scales with its shape");
+  // Never more than a whole host.
+  close(hostShare("test", { vcpus: 64, memoryMiB: 1 << 20, diskMiB: 0 }), 1, "capped at a host");
 });
 
-test("the rates against Cloudflare's: a test job's vCPU and memory cost less than a container's at the default markup", () => {
-  const test = hostRates("test");
-  assert.ok(test.vcpuSecond < CONTAINER_RATES.vcpuSecond, `${test.vcpuSecond} per vCPU-second`);
-  assert.ok(test.memoryGiBSecond < CONTAINER_RATES.memoryGiBSecond * 2, `${test.memoryGiBSecond} per GiB-second`);
-  // About: a 2 vCPU / 8 GiB test job, an hour.
-  const hour = hostSecondRate("test", { vcpus: 2, memoryMiB: 8192, diskMiB: 0 }) * 3600;
-  assert.ok(hour > 0.1 && hour < 0.2, `${hour} an hour`);
+test("about what a job costs at the defaults", () => {
+  const hour = (shape: { vcpus: number; memoryMiB: number }) => hostSecondRate("test", { ...shape, diskMiB: 0 }) * 3600;
+  assert.ok(Math.abs(hour({ vcpus: 2, memoryMiB: 8192 }) - 0.33) < 0.01, `${hour({ vcpus: 2, memoryMiB: 8192 })}`);
+  assert.ok(Math.abs(hostRates("build").hostSecond * 3600 - 1.48) < 0.01);
+  // Cloudflare's for the same 2 vCPU / 8 GiB, at its provisioned rates, for comparison: hosts serve the larger jobs.
+  assert.ok(2 * CONTAINER_RATES.vcpuSecond * 3600 + 8 * CONTAINER_RATES.memoryGiBSecond * 3600 < hour({ vcpus: 2, memoryMiB: 8192 }));
+});
+
+test("the pools' sandbox memory is what the image reserves (versions.env)", () => {
+  const pins = readFileSync(new URL("../../../infra/job-hosts/image/versions.env", import.meta.url), "utf8");
+  const gib = (name: string) => Number(pins.split("\n").find(line => line.startsWith(`NE_MEMPOOL_${name}=`))?.split("=")[1]?.replace(/G$/, ""));
+  assert.equal(gib("TEST"), HOST_POOL_PRICES.test.memoryGiB);
+  assert.equal(gib("BUILD"), HOST_POOL_PRICES.build.memoryGiB);
+});
+
+test("a job's VM: its limits, else its instance type's resources, in whole vCPUs; its pool by size", () => {
+  const spec = (limits?: object) => jobSpec({ id: "j", command: "true", timeoutSeconds: 5, payer: { tenant: "t", agent: "a" }, ...(limits ? { limits } : {}) });
+  assert.deepEqual(hostShape(spec()), { vcpus: 1, memoryMiB: 4096, diskMiB: Math.ceil(8e9 / 2 ** 20) }, "standard-1");
+  assert.deepEqual(hostShape(spec({ cpus: 1.5 })), { vcpus: 2, memoryMiB: 8192, diskMiB: Math.ceil(16e9 / 2 ** 20) }, "fractional cpus round up; the instance that fits them (standard-3)");
+  assert.equal(hostShape(spec({ memoryMiB: 2048 })).memoryMiB, 2048);
+  assert.equal(hostPool(hostShape(spec({ cpus: 4, memoryMiB: 12288 }))), "test");
+});
+
+test("JOB_HOST_ROLE_ARNS: pool=arn entries; anything else fails the whole setting closed", () => {
+  assert.deepEqual(hostRoles("build=arn:aws:iam::1:role/b, test=arn:aws:iam::1:role/t"), [{ pool: "build", arn: "arn:aws:iam::1:role/b" }, { pool: "test", arn: "arn:aws:iam::1:role/t" }]);
+  for (const bad of [undefined, "", "arn:aws:iam::1:role/t", "gpu=arn:aws:iam::1:role/g", "test=", "test=arn:aws:iam::1:role/t,oops"]) assert.equal(hostRoles(bad), undefined, String(bad));
 });
 
 test("the markup and each pool's host price are settings; a setting that does not parse refuses, never charges nothing", () => {
@@ -72,4 +95,29 @@ test("the meter charges a host job through its pricing, from start to stop, once
   assert.equal(charges[0]!.seconds, 90);
   close(charges[0]!.costUsd, hostSessionCost(instance, 90), "the job's charge");
   close(meter.spentUsd(), charges[0]!.costUsd, "spent");
+});
+
+test("a session's rate fixed at its start, and its span as reported, are what it is charged", async () => {
+  const data = new Map<string, unknown>(), charges: ComputerCharge[] = [];
+  let now = 2_000_000;
+  const store: MeterStore = {
+    async get<T>(key: string) { return structuredClone(data.get(key)) as T | undefined; },
+    async put(key, value) { data.set(key, structuredClone(value)); },
+    async delete(key) { return data.delete(key); },
+    async list<T>({ prefix }: { prefix: string }) { return new Map([...data].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value) as T])); },
+  };
+  // A price hook that would fail (a setting broken since the start) is never called: the fixed rate is used.
+  const meter = new ComputerMeter({ store, idleMs: 3_600_000, now: () => now, schedule: async () => {},
+    billing: { async admit() {}, async charge(charge) { charges.push(charge); } },
+    price: () => { throw new Error("JOB_HOST_PRICE_MARKUP must be a number"); } });
+  now += 60_000;
+  await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j2", { at: now - 50_000, rate: 0.001 });
+  await meter.stopped(undefined, now - 20_000);
+  assert.equal(charges.length, 1);
+  assert.equal(charges[0]!.seconds, 30, "from the reported start to the reported end");
+  close(charges[0]!.costUsd, 0.03, "30 s at the fixed rate");
+  // A start reported in the future is now; an end before it, nothing.
+  await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j3", { at: now + 10_000, rate: 0.001 });
+  await meter.stopped(undefined, now - 1_000);
+  assert.equal(charges.length, 1);
 });

@@ -90,7 +90,9 @@ export function awsCaller(response: string, allowedRoles: string[]) {
   const roleArn = `arn:${partition}:iam::${account}:role/${role}`;
   // An assumed role's ARN carries the role's name, not its path: an allowed ARN matches on partition, account and name.
   const key = (value: string) => { const m = /^arn:([^:]+):iam::(\d{12}):role\/(?:.*\/)?([^/]+)$/.exec(value.trim()); return m ? `${m[1]}:${m[2]}:${m[3]}` : undefined; };
-  if (!allowedRoles.map(key).includes(`${partition}:${account}:${role}`)) throw new AttestationError(`Role ${roleArn} is not allowed`);
+  const allowed = allowedRoles.find(value => key(value) === `${partition}:${account}:${role}`);
+  if (!allowed) throw new AttestationError(`Role ${roleArn} is not allowed`);
   if (!/^i-[0-9a-f]{8,17}$/.test(session!)) throw new AttestationError("The role session is not an EC2 instance id");
-  return { host: session!, roleArn };
+  // `allowed`: the allowlist's own entry it matched (the caller maps it to what that role may do: a host's pool).
+  return { host: session!, roleArn, allowed };
 }

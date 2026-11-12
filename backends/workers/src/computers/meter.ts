@@ -58,7 +58,9 @@ export type ComputerPayer = { tenant: string; agent: string; kind?: "workflow" }
 export type ComputerSession = ComputerPayer & { id: string; instance: string; startedAt: number; usedAt: number; idleMs?: number;
   cpuBaseUsec?: number; cpuUsec?: number; cpuAt?: number;
   /** A session named by its caller (a job's), and which of its checkpointed parts this is: its charges are `id`, `id#2`, …. */
-  named?: string; part?: number };
+  named?: string; part?: number;
+  /** USD per second, fixed when it started (a host job's), in place of the instance's rates. */
+  rate?: number };
 /** A finished session's charge. `id` makes it exactly-once: charging the same session twice records it once. */
 export type ComputerCharge = ComputerPayer & { id: string; instance: string; startedAt: number; endedAt: number; seconds: number; costUsd: number;
   /** vCPU-seconds the cgroup counted, and seconds charged at the provisioned vCPU because no reading covers them. */
@@ -131,12 +133,16 @@ export class ComputerMeter {
    * `id` names the session (a job's, which a run made again charges under the same name, so it is charged once);
    * without one each session gets its own.
    */
-  async started(payer: ComputerPayer, instance: string, idleMs = this.idleMs, cpuBaseUsec = 0, id?: string) {
+  /**
+   * `options.at`: when it started, if not now (a host job's VM, from the host's own report). `options.rate`: its USD per
+   * second, fixed now and kept with the session, so the charge never depends on settings read when it closes.
+   */
+  async started(payer: ComputerPayer, instance: string, idleMs = this.idleMs, cpuBaseUsec = 0, id?: string, options: { at?: number; rate?: number } = {}) {
     await this.close();
     this.spent = 0;
-    const at = this.now();
+    const at = Math.min(this.now(), options.at ?? this.now());
     await this.store.put<ComputerSession>(OPEN, { ...payer, id: id ?? crypto.randomUUID(), instance, startedAt: at, usedAt: at, idleMs,
-      cpuBaseUsec, cpuUsec: cpuBaseUsec, cpuAt: at, ...(id ? { named: id, part: 1 } : {}) });
+      cpuBaseUsec, cpuUsec: cpuBaseUsec, cpuAt: at, ...(id ? { named: id, part: 1 } : {}), ...(options.rate !== undefined ? { rate: options.rate } : {}) });
     await this.schedule(at + idleMs + SETTLE_MARGIN_MS);
   }
   private idle(session: ComputerSession) {
@@ -160,9 +166,9 @@ export class ComputerMeter {
     await this.schedule(at + this.idle(open) + SETTLE_MARGIN_MS);
   }
   /** The container was destroyed just now (sleep, restore, purge), with its last CPU reading if one was taken. */
-  async stopped(cpuUsec?: number) {
+  async stopped(cpuUsec?: number, at?: number) {
     await this.reading(cpuUsec);
-    await this.close();
+    await this.close(at);
     await this.settle();
   }
   /**
@@ -204,10 +210,10 @@ export class ComputerMeter {
     return next;
   }
   /** End the open session: now, or when it idled out if that was earlier. */
-  private async close() {
+  private async close(at?: number) {
     const open = await this.store.get<ComputerSession>(OPEN);
     if (!open) return;
-    const now = this.now(), idleAt = open.usedAt + this.idle(open);
+    const now = Math.min(this.now(), at ?? this.now()), idleAt = open.usedAt + this.idle(open);
     const endedAt = Math.max(open.startedAt, Math.min(now, idleAt));
     const seconds = (endedAt - open.startedAt) / 1000;
     // A session from before CPU readings (no cpuAt) is unmeasured throughout.
@@ -220,7 +226,7 @@ export class ComputerMeter {
       Math.max(0, (open.cpuUsec ?? 0) - (open.cpuBaseUsec ?? 0)) / 1e6);
     const charge: ComputerCharge = { id: open.id, tenant: open.tenant, agent: open.agent, ...(open.kind ? { kind: open.kind } : {}), instance: open.instance,
       startedAt: open.startedAt, endedAt, seconds, cpuSeconds, unmeasuredSeconds,
-      costUsd: this.price(open.instance, seconds, cpuSeconds, unmeasuredSeconds) };
+      costUsd: open.rate !== undefined ? seconds * open.rate : this.price(open.instance, seconds, cpuSeconds, unmeasuredSeconds) };
     // A session that ended as it started costs nothing and records nothing.
     if (seconds > 0) await this.store.put(`${UNSETTLED}${open.id}`, charge);
     this.spent += seconds > 0 ? charge.costUsd : 0;

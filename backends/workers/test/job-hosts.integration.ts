@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { startFixture } from "./fixture.ts";
 import { signGetCallerIdentity } from "../../../shared/job-host-attest.ts";
+import { hostSecondRate } from "../src/jobs/host-pricing.ts";
 
 const AGENT = fileURLToPath(new URL("../../../jobhost/agent.ts", import.meta.url));
 
@@ -28,7 +29,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   t.after(() => new Promise<void>(resolve => sts.close(() => resolve())));
   const fixture = await startFixture({ vars: {
     AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "45",
-    JOB_HOST_ROLE_ARNS: "arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,
+    JOB_HOST_ROLE_ARNS: "test=arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,
     ADMIN_TENANTS: "camelrun-proto-local",
   } });
   t.after(() => fixture.stop());
@@ -54,7 +55,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
     return child;
   };
   host("intruder", "not-the-secret-but-also-at-least-32-characters");
-  host("host-1", secret);
+  const host1 = host("host-1", secret);
   const hosts = await until(async () => { const list = await call("/__test/job-hosts") as { name: string }[]; return list.some(entry => entry.name === "host-1") && list; }, "the host's registration");
   assert.deepEqual(hosts.map(entry => entry.name), ["host-1"], "only the host with the secret registers");
 
@@ -170,4 +171,22 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   await until(async () => { const list = await call("/__test/job-hosts") as { name: string; revoked: number; seenAt: number }[]; const entry = list.find(item => item.name === "host-1"); return entry && !entry.revoked && entry.seenAt > Date.now() - 20_000 && entry; }, "host-1 back after it is allowed", 90_000);
   // Only an admin account revokes.
   assert.equal((await fetch(`${fixture.url}/v1/job-hosts/host-1`, { method: "DELETE" })).status === 200, false);
+
+  // A host that dies mid-job: the job ends container_failed once the host has been gone HOST_STALE_MS (30 s), not at
+  // its deadline, and is charged only for the time its VM ran until the host was last heard from.
+  const doomed = await call("/v1/workflows", { script: `return await job({ key: "doomed", command: "sleep 300", timeoutSeconds: 600 });`, budget: { usd: 1 } });
+  await until(async () => { const list = await call("/__test/job-hosts") as { name: string; free: number; slots: number }[]; const entry = list.find(item => item.name === "host-1"); return entry && entry.free < entry.slots; }, "the doomed job running");
+  await new Promise(resolve => setTimeout(resolve, 3_000));
+  const killedAt = Date.now();
+  host1.kill("SIGKILL");
+  const doomedEnd = await until(async () => { const value = await call(`/v1/workflows/${doomed.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the job of a host that went away", 90_000);
+  assert.ok(Date.now() - killedAt < 75_000, "ended long before its deadline");
+  const doomedItem = ((await call(`/v1/workflows/${doomed.id}/items`)).items as { key: string; reason?: string }[]).find(entry => entry.key === "doomed")!;
+  assert.match(doomedItem.reason ?? "", /^container_failed: The job host went away/, JSON.stringify(doomedEnd));
+  const doomedCharge = (await fixture.db.query("select message from pi_usage_receipts where session_id=$1 and message->'_workersAuxiliary'->>'kind'='computer'", [doomed.id])).rows;
+  // Its VM ran about 3 s before the host died, and is charged until the host was last heard from (its started report or a
+  // heartbeat since, at most 10 s apart): never the 30 s it took to call the host gone, nor its deadline.
+  assert.ok(doomedCharge.length <= 1, JSON.stringify(doomedCharge));
+  const seconds = Number(doomedCharge[0]?.message._workersAuxiliary.costUsd ?? 0) / hostSecondRate("test", { vcpus: 1, memoryMiB: 4096, diskMiB: 0 });
+  assert.ok(seconds < 14, `charged ${seconds} s`);
 });

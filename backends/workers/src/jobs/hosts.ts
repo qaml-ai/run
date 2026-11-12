@@ -24,8 +24,7 @@ import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
-import { HOST_POOLS, hostInstance, hostPool, hostSessionCost, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
-import { INSTANCE_RESOURCES } from "../computers/meter.ts";
+import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
 /** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
 export const HOSTS_PROVIDER = "camelrun-hosts";
@@ -83,11 +82,14 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     if (!columns.includes("revoked")) sql.exec("ALTER TABLE hosts ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0");
     // A host's pool (host-pricing.ts), as it says in its hello; a host from before pools is a test host.
     if (!columns.includes("pool")) sql.exec("ALTER TABLE hosts ADD COLUMN pool TEXT NOT NULL DEFAULT 'test'");
+    // Memory its running VMs hold (MiB): placement packs a host to its pool's sandbox memory, never past it.
+    if (!columns.includes("used_mib")) sql.exec("ALTER TABLE hosts ADD COLUMN used_mib INTEGER NOT NULL DEFAULT 0");
     sql.exec("CREATE TABLE IF NOT EXISTS host_credentials (hash TEXT PRIMARY KEY, host TEXT NOT NULL, expires_at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS host_attestations (signature TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     sql.exec("CREATE INDEX IF NOT EXISTS host_attestations_at ON host_attestations (at)");
     sql.exec("CREATE INDEX IF NOT EXISTS host_credentials_expires ON host_credentials (expires_at)");
     sql.exec("CREATE INDEX IF NOT EXISTS host_credentials_host ON host_credentials (host, expires_at)");
+    if (!sql.exec<{ name: string }>("PRAGMA table_info(host_credentials)").toArray().some(column => column.name === "pool")) sql.exec("ALTER TABLE host_credentials ADD COLUMN pool TEXT");
   }
   private revoked(name: string) { return !!this.ctx.storage.sql.exec<{ revoked: number }>("SELECT revoked FROM hosts WHERE name = ?", name).toArray()[0]?.revoked; }
 
@@ -108,24 +110,25 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
    * A credential for `host`, which an attestor proved (enrollHost, in the Worker). A host keeps at most its two newest
    * credentials (the one it uses, and the next while it renews); older ones stop working.
    */
-  issue(host: string): { ok: true; host: string; credential: string; expiresAt: number } | { ok: false; code: string; error: string } {
+  issue(host: string, pool: HostPool): { ok: true; host: string; credential: string; expiresAt: number } | { ok: false; code: string; error: string } {
     if (!HOST_NAME.test(host)) return { ok: false, code: "INVALID_HOST", error: "Invalid host id" };
     if (this.revoked(host)) return { ok: false, code: "HOST_REVOKED", error: "This host is revoked" };
     const sql = this.ctx.storage.sql;
     const lifetime = this.env.TEST_MODE === "1" && Number(this.env.JOB_HOST_CREDENTIAL_SECONDS) >= 1 ? Number(this.env.JOB_HOST_CREDENTIAL_SECONDS) * 1000 : HOST_CREDENTIAL_MS;
     const credential = `${host}.${randomBytes(32).toString("base64url")}`, expiresAt = Date.now() + lifetime;
     sql.exec("DELETE FROM host_credentials WHERE expires_at <= ?", Date.now());
-    sql.exec("INSERT INTO host_credentials (hash, host, expires_at) VALUES (?, ?, ?)", digest(credential), host, expiresAt);
+    sql.exec("INSERT INTO host_credentials (hash, host, expires_at, pool) VALUES (?, ?, ?, ?)", digest(credential), host, expiresAt, pool);
     sql.exec("DELETE FROM host_credentials WHERE host = ? AND hash NOT IN (SELECT hash FROM host_credentials WHERE host = ? ORDER BY expires_at DESC LIMIT 2)", host, host);
     return { ok: true, host, credential, expiresAt };
   }
 
   /** A credential, checked for `name`: its host, not expired, the host not revoked. */
-  verify(name: string, credential: unknown): { ok: true; expiresAt: number } | { ok: false } {
+  verify(name: string, credential: unknown): { ok: true; expiresAt: number; pool: HostPool } | { ok: false } {
     if (typeof credential !== "string" || !credential.startsWith(`${name}.`)) return { ok: false };
-    const row = this.ctx.storage.sql.exec<{ host: string; expires_at: number }>("SELECT host, expires_at FROM host_credentials WHERE hash = ?", digest(credential)).toArray()[0];
+    const row = this.ctx.storage.sql.exec<{ host: string; expires_at: number; pool: string | null }>("SELECT host, expires_at, pool FROM host_credentials WHERE hash = ?", digest(credential)).toArray()[0];
     if (!row || row.host !== name || row.expires_at <= Date.now() || this.revoked(name)) return { ok: false };
-    return { ok: true, expiresAt: row.expires_at };
+    // A credential issued before pools (no pool) is a test host's: it renews within the hour into one that says.
+    return { ok: true, expiresAt: row.expires_at, pool: row.pool === "build" ? "build" : "test" };
   }
 
   /** Revoke a host: its credentials go, it takes no job, and its socket is closed (JobHost.revoke). `allow` undoes it. */
@@ -137,13 +140,25 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
   }
   allow(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET revoked = 0 WHERE name = ?", name); return { allowed: name }; }
 
-  seen(name: string, slots: number | undefined, free: number, pool?: HostPool) {
+  /**
+   * A host's hello (slots, vCPUs, memory) or heartbeat (free slots alone). `pool` is its credential's, which the attested
+   * role decides (enrollHost), never the host's own word. A build host runs one job: one that says otherwise is refused.
+   */
+  seen(name: string, slots: number | undefined, free: number, pool?: HostPool, machine?: { vcpus?: unknown; memoryMiB?: unknown }) {
     // A code in the message: an error's class does not survive Durable Object RPC (JobHost matches on it).
     if (this.revoked(name)) throw new Error(`${HOST_REVOKED}: this host is revoked`);
     // What a host reports is checked: whole numbers, free within its slots (a host cannot claim more than it has).
     const whole = (value: unknown) => Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 1024;
     if (!whole(free) || (slots !== undefined && (!whole(slots) || free > slots))) throw new Error("Invalid host capacity");
     if (pool !== undefined && !HOST_POOLS.includes(pool)) throw new Error("Invalid host pool");
+    if (pool === "build" && slots !== undefined && slots !== 1) throw new Error("Invalid host capacity: a build host runs one job");
+    if (machine && slots !== undefined) {
+      // What a host says it has, checked against its pool's host. Not refused: the memory a host reports may be what is
+      // left after its sandboxes' reserved pool, unverified on a real host yet. Placement packs it by its pool's shape
+      // (HOST_POOL_PRICES), not by this.
+      const size = HOST_POOL_PRICES[pool ?? "test"];
+      if (Number(machine.vcpus) < size.vcpus) console.warn(JSON.stringify({ type: "jobhost_smaller_than_pool", host: name, pool: pool ?? "test", vcpus: Number(machine.vcpus) || null, memoryMiB: Number(machine.memoryMiB) || null }));
+    }
     if (slots === undefined) {
       const known = this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0];
       if (!known || free > known.slots) throw new Error("Invalid host capacity");
@@ -152,14 +167,21 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
       ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
       name, slots ?? free, free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
   }
-  /** A fresh, allowed host of `pool` with a free slot, which is taken; undefined: none. */
-  place(pool: HostPool = "test"): string | undefined {
-    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND pool = ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool).toArray()[0];
+  /**
+   * A fresh, allowed host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox memory, which
+   * are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed boot).
+   */
+  place(pool: HostPool = "test", memoryMiB = 0): string | undefined {
+    const room = HOST_POOL_PRICES[pool].memoryGiB * 1024 - memoryMiB;
+    if (room < 0) return undefined;
+    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
     if (!row) return undefined;
-    this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1 WHERE name = ?", row.name);
+    this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1, used_mib = used_mib + ? WHERE name = ?", memoryMiB, row.name);
     return row.name;
   }
-  release(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1) WHERE name = ? AND revoked = 0", name); }
+  release(name: string, memoryMiB = 0) {
+    this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1), used_mib = MAX(0, used_mib - ?) WHERE name = ? AND revoked = 0", memoryMiB, name);
+  }
   list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked FROM hosts ORDER BY name").toArray(); }
 }
 
@@ -208,12 +230,12 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
   const attestation = input?.attestation, kind = attestation?.kind;
   const attestors = (env.JOB_HOST_ATTESTORS ?? "").split(",").map(name => name.trim()).filter(Boolean);
   const hosts = registry(env);
-  let host: string;
+  let host: string, pool: HostPool;
   try {
     if (kind === "aws" && attestors.includes("aws")) {
-      const roles = (env.JOB_HOST_ROLE_ARNS ?? "").split(",").map(role => role.trim()).filter(Boolean), audience = jobHostAudience(env);
+      const roles = hostRoles(env.JOB_HOST_ROLE_ARNS), audience = jobHostAudience(env);
       // Fail closed without its allowlist, its audience, or (outside tests) the enrollment rate limit.
-      if (!roles.length || !audience) throw new AttestationError("The aws attestor needs JOB_HOST_ROLE_ARNS and AGENT_PUBLIC_URL");
+      if (!roles || !audience) throw new AttestationError("The aws attestor needs JOB_HOST_ROLE_ARNS (pool=arn entries) and AGENT_PUBLIC_URL");
       if (!env.JOB_HOST_ENROLL_LIMITER && env.TEST_MODE !== "1") throw new AttestationError("The aws attestor needs JOB_HOST_ENROLL_LIMITER");
       const checked = checkAwsAttestation(attestation as never, audience);
       if (!await hosts.claim(checked.signature)) throw new AttestationError("This attestation was used already");
@@ -222,7 +244,9 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
         const target = env.TEST_MODE === "1" && env.JOB_HOST_STS_TEST_URL ? env.JOB_HOST_STS_TEST_URL : checked.url;
         const response = await fetch(target, { method: "POST", headers: checked.headers, body: checked.body, redirect: "manual", signal: AbortSignal.timeout(10_000) });
         if (response.status !== 200) throw new AttestationError(`STS answered ${response.status}`);
-        host = awsCaller(await response.text(), roles).host;
+        const caller = awsCaller(await response.text(), roles.map(entry => entry.arn));
+        // The pool is the attested role's (each pool has its own role), never what the host says.
+        host = caller.host; pool = roles.find(entry => entry.arn === caller.allowed)!.pool;
       } catch (error) {
         // STS refused it (or could not be asked): the claim goes, so a forged request leaves nothing behind.
         await hosts.unclaim(checked.signature);
@@ -231,13 +255,14 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
     } else if (kind === "test" && attestors.includes("test") && env.TEST_MODE === "1" && env.JOB_HOST_TEST_SECRET) {
       if (typeof attestation?.secret !== "string" || !sameText(attestation.secret, env.JOB_HOST_TEST_SECRET)) throw new AttestationError("Wrong test secret");
       host = String(attestation.host);
+      pool = attestation?.pool === "build" ? "build" : "test";
     } else throw new AttestationError("No attestor here takes this attestation");
   } catch (error) {
     log(kind, error instanceof AttestationError ? error.message : `attestation failed: ${error instanceof Error ? error.name : "unknown"}`);
     return refuse();
   }
   try {
-    const issued = await hosts.issue(host);
+    const issued = await hosts.issue(host, pool);
     if (!issued.ok) { log(kind, issued.error); return refuse(); }
     return Response.json({ host: issued.host, credential: issued.credential, expiresAt: issued.expiresAt });
   } catch (error) {
@@ -269,6 +294,12 @@ export async function jobHostRoutes(request: Request, env: JobHostsEnv & { ADMIN
 /** One host's connection: jobs out, results in. */
 export class JobHost extends DurableObject<JobHostsEnv> {
   private socket?: WebSocket;
+  /** The pool its credential says (the attested role's). */
+  private pool?: HostPool;
+  /** When the host last said anything, and when each job's VM started (the host's `started`): the span a job is charged. */
+  private lastSeen = 0;
+  private readonly startedAt = new Map<string, number>();
+  private gone?: ReturnType<typeof setTimeout>;
   private readonly pending = new Map<string, (result: WireResult) => void>();
   async fetch(request: Request) {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("Expected a WebSocket", { status: 426 });
@@ -316,6 +347,9 @@ export class JobHost extends DurableObject<JobHostsEnv> {
             // A host that reconnects replaces its old socket; jobs in flight on it keep their pending results.
             if (this.socket && this.socket !== socket) try { this.socket.close(1000, "Replaced"); } catch { /* already closed */ }
             this.socket = socket;
+            this.pool = checked.pool;
+            this.lastSeen = Date.now();
+            if (this.gone) { clearTimeout(this.gone); this.gone = undefined; }
             // The credential's end is the socket's: the host enrolls again and reconnects before then.
             const expiry = setTimeout(() => close(1008, "Credential expired"), Math.max(0, checked.expiresAt - Date.now()));
             socket.addEventListener("close", () => clearTimeout(expiry));
@@ -329,7 +363,17 @@ export class JobHost extends DurableObject<JobHostsEnv> {
         close(1007, "Invalid message");
       }
     });
-    socket.addEventListener("close", () => { if (this.socket === socket) this.socket = undefined; });
+    socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
+      this.socket = undefined;
+      // A host that does not come back within HOST_STALE_MS has gone: its jobs end now, charged until it was last heard
+      // from, rather than at their deadline.
+      this.gone ??= setTimeout(() => {
+        this.gone = undefined;
+        if (this.socket) return;
+        for (const [id, done] of this.pending) { this.pending.delete(id); done({ ok: false, code: "container_failed", message: "The job host went away" }); }
+      }, HOST_STALE_MS);
+    });
   }
   /** Revoked: the socket closes, and jobs waiting on this host end failed rather than at their deadline. */
   revoke() {
@@ -339,11 +383,13 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     for (const [id, done] of this.pending) { this.pending.delete(id); done({ ok: false, code: "container_failed", message: "The job host was revoked" }); }
   }
   private async receive(name: string, message: HostMessage) {
+    this.lastSeen = Date.now();
     if (message.type === "hello") {
-      // Its free slots as it reports them: a reconnecting host's jobs in flight keep theirs.
-      await registry(this.env).seen(name, message.slots, message.free, message.pool);
+      // Its free slots as it reports them: a reconnecting host's jobs in flight keep theirs. Its pool is its credential's.
+      await registry(this.env).seen(name, message.slots, message.free, this.pool ?? "test", { vcpus: message.vcpus, memoryMiB: message.memoryMiB });
       this.send({ type: "registered", host: name });
-    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free);
+    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test");
+    else if (message.type === "started") { if (this.pending.has(message.id)) this.startedAt.set(message.id, Date.now()); }
     else if (message.type === "result") { const done = this.pending.get(message.id); this.pending.delete(message.id); done?.(message.result); }
   }
   private send(message: unknown) {
@@ -351,31 +397,25 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     for (const frame of frames(message)) this.socket.send(frame);
     return true;
   }
-  /** Run one job on this host and answer its result; the socket gone or the deadline passed answers a failure. */
-  async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult> {
-    return new Promise<WireResult>(resolve => {
+  /**
+   * Run one job on this host and answer its result, with the span its VM ran (`ranFrom` the host's `started`, `ranUntil`
+   * its result, or when the host was last heard from if it went away): what the job is charged. No `ranFrom`: its VM
+   * never started, and nothing is charged. The socket gone, or the deadline passed, answers a failure.
+   */
+  async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult & { ranFrom?: number; ranUntil?: number }> {
+    const result = await new Promise<WireResult>(resolve => {
       const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, code: "container_failed", message: "The job host did not answer in time" }); }, deadlineMs);
       this.pending.set(id, result => { clearTimeout(timer); resolve(result); });
       if (!this.send({ type: "job", id, spec })) { clearTimeout(timer); this.pending.delete(id); resolve({ ok: false, code: "start_failed", message: "The job host is not connected" }); }
     });
+    const ranFrom = this.startedAt.get(id);
+    this.startedAt.delete(id);
+    return { ...result, ...(ranFrom !== undefined ? { ranFrom, ranUntil: Math.max(ranFrom, this.socket ? Date.now() : this.lastSeen) } : {}) };
   }
   cancel(id: string) { return this.send({ type: "cancel", id }); }
 }
 
 const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data), size: wire.size, truncated: wire.truncated });
-
-/**
- * A job's VM on a host: its limits where it gives them, else its instance type's resources (what the same job gets in a
- * Cloudflare container), in whole vCPUs.
- */
-export function hostShape(spec: JobSpec & { instance: keyof typeof INSTANCE_RESOURCES }): HostShape {
-  const resources = INSTANCE_RESOURCES[spec.instance];
-  return {
-    vcpus: Math.max(1, Math.ceil(spec.limits?.cpus ?? resources.vcpu)),
-    memoryMiB: spec.limits?.memoryMiB ?? resources.memoryGiB * 1024,
-    diskMiB: spec.limits?.diskMiB ?? Math.ceil(resources.diskGB * 1e9 / 2 ** 20),
-  };
-}
 
 /** One job on a host: admission, a slot, placement, the meter, the result. */
 export class HostJob extends DurableObject<JobHostsEnv> {
@@ -397,8 +437,10 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const lifetimeMs = jobLifetimeMs(spec.timeoutSeconds), meter = this.meter(lifetimeMs), machine = `job:${spec.id}`;
     // The VM the host boots is the one priced: its shape (the job's limits, else its instance type's), and the pool that
     // shape goes to. A pricing setting that does not parse refuses the job before anything starts.
+    // Its rate is fixed here, once: a setting changed (or broken) while it runs cannot change or strand its charge.
     const shape = hostShape(spec), pool = hostPool(shape);
-    try { hostSessionCost(hostInstance(pool, shape), 1, this.env); }
+    let rate: number;
+    try { rate = hostSecondRate(pool, shape, this.env); }
     catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Pricing is misconfigured"); }
     try {
       await meter.admit(spec.payer);
@@ -409,13 +451,11 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     let files: WireFile[];
     try { files = await this.files(spec); }
     catch (error) { await release(); return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
-    const host = await registry(this.env).place(pool);
+    const host = await registry(this.env).place(pool, shape.memoryMiB);
     if (!host) { await release(); return fail("start_failed", `No ${pool} job host has a free slot`); }
     this.active = { host, id: spec.id };
-    let wire: WireResult, costUsd = 0;
+    let wire: WireResult & { ranFrom?: number; ranUntil?: number } = { ok: false, code: "container_failed", message: "No result" }, costUsd = 0;
     try {
-      // Metered from dispatch to result, under the job's own session name: a run made again is the same charge.
-      await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, `job:${spec.id}`);
       // A dispatch that throws (the host object unreachable, the RPC refused) is the job's result, never a throw out of
       // run(): a throw would leave the workflow's row to be run again, and fail again, on every restart.
       wire = await this.env.JOB_HOSTS!.getByName(host).dispatch(spec.id, {
@@ -424,10 +464,17 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
       }, lifetimeMs).catch((error: unknown): WireResult => ({ ok: false, code: "container_failed", message: `The job could not be sent to its host: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}` }));
     } finally {
-      await meter.stopped().catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
-      costUsd = meter.spentUsd();
+      // Charged for the span its VM ran, as its host reported it (from `started` to its result, or until the host was
+      // last heard from), at the rate fixed before it was sent, under the job's own session name: a run made again is
+      // the same charge. A VM that never started is not charged.
+      if (wire.ranFrom !== undefined) {
+        await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, `job:${spec.id}`, { at: wire.ranFrom, rate })
+          .then(() => meter.stopped(undefined, wire.ranUntil))
+          .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
+        costUsd = meter.spentUsd();
+      }
       await release().catch(() => {});
-      await registry(this.env).release(host).catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
       this.active = undefined;
     }
     if (!wire.ok) return fail(wire.code, wire.message, costUsd);
