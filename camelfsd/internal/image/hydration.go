@@ -2,8 +2,10 @@ package image
 
 import (
 	"context"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -28,7 +30,15 @@ func (m *Manager) hydratedSnapshot(ctx context.Context, v *Mount) error {
 		return e
 	}
 	p := filepath.Join(filepath.Dir(v.Dest), "hydrated.img")
-	e := clone(v.Dest, p)
+	source, e := os.Open(v.Dest)
+	var private []extent
+	if e == nil {
+		private, e = extents(source)
+		source.Close()
+	}
+	if e == nil {
+		e = clone(v.Dest, p)
+	}
 	_, re := run(context.Background(), "dmsetup", "resume", v.DM)
 	if e != nil {
 		return e
@@ -46,12 +56,12 @@ func (m *Manager) hydratedSnapshot(ctx context.Context, v *Mount) error {
 	id := v.Root
 	go func() {
 		defer close(result.done)
-		result.ranges, result.err = m.earlyWrites(bg, p, id)
+		result.ranges, result.err = m.earlyWrites(bg, p, id, private)
 		result.clean = result.err == nil && len(result.ranges) == 0
 	}()
 	return nil
 }
-func (m *Manager) earlyWrites(ctx context.Context, p, id string) ([]chunk.Range, error) {
+func (m *Manager) earlyWrites(ctx context.Context, p, id string, before ...[]extent) ([]chunk.Range, error) {
 	r, e := m.load(ctx, id)
 	if e != nil {
 		return nil, e
@@ -61,8 +71,17 @@ func (m *Manager) earlyWrites(ctx context.Context, p, id string) ([]chunk.Range,
 		return nil, e
 	}
 	defer f.Close()
-	var out []chunk.Range
-	e = (chunk.Chunker{}).File(f, r.VirtualSize, func(o int64, h string, _ []byte) error {
+	es, e := extents(f)
+	if e != nil {
+		return nil, e
+	}
+	// Reflinking itself makes source-private extents shared. Preserve the
+	// pre-reflink view for new writes outside the parent root.
+	for _, saved := range before {
+		es = append(es, saved...)
+	}
+	hashRanges, out := earlyRanges(r, es)
+	e = (chunk.Chunker{}).Ranges(f, r.VirtualSize, hashRanges, func(o int64, h string, _ []byte) error {
 		if e := ctx.Err(); e != nil {
 			return e
 		}
@@ -98,4 +117,29 @@ func (m *Manager) poll(v *Mount, stop <-chan struct{}) {
 			}
 		}
 	}
+}
+
+// Parent chunks may have changed or become holes. Private non-parent extents
+// are necessarily new writes; mark their chunks without reading sparse holes.
+func earlyRanges(r root.Root, es []extent) (hashes, changed []chunk.Range) {
+	for key := range r.Chunks {
+		o, _ := strconv.ParseInt(key, 10, 64)
+		hashes = append(hashes, chunk.Range{Offset: o, Length: min(chunk.Size, r.VirtualSize-o)})
+	}
+	seen := map[int64]bool{}
+	for _, x := range es {
+		if x.Flags&0x2000 != 0 {
+			continue
+		}
+		end := min(r.VirtualSize, int64(x.Logical+x.Length))
+		for o := int64(x.Logical) / chunk.Size * chunk.Size; o < end; o += chunk.Size {
+			if _, ok := r.Chunks[strconv.FormatInt(o, 10)]; !ok && !seen[o] {
+				changed = append(changed, chunk.Range{Offset: o, Length: min(chunk.Size, r.VirtualSize-o)})
+				seen[o] = true
+			}
+		}
+	}
+	sort.Slice(hashes, func(i, j int) bool { return hashes[i].Offset < hashes[j].Offset })
+	sort.Slice(changed, func(i, j int) bool { return changed[i].Offset < changed[j].Offset })
+	return
 }

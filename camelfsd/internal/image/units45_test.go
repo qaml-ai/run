@@ -92,11 +92,15 @@ func TestHydratedPartnerEarlyAndLaterWrites(t *testing.T) {
 	defer f.Close()
 	f.WriteAt([]byte{2}, chunk.Size)
 	f.Sync()
+	private, e := extents(f)
+	if e != nil {
+		t.Fatal(e)
+	}
 	partner := filepath.Join(dir, "hydrated.img")
 	if e = clone(p, partner); e != nil {
 		t.Fatal(e)
 	}
-	early, e := m.earlyWrites(context.Background(), partner, imp.Root)
+	early, e := m.earlyWrites(context.Background(), partner, imp.Root, private)
 	if e != nil || len(early) != 1 || early[0].Offset != chunk.Size {
 		t.Fatal(early, e)
 	}
@@ -162,4 +166,17 @@ func TestReleasePromotesOnlyVerifiedHydratedSnapshot(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEarlyRangesSkipHoles(t *testing.T) {
+	r := root.Root{VirtualSize: 1 << 40, Chunks: map[string]string{"0": "a", strconv.FormatInt(10*chunk.Size, 10): "b"}}
+	hashes, changed := earlyRanges(r, []extent{
+		{Logical: 0, Length: uint64(chunk.Size)},
+		{Logical: uint64(20 * chunk.Size), Length: uint64(chunk.Size)},
+		{Logical: uint64(30 * chunk.Size), Length: uint64(chunk.Size), Flags: 0x2000},
+	})
+	if len(hashes) != 2 || len(changed) != 1 || changed[0].Offset != 20*chunk.Size {
+		t.Fatal(hashes, changed)
+	}
+	t.Logf("1 TiB sparse image: hash %d parent chunks; mark %d new chunks without hashing", len(hashes), len(changed))
 }
