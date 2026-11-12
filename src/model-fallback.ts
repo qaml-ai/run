@@ -46,3 +46,24 @@ export async function withModelFallback(first: Streamed, fallback: () => Streame
   })();
   return out;
 }
+
+/**
+ * `streamed` with its failure's message rewritten by `say` (a virtual model's last member failing after the others: the
+ * request's error then names each member's, agent-host.ts `routedCall`). Every other event passes as it is.
+ */
+export async function withFailureSaid(streamed: Streamed, say: (message: AssistantMessage) => string | undefined): Promise<AssistantMessageEventStream> {
+  const stream = await streamed;
+  const out = createAssistantMessageEventStream();
+  void (async () => {
+    try {
+      for await (const event of stream) {
+        if (event.type === "error" && event.reason === "error") {
+          const said = say(event.error);
+          if (said !== undefined) { event.error.errorMessage = said; }
+        }
+        out.push(event);
+      }
+    } finally { out.end(); }
+  })();
+  return out;
+}

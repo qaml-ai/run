@@ -134,10 +134,12 @@ test("flex wait: backs off within its window, then says it is spent", async t =>
   assert.equal(await wait.retry(error), false, "the 20 s window is spent");
   assert.deepEqual(events.filter(event => event.type === "auto_retry_start").map(event => (event as { delayMs: number }).delayMs), [2_000, 4_000, 8_000, 6_000]);
   assert.deepEqual(events.at(-1), { type: "auto_retry_end", success: false, attempt: 4, finalError: error.errorMessage, failure: { errorClass: "rate_limit", providerStatus: 429, retryable: true, model: `openrouter/${CARBON}` } });
-  assert.equal(flexWaitMs({}), 30_000);
-  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "180" }), 180_000);
-  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "180" }, 600), 600_000, "a request's own wait wins (a workflow's)");
-  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "nonsense" }), 30_000);
+  assert.equal(flexWaitMs({}), 10_000);
+  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "5" }), 5_000);
+  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "180" }), 10_000, "never past the cap");
+  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "180" }, 600), 10_000, "a request's own wait too");
+  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "180" }, 3), 3_000, "a request's own wait wins below it");
+  assert.equal(flexWaitMs({ AGENT_FLEX_WAIT_SECONDS: "nonsense" }), 10_000);
   assert.equal(flexWaitMs({}, 0), 0);
 });
 
@@ -266,7 +268,9 @@ test("every member failing: the request fails with the last member's own error, 
   const ask = async () => { let last: any; for await (const event of configured.stream(resolveModel("camelrun/strong"), context, {})) last = event; return last; };
   const first = await ask();
   assert.equal(first.type, "error");
-  assert.equal(first.error.errorMessage, "502 Provider returned error: upstream reset", "the last member's error, never a bare 'exhausted'");
+  // The last member's own error first (retried as it is), then that no member can take it, naming each one's.
+  assert.ok(first.error.errorMessage.startsWith("502 Provider returned error: upstream reset (camelrun/strong: no member can take this now; "), first.error.errorMessage);
+  assert.match(first.error.errorMessage, /\(flex\): 503 flex capacity unavailable; .*\(default\): 502 Provider returned error: upstream reset; it is retried after a backoff\)$/);
   const failed = JSON.parse(logs.find(line => line.includes('"virtual_model_chain_failed"'))!);
   assert.deepEqual(failed.failures, [
     { member: `openrouter/${CARBON} (flex)`, error: "503 flex capacity unavailable" },
@@ -380,4 +384,29 @@ test("strong: a member that sends no first token in time is given up on, and the
   assert.deepEqual(run.calls.map(c => c.tier), ["flex", "default"]);
   assert.equal(run.last.type, "done");
   assert.equal(run.last.message.content[0].text, "on default");
+});
+
+test("strong, with no settings of its own: a stall is not waited on; a flex 429 waits at most the cap; a default-tier 429 fails at once, saying both members' errors; default is unchanged", async t => {
+  t.mock.method(console, "log", () => {});
+  // Flex stalls: no flex wait (it already waited its budget), the default tier answers at once.
+  let started = Date.now();
+  let run = await call("camelrun/strong", model => tier(model) === "flex" ? "HANG" : "on default", { runLimits: { firstTokenSeconds: 0.2 } });
+  assert.deepEqual(run.calls.map(c => c.tier), ["flex", "default"]);
+  assert.equal(run.last.type, "done");
+  assert.ok(Date.now() - started < 3_000, `moved at once: ${Date.now() - started} ms`);
+  // Flex answers 429 throughout: asked again within the cap (AGENT_FLEX_WAIT_SECONDS above it is cut to it), then the default tier.
+  run = await call("camelrun/strong", model => tier(model) === "flex" ? { error: "429 google/gemini-4-carbon is temporarily rate-limited upstream" } : "on default", { flexWaitSeconds: 0.05 });
+  assert.equal(run.calls.at(-1)!.tier, "default");
+  assert.equal(run.last.message.content[0].text, "on default");
+  // Both members 429: one pass, then the error names both and is retried (Pi's backoff, shared by the pair).
+  started = Date.now();
+  run = await call("camelrun/strong", () => ({ error: "429 google/gemini-4-carbon is temporarily rate-limited upstream" }), { flexWaitSeconds: 0.05 });
+  assert.equal(run.last.type, "error");
+  assert.deepEqual([...new Set(run.calls.map(c => c.tier))], ["flex", "default"]);
+  assert.equal(run.calls.filter(c => c.tier === "default").length, 1, "the default tier is asked once, never waited on");
+  assert.match(run.last.error.errorMessage, /^429 google\/gemini-4-carbon is temporarily rate-limited upstream \(camelrun\/strong: no member can take this now; /);
+  assert.ok(Date.now() - started < 3_000);
+  // camelrun/default failing everywhere keeps the last member's own error as it was.
+  run = await call("camelrun/default", () => ({ error: "429 Rate limit exceeded" }));
+  assert.equal(run.last.error.errorMessage, "429 Rate limit exceeded");
 });

@@ -1,7 +1,7 @@
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEvent, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
 import { getModels, getModel, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
-import { resolveModel, routeModel, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
+import { resolveModel, routeModel, virtualChain, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext, refusedReasoningReplay } from "./deepseek-policy.ts";
 import { OutputRequest } from "./output-request.ts";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
@@ -185,7 +185,8 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             continue;
           }
           // Flex with no capacity: asked again within the call's flex wait, then the next member (the default tier) takes it below.
-          if (event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
+          // A first-token stall is not asked again: it already waited its budget, and the default tier takes it at once.
+          if (event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && isModelUnavailable(event.error) && !isStalled(event.error.errorMessage) && !options?.signal?.aborted) {
             flex ??= new FlexWait(flexWaitMs(env, prepared.config.flexWaitSeconds), hooks.onRetryEvent);
             if (await flex.retry(event.error, options?.signal)) { retry = true; continue; }
             if (prepared.virtualNext) {
@@ -227,8 +228,15 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             routing.failed = prepared.model;
             if (event.reason !== "aborted") {
               failed(prepared.model, event.error);
-              // The chain's last member failed too: what each member answered, so the failure can be read in the logs.
-              if (!prepared.virtualNext) console.log(JSON.stringify({ type: "virtual_model_chain_failed", tenant: env.AGENT_TENANT ?? null, model: prepared.config.model, failures: routing.failures.slice(-8) }));
+              // The chain's last member failed too: what each member answered, so the failure can be read in the logs, and,
+              // when none could take it now, said in the error itself (still the last member's error first, so it is retried
+              // as that error is: Pi's backoff is the pair's, and its retry starts at the head again).
+              if (!prepared.virtualNext) {
+                console.log(JSON.stringify({ type: "virtual_model_chain_failed", tenant: env.AGENT_TENANT ?? null, model: prepared.config.model, failures: routing.failures.slice(-8) }));
+                const tried = routing.failures.slice(-(virtualChain(prepared.config.model)?.length ?? 1));
+                if (tried.length > 1 && (prepared.model as { firstTokenBudget?: unknown }).firstTokenBudget && isModelUnavailable(event.error))
+                  event.error.errorMessage = `${event.error.errorMessage ?? "failed"} (${prepared.config.model}: no member can take this now; ${tried.map(failure => `${failure.member}: ${failure.error.slice(0, 120)}`).join("; ")}; it is retried after a backoff)`;
+              }
             }
           }
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; routing.failures = []; }

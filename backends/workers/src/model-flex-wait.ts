@@ -11,14 +11,21 @@ import type { ModelRetryEvent } from "./model-replay-retry.ts";
  * backoff for this long, then the virtual model's next member (the same model on the default tier) takes the call.
  * An ordinary agent's default; a workflow, which tolerates latency, sets its own (`flexWaitSeconds`).
  */
-export const FLEX_WAIT_SECONDS = 30;
+export const FLEX_WAIT_SECONDS = 10;
+/**
+ * The longest any call waits for flex, whatever asked for more (a workflow's `flexWaitSeconds`, AGENT_FLEX_WAIT_SECONDS).
+ * Flex answers a large request with a 429 at once when it has no room (probed 2026-11-12, before and after our own Google
+ * key on OpenRouter: 0 of 10 at 60k tokens), so a long wait only delays the default tier, which answers. One constant,
+ * to change as flex's capacity does.
+ */
+export const STRONG_FLEX_WAIT_CAP_SECONDS = 10;
 const FIRST_DELAY_MS = 2_000, MAX_DELAY_MS = 15_000;
 
-/** The flex wait for a call: the request's `flexWaitSeconds`, else AGENT_FLEX_WAIT_SECONDS, else FLEX_WAIT_SECONDS; 0 moves at once. */
+/** The flex wait for a call: the request's `flexWaitSeconds`, else AGENT_FLEX_WAIT_SECONDS, else FLEX_WAIT_SECONDS, at most STRONG_FLEX_WAIT_CAP_SECONDS; 0 moves at once. */
 export function flexWaitMs(env: { AGENT_FLEX_WAIT_SECONDS?: string }, requested?: number): number {
   const configured = env.AGENT_FLEX_WAIT_SECONDS === undefined || env.AGENT_FLEX_WAIT_SECONDS === "" ? NaN : Number(env.AGENT_FLEX_WAIT_SECONDS);
   const seconds = typeof requested === "number" && Number.isFinite(requested) && requested >= 0 ? requested : Number.isFinite(configured) && configured >= 0 ? configured : FLEX_WAIT_SECONDS;
-  return Math.min(seconds, 3_600) * 1_000;
+  return Math.min(seconds, STRONG_FLEX_WAIT_CAP_SECONDS) * 1_000;
 }
 
 /** Whether a model is a member asked on flex (virtual-models.ts). */

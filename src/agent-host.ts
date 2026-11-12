@@ -23,7 +23,7 @@ import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
-import { withModelFallback } from "./model-fallback.ts";
+import { withFailureSaid, withModelFallback } from "./model-fallback.ts";
 import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../shared/gemini-reasoning.ts";
 import { askedTier, routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
@@ -930,14 +930,21 @@ export function createAgentHost(hostIO: HostIO) {
        */
       const routedCall = (reason: ModelRouteReason, call: (on: AgentConfig["model"]) => ReturnType<typeof stream>, signal: AbortSignal | undefined, selected: AgentConfig["model"], previous?: AssistantMessage): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
         if (!selected.virtual) return call(selected);
+        // Each member's failure this request moved past, for the error when the last one fails too.
+        const tried: string[] = [];
         const attempt = (on: AgentConfig["model"]): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
           routed = on;
           const first = call(on);
           const next = routeModel(selected, { reason: "retry", failed: on });
-          if (!next) return first;
+          const member = `${on.provider}/${on.id}${(on as { serviceTier?: string }).serviceTier ? ` (${(on as { serviceTier?: string }).serviceTier})` : ""}`;
+          // A chain with first-token budgets (camelrun/strong) whose last member cannot take it either: the error says so,
+          // naming each member's, with the last one's own first, so it is retried as that error is (Pi's backoff, the pair's).
+          if (!next) return tried.length && (on as { firstTokenBudget?: unknown }).firstTokenBudget ? withFailureSaid(first, message => isModelUnavailable(message)
+            ? `${message.errorMessage ?? "failed"} (${selected.virtual}: no member can take this now; ${[...tried, `${member}: ${(message.errorMessage ?? "failed").slice(0, 120)}`].join("; ")}; it is retried after a backoff)` : undefined) : first;
           return withModelFallback(first, () => attempt(next), {
             moves: (message, partial) => isModelUnavailable(message) && !partial?.content.length,
             blocked: message => {
+              tried.push(`${member}: ${(message.errorMessage ?? "failed").slice(0, 120)}`);
               recordModelFallback({ tenant: config.tenant, agent: config.id, from: `${on.provider}/${on.id}`, to: `${next.provider}/${next.id}`, reason: "unavailable", errorClass: errorClass(message.errorMessage ?? "") });
             },
             unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: `${on.provider}/${on.id}`, fallback: `${next.provider}/${next.id}`, error: safeError(error) })),

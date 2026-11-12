@@ -381,3 +381,34 @@ test("strong: flex that sends no first token in time is given up on, and the def
   assert.equal(run.outcome.result.reply, "From the default tier.", JSON.stringify(run.outcome));
   assert.deepEqual(requests, ["flex", "default"]);
 });
+
+test("strong: a flex 429 moves to the default tier at once; both tiers 429 fails the request naming both, and camelrun/default's error is as it was", async t => {
+  const requests: (string | undefined)[] = [];
+  let defaultDown = false;
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    requests.push(body.service_tier);
+    if (body.service_tier === "flex" || defaultDown)
+      return res.writeHead(429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "google/gemini-4-carbon is temporarily rate-limited upstream", code: 429 } }));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "From the default tier.", annotations: [] }] }]).events)
+      res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: url } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
+  const run = await r.prompt(agent, "Say hello");
+  assert.equal(run.outcome.result.reply, "From the default tier.", JSON.stringify(run.outcome));
+  assert.deepEqual(requests, ["flex", "default"], "no wait on flex");
+
+  defaultDown = true;
+  requests.length = 0;
+  const down = await r.prompt(agent, "Say hello again");
+  const error = JSON.stringify(down.outcome);
+  assert.match(error, /camelrun\/strong: no member can take this now; openrouter\/google\/gemini-4-carbon \(flex\): .*rate-limited upstream; openrouter\/google\/gemini-4-carbon \(default\): .*rate-limited upstream; it is retried after a backoff/, error);
+  assert.equal(requests[0], "flex");
+  assert.ok(requests.filter(tier => tier === "default").length >= 1);
+});
