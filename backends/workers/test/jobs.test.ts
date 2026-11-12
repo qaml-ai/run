@@ -7,7 +7,7 @@ import test from "node:test";
 import { camelSync, inlineFiles, tarEnd, tarEntry, volumeFiles } from "../src/jobs/camel-sync.ts";
 import { readCapped, runContainerJob, type JobMeter } from "../src/jobs/container-job.ts";
 import { jobDriver, jobObjectName } from "../src/jobs/driver.ts";
-import { JOB_LIMITS, JobSpecError, jobInstance, jobSpec, type JobResult } from "../src/jobs/job.ts";
+import { JOB_LIMITS, JobSpecError, jobInstance, jobSpec, jobVolume, type JobResult } from "../src/jobs/job.ts";
 import { SNAPSHOT_TTL_MS, type ComputerSnapshot } from "../src/computers/provider.ts";
 
 const encoder = new TextEncoder(), decoder = new TextDecoder();
@@ -357,4 +357,11 @@ test("JOB_PROVIDER: containers, hosts or auto, each only where configured; auto 
   const containersOnly = jobDriver({ COMPUTER_CONTAINERS: containerNs });
   assert.ok(containersOnly.ok);
   await assert.rejects(containersOnly.driver.run({ payer: PAYER, id: "big2", command: "true", timeoutSeconds: 5, limits: { cpus: 16 } }), /largest has 4 vCPUs/);
+});
+
+test("a job at a volume that is gone says so, naming the volume and why a workflow's fork would be", async () => {
+  const gone = jobVolume(async () => { throw Object.assign(new Error("FILE_404:Unknown volume"), { status: 404 }); }, "vol_fork");
+  await assert.rejects(gone, (error: unknown) => error instanceof JobSpecError && /No volume vol_fork: .*forks are deleted when the workflow ends/.test((error as Error).message));
+  await assert.rejects(jobVolume(async () => { throw Object.assign(new Error("down"), { status: 503 }); }, "vol_x"), /down/, "anything else is not a missing volume");
+  assert.equal(await jobVolume(async () => "the volume", "vol_ok"), "the volume");
 });

@@ -1048,7 +1048,7 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   assert.match(await call(`/v1/volumes/${checked.volume}/files${checked.stdout.path}`), /PASS/);
   const items = (await call(`/v1/workflows/${created.id}/items`)).items as { key: string; kind: string; status: string }[];
   assert.deepEqual(items.map(item => [item.key, item.kind, item.status]).sort(),
-    [["check", "job", "done"], ["peek", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"]]);
+    [["check", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"], ["peek", "job", "done"]]);
   // The job's computer slot was given back when it ended.
   assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine like 'job:wf-%' and expires_at > $2", ["camelrun-proto-local", Date.now()])).rowCount, 0);
   // Its container time was metered once, to the owner agent, under the job's own receipt, and counts in the workflow's ledger.
