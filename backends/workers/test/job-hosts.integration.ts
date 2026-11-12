@@ -253,9 +253,9 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
   });
   api.listen(0, "127.0.0.1"); await once(api, "listening");
   t.after(() => new Promise<void>(resolve => api.close(() => resolve())));
-  const fixture = await startFixture({ entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
+  const fixture = await startFixture({ camelfsStub: true, entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
     JOB_HOST_ATTESTORS: "test", JOB_HOST_TEST_SECRET: secret, JOB_HOST_WAIT_SECONDS: "5", AGENT_WORKFLOW_TENANTS: "*",
-    CAMELFS_API_URL: `http://127.0.0.1:${(api.address() as { port: number }).port}`, CAMELFS_API_TOKEN: token,
+    TEST_CAMELFS_URL: `http://127.0.0.1:${(api.address() as { port: number }).port}`, CAMELFS_API_TOKEN: token,
   } });
   t.after(() => fixture.stop());
   const call = async (path: string, body?: unknown) => {

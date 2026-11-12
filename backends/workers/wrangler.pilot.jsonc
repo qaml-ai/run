@@ -119,6 +119,8 @@
       }
     }
   ],
+  // The camelFS v0 host (EC2 m8id) through the camel-fs-proto tunnel to its import proxy on 127.0.0.1:8790; id set when Miguel creates the VPC service.
+  "vpc_services": [{ "binding": "CAMELFS", "service_id": "PENDING_CAMELFS_VPC_SERVICE_ID" }],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

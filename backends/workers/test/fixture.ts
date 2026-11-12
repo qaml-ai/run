@@ -74,6 +74,8 @@ export async function startFixture(
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
     entrypoint?: string;
+    /** Bind camelFS to the test-only CamelfsStub named entrypoint. */
+    camelfsStub?: boolean;
     scheduled?: boolean;
     signal?: AbortSignal;
     /** No AGENT_PUBLIC_URL, as a local `wrangler dev` or a self-host without one: origins come from requests. */
@@ -185,6 +187,10 @@ export async function startFixture(
       dockerfile?: string;
     }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
+  if (options.camelfsStub) config.services = [
+    ...(config.services ?? []),
+    { binding: "CAMELFS", service: config.name, entrypoint: "CamelfsStub" },
+  ];
   config.hyperdrive[0].localConnectionString = databaseUrl;
   config.vars = {
     ...config.vars,

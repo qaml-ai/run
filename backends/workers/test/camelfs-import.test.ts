@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { camelfsConfigured, importTree, volumeLineage } from "../src/jobs/camelfs.ts";
 
-const env = { CAMELFS_API_URL: "https://camelfs.invalid/", CAMELFS_API_TOKEN: "unit-test-private-token" };
+const env = { CAMELFS: { fetch: async () => { throw new Error("unexpected binding call"); } }, CAMELFS_API_TOKEN: "unit-test-private-token" };
 const tree = "a".repeat(40), lineage = volumeLineage("tenant", "volume");
 const file = (path: string, text: string) => ({ path, key: `files/${path}`, size: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") });
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status });
 
 test("imports missing blobs once, then only a changed blob with its parent tree", async () => {
   assert.equal(camelfsConfigured(env), true);
+  assert.equal(camelfsConfigured({}), false);
+  assert.equal(camelfsConfigured({ CAMELFS: env.CAMELFS }), false);
   assert.equal(camelfsConfigured({ ...env, CAMELFS_API_TOKEN: "" }), false);
   assert.equal(camelfsConfigured({ CAMELFS_API_TOKEN: "x" }), false);
   const stored = new Set<string>(), puts: string[] = [], posts: unknown[] = [];
@@ -18,13 +20,15 @@ test("imports missing blobs once, then only a changed blob with its parent tree"
     assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${env.CAMELFS_API_TOKEN}`);
     assert.ok(init?.signal);
     if (init?.method === "POST") {
-      assert.equal(String(url), "https://camelfs.invalid/v0/trees");
+      assert.equal(String(url), "http://camelfs/v0/trees");
       const input = JSON.parse(init.body as string); posts.push(input);
       assert.equal(input.lineage, lineage);
       const missing = Object.values(input.files as Record<string, { sha256: string }>).map(f => f.sha256).filter(hash => !stored.has(hash));
       return missing.length ? json(409, { missing: [...missing, missing[0]] }) : json(200, { tree });
     }
     const parsed = new URL(String(url)), hash = parsed.pathname.split("/").at(-1)!;
+    assert.equal(parsed.origin, "http://camelfs");
+    assert.equal(parsed.pathname, `/v0/blobs/${hash}`);
     assert.equal(parsed.searchParams.get("lineage"), lineage);
     assert.equal(new Headers(init?.headers).get("content-type"), "application/octet-stream");
     assert.equal(new Headers(init?.headers).get("content-length"), String((init?.body as Uint8Array).byteLength));
@@ -34,7 +38,11 @@ test("imports missing blobs once, then only a changed blob with its parent tree"
   };
   const read = async (f: { path: string }) => { const body = Buffer.from(bytes.get(f.path)!); return { body, size: body.length }; };
   const files = [...bytes].map(([path, text]) => file(path, text));
-  assert.deepEqual(await importTree(env, { lineage, files, read }, fetcher), { tree, uploaded: 2 });
+  const binding = { fetch(input: Request | string, init?: RequestInit) {
+    assert.equal(this, binding);
+    return fetcher(input, init);
+  } };
+  assert.deepEqual(await importTree({ ...env, CAMELFS: binding }, { lineage, files, read }), { tree, uploaded: 2 });
   bytes.set("/b", "changed");
   const changed = file("/b", "changed");
   assert.deepEqual(await importTree(env, { lineage, parentTree: tree, files: [files[0], changed], read }, fetcher), { tree, uploaded: 1 });
