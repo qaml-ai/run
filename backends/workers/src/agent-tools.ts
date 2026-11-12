@@ -1,3 +1,5 @@
+import { jobDriver } from "./jobs/driver.ts";
+import { agentJobTools } from "./agent-jobs.ts";
 import { workflowTools } from "./workflow-tools.ts";
 import { workflowsEnabled } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
@@ -498,7 +500,14 @@ export function createHarness(this: AgentRuntime): PiHarness {
             ...(conf.config.bucket ? { bucket: conf.config.bucket as string } : {}),
             ...(typeof workflowSettings === "object" && workflowSettings?.maxBudgetUsd !== undefined ? { maxBudgetUsd: workflowSettings.maxBudgetUsd } : {}),
             remaining: async () => { const spend = await this.agentSpend(await this.config()); return spend ? Math.max(0, spend.usd - spend.spent) : Infinity; },
+            jobRun: jobDriver(this.env as never).ok,
           }) });
+        }
+        // The jobs builtin (agent-jobs.ts): one command in a container of its own, on the tenants that have workflows and
+        // where a job driver exists (the pilot).
+        if (workflowsEnabled(this.env as never, conf.tenantId)) {
+          const jobs = agentJobTools({ env: this.env as never, tenant: conf.tenantId, agentId: conf.id, storage: this.ctx.storage });
+          if (jobs.length) registry.install({ name: "camel.jobs", tools: jobs });
         }
         registry.install({
           name: "camel.linux",

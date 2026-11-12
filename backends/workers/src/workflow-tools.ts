@@ -23,6 +23,8 @@ export const WORKFLOW_START_DESCRIPTION =
   "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`. " +
   "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them. " +
   "job({ command, timeoutSeconds, at: volumeId, outputs }) runs one shell command on a copy of the volume in a container of its own and answers its exit code and output.";
+/** Where the agent also has job_run (agent-jobs.ts): a single command is not a workflow. */
+export const WORKFLOW_START_JOB_RUN = " To run a command yourself, use job_run, not a workflow.";
 
 export interface WorkflowToolsHost {
   env: WorkflowEnv;
@@ -34,6 +36,8 @@ export interface WorkflowToolsHost {
   /** What the agent may still spend (USD), Infinity without a spend limit. */
   remaining(): Promise<number>;
   maxBudgetUsd?: number;
+  /** The agent also has job_run: workflow_start says to use it for a single command. */
+  jobRun?: boolean;
 }
 
 const text = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }], structuredOutput: value as never });
@@ -57,7 +61,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       execute: async (args: Record<string, unknown>, api) => text(await run(args, api.callId)) });
 
   return [
-    tool("workflow_start", WORKFLOW_START_DESCRIPTION, {
+    tool("workflow_start", WORKFLOW_START_DESCRIPTION + (host.jobRun ? WORKFLOW_START_JOB_RUN : ""), {
       script: { type: "string", description: `The workflow's JavaScript: its body runs as an async function (await and return at the top level), at most ${WORKFLOW_SCRIPT_CHARS} characters` },
       args: { description: "JSON the script reads as `args`" },
       budgetUsd: { type: "number", description: "The most the workflow may spend in USD; it pauses when that is spent" },
