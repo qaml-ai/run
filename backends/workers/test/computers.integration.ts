@@ -1051,17 +1051,22 @@ test("workflows: children edit forks of a repo volume with their file tools, com
     [["check", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"], ["peek", "job", "done"]]);
   // The job's computer slot was given back when it ended.
   assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine like 'job:wf-%' and expires_at > $2", ["camelrun-proto-local", Date.now()])).rowCount, 0);
-  // Its container time was metered once, to the owner agent, under the job's own receipt, and counts in the workflow's ledger.
+  // Each job's container time was metered once, to the owner agent, under the job's own receipt, and counts in the workflow's ledger.
   let receipts: any[] = [];
-  for (let i = 0; i < 50 && !receipts.length; i++) {
+  for (let i = 0; i < 50 && receipts.length < 2; i++) {
     receipts = (await fixture.db.query("select message->'_workersAuxiliary' as receipt from pi_usage_receipts where tenant=$1 and session_id=$2 and message->'_workersAuxiliary'->>'kind'='computer'", ["camelrun-proto-local", owner.id])).rows;
-    if (!receipts.length) await new Promise(resolve => setTimeout(resolve, 200));
+    if (receipts.length < 2) await new Promise(resolve => setTimeout(resolve, 200));
   }
-  assert.equal(receipts.length, 1, JSON.stringify(receipts));
-  assert.match(receipts[0].receipt.callId, /^computer:job:wf-[0-9a-f]{40}$/);
-  const jobItem = items.find(item => item.key === "check") as unknown as { costUsd?: number };
-  assert.ok(jobItem.costUsd !== undefined && Math.abs(jobItem.costUsd - receipts[0].receipt.costUsd) < 1e-9, JSON.stringify({ jobItem, receipts }));
-  assert.ok(done.spent.usd >= jobItem.costUsd!, JSON.stringify(done.spent));
+  assert.equal(receipts.length, 2, JSON.stringify(receipts));
+  // A job's id (workflow-jobs.ts jobId): its workflow, key and attempt, hashed.
+  const jobId = (workflow: string, key: string, attempt: number) => `wf-${createHash("sha256").update(`${workflow}\n${key}\n${attempt}`).digest("hex").slice(0, 40)}`;
+  for (const key of ["check", "peek"]) {
+    const receipt = receipts.find(row => row.receipt.callId === `computer:job:${jobId(created.id, key, 1)}`)?.receipt;
+    assert.ok(receipt, `${key}: ${JSON.stringify(receipts)}`);
+    const jobItem = items.find(item => item.key === key) as unknown as { costUsd?: number };
+    assert.ok(jobItem.costUsd !== undefined && Math.abs(jobItem.costUsd - receipt.costUsd) < 1e-9, JSON.stringify({ jobItem, receipts }));
+  }
+  assert.ok(done.spent.usd >= receipts.reduce((sum, row) => sum + row.receipt.costUsd, 0) - 1e-9, JSON.stringify(done.spent));
 
   // The workflow ended: its children's forks are deleted, which releases their pins on the repo's content.
   const forks = (items as unknown as { kind: string; result?: { fork?: { volume: string } } }[]).filter(item => item.kind === "agent").map(item => item.result!.fork!.volume);
