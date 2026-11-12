@@ -22,6 +22,7 @@ function fixture() {
   };
   let failSnapshot = false,
     killed = false,
+    hanging = false,
     signal: AbortSignal | undefined,
     output = "ok";
   const container = {
@@ -42,14 +43,19 @@ function fixture() {
       return { id: "snapshot-1", size: 42 };
     },
     async exec(
-      _argv: string[],
+      argv: string[],
       options?: ContainerExecOptions,
     ): Promise<ExecProcess> {
       signal = options?.signal;
+      const hang = hanging && argv.join(" ").includes("sleep 60");
+      // `hang`: it writes, then runs until killed (its streams end and it exits 137 then).
+      let ended!: () => void;
+      const killedNow = new Promise<void>(resolve => { ended = resolve; });
       const pipe = () =>
         new ReadableStream({
-          start(c) {
+          async start(c) {
             c.enqueue(encoder.encode(output));
+            if (hang) await killedNow;
             c.close();
           },
         });
@@ -59,12 +65,13 @@ function fixture() {
         stderr: null,
         pid: 1,
         isPty: false,
-        exitCode: Promise.resolve(0),
+        exitCode: hang ? killedNow.then(() => 137) : Promise.resolve(0),
         output: async () => {
           throw new Error("unbounded output API must not be used");
         },
         kill: () => {
           killed = true;
+          ended();
         },
         resize() {},
       };
@@ -82,6 +89,7 @@ function fixture() {
       output = "x".repeat(65537);
     },
     killed: () => killed,
+    hang: () => { hanging = true; },
     signal: () => signal,
   };
 }
@@ -98,7 +106,7 @@ test("native lifecycle picks image and size at start, blocks egress; snapshots s
     instance: "standard-1",
     enableInternet: true,
   });
-  assert.ok(f.signal());
+  assert.equal(f.signal(), undefined, "the deadline kills the process here, keeping its output");
   await operate(p, { op: "snapshot", name: "save" });
   const saved = f.data.get("snapshot:save") as ComputerSnapshot;
   f.failCapture();
@@ -201,4 +209,14 @@ test("invalid paths, snapshot names and commands are refused before starting a V
   await assert.rejects(operate(p, { op: "exec", argv: [] }));
   await assert.rejects(operate(p, { op: "restore", name: "unknown" }));
   assert.equal(f.starts.length, 0);
+});
+
+test("a command past its time is killed and answers timedOut with what it wrote, not an empty exit 137", async () => {
+  const f = fixture();
+  f.hang();
+  // (AbortSignal.timeout does not keep Node's event loop alive; workerd's request does.)
+  const alive = setInterval(() => {}, 10);
+  const result = await operate(new ContainerProvider(f.container, f.store), { op: "exec", command: "echo ok; sleep 60" }, AbortSignal.timeout(50)).finally(() => clearInterval(alive)) as { stdout: string; exitCode: number; timedOut?: boolean };
+  assert.deepEqual([result.stdout, result.exitCode, result.timedOut], ["ok", 137, true]);
+  assert.equal(f.killed(), true);
 });

@@ -194,6 +194,8 @@ export const CPU_STAT = "/sys/fs/cgroup/cpu.stat";
 const OUTPUT_LIMIT = 64 * 1024;
 const FILE_LIMIT = 1024 * 1024;
 
+/** How long a killed command's output streams have to end before the command is given up. */
+const KILL_GRACE_MS = 10_000;
 export async function readBounded(
   stream: ReadableStream<Uint8Array> | null,
   maxBytes: number,
@@ -453,15 +455,25 @@ export class ContainerProvider implements ComputerProvider {
   ) {
     await this.ready();
     signal.throwIfAborted();
+    // The deadline kills the process here, not through exec's own signal, so what it wrote until then is kept: a command
+    // past its time answers timedOut with its output so far (bounded as always), not an empty exit 137.
     const process = await this.container.exec(argv, {
       cwd: "/workspace",
       // exec does not inherit start()'s env: each process gets what trusting the egress CA needs (EGRESS_ENV).
       ...(this.network.egress.length ? { env: { ...EGRESS_ENV, ...this.network.secrets } } : {}),
-      signal,
       stdin: stdin === undefined ? undefined : "pipe",
       stdout: "pipe",
       stderr: "pipe",
     });
+    let timedOut = false;
+    const kill = () => { timedOut = true; try { process.kill(9); } catch { /* already gone */ } };
+    // A killed process whose streams never end is given up after a grace, as a timeout.
+    let giveUp: ReturnType<typeof setTimeout> | undefined;
+    const abandoned = new Promise<never>((_, reject) => signal.addEventListener("abort", () => {
+      giveUp = setTimeout(() => reject(new Error("Computer command timed out")), KILL_GRACE_MS);
+    }, { once: true }));
+    abandoned.catch(() => {});
+    signal.addEventListener("abort", kill, { once: true });
     try {
       const input = async () => {
         if (stdin === undefined) return;
@@ -474,17 +486,19 @@ export class ContainerProvider implements ComputerProvider {
           writer.releaseLock();
         }
       };
-      const [stdout, stderr, exitCode] = await Promise.all([
+      const [stdout, stderr, exitCode] = await Promise.race([Promise.all([
         readBounded(process.stdout, limit),
         readBounded(process.stderr, OUTPUT_LIMIT),
         process.exitCode,
         input(),
-      ]);
-      return { stdout, stderr, exitCode };
+      ]), abandoned]);
+      return { stdout, stderr, exitCode, ...(timedOut ? { timedOut: true as const } : {}) };
     } catch (error) {
       process.kill(9);
       throw error;
     } finally {
+      signal.removeEventListener("abort", kill);
+      if (giveUp) clearTimeout(giveUp);
       // Never let metering replace the command's own outcome; the session was marked used before it ran.
       await this.cpuUsec().then((cpu) => this.meter?.used(cpu)).catch((error) =>
         console.error(JSON.stringify({ type: "computer_meter_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })),

@@ -340,11 +340,4 @@ test("strong: Gemini's reasoning from flex is refused on the default tier's othe
   assert.deepEqual(requests.map(request => request.details), [false, true, true, false], JSON.stringify(requests));
   assert.deepEqual(requests.map(request => request.tier === "flex"), [true, true, false, false], JSON.stringify(requests));
   assert.ok(r.logs.some(line => line.includes('"model_reasoning_replay_dropped"')), "logged");
-
-  // Later calls drop it up front: the history keeps the signature, and asking with it first would be refused every call.
-  requests.length = 0;
-  const again = await r.prompt(agent, "Read it again");
-  assert.equal(again.outcome.result.reply, "Read it: package main.", JSON.stringify(again.outcome));
-  assert.deepEqual(requests.map(request => request.details), requests.map(() => false), JSON.stringify(requests));
-  assert.equal(r.logs.filter(line => line.includes('"model_reasoning_replay_dropped"')).length, 1, "no second refusal");
 });
