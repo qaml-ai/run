@@ -165,7 +165,7 @@ Pools cancel when their last mount/connection releases them.
 Every minute, and before a cold mount whose virtual size would cross 80% usage,
 one LRU sweep removes cached chunks and complete images until filesystem usage
 falls to 60%, or no eligible files remain. Cache hits and warm image use refresh
-mtime. Live mounts pin their origin chunks and promoted images. Mount files,
+mtime at most once per minute per file. Live mounts pin their origin chunks and promoted images. Mount files,
 blank images and live snapshots are never candidates. Each sweep logs bytes
 removed and elapsed milliseconds. Reflink sharing can reduce the actual space
 reclaimed; the sweep rechecks filesystem usage after each removal.

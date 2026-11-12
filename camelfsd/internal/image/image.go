@@ -333,7 +333,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		base = filepath.Join(m.Data, "images", fmt.Sprintf("blank-%d.img", m.VirtualSize))
 	}
 	if _, e = os.Stat(base); e == nil {
-		_ = os.Chtimes(base, time.Now(), time.Now())
+		store.TouchUsed(base, time.Now())
 		e = clone(base, v.Dest)
 		v.Warm = true
 		v.State = "warm"
