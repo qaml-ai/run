@@ -110,7 +110,7 @@ export async function armImpl(this: AgentRuntime,
     if (deleted) {
       // A deleted agent wakes only for what it still owes, never for the watchdog: a child row left ended and
       // unnotified (its notify refused by the deleted agent's own config) would otherwise wake it every second.
-      const at = deletedDeadline({ billing: !!pendingBilling, events: !!pendingEvents, outbox: await this.outbox.deadline() });
+      const at = deletedDeadline({ billing: !!pendingBilling, events: !!pendingEvents, outbox: await this.outbox.wakeAt() });
       if (generation === this.maintenanceGeneration) this.maintenance = { at, tracksRuns: false };
       // Owing nothing, it goes quiet: no job, no alarm (settleDeleted re-reads the tombstone before removing either).
       if (await settleDeleted(this.ctx.storage, at, next => this.lifecycle.jobs.push({ id: "camel-wake", fn: "camel-wake", time: Math.max(Date.now() + 1, next) })) === "quiet")
@@ -145,7 +145,7 @@ export async function armImpl(this: AgentRuntime,
       await checkGcDeadline(this),
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
-      await this.outbox.deadline() ?? Infinity,
+      await this.outbox.wakeAt() ?? Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.batchQueue.deadline(config),
