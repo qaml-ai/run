@@ -19,7 +19,7 @@ const SETTLED = new Set(["completed", "failed", "aborted", "paused", "budget_exh
 export const WORKFLOW_START_DESCRIPTION =
   "Start a workflow: a JavaScript script that runs sub-agents (agent(prompt, { key, type, class, output })), waits on them (parallel(items, fn)), and returns a result. " +
   "Write a workflow when a task is many independent or repeated units of work (per file, per table, per source), needs more than a few sub-agents at once, must keep running after your turn ends, or needs a person's approval or a budget along the way; use `delegate` for a few sub-agents whose answers you need in this turn. " +
-  "A workflow outlives your turn and reports back as it goes; you own it: you can edit its script, answer its gates and stop it. " +
+  "A workflow outlives your turn and reports back as it goes: when it ends, pauses or finishes a phase you get a <workflow_notification> message, which only the runtime writes, so you need not poll it. You own it: you can edit its script and stop it. " +
   "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`.";
 
 export interface WorkflowToolsHost {
