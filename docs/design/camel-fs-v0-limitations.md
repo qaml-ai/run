@@ -92,9 +92,11 @@ becomes `fixed (#PR)` and the rows stay.
 
 Who fixes what, as of 2026-11-12: `camelfsd` units 4–5 (landed on `camelfs/daemon-v0` at `5456131a`) fixed L1, L13,
 L14 (measured on the 4 GiB stage), L20 and L54, landed L2's prefetch (its numbers wait on L61), with the unit 3 fix
-run's L46–L49 (`30d90cc5`, measured: freeze 260 → 95 ms); unit 6 (running) closes L61 first, then L4, L6, L17,
-L21, L24, L51, L52 and, folded in under the fix-now rule, L58, L59, L60; units 4–6 merge as one PR, and the rows
-flip to `fixed (#PR)` then. L55 is done (`5456131a`). **Unit 7 (next, per Miguel's fix-now rule) takes the bigger
+run's L46–L49 (`30d90cc5`, measured: freeze 260 → 95 ms); unit 6 (landed on the branch at `81ee7ec8`, 13 commits,
+gofmt/vet/tests green on a clean checkout) fixed L4, L6, L17, L21, L24, L51, L52, L58, L59, L60 and L61, landed
+the crash-cleanup half of L15, and added `imageMs` and `wallMs` to the checkpoint timings (`a749724a`); the L61
+host re-measurement of cold read and hydration (for L2) waits on a host slot. Units 4–6 merge as one PR, and every
+"fixed on `camelfs/daemon-v0`" row flips to `fixed (#PR)` then. L55 is done (`5456131a`). **Unit 7 (next, per Miguel's fix-now rule) takes the bigger
 cold-read fix, L2 and L19: parallel pack-based hydration at 32–64 in flight, multi-connection NBD with large
 requests, demand priority over hydration, ublk if NBD stays bounded; target within ~2× of the NIC ceiling.** It also
 adds the warm-dentries walk measurement for L36/L37. **L36/L37, the per-turn freeze growing with file count
