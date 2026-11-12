@@ -264,9 +264,19 @@ test("host-side sync: each file fetched with the job's token, checked, and writt
   assert.deepEqual(seen, ["Bearer t0ken", "Bearer t0ken"]);
   assert.deepEqual(writes.filter(write => write.path === "data/big.bin").map(write => write.append ?? false), [false, true, true]);
   assert.equal(writes.filter(write => write.path === "data/big.bin").reduce((sum, write) => sum + write.bytes, 0), big.length);
-  assert.deepEqual(writes.at(-1), { path: "notes.txt", bytes: 2 });
+  assert.deepEqual(writes.filter(write => write.path === "notes.txt"), [{ path: "notes.txt", bytes: 2 }]);
   // A file that does not match its manifest fails the sync: wrong bytes, or more than it says.
   await assert.rejects(pullFiles(vm, { url: "https://run.example/sync/job", token: "t", files: [{ path: "notes.txt", size: 2, sha256: "0".repeat(64) }] }, (async () => new Response(small as BodyInit)) as typeof fetch), /integrity/);
   await assert.rejects(pullFiles(vm, { url: "https://run.example/sync/job", token: "t", files: [{ path: "notes.txt", size: 1, sha256: sha(small) }] }, (async () => new Response(small as BodyInit)) as typeof fetch), /larger than its manifest/);
   await assert.rejects(pullFiles(vm, { url: "https://run.example/sync/job", token: "t", files: [{ path: "x", size: 1, sha256: "" }] }, (async () => new Response("no", { status: 401 })) as typeof fetch), /answered 401/);
+});
+
+test("host-side sync ends at the job's deadline, whatever is still in flight", async () => {
+  const { pullFiles } = await import("../jobhost/agent.ts");
+  const vm = { request: async () => ({ ok: true }) };
+  // A runtime that never finishes sending: the sync gives up at `until`, not after each file's own timeout.
+  const stalled = ((_url: string, init: RequestInit) => new Promise<Response>((_, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+  const began = Date.now();
+  await assert.rejects(pullFiles(vm, { url: "https://run.example/sync/job", token: "t", files: [{ path: "a", size: 1, sha256: "" }, { path: "b", size: 1, sha256: "" }], until: Date.now() + 300 }, stalled), /past the job's deadline/);
+  assert.ok(Date.now() - began < 3_000);
 });

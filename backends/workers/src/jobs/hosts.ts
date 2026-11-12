@@ -25,6 +25,7 @@ import type { WebhookEnv } from "../webhooks.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
+import { HostSyncStore } from "./host-sync-store.ts";
 import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
 /** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
@@ -67,6 +68,8 @@ export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & HostPriceEnv & {
   JOB_HOST_WAIT_SECONDS?: string;
   /** The scaler's credential (infra/job-hosts/scaler): it reads demand and drains hosts, nothing else. */
   JOB_HOST_SCALER_TOKEN?: string;
+  /** Host-side sync fetches per client address (a Cloudflare rate limiting binding; generous). Unset, not limited. */
+  JOB_HOST_SYNC_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   /** Enrollments per client address (a Cloudflare rate limiting binding). The aws attestor refuses to run without it outside TEST_MODE. */
   JOB_HOST_ENROLL_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   AGENT_PUBLIC_URL?: string;
@@ -550,7 +553,8 @@ export class JobHost extends DurableObject<JobHostsEnv> {
   async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult & { ranFrom?: number; ranUntil?: number }> {
     if (this.cancelled.delete(id)) return { ok: false, code: "stopped", message: "The job was stopped" };
     const result = await new Promise<WireResult>(resolve => {
-      const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, code: "container_failed", message: "The job host did not answer in time" }); }, deadlineMs);
+      // Past its deadline the job is given up: the host is told to stop it (its VM, its slot, any sync still running).
+      const timer = setTimeout(() => { this.pending.delete(id); this.send({ type: "cancel", id }); resolve({ ok: false, code: "container_failed", message: "The job host did not answer in time" }); }, deadlineMs);
       this.pending.set(id, result => { clearTimeout(timer); resolve(result); });
       if (!this.send({ type: "job", id, spec })) { clearTimeout(timer); this.pending.delete(id); resolve({ ok: false, code: "start_failed", message: "The job host is not connected" }); }
     });
@@ -577,10 +581,6 @@ export class JobHost extends DurableObject<JobHostsEnv> {
 }
 
 const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data), size: wire.size, truncated: wire.truncated });
-
-/** A large tree's host-side sync, for the job's host: its token (hashed), until when, and the files with their keys. */
-type HostSync = { hash: string; expiresAt: number; files: { path: string; size: number; sha256: string; key: string }[] };
-const SYNC_KEY = "host-sync";
 
 /** One job on a host: admission, a slot, placement, the meter, the result. */
 export class HostJob extends DurableObject<JobHostsEnv> {
@@ -701,7 +701,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       // Whatever ended it (a result, a refusal, a throw), it no longer waits: a later run or stop sees that.
       if (this.waiting === waiting) this.waiting = undefined;
       // Its host-side sync ends with it: the token serves nothing more.
-      await this.ctx.storage.delete(SYNC_KEY).catch(() => {});
+      try { new HostSyncStore(this.ctx.storage.sql).clear(); } catch { /* none */ }
     }
   }
   /**
@@ -730,9 +730,13 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const origin = this.env.AGENT_PUBLIC_URL?.replace(/\/+$/, "");
     if (!origin) throw new Error("Host-side sync needs AGENT_PUBLIC_URL");
     const token = randomBytes(32).toString("base64url");
+    // Its deadline: the job's lifetime from now, after the longest it may wait for a host. The sync must end by then,
+    // and the token serves nothing after it.
+    const expiresAt = Date.now() + this.waitMs() + jobLifetimeMs(spec.timeoutSeconds);
     const manifest = entries.map(entry => ({ path: jobPath(entry.path, "file path"), size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)!, key: entry.key }));
-    await this.ctx.storage.put<HostSync>(SYNC_KEY, { hash: digest(token), expiresAt: Date.now() + jobLifetimeMs(spec.timeoutSeconds) + HOST_WAIT_MS, files: manifest });
-    return { files: out, sync: { url: `${origin}/v1/internal/job-hosts/sync/${encodeURIComponent(spec.id)}`, token, files: manifest.map(({ key: _key, ...file }) => file) } };
+    new HostSyncStore(this.ctx.storage.sql).put(token, expiresAt, manifest);
+    const files = manifest.map(({ key: _key, ...file }) => file);
+    return { files: out, sync: { url: `${origin}/v1/internal/job-hosts/sync/${encodeURIComponent(spec.id)}`, token, files, until: expiresAt } };
   }
   /**
    * GET /sync/<index>, from the job's host (host-side sync): one file of its manifest, streamed from storage, for the
@@ -741,15 +745,15 @@ export class HostJob extends DurableObject<JobHostsEnv> {
   async fetch(request: Request): Promise<Response> {
     const match = /^\/sync\/(\d{1,6})$/.exec(new URL(request.url).pathname);
     if (!match || request.method !== "GET") return new Response("Not found", { status: 404 });
-    const sync = await this.ctx.storage.get<HostSync>(SYNC_KEY);
     const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
-    if (!sync || sync.expiresAt <= Date.now() || !sameText(digest(token), sync.hash)) return new Response("Unauthorized", { status: 401 });
-    const file = sync.files[Number(match[1])];
-    if (!file || !this.env.BUCKET) return new Response("Not found", { status: 404 });
+    const file = new HostSyncStore(this.ctx.storage.sql).file(token, Number(match[1]));
+    if (!file.ok) return new Response(file.status === 401 ? "Unauthorized" : "Not found", { status: file.status, headers: { "cache-control": "no-store" } });
+    if (!this.env.BUCKET) return new Response("Not found", { status: 404, headers: { "cache-control": "no-store" } });
     const object = await this.env.BUCKET.get(file.key) as { body?: ReadableStream } | null;
-    if (!object?.body) return new Response("File object missing", { status: 404 });
-    return new Response(object.body, { headers: { "content-type": "application/octet-stream", "content-length": String(file.size) } });
+    if (!object?.body) return new Response("File object missing", { status: 404, headers: { "cache-control": "no-store" } });
+    return new Response(object.body, { headers: { "content-type": "application/octet-stream", "content-length": String(file.size), "cache-control": "no-store" } });
   }
+
 
   private waiting?: { job: string; stopped: boolean };
   private waitMs() {

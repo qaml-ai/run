@@ -217,6 +217,10 @@ const worker = {
       // Host-side sync: a job's host fetches its large tree's files (HostJob.fetch checks the job's token).
       const synced = /^\/v1\/internal\/job-hosts\/sync\/([^/]{1,200})\/(\d{1,6})$/.exec(hostPath);
       if (synced && request.method === "GET" && hosts.HOST_JOBS) {
+        // Unauthenticated until the job object checks its token: limited per client address where the binding is set
+        // (generous: one job's host fetches each of its files once).
+        if (hosts.JOB_HOST_SYNC_LIMITER && !(await hosts.JOB_HOST_SYNC_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") ?? "unknown" })).success)
+          return new Response("Too many requests", { status: 429 });
         let job = "";
         try { job = decodeURIComponent(synced[1]!); } catch { /* malformed: refused below */ }
         if (!/^[A-Za-z0-9_-]{1,100}$/.test(job)) return new Response("Not found", { status: 404 });

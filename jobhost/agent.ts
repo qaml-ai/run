@@ -186,16 +186,20 @@ export const SYNC_PIECE_BYTES = 4 * 1024 * 1024;
  */
 export async function pullFiles(vm: Pick<Vm, "request">, sync: NonNullable<WireJob["sync"]>, fetcher: typeof fetch = fetch) {
   const began = Date.now();
-  for (const [index, file] of sync.files.entries()) {
-    const response = await fetcher(`${sync.url}/${index}`, { headers: { authorization: `Bearer ${sync.token}` }, signal: AbortSignal.timeout(10 * 60_000) });
+  // The whole sync is bounded by the job's own deadline (`until`): past it, every fetch in flight is aborted.
+  const controller = new AbortController(), signal = controller.signal;
+  const deadline = setTimeout(() => controller.abort(new Error("Host-side sync ran past the job's deadline")), Math.max(1, (sync.until ?? began + 10 * 60_000) - began));
+  const one = async (index: number) => {
+    const file = sync.files[index]!;
+    const response = await fetcher(`${sync.url}/${index}`, { headers: { authorization: `Bearer ${sync.token}` }, signal });
     if (!response.ok || !response.body) throw new Error(`${file.path}: the runtime answered ${response.status}`);
     const hash = createHash("sha256"), reader = response.body.getReader();
-    let size = 0, first = true, buffered = Buffer.alloc(0);
-    // Writes at most SYNC_PIECE_BYTES at a time (a stream's chunks can be any size), the last piece when `last`.
+    let size = 0, first = true, chunks: Uint8Array[] = [], held = 0;
+    // A piece of at most SYNC_PIECE_BYTES per write (a stream's chunks can be any size), joined once per piece.
     const write = async (last: boolean) => {
-      while (buffered.length >= SYNC_PIECE_BYTES || (last && (buffered.length || first))) {
-        const piece = buffered.subarray(0, SYNC_PIECE_BYTES);
-        buffered = buffered.subarray(piece.length);
+      while (held >= SYNC_PIECE_BYTES || (last && (held || first))) {
+        const all = Buffer.concat(chunks, held), piece = all.subarray(0, SYNC_PIECE_BYTES), rest = all.subarray(piece.length);
+        chunks = rest.length ? [rest] : []; held = rest.length;
         const wrote = await vm.request({ op: "files", files: [{ path: file.path, data: piece.toString("base64"), ...(first ? {} : { append: true }) }] });
         if (!wrote.ok) throw new Error(`${file.path}: ${String(wrote.error ?? "could not be written")}`);
         first = false;
@@ -207,14 +211,27 @@ export async function pullFiles(vm: Pick<Vm, "request">, sync: NonNullable<WireJ
       size += value.byteLength;
       if (size > file.size) { await reader.cancel().catch(() => {}); throw new Error(`${file.path}: larger than its manifest says`); }
       hash.update(value);
-      buffered = Buffer.concat([buffered, value]);
-      await write(false);
+      chunks.push(value); held += value.byteLength;
+      if (held >= SYNC_PIECE_BYTES) await write(false);
     }
     await write(true);
     if (size !== file.size || hash.digest("hex") !== file.sha256) throw new Error(`${file.path}: file integrity check failed`);
-  }
+  };
+  // A few files at a time (many small files are mostly round trips); the first failure ends the sync.
+  let next = 0, failure: unknown;
+  const worker = async () => {
+    while (failure === undefined && next < sync.files.length) {
+      const index = next++;
+      try { await one(index); } catch (error) { failure ??= error; }
+    }
+  };
+  try { await Promise.all(Array.from({ length: Math.min(SYNC_PARALLEL, sync.files.length) }, worker)); }
+  finally { clearTimeout(deadline); }
+  if (failure !== undefined) throw signal.aborted ? new Error("Host-side sync ran past the job's deadline") : failure;
   return Date.now() - began;
 }
+/** Files fetched at once in host-side sync. */
+export const SYNC_PARALLEL = 6;
 
 class Stopped extends Error {}
 
