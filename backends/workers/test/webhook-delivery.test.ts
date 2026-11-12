@@ -230,3 +230,18 @@ test("subscriber cache ignores usage-only endpoints, invalidates on local change
   const failing = new Subscribers({ ...db, query: async () => { throw new Error("database unavailable"); } });
   assert.equal(await failing.runs("alice"), true, "a read outage must not silently discard run events");
 });
+
+test("computer time is a usage.recorded event of its own: seconds and cost, its agent, or the workflow its tenant paid for", () => {
+  const charge = { provider: "cloudflare", model: "standard-1", kind: "computer" as const, platform: true, seconds: 42.5, timestamp: 1_700_000_000_000,
+    usage: { input: 0, output: 0, cost: { total: 0.0123 } } };
+  const agentTime = usageEvent("alice", "agent-1", charge)!;
+  assert.equal(agentTime.type, "usage.recorded");
+  assert.deepEqual(agentTime.data, { agentId: "agent-1", requestId: null, subject: null, actor: null, context: {}, keyScope: null, provider: "cloudflare", model: "standard-1",
+    kind: "computer", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, seconds: 42.5, cost: { usd: 0.0123, source: "catalog" }, at: 1_700_000_000_000 });
+  assert.equal((agentTime as { legacy?: unknown }).legacy, undefined, "the older usage webhook carries model responses only");
+  const workflowTime = usageEvent("alice", "wf_api", { ...charge, workflowId: "wf_api" })!;
+  assert.equal(workflowTime.data.agentId, null, "no agent paid for an API-started workflow's job");
+  assert.equal(workflowTime.data.workflowId, "wf_api");
+  // Web searches and renders still have none.
+  assert.equal(usageEvent("alice", "agent-1", { provider: "x", model: "y", searches: 1, usage: {} }), undefined);
+});
