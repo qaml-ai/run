@@ -477,7 +477,7 @@ test("a gate's deadline: the executor closes it first; an answer that won the ra
   h.world.expireHook = async () => { throw new Error("postgres is down"); };
   h.clock = h.alarmAt!;
   await h.runner.alarm();
-  assert.equal(h.runner.items().items.find(item => item.key === "b")!.status, "pending");
+  assert.equal(h.runner.items().items.find(item => item.key === "b")!.status, "running", "still open, not decided");
   assert.ok(h.runner.events().some(event => event.type === "alarm_failed"));
   h.world.expireHook = undefined;
   h.clock = h.alarmAt!;
