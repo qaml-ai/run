@@ -40,8 +40,8 @@ variable "runtime_public_url" {
 
 # --- Network ---
 
-variable "private_subnets" {
-  description = "Private subnets for the pools in the default VPC: availability zone => IPv4 CIDR. The CIDRs must be free in the VPC (the default subnets use 172.31.0.0/20 through 172.31.48.0/20)."
+variable "pool_subnets" {
+  description = "Dedicated public subnets for the pools in the default VPC: availability zone => IPv4 CIDR. The CIDRs must be free in the VPC (the default subnets use 172.31.0.0/20 through 172.31.48.0/20)."
   type        = map(string)
   default = {
     "us-west-2a" = "172.31.128.0/20"
@@ -49,15 +49,9 @@ variable "private_subnets" {
     "us-west-2c" = "172.31.160.0/20"
   }
   validation {
-    condition     = length(var.private_subnets) > 0 && alltrue([for cidr in values(var.private_subnets) : can(cidrhost(cidr, 0))])
-    error_message = "private_subnets needs at least one availability zone with a valid CIDR."
+    condition     = length(var.pool_subnets) > 0 && alltrue([for cidr in values(var.pool_subnets) : can(cidrhost(cidr, 0))])
+    error_message = "pool_subnets needs at least one availability zone with a valid CIDR."
   }
-}
-
-variable "nat_subnet_az" {
-  description = "Availability zone of the one NAT gateway (in that zone's default public subnet). One NAT, not one per AZ: a zone outage stops new egress from the pools in the other zones, which is acceptable while testing."
-  type        = string
-  default     = "us-west-2a"
 }
 
 variable "s3_gateway_endpoint_id" {
@@ -95,9 +89,9 @@ variable "build_instance_type" {
 }
 
 variable "build_warm_size" {
-  description = "Build hosts kept running (ASG min and desired). Each r8gd.4xlarge is about $1.18/h on demand."
+  description = "Build hosts kept running (ASG min and desired). 0: the pool scales from zero and a build waits for a cold host. Each warm r8gd.4xlarge is about $1.18/h on demand."
   type        = number
-  default     = 2
+  default     = 0
 }
 
 variable "build_max_size" {

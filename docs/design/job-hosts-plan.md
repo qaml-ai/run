@@ -162,14 +162,15 @@ In the camelRun prod account and region (to confirm: the same as the ECS runtime
     URLs, and has the SSM core permissions;
   - nothing else: no runtime database, no secrets.
 - **Networking:**
-  - private subnets for the pools;
+  - dedicated public subnets for the pools, behind a security group with no inbound rule and a return-traffic-only network ACL (no NAT, decided 2026-11-12);
   - an S3 gateway endpoint;
-  - egress through NAT for the allowlisted registries and GitHub (the allowlist is enforced on the host, per job);
+  - egress through the VPC's internet gateway for the allowlisted registries and GitHub (the allowlist is enforced on the host, per job);
   - a security group with no inbound rule and egress on 443 only.
 - **Launch templates:** two (`r8gd` build, `c8gd` test) with `EnclaveOptions.Enabled=true`, IMDSv2 required with a
-  hop limit of 1 (the host's own agent uses it; jobs cannot reach it), and the NVMe instance store mapped.
+  hop limit of 1 (the host's own agent uses it; the hop limit alone does not keep a routed sandbox out, so the host's
+  nftables rules drop sandbox traffic to IMDS), and the NVMe instance store mapped.
 - **Auto Scaling groups:**
-  - build: `r8gd.4xlarge` (8xlarge for ASAN), on-demand (decided 2026-11-12, for the testing phase), a fixed warm size of 2;
+  - build: `r8gd.4xlarge` (8xlarge for ASAN), on-demand (decided 2026-11-12, for the testing phase), a warm size that defaults to 0 (scale from zero, decided 2026-11-12; `build_warm_size=2` keeps two warm);
   - test: `c8gd.4xlarge` (a list, for more sizes), on-demand too (decided 2026-11-12; spot stays a switch, off), min 0, max 16, scaled on the runtime's queue-depth metric;
   - capacity-rebalance and lifecycle hooks on both, for draining.
 - **Quotas:** On-Demand and Spot vCPU quota increases for the Graviton families, if the current limits are below the
@@ -180,9 +181,7 @@ In the camelRun prod account and region (to confirm: the same as the ECS runtime
 - **SSM parameters:** the runtime URL and the enrollment audience for hosts. No long-lived secrets are stored on a
   host.
 
-Cost at list: the build pool's warm 2 × `r8gd.4xlarge` is the fixed cost (a few dollars an hour on-demand; reserved
-pricing can come after the testing phase). The spot test pool scales from zero. The ASG maxima are the spend cap: proposed 4 build and 16 test hosts
-until the acceptance run says otherwise.
+Cost at list: with the build pool scaling from zero, the fixed cost is about $2 a month plus S3; two warm build hosts would add about $1,730 a month ([infra/job-hosts/README.md](../../infra/job-hosts/README.md), "Cost"). The ASG maxima are the spend cap: 4 build and 16 test hosts until the acceptance run says otherwise.
 
 ## Decisions and open questions
 

@@ -4,8 +4,8 @@ mock_provider "aws" {
   mock_data "aws_vpc" {
     defaults = { id = "vpc-0123456789abcdef0", cidr_block = "172.31.0.0/16" }
   }
-  mock_data "aws_subnet" {
-    defaults = { id = "subnet-0123456789abcdef0" }
+  mock_data "aws_internet_gateway" {
+    defaults = { id = "igw-0123456789abcdef0" }
   }
   mock_data "aws_sns_topic" {
     defaults = { arn = "arn:aws:sns:us-west-2:904534089871:camelai-agent-runtime-alerts" }
@@ -106,11 +106,11 @@ run "launch_templates_harden_the_host" {
       && template.metadata_options[0].http_put_response_hop_limit == 1
       && template.enclave_options[0].enabled
       && template.key_name == null
-      && template.network_interfaces[0].associate_public_ip_address == "false"
+      && template.network_interfaces[0].associate_public_ip_address == "true"
       && template.iam_instance_profile[0].arn == aws_iam_instance_profile.host.arn
       && anytrue([for mapping in template.block_device_mappings : mapping.virtual_name == "ephemeral0"])
     ])
-    error_message = "Both launch templates need IMDSv2 with hop limit 1, Nitro Enclaves, no key pair, no public IP, the host profile and the instance store."
+    error_message = "Both launch templates need IMDSv2 with hop limit 1, Nitro Enclaves, no key pair, a public IP (no NAT), the host profile and the instance store."
   }
   assert {
     condition     = aws_launch_template.pool["build"].instance_type == "r8gd.4xlarge" && aws_launch_template.pool["test"].instance_type == "c8gd.4xlarge"
@@ -122,7 +122,7 @@ run "launch_templates_harden_the_host" {
   }
 }
 
-run "network_has_no_inbound_and_443_out" {
+run "network_public_without_nat" {
   command = apply
   assert {
     condition     = length(aws_security_group.hosts.ingress) == 0
@@ -133,20 +133,36 @@ run "network_has_no_inbound_and_443_out" {
     error_message = "The only egress rule is TCP 443."
   }
   assert {
-    condition     = alltrue([for subnet in aws_subnet.private : !subnet.map_public_ip_on_launch])
-    error_message = "Pool subnets are private."
+    condition     = length(aws_subnet.pool) == 3 && alltrue([for subnet in aws_subnet.pool : subnet.map_public_ip_on_launch])
+    error_message = "The pools get three dedicated public subnets."
   }
   assert {
-    condition     = length(aws_vpc_endpoint.s3) == 1
-    error_message = "With no existing endpoint named, an S3 gateway endpoint is created."
+    condition     = aws_route.pools_default.destination_cidr_block == "0.0.0.0/0" && aws_route.pools_default.gateway_id == "igw-0123456789abcdef0" && aws_route.pools_default.nat_gateway_id == null
+    error_message = "The pools route to the VPC's existing internet gateway, not a NAT."
+  }
+  assert {
+    condition     = length(aws_vpc_endpoint.s3) == 1 && aws_vpc_endpoint_route_table_association.s3.route_table_id == aws_route_table.pools.id
+    error_message = "S3 goes through a gateway endpoint on the pools' route table."
+  }
+  assert {
+    condition     = toset(aws_network_acl.pools.subnet_ids) == toset([for subnet in aws_subnet.pool : subnet.id])
+    error_message = "The network ACL covers every pool subnet."
+  }
+  assert {
+    condition     = [for rule in [aws_network_acl_rule.in_return_tcp, aws_network_acl_rule.in_fragmentation_needed] : [rule.egress, rule.protocol, rule.rule_action]] == [[false, "tcp", "allow"], [false, "icmp", "allow"]] && aws_network_acl_rule.in_return_tcp.from_port == 1024 && aws_network_acl_rule.in_return_tcp.to_port == 65535 && aws_network_acl_rule.in_fragmentation_needed.icmp_type == 3 && aws_network_acl_rule.in_fragmentation_needed.icmp_code == 4
+    error_message = "Inbound, the ACL allows only TCP return traffic (1024-65535) and ICMP fragmentation-needed."
+  }
+  assert {
+    condition     = aws_network_acl_rule.out_https.egress && aws_network_acl_rule.out_https.from_port == 443 && aws_network_acl_rule.out_https.to_port == 443 && aws_network_acl_rule.out_ephemeral.egress && aws_network_acl_rule.out_ephemeral.from_port == 1024 && aws_network_acl_rule.out_ephemeral.to_port == 65535
+    error_message = "Outbound, the ACL allows only TCP 443 and the ephemeral reply ports."
   }
 }
 
 run "pools_on_demand_with_maxima" {
   command = apply
   assert {
-    condition     = aws_autoscaling_group.build[0].min_size == 2 && aws_autoscaling_group.build[0].desired_capacity == 2 && aws_autoscaling_group.build[0].max_size == 4
-    error_message = "Build pool: warm 2, max 4."
+    condition     = aws_autoscaling_group.build[0].min_size == 0 && aws_autoscaling_group.build[0].desired_capacity == 0 && aws_autoscaling_group.build[0].max_size == 4
+    error_message = "Build pool: warm 0 by default (scale from zero), max 4."
   }
   assert {
     condition     = aws_autoscaling_group.test[0].min_size == 0 && aws_autoscaling_group.test[0].max_size == 16
@@ -166,6 +182,25 @@ run "pools_on_demand_with_maxima" {
     condition     = length(aws_cloudwatch_metric_alarm.pool_short) == 2 && length(aws_cloudwatch_metric_alarm.pool_status_check) == 2
     error_message = "Each pool has its alarms."
   }
+}
+
+run "warm_build_hosts_are_a_variable" {
+  command = plan
+  variables {
+    build_warm_size = 2
+  }
+  assert {
+    condition     = aws_autoscaling_group.build[0].min_size == 2 && aws_autoscaling_group.build[0].desired_capacity == 2
+    error_message = "build_warm_size sets the build pool's min and desired."
+  }
+}
+
+run "metal_and_medium_are_refused" {
+  command = plan
+  variables {
+    test_instance_types = ["c8gd.metal-24xl"]
+  }
+  expect_failures = [aws_launch_template.pool["test"]]
 }
 
 run "spot_is_opt_in" {
@@ -198,7 +233,8 @@ run "no_ami_no_pool" {
 run "warm_above_max_is_refused" {
   command = plan
   variables {
-    build_max_size = 1
+    build_warm_size = 2
+    build_max_size  = 1
   }
   expect_failures = [aws_autoscaling_group.build]
 }

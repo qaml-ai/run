@@ -35,13 +35,15 @@ resource "aws_launch_template" "pool" {
   }
 
   network_interfaces {
-    associate_public_ip_address = false
+    associate_public_ip_address = true
     delete_on_termination       = true
     security_groups             = [aws_security_group.hosts.id]
   }
 
-  # IMDSv2 only, hop limit 1: the host's own agent reads its role credentials and region; a job's microVM (one more
-  # hop, and its traffic is dropped on the host anyway) cannot.
+  # IMDSv2 only, hop limit 1: the host's own agent reads its role credentials and region. This does NOT keep a
+  # sandbox away from IMDS on its own: AWS notes that a parent routing sandbox traffic (NAT) lets it reach the
+  # parent's IMDS whatever the hop limit. The host image's nftables rules (slice 1) drop sandbox traffic to
+  # 169.254.169.254; that is the control, and slice 6's isolation suite tests it.
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
@@ -49,6 +51,8 @@ resource "aws_launch_template" "pool" {
     instance_metadata_tags      = "disabled"
   }
 
+  # Nitro Sandboxes: Firecracker creates each job's microVM through the Nitro Enclaves driver (/dev/nitro_enclaves),
+  # not /dev/kvm, so the parent must launch with enclaves enabled. See the README, "Nitro, not KVM".
   enclave_options {
     enabled = true
   }
@@ -88,15 +92,16 @@ resource "aws_launch_template" "pool" {
 
   lifecycle {
     precondition {
-      condition     = alltrue([for type in each.value.types : can(regex("^[a-z0-9]+g[a-z]*d\\.", type))])
-      error_message = "Job-host instance types must be Graviton with NVMe instance store (for example r8gd, c8gd)."
+      # Nitro Sandboxes need a non-metal type that supports Nitro Enclaves (not .metal*, not .medium).
+      condition     = alltrue([for type in each.value.types : can(regex("^[a-z0-9]+g[a-z]*d\\.", type)) && !can(regex("\\.(metal|medium)", type))])
+      error_message = "Job-host instance types must be Graviton with NVMe instance store (for example r8gd, c8gd), and not metal or medium: Nitro Sandboxes do not run on bare metal."
     }
   }
 }
 
 locals {
   asg_metrics = ["GroupDesiredCapacity", "GroupInServiceInstances", "GroupPendingInstances", "GroupTerminatingInstances", "GroupTotalInstances"]
-  subnet_ids  = [for subnet in aws_subnet.private : subnet.id]
+  subnet_ids  = [for subnet in aws_subnet.pool : subnet.id]
 }
 
 # Build: a fixed warm size (slice 8 keeps one build sandbox started on each).
