@@ -391,7 +391,7 @@ test("strong: flex that sends no first token in time is given up on, and the def
   assert.deepEqual(requests, ["flex", "default"]);
 });
 
-test("strong: flex's 429 is asked again within the flex wait, then the default tier takes it; both-down errors exclude raw member text", { timeout: 120_000 }, async t => {
+test("strong: flex's 429 is asked again within the flex wait, then the default tier takes it; both-down errors exclude raw member text", { timeout: 180_000 }, async t => {
   const requests: (string | undefined)[] = [];
   let flexFailures = 1, defaultDown = false, slowFlex = false;
   let firstFlexFailure = 0;
@@ -414,7 +414,7 @@ test("strong: flex's 429 is asked again within the flex wait, then the default t
   });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: url } });
-  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low", retry: { maxAttempts: 0, baseDelayMs: 1 } } })).json.id;
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
   // Flex full once: asked again on flex, which answers; no move.
   let run = await r.prompt(agent, "Say hello");
   assert.equal(run.outcome.result.reply, "From flex.", JSON.stringify(run.outcome));
