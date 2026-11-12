@@ -256,7 +256,7 @@ test('a deleted agent that owes nothing goes quiet (no jobs, no alarm); a live o
 test('a deleted or expired child that died before staging its run\'s ending stages and delivers it at its next start', async () => {
   const { goneStart } = await import('../src/agent-endings.ts');
   // restorePendingImpl takes this path for a deleted or expired agent.
-  assert.match(readFileSync(new URL('../src/agent-lifecycle.ts', import.meta.url), 'utf8'), /startConfig\.expiresAt <= Date\.now\(\)\)\) \{[^}]*goneStart\(this\)/);
+  assert.match(readFileSync(new URL('../src/agent-lifecycle.ts', import.meta.url), 'utf8'), /startConfig\.expiresAt <= Date\.now\(\)\)\) \{[^}]*goneStart\(this[,)]/);
   for (const tombstone of [{ deleted: true }, { expired: true }]) {
     const values = new Map<string, unknown>([['configuration', { id: 'child', tenantId: 't', config: {}, ...(tombstone.expired ? { expiresAt: 1 } : {}) }]]);
     if (tombstone.deleted) values.set('deleted', true);
@@ -273,7 +273,11 @@ test('a deleted or expired child that died before staging its run\'s ending stag
     let armed = 0;
     const runtime: any = { ctx: { storage }, records: async () => [values.get('request:run-1')], arm: async () => { armed++; } };
     runtime.outbox = new ChildOutbox({ storage, receiveEnding: async (_owner: Owner, ending: ChildEnding) => { delivered.push(ending); return { accepted: true }; }, receiveProgress: async () => ({ accepted: true }), arm: async () => {} });
-    await goneStart(runtime);
+    // Its flush runs after startup (it reaches the owners' objects): what the agent hands to afterStart.
+    const later: (() => Promise<unknown>)[] = [];
+    await goneStart(runtime, task => { later.push(task); });
+    assert.equal(later.length, 1);
+    for (const task of later) await task();
     assert.deepEqual(delivered.map(ending => [ending.agentId, ending.requestId]), [['child', 'run-1']], JSON.stringify(tombstone));
     assert.equal((values.get('request:run-1') as { endingStaged?: boolean }).endingStaged, true);
     assert.equal(runtime.outbox.size(), 0);

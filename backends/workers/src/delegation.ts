@@ -668,7 +668,11 @@ export class Delegation {
     if (!receipt.accepted) throw new HttpError(400, receipt.error ?? 'Your parent did not take the report');
     return { reported: true };
   }
-  async recover() {
+  /**
+   * `remote` runs what reaches another object (a child's cancel, a legacy child's reconcile): at startup it is given
+   * the object's waitUntil, so it runs after startup, never inside it (a child's own startup may be waiting on this one).
+   */
+  async recover(remote: (task: () => Promise<void>) => void | Promise<void> = task => task()) {
     // Evicted objects can still have the old inline representation. Move it out
     // once before status scans; large payloads must not populate the KV cache.
     for (const child of await this.rows.all()) {
@@ -677,17 +681,17 @@ export class Delegation {
     for (const child of await this.children()) {
       if (child.background && child.status === 'input_required') await this.resumePaused(child);
       if (child.cancelRequested && child.status === 'running') {
-        await this.cancelRemote(child);
+        await remote(() => this.cancelRemote(child));
         if (!child.accepted) {
           if (!child.id) { await this.update(child, { status: 'aborted', endedAt: Date.now(), held: undefined }); continue; }
           const accepted = await this.update(child, { accepted: true });
           this.follow(accepted);
-          if (!accepted.outbox) await this.reconcileLegacy(accepted);
+          if (!accepted.outbox) await remote(() => this.reconcileLegacy(accepted));
           continue;
         }
       }
       if (child.accepted) this.follow(child);
-      if (child.accepted && child.status === 'running' && !child.outbox) await this.reconcileLegacy(child);
+      if (child.accepted && child.status === 'running' && !child.outbox) await remote(() => this.reconcileLegacy(child));
     }
   }
   /**

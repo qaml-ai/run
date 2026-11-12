@@ -175,8 +175,16 @@ export async function armImpl(this: AgentRuntime,
 export async function onStartImpl(this: AgentRuntime) {
     const began = Date.now(), stuck = startStuck(this, "onStart");
     try { return await withMoneyMetrics(this.env, () => this.restorePending()); }
-    finally { clearTimeout(stuck); slowStart(this, "onStart", began); }
+    finally {
+      clearTimeout(stuck); slowStart(this, "onStart", began);
+      // The whole startup (Pi's open, then onStart): over 5 s is logged, whichever step took it.
+      const total = Date.now() - this.constructedAt;
+      if (total > SLOW_STARTUP_MS) console.warn(JSON.stringify({ type: "agent_start_slow", step: "startup", ms: total, sinceConstructedMs: total }));
+    }
   }
+
+/** A whole startup this long is logged (agent_start_slow, step "startup"). */
+const SLOW_STARTUP_MS = 5_000;
 
 /**
  * Startup runs inside the SDK's blockConcurrencyWhile, which resets the object after 30 s (on the pilot, a child woken by
@@ -201,6 +209,10 @@ export function startStuck(runtime: AgentRuntime, step: string) {
 }
 
 export async function restorePendingImpl(this: AgentRuntime) {
+    // Startup holds the object's input gate (blockConcurrencyWhile, reset after 30 s): what reaches another object or
+    // Postgres, or waits on work that needs this object started, runs right after it instead, from waitUntil.
+    const afterStart = (step: string, task: () => Promise<unknown>) =>
+      this.ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "agent_start_deferred_failed", step, error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200) }))));
     const sinceConstructed = Date.now() - this.constructedAt;
     if (sinceConstructed > SLOW_START_STEP_MS) console.warn(JSON.stringify({ type: "agent_start_slow", step: "before onStart", ms: sinceConstructed, sinceConstructedMs: sinceConstructed }));
     // A deleted or expired agent restores nothing: none of its work runs again, and each step reads its configuration,
@@ -211,17 +223,24 @@ export async function restorePendingImpl(this: AgentRuntime) {
       // Except a run's ending it still owes: one that ended (its record committed) as the object died, before the event
       // that stages its ending, is staged now and delivered, as for a live agent (stageMissedEndings reads storage, not
       // the configuration a gone agent refuses).
-      await timed(this, "goneStart", () => goneStart(this));
+      await timed(this, "goneStart", () => goneStart(this, task => afterStart("goneStart", task)));
       return;
     }
     this.configurationQueue.kick();
+    // Stale preparations are released inside startup still: after it, the sweep could race a retried request's admission
+    // under the same id (releasing the new turn's slot). Its Postgres and TENANTS calls never wait on this object.
     await timed(this, "promptPreparations.sweep", () => this.promptPreparations.sweep(Date.now(), true));
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
     await timed(this, "restoreCancellations", () => this.restoreCancellations());
     await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
-    await timed(this, "delegation.recover", () => this.delegation.recover());
-    await timed(this, "notifications.drain", () => this.notifications.drain());
-    await timed(this, "outbox", async () => { await stageMissedEndings(this, await this.records()); await this.outbox.flush(); });
+    // Nothing here waits on another object, or on work that needs this one started: startup holds the object's input
+    // gate (blockConcurrencyWhile, reset after 30 s). A notice delivered to a cold agent started it from inside its own
+    // send, and a drain here waited for that send, which waited for startup: every wake was reset (B3, 2026-11-12). What
+    // reaches out (children's cancels, notices, endings to owners) runs right after startup, from waitUntil.
+    await timed(this, "delegation.recover", () => this.delegation.recover(async task => afterStart("delegation.recover", task)));
+    afterStart("notifications.drain", () => this.notifications.drain());
+    await timed(this, "outbox", async () => stageMissedEndings(this, await this.records()));
+    afterStart("outbox.flush", () => this.outbox.flush());
     // Pi restores its own work on startup. Restore the adapter's result/receipt
     // waiters too, so completion is billed without requiring a client poll.
     for (const record of await this.records())
@@ -240,7 +259,7 @@ export async function restorePendingImpl(this: AgentRuntime) {
     // Re-stage retained inputs, including settled ones, before flushing on every start.
     const mirrorConfig = await this.ctx.storage.get<Config>("configuration");
     if (mirrorConfig && !await this.ctx.storage.get("deleted") && (!mirrorConfig.expiresAt || mirrorConfig.expiresAt > Date.now()))
-      await timed(this, "restageInputMirrors", () => restageInputMirrors(this));
+      afterStart("restageInputMirrors", () => restageInputMirrors(this));
     this.ctx.waitUntil(this.flushTerminalEvents());
     this.batchQueue.kick();
     // Recover a settlement whose admission kick was interrupted by an eviction.
@@ -412,3 +431,4 @@ export async function wakeImpl(this: AgentRuntime) {
     }
     await this.arm();
   }
+
