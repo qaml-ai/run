@@ -3704,7 +3704,10 @@ def verify_webhook(body, headers, secret, *, tolerance=300, now=None):
     headers (any mapping, in any case: Flask's or Django's request.headers, a dict). `secret` is the endpoint's signing
     secret (whsec_...), or a list of secrets while you move to a new one. The signature is compared in constant time, and
     webhook-timestamp must be within `tolerance` seconds (default 300) of now, so an old request cannot be replayed.
-    A retried event keeps its id: dedupe by it. Raises WebhookVerificationError."""
+    A retried event keeps its id: dedupe by it. Raises WebhookVerificationError.
+    A usage.recorded event's data has a `kind`: response, compaction, transcription (audioSeconds), image (images), speech
+    (audioSeconds), decision (decisions) or computer (seconds of a container's time, model its instance type, no tokens;
+    workflowId, with agentId None, for a job of a workflow started with an API key). Treat a kind you do not know as other usage."""
     import hashlib
     import hmac
     import time

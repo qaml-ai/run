@@ -1,3 +1,4 @@
+import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import { HttpError } from "./errors.ts";
 import { deleteNativeFile, recordNativeFile, type NativeStorageBindings } from "./tenant-storage.ts";
@@ -85,6 +86,7 @@ export class Volume extends DurableObject<VolumeBindings> {
   private copies = new Map<string, Promise<VolumeInfo>>();
   constructor(ctx: DurableObjectState, env: VolumeBindings) {
     super(ctx, env);
+    guardAlarms(this, ctx, "Volume", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, version INTEGER NOT NULL, size INTEGER NOT NULL, key TEXT NOT NULL, contentType TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
     );

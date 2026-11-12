@@ -1015,7 +1015,9 @@ Use ARM64 binaries; UDP is blocked except for DNS through the VM's resolver.
 
 Compute is charged to your credit from observed running time and snapshot activity,
 at provider cost unless the operator sets a price. An account using prepaid billing
-must have bought credit. The operator can select Boat instead, keeping its 2-hour
+must have bought credit. A computer does not start, and a running one is stopped within
+a minute or so, once the account reaches its monthly spend limit (on any key) or, on the
+platform's, runs out of credit; the next `computer_start` says why. The operator can select Boat instead, keeping its 2-hour
 idle lease and 24-hour maximum. Both `lambda` and `boat` without credentials request
 the runtime's configured managed provider; Boat with credentials uses your account.
 `GET /v1/computers/options` says whether managed computers are available.
@@ -2433,6 +2435,10 @@ Answers are checked at the input authority, including the responder policy, and
 blocking inputs and decisions settle independently. One agent's decision answers
 arrive together in one notice. The supplied agent routes each answer to its authority;
 the inbox mirror does not authorize or settle answers.
+
+A workflow's [`gate()`](https://run.camelai.com/docs/guides/workflows.md) is an inbox item too, a decision whose
+`agent` is the workflow's id (`wf_…`): answer it the same way, with that id as
+`agent`. The answer goes to the workflow, which hands it to the script.
 
 TypeScript: `runtime.answerInbox(answers, requestId)`. Python, async or sync:
 `runtime.answer_inbox(answers, request_id="review-1")`. CLI:
@@ -5918,7 +5924,7 @@ Every event is an envelope:
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, `code` where the error has a name (`cancelled`: a stop cancelled it before it began; `aborted`; `model_stream_stalled`; `turn_limit`…), and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
-| `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image` or `speech`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added. `superseded: "content_filter"` marks a response that is not the answer: its provider's content filter blocked it and the same request went to the same model elsewhere ([models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#azure-openai)), whose own event follows. Its tokens and cost are what the blocked call took; it is not charged to your account, so do not charge your users for it. `serviceTier` (`flex` or `default`) is the OpenRouter service tier that served a response, when OpenRouter said one: `camelrun/strong` asks for flex, which costs half |
+| `usage.recorded` | A model response's usage was counted, a transcription's, images', or a computer's time | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`, `decision` or `computer`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `seconds` (a computer's, with no tokens), `cost: {usd, source}`, `at`. Computer time (an agent's computer, or a workflow's job) comes once per charged session, a long one every few minutes, with `model` its instance type; for a job of a workflow started with an API key, which no agent owns, `agentId` is `null` and `workflowId` names the workflow. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added. `superseded: "content_filter"` marks a response that is not the answer: its provider's content filter blocked it and the same request went to the same model elsewhere ([models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#azure-openai)), whose own event follows. Its tokens and cost are what the blocked call took; it is not charged to your account, so do not charge your users for it. `serviceTier` (`flex` or `default`) is the OpenRouter service tier that served a response, when OpenRouter said one: `camelrun/strong` asks for flex, which costs half |
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `detail?` (failure classification, e.g. `realtime_failed`), `error?` (privacy-safe provider error classification and message length; no raw message), `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
@@ -7466,9 +7472,9 @@ Its globals:
 | `parallel(fns)`, `parallel(items, fn)` | Runs the functions (or `fn` over each item) at once, up to the workflow's `concurrency`, and waits for all of them, even after one fails. **Every `agent()` inside it needs an explicit `key`** (the workflow faults with `key_required` otherwise): branches finish in any order, and keys are how results are matched to calls on replay |
 | `agent(prompt, { repo })` | With `repo` (a volume id), the sub-agent gets its own copy of that volume at `/repo` (a fork: no bytes copied) and edits it with its file tools; it answers `{ text, fork }` (or the validated object with `fork` in it) |
 | `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
-| `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow: a workflow started with an API key gets `null` (`job_payer_unavailable`). Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
+| `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow; a workflow started with an API key is paid by its account, and its usage shows under the workflow's id. A job the account's credit or monthly spend limit refuses pauses the workflow (`payer_exhausted`) until it is raised. Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
 | `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
-| `gate(opts)` | A decision for a person: `{ title, recommended?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. Returns the answer when it comes. **Not available yet**: today a `gate()` fails at once (the script gets `null`, and its item says `gate() is not available yet`) |
+| `gate(opts)` | A decision for a person, in the account's [inbox](https://run.camelai.com/docs/guides/human-input.md): `{ title (or question), body?, options? (2 to 4 labels), recommended?, reason?, priority?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. The workflow waits, durably, and `gate()` returns what they chose (an option's label, or their own words); a decline returns `null`. Past its expiry it takes `recommended` when `onExpire` is `"recommended"`, else the workflow pauses (`waiting_on_gate`) and the item stays answerable: the answer lands and a resume goes on. Who may answer is as for the owning agent's own decisions (its `humanInput.approvers`); with no owning agent, anyone with the account's key. The agent that owns the workflow hears it open (event `gate_opened`) |
 | `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
 | `phase(name)` | Names the stage the workflow is in (`phase` on its summary, items and log lines) |
 | `log(...parts)` | A line in the workflow's log |
@@ -7542,7 +7548,7 @@ A workflow that stops without ending is `paused`, and `pauseReason` says why:
 | `user` | You paused it. Running sub-agents finish unless the pause said `children: "abort"` |
 | `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resume re-issues it under a new attempt** |
 | `confirm_rerun` | An edit would re-issue more than `rerunConfirmPercent` of the finished effects. Resume to confirm, or edit again |
-| `waiting_on_gate` | A gate passed its expiry without an answer |
+| `waiting_on_gate` | A gate passed its expiry without an answer and without `onExpire: "recommended"`. It can still be answered in the inbox; resume after it is |
 | `capacity_refused` | The account is at its running-workflows limit |
 | a fault code | The script itself went wrong: `key_required`, `key_conflict`, `step_budget`, a thrown error. `fault` on the summary has the message; edit the script and resume |
 
@@ -7649,8 +7655,9 @@ with workflows enabled has the `workflows` builtin: `workflow_start`,
 The agent that starts a workflow owns it: only its tools reach it. It need
 not poll: when the workflow ends (`completed`, `failed`, `aborted`), stops
 (`budget_exhausted`, or paused for its payer, capacity, a fault or a rerun
-confirm) or finishes a phase, the agent gets a message of its own, a turn,
-with a block only the runtime writes:
+confirm), finishes a phase or opens a `gate()` for a person (`gate_opened`,
+with the gate's key, inbox item id, title and expiry), the agent gets a
+message of its own, a turn, with a block only the runtime writes:
 
 ```
 <workflow_notification workflow="wf_…" name="port" status="completed" event="completed">

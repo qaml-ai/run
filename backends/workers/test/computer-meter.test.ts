@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CHECKPOINT_MS, ComputerMeter, SETTLE_MARGIN_MS, CONTAINER_RATES, holdRate, secondRate, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 import { ContainerProvider, operate, type ProviderMeter } from "../src/computers/provider.ts";
+import { AlarmWatch } from "./alarm-watch.ts";
 
 const payer = { tenant: "t1", agent: "a1" };
 function harness(options: { failCharges?: number; failStatus?: number } = {}) {
-  const data = new Map<string, unknown>(), charges: ComputerCharge[] = [], alarms: number[] = [];
+  const data = new Map<string, unknown>(), charges: ComputerCharge[] = [], alarms: number[] = [], watch = new AlarmWatch("ComputerMeter");
   let now = 1_000_000, failures = options.failCharges ?? 0, refuse = false;
   const store: MeterStore = {
     async get<T>(key: string) { return structuredClone(data.get(key)) as T | undefined; },
@@ -16,7 +17,7 @@ function harness(options: { failCharges?: number; failStatus?: number } = {}) {
     },
   };
   const meter = new ComputerMeter({
-    store, idleMs: 60_000, now: () => now, schedule: async at => { alarms.push(at); },
+    store, idleMs: 60_000, now: () => now, schedule: async at => { watch.armed(at); alarms.push(at); },
     billing: {
       async admit() { if (refuse) throw Object.assign(new Error("credit spent"), { status: 402 }); },
       async charge(charge) {
@@ -26,6 +27,10 @@ function harness(options: { failCharges?: number; failStatus?: number } = {}) {
       },
     },
   });
+  // The meter's alarm, watched for hot loops (test/alarm-watch.ts); anything else the test does is an external event.
+  const alarm = meter.alarm.bind(meter);
+  meter.alarm = (running: boolean) => watch.fire(now, () => alarm(running));
+  for (const name of ["started", "used", "stopped"] as const) { const call = meter[name].bind(meter) as (...args: any[]) => Promise<void>; (meter as any)[name] = (...args: any[]) => { watch.external(); return call(...args); }; }
   return { meter, data, charges, alarms, advance: (ms: number) => { now += ms; }, now: () => now, refuse: () => { refuse = true; } };
 }
 
@@ -296,4 +301,24 @@ test("a named session (a job's) is charged under its name, its checkpointed part
   await h.meter.stopped();
   assert.equal(h.charges.length, 3);
   assert.ok(!h.charges[2]!.id.startsWith("job:"));
+});
+
+test("a workflow payer's job is charged as one, under the workflow, once per job however often it is run again", async () => {
+  const h = harness();
+  const workflow = { tenant: "t1", agent: "wf_api", kind: "workflow" as const };
+  await h.meter.started(workflow, "standard-1", 60_000, 0, "job:wf-1");
+  h.advance(10_000);
+  await h.meter.stopped();
+  // The job is run again (a redelivery): the same named session, the same charge id.
+  await h.meter.started(workflow, "standard-1", 60_000, 0, "job:wf-1");
+  h.advance(10_000);
+  await h.meter.stopped();
+  assert.deepEqual(h.charges.map(charge => [charge.id, charge.agent, charge.kind]), [["job:wf-1", "wf_api", "workflow"]], "the payer kind travels with the charge; a rerun records nothing new");
+  // A run across a checkpoint keeps the kind on each part.
+  await h.meter.started(workflow, "standard-1", 60_000, 0, "job:wf-2");
+  h.advance(CHECKPOINT_MS);
+  await h.meter.used();
+  h.advance(1_000);
+  await h.meter.stopped();
+  assert.deepEqual(h.charges.slice(1).map(charge => [charge.id, charge.kind]), [["job:wf-2", "workflow"], ["job:wf-2#2", "workflow"]]);
 });

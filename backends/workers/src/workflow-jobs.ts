@@ -1,6 +1,8 @@
 // The workflow's `job()`, `commit()` and `push()` effects (docs/design/swarm-workflows.md, "Jobs: the ephemeral compute
 // boundary"). A job runs through the JobDriver (jobs/driver.ts) on its own container, paid by the agent that owns the
-// workflow (its metering, receipts and spend limits; the cost also lands in the workflow's ledger), in a job slot of the capacity limiter the runner holds for it; its named outputs and its
+// workflow (its metering, receipts and spend limits), or, for a workflow an API key started, by its tenant under the
+// workflow's id (computers/meter-billing.ts); the cost also lands in the workflow's ledger. It runs in a job slot of the
+// capacity limiter the runner holds for it; its named outputs and its
 // output streams are kept in the workflow's volume, and the script gets a small result that names them. A commit lands
 // a child's fork on its base (workflow-volumes.ts). A push is a job that writes a volume to a GitHub branch with the
 // GitHub App's installation token, which only the job's process sees.
@@ -20,8 +22,8 @@ export interface WorkflowJobsHost {
   workflow: { id: string; tenant: string };
   /**
    * Who pays for its jobs: the agent that owns the workflow (it started it with the `workflows` builtin), whose metering,
-   * receipts and spend limits the container time goes through. Undefined for a workflow an API key started: its jobs
-   * are refused (`job_payer_unavailable`) until computer billing has a workflow payer of its own.
+   * receipts and spend limits the container time goes through. Undefined for a workflow an API key started: its tenant
+   * pays, under the workflow's id (its spend limit and credit admit the job; its usage shows the workflow).
    */
   payer(): string | undefined;
   /** The effect ended: `WorkflowRunner.land`. A second landing is ignored by the runner. */
@@ -153,8 +155,6 @@ export class WorkflowJobs implements EffectExecutor {
     if (effect.kind === "commit") return done(await this.commit(effect.args as { fork?: unknown; snapshot?: unknown }));
     const found = this.driver();
     if (!found.ok) return done({ ok: false, error: `${found.code}: ${found.message}` });
-    if (!this.host.payer())
-      return done({ ok: false, error: "job_payer_unavailable: a workflow's jobs are paid by the agent that owns it, and this workflow was started without one (by an API key). Start it from an agent with the workflows builtin to run jobs." });
     let spec: JobSpec, secrets: string[] = [], parse: (result: Extract<JobResult, { ok: true }>, value: Record<string, unknown>) => Record<string, unknown> = (_, value) => value;
     try {
       if (effect.kind === "push") ({ spec, secrets, parse } = await this.pushSpec(id, effect.args as PushArgs));
@@ -172,11 +172,17 @@ export class WorkflowJobs implements EffectExecutor {
       return done({ ok: false, error: `${result.code}: ${redact(result.message, secrets)}` }, { costUsd: result.costUsd ?? 0, durationMs: result.timings.totalMs });
     }
     const value = parse(result, await this.keep(id, result, secrets));
-    // The container time its owner agent was charged also counts in the workflow's ledger (its budget), once per key:attempt.
+    // The container time its payer was charged also counts in the workflow's ledger (its budget), once per key:attempt.
     await done({ ok: true, value }, { costUsd: result.costUsd ?? 0, model: `cloudflare/${result.instance}`, durationMs: result.timings.totalMs });
   }
 
-  /** A script's job() as a JobSpec: paid by the workflow's tenant, with the workflow as its agent (its computer tree). */
+  /** Who pays for a job: the owner agent, or, for a workflow no agent owns, its tenant under the workflow's id. */
+  private payer(): JobSpec["payer"] {
+    const tenant = this.host.workflow.tenant, owner = this.host.payer();
+    return owner ? { tenant, agent: owner } : { tenant, agent: this.host.workflow.id, kind: "workflow" };
+  }
+
+  /** A script's job() as a JobSpec: paid by `payer()`, its container in that payer's computer tree. */
   private async jobSpec(id: string, args: JobArgs): Promise<JobSpec> {
     const known = ["command", "timeoutSeconds", "outputs", "limits", "internet", "at", "files"];
     const extra = Object.keys(args ?? {}).find(name => !known.includes(name));
@@ -195,7 +201,7 @@ export class WorkflowJobs implements EffectExecutor {
     return {
       id, command: args.command, timeoutSeconds: Math.ceil(args.timeoutSeconds), ...(args.outputs ? { outputs: args.outputs } : {}),
       ...(args.limits ? { limits: args.limits } : {}), ...(args.internet ? { internet: true } : {}), ...source,
-      payer: { tenant, agent: this.host.payer()! },
+      payer: this.payer(),
     };
   }
 

@@ -6,6 +6,7 @@
 // "workflow", id }`), whose endings come back by their outboxes to `receiveEnding`. Effects of other kinds are
 // composed in by kind (`byKind`). With TEST_WORKFLOW_EXECUTOR=stub a test gives the object a stand-in executor that
 // answers at once instead.
+import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import type { WorkflowSandbox } from "../codemode/workflow-protocol.ts";
 import { keyServices } from "./security-services.ts";
@@ -20,6 +21,9 @@ const ENDED = new Set(["completed", "failed", "aborted"]);
 /** Where a child of a repo edits its fork. */
 export const FORK_MOUNT_PATH = "/repo";
 import { WorkflowNotices } from "./workflow-notices.ts";
+import { WorkflowGates } from "./workflow-gates.ts";
+import { database, type PostgresEnv } from "./postgres.ts";
+import type { InboxAnswer, InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { alarmAt, runAlarm } from "./workflow-alarm.ts";
 import { workflowStub } from "./workflow-routes.ts";
 import type { AgentType, ModelClass } from "./workflow-types.ts";
@@ -109,20 +113,6 @@ export const unwiredExecutor: EffectExecutor = {
 };
 
 /**
- * `gate()` until it has an executor (an inbox item the workflow owns): it fails at once and clearly, so the script gets
- * null with the reason on its item, instead of a start that is refused on every wake.
- */
-export const GATE_UNAVAILABLE = "gate() is not available yet: a workflow cannot ask a person on this runtime. Remove the gate, or end the workflow and ask in your own reply";
-export function gateUnavailable(land: (key: string, attempt: number, outcome: EffectOutcome) => Promise<void>, defer: (task: () => Promise<void>) => void): ChildEffects {
-  // Landed after the start returns: a start runs inside the runner's step, which a landing waits for.
-  return {
-    start: async effect => { defer(() => land(effect.key, effect.attempt, { ok: false, error: GATE_UNAVAILABLE })); },
-    // A landing lost to a crash: the sweep's poll answers the same refusal.
-    poll: async () => ({ outcome: { ok: false, error: GATE_UNAVAILABLE } }),
-  };
-}
-
-/**
  * One executor from several, by effect kind: `start` and `cancel` go to the kind's executor (a kind with none is
  * refused loudly), `recover` and `abort` to every one, and children's endings and progress to the `agent` executor.
  * Other lanes add a kind with one entry (job, commit, push).
@@ -190,9 +180,12 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   private readonly notices: WorkflowNotices;
   readonly agents: WorkflowAgents;
   private readonly forks: ForkJanitor;
+  /** Its gates: decisions in the account's inbox (workflow-gates.ts). */
+  private readonly gates: WorkflowGates;
 
   constructor(ctx: DurableObjectState, env: WorkflowEnv) {
     super(ctx, env);
+    guardAlarms(this, ctx, "WorkflowObject", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
     const name = ctx.id.name;
     const sandbox: WorkflowSandbox = {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
@@ -225,8 +218,22 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       payer: () => { const owner = self.settings().owner; return owner?.kind === "agent" ? owner.id : undefined; },
       land: (...args) => self.land(...args), waitUntil: promise => ctx.waitUntil(promise), storage: ctx.storage,
     });
+    const defer = (task: () => Promise<void>) => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) }))));
+    this.gates = new WorkflowGates({
+      get workflow() { return { id: name ?? "", tenant: self.runner.identity().tenant ?? "" }; },
+      db: () => database(env as unknown as PostgresEnv), storage: ctx.storage,
+      land: (key, attempt, outcome) => self.land(key, attempt, outcome), defer,
+      // Who may answer: as for the owner agent's own decisions (its approvers, its subject); with no owner agent (a
+      // workflow started with an API key), anyone the account vouches for.
+      audience: async () => {
+        const owner = self.settings().owner;
+        if (owner?.kind !== "agent") return {};
+        return await (env as unknown as { AGENTS: { getByName(name: string): { inboxAudience(): Promise<{ approvers?: string[]; subject?: string }> } } }).AGENTS.getByName(owner.id).inboxAudience();
+      },
+      opened: gate => { self.notices.stage("gate_opened", { gate }, self.runner.get().status); self.told(undefined); },
+    });
     const stub = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : undefined;
-    this.executor = byKind({ agent: stub ?? this.agents, gate: stub ?? gateUnavailable((key, attempt, outcome) => this.land(key, attempt, outcome), task => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) }))))), job: jobs, commit: jobs, push: jobs });
+    this.executor = byKind({ agent: stub ?? this.agents, gate: stub ?? this.gates, job: jobs, commit: jobs, push: jobs });
     this.notices = new WorkflowNotices({
       sql: ctx.storage.sql, workflowId: name ?? "",
       owner: () => self.settings().owner, name: () => self.settings().name, bucket: () => self.runner.identity().bucket,
@@ -299,6 +306,14 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   setBudget(usd: number | null) { return refusable(async () => { await this.runner.setBudget(usd); return this.told(this.runner.get()); }); }
   /** An executor's landing of effect `key:attempt`. */
   async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.runner.land(key, attempt, outcome, usage); await this.ended(); this.told(undefined); }
+  /** `POST /v1/inbox/answers` for this workflow's gates, from `tenant` (another tenant's answers find nothing). */
+  async answerGates(tenant: string, answers: InboxAnswer[]): Promise<InboxOutcome[]> {
+    if (this.runner.identity().tenant !== tenant) return answers.map(answer => ({ id: answer.id, outcome: "unknown", status: 404, error: "Unknown input" }));
+    const outcomes = await this.gates.answer(answers);
+    await this.ended();
+    this.told(undefined);
+    return outcomes;
+  }
   /** A child's ending, delivered by its outbox until acknowledged (owner `{ kind: "workflow", id }`). */
   receiveEnding(ending: unknown) {
     if (!this.executor.receiveEnding) throw new WorkflowError("This workflow has no child executor yet", 501);

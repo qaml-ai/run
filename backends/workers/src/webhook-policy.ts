@@ -90,12 +90,22 @@ export function usageCost(usage: any): { usd: number; source: "provider" | "cata
 }
 
 /**
- * The `usage.recorded` event for a model response, a transcription or images made, or undefined for other usage (web
- * searches, renders, computer time). `agent` is empty for a transcription or images no agent made (POST /v1/transcriptions,
- * POST /v1/images).
+ * The `usage.recorded` event for a model response, a transcription or images made, or computer time, or undefined for
+ * other usage (web searches, renders). `agent` is empty for a transcription or images no agent made (POST
+ * /v1/transcriptions, POST /v1/images). Computer time names its agent, or the workflow whose job it was when its tenant
+ * paid (`workflowId`, no agent); it comes once per charged session, as its receipt does (computers/meter-billing.ts).
  */
 export function usageEvent(tenant: string, agent: string, message: UsageRecord): WebhookEvent | undefined {
-  if (message.searches || message.renders || message.kind === "computer") return undefined;
+  if (message.searches || message.renders) return undefined;
+  if (message.kind === "computer") {
+    const workflow = message.workflowId;
+    return webhookEvent("usage.recorded", tenant, {
+      agentId: workflow ? null : agent || null, ...(workflow ? { workflowId: workflow } : {}), requestId: message.requestId ?? null,
+      subject: message.identity?.subject ?? null, actor: message.actor ?? null, context: message.identity?.context ?? {}, keyScope: null,
+      provider: message.provider ?? "unknown", model: message.model ?? "unknown", kind: "computer" as const,
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, seconds: message.seconds ?? 0, cost: usageCost(message.usage ?? {}), at: message.timestamp ?? Date.now(),
+    });
+  }
   const transcription = message.kind === "transcription";
   const speech = message.kind === "speech";
   const image = message.kind === "image";

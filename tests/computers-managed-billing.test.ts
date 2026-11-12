@@ -265,3 +265,48 @@ test("pieces add up to the total at any price, and a lower figure never charges 
   f.done();
   g.done();
 });
+
+test("a tenant at its monthly spend limit starts no computer, on the platform's key or its own, with nothing created", async () => {
+  for (const adminKey of [false, true]) {
+    const f = await fixture({ maxMonthlyCost: 0, adminKey });
+    await f.connect();
+    await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 402 && error.code === "SPEND_LIMIT" && /monthly spend limit of \$0\.00/.test(error.message) && /Nothing was created or charged/.test(error.message));
+    assert.deepEqual(await f.rows(), []);
+    assert.equal(f.state.creates, 0);
+    f.done();
+  }
+});
+
+test("a running machine stops at the pass that finds its tenant at its monthly spend limit, though credit is left; other tenants are left alone", async () => {
+  // Under the limit at the start; the first pass's charge reaches it.
+  const f = await fixture({ maxMonthlyCost: cost(60_000) / 1_000_000 });
+  await f.connect();
+  await f.connect("rich", "c");
+  await f.start();
+  await f.start("rich", "c", "start-c");
+  f.advance(120_000);
+  await pass(f);
+  assert.ok(await f.balance() > 0, "credit is left: the limit, not the balance, stops it");
+  assert.ok((await f.row()).ended_at);
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_spend_limit_stop").map(line => [line.tenant, line.reason]), [["payg", "spend_limit"]]);
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_credit_stop"), []);
+  assert.equal((await f.row("c")).ended_at, null);
+  // Its agent hears why at its next start.
+  await assert.rejects(f.start(undefined, undefined, "start-again"), (error: unknown) => error instanceof HttpError && error.code === "SPEND_LIMIT");
+  f.done();
+});
+
+test("limits that cannot be read stop nothing: said as computer_limits_read_failed, not as a failed charge", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  const spendLimit = f.accounts.spendLimit;
+  f.accounts.spendLimit = async function () { throw new Error("database unavailable"); };
+  f.advance(60_000);
+  await pass(f);
+  f.accounts.spendLimit = spendLimit;
+  assert.equal((await f.row()).ended_at, null, "still running");
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_limits_read_failed").map(line => line.tenant), ["payg"]);
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_charge_failed"), []);
+  f.done();
+});

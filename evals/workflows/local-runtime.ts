@@ -12,6 +12,9 @@
 //
 //   OPENROUTER_API_KEY=… node --experimental-strip-types --disable-warning=ExperimentalWarning evals/workflows/local-runtime.ts [--checkout <dir>] [--port 8788]
 //   node … evals/workflows/local-runtime.ts --stop [--checkout <dir>]     (removes the database, and the key in it)
+//
+// Point --checkout at a worktree nobody edits during the evals: wrangler dev reloads on changes in its checkout, which
+// resets every Durable Object mid-run.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

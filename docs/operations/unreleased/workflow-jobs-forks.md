@@ -15,5 +15,8 @@ On the Workers backend (pilot), a workflow script can now:
 
 A job is paid by the agent that owns the workflow (the one that started it with the workflows builtin), with its
 metering and spend limits, once per job however often it is run again; its cost also counts against the workflow's
-budget. A workflow started with an API key has no owner agent, and its `job()` fails with `job_payer_unavailable`.
+budget. A workflow started with an API key has no owner agent: its jobs are paid by its account, admitted by the
+account's monthly spend limit and prepaid credit (its balance, as a fresh run checks it: credit holds are not subtracted), and recorded under the workflow's id (`usage` rows,
+usage details with the workflow as agent and root, one receipt per job run, however often it is run again). A job
+they refuse pauses the workflow with `payer_exhausted`.
 Jobs need Cloudflare Containers, on the pilot only for now: elsewhere `job()` fails with `JOBS_UNAVAILABLE`.
