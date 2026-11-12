@@ -7,7 +7,7 @@ Requires=camel-kvm-prep.service
 [Service]
 Environment=AWS_REGION=us-west-2
 EnvironmentFile=/etc/camel/kvm-host.conf
-ExecStartPre=/usr/local/sbin/camelfsd-cleanup
+ExecStartPre=/usr/local/bin/camelfsd cleanup --data /nvme/camelfs
 ExecStart=/usr/local/bin/camelfsd host --socket /run/camelfsd/api.sock --data /nvme/camelfs --store ${CAMELFSD_STORE} --region ${AWS_REGION}
 Restart=on-failure
 RestartSec=5

@@ -34,9 +34,7 @@ and the Ubuntu noble ext4 base image. Instance-store data disappears on stop/sta
 At boot `camel-kvm-prep` recreates XFS with reflinks, the directories and the base
 image copy on `/nvme`. It refuses to format mounted devices, disks with children,
 or any device not identified as EC2 instance store. Instance store with an old
-label can be erased. Cleanup before camelfsd starts releases only dm tables that
-reference loops backed by `/nvme/camelfs/`, their NBD devices, then those loops
-and stale mount paths. Other daemon data directories are excluded.
+label can be erased. `camelfsd cleanup --data /nvme/camelfs` replaces the path-scoped cleanup script; it releases dm/loop/nbd devices from mount state and clears `mounts/*` before the daemon starts.
 
 Download hashes start as literal `UNPINNED`. A first download prints
 `PIN FIRECRACKER_SHA256=...`, `PIN GUEST_KERNEL_SHA256=...`, or

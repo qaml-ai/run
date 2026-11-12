@@ -101,7 +101,7 @@ export type JobResult =
       pids?: "cgroup" | "ulimit" | "unenforced";
       camelfs?: { commit?: string; tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
         checkpoint?: { walkMs: number; streamMs: number; freezeMs: number; files: number; bytes: number; skipped: number;
-          changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number } };
+          changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; imageMs?: number } };
       snapshot?: ComputerSnapshot;
       /** saveSnapshot was asked for and failed; the result stands. */
       snapshotError?: string;

@@ -1,7 +1,7 @@
 # Runtime source revision; use a revision containing the nested-KVM launcher flags.
 RUN_REF=main
 # Daemon source revision, built separately from the runtime. Pin a commit: a branch rebuilds and restarts camelfsd
-# whenever it moves.
+# whenever it moves. This job host requires unit 6 (81ee7ec8) or later.
 CAMELFSD_REF=camelfs/daemon-v0
 # Runtime enrollment endpoint, e.g. https://run-pilot.camelai.dev (required).
 RUNTIME_URL=
