@@ -101,7 +101,7 @@ import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { JobHost, JobHostRegistry, HostJob } from "./jobs/hosts.ts";
-import { HOST_NAME, enrollHost, jobHostRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
+import { HOST_NAME, enrollHost, jobHostRoutes, scalerRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
@@ -213,6 +213,8 @@ const worker = {
         return hosts.JOB_HOSTS.getByName(name).fetch(request);
       }
       if (hostPath === "/v1/internal/job-hosts/enroll" && request.method === "POST") return enrollHost(request, hosts);
+      const scaled = await scalerRoutes(request, hosts);
+      if (scaled) return scaled;
       return new Response("Not found", { status: 404 });
     }
     if (hosts.JOB_HOST_REGISTRY && (env as { TEST_MODE?: string }).TEST_MODE === "1" && new URL(request.url).pathname === "/__test/job-hosts")
