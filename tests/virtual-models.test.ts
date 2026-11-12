@@ -420,6 +420,6 @@ test("strong: flex's 429 is asked again within the flex wait, then the default t
   defaultDown = true;
   requests.length = 0;
   const down = await r.prompt(agent, "Once more");
-  const error = JSON.stringify(down.outcome);
-  assert.match(error, /camelrun\/strong: no member can take this now; openrouter\/google\/gemini-4-carbon \(flex\): .*rate-limited upstream; openrouter\/google\/gemini-4-carbon \(default\): .*rate-limited upstream; it is retried after a backoff/, error);
+  const error = String(down.outcome?.result?.error ?? JSON.stringify(down.outcome));
+  assert.match(error, /^openrouter API error \(429\).*rate-limited upstream.* \(camelrun\/strong: no member can take this now; openrouter\/google\/gemini-4-carbon \(flex\): .*rate-limited upstream.*; openrouter\/google\/gemini-4-carbon \(default\): .*rate-limited upstream.*; it is retried after a backoff\)$/, error);
 });
