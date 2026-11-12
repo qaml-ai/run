@@ -5,7 +5,9 @@ only; nothing here creates AWS resources (Miguel applies every AWS change himsel
 [swarm-workflows.md](swarm-workflows.md) Part 2 (the repository object, layers, search, git without a VM,
 `camel-sync`), the disk half of [job-hosts-plan.md](job-hosts-plan.md) (S3 snapshots, host-side sync) and #869
 (whole-disk snapshots, parked). The host, VM, enrollment and placement halves of the job-hosts plan stand; this
-design runs on them, moved from Graviton + Nitro Sandboxes to Intel + nested KVM (§1.4).
+design runs on them, moved from Graviton + Nitro Sandboxes to Intel + nested KVM (§1.4). Every limitation,
+shortcoming or slowness met while building and using Prototype v0 (§4) is recorded in
+[camel-fs-v0-limitations.md](camel-fs-v0-limitations.md), the ledger v1 works from.
 
 Decided by Miguel: a full-stack system on AWS, dropping Cloudflare containers; a new service if that is what it
 takes; ambitious; fast search and grep, kept simple (trigrams only); **nested KVM now, `.metal` later**; larger
