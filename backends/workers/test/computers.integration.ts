@@ -1074,15 +1074,12 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   }
   assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one", "the base keeps its content");
 
-  // A workflow an API key started has no owner agent: its job() is refused as a value, not a pause.
+  // A workflow an API key started has no owner agent: its job() runs too, paid by its tenant (the next test has the money).
   const keyStarted = await call("/v1/workflows", { script: `return await job({ key: "j", command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });
   let keyDone: Record<string, any> = keyStarted;
-  for (let i = 0; i < 100 && keyDone.status !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); keyDone = await call(`/v1/workflows/${keyStarted.id}`); }
+  for (let i = 0; i < 600 && !["completed", "failed", "paused"].includes(keyDone.status); i++) { await new Promise(resolve => setTimeout(resolve, 250)); keyDone = await call(`/v1/workflows/${keyStarted.id}`); }
   assert.equal(keyDone.status, "completed", JSON.stringify(keyDone));
-  assert.equal(keyDone.result, null);
-  const refusedItem = ((await call(`/v1/workflows/${keyStarted.id}/items`)).items as { key: string; status: string; reason?: string }[]).find(item => item.key === "j")!;
-  assert.equal(refusedItem.status, "failed");
-  assert.match(refusedItem.reason ?? "", /^job_payer_unavailable: /);
+  assert.equal(keyDone.result?.exitCode, 0, JSON.stringify(keyDone.result));
 });
 
 test("workflows: an API-started workflow's job is paid by its tenant under the workflow, once across a rerun; no credit pauses it", {
