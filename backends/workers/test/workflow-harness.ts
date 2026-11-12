@@ -84,20 +84,12 @@ export class World implements EffectExecutor {
     const index = this.queue.findIndex(item => item.key === effect.key && item.attempt === effect.attempt);
     if (index >= 0) this.queue.splice(index, 1);
   }
-  /** A gate at its deadline (EffectExecutor.expire): by default nobody answered; a test may say otherwise, or throw. */
-  expireHook?: (effect: StartedEffect, take: boolean) => Promise<{ outcome: EffectOutcome } | undefined>;
-  readonly expired: { key: string; take: boolean; dueAt?: number }[] = [];
-  async expire(effect: StartedEffect, take: boolean) {
-    this.expired.push({ key: effect.key, take, dueAt: effect.dueAt });
-    return this.expireHook?.(effect, take);
-  }
   /** An ending the runner did not record (a crash while landing it) is found by the alarm's sweep, as an outbox redelivers. */
   async poll(effect: StartedEffect) {
     if (this.queue.some(item => item.key === effect.key && item.attempt === effect.attempt)) return undefined;
     return { outcome: this.answer(effect), usage: this.usage() };
   }
   answer(effect: StartedEffect): EffectOutcome {
-    if (effect.kind === "gate") return { ok: true, value: (effect.args as { options?: string[] }).options?.[0] ?? "yes" };
     const prompt = (effect.args as { prompt: string }).prompt;
     if (prompt.startsWith("fail")) return { ok: false, error: `could not ${prompt}` };
     if (prompt.startsWith("broke")) return { refused: "out of credit" };
@@ -187,7 +179,7 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
       }
     }
   };
-  const live = () => ["running", "waiting"].includes(runner.get().status);
+  const live = () => runner.get().status === "running";
   return Object.assign(self, {
     store, box, world, attempt, live,
     get runner() { return runner; },

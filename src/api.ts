@@ -1093,11 +1093,11 @@ export function api(context: ApiContext) {
   const noWorkflows = (): never => { throw new HttpError(501, "Workflows run on the Workers runtime; this runtime does not have them yet", "WORKFLOWS_UNSUPPORTED"); };
   route(createRoute({ method: "post", path: "/v1/workflows", request: { body: { content: { "application/json": { schema: schema.WorkflowStart } } } },
     responses: { 201: reply("The workflow, started: its first step runs at once. An Idempotency-Key header gives the same workflow for the same key. 403 WORKFLOWS_OFF where the account does not have workflows", schema.Workflow) } }), noWorkflows);
-  route(createRoute({ method: "get", path: "/v1/workflows/{id}", request: { params: workflowId }, responses: { 200: reply("Its status, phase, revision, counts by effect status, spend and, once it ends, its result", schema.Workflow) } }), noWorkflows);
-  route(createRoute({ method: "get", path: "/v1/workflows/{id}/items", request: { params: workflowId, query: z.object({ after: z.string().optional(), limit: z.string().optional(), status: z.string().optional(), phase: z.string().optional(), kind: z.string().optional() }) },
-    responses: { 200: reply("Its effects (agents, gates, timers) with their keys, attempts, status, results and costs", schema.WorkflowItems) } }), noWorkflows);
+  route(createRoute({ method: "get", path: "/v1/workflows/{id}", request: { params: workflowId }, responses: { 200: reply("Its status, revision, counts by effect status, spend and, once it ends, its result", schema.Workflow) } }), noWorkflows);
+  route(createRoute({ method: "get", path: "/v1/workflows/{id}/items", request: { params: workflowId, query: z.object({ after: z.string().optional(), limit: z.string().optional(), status: z.string().optional(), kind: z.string().optional() }) },
+    responses: { 200: reply("Its effects (agents, jobs, commits, pushes) with their keys, attempts, status, results and costs", schema.WorkflowItems) } }), noWorkflows);
   route(createRoute({ method: "get", path: "/v1/workflows/{id}/events", request: { params: workflowId, query: z.object({ after: z.string().optional(), limit: z.string().optional() }) },
-    responses: { 200: reply("Its events (created, phase, paused, completed …), oldest first", schema.WorkflowEvents) } }), noWorkflows);
+    responses: { 200: reply("Its events (created, paused, completed …), oldest first", schema.WorkflowEvents) } }), noWorkflows);
   route(createRoute({ method: "get", path: "/v1/workflows/{id}/diff", request: { params: workflowId, query: z.object({ revision: z.string().optional() }) },
     responses: { 200: reply("What a revision of its script kept, issued and dropped, and why it changed", z.record(z.string(), z.unknown())) } }), noWorkflows);
   route(createRoute({ method: "put", path: "/v1/workflows/{id}/script", request: { params: workflowId, body: { content: { "application/json": { schema: schema.WorkflowEdit } } } },

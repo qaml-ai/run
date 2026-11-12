@@ -18,6 +18,7 @@ export type NoticeSummary = { status: string; pauseReason?: string; phase?: stri
 export function workflowNext(summary: Pick<NoticeSummary, "status" | "pauseReason" | "fault">): string | undefined {
   if (summary.fault?.code === "vm_crash") return "The script's VM crashed (not the script's error): workflow_resume runs the step again.";
   if (summary.fault?.code === "journal_version") return "Its journal was written by a newer runtime: once that version is deployed here, workflow_resume goes on.";
+  if (summary.fault?.code === "runtime_upgraded") return "It was started on an older runtime: start the workflow again.";
   if (summary.fault) return `The script failed (${summary.fault.code}): fix it with workflow_edit; the edit resumes it.`;
   if (summary.status === "budget_exhausted") return "Its budget is spent: raise it with workflow_budget to go on.";
   if (summary.status !== "paused") return undefined;

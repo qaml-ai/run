@@ -1744,10 +1744,10 @@ export class Voice {
   deleteRecording(id: string): Promise<{ id: string; deleted: true }> { return this.transport.json(`/v1/voice/recordings/${encodeURIComponent(id)}`, this.key(), "DELETE"); }
 }
 
-/** A workflow's status. `waiting`: nothing to do until a child, gate or timer answers; `paused` says why in `pauseReason`. */
-export type WorkflowStatus = "running" | "waiting" | "paused" | "completed" | "failed" | "aborted" | "budget_exhausted";
-/** Why a workflow paused: a person, a payer out of credit, an edit that needs a confirm, a gate past its expiry, a refused capacity slot, or a fault code. */
-export type WorkflowPauseReason = "user" | "payer_exhausted" | "confirm_rerun" | "waiting_on_gate" | "capacity_refused" | (string & {});
+/** A workflow's status. `paused` says why in `pauseReason`. */
+export type WorkflowStatus = "running" | "paused" | "completed" | "failed" | "aborted" | "budget_exhausted";
+/** Why a workflow paused: a person, a payer out of credit, an edit that needs a confirm, a refused capacity slot, or a fault code. */
+export type WorkflowPauseReason = "user" | "payer_exhausted" | "confirm_rerun" | "capacity_refused" | (string & {});
 /** What a sub-agent in a workflow is allowed to do (see the workflows guide). */
 export type WorkflowAgentType = "worker" | "critic" | "lead";
 /** How hard a sub-agent thinks: `camelrun/fast`, `camelrun/strong` or `camelrun/max`, resolved at each call. */
@@ -1778,8 +1778,6 @@ export interface WorkflowSummary {
   revision: number;
   /** Steps run so far (each step replays the script with the results landed since the last). */
   step: number;
-  /** The script's latest `phase(title)`. */
-  phase?: string;
   /** What the script returned, once `completed`. */
   result?: unknown;
   /** Why it `failed`. */
@@ -1800,20 +1798,19 @@ export interface WorkflowSummary {
   /** Who started it: an agent through the `workflows` builtin (which then owns it); absent for a start through the API. */
   owner?: { kind: "agent" | "workflow"; id: string };
 }
-/** One effect of a workflow: an `agent()`, `gate()` or `sleep()` call, by its key. */
+/** One effect of a workflow: an `agent()`, `job()`, `commit()` or `push()` call, by its key. */
 export interface WorkflowItem {
   key: string;
   /** 1, one more each time the effect is re-issued (a resume with `rerun`, a refused effect re-issued). */
   attempt: number;
   /** Whether this attempt is the one that counts. */
   current: boolean;
-  kind: "agent" | "gate" | "timer" | (string & {});
+  kind: "agent" | "job" | "commit" | "push";
   origin: string;
   status: "pending" | "running" | "done" | "failed" | "refused" | "aborted" | (string & {});
-  phase?: string;
   revision: number;
   seenRevision: number;
-  /** What the script called it with (an agent's prompt and options, a gate's question). */
+  /** What the script called it with (an agent's prompt and options, a job's command). */
   args: unknown;
   /** Its answer, once `done`. */
   result?: unknown;
@@ -1826,7 +1823,7 @@ export interface WorkflowItem {
   /** Its place in the journal: pass the page's `next` as `after` for the next page. */
   ord: number;
 }
-export interface WorkflowItemsQuery { after?: number; limit?: number; status?: WorkflowItem["status"]; phase?: string; kind?: WorkflowItem["kind"] }
+export interface WorkflowItemsQuery { after?: number; limit?: number; status?: WorkflowItem["status"]; kind?: WorkflowItem["kind"] }
 export interface WorkflowEvent { seq: number; at: number; type: string; data?: unknown }
 /** What a revision did to the journal: keys it kept from before, keys it issued new, and current keys it has not reached yet. */
 export interface WorkflowDiff { revision: number; reason?: string; kept: string[]; issued: string[]; unseen: string[] }
@@ -1840,7 +1837,7 @@ export interface WorkflowEdit {
   /** Go ahead even if the edit reruns many finished effects (an edit held at confirm_rerun is replaced by this one). */
   confirm?: boolean;
 }
-/** The statuses `workflows.wait` ends on: the workflow ended, or needs someone (a resume, a budget, a gate). */
+/** The statuses `workflows.wait` ends on: the workflow ended, or needs someone (a resume, a budget). */
 const WORKFLOW_SETTLED: ReadonlySet<WorkflowStatus> = new Set(["completed", "failed", "aborted", "paused", "budget_exhausted"]);
 
 /**
@@ -1864,9 +1861,9 @@ export class Workflows {
     const key = request.idempotencyKey;
     return this.transport.json("/v1/workflows", this.key(), "POST", input, !!key, key ? { "Idempotency-Key": key } : {});
   }
-  /** Its status, counts, spend, phase and, once it ends, its result. */
+  /** Its status, counts, spend and, once it ends, its result. */
   get(id: string): Promise<WorkflowSummary> { return this.transport.json(this.path(id), this.key()); }
-  /** Its effects (agents, gates, timers) in journal order, a page at a time (`limit` at most 500); pass `next` back as `after`. */
+  /** Its effects (agents, jobs, commits, pushes) in journal order, a page at a time (`limit` at most 500); pass `next` back as `after`. */
   items(id: string, query: WorkflowItemsQuery = {}): Promise<{ items: WorkflowItem[]; next?: number }> {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
     return this.transport.json(`${this.path(id, "/items")}${params.size ? `?${params}` : ""}`, this.key());

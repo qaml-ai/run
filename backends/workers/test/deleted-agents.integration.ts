@@ -27,7 +27,9 @@ test('a deleted owner answers its child\'s ending and its workflow\'s notices on
     let delta: any;
     if (text.includes('GONE_HELPER')) { await gate.promise; delta = { role: 'assistant', content: 'child-answer' }; }
     else if (body.messages.at(-1).role === 'tool') delta = { role: 'assistant', content: 'started' };
-    else if (text.includes('START_WORKFLOW')) delta = toolCall('workflow_start', { script: 'await sleep(5); return 1;', budgetUsd: 1, name: 'gone-owner' }, 'wf-start');
+    // The workflow's one agent answers after 5 s, so the workflow ends after its owner is gone.
+    else if (text.includes('WF_CHILD')) { await new Promise(resolve => setTimeout(resolve, 5_000)); delta = { role: 'assistant', content: 'done' }; }
+    else if (text.includes('START_WORKFLOW')) delta = toolCall('workflow_start', { script: 'await agent("WF_CHILD"); return 1;', budgetUsd: 1, name: 'gone-owner' }, 'wf-start');
     else delta = toolCall('spawn_agent', { instructions: 'GONE_HELPER', task: 'Wait', name: 'helper' }, 'spawn-gone');
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     response.write(`data: ${JSON.stringify({ id: 'f', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);

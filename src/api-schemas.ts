@@ -876,9 +876,9 @@ export const ChildAgent = z.object({
 export const Workflow = z.object({
   id: z.string().openapi({ example: "wf_7c1d0b6e2f9a4c3b8d5e1f0a2b3c4d5e6f7a8b9c" }),
   name: z.string().optional(),
-  status: z.enum(["running", "waiting", "paused", "completed", "failed", "aborted", "budget_exhausted"]),
-  pauseReason: z.string().optional().openapi({ description: "Why it paused: user, payer_exhausted, confirm_rerun, waiting_on_gate, capacity_refused, or a script fault" }),
-  revision: z.number().int(), step: z.number().int(), phase: z.string().optional(),
+  status: z.enum(["running", "paused", "completed", "failed", "aborted", "budget_exhausted"]),
+  pauseReason: z.string().optional().openapi({ description: "Why it paused: user, payer_exhausted, confirm_rerun, capacity_refused, or a script fault" }),
+  revision: z.number().int(), step: z.number().int(),
   result: z.unknown().optional().openapi({ description: "What the script returned, once completed" }),
   error: z.string().optional(),
   budget: z.object({ usd: z.number().nullable() }),
@@ -890,7 +890,7 @@ export const Workflow = z.object({
   createdAt: z.number(), updatedAt: z.number(),
 }).passthrough().openapi("Workflow");
 export const WorkflowStart = z.object({
-  script: z.string().openapi({ description: "The workflow's JavaScript: an async function body using agent(), parallel(), gate(), sleep(), log(), phase() and `args`" }),
+  script: z.string().openapi({ description: "The workflow's JavaScript: an async function body using agent(), parallel(), job(), commit(), push(), log() and `args`" }),
   args: z.unknown().optional().openapi({ description: "JSON the script reads as `args`" }),
   budget: z.object({ usd: z.number().positive().nullable() }).openapi({ description: "The most it may spend (USD), or null for no cap; it pauses with budget_exhausted when spent" }),
   concurrency: z.number().int().min(1).max(64).optional().openapi({ description: "Sub-agents at once (default 8)" }),

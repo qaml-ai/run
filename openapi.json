@@ -7959,7 +7959,6 @@
             "type": "string",
             "enum": [
               "running",
-              "waiting",
               "paused",
               "completed",
               "failed",
@@ -7969,16 +7968,13 @@
           },
           "pauseReason": {
             "type": "string",
-            "description": "Why it paused: user, payer_exhausted, confirm_rerun, waiting_on_gate, capacity_refused, or a script fault"
+            "description": "Why it paused: user, payer_exhausted, confirm_rerun, capacity_refused, or a script fault"
           },
           "revision": {
             "type": "integer"
           },
           "step": {
             "type": "integer"
-          },
-          "phase": {
-            "type": "string"
           },
           "result": {
             "description": "What the script returned, once completed"
@@ -8090,7 +8086,7 @@
         "properties": {
           "script": {
             "type": "string",
-            "description": "The workflow's JavaScript: an async function body using agent(), parallel(), gate(), sleep(), log(), phase() and `args`"
+            "description": "The workflow's JavaScript: an async function body using agent(), parallel(), job(), commit(), push(), log() and `args`"
           },
           "args": {
             "description": "JSON the script reads as `args`"
@@ -21716,7 +21712,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Its status, phase, revision, counts by effect status, spend and, once it ends, its result",
+            "description": "Its status, revision, counts by effect status, spend and, once it ends, its result",
             "content": {
               "application/json": {
                 "schema": {
@@ -21778,21 +21774,13 @@
               "type": "string"
             },
             "required": false,
-            "name": "phase",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
             "name": "kind",
             "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "Its effects (agents, gates, timers) with their keys, attempts, status, results and costs",
+            "description": "Its effects (agents, jobs, commits, pushes) with their keys, attempts, status, results and costs",
             "content": {
               "application/json": {
                 "schema": {
@@ -21844,7 +21832,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Its events (created, phase, paused, completed …), oldest first",
+            "description": "Its events (created, paused, completed …), oldest first",
             "content": {
               "application/json": {
                 "schema": {
