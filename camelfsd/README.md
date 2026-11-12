@@ -181,3 +181,9 @@ API errors use typed errors through wrapping, never message matching. Codes are
 `not-found` (404), `no-root-for-tree` (404), `fenced` (409),
 `held` (409), `missing-blobs` (409), `bad-stream` (422),
 `stream-timeout` (504), and `internal` (500).
+
+`--lease-ttl` defaults to 5m. Renewal runs at ttl/5, and pauses after two
+intervals without a status GET, checkpoint POST, or
+`POST /v0/mounts/:jobId/heartbeat {}`. Keep sending heartbeats during long
+operations. A taken-over lease fences the mount; status reports `fenced`
+and checkpoint returns 409.

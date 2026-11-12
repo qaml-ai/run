@@ -436,7 +436,8 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.Ref == "" {
+	_ = m.Heartbeat(id)
+	if v.fenced.Load() || v.Ref == "" {
 		return out, refs.ErrFenced
 	}
 	if v.streams == nil {

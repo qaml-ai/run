@@ -37,6 +37,7 @@ type Repository interface {
 type DB struct {
 	DB  *sql.DB
 	Now func() time.Time
+	TTL time.Duration
 }
 
 // v0-limitation: L23
@@ -54,7 +55,7 @@ func Open(path string) (*DB, error) {
 		d.Close()
 		return nil, e
 	}
-	return &DB{d, time.Now}, nil
+	return &DB{DB: d, Now: time.Now, TTL: 5 * time.Minute}, nil
 }
 func (d *DB) Close() error { return d.DB.Close() }
 func (d *DB) Get(l, n string) (Ref, error) {
@@ -87,9 +88,8 @@ func (d *DB) CAS(l, n string, a, b Value, f Fence) error {
 	return e
 }
 
-// v0-limitation: L24
 func (d *DB) Lease(l, n, h string) (int64, error) {
-	r, e := d.DB.Exec(`UPDATE refs SET holder=?,lease_epoch=lease_epoch+1,lease_deadline=?,updated_at=? WHERE lineage=? AND name=? AND (holder IS NULL OR lease_deadline<=?)`, h, d.Now().Add(5*time.Minute).UnixMilli(), d.Now().UnixMilli(), l, n, d.Now().UnixMilli())
+	r, e := d.DB.Exec(`UPDATE refs SET holder=?,lease_epoch=lease_epoch+1,lease_deadline=?,updated_at=? WHERE lineage=? AND name=? AND (holder IS NULL OR lease_deadline<=?)`, h, d.Now().Add(d.TTL).UnixMilli(), d.Now().UnixMilli(), l, n, d.Now().UnixMilli())
 	if e != nil {
 		return 0, e
 	}
@@ -101,9 +101,8 @@ func (d *DB) Lease(l, n, h string) (int64, error) {
 	return v.LeaseEpoch, e
 }
 
-// v0-limitation: L24
 func (d *DB) Renew(l, n string, f Fence) error {
-	r, e := d.DB.Exec(`UPDATE refs SET lease_deadline=? WHERE lineage=? AND name=? AND holder=? AND lease_epoch=? AND lease_deadline>?`, d.Now().Add(5*time.Minute).UnixMilli(), l, n, f.Holder, f.LeaseEpoch, d.Now().UnixMilli())
+	r, e := d.DB.Exec(`UPDATE refs SET lease_deadline=? WHERE lineage=? AND name=? AND holder=? AND lease_epoch=? AND lease_deadline>?`, d.Now().Add(d.TTL).UnixMilli(), l, n, f.Holder, f.LeaseEpoch, d.Now().UnixMilli())
 	if e != nil {
 		return e
 	}

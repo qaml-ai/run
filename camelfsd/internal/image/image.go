@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +30,8 @@ var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
 
 type Config struct {
+	LeaseTTL                      time.Duration
+	Now                           func() time.Time
 	Origin                        *nbd.Server
 	HydrationPackSize             int64
 	Data, Cold, NBDListen, HostID string
@@ -59,11 +62,13 @@ type Request struct {
 	Vsock   string `json:"vsock"`
 }
 type Mount struct {
-	mu      *sync.Mutex
-	streams *streams
-	Apply   *Apply  `json:"apply"`
-	Applied bool    `json:"applied"`
-	ApplyMs float64 `json:"applyMs"`
+	activity *atomic.Int64
+	fenced   *atomic.Bool
+	mu       *sync.Mutex
+	streams  *streams
+	Apply    *Apply  `json:"apply"`
+	Applied  bool    `json:"applied"`
+	ApplyMs  float64 `json:"applyMs"`
 	Request
 	Image                             string  `json:"image"`
 	Warm                              bool    `json:"warm"`
@@ -102,6 +107,18 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	return nil
 }
 func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
+	if c.Now == nil {
+		c.Now = time.Now
+	}
+	if c.LeaseTTL == 0 {
+		c.LeaseTTL = 5 * time.Minute
+	}
+	if c.LeaseTTL < 5*time.Millisecond {
+		return nil, apierr.Invalid("invalid lease ttl")
+	}
+	if db, ok := r.(*refs.DB); ok {
+		db.TTL = c.LeaseTTL
+	}
 	if c.Cold != "clone" && c.Cold != "prehydrate" {
 		return nil, apierr.Invalid("invalid cold mode")
 	}
@@ -217,7 +234,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		}
 		treeRoot = id
 	}
-	v := &Mount{Request: q, mu: new(sync.Mutex)}
+	v := &Mount{activity: &atomic.Int64{}, fenced: &atomic.Bool{}, Request: q, mu: new(sync.Mutex)}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if q.Ref != "" {
@@ -252,7 +269,8 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		}
 		v.Fence = refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
 		v.stopRenew = make(chan struct{})
-		go m.renewMount(v.Lineage, v.Ref, v.JobID, v.Fence, v.stopRenew)
+		v.activity.Store(m.Now().UnixNano())
+		go m.renewMount(v, v.stopRenew)
 		v.LeaseEpoch = epoch
 		v.Parent = p.Value
 		v.Root = p.Root
@@ -526,6 +544,7 @@ func (m *Manager) status(ctx context.Context, v *Mount) error {
 	return nil
 }
 func (m *Manager) Status(ctx context.Context, id string) (*Mount, error) {
+	_ = m.Heartbeat(id)
 	v := m.lookup(id)
 	if v == nil {
 		return nil, os.ErrNotExist
@@ -534,6 +553,9 @@ func (m *Manager) Status(ctx context.Context, id string) (*Mount, error) {
 	defer v.mu.Unlock()
 	if v.State == "released" {
 		return nil, os.ErrNotExist
+	}
+	if v.fenced.Load() {
+		return &Mount{State: "fenced", Image: v.Image, Request: Request{Root: v.Root}, LeaseEpoch: v.LeaseEpoch}, nil
 	}
 	if e := m.status(ctx, v); e != nil {
 		return nil, e
@@ -630,20 +652,33 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 
 // Renewal must not wait on the operation mutex: hashing or hydration can take
 // longer than a lease, including while another mount is being prepared.
-func (m *Manager) renewMount(lineage, name, job string, fence refs.Fence, stop <-chan struct{}) {
-	// v0-limitation: L24
-	t := time.NewTicker(time.Minute)
+func (m *Manager) renewOnce(v *Mount) {
+	if m.Now().Sub(time.Unix(0, v.activity.Load())) > 2*(m.LeaseTTL/5) {
+		return
+	}
+	if e := m.Refs.Renew(v.Lineage, v.Ref, v.Fence); errors.Is(e, refs.ErrFenced) {
+		v.fenced.Store(true)
+	}
+}
+func (m *Manager) renewMount(v *Mount, stop <-chan struct{}) {
+	t := time.NewTicker(m.LeaseTTL / 5)
 	defer t.Stop()
 	for {
 		select {
 		case <-stop:
 			return
 		case <-t.C:
-			if e := m.Refs.Renew(lineage, name, fence); e != nil {
-				log.Printf("op=renew jobId=%s error=%v", job, e)
-			}
+			m.renewOnce(v)
 		}
 	}
+}
+func (m *Manager) Heartbeat(id string) error {
+	v := m.lookup(id)
+	if v == nil {
+		return os.ErrNotExist
+	}
+	v.activity.Store(m.Now().UnixNano())
+	return nil
 }
 
 // v0-limitation: L15

@@ -39,6 +39,7 @@ type Checkpoint struct {
 }
 
 func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, err error) {
+	_ = m.Heartbeat(id)
 	v := m.lookup(id)
 	if v == nil {
 		return out, os.ErrNotExist
@@ -49,7 +50,7 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, er
 }
 func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadata ...CheckpointRequest) (out Checkpoint, err error) {
 	t := time.Now()
-	if v.Ref == "" {
+	if v.fenced.Load() || v.Ref == "" {
 		return out, refs.ErrFenced
 	}
 	if e := m.Refs.Check(v.Lineage, v.Ref, v.Fence); e != nil {

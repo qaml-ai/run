@@ -128,6 +128,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			reply(200, v)
+		} else if len(parts) == 2 && parts[1] == "heartbeat" && r.Method == "POST" {
+			var q struct{}
+			if e := decode(&q); e != nil {
+				fail(e)
+				return
+			}
+			if e := m.Heartbeat(id); e != nil {
+				fail(e)
+				return
+			}
+			reply(200, map[string]bool{"ok": true})
 		} else if len(parts) == 1 && r.Method == "GET" {
 			v, e := m.Status(r.Context(), id)
 			if e != nil {
