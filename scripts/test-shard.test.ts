@@ -29,3 +29,18 @@ test("an empty selected shard exits without invoking the test runner", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /empty shard/);
 });
+
+test("the failures reporter names each failing file once, and writes * for a top-level failure no file is named for", async () => {
+  const { default: failures } = await import("./test-failures-reporter.ts");
+  const events = async function* () {
+    yield { type: "test:fail", data: { file: "/x/tests/a.test.ts", nesting: 0 } };
+    yield { type: "test:fail", data: { file: "/x/tests/a.test.ts", nesting: 1 } };
+    yield { type: "test:fail", data: { file: "/x/tests/a.test.ts", nesting: 0 } };
+    yield { type: "test:pass", data: { file: "/x/tests/b.test.ts", nesting: 0 } };
+    yield { type: "test:fail", data: { file: "/x/tests/c.test.ts", nesting: 0 } };
+    yield { type: "test:fail", data: { nesting: 0 } };
+  };
+  let written = "";
+  for await (const chunk of failures(events())) written += chunk;
+  assert.equal(written, "a.test.ts\nc.test.ts\n*\n");
+});

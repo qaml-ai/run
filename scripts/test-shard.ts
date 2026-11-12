@@ -109,10 +109,17 @@ if (process.argv[2] === "--update") {
   const failuresOut = join(timingsDir, `${name}.failed`);
   let status = run(planned.files.map(file => `tests/${file}`), join(timingsDir, `${name}.json`), failuresOut);
   const failed = status === 0 ? [] : readFileSync(failuresOut, "utf8").split("\n").filter(Boolean);
-  if (failed.length > 0 && failed.length <= RETRY_FILES) {
+  // Retried only when every failure is named for a file and there are few: a crash of the runner (no file named, or an
+  // empty list for a failed run) or a failure it cannot attribute (`*`) fails the shard as it is.
+  if (status !== 0 && (!failed.length || failed.includes("*")))
+    console.log(`# the run failed with ${failed.length ? "a failure no test file is named for" : "no failing test file named (the runner itself failed)"}: not retried`);
+  else if (failed.length > RETRY_FILES)
+    console.log(`# ${failed.length} test files failed (${failed.join(", ")}): more than ${RETRY_FILES}, so a broken change, not retried`);
+  else if (failed.length > 0) {
     console.log(`# ${failed.join(", ")} failed; running ${failed.length === 1 ? "it" : "them"} once more, alone`);
     status = run(failed.map(file => `tests/${file}`), join(timingsDir, `${name}.retry`), join(timingsDir, `${name}.retry-failed`));
     if (status === 0) for (const file of failed) console.log(`::warning title=Flaky test file::${file} failed under ${hosting} hosting (shard ${index}/${count}), then passed alone`);
+    else console.log(`::error title=Test files failed twice::${failed.join(", ")} failed under ${hosting} hosting (shard ${index}/${count}), and again alone`);
   }
   process.exitCode = status;
 }
