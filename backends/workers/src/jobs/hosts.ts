@@ -31,6 +31,14 @@ import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSe
 export const HOSTS_PROVIDER = "camelrun-hosts";
 /** A host not heard from in this long takes no new job. */
 const HOST_STALE_MS = 30_000;
+/** A waiting job not heard from in this long has stopped waiting (its object was evicted, say). */
+const WAITER_STALE_MS = 20_000;
+/** A host not heard from in this long is forgotten (demand prunes it). */
+const HOST_FORGET_MS = 24 * 3600_000;
+/** A placement this recent counts though the host's heartbeat does not list it yet (it was in flight). */
+const PLACEMENT_GRACE_MS = 60_000;
+/** How long a job waits for a host of its pool (a cold pool's host boots in a few minutes), at most; JOB_HOST_WAIT_SECONDS. */
+export const HOST_WAIT_MS = 10 * 60_000;
 /**
  * Inline files and a volume's files cross to the host inline, up to this much (raw). They cross DO RPC as base64 first
  * (dispatch), which carries at most 32 MiB: 16 MiB raw is about 21 MiB there, with room for the rest of the job. A
@@ -55,6 +63,10 @@ export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & HostPriceEnv & {
    * account may hold sts:AssumeRole on it, and it must not trust itself). Slice 7's Terraform enforces this.
    */
   JOB_HOST_ROLE_ARNS?: string;
+  /** How long a job waits for a host of its pool before it fails start_failed (seconds; HOST_WAIT_MS by default). */
+  JOB_HOST_WAIT_SECONDS?: string;
+  /** The scaler's credential (infra/job-hosts/scaler): it reads demand and drains hosts, nothing else. */
+  JOB_HOST_SCALER_TOKEN?: string;
   /** Enrollments per client address (a Cloudflare rate limiting binding). The aws attestor refuses to run without it outside TEST_MODE. */
   JOB_HOST_ENROLL_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   AGENT_PUBLIC_URL?: string;
@@ -85,6 +97,14 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     if (!columns.includes("pool")) sql.exec("ALTER TABLE hosts ADD COLUMN pool TEXT NOT NULL DEFAULT 'test'");
     // Memory its running VMs hold (MiB): placement packs a host to its pool's sandbox memory, never past it.
     if (!columns.includes("used_mib")) sql.exec("ALTER TABLE hosts ADD COLUMN used_mib INTEGER NOT NULL DEFAULT 0");
+    // Draining (the scaler is about to end it): it takes no new job. Idle since: when it last had every slot free.
+    if (!columns.includes("draining")) sql.exec("ALTER TABLE hosts ADD COLUMN draining INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("idle_since")) sql.exec("ALTER TABLE hosts ADD COLUMN idle_since INTEGER");
+    // Jobs waiting for a host of their pool, oldest first; a waiter not heard from in WAITER_STALE_MS has gone.
+    sql.exec("CREATE TABLE IF NOT EXISTS waiting (job TEXT PRIMARY KEY, pool TEXT NOT NULL, since INTEGER NOT NULL, seen_at INTEGER NOT NULL)");
+    // Each placed job's memory, so a host's used_mib is reconciled from the jobs its heartbeat says it runs.
+    if (!sql.exec<{ name: string }>("PRAGMA table_info(waiting)").toArray().some(column => column.name === "mib")) sql.exec("ALTER TABLE waiting ADD COLUMN mib INTEGER NOT NULL DEFAULT 0");
+    sql.exec("CREATE TABLE IF NOT EXISTS placements (job TEXT PRIMARY KEY, host TEXT NOT NULL, mib INTEGER NOT NULL, at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS host_credentials (hash TEXT PRIMARY KEY, host TEXT NOT NULL, expires_at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS host_attestations (signature TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     sql.exec("CREATE INDEX IF NOT EXISTS host_attestations_at ON host_attestations (at)");
@@ -139,13 +159,13 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     await this.env.JOB_HOSTS?.getByName(name).revoke();
     return { revoked: name };
   }
-  allow(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET revoked = 0 WHERE name = ?", name); return { allowed: name }; }
+  allow(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET revoked = 0, draining = 0 WHERE name = ?", name); return { allowed: name }; }
 
   /**
    * A host's hello (slots, vCPUs, memory) or heartbeat (free slots alone). `pool` is its credential's, which the attested
    * role decides (enrollHost), never the host's own word. A build host runs one job: one that says otherwise is refused.
    */
-  seen(name: string, slots: number | undefined, free: number, pool?: HostPool, machine?: { vcpus?: unknown; memoryMiB?: unknown }) {
+  seen(name: string, slots: number | undefined, free: number, pool?: HostPool, machine?: { vcpus?: unknown; memoryMiB?: unknown }, running?: unknown) {
     // A code in the message: an error's class does not survive Durable Object RPC (JobHost matches on it).
     if (this.revoked(name)) throw new Error(`${HOST_REVOKED}: this host is revoked`);
     // What a host reports is checked: whole numbers, free within its slots (a host cannot claim more than it has).
@@ -164,30 +184,120 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
       const known = this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0];
       if (!known || free > known.slots) throw new Error("Invalid host capacity");
     }
-    // A host with every slot free runs nothing: whatever memory its row still counts (a job object that died before it
-    // released its placement) is let go.
-    if (slots !== undefined ? free === slots : free === this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0]?.slots)
-      this.ctx.storage.sql.exec("UPDATE hosts SET used_mib = 0 WHERE name = ?", name);
+    // Its slots and pool as it says (its pool is its credential's); what it runs is the registry's own count, below.
     this.ctx.storage.sql.exec(`INSERT INTO hosts (name, slots, free, seen_at, pool) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
-      name, slots ?? free, free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
+      ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
+      name, slots ?? free, slots ?? free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
+    if (Array.isArray(running) && running.length <= 1024 && running.every(id => typeof id === "string")) {
+      // The jobs it runs are its placed jobs that it lists (or were placed too recently to show up in a heartbeat), and
+      // any it lists that no placement knows (from before the registry forgot them; their memory unknown): a job
+      // object that died before it released its placement stops counting.
+      const sql = this.ctx.storage.sql, now = Date.now(), ids = JSON.stringify(running);
+      sql.exec("DELETE FROM placements WHERE host = ? AND at <= ? AND job NOT IN (SELECT value FROM json_each(?))", name, now - PLACEMENT_GRACE_MS, ids);
+      sql.exec("INSERT OR IGNORE INTO placements (job, host, mib, at) SELECT value, ?, 0, ? FROM json_each(?)", name, now, ids);
+    }
+    this.recount(name);
   }
   /**
-   * A fresh, allowed host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox memory, which
-   * are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed boot).
+   * A host's free slots and used memory, from its placements alone (the one source: place and release add and drop
+   * them, a heartbeat reconciles them), so neither a heartbeat nor a release can count a job twice or undo a placement.
    */
-  place(pool: HostPool = "test", memoryMiB = 0): string | undefined {
+  private recount(name: string) {
+    this.ctx.storage.sql.exec(`UPDATE hosts SET
+        free = MAX(0, slots - (SELECT COUNT(*) FROM placements WHERE host = ?)),
+        used_mib = (SELECT COALESCE(SUM(mib), 0) FROM placements WHERE host = ?)
+      WHERE name = ?`, name, name, name);
+    this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = CASE WHEN free < slots THEN NULL ELSE COALESCE(idle_since, ?) END WHERE name = ?", Date.now(), name);
+  }
+  /** The job is about to be sent: its placement counts though no heartbeat lists it yet (a slow start does not drop it). */
+  touch(job: string) { this.ctx.storage.sql.exec("UPDATE placements SET at = ? WHERE job = ?", Date.now(), job); }
+  /**
+   * A fresh, allowed, undrained host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox
+   * memory, which are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed
+   * boot).
+   */
+  place(pool: HostPool, memoryMiB: number, job: string): string | undefined {
     const room = HOST_POOL_PRICES[pool].memoryGiB * 1024 - memoryMiB;
     if (room < 0) return undefined;
-    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
+    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND draining = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
     if (!row) return undefined;
-    this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1, used_mib = used_mib + ? WHERE name = ?", memoryMiB, row.name);
+    // A job placed again (a run made again) moves: its old host is recounted without it.
+    const before = this.ctx.storage.sql.exec<{ host: string }>("SELECT host FROM placements WHERE job = ?", job).toArray()[0]?.host;
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO placements (job, host, mib, at) VALUES (?, ?, ?, ?)", job, row.name, memoryMiB, Date.now());
+    if (before && before !== row.name) this.recount(before);
+    this.recount(row.name);
     return row.name;
   }
-  release(name: string, memoryMiB = 0) {
-    this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1), used_mib = MAX(0, used_mib - ?) WHERE name = ? AND revoked = 0", memoryMiB, name);
+  /**
+   * A job's turn at a host (HostJob, while it waits): a host when one is free and no job of its pool has waited longer,
+   * else undefined, and the job counts as waiting (the demand the scaler reads) until it calls again or gives up.
+   */
+  want(job: string, pool: HostPool, memoryMiB = 0): string | undefined {
+    const sql = this.ctx.storage.sql, now = Date.now();
+    sql.exec("DELETE FROM waiting WHERE seen_at <= ?", now - WAITER_STALE_MS);
+    sql.exec("INSERT INTO waiting (job, pool, since, seen_at, mib) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job) DO UPDATE SET seen_at = excluded.seen_at, mib = excluded.mib", job, pool, now, now, memoryMiB);
+    // In turn: the oldest waiter that fits a live host now. One too big for any host's room at the moment (it waits for
+    // a host to empty, or a new one) does not hold back smaller jobs that fit.
+    const room = sql.exec<{ room: number | null }>("SELECT MAX(? - used_mib) AS room FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND draining = 0 AND pool = ?",
+      HOST_POOL_PRICES[pool].memoryGiB * 1024, now - HOST_STALE_MS, pool).one().room;
+    if (room === null) return undefined;
+    const first = sql.exec<{ job: string }>("SELECT job FROM waiting WHERE pool = ? AND mib <= ? ORDER BY since, job LIMIT 1", pool, room).toArray()[0];
+    if (first?.job !== job) return undefined;
+    const host = this.place(pool, memoryMiB, job);
+    if (host) sql.exec("DELETE FROM waiting WHERE job = ?", job);
+    return host;
   }
-  list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked FROM hosts ORDER BY name").toArray(); }
+  /** A waiting job that stopped waiting (it gave up, or was stopped). */
+  unwant(job: string) { this.ctx.storage.sql.exec("DELETE FROM waiting WHERE job = ?", job); }
+  release(name: string, _memoryMiB: number, job: string) {
+    this.ctx.storage.sql.exec("DELETE FROM placements WHERE job = ? AND host = ?", job, name);
+    this.recount(name);
+  }
+  list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked, draining, idle_since AS idleSince FROM hosts ORDER BY name").toArray(); }
+  /** Drain a host (the scaler, before it ends it): no new job is placed on it. Undefined: no such host. */
+  drain(name: string) {
+    const changed = this.ctx.storage.sql.exec("UPDATE hosts SET draining = 1 WHERE name = ?", name).rowsWritten;
+    return changed ? { draining: name } : undefined;
+  }
+  /** Undrain it (jobs wait again, or an operator's `allow`): it takes jobs again. */
+  undrain(name: string) {
+    const changed = this.ctx.storage.sql.exec("UPDATE hosts SET draining = 0 WHERE name = ?", name).rowsWritten;
+    return changed ? { draining: false, host: name } : undefined;
+  }
+
+  /**
+   * What the scaler sizes the pools by (infra/job-hosts/scaler): per pool, its live hosts and slots, the jobs running
+   * and waiting (and how long the oldest has), and each live host's state: busy, idle since when, draining. A host is
+   * its EC2 instance id (job-host-attest.ts), which is how the scaler finds it in its group.
+   */
+  demand() {
+    const sql = this.ctx.storage.sql, now = Date.now();
+    sql.exec("DELETE FROM waiting WHERE seen_at <= ?", now - WAITER_STALE_MS);
+    // Hosts not heard from in a day are forgotten (their instances are long gone); a revoked one stays revoked.
+    sql.exec("DELETE FROM hosts WHERE seen_at < ? AND revoked = 0", now - HOST_FORGET_MS);
+    // Every host it knows, with when it was last heard from: the scaler ends a terminating host's hook only once it has
+    // been gone a while, not on one missed heartbeat. Capacity counts only the live ones.
+    const known = sql.exec<{ name: string; pool: string; slots: number; free: number; draining: number; idle_since: number | null; seen_at: number; used_mib: number }>(
+      "SELECT name, pool, slots, free, draining, idle_since, seen_at, used_mib FROM hosts WHERE revoked = 0 ORDER BY name").toArray();
+    const hosts = known.filter(host => host.seen_at > now - HOST_STALE_MS);
+    return {
+      at: now,
+      pools: Object.fromEntries(HOST_POOLS.map(pool => {
+        const mine = hosts.filter(host => host.pool === pool), memoryMiB = HOST_POOL_PRICES[pool].memoryGiB * 1024;
+        const waiting = sql.exec<{ n: number; oldest: number | null; mib: number | null }>("SELECT count(*) AS n, MIN(since) AS oldest, SUM(mib) AS mib FROM waiting WHERE pool = ?", pool).one();
+        return [pool, {
+          // Memory as placement counts it: each host's sandbox memory, and what is left of it.
+          memoryMiB,
+          hosts: mine.map(host => ({ host: host.name, slots: host.slots, running: host.slots - host.free, draining: !!host.draining, idleSince: host.idle_since, lastSeenAt: host.seen_at,
+            freeMiB: Math.max(0, memoryMiB - host.used_mib) })),
+          gone: known.filter(host => host.pool === pool && host.seen_at <= now - HOST_STALE_MS).map(host => ({ host: host.name, lastSeenAt: host.seen_at })),
+          slots: mine.filter(host => !host.draining).reduce((sum, host) => sum + host.slots, 0),
+          running: mine.reduce((sum, host) => sum + host.slots - host.free, 0),
+          waiting: Number(waiting.n), waitingMiB: Number(waiting.mib ?? 0), oldestWaitMs: waiting.oldest === null ? 0 : now - Number(waiting.oldest),
+        }];
+      })),
+    };
+  }
 }
 
 const registry = (env: JobHostsEnv) => env.JOB_HOST_REGISTRY!.getByName("hosts");
@@ -274,6 +384,36 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
     console.error(JSON.stringify({ type: "jobhost_enroll_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
     return Response.json({ error: "Enrollment failed", code: "UNAVAILABLE" }, { status: 503 });
   }
+}
+
+/**
+ * The scaler's routes (infra/job-hosts/scaler), with its own credential (JOB_HOST_SCALER_TOKEN, a bearer token checked
+ * in constant time): GET /v1/internal/job-hosts/demand reads what each pool needs, POST
+ * /v1/internal/job-hosts/<host>/drain stops placing jobs on a host it is about to end, and DELETE on it undoes that (a
+ * drain is never one-way: the scaler undrains when jobs wait, an operator's allow does too). Nothing else: it reads no job,
+ * payer or secret. Without the token configured, these paths are unknown.
+ */
+export async function scalerRoutes(request: Request, env: JobHostsEnv): Promise<Response | undefined> {
+  const path = new URL(request.url).pathname;
+  const match = /^\/v1\/internal\/job-hosts\/(?:demand|([^/]+)\/drain)$/.exec(path);
+  if (!match || !env.JOB_HOST_SCALER_TOKEN || !env.JOB_HOST_REGISTRY) return undefined;
+  const given = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+  if (env.JOB_HOST_SCALER_TOKEN.length < 32) {
+    // A misconfiguration, refused closed, and said so (the scaler only sees 401s).
+    console.error(JSON.stringify({ type: "jobhost_scaler_token_too_short" }));
+    return Response.json({ error: "Unauthorized", code: "UNAUTHORIZED" }, { status: 401 });
+  }
+  if (!sameText(given, env.JOB_HOST_SCALER_TOKEN)) return Response.json({ error: "Unauthorized", code: "UNAUTHORIZED" }, { status: 401 });
+  const hosts = registry(env);
+  if (!match[1] && request.method === "GET") return Response.json(await hosts.demand());
+  if (match[1] && (request.method === "POST" || request.method === "DELETE")) {
+    let host = "";
+    try { host = decodeURIComponent(match[1]); } catch { /* a malformed escape: refused below */ }
+    if (!HOST_NAME.test(host)) return Response.json({ error: "Invalid host id", code: "INVALID_REQUEST" }, { status: 400 });
+    const done = request.method === "POST" ? await hosts.drain(host) : await hosts.undrain(host);
+    return done ? Response.json(done) : Response.json({ error: "Unknown host", code: "NOT_FOUND" }, { status: 404 });
+  }
+  return Response.json({ error: "Not found", code: "NOT_FOUND" }, { status: 404 });
 }
 
 /**
@@ -393,7 +533,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
       // Its free slots as it reports them: a reconnecting host's jobs in flight keep theirs. Its pool is its credential's.
       await registry(this.env).seen(name, message.slots, message.free, this.pool ?? "test", { vcpus: message.vcpus, memoryMiB: message.memoryMiB });
       this.send({ type: "registered", host: name });
-    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test");
+    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test", undefined, message.running);
     else if (message.type === "started") { if (this.pending.has(message.id)) this.startedAt.set(message.id, Date.now()); }
     else if (message.type === "result") { const done = this.pending.get(message.id); this.pending.delete(message.id); done?.(message.result); }
   }
@@ -408,6 +548,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
    * never started, and nothing is charged. The socket gone, or the deadline passed, answers a failure.
    */
   async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult & { ranFrom?: number; ranUntil?: number }> {
+    if (this.cancelled.delete(id)) return { ok: false, code: "stopped", message: "The job was stopped" };
     const result = await new Promise<WireResult>(resolve => {
       const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, code: "container_failed", message: "The job host did not answer in time" }); }, deadlineMs);
       this.pending.set(id, result => { clearTimeout(timer); resolve(result); });
@@ -417,14 +558,29 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     this.startedAt.delete(id);
     return { ...result, ...(ranFrom !== undefined ? { ranFrom, ranUntil: Math.max(ranFrom, this.socket ? Date.now() : this.lastSeen) } : {}) };
   }
-  cancel(id: string) { return this.send({ type: "cancel", id }); }
+  /**
+   * Stop a job on this host. One not sent yet (its dispatch is on its way here) is remembered, and its dispatch then
+   * answers `stopped` without sending it: a cancel that overtakes its job never leaves the job to run.
+   */
+  cancel(id: string, inFlight = false) {
+    if (!this.pending.has(id)) {
+      // Remembered only for a job whose dispatch is on its way (its HostJob says so): never for one already answered,
+      // whose id a later run may use again.
+      if (!inFlight) return false;
+      this.cancelled.set(id, Date.now());
+      for (const [old, at] of this.cancelled) if (Date.now() - at > 2 * 60_000) this.cancelled.delete(old);
+      return true;
+    }
+    return this.send({ type: "cancel", id });
+  }
+  private readonly cancelled = new Map<string, number>();
 }
 
 const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data), size: wire.size, truncated: wire.truncated });
 
 /** One job on a host: admission, a slot, placement, the meter, the result. */
 export class HostJob extends DurableObject<JobHostsEnv> {
-  private active?: { host: string; id: string };
+  private active?: { host: string; id: string; stopped: boolean; sent?: boolean; answered?: boolean };
   constructor(ctx: DurableObjectState, env: JobHostsEnv) {
     super(ctx, env);
     guardAlarms(this, ctx, "HostJob", { test: env.TEST_MODE === "1" });
@@ -438,7 +594,12 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const at = Date.now();
     const timings = () => ({ startedAt: at, endedAt: Date.now(), startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: Date.now() - at });
     const fail = (code: Extract<JobResult, { ok: false }>["code"], message: string, costUsd?: number): JobResult => ({ ok: false, id: spec.id, code, message, timings: timings(), ...(costUsd !== undefined ? { costUsd } : {}) });
-    if (this.active) return fail("job_running", `Job ${spec.id} is running`);
+    // Running, or still waiting for a host (a workflow that restarted asks again): the earlier run lands it.
+    if (this.active || this.waiting) return fail("job_running", `Job ${spec.id} is running`);
+    // Stoppable from here until it is dispatched (this.waiting, kept until this.active is set): it ends `stopped`, its
+    // host's slot and its computer slot given back, nothing charged.
+    const waiting = this.waiting = { job: spec.id, stopped: false };
+    try {
     // Snapshots and other images are Cloudflare containers' alone so far (driver.ts needsContainer): refused, never
     // run without them.
     if (needsContainer(spec)) return fail("start_failed", "Job hosts run the workspace image only, without snapshots, so far: run this job on Cloudflare Containers (JOB_PROVIDER=auto routes it there)");
@@ -450,18 +611,37 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     let rate: number;
     try { rate = hostSecondRate(pool, shape, this.env); }
     catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Pricing is misconfigured"); }
-    try {
-      await meter.admit(spec.payer);
-      const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
-      await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
-    } catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
-    const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
+    try { await meter.admit(spec.payer); }
+    catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
+    if (waiting.stopped) return fail("stopped", "The job was stopped");
     let files: WireFile[];
     try { files = await this.files(spec); }
-    catch (error) { await release(); return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
-    const host = await registry(this.env).place(pool, shape.memoryMiB);
-    if (!host) { await release(); return fail("start_failed", `No ${pool} job host has a free slot`); }
-    this.active = { host, id: spec.id };
+    catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
+    if (waiting.stopped) return fail("stopped", "The job was stopped");
+    // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
+    const stopped = async (host?: string, slot = false) => {
+      if (host) await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
+      if (slot) await withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine)).catch(() => {});
+      this.waiting = undefined;
+      return fail("stopped", "The job was stopped");
+    };
+    const host = await this.waitForHost(waiting, pool, shape.memoryMiB);
+    if (host === "stopped") return stopped();
+    if (!host) { this.waiting = undefined; return fail("start_failed", `No ${pool} job host was free within ${Math.round(this.waitMs() / 1000)} s`); }
+    if (waiting.stopped) return stopped(host);
+    // The computer slot from here: a job waiting for a host holds none.
+    try {
+      const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
+      await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
+    } catch (error) {
+      await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
+      this.waiting = undefined;
+      return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused");
+    }
+    if (waiting.stopped) return stopped(host, true);
+    const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
+    const active: { host: string; id: string; stopped: boolean; sent?: boolean; answered?: boolean } = this.active = { host, id: spec.id, stopped: false };
+    this.waiting = undefined;
     let wire: WireResult & { ranFrom?: number; ranUntil?: number } = { ok: false, code: "container_failed", message: "No result" }, costUsd = 0;
     // A session is open from dispatch, at the rate fixed at admission, under the job's own name (a run made again is the
     // same charge): if this object dies mid-job, its alarm charges it, at most to the job's lifetime. Once the result is
@@ -469,11 +649,21 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     try { await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, `job:${spec.id}`, { rate }); }
     catch (error) {
       await release().catch(() => {});
-      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
       this.active = undefined;
       return fail("start_failed", error instanceof Error ? error.message.slice(0, 300) : "The job could not be metered");
     }
+    // A stop between taking the host and sending the job: not sent; its slots go back, and it is charged nothing.
+    if (active.stopped) {
+      await meter.startedAt(Date.now()).then(() => meter.stopped()).catch(() => {});
+      await release().catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
+      this.active = undefined;
+      return fail("stopped", "The job was stopped");
+    }
+    await registry(this.env).touch(spec.id).catch(() => {});
     const dispatchedAt = Date.now();
+    active.sent = true;
     try {
       // A dispatch that throws (the host object unreachable, the RPC refused) is the job's result, never a throw out of
       // run(): a throw would leave the workflow's row to be run again, and fail again, on every restart.
@@ -482,6 +672,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         limits: { cpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskMiB: shape.diskMiB, ...(spec.limits?.pids ? { pids: spec.limits.pids } : {}) },
         ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
       }, lifetimeMs).catch((error: unknown): WireResult => ({ ok: false, code: "container_failed", message: `The job could not be sent to its host: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}` }));
+      active.answered = true;
     } finally {
       // Charged for the span its VM ran: from its host's `started` report (or, for a result that says it ran, what its
       // timings say: a `started` lost on a reconnect never makes a job that ran free), to its result, or until its host
@@ -491,7 +682,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
       costUsd = meter.spentUsd();
       await release().catch(() => {});
-      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
       this.active = undefined;
     }
     if (!wire.ok) return fail(wire.code, wire.message, costUsd);
@@ -502,6 +693,10 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       pids: wire.pids === "enforced" ? "ulimit" : "unenforced",
       timings: { ...wire.timings, startedAt: at, endedAt: Date.now() }, costUsd,
     };
+    } finally {
+      // Whatever ended it (a result, a refusal, a throw), it no longer waits: a later run or stop sees that.
+      if (this.waiting === waiting) this.waiting = undefined;
+    }
   }
   /** Its files as they cross to the host: inline ones, or a volume snapshot's, up to HOST_SYNC_BYTES. */
   private async files(spec: JobSpec): Promise<WireFile[]> {
@@ -516,9 +711,37 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     else if (spec.volume) for await (const file of volumeFiles(this.env, spec.volume)) add(file.path, file.bytes);
     return out;
   }
+  private waiting?: { job: string; stopped: boolean };
+  private waitMs() {
+    const seconds = Number(this.env.JOB_HOST_WAIT_SECONDS ?? NaN);
+    return Number.isFinite(seconds) && seconds >= 0 && seconds <= 3600 ? seconds * 1000 : HOST_WAIT_MS;
+  }
+  /** A host for `job`, its turn in its pool's queue; undefined when none came in time, "stopped" when stopped meanwhile. */
+  private async waitForHost(waiting: { job: string; stopped: boolean }, pool: HostPool, memoryMiB: number): Promise<string | undefined | "stopped"> {
+    const hosts = registry(this.env), until = Date.now() + this.waitMs(), job = waiting.job;
+    try {
+      for (let pause = 250; ; pause = Math.min(3_000, pause * 2)) {
+        if (waiting.stopped) return "stopped";
+        const host = await hosts.want(job, pool, memoryMiB);
+        // A stop that landed while it asked: the host it got goes back.
+        if (host && waiting.stopped) { await hosts.release(host, memoryMiB, job).catch(() => {}); return "stopped"; }
+        if (host) return host;
+        if (Date.now() + pause > until) return undefined;
+        await new Promise(resolve => setTimeout(resolve, pause));
+      }
+    } finally {
+      await hosts.unwant(job).catch(() => {});
+    }
+  }
   async stop(): Promise<{ stopped: boolean }> {
+    if (this.waiting) { this.waiting.stopped = true; return { stopped: true }; }
     if (!this.active) return { stopped: false };
-    return { stopped: await this.env.JOB_HOSTS!.getByName(this.active.host).cancel(this.active.id) };
+    // Not sent yet: run() sees this before it dispatches. Sent: its host stops it (JobHost.cancel, which also holds a
+    // cancel that overtakes the job itself).
+    this.active.stopped = true;
+    if (!this.active.sent) return { stopped: true };
+    if (this.active.answered) return { stopped: false };
+    return { stopped: await this.env.JOB_HOSTS!.getByName(this.active.host).cancel(this.active.id, true) };
   }
   /** Charges a failed settle left, retried (computers/meter.ts). */
   async alarm() { await this.meter(60_000).alarm(false); }

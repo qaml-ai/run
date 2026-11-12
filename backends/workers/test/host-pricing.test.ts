@@ -147,6 +147,8 @@ test("the charged span: a job whose result says it ran is never charged nothing,
   assert.ok(none.until - none.from >= 1_000, JSON.stringify(none));
   // Never before dispatch, nor past the result.
   assert.deepEqual(chargedSpan({ ok: true, timings: { ...timings, totalMs: 900_000 } }, dispatched, result), { from: dispatched, until: result });
+  // A failure after its VM started (stopped, or the command could not run), its `started` lost: from its timings.
+  assert.deepEqual(chargedSpan({ ok: false, timings: { startMs: 2_000, totalMs: 22_000 } }, dispatched, result), { from: result - 20_000, until: result });
   // A failure whose VM never started: nothing.
   assert.deepEqual(chargedSpan({ ok: false }, dispatched, result), { from: result, until: result });
   // Its host went away: from its start to when the host was last heard from.

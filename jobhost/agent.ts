@@ -133,12 +133,14 @@ export class HostAgent {
     this.running.set(id, job);
     const began = Date.now();
     let result: WireResult;
+    // Set once its VM has started: every result from then on says when (its charge, if its `started` report was lost).
+    let startMs: number | undefined;
     try {
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
       const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet });
       if (job.cancelled) throw new Stopped();
       this.send({ type: "started", id, at: Date.now() });
-      const startMs = Date.now() - began;
+      startMs = Date.now() - began;
       const synced = await vm.request({ op: "files", files: spec.files });
       if (!synced.ok) { result = { ok: false, code: "sync_failed", message: String(synced.error ?? "sync failed") }; return; }
       const free = await vm.request({ op: "free" });
@@ -164,7 +166,8 @@ export class HostAgent {
     } finally {
       await job.vm?.destroy().catch(() => {});
       this.running.delete(id);
-      this.send({ type: "result", id, result: result! ?? { ok: false, code: "container_failed", message: "No result" } });
+      const final: WireResult = result! ?? { ok: false, code: "container_failed", message: "No result" };
+      this.send({ type: "result", id, result: !final.ok && startMs !== undefined ? { ...final, timings: { startMs, totalMs: Date.now() - began } } : final });
     }
   }
 }
