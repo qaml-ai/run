@@ -1,6 +1,6 @@
 {
   "id": "n-data-audit",
-  "version": 1,
+  "version": 2,
   "tier": "N",
   "title": "Audit 20 tables against their schema (non-code, rubric-scored)",
   "status": "ready",
@@ -34,5 +34,5 @@
       "addresses"
     ]
   },
-  "workflowNote": "A workflow's job() containers have Node 24 and Python, and no network."
+  "workflowNote": "job_run and a workflow's job() run in containers with Node 24 and Python, and no network."
 }

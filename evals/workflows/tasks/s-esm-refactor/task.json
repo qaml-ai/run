@@ -1,6 +1,6 @@
 {
   "id": "s-esm-refactor",
-  "version": 1,
+  "version": 2,
   "tier": "S",
   "title": "Move 50 CommonJS modules to ES modules and off a legacy formatter",
   "status": "ready",
@@ -14,5 +14,5 @@
     "glob": "lib/m*.js",
     "instructions": "Migrate this module of ledger-labels (/workspace) as MIGRATION.md says: ES module syntax, the same exports, each legacyFormat call replaced by an identical template literal. Change only this file."
   },
-  "workflowNote": "A workflow's job() containers have Node 24 and Python, and no network."
+  "workflowNote": "job_run and a workflow's job() run in containers with Node 24 and Python, and no network."
 }
