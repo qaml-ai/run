@@ -188,7 +188,8 @@ export async function pullFiles(vm: Pick<Vm, "request">, sync: NonNullable<WireJ
   const began = Date.now();
   // The whole sync is bounded by the job's own deadline (`until`): past it, every fetch in flight is aborted.
   const controller = new AbortController(), signal = controller.signal;
-  const deadline = setTimeout(() => controller.abort(new Error("Host-side sync ran past the job's deadline")), Math.max(1, (sync.until ?? began + 10 * 60_000) - began));
+  let timedOut = false;
+  const deadline = setTimeout(() => { timedOut = true; controller.abort(new Error("Host-side sync ran past the job's deadline")); }, Math.max(1, (sync.until ?? began + 10 * 60_000) - began));
   const one = async (index: number) => {
     const file = sync.files[index]!;
     const response = await fetcher(`${sync.url}/${index}`, { headers: { authorization: `Bearer ${sync.token}` }, signal });
@@ -222,12 +223,14 @@ export async function pullFiles(vm: Pick<Vm, "request">, sync: NonNullable<WireJ
   const worker = async () => {
     while (failure === undefined && next < sync.files.length) {
       const index = next++;
-      try { await one(index); } catch (error) { failure ??= error; }
+      // The first failure ends the sync at once: the fetches still in flight are aborted too.
+      try { await one(index); } catch (error) { if (failure === undefined) { failure = error; controller.abort(error); } }
     }
   };
   try { await Promise.all(Array.from({ length: Math.min(SYNC_PARALLEL, sync.files.length) }, worker)); }
   finally { clearTimeout(deadline); }
-  if (failure !== undefined) throw signal.aborted ? new Error("Host-side sync ran past the job's deadline") : failure;
+  if (timedOut) throw new Error("Host-side sync ran past the job's deadline");
+  if (failure !== undefined) throw failure;
   return Date.now() - began;
 }
 /** Files fetched at once in host-side sync. */
