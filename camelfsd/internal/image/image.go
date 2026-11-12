@@ -30,6 +30,8 @@ var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
 
 type Config struct {
+	Packs                         bool
+	PackWindow                    int64
 	StreamIdle, ApplyMax          time.Duration
 	LeaseTTL                      time.Duration
 	Now                           func() time.Time
@@ -42,7 +44,11 @@ type Config struct {
 	MaxBytes, MaxPathsBytes       int64
 }
 type Manager struct {
-	pins map[string]map[string]bool
+	packMu, packSerial sync.Mutex
+	packWG             sync.WaitGroup
+	packClosed         bool
+	packPending        map[string]bool
+	pins               map[string]map[string]bool
 	Config
 	Store    store.Store
 	Cache    *cache.Cache
@@ -109,6 +115,12 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	return nil
 }
 func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
+	if c.PackWindow == 0 {
+		c.PackWindow = 4 << 20
+	}
+	if c.PackWindow < root.ChunkSize || c.PackWindow%root.ChunkSize != 0 {
+		return nil, apierr.Invalid("invalid pack window")
+	}
 	if c.StreamIdle == 0 {
 		c.StreamIdle = 30 * time.Second
 	}
@@ -445,7 +457,11 @@ func (m *Manager) promote(src, id string) error {
 	if e := clone(src, tmp); e != nil {
 		return e
 	}
-	return os.Rename(tmp, dst)
+	if e := os.Rename(tmp, dst); e != nil {
+		return e
+	}
+	m.queuePack(id)
+	return nil
 }
 func run(ctx context.Context, name string, args ...string) (string, error) {
 	out, e := exec.CommandContext(ctx, name, args...).CombinedOutput()
@@ -709,6 +725,10 @@ func (m *Manager) Heartbeat(id string) error {
 func (m *Manager) Close() {
 	defer m.Cache.Close()
 	close(m.stop)
+	m.packMu.Lock()
+	m.packClosed = true
+	m.packMu.Unlock()
+	m.packWG.Wait()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {

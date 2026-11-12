@@ -225,6 +225,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e != nil {
 		return out, e
 	}
+	m.queuePack(out.Root)
 	v.pendingRanges = nil
 	v.earlyConsumed = true
 	if v.early != nil {
@@ -327,6 +328,12 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	}
 	if e = flush(); e != nil {
 		return out, e
+	}
+	if m.Packs {
+		r, e = m.buildPacks(ctx, r, f)
+		if e != nil {
+			return out, e
+		}
 	}
 	b, e := root.Encode(r)
 	if e != nil {

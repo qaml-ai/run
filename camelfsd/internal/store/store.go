@@ -28,7 +28,7 @@ type Local struct{ Dir string }
 
 func valid(k string) bool {
 	p, h, ok := strings.Cut(k, "/")
-	return ok && (p == "c" || p == "r") && root.Hex(h, 64) || ok && (p == "o" || p == "t") && root.Hex(h, 40)
+	return ok && (p == "c" || p == "r" || p == "p") && root.Hex(h, 64) || ok && (p == "o" || p == "t") && root.Hex(h, 40)
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
@@ -36,6 +36,16 @@ func verify(k string, b []byte) error {
 	}
 	p, h, _ := strings.Cut(k, "/")
 	actual := root.Hash(b)
+	if p == "p" {
+		if len(b) < 2*int(root.ChunkSize) || len(b)%int(root.ChunkSize) != 0 {
+			return fmt.Errorf("invalid pack size")
+		}
+		var hashes []string
+		for o := 0; o < len(b); o += int(root.ChunkSize) {
+			hashes = append(hashes, root.Hash(b[o:o+int(root.ChunkSize)]))
+		}
+		actual = root.PackID(hashes)
+	}
 	if p == "o" || p == "t" {
 		kind := "blob"
 		if p == "t" {

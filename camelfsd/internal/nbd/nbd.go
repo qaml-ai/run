@@ -23,6 +23,7 @@ type Server struct {
 	Cache      *cache.Cache
 	Prefetch   int
 	FetchDepth int
+	Packs      bool
 	Patterns   string
 	mu         sync.Mutex
 	origins    map[string]*origin

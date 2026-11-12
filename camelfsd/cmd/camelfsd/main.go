@@ -80,6 +80,8 @@ func host(args []string) error {
 	cold := f.String("cold", "clone", "clone or prehydrate")
 	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
 	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
+	packs := f.Bool("packs", true, "use and build cold-read packs")
+	packWindow := f.Int64("pack-window", 4<<20, "pack window bytes")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	virtualSize := f.Int64("virtual-size", 1<<30, "blank image size")
 	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
@@ -126,8 +128,8 @@ func host(args []string) error {
 	// v0-limitation: L16
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
-	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, FetchDepth: *fetchDepth, Patterns: filepath.Join(*data, "patterns")}
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, FetchDepth: *fetchDepth, Packs: *packs, Patterns: filepath.Join(*data, "patterns")}
+	m, e := image.New(image.Config{Packs: *packs, PackWindow: *packWindow, StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
