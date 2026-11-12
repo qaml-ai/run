@@ -935,3 +935,151 @@ test("jobs: one command in a container of its own, its files synced in and its o
   const ended = await running;
   assert.equal(ended.code, "stopped", JSON.stringify(ended));
 });
+
+test("workflows: children edit forks of a repo volume with their file tools, commit() lands them (one conflicts), and a job() tests the result", {
+  timeout: 600_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const egressImage = await egressImageWithoutSocketMatch(t);
+  if (egressImage) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+    t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
+  }
+  // The children's model: "EDIT <path> <text>" makes one write tool call, then says it is done. The owner agent's: start
+  // the workflow (SCRIPT) with its workflows builtin, then say which it started.
+  let script = "";
+  const textOf = (message: any) => typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part: any) => part.text ?? "").join("\n");
+  const model = createHttpServer(async (request, response) => {
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    const last = body.messages.at(-1), user = textOf(body.messages.filter((message: any) => message.role === "user").at(-1));
+    const edit = /EDIT (\S+) (\S+)/.exec(user);
+    const system = body.messages.filter((message: any) => message.role === "system").map(textOf).join("\n");
+    const owner = !system.includes("You are a worker in a workflow") && user.startsWith("START");
+    const delta = owner
+      ? last.role === "tool" ? { role: "assistant", content: `STARTED ${textOf(last)}` }
+        : { role: "assistant", tool_calls: [{ index: 0, id: "start-1", type: "function", function: { name: "workflow_start", arguments: JSON.stringify({ script, args: JSON.parse(user.slice(6)), budgetUsd: 5, name: "edit the repo" }) } }] }
+      : last.role !== "tool" && edit
+      ? { role: "assistant", tool_calls: [{ index: 0, id: "write-1", type: "function", function: { name: "write", arguments: JSON.stringify({ path: edit[1], content: edit[2] }) } }] }
+      : { role: "assistant", content: `edited ${edit?.[1] ?? "nothing"}` };
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const base = { id: "repo-model", object: "chat.completion.chunk", created: 1, model: "repo-model" };
+    response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+    response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" in delta ? "tool_calls" : "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  model.listen(0, "127.0.0.1"); await once(model, "listening");
+  t.after(() => { model.closeAllConnections(); return new Promise<void>(resolve => model.close(() => resolve())); });
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
+    AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "repo-fixture/repo-model", strong: "repo-fixture/repo-model", max: "repo-fixture/repo-model" }) } });
+  t.after(async () => {
+    const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));
+    await fixture.stop();
+    for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
+  });
+  const call = async (path: string, body?: unknown, raw?: string, method?: string) => {
+    const response = await fetch(fixture.url + path, {
+      method: method ?? (raw !== undefined ? "PUT" : body === undefined ? "GET" : "POST"),
+      headers: { authorization: `Bearer ${fixture.token}`, "content-type": raw !== undefined ? "text/plain" : "application/json" },
+      ...(raw !== undefined ? { body: raw } : body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(300_000),
+    });
+    const text = await response.text();
+    assert.ok(response.ok, `${path}: ${response.status} ${text}\n${fixture.worker.logs().slice(-4000)}`);
+    try { return JSON.parse(text); } catch { return text; }
+  };
+  await call("/v1/providers/repo-fixture", { type: "openai-completions", baseUrl: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`, models: [{ id: "repo-model", contextWindow: 32768, pricing: { input: 1, output: 1 } }] }, undefined, "PUT");
+
+  // A small repository: two source files and the test the job runs.
+  const repo = await call("/v1/volumes", { name: "workflow-repo" });
+  await call(`/v1/volumes/${repo.id}/files/src/a.txt`, undefined, "1");
+  await call(`/v1/volumes/${repo.id}/files/src/b.txt`, undefined, "2");
+  await call(`/v1/volumes/${repo.id}/files/check.sh`, undefined,
+    'a=$(cat src/a.txt); b=$(cat src/b.txt); echo "a=$a b=$b" | tee "$JOB_OUT/report.txt"; test "$a" = one && test "$b" = two && echo PASS');
+  script = `
+    phase("edit");
+    // Three workers fork the repo as it is now and edit it with their write tool; the third edits the file the first does.
+    const [a, b, c] = await parallel([
+      () => agent("EDIT /repo/src/a.txt one", { key: "edit:a", repo: args.repo, type: "worker" }),
+      () => agent("EDIT /repo/src/b.txt two", { key: "edit:b", repo: args.repo, type: "worker" }),
+      () => agent("EDIT /repo/src/a.txt uno", { key: "edit:c", repo: args.repo, type: "worker" }),
+    ]);
+    phase("commit");
+    const landedA = await commit(a.fork, { key: "commit:a" });
+    const landedB = await commit(b.fork, { key: "commit:b" });
+    const landedC = await commit(c.fork, { key: "commit:c" });
+    phase("test");
+    const checked = await job({ key: "check", command: "bash check.sh", timeoutSeconds: 120, at: args.repo, outputs: ["report.txt"] });
+    return { said: [a.text, b.text, c.text], landedA, landedB, landedC, checked };`;
+  // An agent starts the workflow and owns it: it is the payer of the workflow's jobs.
+  const owner = await call("/v1/agents", { model: "repo-fixture/repo-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
+  const run = await call(`/v1/agents/${owner.id}/prompt`, { text: `START ${JSON.stringify({ repo: repo.id })}` });
+  let started: Record<string, any> = {};
+  for (let i = 0; i < 300 && started.state !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); started = await call(`/v1/agents/${owner.id}/requests/${run.id}`); }
+  const reply = String(started.outcome?.result?.reply ?? "");
+  assert.match(reply, /^STARTED /, JSON.stringify(started.outcome));
+  const created = { id: JSON.parse(reply.slice("STARTED ".length)).workflowId as string };
+  let done: Record<string, any> = await call(`/v1/workflows/${created.id}`);
+  assert.deepEqual(done.owner, { kind: "agent", id: owner.id });
+  for (let i = 0; i < 600 && !["completed", "failed", "paused", "aborted", "budget_exhausted"].includes(done.status); i++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    done = await call(`/v1/workflows/${created.id}`);
+  }
+  assert.equal(done.status, "completed", JSON.stringify(done) + "\n" + JSON.stringify(await call(`/v1/workflows/${created.id}/items`)) + "\n" + fixture.worker.logs().slice(-4000));
+  const { said, landedA, landedB, landedC, checked } = done.result;
+  assert.deepEqual(said, ["edited /repo/src/a.txt", "edited /repo/src/b.txt", "edited /repo/src/a.txt"]);
+  assert.equal(landedA.committed, true, JSON.stringify(landedA));
+  assert.deepEqual(landedA.files, ["/src/a.txt"]);
+  assert.equal(landedB.committed, true, JSON.stringify(landedB));
+  assert.deepEqual(landedB.files, ["/src/b.txt"]);
+  // The third fork started from the a.txt the first commit changed: nothing of it is written.
+  assert.equal(landedC.committed, false, JSON.stringify(landedC));
+  assert.deepEqual(landedC.conflicts.map((conflict: { path: string }) => conflict.path), ["/src/a.txt"]);
+  // The base holds both commits and not the conflicting edit; the job ran against it.
+  assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one");
+  assert.equal(await call(`/v1/volumes/${repo.id}/files/src/b.txt`), "two");
+  assert.equal(checked.exitCode, 0, JSON.stringify(checked));
+  assert.match(checked.stdout.tail, /a=one b=two\nPASS/);
+  // Its streams and outputs are kept whole in the workflow's volume.
+  assert.equal((await call(`/v1/volumes/${checked.volume}/files${checked.outputs["report.txt"].path}`)).trim(), "a=one b=two");
+  assert.match(await call(`/v1/volumes/${checked.volume}/files${checked.stdout.path}`), /PASS/);
+  const items = (await call(`/v1/workflows/${created.id}/items`)).items as { key: string; kind: string; status: string }[];
+  assert.deepEqual(items.map(item => [item.key, item.kind, item.status]).sort(),
+    [["check", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"]]);
+  // The job's computer slot was given back when it ended.
+  assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine like 'job:wf-%' and expires_at > $2", ["camelrun-proto-local", Date.now()])).rowCount, 0);
+  // Its container time was metered once, to the owner agent, under the job's own receipt, and counts in the workflow's ledger.
+  let receipts: any[] = [];
+  for (let i = 0; i < 50 && !receipts.length; i++) {
+    receipts = (await fixture.db.query("select message->'_workersAuxiliary' as receipt from pi_usage_receipts where tenant=$1 and session_id=$2 and message->'_workersAuxiliary'->>'kind'='computer'", ["camelrun-proto-local", owner.id])).rows;
+    if (!receipts.length) await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.equal(receipts.length, 1, JSON.stringify(receipts));
+  assert.match(receipts[0].receipt.callId, /^computer:job:wf-[0-9a-f]{40}$/);
+  const jobItem = items.find(item => item.key === "check") as unknown as { costUsd?: number };
+  assert.ok(jobItem.costUsd !== undefined && Math.abs(jobItem.costUsd - receipts[0].receipt.costUsd) < 1e-9, JSON.stringify({ jobItem, receipts }));
+  assert.ok(done.spent.usd >= jobItem.costUsd!, JSON.stringify(done.spent));
+
+  // The workflow ended: its children's forks are deleted, which releases their pins on the repo's content.
+  const forks = (items as unknown as { kind: string; result?: { fork?: { volume: string } } }[]).filter(item => item.kind === "agent").map(item => item.result!.fork!.volume);
+  assert.equal(forks.length, 3);
+  for (const fork of forks) {
+    let status = 0;
+    for (let i = 0; i < 50 && status !== 404; i++) {
+      status = (await fetch(`${fixture.url}/v1/volumes/${fork}`, { headers: { authorization: `Bearer ${fixture.token}` } })).status;
+      if (status !== 404) await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    assert.equal(status, 404, `fork ${fork} is deleted`);
+  }
+  assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one", "the base keeps its content");
+
+  // A workflow an API key started has no owner agent: its job() is refused as a value, not a pause.
+  const keyStarted = await call("/v1/workflows", { script: `return await job({ key: "j", command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });
+  let keyDone: Record<string, any> = keyStarted;
+  for (let i = 0; i < 100 && keyDone.status !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); keyDone = await call(`/v1/workflows/${keyStarted.id}`); }
+  assert.equal(keyDone.status, "completed", JSON.stringify(keyDone));
+  assert.equal(keyDone.result, null);
+  const refusedItem = ((await call(`/v1/workflows/${keyStarted.id}/items`)).items as { key: string; status: string; reason?: string }[]).find(item => item.key === "j")!;
+  assert.equal(refusedItem.status, "failed");
+  assert.match(refusedItem.reason ?? "", /^job_payer_unavailable: /);
+});

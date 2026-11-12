@@ -65,6 +65,11 @@ export type JobSpec = {
   saveSnapshot?: string;
   /** Who pays for the container time and whose computer limit the job counts against. Every job has one. */
   payer: ComputerPayer;
+  /**
+   * Environment variables only the command sees (a push's token): set on its process, never on the image or a snapshot,
+   * and never part of the result. A command that prints one prints it; callers redact their own (workflow-jobs.ts).
+   */
+  secretEnv?: Record<string, string>;
 };
 export type JobStream = { bytes: Uint8Array; size: number; truncated: boolean };
 export type JobOutput = { bytes: Uint8Array; size: number; truncated: boolean };
@@ -95,8 +100,10 @@ export type JobResult =
       /** saveSnapshot was asked for and failed; the result stands. */
       snapshotError?: string;
       timings: JobTimings;
+      /** What the job's container time cost its payer (USD), as metered; absent for a job run without a meter. */
+      costUsd?: number;
     }
-  | { ok: false; id: string; code: JobFailureCode; message: string; timings: JobTimings; freeBytes?: number };
+  | { ok: false; id: string; code: JobFailureCode; message: string; timings: JobTimings; freeBytes?: number; costUsd?: number };
 
 export class JobSpecError extends Error {
   readonly code = "JOB_INVALID";
@@ -143,7 +150,7 @@ const positive = (value: unknown, name: string, max: number, integer = false) =>
 export function jobSpec(value: unknown): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
   const v = value as Partial<JobSpec> | null;
   if (!v || typeof v !== "object") throw bad("A job is an object");
-  const known = ["id", "image", "snapshot", "files", "volume", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance"];
+  const known = ["id", "image", "snapshot", "files", "volume", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
   const extra = Object.keys(v).find(key => !known.includes(key));
   if (extra) throw bad(`Unknown job field: ${extra}`);
   if (typeof v.id !== "string" || !JOB_ID.test(v.id)) throw bad("A job id is 1-100 letters, digits, _ or -");
@@ -202,6 +209,13 @@ export function jobSpec(value: unknown): JobSpec & { image: string; outputs: str
   if (!v.payer || typeof v.payer.tenant !== "string" || !v.payer.tenant || typeof v.payer.agent !== "string" || !v.payer.agent) throw bad("A job needs a payer: { tenant, agent }");
   const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent };
   if (volume && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
+  let secretEnv: Record<string, string> | undefined;
+  if (v.secretEnv !== undefined) {
+    const entries = v.secretEnv && typeof v.secretEnv === "object" && !Array.isArray(v.secretEnv) ? Object.entries(v.secretEnv) : undefined;
+    if (!entries || entries.length > 8 || entries.some(([name, value]) => !/^[A-Z][A-Z0-9_]{0,63}$/.test(name) || name === "JOB_ID" || name === "JOB_OUT" || typeof value !== "string" || value.length > 8192 || value.includes("\0")))
+      throw bad("secretEnv maps at most 8 upper-case names (not JOB_ID or JOB_OUT) to strings of at most 8 KiB");
+    secretEnv = Object.fromEntries(entries);
+  }
   // A checked spec is checked again where it runs (ContainerComputer.runJob): its derived instance must be the one its limits give.
   const instance = jobInstance(limits);
   const given = (v as { instance?: unknown }).instance;
@@ -210,7 +224,7 @@ export function jobSpec(value: unknown): JobSpec & { image: string; outputs: str
     id: v.id, image: v.image ?? "workspace", command: v.command, timeoutSeconds: v.timeoutSeconds!, outputs,
     ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {},
     ...Object.keys(limits).length ? { limits } : {}, ...v.internet ? { internet: true } : {},
-    ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer,
+    ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer, ...secretEnv ? { secretEnv } : {},
     instance,
   };
 }

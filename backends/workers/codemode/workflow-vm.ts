@@ -7,7 +7,7 @@
 // results in their original batches, which a deterministic VM turns into the same state.
 //
 // This is our own driver, not pi-codemode's: its VM driver keeps its state in closures that cannot be snapshotted,
-// and workflow scripts see their own globals (agent, parallel, sleep, log, phase, now, random), not code mode's tools.
+// and workflow scripts see their own globals (agent, job, commit, push, gate, parallel, sleep, log, phase, now, random), not code mode's tools.
 import { Intrinsics, QuickJS, type JSValueHandle } from "quickjs-wasi";
 import {
   WORKFLOW_STEP_PROTOCOL, type IssuedEffect, type WorkflowBatch, type WorkflowFaultCode, type WorkflowStepOutcome, type WorkflowStepRequest,
@@ -161,6 +161,37 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       const args = { prompt };
       if (opts) for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("agent", args, opts);
+    },
+    // One command in a container of its own (jobs/): its files from a volume (\`at\`) or given inline, its named outputs
+    // kept in the workflow's volume. Answers { exitCode, timedOut, stdout, stderr, outputs, ... }, or null if it could
+    // not run (its item says why).
+    job(opts) {
+      options(opts, "job");
+      if (!opts || typeof opts.command !== "string" || opts.command === "") throw new TypeErrorCtor("job({ command }) needs a command");
+      if (typeof opts.timeoutSeconds !== "number" || !(opts.timeoutSeconds > 0)) throw new TypeErrorCtor("job() needs timeoutSeconds, a positive number");
+      const args = {};
+      for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
+      return effect("job", args, opts);
+    },
+    // Land a child's edits (its fork: agent(..., { repo }).fork) on the volume it was forked from, all or nothing. Answers
+    // { committed: true, seq, files, removed }, or { committed: false, conflicts: [{ path, headVersion }] } when the base
+    // changed under any of the files: nothing is written then, and the script decides (a fixer, a rebase, a skip).
+    commit(fork, opts) {
+      options(opts, "commit");
+      const volume = typeof fork === "string" ? fork : fork && typeof fork.volume === "string" ? fork.volume : undefined;
+      if (!volume) throw new TypeErrorCtor("commit(fork) needs a fork: what agent(..., { repo }) answered as .fork, or its volume id");
+      const args = { fork: volume };
+      if (opts) for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
+      return effect("commit", args, opts);
+    },
+    // Push a volume to a GitHub branch, as a job, with the GitHub App's installation token (never shown to the script).
+    push(opts) {
+      options(opts, "push");
+      if (!opts || typeof opts.volume !== "string" || typeof opts.repo !== "string" || typeof opts.branch !== "string" || typeof opts.app !== "string")
+        throw new TypeErrorCtor("push({ volume, repo, branch, app }) needs a volume id, an owner/name repository, a branch and a GitHub App");
+      const args = {};
+      for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
+      return effect("push", args, opts);
     },
     sleep(seconds, opts) {
       if (typeof seconds !== "number" || !(seconds >= 0) || seconds === Infinity) throw new TypeErrorCtor("sleep(seconds) needs a number of seconds");

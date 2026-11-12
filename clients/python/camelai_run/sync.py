@@ -739,6 +739,7 @@ class Agents:
 
     def __init__(self, api_key=None, *, url=None):
         self.runtime = AgentRuntime(url=url, api_key=api_key)
+        self.workflows = self.runtime.workflows
         # Stateless runs: create, get, stream, abort, delete, messages; Agents.run is the one-call form.
         self.runs = Runs(self.runtime)
         # Speech to text on its own: create(file or url=...). Audio attached to a message is transcribed without it.

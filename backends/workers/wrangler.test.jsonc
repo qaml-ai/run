@@ -112,6 +112,7 @@
     ]
   },
   "vars": {
+    "AGENT_WORKFLOW_TENANTS": "camelrun-proto-local,camelrun-proto-other",
     "TEST_MODEL": "1",
     "TEST_HOOKS": "1",
     "MODEL": "test/echo",

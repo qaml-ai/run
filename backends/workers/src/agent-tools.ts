@@ -1,3 +1,6 @@
+import { workflowTools } from "./workflow-tools.ts";
+import { workflowsEnabled } from "./workflow-routes.ts";
+import type { WorkflowEnv } from "./workflow-object.ts";
 import { decisionInputs } from "./inbox-decisions.ts";
 import { decisionDetail, argumentsHash } from "./decision-inputs.ts";
 import { builtinDefinitions as inboxBuiltinDefinitions } from "./inbox-definitions.ts";
@@ -485,6 +488,17 @@ export function createHarness(this: AgentRuntime): PiHarness {
           name: "camel.delegation",
           tools: messaging.delegation,
         });
+        // The workflows builtin: for an agent that may delegate (not a sub-agent), unless its configuration says
+        // workflows: false, on a tenant that has workflows.
+        const workflowSettings = conf.config.workflows;
+        if (conf.config.delegate && workflowSettings !== false && conf.config.type !== "subagent" && workflowsEnabled(this.env as never, conf.tenantId)) {
+          registry.install({ name: "camel.workflows", tools: workflowTools({
+            env: this.env as unknown as WorkflowEnv, tenant: conf.tenantId, agentId: conf.id,
+            ...(conf.config.bucket ? { bucket: conf.config.bucket as string } : {}),
+            ...(typeof workflowSettings === "object" && workflowSettings?.maxBudgetUsd !== undefined ? { maxBudgetUsd: workflowSettings.maxBudgetUsd } : {}),
+            remaining: async () => { const spend = await this.agentSpend(await this.config()); return spend ? Math.max(0, spend.usd - spend.spent) : Infinity; },
+          }) });
+        }
         registry.install({
           name: "camel.linux",
           tools: await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id)) ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],

@@ -153,6 +153,7 @@
     ]
   },
   "vars": {
+    "AGENT_WORKFLOW_TENANTS": "pilot-camel-code",
     "PILOT_DB_PROFILE": "1",
     "MODEL": "openrouter/meta/muse-ember",
     "AGENT_PUBLIC_URL": "https://run-pilot.camelai.dev",

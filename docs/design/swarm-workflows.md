@@ -750,17 +750,22 @@ return agent(`Rank these by severity and write the summary:\n${JSON.stringify(au
 
 ### API and SDK
 
+Built in phase 1 (Workers, on per tenant; `docs/guides/workflows.md`):
+
 ```
-POST   /v1/workflows                     { name, script | saved, args?, budget: { usd }, concurrency?, repo?, ttlSeconds?, subject?, context? }  -> 201
-GET    /v1/workflows[?status=&owner=]
-GET    /v1/workflows/{id}                 status, counts, spent, phase, revision
-PUT    /v1/workflows/{id}/script          { script, args? } -> { revision, wouldRerun, wouldKeep }
+POST   /v1/workflows                     { script, args?, budget: { usd | null }, concurrency?, classes?, name?, allowFastJudgment? }  -> 201  (Idempotency-Key)
+GET    /v1/workflows/{id}                 status, pauseReason, counts, spent, phase, revision, result
+GET    /v1/workflows/{id}/items, /events, /diff?revision=
+PUT    /v1/workflows/{id}/script          { script, reason, rerunConfirmPercent? } -> { revision, workflow }
 POST   /v1/workflows/{id}/pause | resume | abort | budget
-GET    /v1/workflows/{id}/items, /events, /script?revision=      (/stuck in phase 4)
-POST   /v1/workflow-scripts               { name, script }   (saved scripts; `workflow(name)` and `saved` find them)
 ```
 
-SDK (phase 4; phase 1 is REST only): `agents.runtime.workflows.start({ ... })` returns a handle with `status()`,
+Still to come: `GET /v1/workflows[?status=&owner=]` (a list), `saved` scripts and `POST /v1/workflow-scripts
+{ name, script }` (`workflow(name)`), `repo`, `ttlSeconds`, `subject` and `context` on a start, `args` on a script
+edit, `/script?revision=` (the script text of a revision; `/diff` has what changed), dry-run `wouldRerun`/`wouldKeep`
+on an edit, `/stuck` (phase 4), and the `auto` class (classes are `fast`, `strong` and `max`).
+
+SDK: phase 1 has `agents.workflows` / `runtime.workflows` (TypeScript and Python) with `start`, `get`, `items`, `events`, `diff`, `edit`, `pause`, `resume`, `abort`, `budget` and `wait`. Planned beyond that: `agents.runtime.workflows.start({ ... })` returning a handle with `status()`,
 `items()`, `events()`, `pause()`, `resume()`, `edit(script)`, `abort()`, `wait()`; Python mirrors it. The CLI gets
 `camelrun workflows start|status|edit|resume`.
 

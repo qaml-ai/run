@@ -98,6 +98,7 @@ export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { Volume } from "./volume.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
+import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
@@ -364,6 +365,8 @@ const worker = {
           const workflow = await workflowTestRoute(request, env as unknown as WorkflowEnv, path, auth.tenantId);
           if (workflow) return workflow;
         }
+        const workflows = await workflowRoutes(request, env as unknown as WorkflowEnv & { AGENT_WORKFLOW_TENANTS?: string }, auth.tenantId);
+        if (workflows) return workflows;
         const money = await moneyRoutes(request, env, auth, ctx);
         if (money) return money;
         const admin = await handleAdminRequest(request, env, auth);
