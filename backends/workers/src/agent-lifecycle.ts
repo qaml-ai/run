@@ -1,5 +1,6 @@
 import { ChildOutbox, deletedDeadline, settleDeleted } from "./ending-outbox.ts";
 import { goneStart, stageMissedEndings } from "./agent-endings.ts";
+import { startDeadline } from "./start-deadline.ts";
 import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
@@ -229,7 +230,8 @@ export async function restorePendingImpl(this: AgentRuntime) {
     this.configurationQueue.kick();
     // Stale preparations are released inside startup still: after it, the sweep could race a retried request's admission
     // under the same id (releasing the new turn's slot). Its Postgres and TENANTS calls never wait on this object.
-    await timed(this, "promptPreparations.sweep", () => this.promptPreparations.sweep(Date.now(), true));
+    // Bounded as Pi open's reads are (startDeadline): with them, the whole block stays well under the 30 s reset.
+    await timed(this, "promptPreparations.sweep", () => startDeadline("prompt preparations sweep", this.promptPreparations.sweep(Date.now(), true)));
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
     await timed(this, "restoreCancellations", () => this.restoreCancellations());
     await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
