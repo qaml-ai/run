@@ -75,7 +75,11 @@ export class World implements EffectExecutor {
     this.starts.set(id, count);
     if (count === 1) this.queue.push(effect);
   }
+  /** Keys whose next cancels throw, and how many times. */
+  readonly failCancels = new Map<string, number>();
   async cancel(effect: StartedEffect) {
+    const failing = this.failCancels.get(effect.key) ?? 0;
+    if (failing > 0) { this.failCancels.set(effect.key, failing - 1); throw new Error(`could not cancel ${effect.key}`); }
     this.cancelled.push(`${effect.key}:${effect.attempt}`);
     const index = this.queue.findIndex(item => item.key === effect.key && item.attempt === effect.attempt);
     if (index >= 0) this.queue.splice(index, 1);

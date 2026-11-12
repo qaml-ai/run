@@ -82,7 +82,12 @@ function noticeBlock(source: MessageSource, metadata: Record<string, unknown> | 
   const text = escapeParts(parts).flatMap(part => part.type === "text" && part.text !== undefined ? [part.text] : []).join("\n");
   if (metadata?.kind === "message") return [{ type: "text", text: `<agent_message name="${attribute(source.name)}">\n${text}\n</agent_message>` }];
   // A workflow the agent owns reporting a change (it ended, paused, or finished a phase): workflow-object.ts.
-  if (metadata?.kind === "workflow") return [{ type: "text", text: `<workflow_notification workflow="${attribute(metadata.workflowId)}" name="${attribute(source.name)}" status="${attribute(metadata.status)}" event="${attribute(metadata.event)}">\n${text}\n</workflow_notification>` }];
+  // Other workflows' notices that waited for this turn ride in it (delegation-notifications.ts): a block each.
+  if (metadata?.kind === "workflow") {
+    const workflowBlock = (meta: Record<string, unknown>, name: unknown, body: string) => `<workflow_notification workflow="${attribute(meta.workflowId)}" name="${attribute(name)}" status="${attribute(meta.status)}" event="${attribute(meta.event)}">\n${body}\n</workflow_notification>`;
+    const carried = Array.isArray(metadata.batch) ? metadata.batch as BatchedEnding[] : [];
+    return [{ type: "text", text: [workflowBlock(metadata, source.name, text), ...carried.map(other => workflowBlock(other, other.name, escapeMarkers(String(other.text ?? ""))))].join("\n") }];
+  }
   const block = (name: unknown, meta: Record<string, unknown> | undefined, body: string) =>
     `<agent_notification name="${attribute(name)}" status="${attribute(meta?.status)}"${runAttributes(meta)}>\n${body}\n</agent_notification>`;
   // Endings of other sub-agents that rode in this turn (a batch, multi-agent.ts BatchedEnding): a block each.

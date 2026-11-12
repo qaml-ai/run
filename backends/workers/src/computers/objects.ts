@@ -63,6 +63,8 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   private queue: Promise<unknown> = Promise.resolve();
   /** The job this object runs now, when it is a job's object (jobs/driver.ts): its stop. */
   private job?: AbortController;
+  /** The job this object runs now: a call for the same job made again (its caller was evicted) waits for this run. */
+  private jobRun?: { id: string; result: Promise<JobResult> };
   private active = new Map<Promise<unknown>, number>();
   private network(setup?: OperateSetup): ComputerNetwork {
     const idleMs = (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000;
@@ -301,15 +303,28 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       stopped: async cpu => { await meter.stopped(cpu); await this.releasePermit(); return meter.spentUsd(); },
     };
   }
-  /** Run one job (jobs/container-job.ts). A second call while one runs answers job_running. */
+  /**
+   * Run one job (jobs/container-job.ts). The same job asked again while it runs gets that run's result, and asked again
+   * within an hour of its end, the result it kept: never a second run. Another job while one runs answers job_running.
+   */
   async runJob(value: unknown): Promise<JobResult> {
     const spec = jobSpec(value);
     const refused = (code: "job_running" | "start_failed", message: string): JobResult => {
       const at = Date.now();
       return { ok: false, id: spec.id, code, message, timings: { startedAt: at, endedAt: at, startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 0 } };
     };
+    // The same job asked again while it runs (its caller was evicted and called again): this run's result, once.
+    if (this.jobRun?.id === spec.id) return await this.jobRun.result;
     if (this.job) return refused("job_running", `Job ${spec.id} is running`);
+    // Asked again after it ended (its caller lost the answer): the result it kept, not another run.
+    const kept = await this.ctx.storage.get<KeptJobResult>("job:result");
+    if (kept && kept.result.id === spec.id && kept.expiresAt > Date.now()) return kept.result;
     if (!this.ctx.container) return refused("start_failed", "Job container binding unavailable");
+    const result = this.runJobOnce(spec);
+    this.jobRun = { id: spec.id, result };
+    try { return await result; } finally { if (this.jobRun?.result === result) this.jobRun = undefined; }
+  }
+  private async runJobOnce(spec: ReturnType<typeof jobSpec>): Promise<JobResult> {
     const stop = this.job = new AbortController();
     // The backstop for an object that dies mid-job: its alarm destroys the container after the job's whole lifetime.
     const deadline = Date.now() + jobLifetimeMs(spec.timeoutSeconds);
@@ -317,10 +332,17 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       await this.ctx.storage.put("job:deadline", deadline);
       await this.wake(deadline);
       const files = spec.files ? inlineFiles(spec.files) : spec.volume ? volumeFiles(this.env as unknown as VolumeSyncEnv, spec.volume) : undefined;
-      return await runContainerJob(spec, {
-        container: this.ctx.container, stop: stop.signal, ...files ? { files } : {},
+      const result = await runContainerJob(spec, {
+        container: this.ctx.container!, stop: stop.signal, ...files ? { files } : {},
         meter: this.jobMeter(spec.id, spec.payer),
       });
+      // Kept for a caller that lost it (evicted before it took the answer), within a DO value's size, for an hour.
+      if (result.ok) {
+        const expiresAt = Date.now() + JOB_RESULT_KEPT_MS;
+        await this.ctx.storage.put("job:result", { result: keptJobResult(result), expiresAt } satisfies KeptJobResult);
+        await this.wake(expiresAt);
+      }
+      return result;
     } finally {
       this.job = undefined;
       await this.ctx.storage.delete("job:deadline");
@@ -340,6 +362,9 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   }
   /** A job whose object died mid-run: past its deadline, its container goes and its slot is given back. */
   private async jobBackstop() {
+    const kept = await this.ctx.storage.get<KeptJobResult>("job:result");
+    if (kept && kept.expiresAt <= Date.now()) await this.ctx.storage.delete("job:result");
+    else if (kept) await this.wake(kept.expiresAt);
     const deadline = await this.ctx.storage.get<number>("job:deadline");
     if (deadline === undefined || this.job) return;
     if (Date.now() < deadline) { await this.wake(deadline); return; }
@@ -379,4 +404,21 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     this.queue = check.catch(() => {});
     await check;
   }
+}
+
+/** How long a finished job's result is kept for a caller that asks again. */
+const JOB_RESULT_KEPT_MS = 3_600_000;
+/** Of each stream and each output, what a kept result holds (a DO value is at most 2 MiB): the end of a stream, the start of an output. */
+const KEPT_BYTES = 256 * 1024, KEPT_OUTPUT_TOTAL = 1024 * 1024;
+type KeptJobResult = { result: JobResult; expiresAt: number };
+/** A finished job's result cut to fit one DO value: what is cut is marked truncated. */
+function keptJobResult(result: Extract<JobResult, { ok: true }>): JobResult {
+  const tail = (stream: { bytes: Uint8Array; size: number; truncated: boolean }) => stream.bytes.byteLength <= KEPT_BYTES ? stream : { bytes: stream.bytes.slice(-KEPT_BYTES), size: stream.size, truncated: true };
+  let room = KEPT_OUTPUT_TOTAL;
+  const outputs = Object.fromEntries(Object.entries(result.outputs).map(([name, output]) => {
+    const keep = Math.max(0, Math.min(KEPT_BYTES, room, output.bytes.byteLength));
+    room -= keep;
+    return [name, keep === output.bytes.byteLength ? output : { bytes: output.bytes.slice(0, keep), size: output.size, truncated: true }];
+  }));
+  return { ...result, stdout: tail(result.stdout), stderr: tail(result.stderr), outputs };
 }

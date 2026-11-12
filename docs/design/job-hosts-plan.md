@@ -36,8 +36,8 @@ From the design doc and the spike (`r8gd.4xlarge`, AL2023 arm64 kernel 6.18, Fir
 
 **Hosts dial out; nothing dials in.** A Worker cannot reach a private EC2 address, and we want no inbound ports on a
 host. Each host agent holds one authenticated WebSocket to the runtime, and the runtime pushes assignments down it.
-- **On Workers:** the socket ends at a `JobHost` Durable Object per host (hibernatable).
-- **On Node:** it ends at the same route, served by the control plane.
+- **On Workers:** the socket ends at a `JobHost` Durable Object per host (hibernatable). Phase 2 is Workers only
+  (decided 2026-11-12): no Node driver or route.
 - **Job data:** the host pulls a job's files (`camel-sync`) and pushes its outputs through the runtime's volume API
   with a job-scoped token, as a container job does today.
 - **Uploads to S3:** only saved snapshots and the large outputs past the inline cap go to S3, via presigned URLs the
@@ -102,6 +102,12 @@ The admin dashboard gains cost per job by driver.
 
 ## PR slices
 
+**Status (2026-11-12):** slices 2 and 3 have landed in fake mode, with the runtime side of slice 4 (no `job_hosts`
+table yet: a `JobHostRegistry` object holds the connected hosts). The pieces are `jobhost/guest.ts`, `jobhost/vm.ts`,
+`jobhost/agent.ts`, `shared/job-host-protocol.ts` and `backends/workers/src/jobs/hosts.ts`, tested end to end by
+`backends/workers/test/job-hosts.integration.ts`. The bindings are in the test config only.
+
+
 Each slice is reviewable alone. Slices 1–4 need no AWS resources: they test against fakes, and a single host is used
 for the host-level tests only after the go-ahead.
 
@@ -110,7 +116,7 @@ for the host-level tests only after the go-ahead.
 | 1 | Host image, as code | `infra/job-hosts/image/`: a Packer (or EC2 Image Builder) template for AL2023 arm64 kernel 6.18. It covers: grubby mempool (sized per pool); a boot unit that writes `pcie_slots`, formats the NVMe as XFS `reflink=1` and mounts it; Firecracker 1.18.0 pinned by sha256; the guest kernel (the host's EFI vmlinuz) and a dracut initrd that switch_roots into the job's ext4 root; nftables base rules (IMDS dropped, no forwarding but per-job chains); no SSH (SSM only) | Template validation in CI; a local script that checks the produced files' hashes. AMI build waits for the go-ahead |
 | 2 | Guest side | `camel-guest`, a small static arm64 binary in the base rootfs, the vsock command channel. It runs the command with the job's pid cap and timeout, streams stdout and stderr with caps, runs `camel-sync` and the free-space check, and tars `/out`. It replaces the spike's `socat` + bash | Unit tests; an integration test in a local Firecracker on a KVM sprite (direct mode needs Nitro, so locally it runs plain KVM) |
 | 3 | Host agent | `jobhost/` (TypeScript on Node 22, one SEA binary). It: registers and heartbeats over the WebSocket; pulls images and snapshots from S3 (sha256 checked) into an LRU cache on NVMe; clones with reflink; keeps a pool of pre-made netns and taps; writes the Firecracker config and launches with `--no-api`; drives `camel-guest`; reports `started`, `destroyed` and timings; renews leases; drains on a spot interruption notice or SIGTERM. A fake-Firecracker mode runs it on any Linux box | Unit tests and the sim-style tests the runtime uses; the fake mode in Workers integration |
-| 4 | Runtime: hosts, placement, driver | An expand-only migration for `job_hosts`, `job_host_leases` and `job_snapshots` (`{ id, tenant, baseImage, sizeBytes, s3Key }` plus its hosts). Host enrollment: the host signs an STS `GetCallerIdentity` request; the runtime checks the account and role, then issues a short-lived host token. The `JobHost` and `HostJob` Durable Objects, `placeJob`, `HostsJobDriver` and driver selection. Workers first; Node serves the same route in the same slice so camel-bots and self-hosts could use it later | Unit tests for placement (ties, draining, snapshot affinity, capacity races under concurrent places); a Workers integration test with the fake-mode host agent: admit, place, run, a rerun charged once, host loss turning into `container_failed`, and the retry by key |
+| 4 | Runtime: hosts, placement, driver | An expand-only migration for `job_hosts`, `job_host_leases` and `job_snapshots` (`{ id, tenant, baseImage, sizeBytes, s3Key }` plus its hosts). Host enrollment: the host signs an STS `GetCallerIdentity` request; the runtime checks the account and role, then issues a short-lived host token. The `JobHost` and `HostJob` Durable Objects, `placeJob`, `HostsJobDriver` and driver selection, on Workers only | Unit tests for placement (ties, draining, snapshot affinity, capacity races under concurrent places); a Workers integration test with the fake-mode host agent: admit, place, run, a rerun charged once, host loss turning into `container_failed`, and the retry by key |
 | 5 | Snapshots | `saveSnapshot` on hosts promotes the job's clone to a snapshot (an upload to S3 with presigned multipart, then a `job_snapshots` row); the image cache records what each host holds and placement prefers holders; snapshot expiry and GC | Integration test with the fake host and a local S3 (MinIO) |
 | 6 | Isolation suite | The egress allowlist per job (registries and GitHub granted by the definition, the runtime API, nothing else), IMDS unreachable, no host services, no cross-job routes, the pid cap, disk full failing as `disk_low`. Written as a test suite the host agent runs against a real host | Runs on a real host after the go-ahead; until then, against a KVM sprite |
 | 7 | AWS infrastructure, as code | Terraform module `infra/terraform/job_hosts/`, for the resources listed below. Plan only | `terraform validate` and a plan against the prod account, read-only; apply after the go-ahead |
@@ -139,7 +145,7 @@ In the camelRun prod account and region (to confirm: the same as the ECS runtime
 - **Launch templates:** two (`r8gd` build, `c8gd` test) with `EnclaveOptions.Enabled=true`, IMDSv2 required with a
   hop limit of 1 (the host's own agent uses it; jobs cannot reach it), and the NVMe instance store mapped.
 - **Auto Scaling groups:**
-  - build: `r8gd.4xlarge` (8xlarge for ASAN), on-demand, a fixed warm size of 2;
+  - build: `r8gd.4xlarge` (8xlarge for ASAN), on-demand (decided 2026-11-12, for the testing phase), a fixed warm size of 2;
   - test: `c8gd` sizes with a mixed-instances spot policy, min 0, scaled on the runtime's queue-depth metric;
   - capacity-rebalance and lifecycle hooks on both, for draining.
 - **Quotas:** On-Demand and Spot vCPU quota increases for the Graviton families, if the current limits are below the
@@ -150,16 +156,18 @@ In the camelRun prod account and region (to confirm: the same as the ECS runtime
 - **SSM parameters:** the runtime URL and the enrollment audience for hosts. No long-lived secrets are stored on a
   host.
 
-Cost at list: the build pool's warm 2 × `r8gd.4xlarge` is the fixed cost (a few dollars an hour on-demand, less
-reserved). The spot test pool scales from zero. The ASG maxima are the spend cap: proposed 4 build and 16 test hosts
+Cost at list: the build pool's warm 2 × `r8gd.4xlarge` is the fixed cost (a few dollars an hour on-demand; reserved
+pricing can come after the testing phase). The spot test pool scales from zero. The ASG maxima are the spend cap: proposed 4 build and 16 test hosts
 until the acceptance run says otherwise.
 
-## Open questions for Miguel
+## Decisions and open questions
 
+Decided by Miguel (2026-11-12):
+- **Runtime:** Workers only in phase 2 (the pilot and camel-code). No Node driver or route.
+- **Build pool:** on-demand instances for the testing phase, not reserved.
+
+Still open, with the plan's defaults until answered:
 1. **Account and region:** confirm the same account and region as the ECS runtime.
-2. **Build pool:** reserved or on-demand. The warm 2 run around the clock.
-3. **Runtime:** Workers only in phase 2 (the pilot and camel-code), or Node too. The plan builds both routes in
-   slice 4; enabling Node is a configuration switch.
-4. **Pool maxima:** the starting ASG maxima (proposed above).
-5. **Host agent language:** TypeScript (shared job types, `camel-sync`, our test harness) or Rust (one static binary,
-   like `v8-exec`). Recommended: TypeScript, since the hot path is Firecracker's and the agent mostly does I/O.
+2. **Pool maxima:** the starting ASG maxima. Default: 4 build and 16 test hosts.
+3. **Host agent language:** TypeScript or Rust. Default: TypeScript (shared job types, `camel-sync`, our test
+   harness; the hot path is Firecracker's and the agent mostly does I/O). The fake-mode agent (`jobhost/`) is TypeScript.

@@ -38,8 +38,12 @@ Its globals:
 | `log(...parts)` | A line in the workflow's log |
 | `args` | What it was started with (`args` in the start), frozen |
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
+| `toBase64(value)`, `fromBase64(text, opts?)` | Base64 of any text (as UTF-8) or bytes, and back: text, or a `Uint8Array` with `{ as: "bytes" }`. `btoa`/`atob` take Latin-1 only. `TextEncoder` and `TextDecoder` (UTF-8) are there too |
 
 A workflow's forks are deleted when it ends, once its commits have landed.
+
+A script is compiled before it starts and before an edit lands: a syntax error is refused as `script_error`, with
+its line and column, and nothing runs.
 
 A `key` names an effect across replays. Outside `parallel()` one may be left
 out (the call gets a counted key, `agent#2`); inside, give one. The same key
@@ -224,7 +228,10 @@ message of its own, a turn, with a block only the runtime writes:
 ```
 
 Notifications take turns from the agent's wake budget, as its sub-agents'
-notifications do. `workflow_status` and `workflow_items` read more when it
+notifications do. They never fill the agent's request queue: while the agent
+is busy they wait in its own outbox, and the next one to land brings the
+others with it, one block per workflow (that workflow's latest notice; an
+earlier one it replaces is folded in), up to 20 workflows a turn. `workflow_status` and `workflow_items` read more when it
 needs to. Its budget may
 not exceed the least of the agent's remaining spend limit and `maxBudgetUsd`
 (default $100); above that, a person starts it through the API.
@@ -239,3 +246,22 @@ const lead = await agents.upsert("port-lead", {
 `workflows: false` turns the builtin off for an agent that may delegate but
 should not start workflows. Both settings go on the agent's configuration
 (`upsert`, `createAgent`), set by whoever configures it, never by the agent.
+
+## Running one command: `job_run`
+
+When an agent only needs to run a command (a build, a test, a script), it does not need a workflow. On a runtime with
+workflows and jobs (the Cloudflare pilot today), every agent has the `job_run` tool. It runs one shell command in a
+fresh container and waits for it to finish, up to 15 minutes:
+
+```
+job_run({ command, timeoutSeconds? (300), at?: volumeId, files?: { path: text }, outputs?: [path], internet?: false })
+-> { ok, exitCode, timedOut, stdout, stderr, outputs?, missing?, seconds }
+```
+
+- `at` starts the command with that volume's files in its working directory (a copy: changes are not saved back).
+- `outputs` names files the command writes under `$JOB_OUT`, and returns them inline.
+- `stdout` and `stderr` are each cut to their last 4,000 characters, and each output to its first 4,000.
+
+The container time is metered as the agent's own computer time, against its spend limit. The tool's call id names the
+job, so a replayed call runs nothing again and answers the same way. `workflow_start` tells an agent with `job_run` to
+use it for a single command.

@@ -25,7 +25,9 @@ const STRIP = "--experimental-strip-types --disable-warning=ExperimentalWarning"
  * the image build and publish (Docker image, ECR) and the reuse of an already-tested tree; see the operations doc.
  */
 export const GATES = {
-  full: { what: "the full Node suite, 8 shards (ci.yml test)", args: [] },
+  // sprite-test's full suite is its own shards: 8 unless SPRITE_SHARDS says otherwise (expectShards: how many must
+  // report when the log does not say; the [i/n] sprite-test prints wins).
+  full: { what: "the full Node suite, 8 shards (ci.yml test)", expectShards: 8, args: [] },
   "workers-unit": { what: "Workers unit suite (workers-tests.yml)", args: ["bash", "backends/workers/scripts/validate-sprite.sh", "unit"] },
   "workers-integration": { what: "Workers integration suite, 3 shards (workers-tests.yml)", shards: 3, args: ["bash", "backends/workers/scripts/validate-sprite.sh", "integration", "{shard}/{shards}"] },
   checks: {
@@ -47,27 +49,51 @@ export const GATES = {
 
 const PREFIX = String.raw`^(?:\[\d+\/\d+\] )?`;
 
-/** One gate's log, read: its TAP totals (summed over shards and runs), its top-level failures and its shards' exits. */
+/**
+ * One gate's log, read: its TAP totals (summed over shards and runs), its top-level failures, its shards' exits, the
+ * shards that reported an exit (by number, when sharded) and the sprites whose coordinator lease was lost.
+ */
 export function readLog(text) {
-  const totals = { pass: 0, fail: 0, cancelled: 0 }, failures = [], exits = [];
+  const totals = { pass: 0, fail: 0, cancelled: 0 }, failures = [], exits = [], shards = new Set(), lost = [];
+  let total = 0;
   for (const line of text.split("\n")) {
+    // How many shards sprite-test ran (SPRITE_SHARDS may change it): the n of any [i/n] it printed.
+    const of = /^\[\d+\/(\d+)\]/.exec(line);
+    if (of) total = Math.max(total, Number(of[1]));
     let match = new RegExp(`${PREFIX}# (pass|fail|cancelled) (\\d+)\\s*$`).exec(line);
     if (match) { totals[match[1]] += Number(match[2]); continue; }
     // Top level only: a subtest's `not ok` is indented and is counted by its parent.
     match = new RegExp(`${PREFIX}not ok \\d+ - (.*)$`).exec(line);
     if (match) { failures.push(match[1].trim()); continue; }
     match = new RegExp(`${PREFIX}== exit (\\d+) in (\\d+)s on (\\S+?);?(?:\\s|$)`).exec(line);
-    if (match) exits.push({ code: Number(match[1]), seconds: Number(match[2]), sprite: match[3] });
+    if (match) {
+      exits.push({ code: Number(match[1]), seconds: Number(match[2]), sprite: match[3] });
+      const shard = /^\[(\d+)\/\d+\]/.exec(line);
+      if (shard) shards.add(Number(shard[1]));
+      continue;
+    }
+    match = /== the coordinator lease on (\S+) was lost/.exec(line);
+    if (match) lost.push(match[1]);
   }
-  return { totals, failures: [...new Set(failures)], exits };
+  return { totals, failures: [...new Set(failures)], exits, shards: [...shards].sort((a, b) => a - b), total, lost };
 }
 
-/** A gate's verdict: its exit decides; a failure the run's own retry recovered is said, not counted against it. */
-export function verdict(name, exit, log) {
-  const ok = exit === 0;
-  const counts = log.totals.pass + log.totals.fail + log.totals.cancelled > 0 ? `${log.totals.pass}/${log.totals.fail}` : ok ? "ok" : "failed";
-  const note = ok && log.failures.length ? ` (${log.failures.length} retried)` : "";
-  return { name, ok, exit, counts, note, failures: log.failures, exits: log.exits, totals: log.totals };
+/**
+ * A gate's verdict: its exit decides; a failure the run's own retry recovered is said, not counted against it. A
+ * sharded gate whose shard reported no exit (its sprite's lease was lost, the job died) failed for that, not for its
+ * tests: it says which shards died and where, and its counts are not a failure count.
+ */
+export function verdict(name, exit, log, expected = 0) {
+  // A sharded gate (expected > 0): what sprite-test printed it ran wins over the gate's own number (SPRITE_SHARDS changes
+  // the full suite's 8). An unsharded gate expects no shards at all.
+  const shards = expected ? log.total || expected : 0;
+  const died = shards ? Array.from({ length: shards }, (_, i) => i + 1).filter(shard => !(log.shards ?? []).includes(shard)) : [];
+  const ok = exit === 0 && !died.length;
+  const counts = died.length
+    ? `shard${died.length > 1 ? "s" : ""} ${died.join(", ")} died: no result${log.lost?.length ? ` (lease lost on ${log.lost.join(", ")})` : ""}`
+    : log.totals.pass + log.totals.fail + log.totals.cancelled > 0 ? `${log.totals.pass}/${log.totals.fail}` : ok ? "ok" : "failed";
+  const note = ok && log.failures.length ? ` (${log.failures.length} retried)` : died.length && log.totals.pass + log.totals.fail > 0 ? `; the others ${log.totals.pass}/${log.totals.fail}` : "";
+  return { name, ok, exit, counts, note, failures: log.failures, exits: log.exits, totals: log.totals, died };
 }
 
 /** The status description, at most 140 characters (GitHub's limit): failures first, then the passes. */
@@ -144,7 +170,7 @@ function runGate(name, sha, out) {
     child.stderr.pipe(log, { end: false });
     child.on("close", code => {
       log.end(() => {
-        const result = verdict(name, code ?? 1, readLog(readFileSync(file, "utf8")));
+        const result = verdict(name, code ?? 1, readLog(readFileSync(file, "utf8")), gate.shards ?? gate.expectShards ?? 0);
         writeFileSync(join(out, `${name}.json`), JSON.stringify(result));
         console.log(`sprite-ci: ${name} ${result.ok ? "passed" : "FAILED"} ${result.counts}${result.note} in ${Math.round((Date.now() - started) / 1000)}s`);
         done(result);

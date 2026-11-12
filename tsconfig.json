@@ -14,6 +14,6 @@
       "@camelai/run/*": ["./clients/*.ts"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "plugins/**/*.ts", "clients/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts", "evals/workflows/*.ts", "evals/workflows/lib/*.ts", "evals/workflows/tasks/*/score.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "plugins/**/*.ts", "clients/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts", "jobhost/**/*.ts", "evals/workflows/*.ts", "evals/workflows/lib/*.ts", "evals/workflows/tasks/*/score.ts"],
   "exclude": ["examples/frontend"]
 }

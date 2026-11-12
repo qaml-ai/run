@@ -100,6 +100,8 @@ export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
+export { JobHost, JobHostRegistry, HostJob } from "./jobs/hosts.ts";
+import type { JobHostsEnv } from "./jobs/hosts.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
@@ -200,6 +202,16 @@ function httpFailure(error: unknown, env: Env): Response {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // A job host's agent dials out here (jobs/hosts.ts); its first WebSocket message is the host token. Only where hosts
+    // are configured: elsewhere the path is unknown.
+    const hosts = env as unknown as JobHostsEnv;
+    if (hosts.JOB_HOST_TOKEN && hosts.JOB_HOSTS && new URL(request.url).pathname === "/v1/internal/job-hosts/connect") {
+      const name = new URL(request.url).searchParams.get("host") ?? "";
+      if (!/^[A-Za-z0-9._-]{1,64}$/.test(name)) return new Response("Invalid host name", { status: 400 });
+      return hosts.JOB_HOSTS.getByName(name).fetch(request);
+    }
+    if (hosts.JOB_HOST_REGISTRY && (env as { TEST_MODE?: string }).TEST_MODE === "1" && new URL(request.url).pathname === "/__test/job-hosts")
+      return Response.json(await hosts.JOB_HOST_REGISTRY.getByName("hosts").list());
     if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
       try {
         const result=await handleHook(request,request.headers.get('cf-connecting-ip')??'unknown',()=>workerTriggers(env));

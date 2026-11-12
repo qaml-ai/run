@@ -49,3 +49,41 @@ test("the test-side watch fails a harness whose alarm leaves itself due, or fire
   const fed = new AlarmWatch("Fed");
   for (let i = 0; i < 100; i++) { fed.external(); await fed.fire(i * 100, async () => { fed.armed(i * 100 + 100); }); }
 });
+
+test("a persistent spinner stays floored while it spins, and the floor lifts a window after it stops", async () => {
+  let spinning = true;
+  const o = object(now => spinning ? now + 1 : now + 60_000);
+  guardAlarms(o.host, o.ctx, "Persistent", { now: o.now });
+  // As workerd fires it: when it is due (at once while it spins unfloored, a second out once floored).
+  const fire = async () => { await o.host.alarm(); o.tick(Math.max(10, (o.alarm ?? o.now()) - o.now())); };
+  const gaps: number[] = [];
+  await o.capture(async () => {
+    for (let i = 0; i < 60; i++) { const before = o.now(); await fire(); gaps.push(o.now() - before); }
+  });
+  // After the trip, every fire is a second apart: no burst when the first fast fires leave the window.
+  const afterTrip = gaps.slice(ALARM_HOT_LOOP.fires + 1);
+  assert.ok(afterTrip.every(gap => gap >= ALARM_HOT_LOOP.floorMs), JSON.stringify(gaps));
+  // It stops spinning: a window later the floor is off, and a calm alarm is not moved.
+  spinning = false;
+  await o.capture(async () => { for (let i = 0; i < 3; i++) { await o.host.alarm(); o.tick(ALARM_HOT_LOOP.windowMs); } });
+  spinning = false;
+  const calm = o.alarm!;
+  await o.capture(() => o.host.alarm());
+  assert.equal(o.alarm, o.now() + 60_000, `not floored once calm (was ${calm})`);
+});
+
+test("a lifecycle's handler (configurable, not writable, on the instance) is wrapped once, and its errors propagate", async () => {
+  let alarm: number | null = null, calls = 0;
+  const ctx = { storage: { getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; } } };
+  const host: { alarm?: (...args: unknown[]) => Promise<void> } = {};
+  // As the agents SDK's Lifecycle.installHandlers defines it.
+  Object.defineProperty(host, "alarm", { value: async () => { calls++; if (calls === 2) throw new Error("job failed"); }, configurable: true });
+  guardAlarms(host, ctx, "Lifecycle");
+  const wrapped = host.alarm;
+  guardAlarms(host, ctx, "Lifecycle");
+  assert.equal(host.alarm, wrapped, "a second guard leaves the first in place");
+  await host.alarm!();
+  assert.equal(calls, 1, "the lifecycle's handler runs, once per fire");
+  await assert.rejects(host.alarm!(), /job failed/, "its error reaches the platform, which retries the alarm");
+  assert.equal(calls, 2);
+});
