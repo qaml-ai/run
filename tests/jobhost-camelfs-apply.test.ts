@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { HostAgent } from "../jobhost/agent.ts";
 import { type Camelfsd } from "../jobhost/camelfsd.ts";
-import { fakeLauncher, type VmLauncher } from "../jobhost/vm.ts";
+import { fakeLauncher, type GuestReply, type VmLauncher } from "../jobhost/vm.ts";
 import { FrameReader, WIRE, checkPath, encodeFrame, jsonFrame } from "../jobhost/camelfs-wire.ts";
 import { Frames, base64Text, type HostMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
 
@@ -77,9 +77,14 @@ async function setup(t: TestContext, frames: unknown[], options: { prepare?: (re
   t.after(async () => { for (const peer of peers) peer.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dir, { recursive: true, force: true }); });
   const launcher = fakeLauncher({ work: dir });
   let index: unknown;
+  let applied: GuestReply | undefined;
   const wrapped: VmLauncher = { ...launcher, async boot(...args) {
     const vm = await launcher.boot(...args);
-    return { ...vm, request: request => vm.request(request.op === "camelfs_apply" && options.timeoutMs ? { ...request, timeoutMs: options.timeoutMs } : request), async destroy() {
+    return { ...vm, async request(request) {
+      const response = await vm.request(request.op === "camelfs_apply" && options.timeoutMs ? { ...request, timeoutMs: options.timeoutMs } : request);
+      if (request.op === "camelfs_apply") applied = response;
+      return response;
+    }, async destroy() {
       index = await readFile(join(dir, "job-1/.camelfs/index.json"), "utf8").then(JSON.parse).catch(() => undefined);
       await vm.destroy();
     } };
@@ -87,7 +92,7 @@ async function setup(t: TestContext, frames: unknown[], options: { prepare?: (re
   const daemon: Camelfsd = { mount: async () => ({ image: repo, warm: true, root: tree, tree, mountMs: 1, hydrating: false }), release: async () => {}, health: async () => { throw new Error("unused"); }, status: async () => { throw new Error("unused"); } };
   const h = await host(t, daemon, wrapped);
   await h.agent.run("job-1", { ...spec, command: options.command ?? "true" });
-  return { result: await h.result, reply: await reply.promise, repo, index, dir };
+  return { result: await h.result, reply: await reply.promise, repo, index, dir, applied };
 }
 
 test("HostAgent applies repo bytes, links, modes, deletes and persists indexed stats", async t => {
@@ -102,6 +107,8 @@ test("HostAgent applies repo bytes, links, modes, deletes and persists indexed s
   assert.equal(r.result.ok, true); if (!r.result.ok) return;
   assert.equal(r.result.exitCode, 0); assert.equal(base64Text(r.result.stdout.data), "newnew");
   assert.equal(typeof r.result.camelfs?.applyMs, "number"); assert.equal(r.reply?.applied, true);
+  // The index stays in the guest: returning it can exceed the command channel's line cap.
+  assert.deepEqual(r.applied, { ok: true, applyMs: r.result.camelfs?.applyMs, files: 5, entries: 3 });
   assert.equal(await readFile(join(r.repo, "bin/tool"), "utf8"), "run");
   for (const path of ["bin/tool", "hello"]) assert.equal((await lstat(join(r.repo, path))).mode & 0o777, 0o755);
   assert.ok((await lstat(join(r.repo, "link"))).isSymbolicLink());

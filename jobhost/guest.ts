@@ -5,7 +5,7 @@
 //
 //   { op: "files", files: [{ path, data, append? }] }  → { ok: true, syncMs }               write files under /repo
 //                                                         (append: add to the file: a large one comes in pieces)
-//   { op: "camelfs_apply", jobId, timeoutMs }            → { ok: true, applyMs, files, index }
+//   { op: "camelfs_apply", jobId, timeoutMs }            → { ok: true, applyMs, files, entries: count }
 //   { op: "free" }                                      → { ok: true, freeBytes }            the disk's free bytes
 //   { op: "run", command, timeoutSeconds, pids?, env? } → { ok: true, exitCode, timedOut, stdout, stderr, commandMs }
 //   { op: "collect", outputs: [name] }                  → { ok: true, outputs, missing, collectMs }  from /out
@@ -194,7 +194,7 @@ export class Guest {
         const dir = vm ? "/run/camelfs" : join(this.root, ".camelfs");
         await mkdir(dir, { recursive: true }); check(); await writeFile(join(dir, "index.json"), JSON.stringify(index)); check();
         this.camelfsIndex = index;
-        return { ok: true, applyMs: Date.now() - started, files, index };
+        return { ok: true, applyMs: Date.now() - started, files, entries: indexed.length };
       };
       const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(() => { expired = true; reject(new Error("camelFS apply timed out")); }, Math.max(1, timeoutMs));
