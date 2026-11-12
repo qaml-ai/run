@@ -109,7 +109,7 @@ A workflow that stops without ending is `paused`, and `pauseReason` says why:
 | --- | --- |
 | `user` | You paused it. Running sub-agents finish unless the pause said `children: "abort"` |
 | `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resume re-issues it under a new attempt** |
-| `confirm_rerun` | An edit would re-issue more than `rerunConfirmPercent` of the finished effects. Resume to confirm, or edit again |
+| `confirm_rerun` | An edit would rerun more than `rerunConfirmPercent` of the finished effects: new effects while finished results go unused (their keys dropped). New effects beside finished ones do not count once the script has asked for those (a new effect it waits on before asking for them still does). Resume to confirm, or edit again (with `confirm: true` to go ahead) |
 | `waiting_on_gate` | A gate passed its expiry without an answer and without `onExpire: "recommended"`. It can still be answered in the inbox; resume after it is |
 | `capacity_refused` | The account is at its running-workflows limit |
 | a fault code | The script itself went wrong: `key_required`, `key_conflict`, `step_budget`, a thrown error. `fault` on the summary has the message; edit the script and resume |
@@ -127,7 +127,7 @@ GET  /v1/workflows/{id}                  status, pauseReason?, phase?, revision,
 GET  /v1/workflows/{id}/items            ?after=&limit=&status=&phase=&kind=   -> { items, next? }
 GET  /v1/workflows/{id}/events           ?after=&limit=                        -> { events }
 GET  /v1/workflows/{id}/diff             ?revision=                            -> { revision, reason?, kept, issued, unseen }
-PUT  /v1/workflows/{id}/script           { script, reason, rerunConfirmPercent? } -> { revision, workflow }
+PUT  /v1/workflows/{id}/script           { script, reason, rerunConfirmPercent?, confirm? } -> { revision, workflow }
 POST /v1/workflows/{id}/pause            { children?: "abort" }
 POST /v1/workflows/{id}/resume           { rerun?: [keys] }
 POST /v1/workflows/{id}/abort

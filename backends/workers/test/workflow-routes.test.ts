@@ -56,6 +56,10 @@ test('a script edit refuses a non-integer rerunConfirmPercent with 400, before t
   assert.equal(edits.length, 0);
   assert.equal((await edit({ script: 'x', reason: 'r', rerunConfirmPercent: 30 }))?.status, 200);
   assert.deepEqual(edits, [{ code: 'x', reason: 'r', rerunConfirmPercent: 30 }]);
+  // confirm is true or false.
+  assert.equal((await edit({ script: 'x', reason: 'r', confirm: 'yes' }))?.status, 400);
+  assert.equal((await edit({ script: 'x', reason: 'r', confirm: true }))?.status, 200);
+  assert.deepEqual(edits.at(-1), { code: 'x', reason: 'r', confirm: true });
   // Another tenant's workflow is not found.
   assert.equal((await workflowRoutes(new Request('https://run/v1/workflows/wf_1'), { AGENT_WORKFLOW_TENANTS: '*', WORKFLOWS: { getByName: () => stub } } as never, 'other'))?.status, 404);
 });

@@ -99,7 +99,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       const stub = await own(args.workflowId);
       if (typeof args.script !== "string" || !args.script.trim() || args.script.length > WORKFLOW_SCRIPT_CHARS) throw new WorkflowInputError("script is the new JavaScript");
       if (typeof args.reason !== "string" || !args.reason.trim()) throw new WorkflowInputError("reason says why the script changed");
-      const edited = await stub.edit({ code: args.script, reason: args.reason, ...(args.confirm ? { rerunConfirmPercent: 100 } : {}) });
+      const edited = await stub.edit({ code: args.script, reason: args.reason, ...(args.confirm === true ? { confirm: true } : {}) });
       return { ...brief(args.workflowId, await stub.view() as Record<string, any>), revision: edited.revision };
     }),
     tool("workflow_pause", "Pause a workflow: nothing new starts. With stopChildren, its running sub-agents stop too.", {

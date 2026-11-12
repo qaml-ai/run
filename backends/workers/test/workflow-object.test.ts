@@ -573,3 +573,82 @@ test("fail() ends a workflow once: what is out is cancelled, the executor aborte
   await h.runner.wake();
   assert.equal(recovers, 1, "an ended workflow does not recover its executor");
 });
+
+test("a fault, then an edit that reruns finished work holds at confirm_rerun, then an edit with confirm goes on and completes; a new effect beside kept ones is never a rerun", { timeout: 60_000 }, async () => {
+  const workers = `const done = await parallel(["a", "b", "c"], name => agent("work " + name, { key: "work:" + name }));`;
+  const h = harness();
+  // The pilot's script: three keyed workers, then an effect in parallel() without a key.
+  h.init({ code: `${workers} const combined = await parallel([() => agent("combine")]); return combined;` });
+  await h.wake();
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "key_required"]);
+  // The fix adds one keyed effect after the three finished ones: new work, not a rerun (the three are all still used).
+  await h.runner.edit({ code: `${workers} const combined = await agent("combine " + done.length, { key: "combine" }); return combined.answer;`, reason: "key the combine", rerunConfirmPercent: 25 });
+  assert.equal(at(h).status, "running", JSON.stringify(h.runner.events().at(-1)));
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).result], ["completed", "re: combine 3"]);
+
+  // An edit that redoes one finished worker under a new key reruns it: 1 of 4 finished results goes unused, past 20%.
+  const changed = `const done = await parallel(["a", "b", "c"], name => agent("work " + name, { key: (name === "a" ? "redo:" : "work:") + name }));`;
+  await h.runner.edit({ code: `${changed} const combined = await agent("combine " + done.length, { key: "combine" }); return combined.answer;`, reason: "redo a", rerunConfirmPercent: 20 });
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "confirm_rerun"]);
+  const held = h.runner.events().findLast(event => event.type === "confirm_rerun")!;
+  assert.deepEqual([held.data.reruns, held.data.finished], [1, 4]);
+  // The agent confirms with another edit (the same script): it goes on, and completes.
+  await h.runner.edit({ code: `${changed} const combined = await agent("combine " + done.length, { key: "combine" }); return combined.answer;`, reason: "confirmed", confirm: true });
+  assert.equal(at(h).status, "running");
+  await h.run();
+  assert.equal(at(h).status, "completed", JSON.stringify(at(h)));
+});
+
+test("an edit replacing a held one: its unstarted effects are cancelled, so the same script holds again and dropped work never runs; confirm on another pause waits for resume; a prepend counts", { timeout: 60_000 }, async () => {
+  const workers = (first: string) => `const done = await parallel(["a", "b", "c"], name => agent("work " + name, { key: (name === "a" ? "${first}" : "work:") + name }));`;
+  const tail = `const combined = await agent("combine " + done.length, { key: "combine" }); return combined.answer;`;
+  const setup = async () => {
+    const h = harness();
+    h.init({ code: `${workers("work:")} ${tail}` });
+    await h.wake();
+    await h.run();
+    assert.equal(at(h).status, "completed");
+    await h.runner.edit({ code: `${workers("redo:")} ${tail}`, reason: "redo a", rerunConfirmPercent: 20 });
+    assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "confirm_rerun"]);
+    return h;
+  };
+  // The same script again, unconfirmed: it holds again, and nothing started.
+  const same = await setup();
+  await same.runner.edit({ code: `${workers("redo:")} ${tail}`, reason: "again", rerunConfirmPercent: 20 });
+  assert.deepEqual([at(same).status, at(same).pauseReason], ["paused", "confirm_rerun"]);
+  assert.equal([...same.world.starts.keys()].filter(key => key.startsWith("redo:a")).length, 0, "the held rerun never started");
+
+  // An edit that drops the held effect and adds a new one: the held row is cancelled and never starts; it completes.
+  const dropped = await setup();
+  await dropped.runner.edit({ code: `${workers("work:")} const extra = await agent("extra", { key: "extra" }); return extra.answer;`, reason: "never mind", rerunConfirmPercent: 50 });
+  await dropped.run();
+  assert.equal(at(dropped).status, "completed", JSON.stringify(at(dropped)));
+  assert.equal([...dropped.world.starts.keys()].filter(key => key.startsWith("redo:a")).length, 0);
+  assert.deepEqual(dropped.runner.items({ attempts: true }).items.filter(item => item.key === "redo:a").map(item => item.status), ["cancelled"]);
+
+  // edit({ confirm }) on a user's pause pre-confirms but does not resume; resume goes on with no hold.
+  const user = harness();
+  user.init({ code: `${workers("work:")} ${tail}` });
+  await user.wake();
+  await user.run();
+  await user.runner.edit({ code: `${workers("work:")} const more = await agent("more", { key: "more" }); return more.answer;`, reason: "more" });
+  await user.runner.pause();
+  const holds = user.runner.events().filter(event => event.type === "confirm_rerun").length;
+  await user.runner.edit({ code: `${workers("redo:")} ${tail}`, reason: "redo, confirmed", confirm: true });
+  assert.deepEqual([at(user).status, at(user).pauseReason], ["paused", "user"]);
+  await user.runner.resume();
+  await user.run();
+  assert.equal(at(user).status, "completed");
+  assert.equal(user.runner.events().filter(event => event.type === "confirm_rerun").length, holds, "no hold: the edit was confirmed");
+
+  // A new effect the script waits on before asking for its finished results still counts (kept 0 at that step).
+  const prepend = harness();
+  prepend.init({ code: `${workers("work:")} return done.length;` });
+  await prepend.wake();
+  await prepend.run();
+  await prepend.runner.edit({ code: `const plan = await agent("plan", { key: "plan" }); ${workers("work:")} return done.length;`, reason: "plan first", rerunConfirmPercent: 25 });
+  assert.deepEqual([at(prepend).status, at(prepend).pauseReason], ["paused", "confirm_rerun"]);
+  assert.deepEqual([prepend.runner.events().findLast(event => event.type === "confirm_rerun")!.data.kept, prepend.runner.events().findLast(event => event.type === "confirm_rerun")!.data.reruns], [0, 1]);
+});
