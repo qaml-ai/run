@@ -5,7 +5,7 @@ import { cancelledHumanInput, HumanInputs } from "./human.ts";
 import { releaseTurn } from "./control.ts";
 import { keyServices } from "./security-services.ts";
 import { startHostExecution, admitHostExecution, abortHostExecution, hostExecutionTask, HOST_EXECUTION_TOOL } from "./host-execution.ts";
-import { RequestRecord, reqKey } from "./agent-types.ts";
+import { type RequestRecord, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export async function abortRequestsImpl(this: AgentRuntime,

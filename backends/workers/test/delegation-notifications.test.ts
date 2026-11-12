@@ -195,3 +195,19 @@ test('a completion notification retains the child task payer and bucket', async 
   assert.equal(f.submissions[0].request.params.endUser, 'guest');
   assert.equal(f.submissions[0].request.params.bucket, 'bot:7');
 });
+
+test('a cancelled agent with two queued notices: a drain started with abortPending submits neither as a run', async () => {
+  const f = fixture();
+  const accept = f.host.submit;
+  let down = true;
+  f.host.submit = async (...args) => { if (down) throw new Error('evicted'); return accept(...args); };
+  await assert.rejects(f.notifications.deliver(child));
+  await assert.rejects(f.notifications.deliver({ ...child, id: 'child2', key: 'delegate-456', requestId: 'delegate_456' }));
+  down = false;
+  // A cold start: abortPending (restoreCancellations) is started, then the drain, neither awaited by startup.
+  const cold = new DelegationNotifications(f.host);
+  await Promise.all([cold.abortPending(), cold.drain()]);
+  assert.equal(f.submissions.length, 2);
+  for (const submission of f.submissions) assert.deepEqual(submission.delivery, { run: false, stopped: 'aborted', message: 'Aborted' });
+  assert.equal(await cold.pending(), false);
+});

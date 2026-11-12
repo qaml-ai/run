@@ -239,18 +239,40 @@ export class DelegationNotifications {
       throw error;
     }
   }
-  /** An aborted parent still records queued child endings, without starting another turn. */
+  /**
+   * An aborted parent still records queued child endings, without starting another turn. Every undelivered notice with
+   * no send in flight is marked aborted first, in one transaction, before any send is awaited; a drain started meanwhile
+   * waits for that marking (this.aborting), so it never submits one of them as a run on a stopped agent. Notices with a
+   * send in flight are marked once that send settles, if it did not deliver.
+   */
   async abortPending() {
-    for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
-      if (notice.delivered) continue;
+    const aborted = { run: false, stopped: 'aborted', message: 'Aborted' } as const;
+    const marking = this.host.storage.transaction(async tx => {
+      const marked: string[] = [], inFlight: string[] = [];
+      for (const [key, notice] of await tx.list<PendingNotice>({ prefix, noCache: true })) {
+        if (notice.delivered) continue;
+        if (this.active.has(key)) { inFlight.push(key); continue; }
+        await tx.put(key, { ...notice, delivery: aborted }, { noCache: true });
+        marked.push(key);
+      }
+      return { marked, inFlight };
+    });
+    const settled = this.aborting = marking.then(() => undefined, () => undefined);
+    void settled.then(() => { if (this.aborting === settled) this.aborting = undefined; });
+    const { marked, inFlight } = await marking;
+    for (const key of marked) await this.send(key);
+    for (const key of inFlight) {
       await this.active.get(key);
       const pending = await this.host.storage.get<PendingNotice>(key, { noCache: true });
       if (!pending || pending.delivered) continue;
-      await this.host.storage.put(key, { ...pending, delivery: { run: false, stopped: 'aborted', message: 'Aborted' } }, { noCache: true });
+      await this.host.storage.put(key, { ...pending, delivery: aborted }, { noCache: true });
       await this.send(key);
     }
   }
+  /** abortPending's marking pass while it runs: a drain waits for it. */
+  private aborting?: Promise<void>;
   async drain() {
+    await this.aborting;
     for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
       if (!notice.delivered || (notice.batch?.length && !notice.carriedDiscarded)) await this.send(key);
       else if (notice.batchedInto && !notice.discarded) await this.discardCarried(key, notice);

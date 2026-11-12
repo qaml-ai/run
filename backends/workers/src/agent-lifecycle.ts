@@ -230,7 +230,9 @@ export async function restorePendingImpl(this: AgentRuntime) {
     this.configurationQueue.kick();
     // Stale preparations are released inside startup still: after it, the sweep could race a retried request's admission
     // under the same id (releasing the new turn's slot). Its Postgres and TENANTS calls never wait on this object.
-    // Bounded as Pi open's reads are (startDeadline): with them, the whole block stays well under the 30 s reset.
+    // Bounded as Pi open's reads are (startDeadline): with them, the whole block stays well under the 30 s reset. A sweep
+    // past its deadline is not cancelled: it runs on after the block, so it can still release a retried request's slot
+    // (rare and bounded, one turn's slot; the real fix is a slot id per receipt).
     await timed(this, "promptPreparations.sweep", () => startDeadline("prompt preparations sweep", this.promptPreparations.sweep(Date.now(), true)));
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
     await timed(this, "restoreCancellations", () => this.restoreCancellations(task => afterStart("notifications.abortPending", task)));
