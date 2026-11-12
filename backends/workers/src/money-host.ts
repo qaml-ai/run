@@ -6,6 +6,7 @@ export const clock = () => ({ sleep: (ms: number) => new Promise<void>(resolve =
 export const network = () => ({ fetch });
 export const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 export { recordEventMetrics, deliveryLine, writeMetricLine, creditRefused } from "./money-metrics.ts";
+export { safeError } from "./metrics-policy.ts";
 export type Outbound = {
   check(url: string): unknown;
   fetch(url: string, init: RequestInit & { timeoutMs?: number; maxBytes?: number }): Promise<Response>;
