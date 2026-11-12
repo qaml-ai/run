@@ -138,6 +138,11 @@ export class ComputerMeter {
   async isOpen() {
     return !!(await this.store.get(OPEN));
   }
+  /** Who the open session bills, or undefined: none open. */
+  async openPayer(): Promise<ComputerPayer | undefined> {
+    const open = await this.store.get<ComputerSession>(OPEN);
+    return open ? { tenant: open.tenant, agent: open.agent, ...(open.kind ? { kind: open.kind } : {}) } : undefined;
+  }
   /** The container was used just now: its idle clock starts over. `cpuUsec` is its cgroup CPU reading, if one was taken. */
   async used(cpuUsec?: number) {
     await this.reading(cpuUsec);

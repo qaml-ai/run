@@ -40,6 +40,11 @@ function payerOf(setup?: OperateSetup): ComputerPayer | undefined {
   return typeof claims?.tenant === "string" && typeof claims.agent === "string" ? { tenant: claims.tenant, agent: claims.agent } : undefined;
 }
 
+/** How often a running container's payer is admitted again between operations (computers/objects.ts checkLimits). */
+const LIMIT_CHECK_MS = 60_000;
+/** A billing refusal: a spend limit or spent credit (402), or free credit's hourly allowance (429). */
+const limitRefusal = (error: unknown) => [402, 429].includes(Number((error as { status?: number } | undefined)?.status));
+
 // An optional, dedicated per-agent computer, not the agent's own DO. It owns
 // one container through ctx.container (Cloudflare's `durable_object` scheduling
 // policy) and picks image and size each time it starts one. One queue excludes
@@ -67,6 +72,30 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       ...idle ? { idle } : {},
     };
   }
+  /**
+   * Stop a running container whose payer may no longer spend (its tenant's monthly spend limit or prepaid credit, or the
+   * agent's spend limit): it is charged up to now, once (the session's id), and its slot is given back, as Node stops
+   * a managed machine at its sweep. The agent hears of it at its next operation, whose admission is refused with why.
+   */
+  private async limitStop(payer: ComputerPayer, error: unknown) {
+    if (!this.ctx.container?.running) return;
+    console.error(JSON.stringify({ type: "computer_limit_stop", tenant: payer.tenant, agent: payer.agent, status: (error as { status?: number }).status ?? null, code: (error as { code?: string }).code ?? null }));
+    await this.ctx.container.destroy().catch(() => {});
+    await this.meter().stopped();
+    await this.releasePermit();
+  }
+  /** While a session is open, its payer is admitted again at least this often; one refused is stopped (limitStop). */
+  private async checkLimits() {
+    const meter = this.meter(), payer = await meter.openPayer();
+    if (!payer || !this.ctx.container?.running) return;
+    // A job is admitted at its start and bounded by its own timeout: stopped midway it would fail, not pause its workflow.
+    if (this.job || await this.ctx.storage.get<number>("job:deadline") !== undefined) return;
+    try { await meter.admit(payer); }
+    catch (error) {
+      if (limitRefusal(error)) await this.limitStop(payer, error);
+      else console.error(JSON.stringify({ type: "computer_limits_read_failed", tenant: payer.tenant, agent: payer.agent, status: (error as { status?: number }).status ?? null }));
+    }
+  }
   private meter() {
     return new ComputerMeter({
       store: this.ctx.storage,
@@ -91,7 +120,12 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       admit: async () => {
         if (setup?.shared && await this.ctx.storage.get<boolean>("computer:stopped")) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
         if (!payer) return;
-        await meter.admit(payer);
+        try { await meter.admit(payer); }
+        catch (error) {
+          // Refused for spend: the operation fails, and a container still running for it stops now rather than idling out.
+          if (limitRefusal(error)) await this.limitStop(payer, error);
+          throw error;
+        }
         if (setup?.externalPermit) return;
         await transaction(this.env, async sql => reserveComputer(sql, payer.tenant, payer.agent,
           `native:${payer.agent}`, Date.now() + Math.max(network.idleMs, activityMs), Date.now(),
@@ -99,7 +133,11 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
         await this.ctx.storage.put("computer:permit", { tenant: payer.tenant, machine: `native:${payer.agent}` });
       },
       // Unmetered starts still end any earlier session.
-      started: (instance, idleMs) => payer ? meter.started(payer, instance, idleMs) : meter.stopped(),
+      started: async (instance, idleMs) => {
+        if (!payer) { await meter.stopped(); return; }
+        await meter.started(payer, instance, idleMs);
+        await this.wake(Date.now() + LIMIT_CHECK_MS);
+      },
       // A running container with no open session (a DO that died mid-start, or one started unmetered) is billed from
       // now to whoever uses it (its CPU from the current reading on).
       used: async (cpuUsec) => {
@@ -310,6 +348,8 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   async alarm() {
     // Never put a waiter for a long command onto the command queue. Check again after that command,
     // leaving exec admission free for the other agents sharing this container.
+    // Spend first: a payer that may no longer spend is stopped even mid-command, as on Node.
+    await this.checkLimits();
     if (this.active.size) { await this.checkAfterActive(); return; }
     const check = this.queue.then(async () => {
       if (this.active.size) { await this.checkAfterActive(); return; }
@@ -323,6 +363,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       await this.meter().alarm(!!this.ctx.container?.running);
       await provider?.dropStale().catch(() => {});
       if (next !== undefined) await this.wake(next);
+      if (this.ctx.container?.running && await this.meter().isOpen()) await this.wake(Date.now() + LIMIT_CHECK_MS);
     });
     this.queue = check.catch(() => {});
     await check;
