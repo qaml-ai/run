@@ -21,7 +21,7 @@ function fakeRuntime(answer: (seen: Seen, count: number) => unknown) {
 }
 
 const summary = (status: WorkflowSummary['status'], extra: Partial<WorkflowSummary> = {}): WorkflowSummary => ({
-  id: 'wf_abc', status, revision: 1, step: 2, budget: { usd: 20 }, concurrency: 8,
+  id: 'wf_abc', status, step: 2, budget: { usd: 20 }, concurrency: 8,
   spent: { usd: 1.5, calls: 3, inputTokens: 100, cachedInputTokens: 0, outputTokens: 50 }, counts: { done: 3 }, createdAt: 1, updatedAt: 2, ...extra,
 });
 
@@ -38,42 +38,33 @@ test('start posts the script, budget and the rest, with the Idempotency-Key head
   assert.deepEqual(requests[1]!.body, { script, budget: { usd: null } });
 });
 
-test('reads: get, items with its filters, events after a cursor, diff of a revision', async () => {
-  const { runtime, requests } = fakeRuntime(seen => seen.path.endsWith('/items') ? { items: [], next: 7 } : seen.path.endsWith('/events') ? { events: [] } : seen.path.endsWith('/diff') ? { revision: 2, kept: ['a'], issued: [], unseen: [] } : summary('running', { step: 4 }));
+test('reads: get, items with its filters, events after a cursor', async () => {
+  const { runtime, requests } = fakeRuntime(seen => seen.path.endsWith('/items') ? { items: [], next: 7 } : seen.path.endsWith('/events') ? { events: [] } : summary('running', { step: 4 }));
   assert.equal((await runtime.workflows.get('wf_abc')).step, 4);
   assert.deepEqual(await runtime.workflows.items('wf_abc', { after: 3, limit: 50, status: 'failed', kind: 'agent' }), { items: [], next: 7 });
   await runtime.workflows.items('wf_abc');
   assert.deepEqual(await runtime.workflows.events('wf_abc', { after: 12 }), { events: [] });
-  assert.equal((await runtime.workflows.diff('wf_abc', 2)).revision, 2);
-  await runtime.workflows.diff('wf_abc');
   assert.deepEqual(requests.map(seen => [seen.method, seen.path, seen.query]), [
     ['GET', '/v1/workflows/wf_abc', {}],
     ['GET', '/v1/workflows/wf_abc/items', { after: '3', limit: '50', status: 'failed', kind: 'agent' }],
     ['GET', '/v1/workflows/wf_abc/items', {}],
     ['GET', '/v1/workflows/wf_abc/events', { after: '12' }],
-    ['GET', '/v1/workflows/wf_abc/diff', { revision: '2' }],
-    ['GET', '/v1/workflows/wf_abc/diff', {}],
   ]);
   assert.ok(requests.every(seen => seen.body === undefined && seen.idempotencyKey === null));
 });
 
-test('edit puts the script with its reason; pause, resume, abort and budget post their bodies', async () => {
-  const { runtime, requests } = fakeRuntime(seen => seen.path.endsWith('/script') ? { revision: 2, workflow: summary('running', { revision: 2 }) } : summary('paused', { pauseReason: 'user' }));
-  const edited = await runtime.workflows.edit('wf_abc', { script: 'return 1;', reason: 'critic prompt was too lenient', rerunConfirmPercent: 100 });
-  assert.equal(edited.revision, 2);
-  assert.equal(edited.workflow.revision, 2);
+test('pause, resume, abort and budget post their bodies (no edit: a workflow is changed by starting a new one)', async () => {
+  const { runtime, requests } = fakeRuntime(() => summary('paused', { pauseReason: 'user' }));
+  assert.equal((runtime.workflows as unknown as { edit?: unknown }).edit, undefined);
   assert.equal((await runtime.workflows.pause('wf_abc', { children: 'abort' })).pauseReason, 'user');
   await runtime.workflows.pause('wf_abc');
-  await runtime.workflows.resume('wf_abc', { rerun: ['review:a.ts'] });
   await runtime.workflows.resume('wf_abc');
   await runtime.workflows.abort('wf_abc');
   await runtime.workflows.budget('wf_abc', 40);
   await runtime.workflows.budget('wf_abc', null);
   assert.deepEqual(requests.map(seen => [seen.method, seen.path, seen.body]), [
-    ['PUT', '/v1/workflows/wf_abc/script', { script: 'return 1;', reason: 'critic prompt was too lenient', rerunConfirmPercent: 100 }],
     ['POST', '/v1/workflows/wf_abc/pause', { children: 'abort' }],
     ['POST', '/v1/workflows/wf_abc/pause', {}],
-    ['POST', '/v1/workflows/wf_abc/resume', { rerun: ['review:a.ts'] }],
     ['POST', '/v1/workflows/wf_abc/resume', {}],
     ['POST', '/v1/workflows/wf_abc/abort', {}],
     ['POST', '/v1/workflows/wf_abc/budget', { usd: 40 }],

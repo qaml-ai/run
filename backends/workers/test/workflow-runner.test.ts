@@ -111,9 +111,9 @@ test("a crash at every step boundary leaves the same workflow, each effect journ
   t.diagnostic(`${baseline.ops} crash points over ${baseline.runner.get().step} steps`);
 });
 
-test("faults pause the workflow: keys inside parallel, key conflicts, a stalled script, the step budget, a newer journal", { timeout: 60_000 }, async () => {
+test("faults end the workflow failed: keys inside parallel, key conflicts, a stalled script, the step budget, a newer journal", { timeout: 60_000 }, async () => {
   const unkeyed = await drive(`return await parallel([1, 2], i => agent("review " + i));`);
-  assert.deepEqual([unkeyed.runner.get().status, unkeyed.runner.get().pauseReason, unkeyed.runner.get().fault?.code], ["paused", "key_required", "key_required"]);
+  assert.deepEqual([unkeyed.runner.get().status, unkeyed.runner.get().pauseReason, unkeyed.runner.get().fault?.code], ["failed", undefined, "key_required"]);
   assert.match(unkeyed.runner.get().fault!.message, /inside parallel\(\) needs an explicit key/);
   assert.equal(unkeyed.runner.items().items.length, 0, "a faulted step journals nothing");
   assert.equal((await drive(`await agent("one", { key: "k" }); return await agent("two", { key: "k" });`)).runner.get().fault?.code, "key_conflict");
@@ -128,7 +128,7 @@ test("faults pause the workflow: keys inside parallel, key conflicts, a stalled 
   await h.wake();
   h.store.db.exec("UPDATE workflow_effects SET version = 99");
   await h.next();
-  assert.deepEqual([h.runner.get().status, h.runner.get().fault?.code], ["paused", "journal_version"]);
+  assert.deepEqual([h.runner.get().status, h.runner.get().fault?.code], ["failed", "journal_version"]);
 });
 
 test("protocol 3 mismatches fail clearly", async () => {
@@ -162,7 +162,7 @@ test("a syntax error is a script_error naming the line and column, before a work
   // A script that reaches a step anyway (started before the check) faults as a script error, not a VM crash; a
   // workflow's args line before it does not move the line.
   const h = await drive(`const args = Object.freeze(null);\nlog("x");\nlog("y" "z");`);
-  assert.deepEqual([h.runner.get().status, h.runner.get().fault?.code, h.runner.get().fault?.message], ["paused", "script_error", "SyntaxError at line 2, column 9: Unexpected string"]);
+  assert.deepEqual([h.runner.get().status, h.runner.get().fault?.code, h.runner.get().fault?.message], ["failed", "script_error", "SyntaxError at line 2, column 9: Unexpected string"]);
 });
 
 test("the guest has TextEncoder, TextDecoder and Unicode-safe base64, deterministic across snapshots", { timeout: 30_000 }, async () => {

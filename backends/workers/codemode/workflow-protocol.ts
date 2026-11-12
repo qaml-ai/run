@@ -53,7 +53,9 @@ export interface IssuedEffect { key: string; kind: string; args: string; replaye
 
 /** What the host must handle as a workflow fault: the script cannot go on as written. */
 export type WorkflowFaultCode =
-  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "out_of_memory" | "vm_crash" | "effect_limit" | "script_error" | "missing_origin" | "runtime_upgraded";
+  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "out_of_memory" | "vm_crash" | "effect_limit" | "script_error" | "missing_origin" | "runtime_upgraded"
+  // A payer that stayed without credit for a week ends its workflow.
+  | "payer_gave_up";
 
 export type WorkflowStepOutcome =
   | {

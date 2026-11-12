@@ -11,10 +11,12 @@ import { DurableObject } from "cloudflare:workers";
 import type { WorkflowSandbox } from "../codemode/workflow-protocol.ts";
 import { keyServices } from "./security-services.ts";
 import type { SecurityEnv } from "./security-services.ts";
-import { WorkflowAgents, workflowChildren } from "./workflow-agents.ts";
+import { agentCacheSalt, WorkflowAgents, workflowChildren, type AgentArgs } from "./workflow-agents.ts";
 import { WorkflowJobs, type WorkflowJobsEnv } from "./workflow-jobs.ts";
-import { deleteFork, forkForChild, forkId } from "./workflow-volumes.ts";
+import { copyFork, deleteFork, forkForChild, forkId } from "./workflow-volumes.ts";
 import { ForkJanitor } from "./workflow-forks.ts";
+import { cacheKey, type CachedResult, type WorkflowResults } from "./workflow-results.ts";
+import { volume } from "./files.ts";
 
 const ENDED = new Set(["completed", "failed", "aborted"]);
 
@@ -27,7 +29,7 @@ import type { AgentType, ModelClass } from "./workflow-types.ts";
 import type { Owner } from "../../../shared/owner.ts";
 import type { Env } from "./agent-types.ts";
 import {
-  WorkflowRunner, WorkflowError, refusable, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit,
+  WorkflowRunner, WorkflowError, refusable, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type ResultCache, type StartedEffect, type WorkflowInit,
 } from "./workflow-runner.ts";
 
 /** The tenant's capacity limiter (WorkflowCapacity, workflow-capacity-object.ts), as this object calls it over RPC. */
@@ -42,6 +44,8 @@ interface CapacityStub {
 export interface WorkflowEnv extends SecurityEnv, Omit<WorkflowJobsEnv, keyof SecurityEnv> {
   CODEMODE_SANDBOX: DurableObjectNamespace;
   WORKFLOWS: DurableObjectNamespace<WorkflowObject>;
+  /** The owners' result caches (workflow-results.ts); absent where not deployed: then nothing is reused. */
+  WORKFLOW_RESULTS?: DurableObjectNamespace<WorkflowResults>;
   /** Absent where the capacity limiter is not deployed: then nothing but the workflow's own concurrency bounds it. */
   WORKFLOW_CAPACITY?: { getByName(tenant: string): CapacityStub };
   TEST_MODE?: string;
@@ -183,7 +187,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
     };
     const self = this;
-    this.forks = new ForkJanitor({ storage: ctx.storage, deleteFork: id => deleteFork(env, self.runner.identity().tenant!, id) });
+    this.forks = new ForkJanitor({ storage: ctx.storage, deleteFork: id => deleteFork(env, self.runner.identity().tenant!, id), adopt: fork => self.adopt(fork) });
     this.agents = new WorkflowAgents({
       storage: ctx.storage,
       get workflow() { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant!, ...(identity.bucket ? { bucket: identity.bucket } : {}) }; },
@@ -230,8 +234,82 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
           await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
         } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
+        results: name && env.WORKFLOW_RESULTS ? this.resultCache(env, name) : undefined,
       },
     );
+  }
+
+  /** The owner's result cache: `tenant:agent`, or `tenant:api` for a workflow started with an API key; none without a tenant. */
+  private results(env: WorkflowEnv) {
+    const tenant = this.runner.identity().tenant;
+    if (!tenant || !env.WORKFLOW_RESULTS) return undefined;
+    const owner = this.settings().owner;
+    return { tenant, cache: env.WORKFLOW_RESULTS.getByName(`${tenant}:${owner?.kind === "agent" ? owner.id : "api"}`) };
+  }
+
+  /**
+   * The owner's result cache, as the runner uses it (workflow-results.ts). An effect that reads a volume (an agent() on a
+   * fork of `repo`, a job() `at` one) is keyed with that volume's version at lookup, which the runner keeps for its
+   * landing (`ResultCache`); an agent() also with what decides its answer beyond its arguments (`agentCacheSalt`).
+   * Forks: a landing offers its fork with the result only for an agent() with `repo`, whose `fork` is the runtime's
+   * (spread over the child's answer, workflow-agents.ts); the cache takes it over at this workflow's end (`adopt`, the
+   * janitor). A hit with a fork gets a copy of its own, made as one of this workflow's forks.
+   */
+  private resultCache(env: WorkflowEnv, name: string): ResultCache {
+    const scope = () => { const found = this.results(env); if (!found) throw new Error("The workflow has no tenant: no result cache"); return found; };
+    const parse = (args: string) => { try { return JSON.parse(args) as Record<string, unknown>; } catch { return {}; } };
+    const read = (kind: string, parsed: Record<string, unknown>) => {
+      const source = kind === "agent" ? parsed.repo : kind === "job" ? parsed.at : undefined;
+      return typeof source === "string" ? source : undefined;
+    };
+    return {
+      lookup: async (kind, args, effect) => {
+        const { tenant, cache } = scope();
+        const parsed = parse(args), source = read(kind, parsed);
+        let key = cacheKey(args, source === undefined ? undefined : (await (await volume(env, tenant, source)).info()).seq);
+        if (kind === "agent") {
+          const settings = this.settings();
+          key += `\n@agent:${await agentCacheSalt(env as unknown as Env, tenant, parsed as AgentArgs, { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) })}`;
+        }
+        const hit = await cache.lookup(kind, key) as CachedResult | undefined;
+        if (!hit) return { key };
+        const cached = kind === "agent" && source !== undefined ? (hit.value as { fork?: { volume?: unknown } } | null)?.fork : undefined;
+        if (typeof cached?.volume !== "string") return { key, hit };
+        // Its own copy, recorded first as a fork this workflow made (its end deletes it). Gone meanwhile: a miss.
+        try {
+          await this.forks.made(await forkId(tenant, { workflow: name, key: effect.key, attempt: effect.attempt }));
+          const copy = await copyFork(env, tenant, cached.volume, { workflow: name, key: effect.key, attempt: effect.attempt });
+          return { key, hit: { ...hit, value: { ...(hit.value as object), fork: { ...cached, volume: copy } } } };
+        } catch (error) {
+          console.error(JSON.stringify({ type: "workflow_cache_fork_copy_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+          return { key };
+        }
+      },
+      landed: effect => {
+        const trusted = effect.kind === "agent" && read("agent", parse(effect.args)) !== undefined;
+        const named = trusted ? (effect.value as { fork?: { volume?: unknown } } | null)?.fork?.volume : undefined;
+        this.ctx.waitUntil((async () => {
+          const { tenant, cache } = scope();
+          await cache.put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(typeof named === "string" ? { fork: { tenant, volume: named } } : {}) });
+        })().catch(error => console.error(JSON.stringify({ type: "workflow_cache_put_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }))));
+      },
+    };
+  }
+
+  /**
+   * At the end, fork `fork` goes to the owner's result cache if an entry names it (`adopt`). One whose base moved on
+   * since it was made (a commit landed there) can never be found by its entries again: the cache drops them and the
+   * fork is deleted now.
+   */
+  private async adopt(fork: string) {
+    const env = this.env as WorkflowEnv, found = this.results(env);
+    if (!found) return false;
+    let moved = false;
+    try {
+      const origin = (await (await volume(env, found.tenant, fork)).info()).origin;
+      moved = origin !== undefined && (await (await volume(env, found.tenant, origin.volume)).info()).seq > origin.seq;
+    } catch { /* unreadable: the cache decides from its entries alone */ }
+    return await found.cache.adopt(fork, found.tenant, moved);
   }
 
   /**
@@ -318,11 +396,9 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   // The RPC surface the API and the builtin use answers a WorkflowError as a refusal (refusable), not a throw.
   view() { return refusable(() => { const { name, args, classes, owner } = this.settings(); return { ...this.runner.get(), ...(name ? { name } : {}), ...(args !== undefined ? { args } : {}), ...(classes ? { classes } : {}), ...(owner ? { owner } : {}) }; }); }
   items(query: Parameters<WorkflowRunner["items"]>[0]) { return refusable(() => this.runner.items(query)); }
-  diff(revision?: number) { return refusable(() => this.runner.diff(revision)); }
   events(query: Parameters<WorkflowRunner["events"]>[0]) { return refusable(() => this.runner.events(query)); }
   pause(options: Parameters<WorkflowRunner["pause"]>[0]) { return refusable(async () => { await this.runner.pause(options); return this.told(this.runner.get()); }); }
-  resume(options: Parameters<WorkflowRunner["resume"]>[0]) { return refusable(async () => { await this.runner.resume(options); return this.told(this.runner.get()); }); }
-  edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return refusable(async () => { await this.checkScript(options.code); const edited = await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) }); return this.told({ ...edited, workflow: this.runner.get() }); }); }
+  resume() { return refusable(async () => { await this.runner.resume(); return this.told(this.runner.get()); }); }
   abort() { return refusable(async () => { await this.runner.abort(); await this.ended(); return this.told(this.runner.get()); }); }
   setBudget(usd: number | null) { return refusable(async () => { await this.runner.setBudget(usd); return this.told(this.runner.get()); }); }
   /** An executor's landing of effect `key:attempt`. */
@@ -419,11 +495,9 @@ export async function workflowTestRoute(request: Request, env: WorkflowEnv, path
     if (!action) return respond(await stub.get());
     if (action === "items" && !post) return respond(await stub.items({ ...query, after: query.after ? Number(query.after) : undefined, limit: query.limit ? Number(query.limit) : undefined }));
     if (action === "events" && !post) return respond(await stub.events({ after: query.after ? Number(query.after) : undefined }));
-    if (action === "diff" && !post) return respond(await stub.diff(query.revision ? Number(query.revision) : undefined));
     if (!post) return respond({ error: "Not found" }, 404);
     if (action === "pause") return respond(await stub.pause(input as never));
-    if (action === "resume") return respond(await stub.resume(input as never));
-    if (action === "edit") return respond(await stub.edit(input as never));
+    if (action === "resume") return respond(await stub.resume());
     if (action === "abort") return respond(await stub.abort());
     if (action === "budget") return respond(await stub.setBudget((input.usd ?? null) as number | null));
     if (action === "alarm") { await stub.fireAlarm(); return respond(await stub.get()); }
