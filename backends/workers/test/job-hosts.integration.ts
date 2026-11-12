@@ -29,6 +29,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   t.after(() => new Promise<void>(resolve => sts.close(() => resolve())));
   const fixture = await startFixture({ vars: {
     AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "45",
+    JOB_HOST_WAIT_SECONDS: "8", JOB_HOST_SCALER_TOKEN: "scaler-token-for-the-fixture-at-least-32-characters",
     JOB_HOST_ROLE_ARNS: "test=arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,
     ADMIN_TENANTS: "camelrun-proto-local",
   } });
@@ -172,6 +173,30 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   await until(async () => { const list = await call("/__test/job-hosts") as { name: string; revoked: number; seenAt: number; free: number; slots: number }[]; const entry = list.find(item => item.name === "host-1"); return entry && !entry.revoked && entry.seenAt > allowedAt && entry.free === entry.slots && entry.slots > 0 && entry; }, "host-1 back after it is allowed", 90_000);
   // Only an admin account revokes.
   assert.equal((await fetch(`${fixture.url}/v1/job-hosts/host-1`, { method: "DELETE" })).status === 200, false);
+
+  // Waiting, and what the scaler reads: three jobs for host-1's two slots, so one waits its turn (counted as the test
+  // pool's demand) and runs when a slot frees. The scaler's own token reads demand; nothing else does.
+  const scaler = (path: string, method = "GET", token = "scaler-token-for-the-fixture-at-least-32-characters") =>
+    fetch(`${fixture.url}/v1/internal/job-hosts/${path}`, { method, headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await scaler("demand", "GET", "wrong-token-but-also-at-least-32-characters-long")).status, 401);
+  assert.equal((await fetch(`${fixture.url}/v1/internal/job-hosts/demand`)).status, 401);
+  const queued = await call("/v1/workflows", { script: `return await parallel([1, 2, 3].map(n => () => job({ key: "q" + n, command: "sleep 3; echo q" + n, timeoutSeconds: 30 })));`, budget: { usd: 1 } });
+  const seen = await until(async () => {
+    const value = await (await scaler("demand")).json() as { pools: { test: { waiting: number; running: number; hosts: { host: string }[] } } };
+    return value.pools.test.waiting >= 1 && value.pools.test.running === 2 && value;
+  }, "a job waiting for a slot, counted as demand", 30_000);
+  assert.ok(seen.pools.test.hosts.some(entry => entry.host === "host-1"));
+  const queuedEnd = await until(async () => { const value = await call(`/v1/workflows/${queued.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the three jobs", 90_000);
+  assert.equal(queuedEnd.status, "completed", JSON.stringify(queuedEnd));
+  const idleNow = await (await scaler("demand")).json() as { pools: { test: { waiting: number; running: number; hosts: { host: string; idleSince: number | null }[] } } };
+  assert.equal(idleNow.pools.test.waiting, 0);
+  assert.ok(idleNow.pools.test.hosts.find(entry => entry.host === "host-1")?.idleSince, "an idle host says since when");
+  // Drained, a host takes no new job: one waits its time out and fails, the host left alone.
+  assert.equal((await scaler("host-1/drain", "POST")).status, 200);
+  const drained = await call("/v1/workflows", { script: `return await job({ key: "drained", command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });
+  await until(async () => { const value = await call(`/v1/workflows/${drained.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the job with only a drained host", 60_000);
+  const drainedItem = ((await call(`/v1/workflows/${drained.id}/items`)).items as { key: string; reason?: string }[]).find(entry => entry.key === "drained")!;
+  assert.match(drainedItem.reason ?? "", /^start_failed: No test job host was free within 8 s/);
 
   // A host that dies mid-job: the job ends container_failed once the host has been gone HOST_STALE_MS (30 s), not at
   // its deadline, and is charged only for the time its VM ran until the host was last heard from.

@@ -31,6 +31,10 @@ import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSe
 export const HOSTS_PROVIDER = "camelrun-hosts";
 /** A host not heard from in this long takes no new job. */
 const HOST_STALE_MS = 30_000;
+/** A waiting job not heard from in this long has stopped waiting (its object was evicted, say). */
+const WAITER_STALE_MS = 20_000;
+/** How long a job waits for a host of its pool (a cold pool's host boots in a few minutes), at most; JOB_HOST_WAIT_SECONDS. */
+export const HOST_WAIT_MS = 10 * 60_000;
 /**
  * Inline files and a volume's files cross to the host inline, up to this much (raw). They cross DO RPC as base64 first
  * (dispatch), which carries at most 32 MiB: 16 MiB raw is about 21 MiB there, with room for the rest of the job. A
@@ -55,6 +59,10 @@ export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & HostPriceEnv & {
    * account may hold sts:AssumeRole on it, and it must not trust itself). Slice 7's Terraform enforces this.
    */
   JOB_HOST_ROLE_ARNS?: string;
+  /** How long a job waits for a host of its pool before it fails start_failed (seconds; HOST_WAIT_MS by default). */
+  JOB_HOST_WAIT_SECONDS?: string;
+  /** The scaler's credential (infra/job-hosts/scaler): it reads demand and drains hosts, nothing else. */
+  JOB_HOST_SCALER_TOKEN?: string;
   /** Enrollments per client address (a Cloudflare rate limiting binding). The aws attestor refuses to run without it outside TEST_MODE. */
   JOB_HOST_ENROLL_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   AGENT_PUBLIC_URL?: string;
@@ -85,6 +93,11 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     if (!columns.includes("pool")) sql.exec("ALTER TABLE hosts ADD COLUMN pool TEXT NOT NULL DEFAULT 'test'");
     // Memory its running VMs hold (MiB): placement packs a host to its pool's sandbox memory, never past it.
     if (!columns.includes("used_mib")) sql.exec("ALTER TABLE hosts ADD COLUMN used_mib INTEGER NOT NULL DEFAULT 0");
+    // Draining (the scaler is about to end it): it takes no new job. Idle since: when it last had every slot free.
+    if (!columns.includes("draining")) sql.exec("ALTER TABLE hosts ADD COLUMN draining INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("idle_since")) sql.exec("ALTER TABLE hosts ADD COLUMN idle_since INTEGER");
+    // Jobs waiting for a host of their pool, oldest first; a waiter not heard from in WAITER_STALE_MS has gone.
+    sql.exec("CREATE TABLE IF NOT EXISTS waiting (job TEXT PRIMARY KEY, pool TEXT NOT NULL, since INTEGER NOT NULL, seen_at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS host_credentials (hash TEXT PRIMARY KEY, host TEXT NOT NULL, expires_at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS host_attestations (signature TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     sql.exec("CREATE INDEX IF NOT EXISTS host_attestations_at ON host_attestations (at)");
@@ -171,23 +184,68 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     this.ctx.storage.sql.exec(`INSERT INTO hosts (name, slots, free, seen_at, pool) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
       name, slots ?? free, free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
+    this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = CASE WHEN free < slots THEN NULL ELSE COALESCE(idle_since, ?) END WHERE name = ?", Date.now(), name);
   }
   /**
-   * A fresh, allowed host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox memory, which
-   * are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed boot).
+   * A fresh, allowed, undrained host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox
+   * memory, which are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed
+   * boot).
    */
   place(pool: HostPool = "test", memoryMiB = 0): string | undefined {
     const room = HOST_POOL_PRICES[pool].memoryGiB * 1024 - memoryMiB;
     if (room < 0) return undefined;
-    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
+    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND draining = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
     if (!row) return undefined;
-    this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1, used_mib = used_mib + ? WHERE name = ?", memoryMiB, row.name);
+    this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1, used_mib = used_mib + ?, idle_since = NULL WHERE name = ?", memoryMiB, row.name);
     return row.name;
   }
+  /**
+   * A job's turn at a host (HostJob, while it waits): a host when one is free and no job of its pool has waited longer,
+   * else undefined, and the job counts as waiting (the demand the scaler reads) until it calls again or gives up.
+   */
+  want(job: string, pool: HostPool, memoryMiB = 0): string | undefined {
+    const sql = this.ctx.storage.sql, now = Date.now();
+    sql.exec("DELETE FROM waiting WHERE seen_at <= ?", now - WAITER_STALE_MS);
+    sql.exec("INSERT INTO waiting (job, pool, since, seen_at) VALUES (?, ?, ?, ?) ON CONFLICT(job) DO UPDATE SET seen_at = excluded.seen_at", job, pool, now, now);
+    const first = sql.exec<{ job: string }>("SELECT job FROM waiting WHERE pool = ? ORDER BY since, job LIMIT 1", pool).toArray()[0];
+    if (first?.job !== job) return undefined;
+    const host = this.place(pool, memoryMiB);
+    if (host) sql.exec("DELETE FROM waiting WHERE job = ?", job);
+    return host;
+  }
+  /** A waiting job that stopped waiting (it gave up, or was stopped). */
+  unwant(job: string) { this.ctx.storage.sql.exec("DELETE FROM waiting WHERE job = ?", job); }
   release(name: string, memoryMiB = 0) {
     this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1), used_mib = MAX(0, used_mib - ?) WHERE name = ? AND revoked = 0", memoryMiB, name);
+    this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = ? WHERE name = ? AND free = slots AND idle_since IS NULL", Date.now(), name);
   }
-  list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked FROM hosts ORDER BY name").toArray(); }
+  list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked, draining, idle_since AS idleSince FROM hosts ORDER BY name").toArray(); }
+  /** Drain a host (the scaler, before it ends it): no new job is placed on it. */
+  drain(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET draining = 1 WHERE name = ?", name); return { draining: name }; }
+
+  /**
+   * What the scaler sizes the pools by (infra/job-hosts/scaler): per pool, its live hosts and slots, the jobs running
+   * and waiting (and how long the oldest has), and each live host's state: busy, idle since when, draining. A host is
+   * its EC2 instance id (job-host-attest.ts), which is how the scaler finds it in its group.
+   */
+  demand() {
+    const sql = this.ctx.storage.sql, now = Date.now();
+    sql.exec("DELETE FROM waiting WHERE seen_at <= ?", now - WAITER_STALE_MS);
+    const hosts = sql.exec<{ name: string; pool: string; slots: number; free: number; draining: number; idle_since: number | null }>(
+      "SELECT name, pool, slots, free, draining, idle_since FROM hosts WHERE seen_at > ? AND revoked = 0 ORDER BY name", now - HOST_STALE_MS).toArray();
+    return {
+      at: now,
+      pools: Object.fromEntries(HOST_POOLS.map(pool => {
+        const mine = hosts.filter(host => host.pool === pool), waiting = sql.exec<{ n: number; oldest: number | null }>("SELECT count(*) AS n, MIN(since) AS oldest FROM waiting WHERE pool = ?", pool).one();
+        return [pool, {
+          hosts: mine.map(host => ({ host: host.name, slots: host.slots, running: host.slots - host.free, draining: !!host.draining, idleSince: host.idle_since })),
+          slots: mine.filter(host => !host.draining).reduce((sum, host) => sum + host.slots, 0),
+          running: mine.reduce((sum, host) => sum + host.slots - host.free, 0),
+          waiting: Number(waiting.n), oldestWaitMs: waiting.oldest === null ? 0 : now - Number(waiting.oldest),
+        }];
+      })),
+    };
+  }
 }
 
 const registry = (env: JobHostsEnv) => env.JOB_HOST_REGISTRY!.getByName("hosts");
@@ -274,6 +332,29 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
     console.error(JSON.stringify({ type: "jobhost_enroll_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
     return Response.json({ error: "Enrollment failed", code: "UNAVAILABLE" }, { status: 503 });
   }
+}
+
+/**
+ * The scaler's routes (infra/job-hosts/scaler), with its own credential (JOB_HOST_SCALER_TOKEN, a bearer token checked
+ * in constant time): GET /v1/internal/job-hosts/demand reads what each pool needs, POST
+ * /v1/internal/job-hosts/<host>/drain stops placing jobs on a host it is about to end. Nothing else: it reads no job,
+ * payer or secret. Without the token configured, these paths are unknown.
+ */
+export async function scalerRoutes(request: Request, env: JobHostsEnv): Promise<Response | undefined> {
+  const path = new URL(request.url).pathname;
+  const match = /^\/v1\/internal\/job-hosts\/(?:demand|([^/]+)\/drain)$/.exec(path);
+  if (!match || !env.JOB_HOST_SCALER_TOKEN || !env.JOB_HOST_REGISTRY) return undefined;
+  const given = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+  if (env.JOB_HOST_SCALER_TOKEN.length < 32 || !sameText(given, env.JOB_HOST_SCALER_TOKEN)) return Response.json({ error: "Unauthorized", code: "UNAUTHORIZED" }, { status: 401 });
+  const hosts = registry(env);
+  if (!match[1] && request.method === "GET") return Response.json(await hosts.demand());
+  if (match[1] && request.method === "POST") {
+    let host = "";
+    try { host = decodeURIComponent(match[1]); } catch { /* a malformed escape: refused below */ }
+    if (!HOST_NAME.test(host)) return Response.json({ error: "Invalid host id", code: "INVALID_REQUEST" }, { status: 400 });
+    return Response.json(await hosts.drain(host));
+  }
+  return Response.json({ error: "Not found", code: "NOT_FOUND" }, { status: 404 });
 }
 
 /**
@@ -450,17 +531,24 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     let rate: number;
     try { rate = hostSecondRate(pool, shape, this.env); }
     catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Pricing is misconfigured"); }
-    try {
-      await meter.admit(spec.payer);
-      const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
-      await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
-    } catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
-    const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
+    try { await meter.admit(spec.payer); }
+    catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
     let files: WireFile[];
     try { files = await this.files(spec); }
-    catch (error) { await release(); return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
-    const host = await registry(this.env).place(pool, shape.memoryMiB);
-    if (!host) { await release(); return fail("start_failed", `No ${pool} job host has a free slot`); }
+    catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
+    // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
+    const host = await this.waitForHost(spec.id, pool, shape.memoryMiB);
+    if (host === "stopped") return fail("stopped", "The job was stopped");
+    if (!host) return fail("start_failed", `No ${pool} job host was free within ${Math.round(this.waitMs() / 1000)} s`);
+    // The computer slot from here: a job waiting for a host holds none.
+    try {
+      const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
+      await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
+    } catch (error) {
+      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused");
+    }
+    const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
     this.active = { host, id: spec.id };
     let wire: WireResult & { ranFrom?: number; ranUntil?: number } = { ok: false, code: "container_failed", message: "No result" }, costUsd = 0;
     // A session is open from dispatch, at the rate fixed at admission, under the job's own name (a run made again is the
@@ -516,7 +604,29 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     else if (spec.volume) for await (const file of volumeFiles(this.env, spec.volume)) add(file.path, file.bytes);
     return out;
   }
+  private waiting?: { job: string; stopped: boolean };
+  private waitMs() {
+    const seconds = Number(this.env.JOB_HOST_WAIT_SECONDS ?? NaN);
+    return Number.isFinite(seconds) && seconds >= 0 && seconds <= 3600 ? seconds * 1000 : HOST_WAIT_MS;
+  }
+  /** A host for `job`, its turn in its pool's queue; undefined when none came in time, "stopped" when stopped meanwhile. */
+  private async waitForHost(job: string, pool: HostPool, memoryMiB: number): Promise<string | undefined | "stopped"> {
+    const hosts = registry(this.env), until = Date.now() + this.waitMs(), waiting = this.waiting = { job, stopped: false };
+    try {
+      for (let pause = 250; ; pause = Math.min(3_000, pause * 2)) {
+        if (waiting.stopped) return "stopped";
+        const host = await hosts.want(job, pool, memoryMiB);
+        if (host) return host;
+        if (Date.now() + pause > until) return undefined;
+        await new Promise(resolve => setTimeout(resolve, pause));
+      }
+    } finally {
+      this.waiting = undefined;
+      await hosts.unwant(job).catch(() => {});
+    }
+  }
   async stop(): Promise<{ stopped: boolean }> {
+    if (this.waiting) { this.waiting.stopped = true; return { stopped: true }; }
     if (!this.active) return { stopped: false };
     return { stopped: await this.env.JOB_HOSTS!.getByName(this.active.host).cancel(this.active.id) };
   }
