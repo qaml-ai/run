@@ -1,6 +1,11 @@
-output "host_role_arn" {
-  description = "JOB_HOST_ROLE_ARNS for the runtime (backends/workers/wrangler.pilot.jsonc). Trusts ec2.amazonaws.com only."
-  value       = aws_iam_role.host.arn
+output "host_role_arns" {
+  description = "Each pool's host role (trusts ec2.amazonaws.com only), by pool."
+  value       = { for pool, role in aws_iam_role.host : pool => role.arn }
+}
+
+output "job_host_role_arns" {
+  description = "JOB_HOST_ROLE_ARNS for the runtime (backends/workers/wrangler.pilot.jsonc), exactly: comma-separated pool=arn pairs. The runtime takes a host's pool from the role it attests with."
+  value       = join(",", [for pool in sort(keys(aws_iam_role.host)) : "${pool}=${aws_iam_role.host[pool].arn}"])
 }
 
 output "build_asg_name" {

@@ -31,7 +31,8 @@ resource "aws_launch_template" "pool" {
   # No key pair: no SSH. Operators use SSM Session Manager.
 
   iam_instance_profile {
-    arn = aws_iam_instance_profile.host.arn
+    # Each pool its own profile, so its own role: the runtime takes the pool from the attested role.
+    name = aws_iam_instance_profile.host[each.key].name
   }
 
   network_interfaces {
