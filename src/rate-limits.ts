@@ -282,6 +282,15 @@ export class RateLimits {
     return this.perTenant(tenant, "agentCreates", "agent_creates", "agents created", counted);
   }
 
+  /** Free image checks use a separate shared counter, independent of credit or model-run allowances. */
+  async imageModeration(tenant: string): Promise<RateLimitState> {
+    const max = 120;
+    const row = await this.counted(this.options.db, `image_moderations:${tenant}`,
+      { name: "image_moderations", scope: "tenant", max, windowSeconds: 60 },
+      "Too many image checks: at most 120 a minute for this account; retry after Retry-After");
+    return { limit: max, remaining: Math.max(0, max - row.count), reset: Math.max(1, Math.ceil((Number(row.window_start) + MINUTE - this.now()) / 1000)) };
+  }
+
   /** Resolve billing policy before a caller's transaction, then count on its connection. */
   async prepareAgentCreate(tenant: string) {
     const applies = await this.tenantLimit(tenant, "agentCreates");
