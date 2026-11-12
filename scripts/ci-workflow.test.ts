@@ -11,7 +11,7 @@ const gate = workflow.split("      - name: Require successful checks or intentio
   .split("        run: |\n")[1].split("      - name:")[0];
 
 function passes({ tests = true, image = true, reused = false, event = "push", ref = "refs/heads/main", results = {} as Record<string, string> } = {}) {
-  const states = { reuse: event === "push" ? "success" : "skipped", changes: "success", checks: "success", quick: "skipped", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", ...results };
+  const states = { reuse: event === "push" ? "success" : "skipped", changes: "success", checks: "success", quick: "skipped", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", camelfsd: "success", ...results };
   const needs = workflow.split("  ci:\n")[1].match(/needs: \[(.+)\]/)![1].split(", ");
   assert.deepEqual(Object.keys(states).sort(), needs.sort(), "every required job has a fake state");
   const script = gate.replaceAll("${{ needs.changes.outputs.tests }}", String(tests))
