@@ -308,6 +308,7 @@ test("a fork the result cache keeps (pinned) outlives the end; released (unpinne
   await forks.made("vol_kept");
   await forks.made("vol_free");
   await forks.pin("vol_kept");
+  assert.deepEqual(await forks.pinned(), ["vol_kept"]);
   assert.equal(await forks.ended(), undefined);
   assert.deepEqual(deleted, ["vol_free"]);
   await forks.unpin("vol_kept");

@@ -31,6 +31,10 @@ export class ForkJanitor {
    * Issued synchronously (its storage write before any later read), so an end right after a landing sees the pin.
    */
   pin(volume: string) { return this.host.storage.put(ROW + volume, { at: this.now(), pinned: true }); }
+  /** The forks the result cache keeps. */
+  async pinned() {
+    return [...(await this.host.storage.list<{ pinned?: boolean }>({ prefix: ROW }))].filter(([, row]) => row?.pinned).map(([key]) => key.slice(ROW.length));
+  }
   async unpin(volume: string) {
     const row = await this.host.storage.get<{ at: number; pinned?: boolean }>(ROW + volume);
     if (row?.pinned) await this.host.storage.put(ROW + volume, { at: row.at });

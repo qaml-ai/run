@@ -302,6 +302,25 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     };
   }
 
+  /**
+   * A pinned fork whose base moved on since the fork was made (a commit landed there) can never be found by its cache
+   * entry again (the entry's key has the base's version from before): its pin goes, so the end deletes it now rather than
+   * when the entry expires. One that cannot be read stays pinned (the entry's release still frees it).
+   */
+  private async unreachable() {
+    const tenant = this.runner.identity().tenant;
+    if (!tenant) return;
+    for (const fork of await this.forks.pinned()) {
+      try {
+        const origin = (await (await volume(this.env as WorkflowEnv, tenant, fork)).info()).origin;
+        if (!origin) continue;
+        if ((await (await volume(this.env as WorkflowEnv, tenant, origin.volume)).info()).seq > origin.seq) await this.forks.unpin(fork);
+      } catch (error) {
+        console.error(JSON.stringify({ type: "workflow_fork_check_failed", fork, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+      }
+    }
+  }
+
   /** The result cache let go of a fork this workflow made (its entry expired or was evicted): an ended workflow deletes it. */
   async forkReleased(fork: string) {
     await this.forks.unpin(fork);
@@ -473,6 +492,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   /** Once the workflow has ended: delete its children's forks, and keep the alarm for a retry if any delete failed. */
   private async ended() {
     if (!ENDED.has(this.runner.get().status)) return;
+    await this.unreachable();
     const retry = await this.forks.ended();
     if (retry === undefined) return;
     await this.armBy(retry);
