@@ -14,6 +14,7 @@ dnf -y -q --installroot="$root" --releasever=2023 --setopt=install_weak_deps=Fal
 if [[ -e $root/usr/bin/node-22 ]]; then ln -sf /usr/bin/node-22 "$root/usr/local/bin/node"; else ln -sf /usr/bin/node "$root/usr/local/bin/node"; fi
 install -d -m 0755 "$root/opt/camel" "$root/repo" "$root/out"
 install -m 0644 "$src/jobhost/guest.ts" "$root/opt/camel/guest.ts"
+install -m 0644 "$src/jobhost/camelfs-wire.ts" "$root/opt/camel/camelfs-wire.ts"
 install -m 0755 "$src/files/camel-init" "$root/sbin/camel-init"
 dnf -y -q --installroot="$root" clean all
 truncate -s "${gib}G" "$out"

@@ -19,6 +19,11 @@ if [ -n "$ip" ]; then ip link set eth0 up; ip addr add "$ip" dev eth0; [ -n "$gw
 if [ -n "$proxy" ]; then
   printf 'export https_proxy=%s HTTPS_PROXY=%s http_proxy=%s HTTP_PROXY=%s no_proxy=localhost,127.0.0.1\n' "$proxy" "$proxy" "$proxy" "$proxy" > /etc/profile.d/camel-proxy.sh
 fi
+repo=$(arg camel.repo)
+if [ -n "$repo" ]; then
+  mkdir -p /repo && mount -t ext4 -o rw,noatime "$repo" /repo || echo "camelFS repo disk mount failed" > /dev/console
+  export CAMEL_VSOCK_CONNECT=1
+fi
 socat VSOCK-LISTEN:5000,reuseaddr EXEC:"/usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/guest.ts --root /"
 sync
 echo o > /proc/sysrq-trigger

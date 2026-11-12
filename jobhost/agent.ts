@@ -149,13 +149,18 @@ export class HostAgent {
         mountAttempted = true;
         mounted = await this.options.camelfsd.mount({ jobId: id, lineage: spec.camelfs.lineage, tree: spec.camelfs.tree, vsock: this.options.launcher.vsockPath?.(id) ?? "" });
         if (job.cancelled) throw new Stopped();
-        if (mounted.apply !== undefined) throw new Error("This camelFS tree needs a guest-side apply, not supported on this host yet");
       }
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
       const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet, ...(mounted ? { repo: mounted.image } : {}) });
       if (job.cancelled) throw new Stopped();
       this.send({ type: "started", id, at: Date.now() });
       startMs = Date.now() - began;
+      let applyMs = 0;
+      if (mounted) {
+        const applied = await vm.request({ op: "camelfs_apply", jobId: id, timeoutMs: 600_000 });
+        if (!applied.ok) { result = { ok: false, code: "sync_failed", message: "camelFS apply failed: " + String(applied.error) }; return; }
+        applyMs = Number(applied.applyMs);
+      }
       const synced = spec.files.length ? await vm.request({ op: "files", files: spec.files }) : { ok: true, syncMs: 0 };
       if (!synced.ok) { result = { ok: false, code: "sync_failed", message: String(synced.error ?? "sync failed") }; return; }
       if (spec.sync && !spec.camelfs) {
@@ -178,7 +183,7 @@ export class HostAgent {
         outputs: (collected.outputs ?? {}) as never, missing: (collected.missing ?? spec.outputs) as string[],
         timings: { startMs, syncMs: Number(synced.syncMs ?? 0), commandMs: Number(ran.commandMs ?? 0), collectMs: Number(collected.collectMs ?? 0), totalMs: Date.now() - began },
         pids: pids ? "enforced" : "unenforced",
-        ...(mounted ? { camelfs: { warm: mounted.warm, mountMs: mounted.mountMs, applyMs: 0 } } : {}),
+        ...(mounted ? { camelfs: { warm: mounted.warm, mountMs: mounted.mountMs, applyMs } } : {}),
       };
     } catch (error) {
       result = job.cancelled || error instanceof Stopped ? { ok: false, code: "stopped", message: "The job was stopped" }

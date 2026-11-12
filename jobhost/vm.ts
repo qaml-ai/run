@@ -119,7 +119,7 @@ export function fakeLauncher(options: { base?: string; work?: string } = {}): Vm
         await symlink(boot.repo, join(root, "repo"));
       } else await mkdir(join(root, "repo"), { recursive: true });
       await mkdir(join(root, "out"), { recursive: true });
-      const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", GUEST, "--root", root], { stdio: ["pipe", "pipe", "inherit"] });
+      const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", GUEST, "--root", root], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, CAMEL_VSOCK_UDS: join(work, `${id}.vsock`) } });
       const channel = new StdioChannel(child);
       let gone = false;
       return {
