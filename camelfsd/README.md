@@ -187,3 +187,8 @@ intervals without a status GET, checkpoint POST, or
 `POST /v0/mounts/:jobId/heartbeat {}`. Keep sending heartbeats during long
 operations. A taken-over lease fences the mount; status reports `fenced`
 and checkpoint returns 409.
+
+Both guest streams use `--stream-idle` (default 30s), reset at every received
+or sent frame. Apply also uses `--apply-max` (default 30m); checkpoint uses
+the POST's `timeoutMs` overall cap. A timeout sends a final nack/error trailer
+with a fresh bounded write deadline before closing.

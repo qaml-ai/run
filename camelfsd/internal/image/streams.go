@@ -154,18 +154,31 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 				s.conns[c] = true
 				s.mu.Unlock()
 				go func() {
-					defer c.Close()
-					defer func() { s.mu.Lock(); delete(s.conns, c); s.mu.Unlock() }()
-					c.SetDeadline(time.Now().Add(10 * time.Minute))
+					raw := c
+					defer raw.Close()
+					defer func() { s.mu.Lock(); delete(s.conns, raw); s.mu.Unlock() }()
+					c = &wire.DeadlineConn{Conn: c, Idle: m.StreamIdle, Overall: time.Now().Add(m.ApplyMax)}
 					if e := m.sendApply(c, v.JobID, a, next, ops); e != nil {
-						wire.Send(c, wire.Op{End: true, Error: e.Error()})
+						c.(*wire.DeadlineConn).Final()
+						if ne, ok := e.(net.Error); ok && ne.Timeout() {
+							e = ErrStreamTimeout
+						}
+						wire.Send(raw, wire.Op{End: true, Error: e.Error()})
 						return
 					}
 					var reply struct {
 						Applied bool    `json:"applied"`
 						ApplyMs float64 `json:"applyMs"`
 					}
-					if wire.JSON(c, &reply) == nil && reply.Applied {
+					if e := wire.JSON(c, &reply); e != nil {
+						raw.SetWriteDeadline(time.Now().Add(time.Second))
+						code := ErrBadStream.Error()
+						var ne net.Error
+						if errors.As(e, &ne) && ne.Timeout() {
+							code = ErrStreamTimeout.Error()
+						}
+						wire.Send(raw, wire.Op{End: true, Error: code})
+					} else if reply.Applied {
 						v.mu.Lock()
 						v.Applied = true
 						v.ApplyMs = reply.ApplyMs
@@ -178,8 +191,7 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 	return nil
 }
 func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.Entry, ops []wire.Op) error {
-	// v0-limitation: L52
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Minute))
+	ctx, cancel := context.WithTimeout(context.Background(), m.ApplyMax)
 	defer cancel()
 	if e := wire.Send(c, wire.Header{V: 1, Kind: "apply", JobID: job, FromTree: a.FromTree, ToTree: a.ToTree}); e != nil {
 		return e
@@ -419,7 +431,6 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	if timeout < 1 || timeout > 600000 {
 		return out, apierr.Invalid("invalid timeoutMs")
 	}
-	// v0-limitation: L52
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
 	defer cancel()
 	for _, q := range metadata {
@@ -465,11 +476,13 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 		return out, ErrStreamTimeout
 	}
 	defer c.Close()
-	defer func() { s.mu.Lock(); delete(s.conns, c); s.mu.Unlock() }()
-	stopCancel := context.AfterFunc(ctx, func() { c.Close() })
+	raw := c
+	defer func() { s.mu.Lock(); delete(s.conns, raw); s.mu.Unlock() }()
+	cancelDone := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() { raw.SetDeadline(time.Now()); close(cancelDone) })
 	defer stopCancel()
 	deadline, _ := ctx.Deadline()
-	c.SetDeadline(deadline.Add(-time.Millisecond))
+	c = &wire.DeadlineConn{Conn: raw, Idle: m.StreamIdle, Overall: deadline}
 	prepared, e := m.prepareReceive(ctx, v)
 	if e != nil {
 		return out, e
@@ -479,7 +492,16 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	}
 	r, e := m.receive(ctx, v, c, prepared)
 	if e != nil {
-		wire.Send(c, map[string]any{"ack": false, "error": e.Error()})
+		if !stopCancel() {
+			<-cancelDone
+		}
+		raw.SetWriteDeadline(time.Now().Add(time.Second))
+		finalCode := e.Error()
+		var timeoutErr net.Error
+		if ctx.Err() != nil || errors.As(e, &timeoutErr) && timeoutErr.Timeout() {
+			finalCode = ErrStreamTimeout.Error()
+		}
+		wire.Send(raw, map[string]any{"ack": false, "error": finalCode})
 		if ctx.Err() != nil || time.Until(deadline) < 2*time.Millisecond {
 			return out, ErrStreamTimeout
 		}

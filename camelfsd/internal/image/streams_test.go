@@ -3,6 +3,7 @@ package image
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -344,6 +345,73 @@ func TestConcurrentPromotion(t *testing.T) {
 	}
 	got, e := os.ReadFile(m.image(id))
 	if e != nil || !bytes.Equal(b, got) {
+		t.Fatal(e)
+	}
+}
+
+func TestCheckpointIdleTimeoutNack(t *testing.T) {
+	m, tr := unit3(t)
+	m.StreamIdle = 25 * time.Millisecond
+	v := mount3(t, m, tr, "idle")
+	done := make(chan error, 1)
+	go func() { _, e := m.StreamCheckpoint(context.Background(), v.JobID, 1000); done <- e }()
+	c := armed3(t, v)
+	defer c.Close()
+	var nack struct {
+		Ack   bool
+		Error string
+	}
+	if e := wire.JSON(c, &nack); e != nil || nack.Ack || nack.Error != "stream-timeout" {
+		t.Fatalf("nack=%+v error=%v", nack, e)
+	}
+	select {
+	case e := <-done:
+		if !errors.Is(e, ErrStreamTimeout) {
+			t.Fatal(e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("POST did not return")
+	}
+}
+func TestApplyProgressOutlivesIdleBudget(t *testing.T) {
+	m, _ := unit3(t)
+	m.StreamIdle = 50 * time.Millisecond
+	m.ApplyMax = time.Second
+	a, c := net.Pipe()
+	defer a.Close()
+	defer c.Close()
+	done := make(chan error, 1)
+	go func() {
+		stream := &wire.DeadlineConn{Conn: a, Idle: m.StreamIdle, Overall: time.Now().Add(m.ApplyMax)}
+		if e := m.sendApply(stream, "slow", Apply{}, nil, nil); e != nil {
+			done <- e
+			return
+		}
+		var reply map[string]bool
+		done <- wire.JSON(stream, &reply)
+	}()
+	start := time.Now()
+	for {
+		frame, e := wire.Read(c, wire.JSONMax)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var end struct{ End bool }
+		if e = json.Unmarshal(frame, &end); e != nil {
+			t.Fatal(e)
+		}
+		time.Sleep(30 * time.Millisecond)
+		if end.End {
+			break
+		}
+	}
+	if time.Since(start) <= m.StreamIdle {
+		t.Fatal("did not exceed fixed idle interval")
+	}
+	if e := wire.Send(c, map[string]bool{"applied": true}); e != nil {
+		t.Fatal(e)
+	}
+	if e := <-done; e != nil {
 		t.Fatal(e)
 	}
 }

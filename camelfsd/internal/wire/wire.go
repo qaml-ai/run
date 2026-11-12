@@ -13,6 +13,8 @@ const JSONMax = 64 << 10
 const DataMax = 1 << 20
 
 func Read(r io.Reader, max int) ([]byte, error) {
+	progress(r)
+	defer progress(r)
 	var h [4]byte
 	if _, e := io.ReadFull(r, h[:]); e != nil {
 		return nil, e
@@ -36,6 +38,8 @@ func JSON(r io.Reader, v any) error {
 	return json.Unmarshal(b, v)
 }
 func Write(w io.Writer, b []byte) error {
+	progress(w)
+	defer progress(w)
 	var h [4]byte
 	binary.BigEndian.PutUint32(h[:], uint32(len(b)))
 	if _, e := w.Write(h[:]); e != nil {

@@ -30,6 +30,7 @@ var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
 
 type Config struct {
+	StreamIdle, ApplyMax          time.Duration
 	LeaseTTL                      time.Duration
 	Now                           func() time.Time
 	Origin                        *nbd.Server
@@ -107,6 +108,15 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	return nil
 }
 func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
+	if c.StreamIdle == 0 {
+		c.StreamIdle = 30 * time.Second
+	}
+	if c.ApplyMax == 0 {
+		c.ApplyMax = 30 * time.Minute
+	}
+	if c.StreamIdle < 0 || c.ApplyMax < 0 {
+		return nil, apierr.Invalid("invalid stream deadlines")
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
