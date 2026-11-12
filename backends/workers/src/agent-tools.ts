@@ -503,15 +503,18 @@ export function createHarness(this: AgentRuntime): PiHarness {
             jobRun: jobDriver(this.env as never).ok,
           }) });
         }
-        // The jobs builtin (agent-jobs.ts): one command in a container of its own, on the tenants that have workflows and
-        // where a job driver exists (the pilot).
-        if (workflowsEnabled(this.env as never, conf.tenantId)) {
+        // The jobs builtin (agent-jobs.ts): one command in a container of its own. On the tenants that have workflows and
+        // where a job driver exists (the pilot), for every agent that may use a computer (not one whose computer is
+        // disabled, as camel.linux) unless its configuration says workflows: false. Sub-agents too: a workflow's workers
+        // build and test with it.
+        const noComputer = await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id));
+        if (!noComputer && conf.config.workflows !== false && workflowsEnabled(this.env as never, conf.tenantId)) {
           const jobs = agentJobTools({ env: this.env as never, tenant: conf.tenantId, agentId: conf.id, storage: this.ctx.storage });
           if (jobs.length) registry.install({ name: "camel.jobs", tools: jobs });
         }
         registry.install({
           name: "camel.linux",
-          tools: await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id)) ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
+          tools: noComputer ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
         });
         const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
         registry.install({

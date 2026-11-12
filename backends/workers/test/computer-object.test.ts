@@ -90,7 +90,8 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
       container.running = true;
       await Promise.race([held, new Promise(resolve => options.stop.addEventListener('abort', resolve))]);
       container.running = false;
-      return options.stop.aborted ? { ok: false, id: spec.id, code: 'stopped' } : { ok: true, id: spec.id };
+      const stream = { bytes: new Uint8Array([111, 107]), size: 2, truncated: false };
+      return options.stop.aborted ? { ok: false, id: spec.id, code: 'stopped' } : { ok: true, id: spec.id, stdout: stream, stderr: stream, outputs: {} };
     },
     ComputerMeter: class { async stopped() {} async alarm() {} },
     meterBilling: () => ({}),
@@ -103,10 +104,14 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
   assert.equal(alarm, 1000 + 10_000 + 720_000, 'the backstop alarm is set before the container starts');
   assert.equal(Object.keys((runs[0].files as { inline: object }).inline).join(), 'a');
   assert.equal(typeof (runs[0].meter as { admit?: unknown }).admit, 'function', 'every job is metered to its payer');
-  const second = await computer.runJob({ id: 'j1', payer: { tenant: 't', agent: 'a' }, command: 'x', timeoutSeconds: 10 });
-  assert.equal(second.code, 'job_running');
+  // The same job asked again while it runs (its caller was evicted): it waits for this run, and starts none.
+  const second = computer.runJob({ id: 'j1', payer: { tenant: 't', agent: 'a' }, command: 'x', timeoutSeconds: 10 });
+  // Another job on this object while one runs is refused.
+  assert.equal((await computer.runJob({ id: 'other', payer: { tenant: 't', agent: 'a' }, command: 'x', timeoutSeconds: 10 })).code, 'job_running');
   assert.equal((await computer.stopJob()).stopped, true);
   assert.equal((await first).code, 'stopped');
+  assert.equal((await second).code, 'stopped', "the second call answers the first run's result");
+  assert.equal(runs.length, 1, 'one run');
   assert.equal(data.has('job:deadline'), false);
   assert.equal((await computer.stopJob()).stopped, false);
 
@@ -115,6 +120,10 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
   while (runs.length < 2) await new Promise(resolve => setTimeout(resolve, 0));
   release();
   assert.equal((await third).ok, true);
+  // Asked again after it ended (its caller lost the answer): the result it kept, not a second run; dropped after an hour.
+  const again = await computer.runJob({ id: 'j2', payer: { tenant: 't', agent: 'a' }, command: 'x', timeoutSeconds: 10 });
+  assert.deepEqual([again.ok, again.id, runs.length], [true, 'j2', 2]);
+  assert.equal(data.get('job:result').expiresAt, now + 3_600_000);
   data.set('job:deadline', 5000);
   container.running = true;
   computer.provider = () => ({ sleepIfIdle: async () => undefined, dropStale: async () => {} });

@@ -15,7 +15,7 @@ export interface AgentJobsHost {
   tenant: string;
   agentId: string;
   /** The agent's storage: a call's result, kept so the call made again (a replay) does not run its command twice. */
-  storage: Pick<DurableObjectStorage, "get" | "put">;
+  storage: Pick<DurableObjectStorage, "get" | "put" | "list" | "delete">;
 }
 
 /** How long job_run waits; a longer job is refused (a workflow's job() can run up to JOB_LIMITS.timeoutSeconds.max). */
@@ -24,6 +24,9 @@ export const JOB_RUN_MAX_SECONDS = 900;
 export const JOB_RUN_INLINE_CHARS = 4_000;
 const DEFAULT_SECONDS = 300;
 const RESULT = "job-run:";
+/** How long a call's answer is kept for a replay of it; older ones are pruned as later calls run. */
+export const JOB_RUN_KEPT_MS = 86_400_000;
+type Kept = { answer: unknown; at: number };
 
 export const JOB_RUN_DESCRIPTION =
   "Run one shell command in a fresh Linux container and wait for it to finish. " +
@@ -78,18 +81,21 @@ export function agentJobTools(host: AgentJobsHost): ToolRegistration[] {
 
 /** job_run: the call's job, run once (a call made again answers what it answered), its result for the model. */
 export async function runJob(host: AgentJobsHost, callId: string, args: Record<string, unknown>) {
-  const kept = await host.storage.get<unknown>(RESULT + callId);
-  if (kept !== undefined) return kept;
+  const kept = await host.storage.get<Kept>(RESULT + callId);
+  if (kept !== undefined) return kept.answer;
   const found = jobDriver(host.env);
   if (!found.ok) return { ok: false, code: found.code, error: found.message };
   let spec: JobSpec;
   try { spec = await jobRunSpec(host, await agentJobId(host.agentId, callId), args); }
   catch (error) { if (error instanceof JobSpecError || (error as { status?: number }).status === 404) return { ok: false, code: "JOB_INVALID", error: (error as Error).message }; throw error; }
+  // The call's job, by its id: made again (this agent was evicted mid-call), it waits for the run already going, or gets
+  // the result that run kept, from the job's container object: one run, one charge (jobs/objects runJob).
   const result = await found.driver.run(spec);
-  // Another run of this call holds its container (the call made again while the first still runs): not a result.
-  if (!result.ok && result.code === "job_running") return { ok: false, code: "job_running", error: "This call's job is still running. Wait, then call again." };
   const answer = jobRunResult(result);
-  await host.storage.put(RESULT + callId, answer);
+  if (!result.ok && result.code === "job_running") return answer; // not this call's job (never kept as its answer)
+  const now = Date.now();
+  await host.storage.put(RESULT + callId, { answer, at: now } satisfies Kept);
+  for (const [key, old] of await host.storage.list<Kept>({ prefix: RESULT })) if (now - (old?.at ?? 0) > JOB_RUN_KEPT_MS) await host.storage.delete(key);
   return answer;
 }
 

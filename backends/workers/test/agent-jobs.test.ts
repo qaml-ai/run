@@ -25,7 +25,10 @@ function host(answer: (spec: JobSpec) => JobResult) {
   }) } };
   const value: AgentJobsHost = {
     env: env as never, tenant: "t1", agentId: "client_a",
-    storage: { get: async (key: string) => stored.get(key), put: async (key: string, data: unknown) => { stored.set(key, data); } } as never,
+    storage: {
+      get: async (key: string) => stored.get(key), put: async (key: string, data: unknown) => { stored.set(key, data); },
+      list: async ({ prefix }: { prefix: string }) => new Map([...stored].filter(([key]) => key.startsWith(prefix))), delete: async (key: string) => stored.delete(key),
+    } as never,
   };
   return { host: value, runs, stored };
 }
