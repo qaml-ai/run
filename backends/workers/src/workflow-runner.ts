@@ -43,6 +43,8 @@ export const WORKFLOW_LIMITS = Object.freeze({
   jobConcurrency: 8, maxJobConcurrency: 64,
   /** A workflow paused for its payer's credit tries again on its own: first after this long, doubling to `payerRetryMaxMs`. */
   payerRetryMs: 5 * 60_000, payerRetryMaxMs: 30 * 60_000,
+  /** A payer that stays without credit this long ends the workflow (`payer_gave_up`) instead of being tried forever. */
+  payerGiveUpMs: 7 * 86_400_000,
   /** A workflow paused for the tenant's running-workflows limit tries to open again this often. */
   capacityRetryMs: 60_000,
   /** A gate's default expiry. */
@@ -172,7 +174,7 @@ const SCHEMA = [
     status TEXT NOT NULL, pause_reason TEXT, revision INTEGER NOT NULL, step INTEGER NOT NULL, phase TEXT,
     result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL, job_concurrency INTEGER,
     throttled_until INTEGER, swept_at INTEGER, tenant TEXT, bucket TEXT, end_user TEXT, capacity_open INTEGER NOT NULL DEFAULT 0, renewed_at INTEGER,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL, code TEXT, resume_at INTEGER, resume_tries INTEGER NOT NULL DEFAULT 0)`,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL, code TEXT, resume_at INTEGER, resume_tries INTEGER NOT NULL DEFAULT 0, payer_since INTEGER)`,
   // A revision is a script and what the journal held when it began (its table): an edit, or a rerun of exact keys.
   `CREATE TABLE IF NOT EXISTS workflow_revisions (
     revision INTEGER PRIMARY KEY, kind TEXT NOT NULL, code TEXT NOT NULL, reason TEXT, at INTEGER NOT NULL, start_step INTEGER NOT NULL,
@@ -293,7 +295,7 @@ export class WorkflowRunner {
         this.sql.exec(`ALTER TABLE workflow_effects ADD COLUMN ${column} ${type}`);
     // Expand (workflow-simplification.md "Storage"): the script on the state row, and the self-resume of a paused
     // workflow. A workflow from before has its script in its current revision's row: copied once.
-    for (const [column, type] of [["code", "TEXT"], ["resume_at", "INTEGER"], ["resume_tries", "INTEGER NOT NULL DEFAULT 0"]] as const)
+    for (const [column, type] of [["code", "TEXT"], ["resume_at", "INTEGER"], ["resume_tries", "INTEGER NOT NULL DEFAULT 0"], ["payer_since", "INTEGER"]] as const)
       if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_state') WHERE name = ?", column).toArray().length)
         this.sql.exec(`ALTER TABLE workflow_state ADD COLUMN ${column} ${type}`);
     this.sql.exec("UPDATE workflow_state SET code = (SELECT code FROM workflow_revisions WHERE revision = workflow_state.revision) WHERE id = 1 AND code IS NULL");
@@ -319,6 +321,9 @@ export class WorkflowRunner {
          VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, jobConcurrency, workflow.tenant ?? null, workflow.bucket ?? null, workflow.endUser ?? null, at, at, WORKFLOW_RUNNER_VERSION, workflow.code,
       );
+      // Expand/contract: a version-1 node still reads the script from revision 1 during the rollout (until the
+      // contract deploy drops the table), so it is written here too. Version 2 reads `code`.
+      this.sql.exec("INSERT OR IGNORE INTO workflow_revisions (revision, kind, code, at, start_step, rerun_confirm_percent, confirmed) VALUES (1, 'start', ?, ?, 1, 100, 1)", workflow.code, workflow.startedAt);
       this.event("created", { concurrency, jobConcurrency, budgetUsd: workflow.budgetUsd ?? null });
     });
   }
@@ -408,6 +413,7 @@ export class WorkflowRunner {
     // later each time it is refused again, so nothing waits on a resume nobody may send.
     if (status === "paused" && reason !== null && SELF_RESUMING.has(reason)) {
       const tries = Number(this.sql.exec("SELECT resume_tries AS n FROM workflow_state WHERE id = 1").one().n);
+      if (reason === "payer_exhausted") this.sql.exec("UPDATE workflow_state SET payer_since = COALESCE(payer_since, ?) WHERE id = 1", this.now());
       const delay = reason !== "payer_exhausted" ? WORKFLOW_LIMITS.capacityRetryMs : Math.min(WORKFLOW_LIMITS.payerRetryMaxMs, WORKFLOW_LIMITS.payerRetryMs * 2 ** tries);
       this.sql.exec("UPDATE workflow_state SET resume_at = ? WHERE id = 1", this.now() + delay);
     } else this.sql.exec("UPDATE workflow_state SET resume_at = NULL WHERE id = 1");
@@ -465,12 +471,22 @@ export class WorkflowRunner {
         this.fault({ code: "edit_retired", message: "Editing was removed: start the workflow again; finished results are reused" });
       else if (state.status === "paused" && state.fault_code === "journal_version") {
         // An older node paused it for this node's own rows (the rolling deploy that brought this version): not a fault.
-        this.sql.exec("UPDATE workflow_state SET error = NULL, fault_code = NULL WHERE id = 1");
         this.goOn(false);
       } else if (state.status === "paused" && state.fault_code !== null)
         this.fault({ code: state.fault_code as WorkflowFaultCode, message: (state.error as string | null) ?? String(state.fault_code) });
       this.sql.exec("UPDATE workflow_state SET version = ? WHERE id = 1", WORKFLOW_RUNNER_VERSION);
       this.event("upgraded", { from: Number(state.version), to: WORKFLOW_RUNNER_VERSION });
+    });
+  }
+
+  /**
+   * Arm the alarm if a self-resuming pause has no time set (one a version-1 node paused, which armed nothing): any call
+   * that reaches the object (a status read) is enough for it to go on.
+   */
+  nudge(): Promise<void> {
+    return this.serial(async () => {
+      const state = this.sql.exec("SELECT status, pause_reason, resume_at FROM workflow_state WHERE id = 1").toArray()[0];
+      if (state?.status === "paused" && SELF_RESUMING.has(state.pause_reason as string) && state.resume_at === null) await this.arm();
     });
   }
 
@@ -531,6 +547,12 @@ export class WorkflowRunner {
         "UPDATE workflow_effects SET status = ?, ok = ?, result = ?, reason = ?, due_at = NULL, ended_at = ?, landed = (SELECT COALESCE(MAX(landed), 0) + 1 FROM workflow_effects) WHERE key = ? AND attempt = ?",
         outcome.ok ? "done" : "failed", outcome.ok ? 1 : 0, value, outcome.ok ? null : (outcome as { error: string }).error, at, key, attempt,
       );
+      // A run that got through after a payer's refusals (the probe goOn sent): its payer has credit again, so the
+      // effects still refused follow it now.
+      if (row.cached_from === null && this.state().payer_since !== null && (this.state().status === "running" || this.state().status === "waiting")) {
+        this.sql.exec("UPDATE workflow_state SET payer_since = NULL WHERE id = 1");
+        for (const refused of this.sql.exec("SELECT key FROM workflow_effects WHERE current = 1 AND status = 'refused' ORDER BY ord").toArray()) this.nextAttempt(refused.key as string, "reissue");
+      }
       this.refreshLiveness();
       return true;
     });
@@ -707,7 +729,9 @@ export class WorkflowRunner {
       }
       this.sql.exec("UPDATE workflow_effects SET cached_from = ?, cache_key = ?, started = 1, started_at = ? WHERE key = ? AND attempt = ? AND status = 'pending'", hit.source, found.key, this.now(), effect.key, effect.attempt);
       this.event("effect_cached", { key: effect.key, source: hit.source });
-      this.record(effect.key as string, Number(effect.attempt), { ok: true, value: hit.value }, { costUsd: 0 });
+      // No usage: a hit writes no ledger row (it cost nothing, and is no call). A real ending for the same key:attempt
+      // that still arrives (a run started before a crash) is charged in full by its own row.
+      this.record(effect.key as string, Number(effect.attempt), { ok: true, value: hit.value });
       return true;
     });
   }
@@ -965,8 +989,14 @@ export class WorkflowRunner {
 
   /** Re-issue what a stop refused or aborted, and run again (`selfResumed`: the alarm's own try, counted for its backoff). */
   private goOn(selfResumed: boolean) {
-    for (const row of this.sql.exec("SELECT key FROM workflow_effects WHERE current = 1 AND status IN ('refused', 'aborted')").toArray()) this.nextAttempt(row.key as string, "reissue");
-    this.sql.exec("UPDATE workflow_state SET resume_tries = ? WHERE id = 1", selfResumed ? Number(this.state().resume_tries) + 1 : 0);
+    const payer = selfResumed && this.state().pause_reason === "payer_exhausted";
+    // The alarm's own try after a payer refusal re-issues one refused effect, a probe: the rest follow once it is admitted
+    // (record), so a payer that stays without credit makes one new child (or job snapshot) per try, not one per effect.
+    const again = this.sql.exec(`SELECT key FROM workflow_effects WHERE current = 1 AND status IN ('refused', 'aborted') ORDER BY ord${payer ? " LIMIT 1" : ""}`).toArray();
+    for (const row of again) this.nextAttempt(row.key as string, "reissue");
+    // Leaving a stop clears what it said (a version-1 fault pause carried here had its code and message set).
+    this.sql.exec("UPDATE workflow_state SET resume_tries = ?, fault_code = NULL, error = NULL WHERE id = 1", selfResumed ? Number(this.state().resume_tries) + 1 : 0);
+    if (!selfResumed) this.sql.exec("UPDATE workflow_state SET payer_since = NULL WHERE id = 1");
     this.setStatus("running");
     this.refreshLiveness();
   }
@@ -1082,10 +1112,14 @@ export class WorkflowRunner {
         }
         // Paused for the payer's credit or the tenant's workflow limit: it tries again on its own when its time comes.
         // Refused again, it pauses again (later each time for the payer), so nothing waits on a resume nobody sends.
-        if (state.status === "paused" && state.resume_at !== null && Number(state.resume_at) <= now
-          && SELF_RESUMING.has(state.pause_reason as string)) {
+        // One paused by a version-1 node (or before self-resume) has no time set: it is due now.
+        if (state.status === "paused" && SELF_RESUMING.has(state.pause_reason as string) && (state.resume_at === null || Number(state.resume_at) <= now)) {
           await isolated("self-resume", () => {
-            this.storage.transactionSync(() => { this.goOn(true); this.event("resumed", { by: "alarm", after: state.pause_reason }); });
+            this.storage.transactionSync(() => {
+              if (state.pause_reason === "payer_exhausted" && state.payer_since !== null && now - Number(state.payer_since) >= WORKFLOW_LIMITS.payerGiveUpMs)
+                this.fault({ code: "payer_gave_up", message: `Its payer had no credit for ${Math.round(WORKFLOW_LIMITS.payerGiveUpMs / 86_400_000)} days: start it again once there is credit; finished results are reused` });
+              else { this.goOn(true); this.event("resumed", { by: "alarm", after: state.pause_reason }); }
+            });
           });
         }
         const live = state.status === "running" || state.status === "waiting";
@@ -1163,7 +1197,7 @@ export class WorkflowRunner {
     }
     if (capacity) candidates.push(Number(state.renewed_at ?? this.now()) + capacity.leaseMs / 2);
     // A pause that resumes itself (the payer's credit, the workflow limit): when it tries again.
-    if (state.status === "paused" && state.resume_at !== null) candidates.push(Number(state.resume_at));
+    if (state.status === "paused" && SELF_RESUMING.has(state.pause_reason as string)) candidates.push(state.resume_at === null ? this.now() : Number(state.resume_at));
     return candidates.length ? Math.min(...candidates) : null;
   }
 

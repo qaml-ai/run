@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkflowAgents, workflowRun, type EffectUsage, type LandedOutcome, type WorkflowChildren } from '../src/workflow-agents.ts';
+import { agentCacheSalt, WorkflowAgents, workflowRun, type EffectUsage, type LandedOutcome, type WorkflowChildren } from '../src/workflow-agents.ts';
 import type { Placement } from '../../../shared/owner.ts';
 import { withSql } from './sql-storage.ts';
 
@@ -305,4 +305,14 @@ test('a landing from inside a start never waits on the step that called the star
   await agents.recover();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(landed.length, 1, 'landed once marked, recover leaves it');
+});
+
+test("the result cache's salt for an agent() changes with the model its class resolves to under the workflow's classes, and with its type", async () => {
+  const env = { AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "a/fast", strong: "a/strong", max: "a/max" }) } as never;
+  const salt = (args: Record<string, unknown>, classes?: Record<string, string>) => agentCacheSalt(env, "t", { prompt: "p", ...args } as never, classes ? { classes: classes as never } : {});
+  assert.equal(await salt({ type: "worker" }), await salt({ type: "worker" }));
+  assert.notEqual(await salt({ type: "worker" }, { worker: "fast" }), await salt({ type: "worker" }, { worker: "max" }), "a restart with a stronger class misses");
+  assert.notEqual(await salt({ type: "worker" }), await salt({ type: "critic", output: {} }));
+  assert.notEqual(await salt({}), await salt({ type: "worker" }));
+  assert.equal(await salt({ class: "max", type: "worker" }, { worker: "fast" }), await salt({ class: "max", type: "worker" }), "the call's own class wins over the pin");
 });

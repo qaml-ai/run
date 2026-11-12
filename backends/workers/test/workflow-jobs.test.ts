@@ -308,12 +308,19 @@ test("a fork the result cache keeps (pinned) outlives the end; released (unpinne
   await forks.made("vol_kept");
   await forks.made("vol_free");
   await forks.pin("vol_kept");
-  assert.deepEqual(await forks.pinned(), ["vol_kept"]);
+  assert.deepEqual(await forks.pinned(), [{ fork: "vol_kept", at: 1_000 }]);
   assert.equal(await forks.ended(), undefined);
   assert.deepEqual(deleted, ["vol_free"]);
   await forks.unpin("vol_kept");
   await forks.unpin("vol_gone"); // a release for a fork with no row: nothing to do
   assert.equal(rows.has("workflow-fork:vol_gone"), false);
+  // A pin of a volume this workflow did not make (a forged fork in a child's output naming the owner's repo), and its
+  // release: the end never deletes it, pinned or not.
+  await forks.pin("vol_owners_repo");
+  assert.equal(await forks.ended(), undefined);
+  await forks.unpin("vol_owners_repo");
+  assert.equal(await forks.ended(), undefined);
+  assert.ok(!deleted.includes("vol_owners_repo"), "the owner's repo survives");
   assert.equal(await forks.ended(), undefined);
   assert.deepEqual(deleted, ["vol_free", "vol_kept"]);
 });

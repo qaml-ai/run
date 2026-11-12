@@ -9,14 +9,16 @@ from that result, at no cost: no sub-agent or container runs. See [Workflows](..
   `confirm_rerun` pause. `resume` takes no options; a body with any is 400.
 - **Reuse:** the owner is the agent that started it, or the account for one started with an API key. Only finished
   results are reused, never a `commit()` or `push()`. `agent(…, { repo })` and `job({ at })` are reused only while that
-  volume is unchanged since the earlier call started. `nocache: true` opts a call out. Results live 7 days from their last use, at most
+  volume is unchanged since the earlier call started. An `agent()` is also keyed by the model it resolves to (with the workflow's `classes`) and by its
+  definition's revision. Identical calls within one workflow share a result too. `nocache: true` opts a call out. Results live 7 days from their last use, at most
   2,000 and 64 MiB per owner; one over 1 MiB is not kept.
 - **Shown as:** items with `origin: "cache"` and `cachedFrom`, `counts.cached` on the summary, and the event
   `effect_cached`.
 - **A fault ends the workflow:** `key_required`, `key_conflict`, `step_budget`, a thrown error and the like now end it
   `failed`, with `fault: { code, message }`, instead of pausing it for an edit. What was still running is stopped.
-- **Pauses that end by themselves:** `payer_exhausted` tries again after 5 minutes, doubling to 30; `capacity_refused`
+- **Pauses that end by themselves:** `payer_exhausted` tries again after 5 minutes, doubling to 30, with one refused
+  effect (the rest follow once it gets through), and ends the workflow `failed` (`payer_gave_up`) after 7 days; `capacity_refused`
   tries again every minute; `journal_version` (a journal written by a newer runtime, during a deploy) is now a pause,
   not a fault, and goes on once a node that can read it runs it. `workflow_resume` still goes on at once.
 - **Workflows already running at the deploy:** one held at `confirm_rerun` ends `failed` with the fault
-  `edit_retired`; one paused for a fault ends `failed` with it. Others go on.
+  `edit_retired`; one paused for a fault ends `failed` with it. One paused by an older node for a newer journal, or for its payer or capacity, goes on.

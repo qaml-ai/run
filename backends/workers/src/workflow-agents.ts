@@ -387,6 +387,24 @@ export class WorkflowAgents implements EffectExecutor {
   }
 }
 
+/** Raised when what a cached agent() result stands for changes in a deploy (its prompts, how its child is configured). */
+export const AGENT_CACHE_EPOCH = 1;
+
+/**
+ * What decides an agent() call's answer beyond its arguments, for the result cache's key (workflow-results.ts): the
+ * model it resolves to under the workflow's `classes` (or `model`, or the default), its type's built-in definition, the
+ * named definition's id and revision, and the epoch. A restart with a stronger class, or an edited definition, misses.
+ */
+export async function agentCacheSalt(env: Env & { AGENT_WORKFLOW_CLASS_MODELS?: string }, tenant: string, args: AgentArgs,
+  workflow: { classes?: Partial<Record<AgentType, ModelClass>>; allowFastJudgment?: boolean }) {
+  const resolved = resolveAgentOptions(args, workflow);
+  const model = resolved.modelClass ? classModel(env, resolved.modelClass) : args.model ?? null;
+  const typed = resolved.type ? TYPE_DEFINITIONS[resolved.type] : undefined;
+  const definition = typeof args.definition === "string" ? await resolveDefinition(env, tenant, args.definition) : undefined;
+  const prompt = await digest(JSON.stringify(typed ?? SUBAGENT_PROMPT));
+  return JSON.stringify({ epoch: AGENT_CACHE_EPOCH, model, type: resolved.type ?? null, prompt: prompt.slice(0, 16), ...(definition ? { definition: `${definition.id}@${definition.revision}` } : {}) });
+}
+
 /**
  * The real `WorkflowChildren` for a workflow object: children are agents of the workflow's tenant, made through the
  * directory under the effect's key, placed under the workflow (their header's `owner`, `rootOwner`; recordChildParent),

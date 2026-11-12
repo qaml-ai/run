@@ -81,3 +81,30 @@ test("past its caps a scope drops the least recently hit first; a fork still nam
   await object.alarm();
   assert.deepEqual(told, [], "its fork is still named by another entry");
 });
+
+test("a workflow that got a fork from a hit holds it until it ends; drop frees an unreachable fork only when nobody holds it; a missing source counts as told", async t => {
+  const told: string[] = [];
+  let missing = false;
+  const { object, state } = cache(t, (workflow, fork) => { if (missing) throw new Error("No workflow"); told.push(`${workflow}/${fork}`); });
+  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: { fork: { volume: "vol_f" } }, fork: "vol_f" });
+  assert.ok(await object.lookup("agent", "k", "wf2"));
+  assert.equal(await object.drop("vol_f"), false, "wf2 holds it: its commit must find it");
+  assert.equal(await object.holds("vol_f"), true);
+  // The entry expires; the fork stays for wf2 until wf2 ends.
+  state.clock += RESULT_CACHE_LIMITS.ttlMs;
+  await object.alarm();
+  assert.deepEqual(told, []);
+  await object.unholdAll("wf2");
+  assert.deepEqual(told, ["wf1/vol_f"]);
+  assert.equal(await object.holds("vol_f"), false);
+
+  await object.put({ kind: "agent", key: "k2", source: "wf3:k2:1", workflow: "wf3", value: 1, fork: "vol_g" });
+  assert.equal(await object.drop("vol_g"), true);
+  assert.equal(await object.lookup("agent", "k2"), undefined, "its entries went with it");
+
+  missing = true;
+  await object.put({ kind: "agent", key: "k3", source: "wf9:k3:1", workflow: "wf9", value: 1, fork: "vol_h" });
+  state.clock += RESULT_CACHE_LIMITS.ttlMs;
+  await object.alarm();
+  assert.equal(state.alarm, null, "a release to a workflow that does not exist is not retried");
+});

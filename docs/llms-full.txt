@@ -7554,7 +7554,7 @@ A workflow that stops without ending is `paused`, and `pauseReason` says why:
 | `pauseReason` | |
 | --- | --- |
 | `user` | You paused it. Running sub-agents finish unless the pause said `children: "abort"` |
-| `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resuming re-issues it under a new attempt**. It tries again by itself (after 5 minutes, doubling to 30), or resume it now |
+| `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resuming re-issues it under a new attempt**. It tries again by itself (after 5 minutes, doubling to 30) with one of the refused effects; once that one gets through, the rest follow. Resume it to try them all now. A week without credit ends it `failed` (`payer_gave_up`) |
 | `waiting_on_gate` | A gate passed its expiry without an answer and without `onExpire: "recommended"`. It can still be answered in the inbox; resume after it is |
 | `capacity_refused` | The account is at its running-workflows limit. It tries again by itself every minute |
 | `journal_version` | Its journal was written by a newer runtime than the one that woke it (during a deploy). It goes on by itself |
@@ -7584,7 +7584,13 @@ summary's `counts.cached` counts them.
 - `agent(prompt, { repo })` and `job({ at })` are reused only while that
   volume is unchanged since the earlier call started. A reused agent's answer
   has the same `fork`, which `commit()` lands as before.
-- Pass `nocache: true` to an `agent()` or `job()` to run it again regardless.
+- An `agent()` is also keyed by the model it resolves to (its `class` or
+  `model`, or the workflow's `classes` pin) and by the named `definition`'s
+  revision: a restart with a stronger class, or an edited definition, runs
+  again.
+- Two identical calls (same arguments, different keys) in one workflow share a
+  result too: the second is answered from the first once it finished. Pass
+  `nocache: true` to an `agent()` or `job()` to run it regardless.
 - A result is kept for 7 days from the last time it was reused; an owner keeps
   at most 2,000 results and 64 MiB (the least recently used go first), and a
   result over 1 MiB is not kept.

@@ -125,7 +125,7 @@ test("abort and start again: finished agent() results with the same arguments co
   assert.equal(at(again).spent.usd, 2, "review:d and the summary (its prompt counts four) ran and were paid for; a, b, c were not");
   assert.equal(at(again).counts.cached, 3);
   assert.deepEqual(again.runner.items().items.filter(item => item.origin === "cache").map(item => [item.key, item.cachedFrom, item.costUsd, item.status]),
-    [["review:a", "wf_source:review:a:1", 0, "done"], ["review:b", "wf_source:review:b:1", 0, "done"], ["review:c", "wf_source:review:c:1", 0, "done"]]);
+    [["review:a", "wf_source:review:a:1", undefined, "done"], ["review:b", "wf_source:review:b:1", undefined, "done"], ["review:c", "wf_source:review:c:1", undefined, "done"]]);
   assert.equal([...again.world.starts.keys()].filter(key => key.startsWith("review:a")).length, 0, "no child started for a hit");
   assert.equal(again.runner.events().filter(event => event.type === "effect_cached").length, 3);
 
@@ -637,4 +637,82 @@ test("upgrade: a version-1 workflow held at confirm_rerun, or paused for a fault
   await running.run();
   assert.deepEqual([at(running).status, at(running).result], ["completed", "re: a"]);
   assert.equal(running.runner.events().filter(event => event.type === "upgraded").length, 1, "stamped once");
+});
+
+test("a payer's refusals: the alarm re-issues one effect as a probe, the rest follow once it gets through; a week without credit ends it", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.init({ code: `const r = await parallel(["a", "b", "c"], k => agent(k, { key: k })); return r.map(x => x.answer);` });
+  await h.wake();
+  let credit = false;
+  const refuse = (effect: { key: string }) => credit ? undefined : ({ refused: `no credit for ${effect.key}`, code: "payer_exhausted" as const });
+  while (h.world.queue.length) await h.next(refuse);
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "payer_exhausted"]);
+  assert.equal(h.runner.items({ status: "refused" }).items.length, 3);
+  // Still no credit: each try re-issues one, not three.
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.equal(h.world.queue.length, 1, "one probe");
+  await h.next(refuse);
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "payer_exhausted"]);
+  // Credit again: the probe gets through, and the others follow it.
+  credit = true;
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.equal(h.world.queue.length, 1);
+  await h.next();
+  assert.equal(h.world.queue.length, 2, "the two still refused were re-issued once the probe landed");
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).result], ["completed", ["re: a", "re: b", "re: c"]]);
+
+  const broke = harness();
+  broke.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await broke.wake();
+  await broke.next(() => ({ refused: "no credit", code: "payer_exhausted" }));
+  const since = broke.clock;
+  for (let guard = 0; at(broke).status === "paused" && guard < 1000; guard++) {
+    broke.clock = broke.alarmAt!;
+    await broke.runner.alarm();
+    while (broke.world.queue.length) await broke.next(() => ({ refused: "no credit", code: "payer_exhausted" }));
+  }
+  assert.deepEqual([at(broke).status, at(broke).fault?.code], ["failed", "payer_gave_up"]);
+  assert.ok(broke.clock - since >= 7 * 86_400_000 && broke.clock - since < 8 * 86_400_000);
+  assert.ok(broke.runner.items({ attempts: true, limit: 500 }).items.length < 7 * 48 + 10, "about one try per half hour, not more");
+});
+
+test("rolling deploy: a self-resuming pause a version-1 node left (no time set, a fault code on it) goes on; v2 writes revision 1 for v1 nodes", { timeout: 60_000 }, async () => {
+  for (const reason of ["journal_version", "payer_exhausted", "capacity_refused"]) {
+    const h = harness();
+    h.init({ code: `const a = await agent("a", { key: "a" }); return a.answer;` });
+    await h.wake();
+    // Stamped version 2 already (a v2 node ran it first), then a v1 node paused it: no resume_at.
+    h.store.sql.exec(`UPDATE workflow_state SET status = 'paused', pause_reason = ?, resume_at = NULL, fault_code = ?, error = ? WHERE id = 1`, reason, reason === "journal_version" ? "journal_version" : null, reason === "journal_version" ? "newer rows" : null);
+    h.alarmAt = null;
+    await h.runner.nudge();
+    assert.ok(h.alarmAt !== null, `${reason}: a read arms it`);
+    h.clock = h.alarmAt!;
+    await h.runner.alarm();
+    assert.deepEqual([at(h).status, at(h).fault], ["running", undefined], reason);
+    await h.run();
+    assert.equal(at(h).status, "completed", reason);
+  }
+  const v = harness();
+  v.init({ code: "return 1;" });
+  assert.equal((v.store.sql.exec("SELECT code FROM workflow_revisions WHERE revision = 1").toArray()[0] as { code: string }).code, "return 1;");
+});
+
+test("a cache hit writes no ledger row: no cost, no call; a late real ending for it is charged in full", { timeout: 60_000 }, async () => {
+  const results = new FakeResults();
+  const first = harness({ results });
+  first.world.cost = 1;
+  first.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await first.wake();
+  await first.run();
+  const h = harness({ results });
+  h.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await h.wake();
+  await h.run();
+  assert.deepEqual([at(h).counts.cached, at(h).spent.usd, at(h).spent.calls], [1, 0, 0]);
+  await h.runner.land("a", 1, { ok: true, value: { answer: "late" } }, { costUsd: 2 });
+  assert.equal(at(h).spent.usd, 2, "charged once, by its own ending");
+  assert.equal(at(h).result, "re: a", "and not delivered");
 });

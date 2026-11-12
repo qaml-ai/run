@@ -10,8 +10,9 @@
 // - an entry lives 7 days from its last hit; a scope keeps at most 2,000 entries and 64 MiB, the least recently hit
 //   going first;
 // - an entry whose result names a fork keeps that fork alive (the source workflow's janitor pins it, workflow-forks.ts);
-//   when the entry goes, the source workflow is told (`forkReleased`) and deletes the fork, retried from this object's
-//   alarm until it answers.
+//   so does every workflow that got it from a hit, until that workflow ends (`holders`, `unholdAll`), so its commit()
+//   finds the fork. When neither keeps it, the source workflow is told (`forkReleased`) and deletes the fork, retried
+//   from this object's alarm until it answers (a source that no longer exists counts as told).
 // The journal is the truth: a hit is journaled with its outcome, so a replay never asks again.
 import { DurableObject } from "cloudflare:workers";
 
@@ -38,6 +39,8 @@ const SCHEMA = [
     PRIMARY KEY (kind, key_hash))`,
   `CREATE INDEX IF NOT EXISTS results_lru ON results (last_hit_at)`,
   `CREATE TABLE IF NOT EXISTS releases (fork TEXT PRIMARY KEY, workflow TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL)`,
+  // Workflows that got a fork from a hit and have not ended: the fork stays while any does.
+  `CREATE TABLE IF NOT EXISTS holders (fork TEXT NOT NULL, workflow TEXT NOT NULL, source_workflow TEXT NOT NULL, PRIMARY KEY (fork, workflow))`,
 ];
 
 export async function sha256(text: string) {
@@ -62,8 +65,8 @@ export class WorkflowResults extends DurableObject<ResultCacheEnv> {
   }
   private now() { return Date.now(); }
 
-  /** The entry for `kind` and `key`, if live: its hit refreshes its life. */
-  async lookup(kind: string, key: string): Promise<CachedResult | undefined> {
+  /** The entry for `kind` and `key`, if live: its hit refreshes its life, and `holder` keeps its fork until it ends. */
+  async lookup(kind: string, key: string, holder?: string): Promise<CachedResult | undefined> {
     const hash = await sha256(key), now = this.now();
     const row = this.sql.exec<{ key: string; body: string; source: string; last_hit_at: number }>(
       "SELECT key, body, source, last_hit_at FROM results WHERE kind = ? AND key_hash = ?", kind, hash).toArray()[0];
@@ -71,6 +74,8 @@ export class WorkflowResults extends DurableObject<ResultCacheEnv> {
     if (!row || row.key !== key) return undefined;
     if (Number(row.last_hit_at) + RESULT_CACHE_LIMITS.ttlMs <= now) { await this.evict(`kind = ? AND key_hash = ?`, [kind, hash]); await this.arm(); return undefined; }
     this.sql.exec("UPDATE results SET last_hit_at = ? WHERE kind = ? AND key_hash = ?", now, kind, hash);
+    const kept = this.sql.exec<{ fork: string | null; source_workflow: string }>("SELECT fork, source_workflow FROM results WHERE kind = ? AND key_hash = ?", kind, hash).one();
+    if (holder !== undefined && kept.fork) this.sql.exec("INSERT OR IGNORE INTO holders (fork, workflow, source_workflow) VALUES (?, ?, ?)", kept.fork, holder, kept.source_workflow);
     return { value: JSON.parse(row.body), source: row.source };
   }
 
@@ -106,20 +111,54 @@ export class WorkflowResults extends DurableObject<ResultCacheEnv> {
   private async evict(where: string, params: unknown[]) {
     const gone = this.sql.exec<{ fork: string | null; source_workflow: string }>(`SELECT fork, source_workflow FROM results WHERE ${where}`, ...params).toArray();
     this.sql.exec(`DELETE FROM results WHERE ${where}`, ...params);
-    for (const row of gone) if (row.fork)
-      this.sql.exec("INSERT OR IGNORE INTO releases (fork, workflow, tries, next_at) VALUES (?, ?, 0, ?)", row.fork, row.source_workflow, this.now());
+    for (const row of gone) if (row.fork) this.queueRelease(row.fork, row.source_workflow);
+  }
+
+  /** Workflow `workflow` ended: the forks it got from hits are no longer kept for it. */
+  async unholdAll(workflow: string) {
+    const held = this.sql.exec<{ fork: string; source_workflow: string }>("SELECT fork, source_workflow FROM holders WHERE workflow = ?", workflow).toArray();
+    this.sql.exec("DELETE FROM holders WHERE workflow = ?", workflow);
+    for (const row of held) this.queueRelease(row.fork, row.source_workflow);
+    await this.release();
+    await this.arm();
+  }
+
+  /** Whether an entry or a holder still keeps `fork`. */
+  async holds(fork: string) { return this.kept(fork); }
+
+  /**
+   * The source workflow found `fork` unreachable (its base moved past the version its entries are keyed with): its
+   * entries go, unless a workflow that got it from a hit still holds it. Answers whether the fork is free.
+   */
+  async drop(fork: string) {
+    if (this.sql.exec("SELECT 1 FROM holders WHERE fork = ? LIMIT 1", fork).toArray().length) return false;
+    this.sql.exec("DELETE FROM results WHERE fork = ?", fork);
+    this.sql.exec("DELETE FROM releases WHERE fork = ?", fork);
+    await this.arm();
+    return true;
+  }
+
+  private kept(fork: string) {
+    return this.sql.exec("SELECT 1 FROM results WHERE fork = ? LIMIT 1", fork).toArray().length > 0
+      || this.sql.exec("SELECT 1 FROM holders WHERE fork = ? LIMIT 1", fork).toArray().length > 0;
+  }
+  private queueRelease(fork: string, workflow: string) {
+    this.sql.exec("INSERT OR IGNORE INTO releases (fork, workflow, tries, next_at) VALUES (?, ?, 0, ?)", fork, workflow, this.now());
   }
 
   /** Tell source workflows their forks are free; one that does not answer is told again later. */
   private async release() {
     const now = this.now();
     for (const row of this.sql.exec<{ fork: string; workflow: string; tries: number }>("SELECT fork, workflow, tries FROM releases WHERE next_at <= ?", now).toArray()) {
-      // Still kept by another entry (the same fork answered twice): not free yet.
-      if (this.sql.exec("SELECT 1 FROM results WHERE fork = ? LIMIT 1", row.fork).toArray().length) { this.sql.exec("DELETE FROM releases WHERE fork = ?", row.fork); continue; }
+      // Still kept by another entry (the same fork answered twice) or by a workflow that got it: not free yet; whatever
+      // lets go of it last queues the release again.
+      if (this.kept(row.fork)) { this.sql.exec("DELETE FROM releases WHERE fork = ?", row.fork); continue; }
       try {
         if (this.env.WORKFLOWS) await this.env.WORKFLOWS.getByName(row.workflow).forkReleased(row.fork);
         this.sql.exec("DELETE FROM releases WHERE fork = ?", row.fork);
       } catch (error) {
+        // A source workflow that does not exist (never made, or its storage gone) has nothing to delete: told.
+        if (/No workflow/.test(error instanceof Error ? error.message : String(error))) { this.sql.exec("DELETE FROM releases WHERE fork = ?", row.fork); continue; }
         const tries = Number(row.tries) + 1;
         this.sql.exec("UPDATE releases SET tries = ?, next_at = ? WHERE fork = ?", tries,
           now + Math.min(RESULT_CACHE_LIMITS.releaseRetryMaxMs, RESULT_CACHE_LIMITS.releaseRetryMs * 2 ** (tries - 1)), row.fork);
