@@ -399,6 +399,27 @@ backend or a self-host runs in another region, it runs its own camelFS (the whol
 bucket and a table); cross-region replication of lineages is a later feature (S3 replication + a DynamoDB global
 table), not a design change.
 
+**High-potential follow-up (not in v0): batched reads and an edge cache.** Hot NVMe speed exists only on hosts; an
+agent in Workers reads at S3 speed, 20–60 ms per file, one round trip each. Two additions, both cheap because
+blobs are content-addressed and immutable:
+
+1. **A batched read endpoint** on the us-west-2 API tier: `POST /files/batch { ref, paths: [...] }` or
+   `{ blobs: [sha...] }` returns many files in one response, fetched from S3 in parallel (the tier already resolves
+   the tree in one DynamoDB read). An agent that opens twenty files at the start of a turn pays one round trip
+   (~60–100 ms) instead of twenty sequential ones (~0.5–1.2 s). The tools' `read` of several paths and the
+   console's file views are the first callers; nothing changes on the storage plane.
+2. **An edge cache in Cloudflare's Cache API, keyed by blob hash**, on the Worker side of the API path: the runtime's
+   file tools look up `blob/<sha1>` at the edge before calling us-west-2, and store what comes back. A blob at a hash
+   never changes, so there is no invalidation, and the cache is shared across forks, snapshots, agents and tenants
+   whose trees name the same content (the key is the hash; the authorization to name it was checked when the tree
+   was resolved). A repeat read of a hot file is single-digit milliseconds from the edge and costs no S3 GET; a
+   swarm of children reading the same base tree pays for it once per colo. This is the Workers-side equivalent of
+   the hosts' NVMe cache. Tree and `dirty` lookups stay on the API tier, so a read is at most one edge hit plus one
+   small metadata call, and a path whose blob changed is seen immediately because its tree entry changed.
+
+Together they turn the Workers read path from "N × S3 latency" into "one metadata call plus edge hits", which is
+the number behind open question 6 in §6; v0 measures the unbatched baseline first.
+
 ### 1.7 Search: trigrams per shard, composed per snapshot
 
 Miguel: simple is better. Trigrams only: literal and regex queries with path filters; no symbol index, no semantic
