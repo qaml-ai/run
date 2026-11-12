@@ -317,14 +317,15 @@ const DefaultDepth = 64
 // One shared budget covers foreground reads, prefetch, hydration and uploads.
 type limited struct {
 	Store
-	slots chan struct{}
+	slots  chan struct{}
+	budget budget
 }
 
 func WithDepth(s Store, n int) Store {
 	if n < 1 {
 		n = DefaultDepth
 	}
-	return &limited{s, make(chan struct{}, n)}
+	return &limited{Store: s, slots: make(chan struct{}, n), budget: budget{depth: n, reserved: min(16, max(0, n-1))}}
 }
 func Depth(s Store) int {
 	if v, ok := s.(*Uploaded); ok {
@@ -345,23 +346,33 @@ func (s *limited) acquire(ctx context.Context) error {
 }
 func (s *limited) release() { <-s.slots }
 func (s *limited) Get(ctx context.Context, k string) ([]byte, error) {
-	if e := s.acquire(ctx); e != nil {
-		return nil, e
+	for {
+		child, release, e := s.budget.acquire(ctx)
+		if e != nil {
+			return nil, e
+		}
+		b, e := s.Store.Get(child, k)
+		preempted := child.Err() != nil && ctx.Err() == nil
+		release()
+		if preempted && IsBackground(ctx) {
+			continue
+		}
+		return b, e
 	}
-	defer s.release()
-	return s.Store.Get(ctx, k)
 }
 func (s *limited) Put(ctx context.Context, k string, b []byte) error {
-	if e := s.acquire(ctx); e != nil {
+	child, release, e := s.budget.acquire(ctx)
+	if e != nil {
 		return e
 	}
-	defer s.release()
-	return s.Store.Put(ctx, k, b)
+	defer release()
+	return s.Store.Put(child, k, b)
 }
 func (s *limited) Has(ctx context.Context, k string) (bool, error) {
-	if e := s.acquire(ctx); e != nil {
+	child, release, e := s.budget.acquire(ctx)
+	if e != nil {
 		return false, e
 	}
-	defer s.release()
-	return s.Store.Has(ctx, k)
+	defer release()
+	return s.Store.Has(child, k)
 }

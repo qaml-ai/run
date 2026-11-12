@@ -80,6 +80,7 @@ func host(args []string) error {
 	cold := f.String("cold", "clone", "clone or prehydrate")
 	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
 	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
+	demandSlots := f.Int("demand-slots", 16, "fetch slots reserved for demand")
 	packs := f.Bool("packs", true, "use and build cold-read packs")
 	packWindow := f.Int64("pack-window", 4<<20, "pack window bytes")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
@@ -96,7 +97,7 @@ func host(args []string) error {
 	if e := f.Parse(args); e != nil {
 		return e
 	}
-	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 || *fetchDepth < 1 {
+	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 || *fetchDepth < 1 || *demandSlots < 0 || *demandSlots >= *fetchDepth {
 		return fmt.Errorf("invalid host flags")
 	}
 	if e := os.MkdirAll(*data, 0700); e != nil {
@@ -116,6 +117,7 @@ func host(args []string) error {
 	if e != nil {
 		return e
 	}
+	store.SetDemandSlots(s, *demandSlots)
 	r, e := refs.Open(filepath.Join(*data, "refs.db"))
 	if e != nil {
 		return e
