@@ -77,6 +77,8 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const charged = await receipts();
   assert.equal(charged.length, 1, JSON.stringify(charged));
   assert.equal(charged[0].message._workersAuxiliary.provider, "camelrun-hosts");
+  // Priced as the VM the host booted: the job's shape (a default standard-1's 1 vCPU and 4 GiB) on the test pool.
+  assert.equal(charged[0].message._workersAuxiliary.model, "test-1vcpu-4096mib", JSON.stringify(charged[0].message._workersAuxiliary));
   assert.ok(done.spent.usd > 0, JSON.stringify(done.spent));
   // The slot is given back, and the host is free again.
   assert.equal((await fixture.db.query("select 1 from computer_slots where machine like 'job:%' and expires_at > $1", [Date.now()])).rowCount, 0);
@@ -163,7 +165,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const refusedEnd = await until(async () => { const value = await call(`/v1/workflows/${refused.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the workflow with no host");
   const refusedItem = ((await call(`/v1/workflows/${refused.id}/items`)).items as { key: string; reason?: string }[]).find(entry => entry.key === "after")!;
   assert.equal(refusedEnd.result, null);
-  assert.match(refusedItem.reason ?? "", /^start_failed: No job host/);
+  assert.match(refusedItem.reason ?? "", /^start_failed: No test job host/);
   assert.equal((await admin("/v1/job-hosts/host-1/allow", "POST")).status, 200);
   await until(async () => { const list = await call("/__test/job-hosts") as { name: string; revoked: number; seenAt: number }[]; const entry = list.find(item => item.name === "host-1"); return entry && !entry.revoked && entry.seenAt > Date.now() - 20_000 && entry; }, "host-1 back after it is allowed", 90_000);
   // Only an admin account revokes.
