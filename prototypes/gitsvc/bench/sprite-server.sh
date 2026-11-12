@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# On a sprite: MinIO (the S3/R2 stand-in) on loopback, the tests with replication on, then the bench; the
+# On a sprite: an S3/R2 stand-in (MinIO, else SeaweedFS) on loopback, the tests with replication on, then the bench; the
 # replicated server stays up on :8080 for SERVE_MINUTES so bench/client.ts can run from another sprite.
 set -euo pipefail
 cd "$(dirname "$0")/.."
