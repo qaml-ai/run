@@ -518,7 +518,6 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	if e != nil {
 		return out, e
 	}
-	// v0-limitation: L51
 	tree, e := repo.Import(ctx, objects.Request{Lineage: v.Lineage, ParentTree: v.Tree, Files: r.files})
 	if e != nil {
 		return out, e

@@ -142,24 +142,44 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 		}
 	}
 	blobs := map[string]Blob{}
-	// v0-limitation: L17
-	rows, e := r.DB.DB.QueryContext(ctx, "SELECT sha256,sha1,size FROM lineage_blobs WHERE lineage=?", q.Lineage)
-	if e != nil {
-		return out, e
-	}
-	for rows.Next() {
-		var b Blob
-		if e = rows.Scan(&b.SHA256, &b.SHA1, &b.Size); e != nil {
-			rows.Close()
-			return out, e
+
+	hashes := make([]string, 0, len(q.Files))
+	seen := map[string]bool{}
+	for _, f := range q.Files {
+		if !seen[f.SHA256] {
+			hashes = append(hashes, f.SHA256)
+			seen[f.SHA256] = true
 		}
-		blobs[b.SHA256] = b
 	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return out, e
+	var e error
+	for start := 0; start < len(hashes); start += 500 {
+		batch := hashes[start:min(start+500, len(hashes))]
+		args := []any{q.Lineage}
+		marks := make([]string, len(batch))
+		for i, h := range batch {
+			args = append(args, h)
+			marks[i] = "?"
+		}
+		r.observe("import-blobs")
+		rows, err := r.DB.DB.QueryContext(ctx, "SELECT sha256,sha1,size FROM lineage_blobs WHERE lineage=? AND sha256 IN ("+strings.Join(marks, ",")+")", args...)
+		if err != nil {
+			return out, err
+		}
+		for rows.Next() {
+			var b Blob
+			if err = rows.Scan(&b.SHA256, &b.SHA1, &b.Size); err != nil {
+				rows.Close()
+				return out, err
+			}
+			blobs[b.SHA256] = b
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return out, err
+		}
 	}
+
 	missing := map[string]bool{}
 	top := newNode()
 	for p, f := range q.Files {

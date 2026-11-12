@@ -278,3 +278,32 @@ func TestUploadedPersists(t *testing.T) {
 		t.Fatalf("puts=%d heads=%d", spy.puts, spy.heads)
 	}
 }
+
+func TestImportReferencedQueryBudget(t *testing.T) {
+	r := repository(t)
+	q := Request{Lineage: "l", Files: map[string]File{}}
+	for i := 0; i < 5000; i++ {
+		h := fmt.Sprintf("%064x", i)
+		sha := fmt.Sprintf("%040x", i)
+		_, e := r.DB.DB.Exec("INSERT INTO lineage_blobs VALUES(?,?,?,?,0)", "l", h, sha, i)
+		if e != nil {
+			t.Fatal(e)
+		}
+		q.Files[fmt.Sprint(i)] = File{SHA256: h}
+	}
+	count := 0
+	r.Query = func(string) { count++ }
+	if _, e := r.Import(context.Background(), q); e != nil {
+		t.Fatal(e)
+	}
+	if count != 10 {
+		t.Fatalf("queries=%d", count)
+	}
+	q.Files["missing"] = File{SHA256: strings.Repeat("f", 64)}
+	_, e := r.Import(context.Background(), q)
+	var missing *Missing
+	if !errors.As(e, &missing) || len(missing.Hashes) != 1 {
+		t.Fatal(e)
+	}
+	t.Log("5000 referenced hashes: 10 queries")
+}
