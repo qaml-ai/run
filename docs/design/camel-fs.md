@@ -733,28 +733,31 @@ question (cold mount of a root made elsewhere) cannot be faked by evicting the f
 | git edge | export of a branch as a bare repo on the API node + `git clone` over smart HTTP by stock git (read only); push, mirror and import are v1 |
 | camelRun integration | **`job()` on the hosts driver with `at: <volume>`**: the runtime's `JobDriver` sends `{ lineage, tree, token }` instead of `files`/`sync`; the host mounts a `job:<id>` fork and checkpoints it if `commit: true`; outputs come from the image. Second, if time allows: one agent's `/workspace` as a lineage on a computer VM on the host, through the `MicroVmComputer` provider's first cut (lease, sleep, wake, fork) |
 
-**The v0 daemon contract** (agreed with the runtime side, which builds a third `JobDriver`, `provider:
-"camelfs-host"`, configured by `CAMELFS_HOST_URL` and a shared bearer `CAMELFS_HOST_TOKEN` over a tunnel; no inbound
-port, no enrollment in v0):
+**The v0 contract** (agreed with the runtime side). The job itself takes the path that already exists:
+`HostsJobDriver` → `HostJob` DO → the host's WebSocket → the TypeScript `jobhost` agent on the m8id, which boots
+the VM. Nothing new runs a job over HTTP; what is new is how the tree gets there and what the host does with it.
 
-- `POST /v0/trees` `{ lineage, parentTree?, files: { path: base64 | { sha256 } } }` → `{ tree }`: an import of a
-  volume version, **once per version** (the driver caches `(seq → tree)` on the volume), incremental within a
-  lineage through a per-lineage sha256 → git-sha1 map so later versions send bytes only for files the lineage has
-  not seen. This is the bridge until volumes are lineages; it is never per job.
-- `POST /v0/jobs` `{ id, command, cwd?, env?, timeoutMs, limits, internet, at?: { lineage, tree }, files?,
-  outputs?: [glob], commit?: boolean }` → `{ status, exitCode, stdout, stderr, outputs, tree?, root?, warm,
-  timings: { placeMs, mountMs, applyMs, bootMs, runMs, checkpointMs } }`. `at` mounts a `job:<id>` fork of the tree
-  (reflink or the cold stack); no `at` is an empty image file; `files` are written into `/repo` by the guest after
-  the mount; `outputs` are read from the image after the run; `commit: true` checkpoints the fork with the §1.3
-  contract and returns its tree and root. Idempotent by `id`; a finished result is kept ten minutes for repeats.
-- `POST /v0/jobs/:id/stop` → `{ stopped }`.
+- **Runtime → `camelfsd api`** (from the Worker, through a tunnel in v0; a shared bearer; no inbound port, no
+  enrollment): `POST /v0/trees` `{ lineage, parentTree?, files: { path: { sha256, mode? } } }` → `{ tree }`, or
+  `409 { missing: [sha256] }`; `PUT /v0/blobs/:sha256?lineage=` with raw bytes, which the daemon hashes itself
+  (refusing a mismatch) and keys by git SHA-1 while remembering the sha256 per lineage. The driver sends sha256
+  references only (the Volume DO already has every file's sha256), uploads what is missing, retries. Bytes cross
+  once per lineage; a tree is imported **once per snapshot**, cached on the Volume DO as
+  `camelfs_trees(snapshot → lineage, tree)` (a job's `at` is always an immutable snapshot); the lineage is
+  `<tenant>:<volume>`. This is the bridge until volumes are lineages; it is never per job.
+- **Wire to the host:** `WireJob.camelfs = { lineage, tree, commit? }` replaces `files`/`sync` for a volume job;
+  `WireResult.camelfs = { tree?, root?, warm, mountMs, applyMs, checkpointMs }`. The runtime sends `camelfs` only to
+  a host whose `registered` message lists `features: ["camelfs"]`, so an old agent can never run a job against an
+  empty `/repo` silently.
+- **`jobhost` → `camelfsd host`** (localhost, a Unix socket): `mount { jobId, lineage, tree }` → `{ image, warm,
+  mountMs }` (a `job:<id>` fork; a reflink if the image is local, else the cold stack); the guest applies the tree
+  delta before ready (`applyMs`); `checkpoint { jobId }` → `{ tree, root, checkpointMs }`, driven through the guest
+  freeze/stream protocol of §1.3; `release { jobId }`. `outputs` are read from the image after the run, as today.
 
 **Who boots the VM.** `jobhost/` does, as it does today: the TypeScript host agent (`jobhost/agent.ts`,
 `firecracker.ts`, `network.ts`, the guest protocol) keeps the VM lifecycle, the netns pool, the egress proxy and the
-isolation suite, and serves `POST /v0/jobs` over a new local HTTP listener. `camelfsd` (Go) owns storage only:
-`mount(lineage, tree) → image path`, `fork`, `checkpoint(mount) → { tree, root }`, the `trees` import, the chunk
-cache and the lazy origin, served over a Unix socket on the host that `jobhost/` calls before boot and after the
-run (and over HTTP for `/v0/trees`). The two share nothing but the image file's path. This keeps v0 from rewriting
+isolation suite. `camelfsd` (Go) owns storage only: mount, fork, checkpoint, release, the trees and blobs import,
+the chunk cache and the lazy origin. The two share nothing but the image file's path. This keeps v0 from rewriting
 the working VM code in another language, and it is the production split too: the job-hosts plan's agent stays the
 host's control plane, camelFS is its storage service.
 
