@@ -5,13 +5,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 here=$PWD
 uname -m; nproc; free -g | head -2; df -h "$HOME" | tail -1; git --version; node --version
-bin=$HOME/.cache/gitsvc/minio
-if [ ! -x "$bin" ]; then mkdir -p "$(dirname "$bin")"; curl -fsSL -o "$bin" https://dl.min.io/server/minio/release/linux-amd64/minio; chmod +x "$bin"; fi
-data=$(mktemp -d "$HOME/gitsvc-minio-XXXX")
+# MinIO's binary downloads are gone (410); the last published image is fine for a stand-in. --network host: the
+# sprite's Docker cannot do -p for this image reliably, and loopback is what we want anyway.
 export MINIO_ROOT_USER=gitsvcbench MINIO_ROOT_PASSWORD=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
-"$bin" server "$data" --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >"$data.log" 2>&1 &
-minio=$!
-trap 'kill $minio 2>/dev/null; rm -rf "$data" "$data.log"' EXIT
+docker rm -f gitsvc-minio >/dev/null 2>&1 || true
+docker run -d --name gitsvc-minio --network host -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD \
+  minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >/dev/null
+trap 'docker rm -f gitsvc-minio >/dev/null 2>&1' EXIT
 for i in $(seq 1 60); do curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1 && break; sleep 0.5; done
 export S3_ENDPOINT=http://127.0.0.1:9000 S3_BUCKET=gitsvc S3_ACCESS_KEY_ID=$MINIO_ROOT_USER S3_SECRET_ACCESS_KEY=$MINIO_ROOT_PASSWORD
 node --experimental-strip-types --disable-warning=ExperimentalWarning -e '
