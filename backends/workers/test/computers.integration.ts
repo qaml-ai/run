@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
@@ -1082,4 +1083,28 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   const refusedItem = ((await call(`/v1/workflows/${keyStarted.id}/items`)).items as { key: string; status: string; reason?: string }[]).find(item => item.key === "j")!;
   assert.equal(refusedItem.status, "failed");
   assert.match(refusedItem.reason ?? "", /^job_payer_unavailable: /);
+});
+
+test("an agent's computer time is admitted by its tenant's monthly spend limit, as a fresh run is: a capped tenant's job is refused before it starts", {
+  timeout: 300_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const capped = "camelrun-proto-capped", cappedToken = "art_capped-tenant-fixture-token-with-32-characters";
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", entrypoint: join(process.cwd(), "test/jobs-entry.ts"),
+    tenants: [{ id: "camelrun-proto-local", token: "local-integration-only-token-with-at-least-32-characters" }, { id: capped, token: cappedToken }],
+    vars: { AGENT_TENANTS_JSON: JSON.stringify({ tenants: { [capped]: { tokenSha256: createHash("sha256").update(cappedToken).digest("hex"), maxMonthlyCost: 0 } } }) } });
+  t.after(() => fixture.stop());
+  const post = async (path: string, body: unknown) => {
+    const response = await fetch(fixture.url + path, { method: "POST", headers: { authorization: `Bearer ${cappedToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
+    const text = await response.text();
+    assert.ok(response.ok, `${path}: ${response.status} ${text}`);
+    return JSON.parse(text);
+  };
+  const agent = await post("/v1/agents", {});
+  const refused = await post("/__test/jobs", { id: "capped-1", command: "true", timeoutSeconds: 30, payer: { tenant: capped, agent: agent.id } });
+  assert.equal(refused.ok, false, JSON.stringify(refused));
+  assert.equal(refused.code, "admission_refused", JSON.stringify(refused));
+  assert.match(refused.message, /monthly spend limit of \$0\.00/);
+  assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1", [capped])).rowCount, 0, "no slot was taken");
+  assert.equal((await fixture.db.query("select 1 from pi_usage_receipts where tenant=$1", [capped])).rowCount, 0, "and nothing was charged");
 });
