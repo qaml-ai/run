@@ -79,14 +79,17 @@ test("a shard that reported no exit is a dead shard, said as such, not a failure
     "[3/3] == exit 0 in 210s on rt-pool-32; log b",
     "== the coordinator lease on rt-pool-29 was lost (not renewed for 300s); the job still holds the sprite's lock",
   ].join("\n"));
-  assert.deepEqual([log.shards, log.lost], [[2, 3], ["rt-pool-29"]]);
+  assert.deepEqual([log.shards, log.total, log.lost], [[2, 3], 3, ["rt-pool-29"]]);
   const dead = verdict("workers-integration", 1, log, 3);
   assert.equal(dead.ok, false);
   assert.deepEqual(dead.died, [1]);
   assert.equal(dead.counts + dead.note, "shard 1 died: no result (lease lost on rt-pool-29); the others 90/0");
-  assert.equal(describe([dead]), "1/1 gates failed: workers-integration shard 1 died: no result (lease lost on rt-pool-29)");
+  assert.equal(describe([dead]), "1/1 gates failed: workers-integration FAILED shard 1 died: no result (lease lost on rt-pool-29)");
   // Every shard reported: the exit decides, as before; a gate run unsharded expects none.
   assert.equal(verdict("workers-integration", 0, readLog(sharded.replace("[3/3] == exit 1", "[3/3] == exit 0").replace("[1/3]", "[2/3]")), 0).ok, true);
-  assert.deepEqual(verdict("full", 0, log, 8).died, [1, 4, 5, 6, 7, 8]);
+  // The shard count is what sprite-test printed ([i/3] here), not the gate's default, so SPRITE_SHARDS=3 is no "4–8 died".
+  assert.deepEqual(verdict("full", 0, log, 8).died, [1]);
+  // A log with no [i/n] at all (it died before printing anything) falls back to the gate's expectation.
+  assert.deepEqual(verdict("full", 1, readLog("rsync failed"), 8).died, [1, 2, 3, 4, 5, 6, 7, 8]);
   assert.equal(GATES.full.expectShards, 8);
 });
