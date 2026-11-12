@@ -9,7 +9,9 @@ export default async function* failures(source: AsyncIterable<{ type: string; da
   const failed = new Set<string>();
   for await (const event of source) {
     const { file, nesting } = event.data ?? {};
-    if (event.type === "test:fail" && nesting === 0 && file) failed.add(basename(file));
+    // A top-level failure no file is named for is written as `*`: test-shard.ts then retries nothing, so a failure it
+    // cannot attribute is never passed by retrying other files.
+    if (event.type === "test:fail" && nesting === 0) failed.add(file ? basename(file) : "*");
   }
   yield [...failed].map(file => `${file}\n`).join("");
 }
