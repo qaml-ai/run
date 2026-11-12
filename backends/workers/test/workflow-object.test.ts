@@ -132,6 +132,15 @@ test("abort and start again: finished agent() results with the same arguments co
   // The replay after a hit reads the journal, not the cache: the lookups are one per issued effect.
   assert.equal(results.lookups, 4 + 5);
 
+  // A volume the calls read changed (its version moved): nothing is found, and everything runs again.
+  results.version = 1;
+  const changed = harness({ results });
+  changed.init({ code: script(["a"], "summarize ") });
+  await changed.wake();
+  await changed.run();
+  assert.equal(at(changed).counts.cached, undefined);
+  results.version = 0;
+
   // nocache: true runs again; a lookup that throws is a miss and the effect runs.
   const fresh = harness({ results });
   fresh.init({ code: `const a = await agent("review a", { key: "review:a", nocache: true }); return a.answer;` });

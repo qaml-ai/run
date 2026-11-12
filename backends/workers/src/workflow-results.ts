@@ -3,8 +3,9 @@
 // earlier workflow of the same owner finished are answered from here instead of running (and being paid for) again.
 //
 // One object per scope (`tenant:owner-agent`, or `tenant:api` for workflows started with an API key), SQLite:
-// - an entry is keyed by its kind and its canonical arguments; an agent() on a fork of `repo` adds the repo's head
-//   version when its fork was made, so a result never outlives the tree it was made on (cacheKey);
+// - an entry is keyed by its kind and its canonical arguments; an effect that reads a volume (an agent() on a fork of
+//   `repo`, a job() `at` one) adds that volume's version when it was looked up, just before it started, so a result is
+//   only found again while the volume is unchanged since (cacheKey; workflow-runner.ts `ResultCache`);
 // - only ok results land here (the runner offers them: workflow-runner.ts `ResultCache`), at most 1 MiB each;
 // - an entry lives 7 days from its last hit; a scope keeps at most 2,000 entries and 64 MiB, the least recently hit
 //   going first;
@@ -46,7 +47,7 @@ export async function sha256(text: string) {
 
 /**
  * The cache key of an effect: its canonical arguments (the VM's JSON, which already keys an effect's identity), and for
- * an agent() on a fork of `repo` the repo's head version its fork starts from (`baseSeq`).
+ * one that reads a volume that volume's version before it started (`baseSeq`).
  */
 export function cacheKey(args: string, baseSeq?: number) {
   return baseSeq === undefined ? args : `${args}\n@base:${baseSeq}`;

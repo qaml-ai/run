@@ -7581,9 +7581,9 @@ summary's `counts.cached` counts them.
 - Only results that finished (`done`) are reused: never a failed, refused or
   aborted one, and never a `commit()` or `push()` (they change a volume or a
   branch).
-- `agent(prompt, { repo })` is reused only while the volume is still at the
-  version the earlier sub-agent's fork started from; its answer has the same
-  `fork`, which `commit()` lands as before.
+- `agent(prompt, { repo })` and `job({ at })` are reused only while that
+  volume is unchanged since the earlier call started. A reused agent's answer
+  has the same `fork`, which `commit()` lands as before.
 - Pass `nocache: true` to an `agent()` or `job()` to run it again regardless.
 - A result is kept for 7 days from the last time it was reused; an owner keeps
   at most 2,000 results and 64 MiB (the least recently used go first), and a

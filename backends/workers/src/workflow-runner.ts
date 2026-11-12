@@ -187,7 +187,7 @@ const SCHEMA = [
     revision INTEGER NOT NULL, kind TEXT NOT NULL, args TEXT NOT NULL, options TEXT, phase TEXT, status TEXT NOT NULL,
     started INTEGER NOT NULL DEFAULT 0, started_at INTEGER, due_at INTEGER, lease TEXT, cancel_sent INTEGER NOT NULL DEFAULT 0, cancel_attempts INTEGER NOT NULL DEFAULT 0, cancel_next_at INTEGER, start_failures INTEGER NOT NULL DEFAULT 0, ok INTEGER, result TEXT, reason TEXT, landed INTEGER UNIQUE,
     issued_step INTEGER NOT NULL, delivered_step INTEGER, seen_revision INTEGER NOT NULL, issued_at INTEGER NOT NULL, ended_at INTEGER,
-    version INTEGER NOT NULL, cached_from TEXT, PRIMARY KEY (key, attempt))`,
+    version INTEGER NOT NULL, cached_from TEXT, cache_key TEXT, PRIMARY KEY (key, attempt))`,
   `CREATE INDEX IF NOT EXISTS workflow_effects_current ON workflow_effects (current, status, kind)`,
   `CREATE INDEX IF NOT EXISTS workflow_effects_landed ON workflow_effects (delivered_step, landed)`,
   `CREATE INDEX IF NOT EXISTS workflow_effects_due ON workflow_effects (due_at) WHERE due_at IS NOT NULL`,
@@ -242,10 +242,15 @@ export interface CapacitySeam {
  * An optimization only: a lookup that throws is a miss, and the journal (never the cache) is the truth once landed.
  */
 export interface ResultCache {
-  /** The stored result for an effect of `kind` with canonical `args`, or undefined. */
-  lookup(kind: string, args: string): Promise<{ value: unknown; source: string } | undefined>;
-  /** A cacheable effect landed `ok` with `value`: offered to the cache (best effort, in the background). */
-  landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown }): void;
+  /**
+   * The cache key of an effect of `kind` with canonical `args` as it is about to start (for one that reads a volume,
+   * with that volume's version now), and the result stored under it, if any. The key is kept on the effect: its result
+   * is offered under the key it was looked up with, never one made after it ran, so a result is only ever found again
+   * on the version it could have read (a volume's version only grows: a key made before a change is never made again).
+   */
+  lookup(kind: string, args: string): Promise<{ key: string; hit?: { value: unknown; source: string } }>;
+  /** A cacheable effect landed `ok` with `value`: offered to the cache under `cacheKey` (best effort, in the background). */
+  landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown; cacheKey: string }): void;
 }
 /** Kinds whose `ok` results are reused (`commit`, `push` change a volume or a branch: effects, not results). */
 const CACHEABLE = new Set(["agent", "job"]);
@@ -283,7 +288,7 @@ export class WorkflowRunner {
     if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_state') WHERE name = 'job_concurrency'").toArray().length)
       this.sql.exec("ALTER TABLE workflow_state ADD COLUMN job_concurrency INTEGER");
     // A workflow made before cancels were retried with backoff had neither column (no attempts yet, none scheduled).
-    for (const [column, type] of [["cancel_attempts", "INTEGER NOT NULL DEFAULT 0"], ["cancel_next_at", "INTEGER"], ["cached_from", "TEXT"]] as const)
+    for (const [column, type] of [["cancel_attempts", "INTEGER NOT NULL DEFAULT 0"], ["cancel_next_at", "INTEGER"], ["cached_from", "TEXT"], ["cache_key", "TEXT"]] as const)
       if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_effects') WHERE name = ?", column).toArray().length)
         this.sql.exec(`ALTER TABLE workflow_effects ADD COLUMN ${column} ${type}`);
     // Expand (workflow-simplification.md "Storage"): the script on the state row, and the self-resume of a paused
@@ -484,7 +489,7 @@ export class WorkflowRunner {
    * is still charged; only its delivery to the script is skipped. A refusal's `spent` is its cost when no usage comes.
    */
   private record(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) {
-    const row = this.sql.exec("SELECT status, current, kind, args, cached_from FROM workflow_effects WHERE key = ? AND attempt = ?", key, attempt).toArray()[0];
+    const row = this.sql.exec("SELECT status, current, kind, args, cached_from, cache_key FROM workflow_effects WHERE key = ? AND attempt = ?", key, attempt).toArray()[0];
     if (!row) throw new WorkflowError(`Effect ${key}:${attempt} is not in the journal`, 404);
     const at = this.now();
     const cost = usage ?? ("refused" in outcome && outcome.spent !== undefined ? { costUsd: outcome.spent } : undefined);
@@ -529,9 +534,10 @@ export class WorkflowRunner {
       this.refreshLiveness();
       return true;
     });
-    // A run's ok result (not one the cache gave) is offered to the owner's cache, after its landing committed.
-    if (delivered && "ok" in outcome && outcome.ok && "value" in outcome && row.cached_from === null && cacheable(row.kind as string, row.args as string))
-      this.options.results?.landed({ key, attempt, kind: row.kind as string, args: row.args as string, value: outcome.value });
+    // A run's ok result (not one the cache gave) is offered to the owner's cache under the key it was looked up with,
+    // after its landing committed. No key (its lookup failed, or it started before the cache): not offered.
+    if (delivered && "ok" in outcome && outcome.ok && "value" in outcome && row.cached_from === null && typeof row.cache_key === "string" && cacheable(row.kind as string, row.args as string))
+      this.options.results?.landed({ key, attempt, kind: row.kind as string, args: row.args as string, value: outcome.value, cacheKey: row.cache_key });
   }
 
   /**
@@ -684,19 +690,26 @@ export class WorkflowRunner {
    * transaction, charged nothing. A lookup that fails is a miss (logged): the effect runs.
    */
   private async fromCache(effect: Row): Promise<boolean> {
-    let hit: { value: unknown; source: string } | undefined;
-    try { hit = await this.options.results!.lookup(effect.kind as string, effect.args as string); }
+    let found: Awaited<ReturnType<ResultCache["lookup"]>>;
+    try { found = await this.options.results!.lookup(effect.kind as string, effect.args as string); }
     catch (error) {
+      // A miss, never a fault; with no key its result is not offered either.
+      this.sql.exec("UPDATE workflow_effects SET cache_key = NULL WHERE key = ? AND attempt = ? AND status = 'pending'", effect.key, effect.attempt);
       console.error(JSON.stringify({ type: "workflow_cache_failed", key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
       return false;
     }
-    if (!hit) return false;
-    this.storage.transactionSync(() => {
-      this.sql.exec("UPDATE workflow_effects SET cached_from = ?, started = 1, started_at = ? WHERE key = ? AND attempt = ? AND status = 'pending'", hit.source, this.now(), effect.key, effect.attempt);
+    const hit = found.hit;
+    // One transaction: marked from the cache, and landed. A crash leaves it unstarted (looked up again) or landed.
+    return this.storage.transactionSync(() => {
+      if (!hit) {
+        this.sql.exec("UPDATE workflow_effects SET cache_key = ? WHERE key = ? AND attempt = ? AND status = 'pending'", found.key, effect.key, effect.attempt);
+        return false;
+      }
+      this.sql.exec("UPDATE workflow_effects SET cached_from = ?, cache_key = ?, started = 1, started_at = ? WHERE key = ? AND attempt = ? AND status = 'pending'", hit.source, found.key, this.now(), effect.key, effect.attempt);
       this.event("effect_cached", { key: effect.key, source: hit.source });
+      this.record(effect.key as string, Number(effect.attempt), { ok: true, value: hit.value }, { costUsd: 0 });
+      return true;
     });
-    this.record(effect.key as string, Number(effect.attempt), { ok: true, value: hit.value }, { costUsd: 0 });
-    return true;
   }
 
   private started(row: Row): StartedEffect {

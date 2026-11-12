@@ -263,19 +263,27 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
 
   /**
    * The owner's result cache, as the runner uses it (workflow-results.ts). Scoped to the owner agent (`tenant:agent`), or
-   * `tenant:api` for a workflow started with an API key. An agent() on a fork of `repo` is keyed with the repo's head
-   * version (at lookup: now; at landing: what its fork started from), so a result never outlives its tree. A landing
-   * whose result names a fork pins that fork here first (the end does not delete it while an entry keeps it).
+   * `tenant:api` for a workflow started with an API key. An effect that reads a volume (an agent() on a fork of `repo`,
+   * a job() `at` one) is keyed with that volume's version at lookup, which the runner keeps for its landing (see
+   * `ResultCache`). A landing whose result names a fork pins that fork here first: the end does not delete it while an
+   * entry keeps it.
    */
   private resultCache(env: WorkflowEnv, name: string): ResultCache {
     const scope = () => { const owner = this.settings().owner; return `${this.runner.identity().tenant}:${owner?.kind === "agent" ? owner.id : "api"}`; };
-    const repoOf = (args: string) => { try { const repo = (JSON.parse(args) as { repo?: unknown }).repo; return typeof repo === "string" ? repo : undefined; } catch { return undefined; } };
+    const read = (kind: string, args: string) => {
+      try {
+        const parsed = JSON.parse(args) as { repo?: unknown; at?: unknown };
+        const source = kind === "agent" ? parsed.repo : kind === "job" ? parsed.at : undefined;
+        return typeof source === "string" ? source : undefined;
+      } catch { return undefined; }
+    };
     const cache = () => env.WORKFLOW_RESULTS!.getByName(scope());
     return {
       lookup: async (kind, args) => {
-        const repo = kind === "agent" ? repoOf(args) : undefined;
-        const key = cacheKey(args, repo === undefined ? undefined : (await (await volume(env, this.runner.identity().tenant!, repo)).info()).seq);
-        return await cache().lookup(kind, key);
+        const source = read(kind, args);
+        const key = cacheKey(args, source === undefined ? undefined : (await (await volume(env, this.runner.identity().tenant!, source)).info()).seq);
+        const hit = await cache().lookup(kind, key);
+        return { key, ...(hit ? { hit } : {}) };
       },
       landed: effect => {
         const fork = effect.kind === "agent" ? (effect.value as { fork?: { volume?: unknown } } | null)?.fork?.volume : undefined;
@@ -284,15 +292,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         const release = async () => { if (typeof fork === "string") { await this.forks.unpin(fork); await this.ended(); } };
         this.ctx.waitUntil((async () => {
           await pinned;
-          const repo = effect.kind === "agent" ? repoOf(effect.args) : undefined;
-          let baseSeq: number | undefined;
-          if (repo !== undefined) {
-            // The version of the repo its fork started from: the key a later lookup on the same tree finds.
-            if (typeof fork !== "string") return;
-            baseSeq = (await (await volume(env, this.runner.identity().tenant!, fork)).info()).origin?.seq;
-            if (baseSeq === undefined) return release();
-          }
-          const { stored } = await cache().put({ kind: effect.kind, key: cacheKey(effect.args, baseSeq), source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(typeof fork === "string" ? { fork } : {}) });
+          const { stored } = await cache().put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(typeof fork === "string" ? { fork } : {}) });
           if (!stored) await release();
         })().catch(async error => {
           console.error(JSON.stringify({ type: "workflow_cache_put_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));

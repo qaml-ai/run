@@ -8,8 +8,8 @@ from that result, at no cost: no sub-agent or container runs. See [Workflows](..
   `revision`, items' `revision` and `seenRevision`, the SDKs' `edit` and `diff`, the `workflow_edit` tool, and the
   `confirm_rerun` pause. `resume` takes no options; a body with any is 400.
 - **Reuse:** the owner is the agent that started it, or the account for one started with an API key. Only finished
-  results are reused, never a `commit()` or `push()`. `agent(…, { repo })` is reused only while the volume is still at
-  the version its fork started from. `nocache: true` opts a call out. Results live 7 days from their last use, at most
+  results are reused, never a `commit()` or `push()`. `agent(…, { repo })` and `job({ at })` are reused only while that
+  volume is unchanged since the earlier call started. `nocache: true` opts a call out. Results live 7 days from their last use, at most
   2,000 and 64 MiB per owner; one over 1 MiB is not kept.
 - **Shown as:** items with `origin: "cache"` and `cachedFrom`, `counts.cached` on the summary, and the event
   `effect_cached`.

@@ -163,13 +163,17 @@ export class FakeResults implements ResultCache {
   readonly entries = new Map<string, { value: unknown; source: string }>();
   lookups = 0;
   failLookup?: string;
+  /** What a volume-reading effect's key adds (the volume's version, in the object): set to move the "version". */
+  version = 0;
   async lookup(kind: string, args: string) {
     this.lookups++;
     if (this.failLookup) throw new Error(this.failLookup);
-    return this.entries.get(`${kind}\n${args}`);
+    const key = `${kind}\n${args}\n@${this.version}`;
+    const hit = this.entries.get(key);
+    return { key, ...(hit ? { hit } : {}) };
   }
-  landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown }) {
-    const at = `${effect.kind}\n${effect.args}`;
+  landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown; cacheKey: string }) {
+    const at = effect.cacheKey;
     if (!this.entries.has(at)) this.entries.set(at, { value: effect.value, source: `wf_source:${effect.key}:${effect.attempt}` });
   }
 }
