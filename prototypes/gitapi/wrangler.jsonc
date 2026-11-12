@@ -1,0 +1,11 @@
+{
+  // Prototype only: `npx wrangler@4 dev` with a LOCAL R2 bucket and local Durable Objects. Never deployed.
+  "name": "proto-gitapi",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "limits": { "cpu_ms": 300000 },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "proto-gitapi" }],
+  "durable_objects": { "bindings": [{ "name": "REPOS", "class_name": "GitApiRepo" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GitApiRepo"] }]
+}

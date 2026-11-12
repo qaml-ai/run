@@ -1,0 +1,11 @@
+{
+  "name": "proto-gitapi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "bench": "node --experimental-strip-types --disable-warning=ExperimentalWarning bench/bench.ts",
+    "node": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/node.ts",
+    "dev": "npx wrangler@4 dev --port 8794"
+  }
+}
