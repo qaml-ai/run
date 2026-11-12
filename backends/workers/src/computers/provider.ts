@@ -196,6 +196,33 @@ const FILE_LIMIT = 1024 * 1024;
 
 /** How long a killed command's output streams have to end before the command is given up. */
 const KILL_GRACE_MS = 10_000;
+/** A stream's last `maxBytes` (a ring of chunks): what a command wrote last, the rest dropped and said so. */
+export async function readTail(stream: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+  if (!stream) return { text: "", truncated: false };
+  const reader = stream.getReader(), chunks: Uint8Array[] = [];
+  let size = 0, truncated = false;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+      while (size > maxBytes) {
+        truncated = true;
+        const over = size - maxBytes, first = chunks[0]!;
+        if (first.byteLength <= over) { chunks.shift(); size -= first.byteLength; }
+        else { chunks[0] = first.subarray(over); size -= over; }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  // A cut may land inside a UTF-8 sequence: the decoder replaces its start, which is fine for a tail.
+  return { text: new TextDecoder().decode(bytes), truncated };
+}
 export async function readBounded(
   stream: ReadableStream<Uint8Array> | null,
   maxBytes: number,
@@ -452,6 +479,7 @@ export class ContainerProvider implements ComputerProvider {
     signal: AbortSignal,
     limit = OUTPUT_LIMIT,
     stdin?: string,
+    whole = false,
   ) {
     await this.ready();
     signal.throwIfAborted();
@@ -465,15 +493,18 @@ export class ContainerProvider implements ComputerProvider {
       stdout: "pipe",
       stderr: "pipe",
     });
-    let timedOut = false;
-    const kill = () => { timedOut = true; try { process.kill(9); } catch { /* already gone */ } };
-    // A killed process whose streams never end is given up after a grace, as a timeout.
-    let giveUp: ReturnType<typeof setTimeout> | undefined;
-    const abandoned = new Promise<never>((_, reject) => signal.addEventListener("abort", () => {
-      giveUp = setTimeout(() => reject(new Error("Computer command timed out")), KILL_GRACE_MS);
-    }, { once: true }));
+    // At the deadline: kill it, and give up on it if its streams have not ended after a grace. A deadline that passed
+    // while exec was still starting the process kills it as soon as it is there.
+    let timedOut = false, giveUp: ReturnType<typeof setTimeout> | undefined, abandon!: (error: Error) => void;
+    const abandoned = new Promise<never>((_, reject) => { abandon = reject; });
     abandoned.catch(() => {});
-    signal.addEventListener("abort", kill, { once: true });
+    const kill = () => {
+      timedOut = true;
+      try { process.kill(9); } catch { /* already gone */ }
+      giveUp = setTimeout(() => abandon(new Error("Computer command timed out")), KILL_GRACE_MS);
+    };
+    if (signal.aborted) kill();
+    else signal.addEventListener("abort", kill, { once: true });
     try {
       const input = async () => {
         if (stdin === undefined) return;
@@ -486,13 +517,18 @@ export class ContainerProvider implements ComputerProvider {
           writer.releaseLock();
         }
       };
+      // A command's streams keep their last bytes past the limit (truncated); a file read (`whole`) must fit.
+      const read = (stream: ReadableStream<Uint8Array> | null, max: number) => whole ? readBounded(stream, max).then(text => ({ text, truncated: false })) : readTail(stream, max);
       const [stdout, stderr, exitCode] = await Promise.race([Promise.all([
-        readBounded(process.stdout, limit),
-        readBounded(process.stderr, OUTPUT_LIMIT),
+        read(process.stdout, limit),
+        read(process.stderr, OUTPUT_LIMIT),
         process.exitCode,
         input(),
       ]), abandoned]);
-      return { stdout, stderr, exitCode, ...(timedOut ? { timedOut: true as const } : {}) };
+      return {
+        stdout: stdout.text, stderr: stderr.text, exitCode,
+        ...(stdout.truncated || stderr.truncated ? { truncated: true as const } : {}), ...(timedOut ? { timedOut: true as const } : {}),
+      };
     } catch (error) {
       process.kill(9);
       throw error;
@@ -520,6 +556,8 @@ export class ContainerProvider implements ComputerProvider {
       ],
       signal,
       FILE_LIMIT,
+      undefined,
+      true,
     );
     if (result.exitCode) throw new Error("Computer file read failed");
     return result.stdout;
@@ -535,6 +573,7 @@ export class ContainerProvider implements ComputerProvider {
       signal,
       OUTPUT_LIMIT,
       content,
+      true,
     );
     if (result.exitCode) throw new Error("Computer file write failed");
   }
@@ -542,6 +581,9 @@ export class ContainerProvider implements ComputerProvider {
     const result = await this.run(
       ["node", "/usr/local/lib/camelrun-parse.mjs", path, format],
       signal,
+      OUTPUT_LIMIT,
+      undefined,
+      true,
     );
     if (result.exitCode)
       throw new Error(

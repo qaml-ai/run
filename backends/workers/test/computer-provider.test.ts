@@ -185,17 +185,12 @@ test("the deployment's variables select image and instance; unknown sizes fall b
   assert.deepEqual(computerSpec({ COMPUTER_INSTANCE: "basic" }), { image: "workspace", instance: "lite" });
 });
 
-test("native output is bounded and the process is killed on overflow", async () => {
+test("native output keeps its last 64 KiB, said truncated; a file read past its limit still fails", async () => {
   const f = fixture();
   f.bomb();
-  await assert.rejects(
-    operate(new ContainerProvider(f.container, f.store), {
-      op: "exec",
-      argv: ["yes"],
-    }),
-    /output limit/,
-  );
-  assert.equal(f.killed(), true);
+  const result = await operate(new ContainerProvider(f.container, f.store), { op: "exec", argv: ["yes"] }) as { stdout: string; truncated?: boolean };
+  assert.equal(result.stdout.length, 65536);
+  assert.equal(result.truncated, true);
 });
 
 test("invalid paths, snapshot names and commands are refused before starting a VM", async () => {
@@ -218,5 +213,19 @@ test("a command past its time is killed and answers timedOut with what it wrote,
   const alive = setInterval(() => {}, 10);
   const result = await operate(new ContainerProvider(f.container, f.store), { op: "exec", command: "echo ok; sleep 60" }, AbortSignal.timeout(50)).finally(() => clearInterval(alive)) as { stdout: string; exitCode: number; timedOut?: boolean };
   assert.deepEqual([result.stdout, result.exitCode, result.timedOut], ["ok", 137, true]);
+  assert.equal(f.killed(), true);
+});
+
+test("a deadline that passes while exec is still starting the process kills it as soon as it is there", async () => {
+  const f = fixture();
+  f.hang();
+  const provider = new ContainerProvider(f.container, f.store);
+  await operate(provider, { op: "exec", argv: ["true"] });
+  // The process's start takes longer than the whole deadline.
+  const exec = f.container.exec.bind(f.container);
+  f.container.exec = async (argv: string[], options?: ContainerExecOptions) => { await new Promise(resolve => setTimeout(resolve, 30)); return exec(argv, options); };
+  const alive = setInterval(() => {}, 10);
+  const result = await operate(provider, { op: "exec", command: "echo ok; sleep 60" }, AbortSignal.timeout(1)).finally(() => clearInterval(alive)) as { exitCode: number; timedOut?: boolean };
+  assert.deepEqual([result.exitCode, result.timedOut], [137, true]);
   assert.equal(f.killed(), true);
 });
