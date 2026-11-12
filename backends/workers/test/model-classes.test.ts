@@ -312,6 +312,27 @@ test("Gemini refusing reasoning another provider produced: the same member again
   const stripped = assistant(run.calls[2]!).content;
   assert.deepEqual(stripped, [{ type: "thinking", thinking: "look at a.go" }, { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.go" } }], "signatures gone, the thought's text and the call kept");
   assert.ok(logs.some(line => line.includes('"model_reasoning_replay_dropped"')));
+  // The same agent's later calls drop it up front: no refused request first.
+  {
+    const { calls, provider } = scriptedProvider(["first answer after a refusal", "second answer"]);
+    const scripted = [REFUSED.error];
+    const refusing = { ...provider, stream: (model: Model<Api>, context: unknown, options: any) => {
+      if (scripted.length) {
+        const output = createAssistantMessageEventStream();
+        const error = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage: usage(), timestamp: Date.now(), content: [], stopReason: "error", errorMessage: scripted.shift() } as AssistantMessage;
+        queueMicrotask(() => { output.push({ type: "error", reason: "error", error }); output.end(error); });
+        return output;
+      }
+      return provider.stream(model, context, options);
+    } };
+    const configured = withSettings({ ...refusing, streamSimple: refusing.stream } as never, { settings: async () => ({ model: "openrouter/google/gemini-4-carbon" }) as never, credentials: async () => ({ apiKey: "fixture" }) }, {} as never);
+    const ask = async () => { const events = []; for await (const event of configured.stream(resolveModel("openrouter/google/gemini-4-carbon"), { messages: [{ role: "user", content: "hi", timestamp: 1 }, ...history] } as never, {})) events.push(event); return events.at(-1) as any; };
+    assert.equal((await ask()).type, "done");
+    assert.equal((await ask()).type, "done");
+    assert.equal(calls.length, 2, "the refusal, then one call each");
+    for (const entry of calls) assert.ok(entry.context.messages.find((message: any) => message.role === "assistant").content.every((block: any) => !block.thinkingSignature && !block.thoughtSignature));
+    assert.equal(logs.filter(line => line.includes('"model_reasoning_replay_dropped"')).length, 2, "the first call's drop above, and this agent's one; none for its second call");
+  }
   // Refused again after the drop: a failure of the member like any other, never a loop.
   const twice = await call("camelrun/strong", [REFUSED, REFUSED, REFUSED, REFUSED], {}, { AGENT_FLEX_WAIT_SECONDS: "0" }, history);
   assert.equal(twice.last.type, "error");

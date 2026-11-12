@@ -51,6 +51,13 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
   };
   const outputRequest = new OutputRequest();
   const replayRetry = new ModelReplayRetry(hooks.onRetryEvent);
+  /**
+   * Once Gemini has refused reasoning another provider signed (gemini-reasoning.ts), every later call of this agent drops
+   * the history's encrypted reasoning up front: the history keeps those signatures until compaction, and asking with them
+   * first would cost one refused request (a whole prompt's upload) on every call. Per agent instance, like a model's
+   * images being omitted; a restart asks once more.
+   */
+  let dropReasoning = false;
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     const callKind = modelCallKind(context);
@@ -138,6 +145,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
     const output = createAssistantMessageEventStream();
     void (async () => {
       try {
+        if (dropReasoning && model.provider === "openrouter") context = withoutReplayedReasoning(context);
         let prepared = await prepare(model, context, options);
         replayRetry.begin(prepared.config.requestId ?? String(context.messages.findLast(message => message.role === "user")?.timestamp ?? 0));
         // A call asked on flex that found no flex capacity: its wait (`flex`), and, once it moved to the default tier, from what.
@@ -167,9 +175,10 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           }
           // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same member again, once, with the
           // history's encrypted reasoning dropped, for this call and every member after it. Never a member failure.
-          if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" && !reasoningDropped &&
+          if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" && !reasoningDropped && !dropReasoning &&
               refusedForeignReasoning(event.error.errorMessage) && !options?.signal?.aborted) {
             reasoningDropped = true;
+            dropReasoning = true;
             context = withoutReplayedReasoning(context);
             console.log(JSON.stringify({ type: "model_reasoning_replay_dropped", tenant: env.AGENT_TENANT ?? null, model: `${prepared.model.provider}/${prepared.model.id}`,
               tier: (prepared.model as { serviceTier?: string }).serviceTier ?? null }));

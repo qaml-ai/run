@@ -178,6 +178,12 @@ export function createAgentHost(hostIO: HostIO) {
   let documents = false;
   /** A provider refused an intact image: omit every image for the rest of this turn only. */
   let omitImages = false;
+  /**
+   * Gemini refused reasoning another provider signed (gemini-reasoning.ts): every later call of this agent drops the
+   * history's encrypted reasoning up front. The history keeps those signatures until compaction, and asking with them first
+   * would cost one refused request (a whole prompt's upload) on every call. For this host's life; a restart asks once more.
+   */
+  let dropReasoning = false;
   /** This run's failed model requests Pi made again (`retryDecision`), and whether the latest answer came from a retry. */
   let retries = { failed: 0, pending: 0 };
   /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
@@ -990,11 +996,14 @@ export function createAgentHost(hostIO: HostIO) {
         streamFn: (model, context, options) => {
           const asked = (on: typeof model, toolChoice = outputChoice(on)) => ({ ...options, ...callSettings(on, config, options?.reasoning), ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
           const messages = context.messages, previous = messages.findLast(message => message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") as AssistantMessage | undefined;
+          // The history as this call sends it: without encrypted reasoning once Gemini refused another provider's, for
+          // every member of the chain after that refusal too.
+          const history = (on: typeof model) => dropReasoning && on.provider === "openrouter" ? withoutReplayedReasoning(context) : context;
           return routedCall(messages.at(-1)?.role === "toolResult" ? "continuation" : "user", on => {
             // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same model again, once, with
             // the history's encrypted reasoning dropped, before Pi sees the refusal.
-            const once = stream(on, context, asked(on));
-            const first = on.provider !== "openrouter" ? once : withModelFallback(once, () => stream(on, withoutReplayedReasoning(context), asked(on)), {
+            const once = stream(on, history(on), asked(on));
+            const first = on.provider !== "openrouter" || dropReasoning ? once : withModelFallback(once, () => { dropReasoning = true; return stream(on, history(on), asked(on)); }, {
               moves: (message, partial) => refusedForeignReasoning(message.errorMessage) && !partial?.content.length,
               blocked: () => console.log(JSON.stringify({ type: "model_reasoning_replay_dropped", tenant: config.tenant, agent: config.id, model: `${on.provider}/${on.id}`, tier: (on as { serviceTier?: string }).serviceTier ?? null })),
               unavailable: error => console.error(JSON.stringify({ type: "model_reasoning_replay_failed", agent: config.id, model: `${on.provider}/${on.id}`, error: safeError(error) })),
@@ -1003,7 +1012,7 @@ export function createAgentHost(hostIO: HostIO) {
             const fallback = config.contentFilterFallback;
             if (!fallback || fallback.from !== `${on.provider}/${on.id}`) return first;
             const to = `${fallback.model.provider}/${fallback.model.id}`;
-            return withModelFallback(first, () => viaFallback(fallback.model, context, asked(fallback.model)), {
+            return withModelFallback(first, () => viaFallback(fallback.model, history(fallback.model), asked(fallback.model)), {
               blocked: () => recordModelFallback({ tenant: config.tenant, agent: config.id, from: fallback.from, to, reason: "content_filter" }),
               unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: fallback.from, fallback: to, error: safeError(error) })),
               aborted: () => !!options?.signal?.aborted,
