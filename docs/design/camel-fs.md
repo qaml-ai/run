@@ -402,14 +402,15 @@ table), not a design change.
 ### 1.7 Search: trigrams per shard, composed per snapshot
 
 Miguel: simple is better. Trigrams only: literal and regex queries with path filters; no symbol index, no semantic
-or embedding search. Shape, as built and measured on `proto/search` (`prototypes/search/DESIGN.md`, `RESULTS.md`,
-on an 8-vCPU sprite; an NVMe rerun is coming):
+or embedding search. Shape, as built and measured on `proto/search` (`prototypes/search/DESIGN.md`, `RESULTS.md`
+at `234d693f`, on the v0 host: `m8id.4xlarge`, NVMe, real S3):
 
 - A **shard** is an immutable, content-addressed set of blobs (~64 MB of content in a base build; its id is the
   hash of its sorted blob ids) holding document-level trigram postings (which blobs contain each trigram, not
   positions) over ASCII-folded text. The prototype also keeps a copy of the blob bytes in the shard for
   verification; in camelFS the verification bytes come from the host's blob cache, so a shard is postings only.
-- A **snapshot's index** is its list of shard ids plus its path table (path → blob id, keyed by the tree); on open a
+- A **snapshot's index** is its list of shard ids plus its path table (path → blob id, keyed by the tree; in
+  camelFS the tree itself is the path table, which is most of the prototype's per-checkpoint cost); on open a
   **live mask** hides blobs in shared shards that this tree no longer references. A **commit** puts the blobs its
   parent's shards lack into one delta shard; the new manifest is the parent's shards (fully dead ones dropped) plus
   the delta. A **fork** is a ref to the same tree: no index work. A **merge** is the union of both parents' shards.
@@ -428,23 +429,25 @@ Measured (Kubernetes 283 MB of source; Linux 1.68 GB):
 
 | | Kubernetes | Linux |
 |---|---:|---:|
-| trigram index as a share of source | 13 % (37.5 MB) | 11 % (178 MB) |
-| full build | 4.0 s | 22.6 s (~110 core-seconds per GB) |
-| incremental per commit: 1 file / 100 files | 4.5 ms / 36 ms | 3.6 ms / 38 ms (a 0.5–0.7 MB delta shard) |
-| fork | 0.2–0.3 ms | 0.2–0.3 ms |
-| compaction of small shards into one | 21 → 1 in 156 ms | 28 → 1 in 1.8 s |
-| query p50 / p99, warm: literal | 21 / 57 ms | 16 / 38 ms |
-| regex | 10 / 79 ms | 32 / 506 ms (the p99 is a full-scan regex with no literal, 460 ms) |
-| path-filtered | 2.4 / 12 ms | 9 / 11 ms |
-| ripgrep warm, same queries | 145–490 ms | 320–1,010 ms |
-| `git grep` on the commit | 570–760 ms | 1.2–2.0 s |
-| cold: index in a new process, page cache dropped / ripgrep cold | 1.9 s / 8.0 s | 1.8 s / 15.8 s |
-| ripgrep over a cold FUSE lazy mount at 20 ms per blob: lazy / 32 prefetchers / warm cache | 72 s / 13.5 s / 2.5 s | 262 s / 60 s / 13.9 s |
+| trigram index as a share of source | 13 % | 11 % |
+| full build | 1.2 s | 2.6 s |
+| checkpoint, 1 file: total / of which the delta shard | 26 ms / 1.4 ms | 52 ms / 1.7 ms (the rest is the flat path table, which the tree replaces) |
+| checkpoint, 100 files | 48 ms | 100 ms |
+| fork | 0.1 ms | 0.1 ms |
+| query p50 / p99, warm: literal | 11 / 25 ms | 9.4 / 14 ms |
+| regex | 5.3 / 34 ms | 23 / 228 ms (27 ms p99 without the one full-scan query) |
+| path-filtered | 1.4 / 5 ms | 6.2 / 7.5 ms |
+| ripgrep warm, same queries | 32–51 ms | 89–365 ms |
+| `git grep` on the commit | 0.35 s | 0.93–1.4 s |
+| first query with the page cache dropped / ripgrep cold | 72 ms / 0.39 s | 165 ms / 1.3 s |
+| shards cold from S3 (`aws s3 sync`), then the first query | 2.3 s, then 73 ms | 4.6 s, then 165 ms |
+| ripgrep over a cold FUSE lazy mount at 20 ms per blob: lazy / 32 prefetchers | 72 s (sprite) / 12 s | 173 s / 47 s |
 
-So a query is 10–30 ms p50 at any size with no slowdown at 45 shards, 10–30× faster than warm ripgrep and two
-orders faster than anything cold; indexing a turn's commit costs single-digit milliseconds per file; a fork costs
-nothing. The last row is also the clearest statement of why grep over a lazy mount is the wrong design: the index
-is the only thing that makes "instant over any snapshot" true.
+So a query is 5–25 ms p50 at any size with no slowdown at 23+ delta shards, 3–10× warm ripgrep on NVMe and two
+orders faster than anything cold; the index work of a turn's checkpoint is 1–2 ms for a file and ~50–100 ms for a
+hundred, the shards of a cold lineage come from S3 in seconds, and a fork costs nothing. The last row is also the
+clearest statement of why grep over a lazy mount is the wrong design: the index is the only thing that makes
+"instant over any snapshot" true.
 
 Why not one index per lineage, mutated in place: forks and snapshots would each need a copy or a versioned index;
 content-addressed shards make a fork free and an old snapshot searchable forever.
@@ -459,7 +462,8 @@ Three things the prototype makes explicit, and the design's answer to each:
 - **A cap of 2,000 matching files** per query, as the prototype has; the answer says it was capped, and the agent
   narrows with a path filter.
 - **Compaction** runs on the host or API node that made the delta, when a snapshot's delta shards pass a count
-  (the prototype: 21–28 small shards fold into one in 0.16–1.8 s), and is itself just a new content-addressed shard
+  (the sprite run: 21–28 small shards fold into one in 0.16–1.8 s; no query slowdown with 23+ delta shards on the
+  v0 host), and is itself just a new content-addressed shard
   the next manifest names; old shards die by reachability.
 
 Targets, now measured rather than guessed: ≤ 50 ms p50 warm at any tree size; cold ≤ 2 s plus shard GETs; index
@@ -966,4 +970,4 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 | Is Artifacts the answer? | no: 1 GB/repo, 32 MiB/file, 33× price, no server-side writes | `artifacts-volumes` |
 | Is a stateful git fleet the answer? | not as truth: 6/10, a fleet to page on; as a cache at the edge, yes | `gitsvc` |
 | Does lazy demand reading pay on cold full reads? | only with deep prefetch: a real S3 GET is 30–39 ms and 4-deep prefetch serialized 2,438 of them into 40 s; background hydration is the cold default | `proto/block` on the v0 host |
-| Search over snapshots? | trigrams per content-addressed shard: 11–13 % of source, 10–30 ms p50 warm, ~4 ms per changed file to index, forks free; 10–30× warm ripgrep | `proto/search` |
+| Search over snapshots? | trigrams per content-addressed shard: 11–13 % of source, 5–25 ms p50 warm on the v0 host, 1–2 ms of shard work per changed file, cold shards from S3 in 2–5 s, forks free; 3–10× warm ripgrep on NVMe, two orders over anything cold | `proto/search` on `m8id.4xlarge` |
