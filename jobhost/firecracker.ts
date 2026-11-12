@@ -1,11 +1,11 @@
 // The real launcher (docs/design/job-hosts-plan.md, slices 1 and 6): one Firecracker microVM per job, in Nitro Sandboxes
-// direct mode, on a host built from infra/job-hosts/image. For each job it:
-// - clones the base image (cp --reflink=always on the host's XFS) and grows it to the job's disk;
+// direct mode, on a host built from infra/job-hosts/image. Plain KVM is supported with `kvm`. For each job it:
+// - clones the base image (cp --reflink=always by default, or auto) and grows it to the job's disk;
 // - makes the job slot's tap (network.ts), and writes the egress proxy's policy for the slot's guest address;
 // - writes the Firecracker config (vm.ts firecrackerConfig) and starts `firecracker --no-api`;
 // - connects to the guest agent over vsock (Firecracker's UDS: "CONNECT <port>"), the same NDJSON channel as fake mode.
 // destroy() kills Firecracker and removes the clone, the tap, the policy and the socket. Booting needs a Nitro host
-// (or plain KVM for everything but the enclave block); nothing here has run on one yet.
+// or plain KVM with `kvm`; nothing here has run on one yet.
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { connect, type Socket } from "node:net";
 import { open, rm, writeFile } from "node:fs/promises";
@@ -22,13 +22,17 @@ export const BOOT_DEADLINE_MS = 30_000;
 
 export type FirecrackerOptions = {
   /** The pinned binary, the guest kernel and initrd, and the base root image (infra/job-hosts/image). */
-  firecracker: string; kernel: string; initrd: string; image: string;
+  firecracker: string; kernel: string; initrd?: string; image: string;
   /** Where clones, configs, sockets and logs go (the host's NVMe). */
   work: string;
   /** Where the egress proxy reads job policies. */
   policyDir: string;
   /** Build hosts: dedicated vCPUs (no overcommit). */
   build?: boolean;
+  /** Plain KVM (no Nitro Sandboxes): no enclave block. */
+  kvm?: boolean;
+  /** How the job's root disk is cloned: "always" (XFS reflink, the default) or "auto" (a copy where reflinks are missing). */
+  reflink?: "always" | "auto";
   /** Opt in only for guest images whose init mounts the repo disk. */
   mountsRepo?: boolean;
   /** Names a job with internet may reach (DEFAULT_EGRESS), and the runtime's own host, always allowed then. */
@@ -135,7 +139,7 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
       };
       try {
         // The job's disk: a reflink clone of the base image (1.5 ms on XFS), grown to its size.
-        await exec("cp", ["--reflink=always", options.image, disk]);
+        await exec("cp", [`--reflink=${options.reflink ?? "always"}`, options.image, disk]);
         await exec("truncate", ["-s", `${shape.diskMiB}M`, disk]);
         await exec("resize2fs", ["-f", disk]);
         await tapUp(address, exec);
@@ -143,8 +147,8 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
         // entry it allows, and the host's rules give it no other way out).
         const allow = internet ? [...(options.egress ?? DEFAULT_EGRESS), ...(options.runtimeHost ? [options.runtimeHost] : [])] : [];
         await writePolicy(options.policyDir, address.guestIp, { job: id, allow });
-        const base = firecrackerConfig({ id, kernel: options.kernel, initrd: options.initrd, disk, vsockPath: vsock, tap: address.tap, mac: address.mac }, shape, options.build, boot.repo);
-        base["boot-source"].boot_args += ` root=/dev/vda rw ${guestNetArgs(address, internet)}`;
+        const base = firecrackerConfig({ id, kernel: options.kernel, initrd: options.initrd, disk, vsockPath: vsock, tap: address.tap, mac: address.mac }, shape, options.build, boot.repo, options.kvm);
+        base["boot-source"].boot_args += ` root=/dev/vda rw init=/sbin/camel-init ${guestNetArgs(address, internet)}`;
         if (boot.repo) base["boot-source"].boot_args += " camel.repo=/dev/vdb";
         await writeFile(config, JSON.stringify(base));
         await rm(vsock, { force: true });

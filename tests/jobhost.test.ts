@@ -51,7 +51,30 @@ test("a path stays inside its root; the Firecracker config is direct mode with t
   assert.equal(config.drives[0]!.io_engine, "Async");
   assert.deepEqual(config.enclave, { direct_mode: true, cpu_overcommit: true });
   assert.match(config["boot-source"].boot_args, /\bquiet\b/);
-  assert.equal(firecrackerConfig({ id: "j", kernel: "", initrd: "", disk: "", vsockPath: "", tap: "", mac: "" }, { vcpus: 14, memoryMiB: 98304, diskMiB: 1 }, true).enclave.cpu_overcommit, false, "a build sandbox has dedicated vCPUs");
+  assert.deepEqual(firecrackerConfig({ id: "j", kernel: "", initrd: "", disk: "", vsockPath: "", tap: "", mac: "" }, { vcpus: 14, memoryMiB: 98304, diskMiB: 1 }, true).enclave, { direct_mode: true, cpu_overcommit: false }, "a build sandbox has dedicated vCPUs");
+});
+
+test("plain KVM omits only the enclave block; an absent or empty initrd omits initrd_path", () => {
+  const job = { id: "j", kernel: "/k", initrd: "/i", disk: "/d", vsockPath: "/v.sock", tap: "tap0", mac: "02:00:00:00:00:01" };
+  const shape = { vcpus: 2, memoryMiB: 4096, diskMiB: 8192 };
+  for (const build of [false, true]) {
+    for (const repo of [undefined, "/repo"]) {
+      const { enclave, ...rest } = firecrackerConfig(job, shape, build, repo);
+      assert.deepEqual(enclave, { direct_mode: true, cpu_overcommit: !build });
+      const kvm = firecrackerConfig(job, shape, build, repo, true);
+      assert.equal(Object.hasOwn(kvm, "enclave"), false);
+      assert.deepEqual(kvm, rest);
+      for (const initrd of [undefined, ""]) {
+        for (const plainKvm of [false, true]) {
+          const { initrd_path, ...boot } = firecrackerConfig(job, shape, build, repo, plainKvm)["boot-source"];
+          assert.equal(initrd_path, "/i");
+          const config = firecrackerConfig({ ...job, initrd }, shape, build, repo, plainKvm);
+          assert.equal(Object.hasOwn(config["boot-source"], "initrd_path"), false);
+          assert.deepEqual(config["boot-source"], boot);
+        }
+      }
+    }
+  }
 });
 
 test("frames are bounded: a frame over its size, or more messages open than allowed, is refused", () => {
