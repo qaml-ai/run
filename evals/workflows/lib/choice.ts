@@ -15,10 +15,14 @@ export interface ChoicePrompt { id: string; expect: "split" | "alone"; why: stri
 type Template = "module" | "doc" | "table" | "contract" | "sql" | "source" | "readme";
 export interface ChoiceResult {
   schema: 1; label: string; id: string; expect: "split" | "alone"; mode: "dry" | "workflow"; guidance: string | null; run: number;
-  /** split: started a workflow (workflow mode) or at least two sub-agents in its first turn (dry mode); alone: neither before its turn ended or the cap. */
+  /** split: started a workflow that runs sub-agents (workflow mode) or at least two sub-agents in its first turn (dry mode); alone: neither before its turn ended or the cap. */
   decision: "split" | "alone" | "error";
   correct: boolean;
-  subagents: number; workflowStarted: boolean; firstTools: string[]; costUsd: number; wallMs: number; capped: boolean; error?: string;
+  subagents: number; workflowStarted: boolean;
+  /** Workflow mode: what the first workflow's script runs: sub-agents, only jobs (commands, not a split), or neither. */
+  workflowKind?: "agents" | "jobs" | "other";
+  /** Workflow mode: workflows it started that ran no sub-agent (jobs, probes) before it decided. */
+  otherWorkflows?: number; firstTools: string[]; costUsd: number; wallMs: number; capped: boolean; error?: string;
 }
 
 export const PROMPTS_FILE = join(dirname(fileURLToPath(import.meta.url)), "..", "choice", "prompts.json");
@@ -59,7 +63,8 @@ export async function choose(runtime: Runtime, prompt: ChoicePrompt, options: Ch
     const classes: Classes = { orchestrator: options.orchestrator, worker: CLASS_MODELS.fast, critic: CLASS_MODELS.strong, lead: CLASS_MODELS.strong };
     const types = await runtime.defineTypes(prefix, volumeId, classes);
     for (const key of Object.values(types.keys)) cleanups.push(() => runtime.client.deleteDefinition(key));
-    let subagents = 0, workflowStarted = false, decided: (() => void) | undefined;
+    let subagents = 0, workflowStarted = false, decided: (() => void) | undefined, workflowKind: ChoiceResult["workflowKind"], otherWorkflows = 0;
+    const workflowIds = new Set<string>();
     const firstTools: string[] = [];
     const decision = new Promise<void>(resolve => { decided = resolve; });
     const agent = await runtime.client.createAgent({
@@ -70,7 +75,17 @@ export async function choose(runtime: Runtime, prompt: ChoicePrompt, options: Ch
         if (event.type === "tool_execution_start") {
           if (firstTools.length < 12) firstTools.push(event.toolName);
           appendFileSync(log, JSON.stringify({ call: event.toolName, args: JSON.stringify(event.args).slice(0, 1500) }) + "\n");
-          if (event.toolName === "workflow_start" || (event.toolName === "codemode" && /\bworkflow_start\b/.test(JSON.stringify(event.args)))) { workflowStarted = true; decided?.(); }
+          if (event.toolName === "workflow_start" || (event.toolName === "codemode" && /\bworkflow_start\b/.test(JSON.stringify(event.args)))) {
+            // Only a workflow that runs sub-agents splits the work. Agents also start workflows to run a command (jobs)
+            // or to look around (a script that lists its globals): those are recorded, and the run goes on.
+            const script = JSON.stringify(event.args);
+            const kind = /\bagent\s*\(/.test(script) ? "agents" : /\bjob\s*\(/.test(script) ? "jobs" : "other";
+            otherWorkflows += kind === "agents" ? 0 : 1;
+            if (kind === "agents") { workflowStarted = true; workflowKind = kind; decided?.(); }
+            else workflowKind ??= kind;
+          }
+        } else if (event.type === "tool_execution_end" && (event.toolName === "workflow_start" || event.toolName === "codemode")) {
+          for (const match of JSON.stringify(event.result).matchAll(/\bwf_[A-Za-z0-9_-]{6,}/g)) workflowIds.add(match[0]);
         } else if (event.type === "subagent_start") {
           subagents++;
           appendFileSync(log, JSON.stringify({ subagentStart: event.agentId, name: event.name }) + "\n");
@@ -82,17 +97,18 @@ export async function choose(runtime: Runtime, prompt: ChoicePrompt, options: Ch
     } as Parameters<AgentRuntime["createAgent"]>[0]);
     cleanups.push(() => agent.destroy());
     let capped = false;
-    const turn = agent.prompt(prompt.prompt, { timeoutMs: options.capMs }).then(() => undefined, error => { appendFileSync(log, JSON.stringify({ promptError: String(error) }) + "\n"); });
+    // In workflow mode the agent is told its /workspace's volume id, which agent({ repo }) and job({ at }) take, as in the task evals.
+    const text = options.mode === "workflow" ? `${prompt.prompt}\n\nYour /workspace is volume ${volumeId}.` : prompt.prompt;
+    const turn = agent.prompt(text, { timeoutMs: options.capMs }).then(() => undefined, error => { appendFileSync(log, JSON.stringify({ promptError: String(error) }) + "\n"); });
     const cap = new Promise<void>(resolve => setTimeout(() => { capped = true; resolve(); }, options.capMs));
     await Promise.race([turn, decision, cap]);
     const split = workflowStarted || (options.mode === "dry" && subagents >= 2);
+    // The id comes back with workflow_start's answer, which lands after the call began: wait for it, then stop both.
+    for (let wait = 0; workflowStarted && wait < 15 && !workflowIds.size; wait++) await new Promise(resolve => setTimeout(resolve, 1_000));
     await agent.abort({ children: "abort" }).catch(() => {});
-    if (workflowStarted) {
-      const { body } = await runtime.api(`/v1/workflows?owner=${encodeURIComponent(agent.id)}`);
-      for (const workflow of body.workflows ?? body.data ?? []) await runtime.api(`/v1/workflows/${workflow.id}/abort`, { method: "POST", body: {} });
-    }
+    for (const id of workflowIds) await runtime.abortWorkflow("public", id);
     const costUsd = (await runtime.usage(agent.id, types.ids)).totalUsd;
-    return { ...base, decision: split ? "split" : "alone", correct: (split ? "split" : "alone") === prompt.expect, subagents, workflowStarted, firstTools, costUsd, wallMs: Date.now() - started, capped: capped && !split };
+    return { ...base, decision: split ? "split" : "alone", correct: (split ? "split" : "alone") === prompt.expect, subagents, workflowStarted, ...(workflowKind ? { workflowKind } : {}), ...(otherWorkflows ? { otherWorkflows } : {}), firstTools, costUsd, wallMs: Date.now() - started, capped: capped && !split };
   } catch (error) {
     return { ...base, decision: "error", correct: false, subagents: 0, workflowStarted: false, firstTools: [], costUsd: 0, wallMs: Date.now() - started, capped: false, error: String((error as Error).stack ?? error).slice(0, 1000) };
   } finally {
@@ -103,15 +119,15 @@ export async function choose(runtime: Runtime, prompt: ChoicePrompt, options: Ch
 export function choiceSummary(results: ChoiceResult[]): string {
   const lines = ["# Choice eval", "", "Does the agent split the work when it should, and work alone when it should not?", ""];
   const groups = Map.groupBy(results, result => `${result.mode}\t${result.guidance ?? "runtime wording"}`);
-  lines.push("| mode | wording | runs | accuracy | split when it should | split when it should not | errors | cost |", "|---|---|---|---|---|---|---|---|");
+  lines.push("| mode | wording | runs | accuracy | split when it should | split when it should not | delegated instead (workflow mode) | errors | cost |", "|---|---|---|---|---|---|---|---|---|");
   for (const [key, runs] of groups) {
     const [mode, wording] = key.split("\t");
     const scored = runs.filter(run => run.decision !== "error");
     const should = scored.filter(run => run.expect === "split"), shouldNot = scored.filter(run => run.expect === "alone");
     const rate = (list: ChoiceResult[]) => list.length ? `${list.filter(run => run.decision === "split").length}/${list.length}` : "—";
-    lines.push(`| ${mode} | ${wording} | ${runs.length} | ${scored.length ? Math.round(100 * scored.filter(run => run.correct).length / scored.length) : 0}% | ${rate(should)} | ${rate(shouldNot)} | ${runs.length - scored.length} | $${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(3)} |`);
+    lines.push(`| ${mode} | ${wording} | ${runs.length} | ${scored.length ? Math.round(100 * scored.filter(run => run.correct).length / scored.length) : 0}% | ${rate(should)} | ${rate(shouldNot)} | ${mode === "workflow" ? `${scored.filter(run => run.decision === "alone" && run.subagents >= 2).length}/${scored.length}` : "—"} | ${runs.length - scored.length} | $${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(3)} |`);
   }
   lines.push("", "| prompt | expect | mode | wording | decision | sub-agents | first tools | cost | wall |", "|---|---|---|---|---|---|---|---|---|");
-  for (const run of results) lines.push(`| ${run.id} | ${run.expect} | ${run.mode} | ${run.guidance ?? "runtime"} | ${run.decision}${run.correct ? "" : " (wrong)"}${run.capped ? " (cap)" : ""} | ${run.subagents} | ${run.firstTools.slice(0, 5).join(", ")} | $${run.costUsd.toFixed(3)} | ${Math.round(run.wallMs / 1000)} s |`);
+  for (const run of results) lines.push(`| ${run.id} | ${run.expect} | ${run.mode} | ${run.guidance ?? "runtime"} | ${run.decision}${run.otherWorkflows ? ` (+${run.otherWorkflows} job/probe workflows)` : ""}${run.correct ? "" : " (wrong)"}${run.capped ? " (cap)" : ""} | ${run.subagents} | ${run.firstTools.slice(0, 5).join(", ")} | $${run.costUsd.toFixed(3)} | ${Math.round(run.wallMs / 1000)} s |`);
   return lines.join("\n") + "\n";
 }
