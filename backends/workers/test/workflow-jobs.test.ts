@@ -218,7 +218,7 @@ test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", as
   const step = { warm: true, mountMs: 2, applyMs: 3, checkpointMs: 4, checkpoint };
   for (const fields of [{ commit: "c".repeat(40), tree: "b".repeat(40), root: "r" }, { checkpointError: "checkpoint failed" }]) {
     const written: string[] = [];
-    const env = { CAMELFS_API_URL: "http://camelfs.invalid", CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
+    const env = { CAMELFS: { fetch: async () => { throw new Error("unexpected camelFS import"); } }, CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
       initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
       write: async (path: string) => { written.push(path); return { path }; },
     }) } } as unknown as WorkflowJobsEnv;
@@ -252,7 +252,7 @@ test("WorkflowJobs: commit without camelFS, or refused by the driver, lands as t
   await without.executor.start(effect("nofs", { command: "true", timeoutSeconds: 5, at: "vol_source", commit: true }));
   await without.settled();
   assert.deepEqual(without.landed[0]![2], { ok: false, error: "job() commit needs camelFS job hosts, which this deployment does not have" });
-  const env = { CAMELFS_API_URL: "http://camelfs.invalid", CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
+  const env = { CAMELFS: { fetch: async () => { throw new Error("unexpected camelFS import"); } }, CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
     initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
   }) } } as unknown as WorkflowJobsEnv;
   const sql = { query: async (text: string) => {
