@@ -4,9 +4,12 @@ On the Workers backend, a workflow's `gate({ title | question, body?, options?, 
 onExpire? })` now works. Until now it failed at once. It creates a decision in the account's inbox (`GET /v1/inbox`),
 owned by the workflow (`owner_kind = 'workflow'`, `agent` = the workflow's id), and the workflow waits durably. Answer
 it with `POST /v1/inbox/answers`, naming the workflow's id as `agent`. The answer lands on the gate exactly once, and
-`gate()` returns the chosen label (or the person's own words); a decline returns `null`.
+`gate()` returns the chosen label (or the person's own words); a decline returns `null`. Who may answer is as for the
+owner agent's own decisions: its `humanInput.approvers` (and its `subject`), else, for a workflow started with an API
+key, anyone the account vouches for. The item expires at the gate's deadline.
 
-At its expiry (the workflow's own alarm), a gate with `onExpire: "recommended"` takes its recommendation, and its item
+At its expiry (the workflow's own alarm), the item is closed to answers first; an answer that came in before that wins
+and is what the script gets. Otherwise a gate with `onExpire: "recommended"` takes its recommendation, and its item
 leaves the inbox as expired. Any other gate pauses the workflow (`waiting_on_gate`), and its item stays answerable for
 30 more days: the answer lands, and a resume goes on. Aborting or editing the gate away withdraws the item. The agent
 that owns the workflow gets a `<workflow_notification>` with event `gate_opened` (the gate's key, item id, title and

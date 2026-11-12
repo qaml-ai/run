@@ -16,8 +16,8 @@ import type { EffectExecutor, EffectOutcome, StartedEffect } from "./workflow-ru
 export const gateInputId = (workflow: string, key: string, attempt: number) =>
   `inp_${createHash("sha256").update(JSON.stringify(["workflow-gate", workflow, key, attempt])).digest("hex").slice(0, 32)}`;
 const ROW = "workflow-gate:";
-/** An open gate: its item, its effect, and whether its expiry takes the recommendation (else the workflow pauses on it). */
-type Open = { id: string; key: string; attempt: number; takesRecommendation?: boolean };
+/** An open gate: its item and its effect. */
+type Open = { id: string; key: string; attempt: number };
 /** A gate whose expiry paused its workflow stays answerable this much longer: the answer lands and a resume goes on. */
 export const GATE_PAUSED_ANSWERABLE_MS = 30 * 86_400_000;
 
@@ -56,6 +56,16 @@ export function gateDetail(args: Record<string, unknown>) {
   });
 }
 
+/**
+ * When a gate's item expires: the runner's deadline for the gate, so the inbox and the workflow agree on it (the runner
+ * decides at that deadline, and moves a paused gate's item on). A gate with no deadline left (its expiry paused the
+ * workflow) stays answerable for GATE_PAUSED_ANSWERABLE_MS.
+ */
+function deadline(effect: StartedEffect, now = Date.now()) {
+  if (effect.dueAt !== undefined) return effect.dueAt;
+  return now + GATE_PAUSED_ANSWERABLE_MS;
+}
+
 export class WorkflowGates implements EffectExecutor {
   private readonly host: WorkflowGatesHost;
   constructor(host: WorkflowGatesHost) { this.host = host; }
@@ -72,11 +82,8 @@ export class WorkflowGates implements EffectExecutor {
       this.host.defer(() => this.host.land(effect.key, effect.attempt, { ok: false, error: `gate(): ${message}` }));
       return;
     }
-    const options = (effect.options ?? {}) as { onExpire?: string };
-    const takesRecommendation = options.onExpire === "recommended" && (effect.args as { recommended?: unknown }).recommended !== undefined;
-    await this.host.storage.put(ROW + id, { id, key: effect.key, attempt: effect.attempt, takesRecommendation } satisfies Open);
-    const seconds = Number((effect.options as { expiresInSeconds?: number } | undefined)?.expiresInSeconds ?? 604_800);
-    this.host.defer(() => this.open(id, effect, detail, Date.now() + seconds * 1000));
+    await this.host.storage.put(ROW + id, { id, key: effect.key, attempt: effect.attempt } satisfies Open);
+    this.host.defer(() => this.open(id, effect, detail, deadline(effect)));
   }
 
   /** Write the item, once: a second write of the same id (a restart) changes nothing. */
@@ -162,7 +169,7 @@ export class WorkflowGates implements EffectExecutor {
     const input = await this.inputs().get(id);
     if (!input && open) {
       // Its item was never written (a crash before it was): write it now.
-      this.host.defer(() => this.open(id, effect, gateDetail(effect.args as Record<string, unknown>), Date.now() + Number((effect.options as { expiresInSeconds?: number } | undefined)?.expiresInSeconds ?? 604_800) * 1000));
+      this.host.defer(() => this.open(id, effect, gateDetail(effect.args as Record<string, unknown>), deadline(effect)));
       return undefined;
     }
     if (!input || input.state === "pending") return undefined;
@@ -184,20 +191,36 @@ export class WorkflowGates implements EffectExecutor {
   }
 
   /**
-   * Gates at their expiry (the object's alarm, after the runner decided; within a minute, as the item was written just
-   * after the effect): one that took its recommendation leaves the inbox, settled as expired; one that paused the
-   * workflow stays answerable, its expiry moved on (GATE_PAUSED_ANSWERABLE_MS), so the answer lands and a resume goes on.
+   * The gate at its deadline (the runner's alarm, before it decides). The item is closed to answers first, compare-
+   * and-set: one that takes the recommendation is settled as expired with it (the runner then lands it); one that
+   * pauses the workflow stays answerable, its expiry moved on (GATE_PAUSED_ANSWERABLE_MS), so a later answer lands and
+   * a resume goes on. An answer that settled the item first wins: its outcome is returned, and the runner lands that.
    */
-  async expired(now = Date.now()) {
-    for (const [, open] of await this.host.storage.list<Open>({ prefix: ROW })) {
-      const input = await this.inputs().get(open.id);
-      if (!input || input.state !== "pending" || input.expiresAt > now + 60_000) continue;
-      if (open.takesRecommendation) {
-        await this.inputs().settle(open.id, expiryAnswer({ ...input, detail: { ...input.detail, applyRecommendationOnExpiry: true } }, now), "expired");
-        await this.host.storage.delete(ROW + open.id);
-      } else {
-        await this.host.db().query("update agent_inputs set expires_at = $2, version = version + 1, updated_at = now() where id = $1 and state = 'pending'", [open.id, now + GATE_PAUSED_ANSWERABLE_MS]);
+  async expire(effect: StartedEffect, take: boolean, now = Date.now()): Promise<{ outcome: EffectOutcome } | undefined> {
+    const id = gateInputId(this.host.workflow.id, effect.key, effect.attempt);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const input = await this.inputs().get(id);
+      if (input && input.state !== "pending") {
+        await this.host.storage.delete(ROW + id);
+        const system = (input.answer?.by as Responder | undefined)?.system;
+        return system ? undefined : { outcome: { ok: true, value: gateValue(input) } };
       }
+      if (!input) {
+        // Never written (a crash before its write): nothing to close. A pausing gate's item is written now, answerable.
+        if (take) await this.host.storage.delete(ROW + id);
+        else if (await this.host.storage.get<Open>(ROW + id)) await this.open(id, effect, gateDetail(effect.args as Record<string, unknown>), now + GATE_PAUSED_ANSWERABLE_MS);
+        return undefined;
+      }
+      if (take) {
+        const done = await this.inputs().settle(id, expiryAnswer({ ...input, detail: { ...input.detail, applyRecommendationOnExpiry: true } }, now), "expired");
+        if (done) { await this.host.storage.delete(ROW + id); return undefined; }
+      } else {
+        // The version stays: what a person saw is still the question they answer.
+        const moved = await this.host.db().query("update agent_inputs set expires_at = $2, updated_at = now() where id = $1 and state = 'pending' returning id", [id, now + GATE_PAUSED_ANSWERABLE_MS]);
+        if (moved.rows.length) return undefined;
+      }
+      // An answer settled it in between: read it again.
     }
+    throw new Error(`Gate ${effect.key}:${effect.attempt} kept changing while it expired`);
   }
 }

@@ -23,7 +23,7 @@ export const WORKFLOW_START_DESCRIPTION =
   "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`. " +
   "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them. " +
   "job({ command, timeoutSeconds, at: volumeId, outputs }) runs one shell command on a copy of the volume in a container of its own and answers its exit code and output. " +
-  "gate({ question, options, recommended, reason, key }) asks a person in the inbox and waits for the answer (the chosen label, their own words, or null if declined).";
+  "gate({ question, options, recommended, reason, key }) asks a person in the inbox and waits for the answer (the chosen label, their own words, or null if declined); unanswered after expiresInSeconds (default 7 days), the workflow pauses, unless onExpire: "recommended" takes the recommended answer.";
 
 export interface WorkflowToolsHost {
   env: WorkflowEnv;

@@ -455,3 +455,33 @@ test("money: a redelivered ending is charged once, an ending after abort is char
   await assert.rejects(big.runner.land(g.key, g.attempt, { ok: true, value: "x".repeat(10_000) }, usage), /must be landed as a handle/);
   assert.equal(at(big).spent.usd, 0.25);
 });
+
+test("a gate's deadline: the executor closes it first; an answer that won the race lands instead of the recommendation, and a failed close leaves it for the next alarm", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.init({ code: `
+    const a = await gate({ key: "a", title: "A?", recommended: "ship", expiresInSeconds: 60, onExpire: "recommended" });
+    const b = await gate({ key: "b", title: "B?", recommended: "ship", expiresInSeconds: 60, onExpire: "recommended" });
+    return { a, b };` });
+  await h.wake();
+  const started = h.world.queue.find(effect => effect.key === "a")!;
+  assert.equal(started.dueAt, h.alarmAt, "the gate's start carries its deadline, which the item's expiry follows");
+  h.world.queue.splice(0);
+  // A person answered "hold" just before the deadline closed it: that answer is what lands.
+  h.world.expireHook = async () => ({ outcome: { ok: true, value: "hold" } });
+  await h.next();
+  assert.deepEqual(h.world.expired.map(entry => [entry.key, entry.take]), [["a", true]]);
+  assert.equal(h.runner.items().items.find(item => item.key === "a")!.result, "hold");
+  assert.ok(!h.runner.events().some(event => event.type === "gate_expired" && event.data.key === "a"), "no recommendation taken");
+  // Closing the next gate fails (the database is down): the alarm survives, and the gate is decided on the next one.
+  h.world.queue.splice(0);
+  h.world.expireHook = async () => { throw new Error("postgres is down"); };
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.equal(h.runner.items().items.find(item => item.key === "b")!.status, "pending");
+  assert.ok(h.runner.events().some(event => event.type === "alarm_failed"));
+  h.world.expireHook = undefined;
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.equal(at(h).status, "completed");
+  assert.deepEqual(at(h).result, { a: "hold", b: "ship" });
+});

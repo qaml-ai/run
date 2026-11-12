@@ -213,8 +213,13 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       get workflow() { return { id: name ?? "", tenant: self.runner.identity().tenant ?? "" }; },
       db: () => database(env as unknown as PostgresEnv), storage: ctx.storage,
       land: (key, attempt, outcome) => self.land(key, attempt, outcome), defer,
-      // Who may answer: anyone the account vouches for, as for any inbox item the owner has not narrowed.
-      audience: async () => ({}),
+      // Who may answer: as for the owner agent's own decisions (its approvers, its subject); with no owner agent (a
+      // workflow started with an API key), anyone the account vouches for.
+      audience: async () => {
+        const owner = self.settings().owner;
+        if (owner?.kind !== "agent") return {};
+        return await (env as unknown as { AGENTS: { getByName(name: string): { inboxAudience(): Promise<{ approvers?: string[]; subject?: string }> } } }).AGENTS.getByName(owner.id).inboxAudience();
+      },
       opened: gate => { self.notices.stage("gate_opened", { gate }, self.runner.get().status); self.told(undefined); },
     });
     const stub = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : undefined;
@@ -317,7 +322,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
   async wake() { await this.runner.wake(); await this.ended(); this.told(undefined); }
 
-  override async alarm() { await this.runner.alarm(); await this.gates.expired(); await this.ended(); this.told(undefined); }
+  override async alarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
 
   /** Once the workflow has ended: delete its children's forks, and keep the alarm for a retry if any delete failed. */
   private async ended() {
@@ -328,7 +333,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     if (current === null || current > retry || current <= Date.now()) await this.ctx.storage.setAlarm(retry);
   }
   /** TEST_MODE: what the alarm does, now. */
-  async fireAlarm() { await this.runner.alarm(); await this.gates.expired(); await this.ended(); this.told(undefined); }
+  async fireAlarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
 }
 
 /**
