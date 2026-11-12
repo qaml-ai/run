@@ -102,6 +102,12 @@ The admin dashboard gains cost per job by driver.
 
 ## PR slices
 
+**Status (2026-11-12):** slices 2 and 3 have landed in fake mode, with the runtime side of slice 4 (no `job_hosts`
+table yet: a `JobHostRegistry` object holds the connected hosts). The pieces are `jobhost/guest.ts`, `jobhost/vm.ts`,
+`jobhost/agent.ts`, `shared/job-host-protocol.ts` and `backends/workers/src/jobs/hosts.ts`, tested end to end by
+`backends/workers/test/job-hosts.integration.ts`. The bindings are in the test config only.
+
+
 Each slice is reviewable alone. Slices 1–4 need no AWS resources: they test against fakes, and a single host is used
 for the host-level tests only after the go-ahead.
 

@@ -22,7 +22,7 @@ export const CONTAINER_PROVIDER = "cloudflare";
  * recorded under the workflow's id (usage rows, usage details with the workflow as agent and root, the receipt keyed by
  * the session). No end user is ever charged: a workflow's job has none.
  */
-export function meterBilling(env: KeyEnv & WebhookEnv): MeterBilling {
+export function meterBilling(env: KeyEnv & WebhookEnv, provider = CONTAINER_PROVIDER): MeterBilling {
   return {
     async admit(payer: ComputerPayer) {
       const { accounts } = await keyServices(env);
@@ -40,9 +40,9 @@ export function meterBilling(env: KeyEnv & WebhookEnv): MeterBilling {
       const { accounts } = await keyServices(env);
       await transaction(env, async sql => {
         if (!await recordAuxiliaryUsage(sql, { tenant: charge.tenant, agent: charge.agent, callId: `computer:${charge.id}`,
-          startedAt: charge.startedAt, kind: "computer" }, { costUsd: charge.costUsd, provider: CONTAINER_PROVIDER, model: charge.instance },
+          startedAt: charge.startedAt, kind: "computer" }, { costUsd: charge.costUsd, provider, model: charge.instance },
           charge.kind === "workflow" ? "workflow" : "agent")) return;
-        await accounts.recordUsageIn(sql, charge.tenant, charge.agent, { provider: CONTAINER_PROVIDER, model: charge.instance,
+        await accounts.recordUsageIn(sql, charge.tenant, charge.agent, { provider, model: charge.instance,
           kind: "computer", platform: true, seconds: charge.seconds, timestamp: charge.endedAt, ...(charge.kind === "workflow" ? { workflowId: charge.agent } : {}),
           usage: { input: 0, output: 0, cost: { total: charge.costUsd } } });
       });

@@ -1,0 +1,201 @@
+// Jobs on our own hosts (docs/design/job-hosts-plan.md, slices 3 and 4), behind the JobDriver seam (driver.ts):
+// - JobHostRegistry: the hosts that are connected, their free slots and last heartbeat (one object, "hosts");
+// - JobHost: one per host. The host's agent (jobhost/agent.ts) dials out to it over a WebSocket; its first message is
+//   the shared host token (JOB_HOST_TOKEN). It sends the host jobs and takes their results;
+// - HostJob: one per job id, as ContainerComputer is for a container job: it admits the payer, takes a computer slot,
+//   places the job on a host, meters it from dispatch to result under the session `job:<id>` (so a job run again is
+//   charged once), and answers the JobResult.
+// Off by default: jobDriver() picks these only where the bindings and JOB_HOST_TOKEN are set (test configs today).
+import { DurableObject } from "cloudflare:workers";
+import { timingSafeEqual } from "node:crypto";
+import { releaseComputer, reserveComputer } from "../../../../src/core/computer-limit.ts";
+import { Frames, frames, fromBase64, toBase64, type HostMessage, type WireFile, type WireJob, type WireResult, type WireStream } from "../../../../shared/job-host-protocol.ts";
+import { guardAlarms } from "../alarm-guard.ts";
+import { ComputerMeter } from "../computers/meter.ts";
+import { meterBilling } from "../computers/meter-billing.ts";
+import type { KeyEnv } from "../security-services.ts";
+import { keyServices } from "../security-services.ts";
+import { transaction, withSql } from "../postgres.ts";
+import type { WebhookEnv } from "../webhooks.ts";
+import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
+import { jobLifetimeMs, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
+
+/** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
+export const HOSTS_PROVIDER = "camelrun-hosts";
+/** A host not heard from in this long takes no new job. */
+const HOST_STALE_MS = 30_000;
+/** Inline files and a volume's files cross the socket inline, up to this much; a larger tree waits for host-side sync. */
+const HOST_SYNC_BYTES = 64 * 1024 * 1024;
+
+export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & {
+  JOB_HOST_TOKEN?: string;
+  JOB_HOSTS?: DurableObjectNamespace<JobHost>;
+  HOST_JOBS?: DurableObjectNamespace<HostJob>;
+  JOB_HOST_REGISTRY?: DurableObjectNamespace<JobHostRegistry>;
+  TEST_MODE?: string;
+};
+
+/** The connected hosts and their free slots. One object, named "hosts". */
+export class JobHostRegistry extends DurableObject<JobHostsEnv> {
+  constructor(ctx: DurableObjectState, env: JobHostsEnv) {
+    super(ctx, env);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS hosts (name TEXT PRIMARY KEY, slots INTEGER NOT NULL, free INTEGER NOT NULL, seen_at INTEGER NOT NULL)");
+  }
+  seen(name: string, slots: number | undefined, free: number) {
+    this.ctx.storage.sql.exec(`INSERT INTO hosts (name, slots, free, seen_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at`, name, slots ?? free, free, Date.now(), slots ?? null);
+  }
+  /** A fresh host with a free slot, which is taken; undefined: none. */
+  place(): string | undefined {
+    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS).toArray()[0];
+    if (!row) return undefined;
+    this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1 WHERE name = ?", row.name);
+    return row.name;
+  }
+  release(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1) WHERE name = ?", name); }
+  list() { return this.ctx.storage.sql.exec("SELECT name, slots, free, seen_at AS seenAt FROM hosts ORDER BY name").toArray(); }
+}
+
+const registry = (env: JobHostsEnv) => env.JOB_HOST_REGISTRY!.getByName("hosts");
+const sameToken = (given: unknown, want: string | undefined) => {
+  if (!want || typeof given !== "string") return false;
+  const a = new TextEncoder().encode(given), b = new TextEncoder().encode(want);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+/** One host's connection: jobs out, results in. */
+export class JobHost extends DurableObject<JobHostsEnv> {
+  private socket?: WebSocket;
+  private readonly pending = new Map<string, (result: WireResult) => void>();
+  async fetch(request: Request) {
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("Expected a WebSocket", { status: 426 });
+    const name = new URL(request.url).searchParams.get("host") ?? "";
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(name)) return new Response("Invalid host name", { status: 400 });
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+    server.accept();
+    this.attach(server, name);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+  private attach(socket: WebSocket, name: string) {
+    const assembler = new Frames();
+    let authed = false;
+    socket.addEventListener("message", event => {
+      try {
+        const text = typeof event.data === "string" ? event.data : "";
+        if (!authed) {
+          // The host's first message is its token; anything else closes the socket.
+          if (!sameToken((JSON.parse(text) as { token?: unknown }).token, this.env.JOB_HOST_TOKEN)) { socket.close(1008, "Unauthorized"); return; }
+          authed = true;
+          // A host that reconnects replaces its old socket; jobs in flight on it keep their pending results.
+          if (this.socket && this.socket !== socket) try { this.socket.close(1000, "Replaced"); } catch { /* already closed */ }
+          this.socket = socket;
+          return;
+        }
+        const message = assembler.add(text) as HostMessage | undefined;
+        if (message) void this.receive(name, message);
+      } catch (error) {
+        console.error(JSON.stringify({ type: "jobhost_message_invalid", host: name, error: error instanceof Error ? error.name : "unknown" }));
+        socket.close(1007, "Invalid message");
+      }
+    });
+    socket.addEventListener("close", () => { if (this.socket === socket) this.socket = undefined; });
+  }
+  private async receive(name: string, message: HostMessage) {
+    if (message.type === "hello") {
+      await registry(this.env).seen(name, message.slots, message.slots);
+      this.send({ type: "registered", host: name });
+    } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free);
+    else if (message.type === "result") { const done = this.pending.get(message.id); this.pending.delete(message.id); done?.(message.result); }
+  }
+  private send(message: unknown) {
+    if (!this.socket) return false;
+    for (const frame of frames(message)) this.socket.send(frame);
+    return true;
+  }
+  /** Run one job on this host and answer its result; the socket gone or the deadline passed answers a failure. */
+  async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult> {
+    return new Promise<WireResult>(resolve => {
+      const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, code: "container_failed", message: "The job host did not answer in time" }); }, deadlineMs);
+      this.pending.set(id, result => { clearTimeout(timer); resolve(result); });
+      if (!this.send({ type: "job", id, spec })) { clearTimeout(timer); this.pending.delete(id); resolve({ ok: false, code: "start_failed", message: "The job host is not connected" }); }
+    });
+  }
+  cancel(id: string) { return this.send({ type: "cancel", id }); }
+}
+
+const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data), size: wire.size, truncated: wire.truncated });
+
+/** One job on a host: admission, a slot, placement, the meter, the result. */
+export class HostJob extends DurableObject<JobHostsEnv> {
+  private active?: { host: string; id: string };
+  constructor(ctx: DurableObjectState, env: JobHostsEnv) {
+    super(ctx, env);
+    guardAlarms(this, ctx, "HostJob", { test: env.TEST_MODE === "1" });
+  }
+  private meter(idleMs: number) {
+    return new ComputerMeter({ store: this.ctx.storage, billing: meterBilling(this.env, HOSTS_PROVIDER), idleMs, schedule: at => this.ctx.storage.setAlarm(at) });
+  }
+  async run(value: unknown): Promise<JobResult> {
+    const spec = jobSpec(value);
+    const at = Date.now();
+    const timings = () => ({ startedAt: at, endedAt: Date.now(), startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: Date.now() - at });
+    const fail = (code: Extract<JobResult, { ok: false }>["code"], message: string, costUsd?: number): JobResult => ({ ok: false, id: spec.id, code, message, timings: timings(), ...(costUsd !== undefined ? { costUsd } : {}) });
+    if (this.active) return fail("job_running", `Job ${spec.id} is running`);
+    const lifetimeMs = jobLifetimeMs(spec.timeoutSeconds), meter = this.meter(lifetimeMs), machine = `job:${spec.id}`;
+    try {
+      await meter.admit(spec.payer);
+      const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
+      await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
+    } catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
+    const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
+    let files: WireFile[];
+    try { files = await this.files(spec); }
+    catch (error) { await release(); return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
+    const host = await registry(this.env).place();
+    if (!host) { await release(); return fail("start_failed", "No job host has a free slot"); }
+    this.active = { host, id: spec.id };
+    let wire: WireResult, costUsd = 0;
+    try {
+      // Metered from dispatch to result, under the job's own session name: a run made again is the same charge.
+      await meter.started(spec.payer, spec.instance, lifetimeMs, 0, `job:${spec.id}`);
+      wire = await this.env.JOB_HOSTS!.getByName(host).dispatch(spec.id, {
+        command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, limits: spec.limits ?? {}, internet: !!spec.internet, files,
+        ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
+      }, lifetimeMs);
+    } finally {
+      await meter.stopped().catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
+      costUsd = meter.spentUsd();
+      await release().catch(() => {});
+      await registry(this.env).release(host).catch(() => {});
+      this.active = undefined;
+    }
+    if (!wire.ok) return fail(wire.code, wire.message, costUsd);
+    return {
+      ok: true, id: spec.id, instance: spec.instance, exitCode: wire.exitCode, timedOut: wire.timedOut,
+      stdout: stream(wire.stdout), stderr: stream(wire.stderr), missing: wire.missing,
+      outputs: Object.fromEntries(Object.entries(wire.outputs).map(([name, output]) => [name, stream(output)])),
+      pids: wire.pids === "enforced" ? "ulimit" : "unenforced",
+      timings: { ...wire.timings, startedAt: at, endedAt: Date.now() }, costUsd,
+    };
+  }
+  /** Its files as they cross to the host: inline ones, or a volume snapshot's, up to HOST_SYNC_BYTES. */
+  private async files(spec: JobSpec): Promise<WireFile[]> {
+    const out: WireFile[] = [];
+    let bytes = 0;
+    const add = (path: string, data: Uint8Array) => {
+      bytes += data.byteLength;
+      if (bytes > HOST_SYNC_BYTES || out.length >= JOB_LIMITS.syncFiles) throw new Error(`A job's files on a host are at most ${HOST_SYNC_BYTES / 2 ** 20} MiB for now`);
+      out.push({ path, data: toBase64(data) });
+    };
+    if (spec.files) for (const [path, data] of Object.entries(spec.files)) add(path, data);
+    else if (spec.volume) for await (const file of volumeFiles(this.env, spec.volume)) add(file.path, file.bytes);
+    return out;
+  }
+  async stop(): Promise<{ stopped: boolean }> {
+    if (!this.active) return { stopped: false };
+    return { stopped: await this.env.JOB_HOSTS!.getByName(this.active.host).cancel(this.active.id) };
+  }
+  /** Charges a failed settle left, retried (computers/meter.ts). */
+  async alarm() { await this.meter(60_000).alarm(false); }
+}
