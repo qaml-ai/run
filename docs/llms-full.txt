@@ -1015,7 +1015,9 @@ Use ARM64 binaries; UDP is blocked except for DNS through the VM's resolver.
 
 Compute is charged to your credit from observed running time and snapshot activity,
 at provider cost unless the operator sets a price. An account using prepaid billing
-must have bought credit. The operator can select Boat instead, keeping its 2-hour
+must have bought credit. A computer does not start, and a running one is stopped within
+a minute or so, once the account reaches its monthly spend limit (on any key) or, on the
+platform's, runs out of credit; the next `computer_start` says why. The operator can select Boat instead, keeping its 2-hour
 idle lease and 24-hour maximum. Both `lambda` and `boat` without credentials request
 the runtime's configured managed provider; Boat with credentials uses your account.
 `GET /v1/computers/options` says whether managed computers are available.
