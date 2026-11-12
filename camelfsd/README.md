@@ -15,7 +15,7 @@ Build with Go 1.24+, a C compiler (SQLite), and Linux headers: `go build -o came
 ./camelfsd version
 ```
 
-`--store /absolute/directory` substitutes a local store. S3 uses the SDK default credential chain. Objects are `c/<sha256>` (chunks), `r/<sha256>` (canonical roots), `o/<sha1>` (raw blobs), and `t/<sha1>` (trees over 400 KiB). `--cold prehydrate` downloads aligned windows with 32 workers by default and returns a complete warm image. Default clone mode returns `/dev/mapper/camelfs-<jobId>` immediately; background hydration is on by default (`mount --hydrate=false` or JSON `hydrate:false` opts out). `--nbd-listen` defaults to `127.0.0.1:10809`; `--prefetch-depth` defaults to 64. One listener serves all root exports. Keep this listener private to the host.
+`--store /absolute/directory` substitutes a local store. S3 uses the SDK default credential chain. Objects are `c/<sha256>` (chunks), `r/<sha256>` (canonical roots), `o/<sha1>` (raw blobs), and `t/<sha1>` (trees over 400 KiB). `--cold prehydrate` downloads aligned windows with 32 workers by default and returns a complete warm image. Default clone mode returns `/dev/mapper/camelfs-<dataHash>-<jobId>` immediately; background hydration is on by default (`mount --hydrate=false` or JSON `hydrate:false` opts out). `--nbd-listen` defaults to `127.0.0.1:10809`; `--prefetch-depth` defaults to 64. One listener serves all root exports. Keep this listener private to the host.
 
 The HTTP/1.1 JSON API is restricted by a mode-0600 Unix socket. Examples use shell variables `S=/run/camelfsd/api.sock`, `R=<64-hex-root>` and `T=<40-hex-tree>`:
 
@@ -39,7 +39,7 @@ Errors are JSON `{error, detail}`; a missing lease or failed CAS returns 409 `fe
 
 Checkpoint syncs the destination and reflinks a snapshot. **FIEMAP correction:** reflinking makes the snapshot share with the source, so private extents must be collected on the source *before* reflinking; those ranges are then hashed from the snapshot. Holes are included to detect zeroed/punched-out parent chunks. fiemapMs measures only the live-image walk. Holes are read only where the parent has a stored chunk. Cold checkpoint first waits for complete hydration (up to five minutes, bounded by the request deadline). At completion the status poller briefly suspends dm-clone, reflinks `hydrated.img`, and resumes it. A background whole-image comparison against the original root finds early guest writes. Checkpoint waits for that comparison, then hashes those offsets plus FIEMAP private extents since the sharing partner. After publication, the checkpoint snapshot becomes the partner and early writes are cleared. Suspension covers FIEMAP and reflinking only; hashing and publication run after resume. Release never hashes: it promotes `hydrated.img` under the original root only when the completed background comparison found no early writes. Checkpoint promotes edited images under their new roots.
 
-State lives in `images/`, `mounts/<jobId>/state.json`, `cache/<aa>/<hash>`, and `refs.db`. A data-directory lock prevents concurrent daemons. Graceful SIGTERM releases mounts. Startup refuses leftover mount state after a crash: stop guest users and manually detach the devices recorded in state before removing that mount directory. Automatic recovery is a later unit.
+State lives in `images/`, `mounts/<jobId>/state.json`, `cache/<aa>/<hash>`, and `refs.db`. A data-directory lock prevents concurrent daemons. Graceful SIGTERM releases mounts. Startup refuses leftover mount state after a crash: stop guest users and run `camelfsd cleanup --data DIR` to detach recorded devices and remove mount directories. Automatic recovery is a later unit.
 
 For unprivileged tests only, `CAMELFSD_TEST_NO_REFLINK=1` skips the probe, copies instead of reflinking and hashes the whole image during checkpoint; a log line identifies this mode. Root-mount file permissions are read-only; privileged consumers must honor that contract. Run `sudo scripts/ec2-smoke.sh clone` and `sudo scripts/ec2-smoke.sh prehydrate` only after the host availability gate. The script writes its report under `/nvme/camelfs/`, uses a fresh S3 prefix, verifies round trips and cleans up its devices. S3 objects remain for inspection.
 
@@ -192,3 +192,9 @@ Both guest streams use `--stream-idle` (default 30s), reset at every received
 or sent frame. Apply also uses `--apply-max` (default 30m); checkpoint uses
 the POST's `timeoutMs` overall cap. A timeout sends a final nack/error trailer
 with a fresh bounded write deadline before closing.
+
+Device names are `camelfs-<8 hex SHA-256 of absolute data path>-<jobId>`.
+Health reports `dmPrefix`; state records dm, loop and NBD devices and
+`nbdListen`. After stopping guests and the daemon, run
+`camelfsd cleanup --data DIR` to detach recorded devices and clear mount state.
+Cleanup takes the same data-directory lock as the daemon.

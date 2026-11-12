@@ -55,6 +55,16 @@ func run(args []string) error {
 		return nil
 	case "client":
 		return client.Run(args[1:], os.Stdout)
+	case "cleanup":
+		f := flag.NewFlagSet("cleanup", flag.ContinueOnError)
+		data := f.String("data", "", "data directory")
+		if e := f.Parse(args[1:]); e != nil {
+			return e
+		}
+		if *data == "" {
+			return fmt.Errorf("data required")
+		}
+		return image.Cleanup(context.Background(), *data, nil)
 	case "host":
 		return host(args[1:])
 	default:

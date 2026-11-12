@@ -63,13 +63,14 @@ type Request struct {
 	Vsock   string `json:"vsock"`
 }
 type Mount struct {
-	activity *atomic.Int64
-	fenced   *atomic.Bool
-	mu       *sync.Mutex
-	streams  *streams
-	Apply    *Apply  `json:"apply"`
-	Applied  bool    `json:"applied"`
-	ApplyMs  float64 `json:"applyMs"`
+	NBDListen string `json:"nbdListen"`
+	activity  *atomic.Int64
+	fenced    *atomic.Bool
+	mu        *sync.Mutex
+	streams   *streams
+	Apply     *Apply  `json:"apply"`
+	Applied   bool    `json:"applied"`
+	ApplyMs   float64 `json:"applyMs"`
 	Request
 	Image                             string  `json:"image"`
 	Warm                              bool    `json:"warm"`
@@ -147,7 +148,6 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e != nil {
 		return nil, e
 	}
-	// v0-limitation: L15
 	if len(entries) > 0 {
 		return nil, fmt.Errorf("existing mount state requires cleanup before restart")
 	}
@@ -244,7 +244,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		}
 		treeRoot = id
 	}
-	v := &Mount{activity: &atomic.Int64{}, fenced: &atomic.Bool{}, Request: q, mu: new(sync.Mutex)}
+	v := &Mount{activity: &atomic.Int64{}, fenced: &atomic.Bool{}, NBDListen: m.NBDListen, Request: q, mu: new(sync.Mutex)}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if q.Ref != "" {
@@ -482,8 +482,14 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 		v.NBD = ""
 		return e
 	}
+	if e = m.save(v); e != nil {
+		return e
+	}
 	v.DestLoop, e = run(ctx, "losetup", "-f", "--show", v.Dest)
 	if e != nil {
+		return e
+	}
+	if e = m.save(v); e != nil {
 		return e
 	}
 	meta := filepath.Join(filepath.Dir(v.Dest), "clone-meta.img")
@@ -500,12 +506,18 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 	if e != nil {
 		return e
 	}
-	dm := "camelfs-" + v.JobID
+	if e = m.save(v); e != nil {
+		return e
+	}
+	dm := DMPrefix(m.Data) + v.JobID
 	table := fmt.Sprintf("0 %d clone %s %s %s 512 1 no_hydration", r.VirtualSize/512, v.MetaLoop, v.DestLoop, v.NBD)
 	if _, e = run(ctx, "dmsetup", "create", dm, "--table", table); e != nil {
 		return e
 	}
 	v.DM = dm
+	if e = m.save(v); e != nil {
+		return e
+	}
 	v.Image = "/dev/mapper/" + dm
 	v.State = "cold"
 	v.TotalRegions = (r.VirtualSize + chunk.Size - 1) / chunk.Size
@@ -691,7 +703,6 @@ func (m *Manager) Heartbeat(id string) error {
 	return nil
 }
 
-// v0-limitation: L15
 func (m *Manager) Close() {
 	close(m.stop)
 	m.mu.Lock()

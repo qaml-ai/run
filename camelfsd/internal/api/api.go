@@ -67,7 +67,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(200, v)
 	case r.Method == "GET" && r.URL.Path == "/v0/health":
-		reply(200, map[string]any{"ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID})
+		reply(200, map[string]any{"dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID})
 	case r.Method == "POST" && r.URL.Path == "/v0/mounts":
 		var q image.Request
 		if e := decode(&q); e != nil {
