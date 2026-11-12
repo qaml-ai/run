@@ -17,6 +17,7 @@ It only reads the runtime's resources: the default VPC and its internet gateway,
 | `iam.tf` | The host role and instance profile (below) |
 | `ssm.tf` | `/camelrun/job-hosts/prod/runtime-url` and `/camelrun/job-hosts/prod/enrollment-audience` (`camelrun-job-host:<runtime URL>`) |
 | `pools.tf` | Per pool, once its AMI is set: a launch template (arm64 AMI, IMDSv2 required with hop limit 1, Nitro Enclaves on, NVMe instance store mapped, the host profile, no key pair, a public IPv4 address, encrypted gp3 root) and an Auto Scaling group across the pool subnets with a 15-minute termination lifecycle hook for draining |
+| `scaler.tf` | Once a pool exists: the scaler Lambda (below), its log group (14 days), an EventBridge rule running it every minute, its role, and an alarm on its errors |
 | `alarms.tf` | Per pool: "fewer hosts in service than desired for 15 minutes" and "a host failing EC2 status checks for 10 minutes", to `camelai-agent-runtime-alerts` (us-west-2), which emails Miguel like the runtime's alarms |
 
 The pools at the defaults:
@@ -24,7 +25,7 @@ The pools at the defaults:
 | Pool | Instance | Purchase | Min | Desired | Max |
 |---|---|---|---|---|---|
 | build | `r8gd.4xlarge` (16 vCPU, 128 GiB, 950 GB NVMe) | on-demand | `build_warm_size` (0) | `build_warm_size` (0) | 4 |
-| test | `c8gd.4xlarge` (16 vCPU, 32 GiB, 950 GB NVMe) | on-demand (`test_use_spot=true` for spot) | 0 | slice 8 | 16 |
+| test | `c8gd.4xlarge` (16 vCPU, 32 GiB, 950 GB NVMe) | on-demand (`test_use_spot=true` for spot) | 0 | the scaler | 16 |
 
 **A pool exists only once its AMI is set** (`build_ami_id`, `test_ami_id`, from slice 1). With an empty AMI there is
 no launch template, ASG or alarm for that pool, so the bucket, network and role can be applied first and an empty
@@ -86,13 +87,37 @@ Sources:
 - `AmazonSSMManagedInstanceCore` (Session Manager; there is no SSH).
 - Read `images/*` and `snapshots/*` in the bucket, list those prefixes, and `kms:Decrypt` on the bucket's key through
   S3 only. No writes: snapshots and outputs go up through URLs the runtime presigns (slice 5).
-- Read its own two SSM parameters. An explicit deny on every other parameter, because the SSM core policy allows
-  reading all of them.
-- `autoscaling:CompleteLifecycleAction` / `RecordLifecycleActionHeartbeat` on the pools' ASGs, so a drained host ends
-  its own termination wait. (No condition key names the instance: a host could end another host's wait, which only
-  terminates that host sooner.)
+- Read its own two SSM parameters (`runtime-url`, `enrollment-audience`) by exact name. An explicit deny on every
+  other parameter, because the SSM core policy allows reading all of them; that includes the scaler's token under
+  the same prefix.
+- No Auto Scaling permissions: the scaler completes the hosts' termination hooks.
 - An explicit deny on `sts:AssumeRole*`. No secrets, no database, no CloudWatch agent (the runtime gets heartbeats
   over the host's WebSocket; EC2's basic metrics are enough for the alarms).
+
+### The scaler
+
+A Lambda (`camelrun-job-hosts-scaler`; code in `infra/job-hosts/scaler/index.mjs`, Node 22, arm64, 128 MB, 50 s
+timeout, reserved concurrency 1 so two runs never decide at once) that EventBridge runs every minute. It exists only
+when at least one pool does. Each run it reads every pool's demand from the runtime (`RUNTIME_URL`, authenticated with
+the token in the SSM SecureString `TOKEN_PARAMETER`) and the ASGs' state, then:
+
+- **Scales out on waiting jobs**, up to the ASG max: enough hosts for the waiting jobs at `BUILD_SLOTS=1` job per
+  build host and `TEST_SLOTS=8` per test host.
+- **Scales in hosts idle for `IDLE_MINUTES`** (`scaler_idle_minutes`, default 10), never below the ASG min: it asks
+  the runtime to drain the host first (no new jobs placed on it), then terminates it with
+  `ShouldDecrementDesiredCapacity`, so the ASG does not replace it.
+- **Completes termination lifecycle hooks** (for its own scale-ins and for any other termination) once the runtime
+  reports the host has no running jobs or has disconnected. The hook's 15-minute timeout (`CONTINUE`) is the
+  backstop if the scaler is down.
+
+Its role trusts only `lambda.amazonaws.com` and may do exactly this (a precondition and the tests check the set):
+`autoscaling:DescribeAutoScalingGroups` (on `*`: it takes no resource-level permissions);
+`SetDesiredCapacity`, `TerminateInstanceInAutoScalingGroup` and `CompleteLifecycleAction` on the two pools' ASG ARNs
+only; `ssm:GetParameter` on its token parameter only; and writing its own log group. Nothing else, no KMS: keep the
+token on the default `aws/ssm` key, which SSM decrypts for it. An alarm fires when it has errored in each of three
+5-minute periods (15 minutes), to the same alerts topic.
+
+The token is **not** created here (no secrets in state); see "Scaler token" in the commands below.
 
 ## The trust-policy invariant
 
@@ -127,8 +152,13 @@ gateway, Nitro Sandboxes themselves.
 | Their public IPv4 | $0 | $0 | 2 × ~$3.65 = ~$7 |
 | Their root volumes | $0 | $0 | 2 × ~$2.40 = ~$5 |
 | KMS key | ~$1 | ~$1 | ~$1 |
-| Alarms (4, two with 2-metric math) | $0 | ~$1 | ~$1 |
+| Alarms (5, two with 2-metric math) | $0 | ~$1 | ~$1 |
+| Scaler (Lambda, logs, schedule) | $0 | a few cents | a few cents |
 | **Total, plus S3 storage (~$12 per 500 GB)** | **~$1** | **~$2** | **~$1,731** |
+
+The scaler: 43,800 runs a month at 128 MB and about a second each is ~5,500 GB-seconds (~$0.07 on arm64) plus
+~$0.01 of requests, within Lambda's free tier anyway; its logs a few cents; the schedule and the SSM standard
+parameter reads are free.
 
 On top, per running host: build ~$1.18/h, test ~$0.79/h (instance plus its IPv4), plus ~$2.40/month of root
 volume. At the maxima (4 build + 16 test, all running) the pools cost ~$17.35/h, about $12,700 a month: the ASG
@@ -201,6 +231,18 @@ Needs AWS credentials for `904534089871`, `tofu` (>= 1.10) and `jq`. No Cloudfla
    The aws attestor refuses to run without `JOB_HOST_ROLE_ARNS`, `AGENT_PUBLIC_URL` and the rate limit, so all three
    go in together.
 
+4. **Scaler token**, before or right after step 2 (until it exists, every scaler run fails and, after 15 minutes,
+   alarms). One random value, 48 characters or more, in two places; the scaler sends it to the runtime:
+
+   ```bash
+   token=$(openssl rand -base64 48 | tr -d '\n=+/')
+   aws ssm put-parameter --region us-west-2 --name /camelrun/job-hosts/prod/scaler-token --type SecureString --value "$token"
+   (cd backends/workers && printf %s "$token" | npx wrangler secret put JOB_HOST_SCALER_TOKEN --config wrangler.pilot.jsonc)
+   unset token
+   ```
+
+   Keep the default key (`aws/ssm`). To rotate, put a new value in both places (`--overwrite` on the parameter).
+
 Later changes go the same way (`PLAN_ONLY=1` first). A plan that deletes or replaces anything is refused unless
 `ALLOW_DESTROY` names each address, for example `ALLOW_DESTROY='aws_autoscaling_group.test[0]'`. Changing an AMI
 updates the launch template in place; running hosts keep the old one until they are replaced.
@@ -225,13 +267,16 @@ tofu init -backend=false && tofu validate && tofu fmt -check -recursive && tofu 
   us-west-2a/b/c.
 - That no S3 gateway endpoint exists outside Terraform (if one does, set `s3_gateway_endpoint_id`).
 - That EC2 publishes `StatusCheckFailed` per Auto Scaling group under basic monitoring.
+- The scaler's code (`infra/job-hosts/scaler/`, written separately): `archive_file` zips that directory at plan
+  time, so the plan fails until it exists. Also the Lambda concurrency quota: reserving 1 needs the account's
+  unreserved concurrency to stay at or above 10 (accounts with a 10-execution limit cannot reserve any).
 - The vCPU quota, the Auto Scaling service-linked role, and whether default EBS encryption uses a customer key
   (the ASG's role would need a grant).
 - The AMIs (slice 1) and their kernel version (6.18.51-120.162.amzn2023 or later), and the prices above.
 
 ## Not covered here
 
-- The AMIs (slice 1), the queue-depth metric and test-pool scaling policy (slice 8), and runtime-side alarms on
-  heartbeat loss and stuck leases (slice 8).
+- The AMIs (slice 1), the scaler's code and the runtime's demand and drain endpoints it calls, and runtime-side
+  alarms on heartbeat loss and stuck leases.
 - Credentials for the runtime to presign snapshot and output uploads into the bucket (slice 5): whatever signs them
   needs `s3:PutObject` under `snapshots/`/`outputs/` and `kms:GenerateDataKey` on `images_kms_key_arn`.

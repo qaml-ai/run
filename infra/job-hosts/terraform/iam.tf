@@ -8,6 +8,8 @@
 # Three guards fail the plan if that changes: the precondition and postcondition on aws_iam_role.host, the
 # check "host_role_trust" against the live role, and tests/job-hosts.tftest.hcl.
 #
+# Hosts have no Auto Scaling permissions: the scaler (scaler.tf) drains them and completes their lifecycle hooks.
+#
 # Who can still become a host: anyone allowed iam:PassRole on this role together with ec2:RunInstances (or
 # ec2:AssociateIamInstanceProfile) can start a real instance with it, which then enrolls as a real host. Grant
 # iam:PassRole on it to nobody but the operator who applies this module (Auto Scaling passes it through its
@@ -38,6 +40,9 @@ locals {
   ])
 
   ssm_parameter_prefix = "/camelrun/job-hosts/${var.env}"
+  # The only parameters a host may read (ssm.tf). Built from names, not resource ARNs, so the policy has no
+  # dependency on the parameters themselves.
+  host_parameter_arns = [for leaf in ["runtime-url", "enrollment-audience"] : "arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm_parameter_prefix}/${leaf}"]
 
   # Everything the host role may do besides AmazonSSMManagedInstanceCore. No secrets, no database, no STS.
   host_policy = {
@@ -71,24 +76,15 @@ locals {
         Sid      = "ReadOwnParameters"
         Effect   = "Allow"
         Action   = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = ["arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm_parameter_prefix}/*"]
-      },
-      # A draining host ends its own termination lifecycle hook (pools.tf) instead of waiting out the timeout. No
-      # condition key names the instance, so a host could also end another pool host's wait: at worst it is
-      # terminated sooner, which a host can't otherwise cause.
-      {
-        Sid      = "CompleteOwnDrain"
-        Effect   = "Allow"
-        Action   = ["autoscaling:CompleteLifecycleAction", "autoscaling:RecordLifecycleActionHeartbeat"]
-        Resource = ["arn:aws:autoscaling:${var.region}:${var.account_id}:autoScalingGroup:*:autoScalingGroupName/${var.name}-*"]
+        Resource = local.host_parameter_arns
       },
       # AmazonSSMManagedInstanceCore allows ssm:GetParameter(s) on every parameter in the account; a host reads
-      # only its own.
+      # only these two. Not the whole prefix: the scaler's token (scaler.tf) lives under it too.
       {
         Sid         = "NoOtherParameters"
         Effect      = "Deny"
         Action      = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-        NotResource = ["arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm_parameter_prefix}/*"]
+        NotResource = local.host_parameter_arns
       },
       # Belt and braces: the role can never assume another role, whatever is attached to it later.
       {

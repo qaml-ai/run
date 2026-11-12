@@ -25,8 +25,27 @@ mock_provider "aws" {
   mock_resource "aws_iam_instance_profile" {
     defaults = { arn = "arn:aws:iam::904534089871:instance-profile/camelrun-job-hosts-prod" }
   }
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::904534089871:role/mocked" }
+  }
+  mock_resource "aws_cloudwatch_event_rule" {
+    defaults = { arn = "arn:aws:events:us-west-2:904534089871:rule/camelrun-job-hosts-scaler" }
+  }
+  mock_resource "aws_lambda_function" {
+    defaults = { arn = "arn:aws:lambda:us-west-2:904534089871:function:camelrun-job-hosts-scaler" }
+  }
+  mock_resource "aws_autoscaling_group" {
+    defaults = { arn = "arn:aws:autoscaling:us-west-2:904534089871:autoScalingGroup:00000000-0000-0000-0000-000000000000:autoScalingGroupName/mocked" }
+  }
   mock_resource "aws_launch_template" {
     defaults = { id = "lt-0123456789abcdef0", latest_version = 1 }
+  }
+}
+
+# The scaler's zip is built from infra/job-hosts/scaler at plan time; mocked here.
+mock_provider "archive" {
+  mock_data "archive_file" {
+    defaults = { output_base64sha256 = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=" }
   }
 }
 
@@ -63,7 +82,7 @@ run "role_permissions_are_exactly_these" {
   }
   assert {
     condition = [for statement in jsondecode(aws_iam_role_policy.host.policy).Statement : statement.Sid] == [
-      "ReadImagesAndSnapshots", "ListImagesAndSnapshots", "DecryptImagesThroughS3", "ReadOwnParameters", "CompleteOwnDrain", "NoOtherParameters", "NoAssumeRole",
+      "ReadImagesAndSnapshots", "ListImagesAndSnapshots", "DecryptImagesThroughS3", "ReadOwnParameters", "NoOtherParameters", "NoAssumeRole",
     ]
     error_message = "The inline policy's statements changed; review them against the role's rule (no secrets, no database, no STS)."
   }
@@ -79,6 +98,19 @@ run "role_permissions_are_exactly_these" {
       statement.Effect == "Deny" || !contains(flatten([statement.Action]), "s3:PutObject")
     ])
     error_message = "Hosts write to the bucket only through presigned URLs."
+  }
+  assert {
+    condition = alltrue([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement :
+      !anytrue([for action in flatten([try(statement.Action, [])]) : startswith(action, "autoscaling:")])
+    ])
+    error_message = "Hosts have no Auto Scaling permissions: the scaler completes their lifecycle hooks."
+  }
+  assert {
+    condition = one([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement : statement if statement.Sid == "ReadOwnParameters"]).Resource == [
+      "arn:aws:ssm:us-west-2:904534089871:parameter/camelrun/job-hosts/prod/runtime-url",
+      "arn:aws:ssm:us-west-2:904534089871:parameter/camelrun/job-hosts/prod/enrollment-audience",
+    ] && one([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement : statement if statement.Sid == "NoOtherParameters"]).NotResource == one([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement : statement if statement.Sid == "ReadOwnParameters"]).Resource
+    error_message = "A host reads exactly its two parameters (never the scaler's token under the same prefix)."
   }
   assert {
     condition     = one([for statement in jsondecode(aws_iam_role_policy.host.policy).Statement : statement if statement.Sid == "NoAssumeRole"]).Effect == "Deny"
@@ -190,8 +222,9 @@ run "warm_build_hosts_are_a_variable" {
     build_warm_size = 2
   }
   assert {
-    condition     = aws_autoscaling_group.build[0].min_size == 2 && aws_autoscaling_group.build[0].desired_capacity == 2
-    error_message = "build_warm_size sets the build pool's min and desired."
+    # Desired capacity is the scaler's after creation (ignore_changes); raising min makes AWS raise desired to it.
+    condition     = aws_autoscaling_group.build[0].min_size == 2
+    error_message = "build_warm_size sets the build pool's min."
   }
 }
 
@@ -225,6 +258,10 @@ run "no_ami_no_pool" {
     error_message = "Without an AMI there is no launch template, ASG or alarm."
   }
   assert {
+    condition     = length(aws_lambda_function.scaler) == 0 && length(aws_iam_role.scaler) == 0 && length(aws_cloudwatch_event_rule.scaler) == 0 && output.scaler_function_name == ""
+    error_message = "Without a pool there is no scaler."
+  }
+  assert {
     condition     = output.build_asg_name == "" && output.test_asg_name == "" && output.images_bucket == "camelrun-job-images-prod"
     error_message = "The foundation (bucket, role) exists without the pools."
   }
@@ -253,5 +290,89 @@ run "audience_matches_the_runtime" {
   assert {
     condition     = aws_ssm_parameter.enrollment_audience.value == "camelrun-job-host:https://run-pilot.camelai.dev" && aws_ssm_parameter.runtime_url.value == "https://run-pilot.camelai.dev"
     error_message = "The audience is camelrun-job-host:<AGENT_PUBLIC_URL> (backends/workers/src/jobs/hosts.ts)."
+  }
+}
+
+run "scaler_sizes_the_pools" {
+  command = apply
+  assert {
+    condition = (
+      aws_lambda_function.scaler[0].runtime == "nodejs22.x" && aws_lambda_function.scaler[0].architectures == tolist(["arm64"])
+      && aws_lambda_function.scaler[0].memory_size == 128 && aws_lambda_function.scaler[0].timeout == 50
+      && aws_lambda_function.scaler[0].reserved_concurrent_executions == 1 && aws_lambda_function.scaler[0].handler == "index.handler"
+    )
+    error_message = "The scaler is a 128 MB arm64 Node 22 Lambda, 50 s timeout, one run at a time."
+  }
+  assert {
+    condition = aws_lambda_function.scaler[0].environment[0].variables == tomap({
+      RUNTIME_URL     = "https://run-pilot.camelai.dev"
+      TOKEN_PARAMETER = "/camelrun/job-hosts/prod/scaler-token"
+      BUILD_ASG       = "camelrun-job-hosts-build"
+      TEST_ASG        = "camelrun-job-hosts-test"
+      IDLE_MINUTES    = "10"
+      BUILD_SLOTS     = "1"
+      TEST_SLOTS      = "8"
+    })
+    error_message = "The scaler's environment names the runtime, its token parameter (by name only) and the pools."
+  }
+  assert {
+    condition     = aws_cloudwatch_event_rule.scaler[0].schedule_expression == "rate(1 minute)" && aws_lambda_permission.scaler[0].principal == "events.amazonaws.com" && aws_lambda_permission.scaler[0].source_arn == aws_cloudwatch_event_rule.scaler[0].arn
+    error_message = "EventBridge runs the scaler every minute, and only that rule may invoke it."
+  }
+  assert {
+    condition     = aws_cloudwatch_log_group.scaler[0].retention_in_days == 14 && aws_cloudwatch_log_group.scaler[0].name == "/aws/lambda/camelrun-job-hosts-scaler"
+    error_message = "The scaler logs to its own group, kept 14 days."
+  }
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.scaler_errors[0].metric_name == "Errors" && aws_cloudwatch_metric_alarm.scaler_errors[0].period * aws_cloudwatch_metric_alarm.scaler_errors[0].evaluation_periods == 900 && aws_cloudwatch_metric_alarm.scaler_errors[0].alarm_actions == toset(["arn:aws:sns:us-west-2:904534089871:camelai-agent-runtime-alerts"])
+    error_message = "Scaler errors over 15 minutes alarm to the alerts topic."
+  }
+  assert {
+    condition     = length([for parameter in [aws_ssm_parameter.runtime_url, aws_ssm_parameter.enrollment_audience] : parameter if parameter.name == "/camelrun/job-hosts/prod/scaler-token"]) == 0
+    error_message = "The token parameter is never created here: no secret in state."
+  }
+}
+
+run "scaler_role_is_exactly_this" {
+  command = apply
+  assert {
+    condition = jsondecode(aws_iam_role.scaler[0].assume_role_policy) == {
+      Version   = "2012-10-17"
+      Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
+    }
+    error_message = "The scaler role trusts only lambda.amazonaws.com."
+  }
+  assert {
+    condition = jsondecode(aws_iam_role_policy.scaler[0].policy).Statement == [
+      { Sid = "DescribePools", Effect = "Allow", Action = ["autoscaling:DescribeAutoScalingGroups"], Resource = "*" },
+      {
+        Sid      = "SizePools"
+        Effect   = "Allow"
+        Action   = ["autoscaling:SetDesiredCapacity", "autoscaling:TerminateInstanceInAutoScalingGroup", "autoscaling:CompleteLifecycleAction"]
+        Resource = [aws_autoscaling_group.build[0].arn, aws_autoscaling_group.test[0].arn]
+      },
+      { Sid = "ReadToken", Effect = "Allow", Action = ["ssm:GetParameter"], Resource = ["arn:aws:ssm:us-west-2:904534089871:parameter/camelrun/job-hosts/prod/scaler-token"] },
+      { Sid = "OwnLogs", Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = ["arn:aws:logs:us-west-2:904534089871:log-group:/aws/lambda/camelrun-job-hosts-scaler:*"] },
+    ]
+    error_message = "The scaler may describe ASGs, size/terminate/complete hooks in the two pools only, read its token and write its logs; nothing else."
+  }
+  assert {
+    condition     = length(aws_iam_role_policy_attachment.host) == 1 && !anytrue([for statement in jsondecode(aws_iam_role_policy.scaler[0].policy).Statement : anytrue([for action in flatten([statement.Action]) : startswith(action, "sts:") || startswith(action, "kms:") || startswith(action, "iam:")])])
+    error_message = "No STS, KMS or IAM for the scaler; no managed policies beyond the host's SSM core."
+  }
+}
+
+run "scaler_with_one_pool" {
+  command = apply
+  variables {
+    test_ami_id = ""
+  }
+  assert {
+    condition     = aws_lambda_function.scaler[0].environment[0].variables.TEST_ASG == "" && aws_lambda_function.scaler[0].environment[0].variables.BUILD_ASG == "camelrun-job-hosts-build"
+    error_message = "A pool that does not exist has an empty ASG name."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.scaler[0].policy).Statement[1].Resource == [aws_autoscaling_group.build[0].arn]
+    error_message = "The scaler can size only the pools that exist."
   }
 }
