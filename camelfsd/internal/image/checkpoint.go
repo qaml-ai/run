@@ -81,16 +81,33 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
+		if v.early != nil && !v.earlyConsumed {
+			select {
+			case <-v.early.done:
+				if v.early.err != nil {
+					return out, v.early.err
+				}
+			case <-ctx.Done():
+				return out, ctx.Err()
+			}
+		}
+	}
+	suspended := false
+	if v.DM != "" {
 		if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
 			return out, e
 		}
-		defer func() {
+		suspended = true
+	}
+	defer func() {
+		if suspended {
 			_, re := run(context.Background(), "dmsetup", "resume", v.DM)
 			if err == nil {
 				err = re
 			}
-		}()
-	}
+		}
+	}()
+
 	f, e := os.OpenFile(v.Dest, os.O_RDWR, 0)
 	if e != nil {
 		return out, e
@@ -105,6 +122,11 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		return out, e
 	}
 	out.FiemapMs = ms(ft)
+	v.pendingRanges = append(v.pendingRanges, ranges...)
+	if v.early != nil && !v.earlyConsumed {
+		v.pendingRanges = append(v.pendingRanges, v.early.ranges...)
+	}
+	ranges = v.pendingRanges
 	rt := time.Now()
 	v.Snapshot++
 	snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
@@ -112,6 +134,13 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		return out, e
 	}
 	out.ReflinkMs = ms(rt)
+	if suspended {
+		_, e = run(context.Background(), "dmsetup", "resume", v.DM)
+		if e != nil {
+			return out, e
+		}
+		suspended = false
+	}
 	sf, e := os.Open(snap)
 	if e != nil {
 		return out, e
@@ -171,6 +200,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		}
 		set.Commit = out.Commit
 	}
+	m.protect(v.JobID, r, out.Root)
 	if e = m.promote(snap, out.Root); e != nil {
 		return out, e
 	}
@@ -184,6 +214,11 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	}
 	if e != nil {
 		return out, e
+	}
+	v.pendingRanges = nil
+	v.earlyConsumed = true
+	if v.early != nil {
+		v.early.ranges = nil
 	}
 	v.Parent = set
 	v.Root = out.Root
@@ -222,6 +257,7 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	if e != nil {
 		return out, e
 	}
+	// v0-limitation: L22
 	allowed := append([]string{m.Data, "/nvme"}, m.ImportAllow...)
 	ok := false
 	for _, dir := range allowed {

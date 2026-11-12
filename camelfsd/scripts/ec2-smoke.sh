@@ -2,7 +2,7 @@
 # Root-only integration test. The caller must check /nvme/host-free first.
 # Usage: sudo ./scripts/ec2-smoke.sh [clone|prehydrate]
 set -euo pipefail
-[[ -e /nvme/host-free ]] || { echo "unit 3 smoke skipped: /nvme/host-free is absent"; exit 0; }
+[[ -e /nvme/host-free ]] || { echo "units 3–5 smoke skipped: /nvme/host-free is absent"; exit 0; }
 [[ $EUID == 0 ]] || { echo 'run as root' >&2; exit 1; }
 MODE=${1:-clone}
 [[ $MODE == clone || $MODE == prehydrate ]] || exit 2
@@ -27,7 +27,9 @@ client() {
   local j=$3 status
   status=$("$BIN" client --socket "$SOCK" status --job "$j")
   mount -o loop "$(field image <<<"$status")" "$W/mnt"
-  "$BIN" testguest apply --vsock-dir "$W/$j" --job "$j" --mount "$W/mnt" --index "$W/$j.idx.json"
+  if [[ ! -f $W/$j.idx.json ]]; then
+   "$BIN" testguest apply --vsock-dir "$W/$j" --job "$j" --mount "$W/mnt" --index "$W/$j.idx.json"
+  fi
   "$BIN" testguest checkpoint --vsock-dir "$W/$j" --job "$j" --mount "$W/mnt" --index "$W/$j.idx.json" &
   local guest=$! result
   result=$("$BIN" client --socket "$SOCK" "$@")
@@ -36,6 +38,13 @@ client() {
   umount "$W/mnt"
   echo "$result"
  else
+  if [[ $1 == mount ]]; then
+   local previous= arg
+   for arg in "$@"; do
+    if [[ $previous == --job ]]; then rm -f "$W/$arg.idx.json" "$W/$arg.idx.pending.json";break;fi
+    previous=$arg
+   done
+  fi
   "$BIN" client --socket "$SOCK" "$@"
  fi
 }
@@ -140,6 +149,8 @@ grep -q '^// smoke generation 2' "$W/mnt/src/m0/d0/f0.ts"
 umount "$W/mnt"; client release --job j2 >/dev/null
 source scripts/ec2-unit3.sh
 unit3
+source scripts/ec2-unit45.sh
+unit45
 cleanup; PID=; AWAY=0
 rec 'cleanup checks:'
 DM=$(dmsetup ls 2>&1); rec "$DM"

@@ -266,8 +266,10 @@ func Checkpoint(vsock, job, mount, index string) (err error) {
 	if e = freeze(mount, true); e != nil {
 		return e
 	}
+	frozenAt := time.Now()
 	defer func() {
 		e := freeze(mount, false)
+		fmt.Fprintf(os.Stderr, "freeze_window_ms=%.3f\n", float64(time.Since(frozenAt).Microseconds())/1000)
 		if err == nil {
 			err = e
 		}

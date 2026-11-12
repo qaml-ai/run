@@ -33,6 +33,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fail := func(e error) {
 		status := 500
 		code := "internal"
+		// v0-limitation: L21
 		if strings.Contains(e.Error(), "invalid") || strings.Contains(e.Error(), "not allowed") || strings.Contains(e.Error(), "already mounted") || strings.Contains(e.Error(), "unknown field") || strings.Contains(e.Error(), "JSON") || errors.Is(e, io.EOF) {
 			status = 400
 			code = "invalid-request"

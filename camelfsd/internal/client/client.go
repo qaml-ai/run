@@ -33,7 +33,7 @@ func Run(args []string, out io.Writer) error {
 	root := g.String("root", "", "root id")
 	tree := g.String("tree", "", "git tree SHA")
 	vsock := g.String("vsock", "", "vsock path")
-	hydrate := g.Bool("hydrate", false, "hydrate")
+	hydrate := g.Bool("hydrate", true, "hydrate")
 	path := g.String("path", "", "import image")
 	name := g.String("name", "", "import ref name")
 	if e := g.Parse(f.Args()[1:]); e != nil {

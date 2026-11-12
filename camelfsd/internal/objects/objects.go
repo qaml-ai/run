@@ -143,6 +143,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 		}
 	}
 	blobs := map[string]Blob{}
+	// v0-limitation: L17
 	rows, e := r.DB.DB.QueryContext(ctx, "SELECT sha256,sha1,size FROM lineage_blobs WHERE lineage=?", q.Lineage)
 	if e != nil {
 		return out, e
@@ -366,15 +367,49 @@ func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
 				}
 				continue
 			}
-			e = r.DB.DB.QueryRowContext(ctx, "SELECT size FROM lineage_blobs WHERE sha1=? LIMIT 1", entry.SHA1).Scan(&entry.Size)
-			if e != nil && !errors.Is(e, sql.ErrNoRows) {
-				return e
-			}
+
 			out = append(out, entry)
 		}
 		return nil
 	}
 	e := walk(id, "")
+	if e != nil {
+		return nil, e
+	}
+	// Bounded IN batches avoid one size query per file without depending on
+	// SQLite's host-parameter limit for large trees.
+	sizes := map[string]int64{}
+	for start := 0; start < len(out); start += 512 {
+		batch := out[start:min(start+512, len(out))]
+		args := make([]any, len(batch))
+		marks := make([]string, len(batch))
+		for i, f := range batch {
+			args[i] = f.SHA1
+			marks[i] = "?"
+		}
+		rows, err := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE sha1 IN ("+strings.Join(marks, ",")+") GROUP BY sha1", args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var sha string
+			var size int64
+			if err = rows.Scan(&sha, &size); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			sizes[sha] = size
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for i := range out {
+		out[i].Size = sizes[out[i].SHA1]
+	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, e
 }

@@ -39,6 +39,7 @@ type DB struct {
 	Now func() time.Time
 }
 
+// v0-limitation: L23
 func Open(path string) (*DB, error) {
 	d, e := sql.Open("sqlite3", path+"?_busy_timeout=5000&_journal_mode=WAL")
 	if e != nil {
@@ -85,6 +86,8 @@ func (d *DB) CAS(l, n string, a, b Value, f Fence) error {
 	}
 	return e
 }
+
+// v0-limitation: L24
 func (d *DB) Lease(l, n, h string) (int64, error) {
 	r, e := d.DB.Exec(`UPDATE refs SET holder=?,lease_epoch=lease_epoch+1,lease_deadline=?,updated_at=? WHERE lineage=? AND name=? AND (holder IS NULL OR lease_deadline<=?)`, h, d.Now().Add(5*time.Minute).UnixMilli(), d.Now().UnixMilli(), l, n, d.Now().UnixMilli())
 	if e != nil {
@@ -97,6 +100,8 @@ func (d *DB) Lease(l, n, h string) (int64, error) {
 	v, e := d.Get(l, n)
 	return v.LeaseEpoch, e
 }
+
+// v0-limitation: L24
 func (d *DB) Renew(l, n string, f Fence) error {
 	r, e := d.DB.Exec(`UPDATE refs SET lease_deadline=? WHERE lineage=? AND name=? AND holder=? AND lease_epoch=? AND lease_deadline>?`, d.Now().Add(5*time.Minute).UnixMilli(), l, n, f.Holder, f.LeaseEpoch, d.Now().UnixMilli())
 	if e != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type flight struct {
@@ -25,7 +26,7 @@ type Cache struct {
 
 func New(dir string, s store.Store, n int) *Cache {
 	if n < 1 {
-		n = 4
+		n = 64
 	}
 	return &Cache{Dir: dir, Store: s, flights: map[string]*flight{}, slots: make(chan struct{}, n)}
 }
@@ -50,6 +51,7 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.flights, h); close(f.done); c.mu.Unlock() }()
 	if b, e := os.ReadFile(p); e == nil && root.Hash(b) == h && len(b) == int(root.ChunkSize) {
+		_ = os.Chtimes(p, time.Now(), time.Now())
 		f.path = p
 		return p, nil
 	}

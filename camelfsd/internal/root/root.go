@@ -49,6 +49,7 @@ func (r Root) Validate() error {
 }
 
 // Marshal a map so every level, including the top level, is lexically sorted.
+// v0-limitation: L18
 func Encode(r Root) ([]byte, error) {
 	if e := r.Validate(); e != nil {
 		return nil, e

@@ -22,10 +22,15 @@ type Server struct {
 	Store    store.Store
 	Cache    *cache.Cache
 	Prefetch int
+	Patterns string
+	mu       sync.Mutex
+	origins  map[string]*origin
 }
 type device struct {
-	r root.Root
-	s *Server
+	r       root.Root
+	s       *Server
+	p       *origin
+	release func()
 }
 
 func (s *Server) load(id string) (*device, error) {
@@ -40,8 +45,17 @@ func (s *Server) load(id string) (*device, error) {
 		return nil, errors.New("root hash mismatch")
 	}
 	r, e := root.Decode(b)
-	return &device{r, s}, e
+	if e != nil {
+		return nil, e
+	}
+	release := s.Register(id, "", r)
+	s.mu.Lock()
+	p := s.origins[id]
+	s.mu.Unlock()
+	return &device{r: r, s: s, p: p, release: release}, nil
 }
+
+// v0-limitation: L15
 func (s *Server) Serve(l net.Listener) error {
 	for {
 		c, e := l.Accept()
@@ -56,6 +70,9 @@ func (d *device) readAt(buf []byte, offset int64) error {
 		o := offset / root.ChunkSize * root.ChunkSize
 		in := offset - o
 		n := min(int(root.ChunkSize-in), len(buf))
+		if d.p != nil {
+			d.p.touch(o)
+		}
 		h := d.r.Chunks[strconv.FormatInt(o, 10)]
 		if h == "" {
 			clear(buf[:n])
@@ -74,14 +91,8 @@ func (d *device) readAt(buf []byte, offset int64) error {
 				return e
 			}
 		}
-		for k := 1; k <= d.s.Prefetch; k++ {
-			next := o + int64(k)*root.ChunkSize
-			if next >= d.r.VirtualSize {
-				break
-			}
-			if h := d.r.Chunks[strconv.FormatInt(next, 10)]; h != "" {
-				go func() { _, _ = d.s.Cache.Ensure(h) }()
-			}
+		if d.p != nil {
+			d.p.ahead(o)
 		}
 		buf = buf[n:]
 		offset += int64(n)
@@ -120,6 +131,11 @@ const (
 func (s *Server) ServeConn(c net.Conn) error {
 	var d *device
 	defer c.Close()
+	defer func() {
+		if d != nil && d.release != nil {
+			d.release()
+		}
+	}()
 	if tc, ok := c.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
 	}
@@ -192,6 +208,10 @@ func (s *Server) ServeConn(c net.Conn) error {
 				return errors.New("bad export name")
 			}
 			var err error
+			if d != nil && d.release != nil {
+				d.release()
+				d = nil
+			}
 			d, err = s.load(string(data[4 : 4+sz]))
 			if err != nil {
 				reply(opt, 1<<31|6, nil)
@@ -220,6 +240,7 @@ func (d *device) transmission(c net.Conn, r *bufio.Reader, w *bufio.Writer) erro
 	var wmu sync.Mutex
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	// v0-limitation: L19
 	slots := make(chan struct{}, 64)
 	send := func(cookie uint64, errno uint32, data []byte) {
 		wmu.Lock()

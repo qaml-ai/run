@@ -418,6 +418,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	if timeout < 1 || timeout > 600000 {
 		return out, fmt.Errorf("invalid timeoutMs")
 	}
+	// v0-limitation: L52
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
 	defer cancel()
 	for _, q := range metadata {
@@ -593,6 +594,7 @@ func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase
 		return out, err
 	}
 	out.quota = r.VirtualSize
+	// v0-limitation: L53
 	entries, err := m.entries(ctx, v.Tree)
 	if err != nil {
 		return out, err

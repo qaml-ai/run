@@ -7,3 +7,9 @@ Real FICLONE checkpoint regression skipped on Sprites (operation not supported).
 unit 3
 2026-11-12: skipped in the development workspace: /nvme/host-free is absent.
 No EC2 smoke timings collected. Loop-mount Go test skips because the user is not root.
+
+units 4–5
+Not run in this workspace: /nvme/host-free is absent.
+5k-file freeze window before: unavailable (no authorized EC2/loop host).
+5k-file freeze window after: unavailable (same gate).
+Sprite checks: loop freeze test skipped (requires root); hydrated FIEMAP test skipped (FICLONE unsupported).

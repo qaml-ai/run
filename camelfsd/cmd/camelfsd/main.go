@@ -75,7 +75,7 @@ func host(args []string) error {
 	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
 	maxBytes := f.Int64("max-bytes", 8<<30, "checkpoint byte cap")
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
-	_ = f.Int64("hydration-pack-size", 4<<20, "reserved pack size")
+	packSize := f.Int64("hydration-pack-size", 4<<20, "hydration window size")
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
@@ -110,9 +110,11 @@ func host(args []string) error {
 	if e != nil {
 		return e
 	}
+	// v0-limitation: L16
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
-	m, e := image.New(image.Config{VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
+	m, e := image.New(image.Config{Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
@@ -122,7 +124,7 @@ func host(args []string) error {
 		return e
 	}
 	defer nl.Close()
-	go func() { _ = (&nbd.Server{Store: s, Cache: c, Prefetch: *depth}).Serve(nl) }()
+	go func() { _ = origin.Serve(nl) }()
 	if e = os.MkdirAll(filepath.Dir(*socket), 0700); e != nil {
 		return e
 	}

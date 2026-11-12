@@ -1,12 +1,14 @@
 package image
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
+	"github.com/qaml-ai/run/camelfsd/internal/nbd"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -26,6 +28,8 @@ var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
 
 type Config struct {
+	Origin                        *nbd.Server
+	HydrationPackSize             int64
 	Data, Cold, NBDListen, HostID string
 	ImportAllow                   []string
 	VirtualSize                   int64
@@ -33,6 +37,7 @@ type Config struct {
 	MaxBytes, MaxPathsBytes       int64
 }
 type Manager struct {
+	pins map[string]map[string]bool
 	Config
 	Store    store.Store
 	Cache    *cache.Cache
@@ -40,6 +45,8 @@ type Manager struct {
 	deviceMu sync.Mutex // Serializes free NBD selection and attachment.
 	mu       sync.Mutex
 	mounts   map[string]*Mount
+	stop     chan struct{}
+	sweepMu  sync.Mutex
 }
 type Request struct {
 	JobID   string `json:"jobId"`
@@ -71,8 +78,28 @@ type Mount struct {
 	Snapshot                          int
 	Promoted                          bool
 	stopRenew                         chan struct{}
+	stopPoll                          chan struct{}
+	releaseOrigin                     func()
+	hydrated                          string
+	hydrationRoot                     string
+	early                             *earlyResult
+	earlyCancel                       context.CancelFunc
+	earlyConsumed                     bool
+	pendingRanges                     []chunk.Range
 }
 
+// Hydration defaults on for JSON callers while retaining the Go bool API.
+func (q *Request) UnmarshalJSON(b []byte) error {
+	type plain Request
+	v := plain{Hydrate: true}
+	decoder := json.NewDecoder(bytes.NewReader(b))
+	decoder.DisallowUnknownFields()
+	if e := decoder.Decode(&v); e != nil {
+		return e
+	}
+	*q = Request(v)
+	return nil
+}
 func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
 	if c.Cold != "clone" && c.Cold != "prehydrate" {
 		return nil, fmt.Errorf("invalid cold mode")
@@ -92,6 +119,7 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e != nil {
 		return nil, e
 	}
+	// v0-limitation: L15
 	if len(entries) > 0 {
 		return nil, fmt.Errorf("existing mount state requires cleanup before restart")
 	}
@@ -113,7 +141,15 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e := blank(c); e != nil {
 		return nil, e
 	}
-	return &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}}, nil
+	if c.HydrationPackSize == 0 {
+		c.HydrationPackSize = 4 << 20
+	}
+	if c.HydrationPackSize < chunk.Size || c.HydrationPackSize%chunk.Size != 0 {
+		return nil, fmt.Errorf("invalid hydration pack size")
+	}
+	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{})}
+	go m.maintain()
+	return m, nil
 }
 func ms(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }
 func (m *Manager) load(ctx context.Context, id string) (root.Root, error) {
@@ -248,7 +284,16 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 				v.streams.close()
 			}
 			_ = m.cleanup(v)
+			if v.releaseOrigin != nil {
+				v.releaseOrigin()
+			}
 			_ = os.RemoveAll(dir)
+		}
+	}()
+	m.protect(v.JobID, r, v.Root)
+	defer func() {
+		if err != nil {
+			m.unprotect(v.JobID)
 		}
 	}()
 	base := m.image(v.Root)
@@ -256,12 +301,16 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		base = filepath.Join(m.Data, "images", fmt.Sprintf("blank-%d.img", m.VirtualSize))
 	}
 	if _, e = os.Stat(base); e == nil {
+		_ = os.Chtimes(base, time.Now(), time.Now())
 		e = clone(base, v.Dest)
 		v.Warm = true
 		v.State = "warm"
 	} else if !os.IsNotExist(e) {
 		return nil, e
 	} else if m.Cold == "prehydrate" {
+		if e = m.sweep(r.VirtualSize); e != nil {
+			return nil, e
+		}
 		e = m.materialize(ctx, r, v.Dest)
 		v.Warm = true
 		v.State = "warm"
@@ -269,6 +318,12 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			e = m.promote(v.Dest, v.Root)
 		}
 	} else {
+		if e = m.sweep(r.VirtualSize); e != nil {
+			return nil, e
+		}
+		if m.Origin != nil {
+			v.releaseOrigin = m.Origin.Register(v.Root, v.Lineage, r)
+		}
 		e = m.cold(ctx, v, r)
 	}
 	if e != nil {
@@ -294,6 +349,10 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	m.mu.Lock()
 	m.mounts[q.JobID] = v
 	m.mu.Unlock()
+	if v.DM != "" {
+		v.stopPoll = make(chan struct{})
+		go m.poll(v, v.stopPoll)
+	}
 	copy := *v
 	return &copy, nil
 }
@@ -306,21 +365,28 @@ func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error 
 	if e = f.Truncate(r.VirtualSize); e != nil {
 		return e
 	}
-	keys := make([]string, 0, len(r.Chunks))
-	for o := range r.Chunks {
-		keys = append(keys, o)
+	windows := packWindows(r, m.HydrationPackSize)
+	keys := make([]string, len(windows))
+	for i := range keys {
+		keys[i] = strconv.Itoa(i)
 	}
-	e = store.Parallel(ctx, store.Depth(m.Store), keys, func(o string) error {
-		b, e := m.Store.Get(ctx, "c/"+r.Chunks[o])
-		if e != nil {
-			return e
+	e = store.Parallel(ctx, 32, keys, func(key string) error {
+		i, _ := strconv.Atoi(key)
+		for _, o := range windows[i] {
+			p, e := m.Cache.EnsureContext(ctx, r.Chunks[o])
+			if e != nil {
+				return e
+			}
+			b, e := os.ReadFile(p)
+			if e != nil {
+				return e
+			}
+			off, _ := strconv.ParseInt(o, 10, 64)
+			if _, e = f.WriteAt(b[:min(int64(len(b)), r.VirtualSize-off)], off); e != nil {
+				return e
+			}
 		}
-		if root.Hash(b) != r.Chunks[o] || len(b) != int(chunk.Size) {
-			return fmt.Errorf("chunk mismatch")
-		}
-		off, _ := strconv.ParseInt(o, 10, 64)
-		_, e = f.WriteAt(b[:min(int64(len(b)), r.VirtualSize-off)], off)
-		return e
+		return nil
 	})
 	if e == nil {
 		e = f.Sync()
@@ -449,6 +515,9 @@ func (m *Manager) status(ctx context.Context, v *Mount) error {
 	if v.TotalRegions > 0 && v.HydratedRegions == v.TotalRegions {
 		v.State = "hydrated"
 		v.Hydrating = false
+		if e = m.hydratedSnapshot(ctx, v); e != nil {
+			return e
+		}
 	}
 	return nil
 }
@@ -506,28 +575,22 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	if v.streams != nil {
 		v.streams.close()
 	}
-	if e := m.status(ctx, v); e != nil {
-		return false, e
-	}
-	if v.State == "hydrated" {
-		if _, e := run(ctx, "dmsetup", "suspend", v.DM); e != nil {
-			return false, e
-		}
-		matches, e := m.matches(ctx, v.Dest, v.Root)
-		if e == nil && matches {
-			e = m.promote(v.Dest, v.Root)
-			if e == nil {
+
+	if v.early != nil {
+		select {
+		case <-v.early.done:
+			if v.early.err == nil && v.early.clean {
+				if e := m.promote(v.hydrated, v.hydrationRoot); e != nil {
+					return false, e
+				}
 				v.Promoted = true
 			}
+		default:
 		}
-		_, re := run(context.Background(), "dmsetup", "resume", v.DM)
-		if e != nil {
-			return false, e
-		}
-		if re != nil {
-			return false, re
-		}
+		v.earlyCancel()
+		<-v.early.done
 	}
+
 	if e := m.cleanup(v); e != nil {
 		return false, e
 	}
@@ -535,6 +598,14 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 		if e := m.Refs.ReleaseLease(v.Lineage, v.Ref, v.Fence); e != nil && !errors.Is(e, refs.ErrFenced) {
 			return false, e
 		}
+	}
+	if v.stopPoll != nil {
+		close(v.stopPoll)
+		v.stopPoll = nil
+	}
+	if v.releaseOrigin != nil {
+		v.releaseOrigin()
+		v.releaseOrigin = nil
 	}
 	if e := os.RemoveAll(filepath.Dir(v.Dest)); e != nil {
 		return false, e
@@ -548,6 +619,7 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	m.mu.Lock()
 	delete(m.mounts, id)
 	m.mu.Unlock()
+	m.unprotect(v.JobID)
 	v.State = "released"
 	return v.Promoted, nil
 }
@@ -555,6 +627,7 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 // Renewal must not wait on the operation mutex: hashing or hydration can take
 // longer than a lease, including while another mount is being prepared.
 func (m *Manager) renewMount(lineage, name, job string, fence refs.Fence, stop <-chan struct{}) {
+	// v0-limitation: L24
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
@@ -568,7 +641,10 @@ func (m *Manager) renewMount(lineage, name, job string, fence refs.Fence, stop <
 		}
 	}
 }
+
+// v0-limitation: L15
 func (m *Manager) Close() {
+	close(m.stop)
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {
@@ -580,28 +656,6 @@ func (m *Manager) Close() {
 			log.Printf("op=cleanup jobId=%s error=%v", id, e)
 		}
 	}
-}
-
-// A hydrated destination may contain uncheckpointed writes; it must never be
-// promoted under its immutable origin id unless its bytes still match.
-func (m *Manager) matches(ctx context.Context, p, id string) (bool, error) {
-	r, e := m.load(ctx, id)
-	if e != nil {
-		return false, e
-	}
-	f, e := os.Open(p)
-	if e != nil {
-		return false, e
-	}
-	defer f.Close()
-	same := true
-	e = (chunk.Chunker{}).File(f, r.VirtualSize, func(o int64, h string, _ []byte) error {
-		if h != r.Chunks[strconv.FormatInt(o, 10)] {
-			same = false
-		}
-		return nil
-	})
-	return same, e
 }
 
 func (m *Manager) lookup(id string) *Mount { m.mu.Lock(); defer m.mu.Unlock(); return m.mounts[id] }
