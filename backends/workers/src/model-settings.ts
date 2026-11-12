@@ -39,7 +39,15 @@ export type ModelHooks = {
 
 export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; TEST_MODEL_BASE_URL?: string; TEST_MODEL_API?: Api; AGENT_CONTENT_FILTER_FALLBACKS?: string; AGENT_TENANT?: string; AGENT_FLEX_WAIT_SECONDS?: string }): Provider {
   const timeouts = runtimeStreamTimeouts(env);
-  let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
+  /**
+   * A virtual model's routing for the message being answered: the member that answered last (`previous`), the member
+   * whose request just failed (`failed`), and every member's failure since the last answer (`failures`), for the log.
+   */
+  let routing: { user: string; previous?: Model<Api>; failed?: Model<Api>; failures: { member: string; error: string }[] } | undefined;
+  const member = (model: Model<Api>) => `${model.provider}/${model.id}${(model as { serviceTier?: string }).serviceTier ? ` (${(model as { serviceTier?: string }).serviceTier})` : ""}`;
+  const failed = (model: Model<Api>, message: AssistantMessage) => {
+    routing?.failures.push({ member: member(model), error: (message.errorMessage ?? message.stopReason ?? "failed").slice(0, 300) });
+  };
   const outputRequest = new OutputRequest();
   const replayRetry = new ModelReplayRetry(hooks.onRetryEvent);
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
@@ -49,9 +57,15 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
     const config = await hooks.settings?.() ?? {};
     if (config.model?.startsWith("camelrun/")) {
       const user = config.requestId ?? String([...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0);
-      if (!routing || routing.user !== user) routing = { user };
-      const selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
-      if (!selected) throw new Error("Virtual model fallback chain is exhausted");
+      if (!routing || routing.user !== user) routing = { user, failures: [] };
+      let selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
+      if (!selected) {
+        // Every member failed this request, and the request is made again (Pi's retry, with its backoff and its bound):
+        // it starts again at the head, as on the Node runtime, instead of failing with no member's error in view.
+        console.log(JSON.stringify({ type: "virtual_model_chain_restart", tenant: env.AGENT_TENANT ?? null, model: config.model, failures: routing.failures.slice(-8) }));
+        routing.failed = undefined;
+        selected = routeModel(resolveModel(config.model), { reason: "user" })!;
+      }
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
     const credential = await hooks.credentials?.(model.provider);
@@ -168,6 +182,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           }
           if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
             routing!.failed = prepared.model;
+            failed(prepared.model, event.error);
             prepared = await prepare(prepared.virtualNext, context, options);
             retry = true;
             continue;
@@ -188,8 +203,15 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             retry = true;
             continue;
           }
-          if (routing && event.type === "error") routing.failed = prepared.model;
-          if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
+          if (routing && event.type === "error") {
+            routing.failed = prepared.model;
+            if (event.reason !== "aborted") {
+              failed(prepared.model, event.error);
+              // The chain's last member failed too: what each member answered, so the failure can be read in the logs.
+              if (!prepared.virtualNext) console.log(JSON.stringify({ type: "virtual_model_chain_failed", tenant: env.AGENT_TENANT ?? null, model: prepared.config.model, failures: routing.failures.slice(-8) }));
+            }
+          }
+          if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; routing.failures = []; }
           if (event.type === "done") await replayRetry.success();
           await hooks.onStreamEvent?.(event);
           output.push(event);

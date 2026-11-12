@@ -247,3 +247,31 @@ test("flex asked and not served is logged once as model_flex_unhonored; flex ser
     { type: "model_flex_unhonored", provider: "openrouter", model: CARBON, servedTier: null },
   ]);
 });
+
+test("every member failing: the request fails with the last member's own error, the log names each member's, and Pi's retry starts at the head again", async t => {
+  const logs: string[] = [];
+  t.mock.method(console, "log", (line: string) => { logs.push(line); });
+  const { calls, provider } = scriptedProvider(model => tier(model) === "flex" ? { error: "503 flex capacity unavailable" } : { error: "502 Provider returned error: upstream reset" });
+  const configured = withSettings(provider, { settings: async () => ({ model: "camelrun/strong", flexWaitSeconds: 0 }) as never, credentials: async () => ({ apiKey: "fixture" }) }, {} as never);
+  const context = { messages: [{ role: "user", content: "hi", timestamp: 1 }] } as never;
+  const ask = async () => { let last: any; for await (const event of configured.stream(resolveModel("camelrun/strong"), context, {})) last = event; return last; };
+  const first = await ask();
+  assert.equal(first.type, "error");
+  assert.equal(first.error.errorMessage, "502 Provider returned error: upstream reset", "the last member's error, never a bare 'exhausted'");
+  const failed = JSON.parse(logs.find(line => line.includes('"virtual_model_chain_failed"'))!);
+  assert.deepEqual(failed.failures, [
+    { member: `openrouter/${CARBON} (flex)`, error: "503 flex capacity unavailable" },
+    { member: `openrouter/${CARBON} (default)`, error: "502 Provider returned error: upstream reset" },
+  ]);
+  // Pi retries the request (its backoff, its bound): the chain starts again at flex rather than refusing.
+  const again = await ask();
+  assert.equal(again.type, "error");
+  assert.deepEqual(calls.map(c => c.tier), ["flex", "default", "flex", "default"]);
+  assert.ok(logs.some(line => line.includes('"virtual_model_chain_restart"')));
+  // camelrun/default: the same, its members by name.
+  logs.splice(0);
+  const plain = scriptedProvider(() => ({ error: "429 Rate limit exceeded" }));
+  const aliased = withSettings(plain.provider, { settings: async () => ({ model: "camelrun/default" }) as never, credentials: async () => ({ apiKey: "fixture" }) }, {} as never);
+  for await (const _ of aliased.stream(resolveModel("camelrun/default"), context, {})) { /* drain */ }
+  assert.deepEqual(JSON.parse(logs.find(line => line.includes('"virtual_model_chain_failed"'))!).failures.map((f: { member: string }) => f.member), [`openrouter/${EMBER}`, `openrouter/${FLASH}`]);
+});
