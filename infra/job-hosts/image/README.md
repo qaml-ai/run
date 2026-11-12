@@ -1,5 +1,7 @@
 # Job host image
 
+For Ubuntu 24.04 nested-KVM hosts, see `infra/job-hosts/kvm/`.
+
 The AMI a job host boots (docs/design/job-hosts-plan.md, slices 1 and 6). It is Amazon Linux 2023 on arm64 (kernel 6.18), set up to run one Firecracker microVM per job in Nitro Sandboxes direct mode. There is one image per pool, `build` or `test`, because the memory pool reserved for sandboxes differs.
 
 **No KVM.** The hosts don't use `/dev/kvm`, nested virtualization or `.metal` instances. Firecracker's Nitro Sandboxes mode (the `enclave` block of its config) runs a microVM through the Nitro Enclaves driver instead. Per Firecracker's [Nitro Sandboxes getting started](https://github.com/firecracker-microvm/firecracker/blob/main/docs/nitro-sandboxes/getting-started.md) ("Requirements"):

@@ -1,0 +1,13 @@
+[Unit]
+Description=camelRun KVM instance-store preparation
+Before=camelfsd.service camel-egress-proxy.service camel-jobhost.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/camel-kvm-prep
+RemainAfterExit=yes
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

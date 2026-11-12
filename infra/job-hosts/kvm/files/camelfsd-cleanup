@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Only release devices traceable through a loop backing file in this daemon's data directory.
+set -euo pipefail
+DATA_DIR=/nvme/camelfs
+[[ $EUID == 0 ]] || { echo 'Must run as root' >&2; exit 1; }
+declare -a loops=() loop_refs=()
+declare -A nbds=()
+# Keep the remaining columns as the backing path, including any spaces.
+loop_listing=$(losetup -l -n -O NAME,BACK-FILE)
+while read -r loop backing; do
+  [[ $backing == "$DATA_DIR/"* ]] || continue
+  loops+=("$loop")
+  loop_refs+=("$loop" "$(lsblk -dnro MAJ:MIN "$loop")")
+done <<< "$loop_listing"
+# dmsetup's table prints device references as major:minor, or sometimes /dev paths.
+# Match entire fields, never substrings (7:1 must not match 7:10).
+references() {
+  local table=$1 ref=$2
+  awk -v ref="$ref" '{for(i=1;i<=NF;i++) if($i==ref) found=1} END {exit !found}' <<< "$table"
+}
+if ((${#loops[@]})); then
+  names=$(dmsetup info -c --noheadings -o name)
+  while read -r name; do
+    [[ $name == camelfs-* ]] || continue
+    table=$(dmsetup table "$name")
+    ours=0
+    for ref in "${loop_refs[@]}"; do
+      if references "$table" "$ref"; then ours=1; break; fi
+    done
+    [[ $ours == 1 ]] || continue
+    echo "== Remove dm device $name"
+    if ! dmsetup remove "$name"; then
+      echo "== Force retry dm device $name"
+      dmsetup remove --force "$name" # A second failure must block daemon startup.
+    fi
+    for sys in /sys/block/nbd*; do
+      [[ -f $sys/dev ]] || continue
+      nbd=/dev/${sys##*/}
+      if references "$table" "$nbd" || references "$table" "$(cat "$sys/dev")"; then
+        nbds["$nbd"]=1
+      fi
+    done
+  done <<< "$names"
+fi
+for nbd in "${!nbds[@]}"; do
+  if [[ $(cat "/sys/block/${nbd##*/}/pid" 2>/dev/null || true) =~ ^[1-9][0-9]*$ ]]; then
+    echo "== Disconnect $nbd"
+    nbd-client -d "$nbd"
+  fi
+done
+for loop in "${loops[@]}"; do
+  echo "== Detach $loop"
+  losetup -d "$loop"
+done
+# Never descend into a still-mounted filesystem, including a nested bind mount.
+if findmnt -rn -o TARGET | awk -v p="$DATA_DIR/mounts" '$0==p || index($0,p"/")==1 {found=1} END {exit !found}'; then
+  echo "ERROR: mounts remain under $DATA_DIR/mounts; unmount them before restarting" >&2
+  exit 1
+fi
+shopt -s nullglob dotglob
+for path in "$DATA_DIR/mounts/"*; do
+  echo "== Remove stale path $path"
+  rm -rf --one-file-system -- "$path"
+done

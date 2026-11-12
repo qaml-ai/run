@@ -1,0 +1,28 @@
+# Runtime source revision; use a revision containing the nested-KVM launcher flags.
+RUN_REF=main
+# Daemon source revision, built separately from the runtime.
+CAMELFSD_REF=camelfs/daemon-v0
+# Runtime enrollment endpoint, e.g. https://run.camelai.com (required).
+RUNTIME_URL=
+# aws uses the instance role; test needs JOB_HOST_TEST_SECRET in /etc/camel/jobhost-test.env.
+ATTESTOR=aws
+# Runtime scheduling pool: test or build.
+POOL=test
+# Maximum concurrent jobs.
+SLOTS=1
+# Advertised total host CPU capacity, not a per-guest allocation.
+JOB_VCPUS=2
+# Advertised total host memory capacity in MiB, not a per-guest allocation.
+JOB_MEMORY_MIB=2048
+# Authenticated import API, listening on host loopback.
+CAMELFS_API_PORT=8790
+# Daemon object store URL (required; replace both placeholders).
+CAMELFSD_STORE='s3://<bucket>/camelfsd/<prefix>'
+# Region of the daemon store and AWS environment.
+AWS_REGION=us-west-2
+# Empty discovers instance store by model; an override still requires safety checks.
+NVME_DEVICE=
+# Empty uses http://archive.ubuntu.com/ubuntu for the noble guest.
+UBUNTU_MIRROR=
+# Size of the guest base image in GiB.
+GUEST_IMAGE_GIB=6
