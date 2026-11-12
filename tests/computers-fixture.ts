@@ -80,11 +80,11 @@ export function fakeBoat(clock: () => number) {
   return { boat, state, machines, rollover: (at: string) => { since = at; } };
 }
 
-export async function fixture(options: { billing?: "prepaid" | "none"; flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; balance?: number; payer?: { id: string; bucket: string }; price?: number; extraAgents?: string[]; outbound?: any } = {}) {
+export async function fixture(options: { billing?: "prepaid" | "none"; flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; balance?: number; payer?: { id: string; bucket: string }; price?: number; extraAgents?: string[]; outbound?: any; maxMonthlyCost?: number } = {}) {
   const { db } = await testDatabase();
   for (const [agent, tenant] of [["a", "payg"], ["b", "payg"], ["c", "rich"], ...(options.extraAgents ?? []).map(id => [id, "payg"])]) await db.query("insert into agents(id,tenant,header,revision,name,type,model) values ($1,$2,'{}',1,'A','test','x')", [agent, tenant]);
   const entry = (name: string, extra = {}) => ({ tokenSha256: createHash("sha256").update(name).digest("hex"), apiKeys: {}, billing: options.billing ?? "prepaid", ...extra });
-  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: entry("payg", options.adminKey ? { apiKeys: { boat: "admin-key" } } : {}), rich: entry("rich") }, platformKeys: options.platformKey === false ? {} : { boat: "platform-key" } }) });
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: entry("payg", { ...options.adminKey ? { apiKeys: { boat: "admin-key" } } : {}, ...options.maxMonthlyCost !== undefined ? { maxMonthlyCost: options.maxMonthlyCost } : {} }), rich: entry("rich") }, platformKeys: options.platformKey === false ? {} : { boat: "platform-key" } }) });
   await tenants.reload();
   const accounts = new Accounts({ db, tenants, pricing: { ...DEFAULT_PRICING, ...options.price ? { computerHour: options.price } : {} }, secretsKey: "ab".repeat(32) });
   const endUsers = new EndUserCredits(db), credit = new CreditHolds(db, accounts.billing);

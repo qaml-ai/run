@@ -166,7 +166,7 @@ const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
 export class ManagedComputers {
   readonly options: {
     db: Db;
-    accounts: Pick<Accounts, "billing" | "tenants" | "providerKey" | "recordUsageIn" | "usageCommitted">;
+    accounts: Pick<Accounts, "billing" | "tenants" | "providerKey" | "recordUsageIn" | "usageCommitted" | "spendLimit">;
     outbound: Outbound;
     /** Whether agents may have managed computers (AGENT_MANAGED_COMPUTERS). */
     enabled: boolean;
@@ -307,13 +307,16 @@ export class ManagedComputers {
   }
 
   /**
-   * What a new computer needs: that it may start, on which key, and its end user's hold. On the platform's key an account
-   * on prepaid billing must have bought credit and have credit left after its model-call holds. Internal accounts
-   * use their configured billing mode; end-user limits still apply to either mode.
+   * What a new computer needs: that it may start, on which key, and its end user's hold. The account must be under its
+   * monthly spend limit, on any key, as a run must (the same check as a fresh run, and as Workers computers make). On the
+   * platform's key an account on prepaid billing must also have bought credit and have credit left after its model-call
+   * holds. Internal accounts use their configured billing mode; end-user limits still apply to either mode.
    */
   private async newRow(connection: any, tenant: string, agent: string) {
     const { accounts, payer, endUsers, credit, now } = this.options;
     if ((await this.db.query("select 1 from computer_blocks where tenant=$1", [tenant])).rowCount) throw new HttpError(403, "Computers are turned off for this account. Nothing was created or charged. Do not retry in this turn; tell the user.");
+    const capped = await accounts.spendLimit(tenant);
+    if (capped) throw new HttpError(402, `${capped}. Nothing was created or charged. Do not retry in this turn; tell the user.`, "SPEND_LIMIT");
     const credential = this.provider === "lambda" ? { platform: true } : await resolveKey(accounts, tenant, NAME);
     if (!credential) throw new HttpError(503, "Computers are unavailable on this runtime. Do not retry in this turn; tell the user.");
     let held: { id: string; endUser: string; bucket: string } | undefined;
@@ -535,14 +538,23 @@ export class ManagedComputers {
       } catch { this.log("computer_charge_failed", { computer: row.id }); }
     }
     const users = this.options.endUsers?.();
-    const limits = new Map<string, boolean>();
-    for (const row of rows.filter(row => row.platform && !row.agent_gone)) {
+    // Why a tenant's machines stop at this pass: its monthly spend limit (any key, as a start checks it), or, on the
+    // platform's key, its prepaid credit. One read of each per tenant per pass.
+    const limits = new Map<string, Promise<{ spend: boolean; credit: boolean }>>();
+    const limitOf = (tenant: string) => {
+      let found = limits.get(tenant);
+      if (!found) limits.set(tenant, found = (async () => ({ spend: !!await accounts.spendLimit(tenant), credit: !!await accounts.billing.creditLimit(tenant) }))());
+      return found;
+    };
+    for (const row of rows.filter(row => !row.agent_gone)) {
       try {
-        if (row.hold && users) await users.renew(row.tenant, row.end_user, row.hold, now());
+        if (row.platform && row.hold && users) await users.renew(row.tenant, row.end_user, row.hold, now());
         if (!this.options.enabled) continue;
-        if (!limits.has(row.tenant)) limits.set(row.tenant, !!await accounts.billing.creditLimit(row.tenant));
-        if (!limits.get(row.tenant)) continue;
-        this.log("computer_credit_stop", { tenant: row.tenant, agent: row.agent, computer: row.id });
+        const limit = await limitOf(row.tenant);
+        const reason = limit.spend ? "spend_limit" : row.platform && limit.credit ? "credit" : undefined;
+        if (!reason) continue;
+        // The agent hears of it at its next computer call: the computer is stopped, and a start is refused with why.
+        this.log(reason === "credit" ? "computer_credit_stop" : "computer_spend_limit_stop", { tenant: row.tenant, agent: row.agent, computer: row.id, reason });
         const current = (await this.db.query("select * from managed_computers where id=$1 and ended_at is null", [row.id])).rows[0];
         if (current) await this.stopRow(current);
       } catch { this.log("computer_charge_failed", { computer: row.id }); }
