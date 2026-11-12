@@ -195,7 +195,10 @@ test("every Wrangler config adds WorkflowObject with its own new_sqlite_classes 
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowObject"), [{ name: "WORKFLOWS", class_name: "WorkflowObject" }], name);
     const tags = config.migrations.map(migration => migration.tag);
     assert.equal(new Set(tags).size, tags.length, `${name}: unique tags`);
-    assert.deepEqual(config.migrations.at(-1), { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, `${name}: the last migration`);
+    // After the existing ones: last, or followed only by the job hosts' (test configs, docs/design/job-hosts-plan.md).
+    const index = tags.indexOf("workflow-object");
+    assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), [], `${name}: nothing but the job hosts' after it`);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);
     // Every class bound locally has a migration that creates it.
     for (const binding of config.durable_objects.bindings.filter(binding => !binding.script_name))
