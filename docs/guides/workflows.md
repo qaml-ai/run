@@ -32,7 +32,7 @@ Its globals:
 | `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
 | `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow: a workflow started with an API key gets `null` (`job_payer_unavailable`). Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
 | `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
-| `gate(opts)` | A decision for a person: `{ title, recommended?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. Returns the answer when it comes. **Not available yet**: today a `gate()` fails at once (the script gets `null`, and its item says `gate() is not available yet`) |
+| `gate(opts)` | A decision for a person, in the account's [inbox](human-input.md): `{ title (or question), body?, options? (2 to 4 labels), recommended?, reason?, priority?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. The workflow waits, durably, and `gate()` returns what they chose (an option's label, or their own words); a decline returns `null`. Past its expiry it takes `recommended` when `onExpire` is `"recommended"`, else the workflow pauses (`waiting_on_gate`) and the item stays answerable: the answer lands and a resume goes on. The agent that owns the workflow hears it open (event `gate_opened`) |
 | `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
 | `phase(name)` | Names the stage the workflow is in (`phase` on its summary, items and log lines) |
 | `log(...parts)` | A line in the workflow's log |
@@ -106,7 +106,7 @@ A workflow that stops without ending is `paused`, and `pauseReason` says why:
 | `user` | You paused it. Running sub-agents finish unless the pause said `children: "abort"` |
 | `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resume re-issues it under a new attempt** |
 | `confirm_rerun` | An edit would re-issue more than `rerunConfirmPercent` of the finished effects. Resume to confirm, or edit again |
-| `waiting_on_gate` | A gate passed its expiry without an answer |
+| `waiting_on_gate` | A gate passed its expiry without an answer and without `onExpire: "recommended"`. It can still be answered in the inbox; resume after it is |
 | `capacity_refused` | The account is at its running-workflows limit |
 | a fault code | The script itself went wrong: `key_required`, `key_conflict`, `step_budget`, a thrown error. `fault` on the summary has the message; edit the script and resume |
 
@@ -213,8 +213,9 @@ with workflows enabled has the `workflows` builtin: `workflow_start`,
 The agent that starts a workflow owns it: only its tools reach it. It need
 not poll: when the workflow ends (`completed`, `failed`, `aborted`), stops
 (`budget_exhausted`, or paused for its payer, capacity, a fault or a rerun
-confirm) or finishes a phase, the agent gets a message of its own, a turn,
-with a block only the runtime writes:
+confirm), finishes a phase or opens a `gate()` for a person (`gate_opened`,
+with the gate's key, inbox item id, title and expiry), the agent gets a
+message of its own, a turn, with a block only the runtime writes:
 
 ```
 <workflow_notification workflow="wf_…" name="port" status="completed" event="completed">

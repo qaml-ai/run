@@ -74,6 +74,12 @@ export class WorkflowNotices {
     sql.exec("INSERT INTO workflow_notices (event, body, status) VALUES (?, ?, ?)", event, text, summary.status);
   }
 
+  /** Stage a notice of an event that is not a change of status (a gate opened), in order with the others. */
+  stage(event: string, body: Record<string, unknown>, status: string) {
+    if (this.deps.owner()?.kind !== "agent") return;
+    this.deps.sql.exec("INSERT INTO workflow_notices (event, body, status) VALUES (?, ?, ?)", event, JSON.stringify({ workflowId: this.deps.workflowId, event, status, ...body }), status);
+  }
+
   /** Deliver staged notices in order; one that fails stops the rest (they keep their order) and is tried again later. */
   flush(): Promise<void> {
     this.flushing ??= this.flushOnce().finally(() => { this.flushing = undefined; });

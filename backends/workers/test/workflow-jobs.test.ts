@@ -16,7 +16,7 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 } });
 const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");
-const { byKind, gateUnavailable, GATE_UNAVAILABLE } = await import("../src/workflow-object.ts");
+const { byKind } = await import("../src/workflow-object.ts");
 const { forkChanges } = await import("../src/workflow-volumes.ts");
 const { ForkJanitor } = await import("../src/workflow-forks.ts");
 hooks.deregister();
@@ -313,12 +313,4 @@ test("a job, commit or push whose landing a crash lost is found by the alarm's s
     assert.equal(h.runner.get().status, "completed", kind);
     assert.deepEqual(h.runner.get().result, { landed: kind });
   }
-});
-
-test("gate() while unavailable: a lost landing is answered by the sweep's poll with the same refusal", async () => {
-  const deferred: (() => Promise<void>)[] = [];
-  const gates = gateUnavailable(async () => {}, task => { deferred.push(task); });
-  await gates.start({ key: "g", attempt: 1, kind: "gate", args: {}, options: undefined, phase: undefined });
-  assert.equal(deferred.length, 1, "its landing is deferred past the start");
-  assert.deepEqual(await gates.poll!({ key: "g", attempt: 1, kind: "gate", args: {}, options: undefined, phase: undefined }), { outcome: { ok: false, error: GATE_UNAVAILABLE } });
 });
