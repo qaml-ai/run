@@ -210,8 +210,21 @@ steers it. Every agent with [`delegate` settings](multi-agent.md) on a runtime
 with workflows enabled has the `workflows` builtin: `workflow_start`,
 `workflow_status` (with a `waitSeconds`), `workflow_items`, `workflow_edit`,
 `workflow_pause`, `workflow_resume`, `workflow_abort` and `workflow_budget`.
-The agent that starts a workflow owns it: only its tools reach it, and it
-reads how the workflow is doing with `workflow_status` and `workflow_items`. Its budget may
+The agent that starts a workflow owns it: only its tools reach it. It need
+not poll: when the workflow ends (`completed`, `failed`, `aborted`), stops
+(`budget_exhausted`, or paused for its payer, capacity, a fault or a rerun
+confirm) or finishes a phase, the agent gets a message of its own, a turn,
+with a block only the runtime writes:
+
+```
+<workflow_notification workflow="wf_…" name="port" status="completed" event="completed">
+{"workflowId":"wf_…","status":"completed","phase":"report","counts":{"done":41},"spentUsd":12.4,"budgetUsd":20,"result":…}
+</workflow_notification>
+```
+
+Notifications take turns from the agent's wake budget, as its sub-agents'
+notifications do. `workflow_status` and `workflow_items` read more when it
+needs to. Its budget may
 not exceed the least of the agent's remaining spend limit and `maxBudgetUsd`
 (default $100); above that, a person starts it through the API.
 
