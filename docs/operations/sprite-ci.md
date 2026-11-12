@@ -70,9 +70,16 @@ With `--comment`, a PR comment lists:
 - where the logs are.
 
 When the run finishes, the status is posted as `success` or `failure`; it is set to `pending` while it runs. If
-`gh` cannot reach GitHub, the script still prints the full report and says the status was not posted. Post it later
-by running the script again with `--gates` naming the gates you need. The sprite checkouts are cached, so a rerun
-of the same commit starts faster.
+`gh` cannot reach GitHub, the script still prints the full report and says the status was not posted.
+
+Each gate's latest result for a commit is kept next to its log (`<gate>.json`), so the report and status always
+cover every gate that ran on that commit. For a gate that failed on something outside the change (a flake, a sprite
+under load), rerun just that gate with `--gates=<gate>`: the new status combines it with the other gates' earlier
+results. The same rerun posts a status GitHub could not take earlier. A rerun marks its gates failed until they
+finish, so a rerun cut short never leaves an earlier pass standing.
+
+Known flake: the Workers unit suite sometimes loses a test file to a `SIGSEGV` in Node (the file shows as `not ok`
+with `signal: 'SIGSEGV'`; `pilot-migrate.test.ts` and `security-policy.test.ts` have done it). Rerun the gate.
 
 A failure on one sprite that does not reproduce elsewhere is usually load on that sprite, often in the Docker tests.
 Before calling it noise, rerun that gate pinned to one sprite (`SPRITE_NAME=rt-pool-30 scripts/sprite-test ...`)

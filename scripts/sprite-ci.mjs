@@ -12,7 +12,7 @@
 // Options: --gates=a,b (default: all), --no-status (post nothing), --comment, --out=DIR (default
 // ~/.cache/sprite-ci/<sha>), --context=NAME (default sprite-ci). Exit 0 when every gate passed, 1 otherwise.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, createWriteStream } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, createWriteStream } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,9 @@ export const GATES = {
   },
   docs: {
     what: "CI's own scripts, docs and OpenAPI tests (ci.yml docs)",
-    args: ["bash", "-c", `node ${STRIP} --test scripts/ci-reuse.test.cjs scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-select.test.ts scripts/test-shard.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts`],
+    // A sprite's checkout is the tree without .git; ci-reuse's tests read HEAD^{tree}, so the gate commits the tree to
+    // a throwaway repository first (.gitignore applies, so its tree is the commit's) and removes it after.
+    args: ["bash", "-c", `set -e; git init -q; trap 'rm -rf .git' EXIT; git add -A; git -c user.name=sprite-ci -c user.email=sprite-ci@localhost commit -qm tree --no-verify; node ${STRIP} --test scripts/ci-reuse.test.cjs scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-select.test.ts scripts/test-shard.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts`],
   },
   sim: { what: "the simulator's fixed seeds, twice each (ci.yml sim)", args: ["bash", "-c", "npm run -s sim -- --seeds 1-10 --twice --jobs \"$(nproc)\""] },
   python: {
@@ -143,6 +145,7 @@ function runGate(name, sha, out) {
     child.on("close", code => {
       log.end(() => {
         const result = verdict(name, code ?? 1, readLog(readFileSync(file, "utf8")));
+        writeFileSync(join(out, `${name}.json`), JSON.stringify(result));
         console.log(`sprite-ci: ${name} ${result.ok ? "passed" : "FAILED"} ${result.counts}${result.note} in ${Math.round((Date.now() - started) / 1000)}s`);
         done(result);
       });
@@ -161,7 +164,12 @@ async function main() {
   mkdirSync(out, { recursive: true });
   console.log(`sprite-ci: ${sha}${pr ? ` (PR #${pr})` : ""}, gates ${options.gates.join(", ")}`);
   if (options.status) postStatus(sha, "pending", `Running on the sprite pool: ${options.gates.join(", ")}`.slice(0, 140), options.context);
-  const results = await Promise.all(options.gates.map(name => runGate(name, sha, out)));
+  // A gate rerun starts as failed: a run cut short never leaves an earlier pass of it standing.
+  for (const name of options.gates) writeFileSync(join(out, `${name}.json`), JSON.stringify(verdict(name, 1, readLog(""))));
+  await Promise.all(options.gates.map(name => runGate(name, sha, out)));
+  // Every gate's latest result for this commit: a rerun of some gates (--gates) reports and posts them with the others'
+  // earlier results, so the status always covers every gate that ran on this commit.
+  const results = Object.keys(GATES).filter(name => readdirSync(out).includes(`${name}.json`)).map(name => JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")));
   const body = report(sha, results, out), description = describe(results);
   const passed = results.every(result => result.ok);
   console.log(`\n${body}\n`);
