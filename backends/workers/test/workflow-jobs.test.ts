@@ -160,12 +160,13 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   await j.executor.cancel(effect("f", {}));
   assert.deepEqual(j.stopped, [await jobId("wf_1", "f", 1)]);
 
-  // A workflow an API key started has no owner agent: its jobs refuse as a value, with no compute.
-  j = jobs(() => { throw new Error("never"); }, true, null);
+  // A workflow an API key started has no owner agent: its tenant pays, under the workflow's id; a refusal of that
+  // payer pauses it as an owner's would.
+  j = jobs(spec => ({ ok: false, id: spec.id, code: "admission_refused", message: "This tenant has reached its monthly spend limit", timings }), true, null);
   await j.executor.start(effect("api", { command: "true", timeoutSeconds: 5 }));
   await j.settled();
-  assert.match((j.landed[0]![2] as { error: string }).error, /^job_payer_unavailable: /);
-  assert.equal(j.specs.length, 0);
+  assert.deepEqual(j.specs[0]!.payer, { tenant: "t1", agent: "wf_1", kind: "workflow" }, "the workflow's tenant pays, under the workflow");
+  assert.deepEqual(j.landed[0]![2], { refused: "This tenant has reached its monthly spend limit", code: "payer_exhausted" });
 
   // A failure's metered cost still reaches the workflow's ledger (the usage it lands with).
   j = jobs(spec => ({ ok: false, id: spec.id, code: "container_failed", message: "out of memory", timings, costUsd: 0.02 }));
