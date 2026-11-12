@@ -197,9 +197,12 @@ test("every Wrangler config adds WorkflowObject and WorkflowResults with their o
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
     assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results"), [], `${name}: nothing but the job hosts' and the result cache's after it`);
-    // The result cache (workflow-results.ts): bound, and created by its own migration, last.
+    // The result cache (workflow-results.ts): bound, with only the pilot's job hosts after its migration.
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
-    assert.deepEqual(config.migrations.at(-1), { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] }, name);
+    assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
+      { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },
+      ...(name === "wrangler.pilot.jsonc" ? [{ tag: "job-hosts", new_sqlite_classes: ["JobHost", "HostJob", "JobHostRegistry"] }] : []),
+    ], name);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);
     // Every class bound locally has a migration that creates it.
     for (const binding of config.durable_objects.bindings.filter(binding => !binding.script_name))
