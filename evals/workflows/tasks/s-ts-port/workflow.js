@@ -8,17 +8,17 @@ export const meta = { name: "ts-port", description: "Port each file, review it, 
 const FINDINGS = { type: "object", properties: { findings: { type: "array", items: { type: "string" } } }, required: ["findings"], additionalProperties: false };
 const ts = (file) => file.replace(/\.js$/, ".ts");
 
-phase("Port");
+log("Port");
 await parallel(args.files.map((file) => () => agent(`${args.instructions}\nFile: /workspace/${file}`, { key: `port:${file}`, type: "worker", definition: args.definitions.worker, label: file })));
-phase("Review");
+log("Review");
 const reviews = await parallel(args.files.map((file) => () => agent(
   `Compare /workspace/${ts(file)} with the original JavaScript behaviour described by the tests and the other modules. List every behaviour change, loose type, stub or missing case. Only report; never edit.`,
   { key: `review:${file}`, type: "critic", definition: args.definitions.critic, output: FINDINGS, label: file })));
-phase("Fix");
+log("Fix");
 await parallel(args.files.map((file, index) => () => reviews[index]?.findings?.length
   ? agent(`Fix these review findings in /workspace/${ts(file)}:\n${reviews[index].findings.join("\n")}`, { key: `fix:${file}`, type: "worker", definition: args.definitions.worker, label: file })
   : null));
-phase("Final review");
+log("Final review");
 const final = await agent("Review the whole TypeScript port in /workspace/src and /workspace/test: imports with .ts extensions, no .js left in src, strict types, every test case kept. List problems only.", { key: "final-review", type: "critic", definition: args.definitions.critic, output: FINDINGS });
 log(`final review: ${final?.findings?.length ?? "no"} findings`);
 return { files: args.files.length, finalFindings: final?.findings ?? [] };

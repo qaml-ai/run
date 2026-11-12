@@ -28,21 +28,18 @@ test("a WorkflowObject runs a workflow through the sandbox Worker, its alarm and
     throw new Error(`${path} never got there: ${JSON.stringify(await call(path))}`);
   };
   const script = (files: string[]) => `
-    phase("review");
     const reviews = await parallel(${JSON.stringify(files)}, file => agent("review " + file, { key: "review:" + file }));
-    await sleep(1);
-    const go = await gate({ key: "ship", title: "Ship?", recommended: "ship" });
+    const go = (await agent("decide", { key: "ship" })).answer;
     log("decided", go);
     return { reviews: reviews.map(r => r.answer), go };`;
 
   const created = await call("wf1", { code: script(["a", "b"]), budgetUsd: 5 });
   assert.equal(created.revision, 1);
-  // The one-second timer lands on the object's own alarm.
   const done = await until("wf1", value => value.status === "completed");
-  assert.deepEqual(done.result, { reviews: ["re: review a", "re: review b"], go: "ship" });
+  assert.deepEqual(done.result, { reviews: ["re: review a", "re: review b"], go: "re: decide" });
   assert.equal(done.spent.usd, 0.03);
   const items = (await call("wf1/items")).items as { key: string; kind: string; status: string }[];
-  assert.deepEqual(items.map(item => [item.key, item.kind, item.status]).sort(), [["review:a", "agent", "done"], ["review:b", "agent", "done"], ["ship", "gate", "done"], [items.find(item => item.kind === "sleep")!.key, "sleep", "done"]].sort());
+  assert.deepEqual(items.map(item => [item.key, item.kind, item.status]).sort(), [["review:a", "agent", "done"], ["review:b", "agent", "done"], ["ship", "agent", "done"]].sort());
   const events = (await call("wf1/events")) as unknown as { type: string }[];
   assert.deepEqual(events.map(event => event.type), ["created", "completed"]);
 
@@ -53,9 +50,9 @@ test("a WorkflowObject runs a workflow through the sandbox Worker, its alarm and
   assert.equal(diff.reason, "review c too");
   assert.ok(diff.kept.includes("review:a") && diff.issued.includes("review:c"), JSON.stringify(diff));
 
-  // Abort: a long timer is cancelled and the alarm goes with it.
-  await call("wf2", { code: `await sleep(3600); return 1;` });
-  assert.equal((await call("wf2")).status, "waiting");
+  // Abort: a workflow with no budget stops before its first agent, and is aborted from there for good.
+  await call("wf2", { code: `return (await agent("a")).answer;`, budgetUsd: 0 });
+  assert.equal((await call("wf2")).status, "budget_exhausted");
   const aborted = await call("wf2/abort", {});
   assert.equal(aborted.status, "aborted");
   const refused = await fetch(`${fixture.worker.url}/__test/workflows/wf2/resume`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });

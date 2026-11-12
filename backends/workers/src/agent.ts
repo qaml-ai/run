@@ -44,10 +44,6 @@ export class CamelAgent extends DurableObject<Env> {
     return this.#runtime.admitDelegateWake(id);
   }
 
-  /** Who may answer the gates of a workflow this agent owns (workflow-gates.ts). */
-  inboxAudience() {
-    return this.#runtime.inboxAudience();
-  }
   receiveAgentMessage(
     request: NoticeRequest,
     notice: RuntimeNotice,

@@ -1,6 +1,6 @@
 // The public workflow API (docs/design/swarm-workflows.md, "API and SDK"), Workers only, gated per tenant:
 //   POST /v1/workflows                      { script, args?, budget: { usd: number | null }, concurrency?, classes?, name? } -> 201
-//   GET  /v1/workflows/{id}                 status, counts, spent, phase, revision
+//   GET  /v1/workflows/{id}                 status, counts, spent, revision
 //   GET  /v1/workflows/{id}/items|events|diff
 //   PUT  /v1/workflows/{id}/script          { script, reason, rerunConfirmPercent?, confirm? }
 //   POST /v1/workflows/{id}/pause|resume|abort|budget
@@ -116,7 +116,7 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
     const view = async () => ({ id, ...(await stub.view()) });
     if (request.method === "GET") {
       if (!action) return json(await view());
-      if (action === "items") return json(await stub.items({ after: number("after"), limit: number("limit"), ...(query.get("status") ? { status: query.get("status")! } : {}), ...(query.get("phase") ? { phase: query.get("phase")! } : {}), ...(query.get("kind") ? { kind: query.get("kind")! } : {}) }));
+      if (action === "items") return json(await stub.items({ after: number("after"), limit: number("limit"), ...(query.get("status") ? { status: query.get("status")! } : {}), ...(query.get("kind") ? { kind: query.get("kind")! } : {}) }));
       if (action === "events") return json({ events: await stub.events({ after: number("after"), limit: number("limit") }) });
       if (action === "diff") return json(await stub.diff(number("revision")));
       return refuse(404, "Not found", "NOT_FOUND");

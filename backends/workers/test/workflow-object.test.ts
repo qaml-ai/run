@@ -7,45 +7,18 @@ import { harness } from "./workflow-harness.ts";
 
 const at = (h: ReturnType<typeof harness>) => h.runner.get();
 
-test("one alarm multiplexes timers, gate expiry, the sweep and the step-rate window", { timeout: 60_000 }, async () => {
+test("one alarm multiplexes the sweep and the step-rate window", { timeout: 60_000 }, async () => {
   const h = harness();
-  h.init({
-    code: `
-      const [slept, chosen, review] = await parallel([
-        () => sleep(30, { key: "nap" }),
-        () => gate({ key: "ship", title: "Ship it?", recommended: "ship", expiresInSeconds: 120, onExpire: "recommended" }),
-        () => agent("review", { key: "review" }),
-      ]);
-      const held = await gate({ key: "hold", title: "Hold?", expiresInSeconds: 60 });
-      return { slept, chosen, review: review.answer, held, at: now() };`,
-  });
+  h.init({ code: `const review = await agent("review", { key: "review" }); return { review: review.answer, at: now() };` });
   await h.wake();
-  // The agent and the gate went to the executor; the timer is the runner's own.
-  assert.deepEqual(h.world.queue.map(effect => effect.key), ["ship", "review"]);
-  h.world.queue.splice(0); // the person never answers the gate; the agent's ending is lost until the sweep finds it
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["review"]);
+  h.world.queue.splice(0); // the agent's ending is lost until the sweep finds it
   assert.equal(at(h).status, "running");
-  assert.equal(h.alarmAt, 5_000 + 30_000, "first the timer");
-  await h.next();
-  assert.equal(h.runner.items().items.find(item => item.key === "nap")!.status, "done");
-  assert.equal(h.alarmAt, 5_000 + 120_000, "then the gate's expiry");
-  await h.next();
-  assert.equal(h.runner.items().items.find(item => item.key === "ship")!.result, "ship", "an expired gate takes its recommendation");
-  assert.equal(h.alarmAt, 5_000 + 30_000 + WORKFLOW_LIMITS.sweepMs, "then the sweep (one interval after the last, at the timer), for the agent that has not landed");
+  assert.equal(h.alarmAt, 5_000 + WORKFLOW_LIMITS.sweepMs, "the sweep, for the agent that has not landed");
   await h.next();
   assert.equal(h.runner.items().items.find(item => item.key === "review")!.status, "done", "the sweep found its ending");
-  // The second gate pauses the workflow when it expires: nobody answered and there is no recommendation.
-  assert.equal(at(h).status, "waiting", "only a gate is open");
-  h.world.queue.splice(0);
-  h.clock = h.alarmAt!;
-  await h.runner.alarm();
-  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "waiting_on_gate"]);
-  assert.ok(h.runner.events().some(event => event.type === "gate_expired" && event.data.took === "pause"));
-  // The answer still lands, and resume goes on.
-  await h.runner.land("hold", 1, { ok: true, value: "hold" });
-  assert.equal(at(h).status, "paused");
-  await h.runner.resume();
   assert.equal(at(h).status, "completed");
-  assert.deepEqual(at(h).result, { slept: null, chosen: "ship", review: "re: review", held: "hold", at: h.clock });
+  assert.deepEqual(at(h).result, { review: "re: review", at: h.clock });
 
   // The step-rate guard: past 5,000 steps in an hour, steps wait for the window to move.
   const busy = harness();
@@ -86,11 +59,11 @@ test("pause, resume and abort", { timeout: 60_000 }, async () => {
   assert.deepEqual(at(h).result, ["re: a", "re: b", 2]);
 
   const gone = harness();
-  gone.init({ code: `const a = await parallel([() => agent("a", { key: "a" }), () => sleep(600, { key: "t" })]); return a;` });
+  gone.init({ code: `const a = await parallel([() => agent("a", { key: "a" }), () => agent("t", { key: "t" })]); return a;` });
   await gone.wake();
   await gone.runner.abort();
   assert.equal(at(gone).status, "aborted");
-  assert.deepEqual(gone.world.cancelled, ["a:1"]);
+  assert.deepEqual(gone.world.cancelled, ["a:1", "t:1"]);
   assert.equal(gone.alarmAt, null);
   assert.deepEqual(gone.runner.items().items.map(item => item.status), ["aborted", "aborted"], "the journal stays readable");
   await gone.runner.land("a", 1, { ok: true, value: "late" });
@@ -172,15 +145,14 @@ test("the budget ledger: past the cap the workflow is budget_exhausted; a refuse
 test("a crash between steps: a new object over the same storage picks up where the last one committed", { timeout: 60_000 }, async () => {
   const db = new DatabaseSync(":memory:");
   const first = harness({ db });
-  first.init({ code: `const a = await agent("a"); await sleep(10); return (await agent("b")).answer + a.answer;` });
+  first.init({ code: `const a = await agent("a"); return (await agent("b")).answer + a.answer;` });
   await first.wake();
   const started = first.world.queue.shift()!;
-  // The object is evicted. Its successor gets the landing, then the alarm.
+  // The object is evicted. Its successor gets the landing, runs the step and starts the next agent.
   const second = harness({ db });
   second.clock = first.clock;
   await second.runner.land(started.key, started.attempt, { ok: true, value: { answer: "A" } });
-  assert.equal(second.alarmAt, second.clock + 10_000, "the successor armed the timer the step journaled");
-  await second.next();
+  assert.deepEqual(second.world.queue.map(effect => (effect.args as { prompt: string }).prompt), ["b"], "the successor ran the step the landing was for");
   await second.run();
   assert.equal(at(second).result, "re: bA");
 });
@@ -229,11 +201,11 @@ test("a failed start is recorded and retried by every later advance and by the a
 
 test("effects issued in the step the script ends in are cancelled, never started", { timeout: 30_000 }, async () => {
   const h = harness();
-  h.init({ code: `const first = await agent("first"); agent("forgotten", { key: "bg" }); sleep(60, { key: "nap" }); return first.answer;` });
+  h.init({ code: `const first = await agent("first"); agent("forgotten", { key: "bg" }); return first.answer;` });
   await h.wake();
   await h.run();
   assert.equal(at(h).status, "completed");
-  assert.deepEqual(h.runner.items().items.map(item => [item.kind, item.status]), [["agent", "done"], ["agent", "cancelled"], ["sleep", "cancelled"]]);
+  assert.deepEqual(h.runner.items().items.map(item => [item.kind, item.status]), [["agent", "done"], ["agent", "cancelled"]]);
   assert.equal(h.world.starts.has("bg:1"), false);
   assert.equal(h.alarmAt, null);
 });
@@ -304,12 +276,13 @@ test("capacity: slots are acquired per agent, waiters start on a grant or a rene
   await s2.run();
   assert.equal(at(s2).result, "re: a");
 
-  // A waiting-only workflow still renews.
+  // A workflow whose only agent has not landed still renews.
   const idle = new FakeCapacity(1);
   const w = harness({ capacity: idle });
-  w.init({ code: `await sleep(3600); return 1;` });
+  w.init({ code: `return (await agent("a")).answer;` });
   await w.wake();
-  assert.equal(w.alarmAt, w.clock + idle.leaseMs / 2, "the renew comes before the hour-long timer");
+  w.world.queue.splice(0); // its ending is lost until the sweep finds it
+  assert.equal(w.alarmAt, w.clock + idle.leaseMs / 2, "the renew is due");
   await w.next();
   assert.ok(idle.calls.includes("renew"));
   await w.run();
@@ -334,21 +307,21 @@ test("review fixes: the alarm survives a failing concern; an edit can drop a run
   // 1. A renew that throws, and an executor poll that throws: recorded, the rest of the alarm runs, the alarm is re-armed later.
   const capacity = new FakeCapacity(4);
   const h = harness({ capacity });
-  h.init({ code: `const [a, nap] = await parallel([() => agent("a", { key: "a" }), () => sleep(600, { key: "nap" })]); return a.answer;` });
+  h.init({ code: `const [a, b] = await parallel([() => agent("a", { key: "a" }), () => agent("b", { key: "b" })]); return a.answer;` });
   await h.wake();
-  h.world.queue.splice(0); // a's ending is lost; the sweep would poll it
+  h.world.queue.splice(0); // a's and b's endings are lost; the sweep would poll them
   capacity.failRenew = "the limiter is down";
   h.world.poll = async () => { throw new Error("poll is down"); };
   h.clock = h.alarmAt!;
   await h.runner.alarm();
-  assert.deepEqual(h.runner.events().filter(event => event.type === "alarm_failed").map(event => event.data.concern).sort(), ["capacity renew", "poll a"]);
+  assert.deepEqual(h.runner.events().filter(event => event.type === "alarm_failed").map(event => event.data.concern).sort(), ["capacity renew", "poll a", "poll b"]);
   assert.ok(h.alarmAt! >= h.clock + 30_000, "armed again, later, not lost");
   capacity.failRenew = undefined;
   capacity.refuseRenew = "workflow_not_open: the lease expired";
   h.clock = h.alarmAt!;
   await h.runner.alarm();
   assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "capacity_refused"], "a refused renew pauses rather than throws");
-  assert.ok(h.alarmAt! > h.clock, "the timer still has its alarm");
+  assert.equal(h.alarmAt, null, "paused with its capacity given up, it waits for a resume, not an alarm");
 
   // 2. An edit that no longer asks for a key whose child is still running: its ending is kept, not a fault.
   const e = harness();
@@ -457,36 +430,6 @@ test("money: a redelivered ending is charged once, an ending after abort is char
   const g = big.world.queue.shift()!;
   await assert.rejects(big.runner.land(g.key, g.attempt, { ok: true, value: "x".repeat(10_000) }, usage), /must be landed as a handle/);
   assert.equal(at(big).spent.usd, 0.25);
-});
-
-test("a gate's deadline: the executor closes it first; an answer that won the race lands instead of the recommendation, and a failed close leaves it for the next alarm", { timeout: 60_000 }, async () => {
-  const h = harness();
-  h.init({ code: `
-    const a = await gate({ key: "a", title: "A?", recommended: "ship", expiresInSeconds: 60, onExpire: "recommended" });
-    const b = await gate({ key: "b", title: "B?", recommended: "ship", expiresInSeconds: 60, onExpire: "recommended" });
-    return { a, b };` });
-  await h.wake();
-  const started = h.world.queue.find(effect => effect.key === "a")!;
-  assert.equal(started.dueAt, h.alarmAt, "the gate's start carries its deadline, which the item's expiry follows");
-  h.world.queue.splice(0);
-  // A person answered "hold" just before the deadline closed it: that answer is what lands.
-  h.world.expireHook = async () => ({ outcome: { ok: true, value: "hold" } });
-  await h.next();
-  assert.deepEqual(h.world.expired.map(entry => [entry.key, entry.take]), [["a", true]]);
-  assert.equal(h.runner.items().items.find(item => item.key === "a")!.result, "hold");
-  assert.ok(!h.runner.events().some(event => event.type === "gate_expired" && event.data.key === "a"), "no recommendation taken");
-  // Closing the next gate fails (the database is down): the alarm survives, and the gate is decided on the next one.
-  h.world.queue.splice(0);
-  h.world.expireHook = async () => { throw new Error("postgres is down"); };
-  h.clock = h.alarmAt!;
-  await h.runner.alarm();
-  assert.equal(h.runner.items().items.find(item => item.key === "b")!.status, "running", "still open, not decided");
-  assert.ok(h.runner.events().some(event => event.type === "alarm_failed"));
-  h.world.expireHook = undefined;
-  h.clock = h.alarmAt!;
-  await h.runner.alarm();
-  assert.equal(at(h).status, "completed");
-  assert.deepEqual(at(h).result, { a: "hold", b: "ship" });
 });
 
 test("a cancel that fails at the end is retried by the alarm, with backoff; a failed step on a landing backs off too", { timeout: 60_000 }, async () => {

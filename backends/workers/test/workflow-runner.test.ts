@@ -8,12 +8,9 @@ import { WorkflowRunner } from "../src/workflow-runner.ts";
 import { harness, PI_QUICKJS, storage, WASM, WASM_BYTES, World } from "./workflow-harness.ts";
 
 const REVIEW = `
-phase("plan");
 const plan = await agent("plan the work");
 log("planned", plan.answer);
-phase("review");
 const reviews = await parallel(["a.ts", "b.ts", "c.ts"], file => agent("review " + file, { key: "review:" + file }));
-await sleep(60);
 const deploy = await agent("fail to deploy");
 const fix = await agent("fix", { type: "fixer" });
 log("fixed");
@@ -41,7 +38,7 @@ test("the pinned QuickJS build is the installed one, and host and guest compute 
   for (const text of ["", "a", "héllo €𝄞", canonicalJson({ z: 1, a: [null, "x"] })]) assert.equal(fnv1a64(text), reference(text));
 });
 
-test("a workflow runs its effects, with phases, logs, parallel keys, a timer, a failure as null and its clock", { timeout: 30_000 }, async () => {
+test("a workflow runs its effects, with logs, parallel keys, a failure as null and its clock", { timeout: 30_000 }, async () => {
   const h = await drive(REVIEW);
   const summary = h.runner.get();
   assert.equal(summary.status, "completed", JSON.stringify(summary));
@@ -49,15 +46,14 @@ test("a workflow runs its effects, with phases, logs, parallel keys, a timer, a 
   assert.deepEqual(result.reviews, ["re: review a.ts", "re: review b.ts", "re: review c.ts"]);
   assert.equal(result.deploy, null, "a failed effect gives the script null");
   assert.equal(result.fix, "re: fix");
-  assert.equal(result.t, 65_000, "the clock is the step's: the timer fired 60 s after it was set");
+  assert.equal(result.t, 5_000, "the clock is the step's");
   assert.equal(result.d, result.t, "Date.now() is the step's clock too");
   const items = h.runner.items().items;
-  assert.deepEqual(items.map(item => [item.kind, item.phase, item.status]), [
-    ["agent", "plan", "done"], ["agent", "review", "done"], ["agent", "review", "done"], ["agent", "review", "done"],
-    ["sleep", "review", "done"], ["agent", "review", "failed"], ["agent", "review", "done"],
+  assert.deepEqual(items.map(item => [item.kind, item.status]), [
+    ["agent", "done"], ["agent", "done"], ["agent", "done"], ["agent", "done"], ["agent", "failed"], ["agent", "done"],
   ]);
-  assert.equal(items[5]!.reason, "could not fail to deploy");
-  assert.deepEqual(h.runner.logs().map(row => [row.phase, row.text]), [["plan", "planned re: plan the work"], ["review", "fixed"]]);
+  assert.equal(items[4]!.reason, "could not fail to deploy");
+  assert.deepEqual(h.runner.logs().map(row => row.text), ["planned re: plan the work", "fixed"]);
   assert.equal(h.alarmAt, null, "a finished workflow keeps no alarm");
 });
 
@@ -130,7 +126,7 @@ test("faults pause the workflow: keys inside parallel, key conflicts, a stalled 
   const h = harness();
   h.init({ code: `await agent("a"); return await agent("b");` });
   await h.wake();
-  h.store.db.exec("UPDATE workflow_effects SET version = 2");
+  h.store.db.exec("UPDATE workflow_effects SET version = 99");
   await h.next();
   assert.deepEqual([h.runner.get().status, h.runner.get().fault?.code], ["paused", "journal_version"]);
 });
@@ -197,4 +193,42 @@ test("the script check only compiles: a script that closes its wrapper does not 
   assert.ok(Date.now() - started < 5_000, "the check returned at once");
   const h = await drive(`return { sw: fromBase64("sw=="), round: fromBase64(toBase64("ss saas \\u{1F42A}s")), spaced: fromBase64("c3 Nz\\nc3M=") };`);
   assert.deepEqual(h.runner.get().result, { sw: Buffer.from("sw==", "base64").toString(), round: "ss saas \u{1F42A}s", spaced: "sssss" });
+});
+
+test("gate(), sleep() and phase() are gone: a script that calls one fails on that line", { timeout: 30_000 }, async () => {
+  for (const call of ["sleep(1)", "gate({ title: \"Ship?\" })", "phase(\"plan\")"]) {
+    const h = await drive(`await agent("a"); ${call}; return 1;`);
+    const summary = h.runner.get();
+    assert.equal(summary.status, "failed", call);
+    assert.match(summary.error ?? "", new RegExp(`${call.slice(0, call.indexOf("("))} is not defined`), call);
+  }
+});
+
+test("a workflow from runner 1 waiting on a gate or a timer ends failed with script_api_retired; one waiting on nothing else runs on", { timeout: 30_000 }, async () => {
+  // As runner 1 left it: an agent running beside a pending gate, status `waiting` once the agent lands.
+  const h = harness();
+  h.init({ code: `const [a] = await parallel([() => agent("a", { key: "a" }), () => agent("b", { key: "b" })]); return a;` });
+  await h.wake();
+  h.store.db.exec(`INSERT INTO workflow_effects (key, attempt, current, ord, origin, revision, kind, args, status, started, issued_step, seen_revision, issued_at, version)
+    VALUES ('ship', 1, 1, 100, 'script', 1, 'gate', '{"title":"Ship?"}', 'pending', 1, 1, 1, 1000, 1)`);
+  h.store.db.exec("UPDATE workflow_state SET version = 1, status = 'waiting'");
+  await h.wake();
+  const summary = h.runner.get();
+  assert.deepEqual([summary.status, summary.fault?.code], ["failed", "script_api_retired"]);
+  assert.equal(summary.fault?.message, "gate() and sleep() were removed: start the workflow again without them");
+  assert.deepEqual(h.world.cancelled.sort(), ["a:1", "b:1"], "its running agents are stopped; the gate goes to no executor");
+  assert.ok(h.runner.items().items.every(item => item.status === "cancelled"));
+  assert.equal(h.store.db.prepare("SELECT version FROM workflow_state").get()!.version, 2);
+  await h.wake();
+  assert.equal(h.runner.events().filter(event => event.type === "failed").length, 1, "brought up to date once");
+
+  // `waiting` with nothing retired pending (an agent's result waiting for its step): it is running, and finishes.
+  const other = harness();
+  other.init({ code: `return (await agent("a")).answer;` });
+  await other.wake();
+  other.store.db.exec("UPDATE workflow_state SET version = 1, status = 'waiting'");
+  await other.wake();
+  assert.equal(other.runner.get().status, "running");
+  await other.run();
+  assert.deepEqual([other.runner.get().status, other.runner.get().result], ["completed", "re: a"]);
 });

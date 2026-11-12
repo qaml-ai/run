@@ -239,7 +239,7 @@ export class Runtime {
       if (status !== 200) throw new Error(`workflow ${id}: ${status}`);
       if (["completed", "failed", "aborted", "budget_exhausted"].includes(body.status)) return body;
       if (body.status !== last) { last = body.status; since = Date.now(); }
-      if ((["paused", "waiting"].includes(body.status) && Date.now() - since > stallMs) || Date.now() > deadline) return { ...body, stalled: true };
+      if ((body.status === "paused" && Date.now() - since > stallMs) || Date.now() > deadline) return { ...body, stalled: true };
       await new Promise(resolve => setTimeout(resolve, pollMs));
     }
   }
@@ -423,7 +423,7 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
     notified = await runtime.notifications(agent.id);
     // Polls: workflow_status calls, direct or from code mode.
     notified.statusPolls = Math.max(notified.statusPolls, (toolCalls.workflow_status ?? 0) + (toolCalls["codemode:workflow_status"] ?? 0));
-    for (const event of notified.events) if (!["completed", "phase", "paused"].includes(event)) failures.push({ source: "workflow notification", message: `event ${event}` });
+    for (const event of notified.events) if (!["completed", "paused"].includes(event)) failures.push({ source: "workflow notification", message: `event ${event}` });
   }
 
   const children = await runtime.children(agent.id);

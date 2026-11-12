@@ -36,9 +36,6 @@ Its globals:
 | `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
 | `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow; a workflow started with an API key is paid by its account, and its usage shows under the workflow's id. A job the account's credit or monthly spend limit refuses pauses the workflow (`payer_exhausted`) until it is raised. Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
 | `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
-| `gate(opts)` | A decision for a person, in the account's [inbox](human-input.md): `{ title (or question), body?, options? (2 to 4 labels), recommended?, reason?, priority?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. The workflow waits, durably, and `gate()` returns what they chose (an option's label, or their own words); a decline returns `null`. Past its expiry it takes `recommended` when `onExpire` is `"recommended"`, else the workflow pauses (`waiting_on_gate`) and the item stays answerable: the answer lands and a resume goes on. Who may answer is as for the owning agent's own decisions (its `humanInput.approvers`); with no owning agent, anyone with the account's key. The agent that owns the workflow hears it open (event `gate_opened`) |
-| `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
-| `phase(name)` | Names the stage the workflow is in (`phase` on its summary, items and log lines) |
 | `log(...parts)` | A line in the workflow's log |
 | `args` | What it was started with (`args` in the start), frozen |
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
@@ -60,11 +57,9 @@ stored answer, a new one starts an effect. The runner stops at the first call
 it cannot answer yet.
 
 ```js
-phase("port");
 const ported = await parallel(args.files.map(file => () =>
   agent(`Port ${file} from Bun to Node. Keep behaviour identical.`, { key: `port:${file}`, type: "worker" })));
 
-phase("review");
 const findings = await parallel(args.files.map(file => () =>
   agent(`Review the port of ${file}. List problems.`, {
     key: `review:${file}`, type: "critic",
@@ -74,7 +69,6 @@ const findings = await parallel(args.files.map(file => () =>
 const bad = findings.filter(Boolean).flatMap(finding => finding.problems);
 log(`${bad.length} problems in ${args.files.length} files`);
 
-phase("report");
 return agent(`Write the port report. Problems: ${JSON.stringify(bad)}`, { key: "report", type: "lead" });
 ```
 
@@ -114,7 +108,6 @@ A workflow that stops without ending is `paused`, and `pauseReason` says why:
 | `user` | You paused it. Running sub-agents finish unless the pause said `children: "abort"` |
 | `payer_exhausted` | A sub-agent was refused for credit (the account's spend limit, a 402). That is not a failed effect the script would see as `null`: the effect is `refused`, and **resume re-issues it under a new attempt** |
 | `confirm_rerun` | An edit would rerun more than `rerunConfirmPercent` of the finished effects: new effects while finished results go unused (their keys dropped). New effects beside finished ones do not count once the script has asked for those (a new effect it waits on before asking for them still does). Resume to confirm, or edit again (with `confirm: true` to go ahead) |
-| `waiting_on_gate` | A gate passed its expiry without an answer and without `onExpire: "recommended"`. It can still be answered in the inbox; resume after it is |
 | `capacity_refused` | The account is at its running-workflows limit |
 | a fault code | The script itself went wrong: `key_required`, `key_conflict`, `step_budget`, a thrown error. `fault` on the summary has the message; edit the script and resume |
 
@@ -127,8 +120,8 @@ sub-agents stop and the journal stays readable.
 
 ```
 POST /v1/workflows                       { script, args?, budget: { usd }, concurrency?, classes?, name?, allowFastJudgment? } -> 201
-GET  /v1/workflows/{id}                  status, pauseReason?, phase?, revision, step, budget, spent, counts, result?, error?
-GET  /v1/workflows/{id}/items            ?after=&limit=&status=&phase=&kind=   -> { items, next? }
+GET  /v1/workflows/{id}                  status, pauseReason?, revision, step, budget, spent, counts, result?, error?
+GET  /v1/workflows/{id}/items            ?after=&limit=&status=&kind=          -> { items, next? }
 GET  /v1/workflows/{id}/events           ?after=&limit=                        -> { events }
 GET  /v1/workflows/{id}/diff             ?revision=                            -> { revision, reason?, kept, issued, unseen }
 PUT  /v1/workflows/{id}/script           { script, reason, rerunConfirmPercent?, confirm? } -> { revision, workflow }
@@ -150,8 +143,8 @@ curl -X POST $CAMELRUN_URL/v1/workflows \
 curl $CAMELRUN_URL/v1/workflows/wf_…/items?status=failed -H "Authorization: Bearer $CAMELAI_API_KEY"
 ```
 
-`items` is the journal: one row per effect (`kind` `agent`, `gate` or
-`timer`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
+`items` is the journal: one row per effect (`kind` `agent`, `job`,
+`commit` or `push`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
 `failed`, `refused`, `aborted`), `args`, `result`, `reason`, `costUsd` and
 `model`, in the order they were issued; pass `next` back as `after`.
 `counts` on the summary is the same by status. `events` is what happened
@@ -221,13 +214,12 @@ with workflows enabled has the `workflows` builtin: `workflow_start`,
 The agent that starts a workflow owns it: only its tools reach it. It need
 not poll: when the workflow ends (`completed`, `failed`, `aborted`), stops
 (`budget_exhausted`, or paused for its payer, capacity, a fault or a rerun
-confirm), finishes a phase or opens a `gate()` for a person (`gate_opened`,
-with the gate's key, inbox item id, title and expiry), the agent gets a
+confirm), the agent gets a
 message of its own, a turn, with a block only the runtime writes:
 
 ```
 <workflow_notification workflow="wf_…" name="port" status="completed" event="completed">
-{"workflowId":"wf_…","status":"completed","phase":"report","counts":{"done":41},"spentUsd":12.4,"budgetUsd":20,"result":…}
+{"workflowId":"wf_…","status":"completed","counts":{"done":41},"spentUsd":12.4,"budgetUsd":20,"result":…}
 </workflow_notification>
 ```
 
