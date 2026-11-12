@@ -647,6 +647,20 @@ chunk dedupe, and ext4 metadata amplification at checkpoints (kept off the hot p
 the file tree as truth everywhere, keeps the image as a derivable cache that exists only on hosts, and makes image
 lineages block-only rather than pretend a tree can hold an OS.
 
+`proto/mount` (a FUSE lazy mount from a manifest with a host blob cache and an overlay for writes; sprites, a fake
+R2 at 20 ms per request) is the measurement that settles the first half of this: **lazy beats copying by two to
+three orders of magnitude, even through FUSE**. Time to the first command from a manifest was 0.05 / 0.06 / 0.17 s
+for the small / medium / large trees and 0.28 s for a real 80.7k-file, 1.64 GB repository with `node_modules`,
+against today's host pull at 0.75 / 17.9 / 178 / 286 s and the sequential `camel-sync` tar at 5 / 103 / ~1,000 s.
+`tsc` on that repository: 65.6 s after a copy, 7.4 s on a cold lazy mount (4.8k of 80.7k blobs fetched), 6.2 s on a
+warm cache. A fork on a warm host cache hit 100 % of blobs at every size because commits write through to the
+cache; an overlay commit grows with changed files, not tree size (0.13 / 0.83 / 10.7 s for 30 / 270 / 2,520 changed
+files). And the second half: per-file open+read was 0.3–0.6 ms through warm FUSE against 0.1 ms native, with
+passthrough making no measurable difference on small files because LOOKUP and OPEN dominate; a cold full read of the
+large tree was 138 s lazy and 33.5 s with 32 prefetchers against 4.4 s native. So the design takes the laziness and
+the shared content-addressed cache from this arm and moves them below the filesystem, where the kernel serves every
+warm operation and hydration replaces per-file demand fetches.
+
 **Reflink files + a lazy origin + dm-clone, not dm-thin, not NBD alone, not virtio-fs + DAX, not ZFS/Btrfs.**
 XFS reflink is the CoW and snapshot primitive the hosts already use (1.5 ms clones, measured on the spike), works on
 plain files that Firecracker, loop and dm-clone all take, and gives change detection through FIEMAP's shared-extent
@@ -936,7 +950,9 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 | Is in-VM block access native? | yes, on the v0 host: in a nested-KVM guest every warm op equals a raw file on NVMe (stat 2.5 µs, open+read 2.9 µs); hydrated full reads 7.35 s vs 7.20 s local | `proto/block` on `m8id.4xlarge` |
 | Does nested KVM cost file ops? | no: guest 2.9 µs = host 2.9 µs; only cold I/O pays +15–30 µs per exit; the build tax is v0's measurement | same |
 | Does dm-clone make the cold path native? | yes: hydration at ~1 GB/s from S3 (2 GiB in 1.8 s), then kernel-only; NBD-in-path stays 1.8× on metadata-heavy reads | same |
-| Is FUSE acceptable in the hot path? | no: 5–10× on every metadata op and open; passthrough fixes reads only | `proto/block`, `proto/mount` |
+| Is FUSE acceptable in the hot path? | no: 5–10× (host) to 10–40× (NVMe) on every metadata op and open; passthrough trims warm reads only and nothing on small files | `proto/block`, `proto/mount` |
+| Does lazy mounting beat copying? | by 2–3 orders: first command in 0.05–0.28 s from a manifest vs 0.75–286 s for today's pull; `tsc` on an 80k-file repo 7.4 s cold-lazy vs 65.6 s after a copy; forks 100 % cache hits | `proto/mount` |
+| Does a commit scale with the tree? | no: with changed files (0.13 / 0.83 / 10.7 s for 30 / 270 / 2,520) | `proto/mount`, matching the checkpoint contract |
 | Can a tree be the version while blocks are the transport? | yes, and it must be: block maps differ per materialization | `proto/block` |
 | Which VM substrates take a host block device as virtio-blk? | all three: Nitro Sandboxes (direct and confidential), Firecracker on KVM, Cloud Hypervisor | Firecracker `docs/nitro-sandboxes/`, CH docs, via `proto-block` |
 | Does Nitro Sandboxes support what computers need? | no: no memory snapshots, no pause, no unplug, no balloon, no overcommit; vhost-user-blk rejected | same |
