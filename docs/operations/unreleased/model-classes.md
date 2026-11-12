@@ -8,8 +8,13 @@ rest of the turn, logged as `model_flex_fallback` and `model_flex_fallback_cost`
 response that asked flex and was served on another tier with no fallback is logged as `model_flex_unhonored`. The
 tier that served a response is on its usage (`serviceTier`, and `requestedServiceTier` when one was asked), its model
 attempt and its `usage.recorded` event, and the platform's price for it is that tier's. `GET /v1/models` lists each
-route's tier as `serviceTiers`. Gemini 4 Carbon joins the catalog (asking for at most 32,768 output tokens, which every endpoint serves). Nothing
+route's tier as `serviceTiers`. Gemini 4 Carbon joins the catalog (asking for at most 65,536 output tokens: room for its high-effort reasoning). Nothing
 changes for any other model: no other request sends `service_tier`.
 
 On the Workers backend, platform pricing now reads the same model catalog as routing: its separate copy lacked Muse
 Ember, which it priced as an unknown model.
+
+On the Workers backend, when every member of a virtual model fails a request, a retry of it starts again at the first
+member (as on the Node runtime) instead of failing with "Virtual model fallback chain is exhausted"; the request fails
+with the last member's own error, and `virtual_model_chain_failed` / `virtual_model_chain_restart` log each member's
+failure. An answer cut off at its output limit is passed through as truncated and logged (`model_output_cut`).
