@@ -143,7 +143,7 @@ touch (§1.9).
 | `objects` | `id` | trees and commits (content-addressed; a put is unconditional and idempotent), `generation` |
 | `touch` | `id` | an object named by id without bytes since the last mark began (§1.9); TTL = 2 × grace |
 | `warm` | `lineage`, `host` | the image files this host holds, with the host's boot epoch, for placement |
-| `lineages` | `lineage` | tenant, kind (`workspace` / `image`), quota, default branch, durability cadence, ignore list, last mark |
+| `lineages` | `lineage` | tenant, kind (`workspace` / `image`), quota, default branch, ignore list, last mark |
 
 A **lineage** is a volume plus everything made from it (forks, job views, cache entries, mirrors); it is the
 DynamoDB partition key and the unit of chunk sharing. DynamoDB's adaptive capacity splits a hot partition, so a
@@ -272,8 +272,8 @@ and v0 item 4 measures the floor with the journal pinned.
 5. The host **publishes the file tier**: the trees on the changed paths (3–5 tree objects for a one-file edit, read
    from its tree cache), one commit with the attribution trailers, and the fenced ref CAS. This is the **durable
    version**: every later reader, Worker, merge, search and git export sees it.
-6. The host **publishes the root**, coalesced (every 30 s and at mount end; `durability: "call"` lineages do it per
-   checkpoint): FIEMAP on the live image just before step 3 listed the extents **not shared** with the previous
+6. The host **publishes the root**, coalesced (every 30 s and at mount end, so a burst of manual checkpoints shares
+   one root publish): FIEMAP on the live image just before step 3 listed the extents **not shared** with the previous
    snapshot, which are exactly the ranges written since it (every extent is shared right after a reflink and a CoW
    write makes a private one); the host hashes those 256 KiB-aligned ranges from the snapshot file, PUTs the chunks
    S3 lacks (touching the ones it skips), writes a root `{ parentRoot, tree, offsets → hashes }`, and records it on
@@ -291,9 +291,41 @@ that snapshot, a root's tree is the tracked view of exactly that image. A guest 
 about its own files, which hurts only its own lineage. A periodic verify job (mount a sample root in a sacrificial
 VM, walk, compare to the tree) catches drift from bugs on our side.
 
-**Cadence.** A durable version **per turn, or after 30 s of dirtiness**, whichever first, and always before a fork,
-a job, a merge, a sleep and at mount end. A lineage may set `durability: "call"` (a checkpoint at every tool call;
-the freeze-stream is milliseconds for the usual few files) for interactive computers; the default is open (§6).
+**Checkpoints: automatic and manual, both always on, nothing to configure** (Miguel, 2026-11-12).
+
+- **Automatic.** A durable version at the end of **every turn** that wrote, after **30 s of dirtiness**, and always
+  before a fork, a job, a merge, a sleep and at mount end. Not a setting: every lineage, every agent, every job. (The
+  earlier per-lineage `durability` knob is gone; there is nothing to configure.)
+- **Manual.** The agent can checkpoint **at any moment** with a tool, `checkpoint(message)`. It makes an ordinary
+  version through the same call as the automatic one, with two differences: the commit message is the agent's
+  (automatic commits carry a generated one, "turn 14 of run …"), and the trailer `Camel-Checkpoint: manual` marks
+  it. Nothing else is special about it: it is one more commit on the branch's first-parent chain, the automatic
+  checkpoints keep running around it, and a manual checkpoint on an unchanged tree is a commit with the same tree as
+  its parent (allowed, so a name can be given to a state the agent did not change; the API answers `unchanged:
+  true`). Cost is the incremental checkpoint cost: a freeze of milliseconds, the changed files' blobs, 3–5 tree
+  objects and one commit; with nothing changed it is one commit object and one CAS, near free.
+- **Why both.** Automatic checkpoints make every turn recoverable without anyone thinking about it; manual ones let
+  an agent name the points that matter ("tests green before the refactor", "about to try approach B") so that it,
+  a reviewer or a person can come back to exactly there. The restore, fork and history surfaces **prefer named
+  checkpoints**: `history` lists manual checkpoints first and folds automatic ones under them; `restore` and `fork`
+  take a checkpoint id, a message prefix or `latest`, and their pickers show manual checkpoints by message with the
+  automatic ones one level down; `blame` and `diff` treat both alike.
+- **The daemon API.** `checkpoint(mount | ref, { message?, trailers })` on `camelfsd`, where the trailers carry the
+  attribution (`Camel-Agent`, `Camel-Run`, `Camel-Turn`, `Camel-Call`, `Camel-Job`, `Camel-Workflow`,
+  `Camel-Checkpoint: automatic | manual`); the automatic path calls it with no message, the tool with the agent's.
+  One implementation, one contract (steps 1–7 above), one kind of version.
+- **Jobs.** A job with `commit: true` is checkpointed **even when its command fails**: the commit records the exit
+  status in its trailers (`Camel-Job-Exit: 1`) and message, the fork's tree is returned as usual, and the workflow
+  decides whether to merge it. An agent can therefore inspect exactly what a failed build or test run left behind
+  (logs it wrote into the tree, generated files, a half-applied codemod) instead of losing it with the VM.
+- **Model-facing tool text, draft** (short on purpose; to be reviewed line by line):
+  > `checkpoint(message)`: save a named version of your workspace now. Everything you have written is already saved
+  > automatically at the end of each turn; use this to name a point you may want to come back to, such as "tests
+  > pass before refactor". Returns the version id. Costs nothing if nothing changed.
+- **v0.** The automatic per-turn checkpoint is in v0. The manual tool is a thin layer over the same daemon call (a
+  message and one trailer), so it is **in v0 too**; the history and restore pickers that prefer named checkpoints
+  come with the console (phase 3).
+
 There are no host-local snapshots that are not versions: a version is the only thing a fork, a rollback or a job
 can name, and rollback is a fork from an older version mounted fresh.
 
@@ -370,7 +402,7 @@ isolation suite. The difference is the lease:
 | | job (`job()`, `job_run`) | computer (an agent's long-lived machine) |
 |---|---|---|
 | mounts | `/repo` ← fork of the named tree (a `job:<id>` ref); root disk ← the job's image lineage | `/workspace` ← the agent's branch (a lease); root disk ← the computer's image lineage |
-| writes | into its image copies; `outputs` are read from the final image; with `commit: true` the `/repo` fork is checkpointed at the end | checkpoints per turn (or per call), durable versions |
+| writes | into its image copies; `outputs` are read from the final image; with `commit: true` the `/repo` fork is checkpointed at the end, even when the command fails (the exit status is in the commit) | automatic checkpoints per turn plus the agent's manual `checkpoint(message)`, all durable versions |
 | end | checkpoint if asked, drop the files, destroy; the fork is merged by the workflow or garbage | sleep = checkpoint, then a Firecracker memory snapshot (nested KVM) or destroy; wake = restore (tens of ms) or boot (0.8–2.5 s) |
 | fork | freeze, reflink, a new VM, O(1) | the same; a child computer is a reflink and a boot (or a restore of the parent's memory snapshot, for a true fork of a running machine) |
 
@@ -492,7 +524,7 @@ Three things the prototype makes explicit, and the design's answer to each:
 - **Unsaved edits are invisible to the index until a checkpoint.** An API-held branch's `dirty` rows are few and in
   hand, so `grep` scans them directly and overlays the result on the index (a dirty path masks its indexed blob);
   a held branch's unpublished turn is reachable only inside the VM, where the agent's own `rg` sees it, or through a
-  forwarded `grep` to the holder; and `durability: "call"` closes the window to one tool call. Before launch the
+  forwarded `grep` to the holder; and a manual `checkpoint` closes the window on demand. Before launch the
   dirty-row overlay is required; the forwarded grep comes with forwarding (phase 2).
 - **A cap of 2,000 matching files** per query, as the prototype has; the answer says it was capped, and the agent
   narrows with a path filter.
@@ -534,8 +566,10 @@ so the table holds the working set and S3 holds history at S3 prices. Walkers (m
 through the same object interface.
 
 **Attribution.** Every commit's author is `agent:<id>` (or `user:<id>`, `job:<id>`) and its trailers name the run,
-the tool call and the workflow. With per-turn checkpoints the `Camel-Call` trailer names the call that closed the
-turn and a line is attributed to the turn; with `durability: "call"` it is the call. `blame(ref, path)` gives, per
+the turn, the tool call, the job and the workflow, and `Camel-Checkpoint` says `automatic` or `manual`. An automatic
+checkpoint's `Camel-Call` names the call that closed the turn, so a line is attributed to the turn; a manual
+checkpoint's names the `checkpoint` call itself, so a line is attributed to the span since the previous version.
+`blame(ref, path)` gives, per
 line, the commit, the agent and the call; `diff` between any two trees is O(changed paths). A merge's second parent
 keeps an attempt's intermediate versions, so "which turn introduced this line" survives the merge.
 
@@ -601,7 +635,7 @@ live sets; the sweep is a sorted merge over the inventory (daily, a few cents pe
 | | value | why |
 |---|---|---|
 | RPO, published version | 0 | S3 (11 nines, versioned) and DynamoDB (3 AZs, PITR) hold it before the CAS is acknowledged |
-| RPO, held branch | the current turn (≤ 30 s of dirtiness, or one call with `durability: "call"`); forwarded writes included | the window between checkpoints lives in the host's image file |
+| RPO, held branch | the current turn (≤ 30 s of dirtiness, or less if the agent checkpointed manually); forwarded writes included | the window between checkpoints lives in the host's image file |
 | RPO, API-held branch | 0 | every write is a DynamoDB row |
 | RTO, API tier | 0 (multi-AZ, stateless) | any node serves any request |
 | RTO, a lost host | the job rerun / computer wake on another host: seconds to boot plus cache warmth | nothing on a host is truth; leases lapse at their deadline (30 s) and the owner re-places; the host-boot epoch kills stale leases instantly on a reboot |
@@ -745,8 +779,8 @@ transaction hook.
 
 **Checkpoints are versions; there are no snapshots that are not.** The earlier draft kept host-local per-tool-call
 snapshots that were not versions; the review showed they could not be turned into one without a VM and could make
-the next checkpoint's tree disagree with the image after a rollback. Gone. Per-call durability is a cadence setting,
-not a second mechanism.
+the next checkpoint's tree disagree with the image after a rollback. Gone. The agent's manual `checkpoint` is the
+same call as the automatic one with a message attached, not a second mechanism, and there is no cadence setting.
 
 **Trigrams only for search.** No symbol index, no embeddings: agents grep, and the simplest index that makes grep
 instant over any snapshot is the one to run.
@@ -784,8 +818,9 @@ What exists today, from the code on `main` (the survey is precise; line referenc
 | `grep` bounded to 1,000 files / 32 MiB (`GREP_BYTES`) | the index; unbounded | the bound |
 
 Agents' tools do not change shape: `read`, `write`, `edit`, `ls`, `glob`, `grep`, `present_file` keep their names
-and the "changed since you read it" check (blob id instead of version). New for agents: `history`, `diff`, `blame`,
-`fork`, `merge` as tools on a repo-kind volume, and `job_run` on any volume. The SDK's `VolumeHandle` keeps its
+and the "changed since you read it" check (blob id instead of version). New for agents: `checkpoint(message)` on
+every workspace (§1.3), and `history`, `diff`, `blame`, `restore`, `fork`, `merge` as tools on a repo-kind volume,
+and `job_run` on any volume. The SDK's `VolumeHandle` keeps its
 surface with `version` meaning a tree id; `Mount` (`{ volumeId, path, mode, subpath }`, ≤ 16 per agent) is unchanged
 and now also means "mounted in the computer".
 
@@ -853,9 +888,10 @@ the working VM code in another language, and it is the production split too: the
 host's control plane, camelFS is its storage service.
 
 **What v0 deliberately skips:** HA and a second AZ; more than one host; GC **sweep** (the mark runs and logs what it
-would delete, nothing is deleted); forwarded writes and reads (one writer, refusal otherwise); per-tool-call
-durability (per turn only); generation packing; quotas beyond a per-mount XFS project quota; the ignore list beyond
-`.git/`; merges with rename detection; push/mirror/import; the console; metering; polish of any kind.
+would delete, nothing is deleted); forwarded writes and reads (one writer, refusal otherwise); the history and
+restore pickers that prefer named checkpoints (the automatic per-turn checkpoint and the manual `checkpoint`
+tool are both in); generation packing; quotas beyond a per-mount XFS project quota; the ignore list beyond `.git/`;
+merges with rename detection; push/mirror/import; the console; metering; polish of any kind.
 
 **What v0 does not guarantee:** a held branch's reads from the API may be a turn stale; a write to a held branch is
 refused, not queued; a host crash loses the current turn of every branch it held and every memory snapshot; nothing
@@ -921,7 +957,7 @@ purpose; v0's measurements will reshape them.
 ### Phase 2: computers on the fleet; every other substrate is deleted (4 weeks)
 
 - `MicroVmComputer`: leases, forwarded reads and writes with guest-side CAS, sleep as checkpoint + memory snapshot,
-  wake as restore or boot, fork as reflink + boot or restore, `durability: "call"`, the watchdog, cold-path tuning
+  wake as restore or boot, fork as reflink + boot or restore, the watchdog, cold-path tuning
   (ublk, dm-clone or pre-hydration per v0's numbers, access-pattern prefetch).
 - Bar: wake ≤ 300 ms p50 and ≤ 4 s p99 (lease + dirty apply + reflink + restore; cold boots included in the p99);
   fork of a computer ≤ 500 ms to a running child; durable version lag ≤ 30 s p99; a forwarded Worker write visible
@@ -983,11 +1019,11 @@ computer providers in production. After phase 2 there is one substrate and nothi
 8. **Go for the device daemon.** No mature ublk library in Go today; NBD is fine and measured; Rust's `libublk` is
    maintained by ublk's author. **Decided (Miguel, 2026-11-12): Go.** NBD is the lazy origin now; ublk comes
    through a thin cgo binding or a Rust sidecar when it is measured to matter.
-9. **Default durability cadence.** Per turn (or 30 s) is ~$365/month of versions at the baseline; per tool call for
-   the file tier is ~5× that. **Decided (Miguel, 2026-11-12): an automatic checkpoint per turn is the v0 default.**
-   `durability: "call"` stays a per-lineage setting. Still open: whether agents also get an explicit, named
-   checkpoint of their own (automatic only, or automatic plus agent-controlled); the recommendation on the table is
-   both, with `restore` able to target a named point, and that part of the design waits for his answer.
+9. **Checkpoint cadence and control.** **Decided (Miguel, 2026-11-12): both, always on, not configurable.** Every
+   turn checkpoints automatically, and the agent can checkpoint manually at any moment with `checkpoint(message)`;
+   there is no per-lineage cadence setting. The design is in §1.3 ("Checkpoints: automatic and manual"); both are
+   in v0. Cost at the baseline is the per-turn figure (~$365/month of versions) plus whatever agents name, which is
+   incremental and near free when nothing changed.
 10. **History horizon and retention.** Reachability keeps everything a `main` ever was unless a lineage sets a
     horizon; with generation packing it costs S3 prices. **Decided (Miguel, 2026-11-12): keep history indefinitely
     for now.** No retention knob in v0; a horizon stays a later, operator-side policy.
