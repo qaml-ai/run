@@ -13,6 +13,20 @@ instances are fine; and before any production build, a **usable end-to-end proto
 shape. Hard rule from the #869 security review: **never parse a guest-controlled filesystem on the host**, and bound
 every decompress and unpack.
 
+## The invariant: one execution substrate
+
+**Every VM camelRun manages, a job's or an agent's computer, runs on our hosts with a camelFS disk.** We own the
+VM and we manage its mounted disk; there is no second substrate and no managed fallback. Miguel, 2026-11-12,
+reversing the earlier "keep a fallback during the transition": "the invariant here is that we own the VM and we
+manage the mounted disk … simpler, cleaner, and less buggy … even if that means that we need to maintain a service
+and that it's a failure point." Consequences, applied throughout: Cloudflare containers, the `containers` and
+`auto` `JOB_PROVIDER` values, the container snapshot and fork machinery, the Lambda MicroVM and Boat computer
+providers, and the tar copy-in path are **deleted outright in phase 2**, not kept behind the seams; availability
+comes from our own fleet's HA (§1.11), not from another provider; and the `JobDriver` and `ComputerProvider` seams
+survive only as the boundary between the runtime and `jobhost/`, with one implementation each. The one scope
+question still open is whether *user-chosen* computer connections (a tenant bringing Daytona, E2B, sprites,
+Browserbase or similar) remain as an integration; §6 carries it.
+
 ## The ideal, and what this design gives
 
 | Ideal | camelFS |
@@ -598,6 +612,19 @@ live sets; the sweep is a sorted merge over the inventory (daily, a few cents pe
 Sharding is by lineage: DynamoDB partitions on it, chunk sharing stops at it, marks are per lineage, leases are per
 branch. There is no shard map to operate and no shard to rebalance. The API tier is horizontal.
 
+**Availability without a fallback.** Since no other provider stands behind the fleet, the fleet's own HA is the
+whole answer, and it is made of four things we already own: **multi-AZ pools** (every pool spans the three pool
+subnets, placement spreads across AZs, and an AZ loss leaves two thirds of capacity and every image reachable from
+S3); **capacity headroom** (each pool's target keeps enough free slots for the largest expected burst plus one
+host's worth, scaled on queue depth as the job-hosts plan already does, so a lost host is absorbed without a cold
+boot of a new one); **fast host replacement** (an ASG replaces a failed host in minutes from a baked AMI, enrolls
+it through the attestation path, and it is useful at once because nothing on a host is truth and caches fill
+lazily); and **retry on another host** (a job whose host died is reissued by key, as today; a computer whose host
+died wakes elsewhere from its last durable version, losing at most the current turn, §1.11's RPO row). What a
+fallback provider would have added is a second code path with its own semantics, which the invariant forbids. The
+remaining single points are the regional managed services, S3 and DynamoDB, which are the same dependency any
+provider would have had.
+
 **Pages at 3 a.m., and the runbook each needs:** the daemon down or the lazy origin stalled on a host (the watchdog
 has dropped its leases; drain and replace the host); the image store or the chunk cache over watermark with live
 mounts pinned (evict, then drain); a lineage throttled in DynamoDB (adaptive capacity usually splits it; otherwise
@@ -724,8 +751,10 @@ not a second mechanism.
 **Trigrams only for search.** No symbol index, no embeddings: agents grep, and the simplest index that makes grep
 instant over any snapshot is the one to run.
 
-**One fleet.** The volume hosts are the job hosts are the computer hosts. A separate storage fleet would hold caches
-that the compute could not use locally, and the whole point of the image tier is locality.
+**One fleet, one substrate.** The volume hosts are the job hosts are the computer hosts. A separate storage fleet
+would hold caches that the compute could not use locally, and the whole point of the image tier is locality. And
+there is no other substrate: no managed provider behind the fleet (the invariant above), so every job and computer
+has exactly one lifecycle, one disk model and one set of failure modes.
 
 **Not chosen, and why:** Cloudflare Artifacts (1 GB/repo, 32 MiB/file, 33× R2's price, no server-side writes, no
 partial clone); Pierre (OpenAI acquired it 2026-11-04; $3.60/GB-month; its ephemeral branches, preview merge and
@@ -748,7 +777,7 @@ What exists today, from the code on `main` (the survey is precise; line referenc
 | `workflow-results.ts` (203): cache key = canonical args + `@base:<seq>`; `adopt` takes a fork over; 7-day TTL, 2,000 entries | key = `(tree, command, inputs)`; a cached result's fork is `cache/<key>` with `owner: cache`; adopt = one update | the adopt and fork-ownership paths (~50) |
 | `jobs/camel-sync.ts` (150): the Worker reads every file from R2, builds a tar, pipes it to `tar -x` on the container's stdin, whole tree every job; `jobs/hosts.ts` `HostJob.files/fetch` + `host-sync-store.ts`: ≤ 16 MiB inline as base64 in the WebSocket, else a per-file manifest the host pulls six at a time in 4 MiB base64 pieces through the guest `files{append}` op; `JOB_LIMITS.sync` 100k files / 64 MiB per file / 4 GiB | `job({ at: ref|tree })` mounts a `job:<id>` fork (reflink or lazy); `outputs` are read from the final image; `commit: true` checkpoints the fork for the workflow to merge. Inline `files: {…}` keep the current path for the few-file case | `camel-sync.ts`, `host-sync-store.ts`, `HostJob.files/fetch` (`hosts.ts:712-755`), `pullFiles` (`jobhost/agent.ts:187`), the `sync` half of `WireJob` and the guest `files` op past inline sizes |
 | `jobhost/firecracker.ts`: `cp --reflink=always base.ext4` + `truncate` + `resize2fs -f` on the host; the planned `job_snapshots` table, S3 `snapshots/` prefix and image LRU (plan slice 5, unbuilt); `#869` whole-disk snapshots (parked) | image lineages, roots and the host's image store; `saveSnapshot` is a checkpoint of the image lineage; placement reads `warm`; growth is `resize2fs` in the guest | the host-side `resize2fs`, slice 5 and #869 |
-| `computers/objects.ts` `ContainerComputer` (a Cloudflare container per agent; `read`/`write` run `node -e` inside it, 1 MiB cap; disk persists only as container snapshots, 30-day TTL, no delete API; `idle: "sleep"` snapshots before stop), `provider.ts` snapshot/base/sleep/fork (lines 599–786), `native-fork.ts`, `child-fork.ts`, `microvm.ts` (Lambda, 1 vCPU / 2 GiB, no snapshot or fork), `remote.ts` connections (Boat fork 9.6 s for 1.7 GB) | one `MicroVmComputer` provider on the hosts: a lease on the agent's branch mounted at `/workspace`, sleep as checkpoint + memory snapshot, wake as restore or boot, fork as reflink + boot; `read`/`write` become file-API calls on the branch (forwarded while held) | the Cloudflare container provider and its `wrangler.jsonc` `containers` block at the end of phase 2; Lambda MicroVM and Boat once the fleet has run a month; the remote-connection fork path |
+| `computers/objects.ts` `ContainerComputer` (a Cloudflare container per agent; `read`/`write` run `node -e` inside it, 1 MiB cap; disk persists only as container snapshots, 30-day TTL, no delete API; `idle: "sleep"` snapshots before stop), `provider.ts` snapshot/base/sleep/fork (lines 599–786), `native-fork.ts`, `child-fork.ts`, `microvm.ts` (Lambda, 1 vCPU / 2 GiB, no snapshot or fork), `remote.ts` connections (Boat fork 9.6 s for 1.7 GB) | one `MicroVmComputer` provider on the hosts: a lease on the agent's branch mounted at `/workspace`, sleep as checkpoint + memory snapshot, wake as restore or boot, fork as reflink + boot; `read`/`write` become file-API calls on the branch (forwarded while held) | **deleted outright in phase 2:** the Cloudflare container provider and its `wrangler.jsonc` `containers` block, `ContainerComputer`, the container snapshot/base/sleep/fork machinery, the Lambda MicroVM and Boat providers, `JOB_PROVIDER` `containers`/`auto`, and the remote-connection fork path; whether user-chosen connections (Daytona, E2B, sprites, Browserbase) stay as an integration is open (§6) |
 | `history-pins.ts` (21): attachment pins inherited by forks | an agent's attachments are a tree under `agent/<id>` | all of it |
 | Node backend `src/volumes.ts` (1,192: 1 MiB content-addressed chunks under `chunks/<tenant>/<aa>/<sha256>`, `chunk_pins`, `chunk_touches`, `gc_candidates`), `storage-gc.ts`, `gc-verify.ts`, `pin-backfill.ts` | the same client over the same API | ~1,700 lines; one implementation for both backends |
 | `workflow-jobs.ts` `PUSH_SCRIPT` (`git clone --depth 1`, replace the tree, `git add -A; commit; push` in a job) | the API's mirror edge with the App token | the job-shaped push |
@@ -889,7 +918,7 @@ purpose; v0's measurements will reshape them.
   launch templates with nested virtualization enabled; the vCPU quota for the Intel families. Fixed cost ~$150/month
   plus the pools.
 
-### Phase 2: computers on the fleet; Cloudflare containers go (4 weeks)
+### Phase 2: computers on the fleet; every other substrate is deleted (4 weeks)
 
 - `MicroVmComputer`: leases, forwarded reads and writes with guest-side CAS, sleep as checkpoint + memory snapshot,
   wake as restore or boot, fork as reflink + boot or restore, `durability: "call"`, the watchdog, cold-path tuning
@@ -897,8 +926,14 @@ purpose; v0's measurements will reshape them.
 - Bar: wake ≤ 300 ms p50 and ≤ 4 s p99 (lease + dirty apply + reflink + restore; cold boots included in the p99);
   fork of a computer ≤ 500 ms to a running child; durable version lag ≤ 30 s p99; a forwarded Worker write visible
   in the VM ≤ 200 ms; metadata-random reads of a hydrated lineage within 10 % of local; zero Cloudflare container
-  minutes after cutover.
-- AWS: a computers pool (`m8id`, more hosts, overcommit on), its quota, and alarms on image-store and cache pressure.
+  minutes after cutover; the deletions below landed, so `JobDriver` and `ComputerProvider` each have one
+  implementation.
+- Deleted in this phase, not kept as fallbacks: the Cloudflare container provider and `containers` block,
+  `ContainerComputer` and the container snapshot/fork machinery, the Lambda MicroVM and Boat providers,
+  `JOB_PROVIDER` `containers` and `auto` (the value becomes the hosts driver alone), `camel-sync` and the tar
+  copy-in path, `host-sync-store.ts` and the `sync` half of the wire protocol.
+- AWS: a computers pool (`m8id`, more hosts, overcommit on), its quota, multi-AZ placement with the headroom rule of
+  §1.11, and alarms on image-store and cache pressure.
 
 ### Phase 3: search, the git edge, blame (3 weeks)
 
@@ -921,8 +956,8 @@ purpose; v0's measurements will reshape them.
   ≥ 95 % of deleted-workflow bytes within 48 h with zero false positives; p99 API latency unchanged at 10× the
   baseline request rate.
 
-Cloudflare containers are deleted at the end of phase 2, not before: until then they are the computer provider and
-the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
+Cloudflare containers, Lambda MicroVMs and Boat are deleted in phase 2, not before: until then they are the
+computer providers in production. After phase 2 there is one substrate and nothing to fall back to.
 
 ## 6. Risks and open questions for Miguel
 
@@ -959,10 +994,12 @@ the fallback. Boat and Lambda MicroVMs leave once the fleet has run a month.
 11. **Self-host.** The design runs on a directory and SQLite in place of S3 and DynamoDB (the Go interfaces are four
     calls each), but the image tier needs root, KVM, XFS reflink and a kernel with NBD or ublk; self-hosters without
     them get the API and copy-mode jobs only. Acceptable for the self-host product line?
-12. **Fallback providers.** Boat and Lambda stay only while the fleet proves itself; Cloudflare containers go at the
-    end of phase 2. **Decided (Miguel, 2026-11-12): keep a managed fallback during the transition.** The
-    `ComputerProvider` and `JobDriver` seams keep one managed provider selectable until the fleet has carried
-    production for a month; retiring it is a later, separate decision.
+12. **Fallback providers.** **Decided (Miguel, 2026-11-12, reversing his earlier answer the same day): no managed
+    fallback.** One execution substrate is the invariant (page 1); Cloudflare containers, Lambda MicroVM and Boat
+    are deleted in phase 2; availability is the fleet's own HA (§1.11). **Still open, asked of Miguel:** whether
+    user-chosen computer *connections* (a tenant bringing Daytona, E2B, sprites, Browserbase or similar through
+    `computer_connections`) stay as an integration, or go with the rest. They are not a fallback for our VMs, and
+    they never carry a camelFS disk; the question is only whether the integration surface is worth keeping.
 13. **Idle computers on our hosts.** A sleeping computer is a memory snapshot on NVMe and costs nothing; a running
     idle one holds memory. Recommendation: idle timeout 5 minutes, then sleep, since wake is tens of milliseconds.
 14. **Git features the tree store refuses.** Submodules are refused at import rather than flattened; LFS pointers are
