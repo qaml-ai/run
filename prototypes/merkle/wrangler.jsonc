@@ -1,0 +1,10 @@
+// Local only (`wrangler dev --local`): no Cloudflare resources are created from this file.
+{
+  "name": "proto-merkle-volumes",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [{ "name": "LINEAGE", "class_name": "Lineage" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lineage"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "proto-merkle-local" }]
+}

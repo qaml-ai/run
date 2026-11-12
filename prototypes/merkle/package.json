@@ -1,0 +1,9 @@
+{
+  "name": "proto-merkle-volumes",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "bench": "node --experimental-strip-types --disable-warning=ExperimentalWarning bench/bench.ts"
+  }
+}
