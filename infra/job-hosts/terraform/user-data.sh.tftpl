@@ -1,0 +1,18 @@
+#!/bin/bash
+# Writes the host agent's settings (slice 1's systemd unit loads /etc/camelrun/job-host.env). Fails the boot loudly
+# rather than starting an agent with no runtime to talk to.
+set -euo pipefail
+install -d -m 0755 /etc/camelrun
+parameter() { aws ssm get-parameter --region "${region}" --name "$1" --query Parameter.Value --output text; }
+runtime_url=$(parameter "${ssm_prefix}/runtime-url")
+audience=$(parameter "${ssm_prefix}/enrollment-audience")
+[[ -n $runtime_url && -n $audience ]]
+umask 022
+cat > /etc/camelrun/job-host.env.tmp <<ENV
+CAMELRUN_RUNTIME_URL=$runtime_url
+CAMELRUN_JOB_HOST_AUDIENCE=$audience
+CAMELRUN_JOB_HOST_POOL=${pool}
+CAMELRUN_JOB_IMAGES_BUCKET=${images_bucket}
+AWS_REGION=${region}
+ENV
+mv /etc/camelrun/job-host.env.tmp /etc/camelrun/job-host.env
