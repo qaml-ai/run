@@ -258,3 +258,18 @@ test('after attempts land out of order, list_agents and wait_agent show the work
   const waited = (await (tools.find(tool => tool.name === 'wait_agent') as any).execute({ agents: ['review'] }, { ...api, callId: 'w' }, {})).structuredOutput.agents;
   assert.deepEqual(waited.map((agent: any) => [agent.agentId, agent.status]), [['wf_1', 'completed']]);
 });
+
+test('a payer stop retries by itself: the owner hears it once, not at every refused retry, and again after another stop', () => {
+  const w = workflow(async () => ({ accepted: true }));
+  const payer = summary('paused', { pauseReason: 'payer_exhausted' });
+  w.endings.statusWritten(payer);
+  w.endings.statusWritten(payer);
+  w.endings.statusWritten(payer);
+  assert.deepEqual([w.endings.pending(), w.endings.attempt()], [1, 2], 'one stop told; its retries refused again tell nothing');
+  w.endings.statusWritten(summary('budget_exhausted'));
+  w.endings.statusWritten(payer);
+  assert.deepEqual([w.endings.pending(), w.endings.attempt()], [3, 4], 'a budget stop, then the payer again: both told');
+  w.endings.statusWritten(summary('failed', { fault: { code: 'payer_gave_up', message: 'no credit for 7 days' } }));
+  const keys = w.storage.sql.exec("SELECT key FROM child_outbox ORDER BY key").toArray().map((row: any) => row.key);
+  assert.deepEqual(keys, ['wf_1_a000001:z', 'wf_1_a000002:z', 'wf_1_a000003:z', 'wf_1_a000004:z']);
+});
