@@ -1,6 +1,7 @@
 package testguest
 
 import (
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"net"
 	"os"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestApplyRefusesSymlinkParent(t *testing.T) {
-	vsock := filepath.Join(t.TempDir(), "v")
+	vsock := filepath.Join(testutil.SocketDir(t), "v")
 	l, e := net.Listen("unix", vsock+"_5201")
 	if e != nil {
 		t.Fatal(e)
@@ -47,7 +48,7 @@ func TestCheckpointRefusesPlainDirectory(t *testing.T) {
 }
 
 func TestApplyDirectoryToFile(t *testing.T) {
-	vsock := filepath.Join(t.TempDir(), "v")
+	vsock := filepath.Join(testutil.SocketDir(t), "v")
 	l, e := net.Listen("unix", vsock+"_5201")
 	if e != nil {
 		t.Fatal(e)

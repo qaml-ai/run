@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 D=/nvme/camelfs
 W=/nvme/bench/work/camelfsd-$MODE
 SOCK=$D/api.sock
-export GOCACHE=$PWD/.cache GOPATH=$PWD/.go TMPDIR=$PWD/.tmp
+export GOCACHE=$PWD/.cache GOPATH=$PWD/.go TMPDIR=/tmp/camelfsd-smoke
 mkdir -p "$GOCACHE" "$GOPATH" "$TMPDIR"
 BIN=$PWD/camelfsd
 mkdir -p "$D" "$W" "$W/mnt"
@@ -99,7 +99,7 @@ NEW=$(field root <<<"$CP")
 [[ $NEW != "$ROOT" ]]
 rec "checkpoint $CP"
 J2=$(client mount --job j2 --lineage test --root "$NEW")
-mount -o loop,ro "$(field image <<<"$J2")" "$W/mnt"
+mount -o loop,ro,noload "$(field image <<<"$J2")" "$W/mnt"
 head -1 "$W/mnt/src/m0/d0/f0.ts" | grep -q '^// file 100000'
 umount "$W/mnt"
 client release --job j1 >/dev/null
@@ -144,7 +144,7 @@ NEW2=$(field root <<<"$CP2")
 # Verify the moved ref and exact cold-checkpoint bytes through another mount.
 VERIFY=$(client mount --job j2 --lineage test --ref main)
 assert 'j["warm"] is True and j["root"]=="'"$NEW2"'"' <<<"$VERIFY"
-mount -o loop,ro "$(field image <<<"$VERIFY")" "$W/mnt"
+mount -o loop,ro,noload "$(field image <<<"$VERIFY")" "$W/mnt"
 grep -q '^// smoke generation 2' "$W/mnt/src/m0/d0/f0.ts"
 umount "$W/mnt"; client release --job j2 >/dev/null
 source scripts/ec2-unit3.sh

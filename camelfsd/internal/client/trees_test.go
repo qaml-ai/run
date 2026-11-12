@@ -3,6 +3,7 @@ package client_test
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +23,7 @@ func TestImportTreeClient(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	socket := filepath.Join(t.TempDir(), "s")
+	socket := filepath.Join(testutil.SocketDir(t), "s")
 	ln, e := net.Listen("unix", socket)
 	if e != nil {
 		t.Fatal(e)

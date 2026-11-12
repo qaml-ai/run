@@ -198,3 +198,7 @@ Health reports `dmPrefix`; state records dm, loop and NBD devices and
 `nbdListen`. After stopping guests and the daemon, run
 `camelfsd cleanup --data DIR` to detach recorded devices and clear mount state.
 Cleanup takes the same data-directory lock as the daemon.
+
+Snapshots taken while ext4 is frozen can retain the journal's recovery-needed
+flag. Read-only verification mounts must use `-o loop,ro,noload`; they must not
+replay the journal. A VM's normal read-write mount replays it.

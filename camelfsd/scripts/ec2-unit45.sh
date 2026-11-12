@@ -51,7 +51,7 @@ unit45() {
  rm -f "$D/images/$root.img";rm -rf "$D/cache"
  mounted=$(client mount --job j3 --lineage large --root "$root" --hydrate=false)
  dev=$(field image <<<"$mounted")
- first=$(now);mount -o loop,ro "$dev" "$W/mnt"
+ first=$(now);mount -o loop,ro,noload "$dev" "$W/mnt"
  tar cf - -C "$W/mnt" . | cat >/dev/null
  rec "cold_full_read_ms=$(elapsed "$first") depth=64"
  umount "$W/mnt";client release --job j3 >/dev/null

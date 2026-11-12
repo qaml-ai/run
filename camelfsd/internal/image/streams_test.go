@@ -11,6 +11,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/testguest"
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"net"
 	"os"
@@ -42,7 +43,7 @@ func unit3(t *testing.T) (*Manager, string) {
 }
 func mount3(t *testing.T, m *Manager, tree, job string) *Mount {
 	t.Helper()
-	v, e := m.Mount(context.Background(), Request{Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(t.TempDir(), "v")})
+	v, e := m.Mount(context.Background(), Request{Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 	if e != nil {
 		t.Fatal(e)
 	}

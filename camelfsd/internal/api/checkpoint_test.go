@@ -9,6 +9,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/testguest"
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"io"
 	"net"
@@ -51,7 +52,7 @@ func TestStreamErrorRoutes(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			v, e := m.Mount(context.Background(), image.Request{JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(d, "v")})
+			v, e := m.Mount(context.Background(), image.Request{JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 			if e != nil {
 				t.Fatal(e)
 			}
