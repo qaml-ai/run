@@ -91,7 +91,9 @@ export interface RunResult {
   retries: number | null;
   /** Whether the orchestrator split the work at all, and how. */
   /** workflowAgents and workflowJobs: the agent() and job() effects across its workflows; a workflow with jobs and no agents was used to run commands, not to split the work. */
-  choice: { delegated: boolean; delegateCalls: number; workflowStarted: boolean; workflowIds: string[]; toolCalls: Record<string, number>; workflowAgents?: number; workflowJobs?: number };
+  choice: { delegated: boolean; delegateCalls: number; workflowStarted: boolean; workflowIds: string[]; toolCalls: Record<string, number>; workflowAgents?: number; workflowJobs?: number;
+    /** Commands run with the job_run builtin (#826), outside any workflow. */
+    jobRuns?: number };
   reply?: string;
   /** Runtime failures seen in the run: model errors and retries, failed sub-agents, failed or refused workflow effects, faults. `recovered`: the runtime retried past it. */
   failures?: RunFailure[];
