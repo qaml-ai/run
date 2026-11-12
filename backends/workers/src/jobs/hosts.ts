@@ -53,7 +53,7 @@ export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & {
    * account may hold sts:AssumeRole on it, and it must not trust itself). Slice 7's Terraform enforces this.
    */
   JOB_HOST_ROLE_ARNS?: string;
-  /** Enrollments per client address (a Cloudflare rate limiting binding); unset, enrollment is not rate limited. */
+  /** Enrollments per client address (a Cloudflare rate limiting binding). The aws attestor refuses to run without it outside TEST_MODE. */
   JOB_HOST_ENROLL_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   AGENT_PUBLIC_URL?: string;
   JOB_HOST_TEST_SECRET?: string;
@@ -180,11 +180,23 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
     if (!(await env.JOB_HOST_ENROLL_LIMITER.limit({ key: address })).success) return Response.json({ error: "Too many enrollments", code: "RATE_LIMITED" }, { status: 429 });
   }
   if (Number(request.headers.get("content-length") ?? NaN) > ENROLL_BODY_BYTES) return refuse(413);
+  // Read with a bound: a body sent without Content-Length (chunked) stops at the cap too, never buffered whole.
   let input: { attestation?: Record<string, unknown> } | undefined;
   try {
-    const text = await request.text();
-    if (text.length > ENROLL_BODY_BYTES) return refuse(413);
-    input = JSON.parse(text);
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    const reader = request.body?.getReader();
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > ENROLL_BODY_BYTES) { await reader.cancel().catch(() => {}); return refuse(413); }
+      chunks.push(value);
+    }
+    const body = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    input = JSON.parse(new TextDecoder().decode(body));
   } catch { return refuse(400); }
   const attestation = input?.attestation, kind = attestation?.kind;
   const attestors = (env.JOB_HOST_ATTESTORS ?? "").split(",").map(name => name.trim()).filter(Boolean);
@@ -193,7 +205,9 @@ export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Re
   try {
     if (kind === "aws" && attestors.includes("aws")) {
       const roles = (env.JOB_HOST_ROLE_ARNS ?? "").split(",").map(role => role.trim()).filter(Boolean), audience = jobHostAudience(env);
+      // Fail closed without its allowlist, its audience, or (outside tests) the enrollment rate limit.
       if (!roles.length || !audience) throw new AttestationError("The aws attestor needs JOB_HOST_ROLE_ARNS and AGENT_PUBLIC_URL");
+      if (!env.JOB_HOST_ENROLL_LIMITER && env.TEST_MODE !== "1") throw new AttestationError("The aws attestor needs JOB_HOST_ENROLL_LIMITER");
       const checked = checkAwsAttestation(attestation as never, audience);
       if (!await hosts.claim(checked.signature)) throw new AttestationError("This attestation was used already");
       try {

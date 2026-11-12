@@ -120,6 +120,9 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   assert.equal((await enroll(signGetCallerIdentity({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "s" }, "camelrun-job-host:https://another.example"))).status, 403, "one signed for another runtime is refused");
   assert.equal((await enroll({ ...signed, url: "https://evil.example/" })).status, 403, "the runtime sends nothing anywhere but STS");
   assert.equal((await fetch(`${fixture.url}/v1/internal/job-hosts/enroll`, { method: "POST", body: "x".repeat(17 * 1024) })).status, 413, "a body over 16 KiB is refused unread");
+  // Without Content-Length (a streamed, chunked body), the cap holds as it is read.
+  const chunked = new ReadableStream<Uint8Array>({ start(controller) { for (let i = 0; i < 20; i++) controller.enqueue(new Uint8Array(1024).fill(120)); controller.close(); } });
+  assert.equal((await fetch(`${fixture.url}/v1/internal/job-hosts/enroll`, { method: "POST", body: chunked, duplex: "half" } as RequestInit)).status, 413, "a chunked body over 16 KiB is refused as it is read");
   // A host keeps its two newest credentials: a third enrollment retires the first.
   const again = async () => (await (await enroll({ kind: "test", host: "spare-host", secret })).json() as { credential: string }).credential;
   const [first, second, third] = [await again(), await again(), await again()];
@@ -143,7 +146,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
     await until(async () => spare.messages.some(message => message.includes('"registered"')), "a current credential connects");
     spare.socket.close();
   }
-  // The right one registers, and its socket closes when the credential ends (30 s here).
+  // The right one registers, and its socket closes when the credential ends (45 s here).
   const probe = await socketFor("i-0abc123def4567890", awsBody.credential);
   await until(async () => probe.messages.some(message => message.includes('"registered"')), "the instance's registration");
   const expired = await Promise.race([probe.closed, new Promise<undefined>(resolve => setTimeout(resolve, 60_000))]);

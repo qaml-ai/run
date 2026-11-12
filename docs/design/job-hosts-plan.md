@@ -122,7 +122,8 @@ attestation proves:
   the signed request (once; given back when STS refuses it) and issues the credential, so forged requests can't tie up
   the one registry object. Bodies over 16 KiB are refused unread, and callers get only a fixed refusal. A host keeps
   at most its two newest credentials. `JOB_HOST_ENROLL_LIMITER`, a Cloudflare rate limiting binding keyed by the
-  client address, limits enrollments; it is not configured anywhere yet, so add it with the first deployed config.
+  client address, limits enrollments. The aws attestor refuses to run without it (outside tests), as it does without
+  `AGENT_PUBLIC_URL` and `JOB_HOST_ROLE_ARNS`; no config has it yet.
 - **Required trust policy (slice 7's Terraform must enforce it):** the host id is the role session name, and whoever
   assumes the role chooses it. EC2 sets it to the instance id, but any other principal allowed to assume an allowlisted
   role could name a running instance and take its jobs and their secrets. Each role in `JOB_HOST_ROLE_ARNS` must
