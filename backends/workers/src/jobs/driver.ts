@@ -1,6 +1,6 @@
 import type { ContainerComputer } from "../computers/objects.ts";
 import type { HostJob, JobHostsEnv } from "./hosts.ts";
-import { fitsContainer, jobSpec, type JobResult, type JobSpec } from "./job.ts";
+import { JobSpecError, fitsContainer, jobSpec, type JobResult, type JobSpec } from "./job.ts";
 
 /**
  * The seam every job host sits behind (docs/design/swarm-workflows.md, "Our own job hosts"). Phase 1 has one driver,
@@ -31,6 +31,7 @@ class CloudflareContainersJobDriver implements JobDriver {
   }
   async run(spec: JobSpec): Promise<JobResult> {
     const checked = jobSpec(spec);
+    if (checked.commit) throw new JobSpecError("commit needs camelFS job hosts; Cloudflare containers cannot checkpoint a job's tree");
     return await this.namespace.getByName(jobObjectName(checked.id)).runJob(checked) as JobResult;
   }
   async stop(id: string) {
@@ -72,6 +73,10 @@ class RoutingJobDriver implements JobDriver {
   /** Which driver runs `spec`; a spec neither can take throws the spec error, as a single driver's run would. */
   route(spec: JobSpec): JobDriver {
     const checked = jobSpec(spec, { beyondContainers: true });
+    if (checked.commit) {
+      if (needsContainer(checked)) throw new JobSpecError("commit cannot be combined with a snapshot or a custom image");
+      return this.hosts;
+    }
     if (needsContainer(checked)) return this.containers;
     return fitsContainer(checked.limits) ? this.containers : this.hosts;
   }

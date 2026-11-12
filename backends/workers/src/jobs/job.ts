@@ -53,6 +53,8 @@ export type JobSpec = {
   snapshot?: ComputerSnapshot;
   files?: JobFiles;
   volume?: JobVolumeSource;
+  /** Checkpoint /repo when the command ends (camelFS hosts only); needs `volume`. */
+  commit?: boolean;
   /** A shell command (`bash -lc`), run in /repo. */
   command: string;
   timeoutSeconds: number;
@@ -183,7 +185,7 @@ const positive = (value: unknown, name: string, max: number, integer = false) =>
 export function jobSpec(value: unknown, options: { beyondContainers?: boolean } = {}): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
   const v = value as Partial<JobSpec> | null;
   if (!v || typeof v !== "object") throw bad("A job is an object");
-  const known = ["id", "image", "snapshot", "files", "volume", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
+  const known = ["id", "image", "snapshot", "files", "volume", "commit", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
   const extra = Object.keys(v).find(key => !known.includes(key));
   if (extra) throw bad(`Unknown job field: ${extra}`);
   if (typeof v.id !== "string" || !JOB_ID.test(v.id)) throw bad("A job id is 1-100 letters, digits, _ or -");
@@ -221,6 +223,8 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
       throw bad("A job volume source names a tenant, a volume and a snapshot");
     volume = { tenant: s.tenant, volume: s.volume, snapshot: s.snapshot };
   }
+  if (v.commit !== undefined && typeof v.commit !== "boolean") throw bad("commit is true or false");
+  if (v.commit && !volume) throw bad("A job commits only a volume's tree: commit needs volume");
   if (v.outputs !== undefined && (!Array.isArray(v.outputs) || v.outputs.length > JOB_LIMITS.outputs)) throw bad(`outputs is a list of at most ${JOB_LIMITS.outputs} paths under /out`);
   const outputs = [...new Set((v.outputs ?? []).map(path => jobPath(path, "output path")))];
   const l = v.limits as JobLimits | undefined;
@@ -260,6 +264,6 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
     ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {},
     ...Object.keys(limits).length ? { limits } : {}, ...v.internet ? { internet: true } : {},
     ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer, ...secretEnv ? { secretEnv } : {},
-    instance,
+    ...(v.commit ? { commit: true } : {}), instance,
   };
 }

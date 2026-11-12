@@ -283,7 +283,7 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
     socket.send(JSON.stringify({ type: "result", id: message.id, result: { ok: true, exitCode: 0, timedOut: false,
       stdout: stream, stderr: stream, outputs: {}, missing: [], pids: "enforced",
       timings: { startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 0 },
-      camelfs: { tree, warm: true, mountMs: 2, applyMs: 3 },
+      camelfs: { tree, warm: true, mountMs: 2, applyMs: 3, ...(message.spec.camelfs?.commit ? { commit: "c".repeat(40), root: "r" } : {}) },
     } }));
   });
   const waitRegistered = async (count: number) => {
@@ -293,7 +293,7 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
   const hello = { type: "hello", host: "camelfs-host", slots: 1, free: 1, vcpus: 1, memoryMiB: 4096, version: "test" };
   socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
   socket.send(JSON.stringify({ ...hello, features: ["camelfs"] })); await waitRegistered(1);
-  const run = (id: string) => call("/__test/camelfs-job", { id, command: "true", timeoutSeconds: 30,
+  const run = (id: string, commit = false) => call("/__test/camelfs-job", { id, ...(commit ? { commit: true } : {}), command: "true", timeoutSeconds: 30,
     volume: { tenant: "camelrun-proto-local", volume: volume.id, snapshot: snapshot.id },
     payer: { tenant: "camelrun-proto-local", agent: workflow.id, kind: "workflow" },
   });
@@ -308,9 +308,14 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
     assert.deepEqual(spec.camelfs, { lineage: `camelrun-proto-local:${volume.id}`, tree });
     assert.deepEqual(spec.files, []); assert.equal(spec.sync, undefined);
   }
+  const committed = await run("camelfs-commit", true);
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  assert.deepEqual(committed.camelfs, { commit: "c".repeat(40), tree, root: "r", warm: true, mountMs: 2, applyMs: 3 });
+  assert.deepEqual(received[2].camelfs, { lineage: `camelrun-proto-local:${volume.id}`, tree, commit: true });
+  assert.equal(calls, 3, "a commit also uses the cached tree");
   socket.send(JSON.stringify(hello)); await waitRegistered(2);
   const refused = await run("camelfs-unsupported");
   assert.equal(refused.ok, false); assert.equal(refused.code, "start_failed");
   assert.equal(refused.message, "This job host cannot mount camelFS trees");
-  assert.equal(received.length, 2); assert.equal(calls, 3);
+  assert.equal(received.length, 3); assert.equal(calls, 3);
 });

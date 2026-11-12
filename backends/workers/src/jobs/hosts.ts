@@ -719,6 +719,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
    * gets a manifest and a token for this job's files only, valid for its lifetime, kept here hashed.
    */
   private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"]; camelfs?: WireJob["camelfs"] }> {
+    // A result, not a throw: a JobSpecError loses its class across this object's RPC, and the caller must land it.
+    if (spec.commit && !camelfsConfigured(this.env)) throw new Error("commit needs camelFS, which this deployment does not have");
     const out: WireFile[] = [];
     let bytes = 0;
     const add = (path: string, data: Uint8Array) => {
@@ -733,7 +735,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       const { tenant, volume: name, snapshot } = spec.volume, lineage = volumeLineage(tenant, name);
       const volume = this.env.VOLUMES.getByName(lineage);
       const cached = await volume.camelfsTree(snapshot);
-      if (cached) return { files: [], camelfs: cached };
+      if (cached) return { files: [], camelfs: { ...cached, ...(spec.commit ? { commit: true } : {}) } };
       const { files: entries } = await volume.readSet("/", snapshot);
       const files = entries.map(entry => ({ path: entry.path, key: entry.key, size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)! }));
       const { tree } = await importTree(this.env, {
@@ -746,7 +748,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         },
       });
       await volume.setCamelfsTree(snapshot, lineage, tree);
-      return { files: [], camelfs: { lineage, tree } };
+      return { files: [], camelfs: { lineage, tree, ...(spec.commit ? { commit: true } : {}) } };
     }
     const { files: entries } = await this.env.VOLUMES.getByName(`${spec.volume.tenant}:${spec.volume.volume}`).readSet("/", spec.volume.snapshot);
     if (entries.length > JOB_LIMITS.syncFiles) throw new Error(`A job syncs at most ${JOB_LIMITS.syncFiles} files`);
