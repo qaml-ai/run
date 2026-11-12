@@ -1,0 +1,24 @@
+#!/bin/bash
+# PID 1 of a job VM (guest-rootfs.sh installs it as /sbin/camel-init; the host boots with init=/sbin/camel-init).
+# It mounts the basics, takes its network from the kernel command line (jobhost/network.ts guestNetArgs), exports the
+# egress proxy for login shells when the job has internet, and serves camel-guest on vsock port 5000 (one channel,
+# jobhost/firecracker.ts). When the guest ends, the VM powers off.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm /tmp /run; mount -t devpts devpts /dev/pts; mount -t tmpfs tmpfs /dev/shm; mount -t tmpfs tmpfs /run
+# cgroup v2: camel-guest caps a command's processes with pids.max (the command runs as root, which ulimit -u does not bind).
+mount -t cgroup2 cgroup2 /sys/fs/cgroup
+chmod 1777 /tmp
+hostname job
+arg() { tr ' ' '\n' < /proc/cmdline | sed -n "s/^$1=//p" | tail -1; }
+ip link set lo up
+ip=$(arg camel.ip) gw=$(arg camel.gw) proxy=$(arg camel.proxy)
+if [ -n "$ip" ]; then ip link set eth0 up; ip addr add "$ip" dev eth0; [ -n "$gw" ] && ip route add default via "$gw"; fi
+# No DNS: names are resolved by the host's proxy, the only way out.
+: > /etc/resolv.conf
+if [ -n "$proxy" ]; then
+  printf 'export https_proxy=%s HTTPS_PROXY=%s http_proxy=%s HTTP_PROXY=%s no_proxy=localhost,127.0.0.1\n' "$proxy" "$proxy" "$proxy" "$proxy" > /etc/profile.d/camel-proxy.sh
+fi
+socat VSOCK-LISTEN:5000,reuseaddr EXEC:"/usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/guest.ts --root /"
+sync
+echo o > /proc/sysrq-trigger

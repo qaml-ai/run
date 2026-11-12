@@ -25,7 +25,7 @@ From the design doc and the spike (`r8gd.4xlarge`, AL2023 arm64 kernel 6.18, Fir
   snapshots are pulled from S3 on first use and kept while the host lives.
 - **Pools:**
   - `r8gd` build hosts run nothing but their sandbox, each with one build sandbox started before it is needed;
-  - `c8gd` spot test hosts are scaled on queue depth.
+  - `c8gd` test hosts are scaled on queue depth (on-demand for the testing phase; spot later).
 - **Targets (phase 2 acceptance):**
   - build overhead ≤ 2%;
   - test-shard start p50 ≤ 2.5 s at 32 in parallel;
@@ -151,7 +151,7 @@ Order: slices 1–4 in parallel (image, guest, agent, runtime), then 5–6, then
 
 ## AWS resources (none created yet; each needs Miguel's go-ahead)
 
-In the camelRun prod account and region (to confirm: the same as the ECS runtime), all in Terraform:
+In the camelRun prod account (904534089871) and `us-west-2`, all in OpenTofu:
 
 - **AMI pipeline:** an Image Builder pipeline (or a Packer run from CI), producing one AMI per pool kind (the
   mempool size differs: build hosts reserve most of the memory, test hosts less).
@@ -187,10 +187,16 @@ Cost at list: with the build pool scaling from zero, the fixed cost is about $2 
 
 Decided by Miguel (2026-11-12):
 - **Runtime:** Workers only in phase 2 (the pilot and camel-code). No Node driver or route.
-- **Build pool:** on-demand instances for the testing phase, not reserved.
+- **Instances:** on-demand for the testing phase, not reserved and not spot, for both pools.
+- **Account and region:** his AWS account, the one camelRun's production ECS runs in (904534089871). The region was
+  left to us: `us-west-2`, where camelRun already runs. Nothing about metal or Nitro capacity or price argued for another.
+- **Host agent language:** left to us: TypeScript (shared job types, `camel-sync`, our test harness; the hot path is
+  Firecracker's, and the agent mostly does I/O).
+- **Pool maxima:** not answered, so the defaults stand: 4 build hosts and 16 test hosts.
+- **Applies:** Miguel runs every AWS change himself (image builds, `tofu apply`). Agents deliver code, plans and the
+  exact commands.
 
-Still open, with the plan's defaults until answered:
-1. **Account and region:** confirm the same account and region as the ECS runtime.
-2. **Pool maxima:** the starting ASG maxima. Default: 4 build and 16 test hosts.
-3. **Host agent language:** TypeScript or Rust. Default: TypeScript (shared job types, `camel-sync`, our test
-   harness; the hot path is Firecracker's and the agent mostly does I/O). The fake-mode agent (`jobhost/`) is TypeScript.
+Slices 1 and 6 have landed as code (2026-11-12): the image in `infra/job-hosts/image/` (its README says what is and is
+not verified without a Nitro host), the Firecracker launcher (`jobhost/firecracker.ts`), the per-job network and egress
+proxy (`jobhost/network.ts`, `jobhost/egress-proxy.ts`), and the isolation suite (`jobhost/isolation-suite.ts`, with
+`infra/job-hosts/image/test-netns.sh` checking the network rules for real in namespaces).

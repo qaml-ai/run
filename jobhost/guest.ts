@@ -90,7 +90,14 @@ export class Guest {
   private run(request: { command: string; timeoutSeconds: number; pids?: number; env?: Record<string, string> }) {
     const started = Date.now();
     const stdout = new Capped(GUEST_LIMITS.streamBytes), stderr = new Capped(GUEST_LIMITS.streamBytes);
-    const pids = Number.isInteger(request.pids) && request.pids! > 0 ? `ulimit -u ${request.pids} 2>/dev/null || exit 125; ` : "";
+    // The pid cap: a cgroup's pids.max where the guest has cgroup v2 (a VM: the command runs as root, which ulimit -u does
+    // not bind), else ulimit -u. Either failing to apply ends the command (125) rather than running it uncapped.
+    // Not a security boundary: the command is root in its own VM and can raise pids.max or leave the cgroup. It keeps an
+    // honest job's runaway forks in check; what bounds a hostile one is its VM (its vCPUs and memory), never this.
+    const cap = Number.isInteger(request.pids) && request.pids! > 0 ? request.pids! : 0;
+    const pids = !cap ? "" : `if [ -w /sys/fs/cgroup/cgroup.subtree_control ]; then g=/sys/fs/cgroup/camel-job-$$; `
+      + `{ grep -q pids /sys/fs/cgroup/cgroup.subtree_control || echo +pids > /sys/fs/cgroup/cgroup.subtree_control; } && mkdir -p $g && echo ${cap} > $g/pids.max && echo $$ > $g/cgroup.procs || exit 125; `
+      + `else ulimit -u ${cap} 2>/dev/null || exit 125; fi; `;
     return new Promise(resolve => {
       const child = spawn("bash", ["-lc", `${pids}${request.command}`], {
         cwd: this.repo, detached: true, stdio: ["ignore", "pipe", "pipe"],

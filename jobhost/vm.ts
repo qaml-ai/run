@@ -3,14 +3,13 @@
 //
 // - FakeVm (tests, sprites): the "disk" is a directory cloned from a base directory (cp --reflink=auto), and the guest
 //   runs as a local process over stdio. No isolation: for the runtime's end-to-end tests only.
-// - Firecracker (`firecrackerConfig`): the configuration a real host boots with, in Nitro Sandboxes direct mode. It is
-//   written and tested as data here; booting it needs the host image (slice 1) and AWS, after the go-ahead.
+// - Firecracker (`firecrackerConfig`, and firecracker.ts's launcher): the configuration a real host boots with, in Nitro
+//   Sandboxes direct mode, on the host image infra/job-hosts/image builds.
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 export type GuestReply = { ok: boolean; error?: string; [key: string]: unknown };
@@ -26,7 +25,50 @@ export interface Vm extends GuestChannel {
 export type VmShape = { vcpus: number; memoryMiB: number; diskMiB: number };
 export interface VmLauncher {
   readonly kind: "fake" | "firecracker";
-  boot(id: string, shape: VmShape): Promise<Vm>;
+  /** `internet`: the job may reach its egress allowlist (a real host's proxy); without it, nothing. */
+  boot(id: string, shape: VmShape, options?: { internet?: boolean }): Promise<Vm>;
+}
+
+/**
+ * The longest line the host takes from a guest. The largest honest reply is a `run` with both streams at their cap,
+ * base64 (2 × 8 MiB × 4/3, about 22 MiB); a guest is untrusted (root in its VM, it can replace camel-guest), so a line
+ * past this ends the channel rather than growing the host agent's memory.
+ */
+export const GUEST_LINE_BYTES = 32 * 1024 * 1024;
+
+/** Lines from a guest's stream, each at most `max` bytes: past it the stream is destroyed and the reader throws. */
+export function boundedLines(input: NodeJS.ReadableStream & { destroy(error?: Error): void }, max = GUEST_LINE_BYTES): AsyncIterator<string> {
+  const ready: string[] = [];
+  let partial: Buffer[] = [], size = 0, ended = false, failure: Error | undefined;
+  let wake: (() => void) | undefined;
+  const notify = () => { const resume = wake; wake = undefined; resume?.(); };
+  input.on("data", (chunk: Buffer | string) => {
+    let data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    for (let at = data.indexOf(10); at >= 0; at = data.indexOf(10)) {
+      partial.push(data.subarray(0, at));
+      ready.push(Buffer.concat(partial).toString("utf8").replace(/\r$/, ""));
+      partial = []; size = 0; data = data.subarray(at + 1);
+    }
+    if (data.length) {
+      size += data.length;
+      if (size > max) { failure = new Error(`The guest sent a line over ${max} bytes`); partial = []; input.destroy(failure); notify(); return; }
+      partial.push(data);
+    }
+    notify();
+  });
+  input.on("end", () => { ended = true; notify(); });
+  input.on("close", () => { ended = true; notify(); });
+  input.on("error", error => { failure ??= error as Error; notify(); });
+  return {
+    async next() {
+      for (;;) {
+        if (ready.length) return { value: ready.shift()!, done: false };
+        if (failure) throw failure;
+        if (ended) return { value: undefined, done: true };
+        await new Promise<void>(resolve => { wake = resolve; });
+      }
+    },
+  };
 }
 
 /** A guest channel over a child's stdio (newline-delimited JSON, guest.ts). */
@@ -36,7 +78,7 @@ class StdioChannel implements GuestChannel {
   private readonly child: ChildProcess;
   constructor(child: ChildProcess) {
     this.child = child;
-    this.lines = createInterface({ input: child.stdout!, crlfDelay: Infinity })[Symbol.asyncIterator]();
+    this.lines = boundedLines(child.stdout as never);
   }
   request(request: Record<string, unknown>, onLog?: (stream: "stdout" | "stderr", data: string) => void) {
     const result = this.queue.then(async () => {

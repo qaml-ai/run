@@ -1,0 +1,22 @@
+[Unit]
+Description=camelRun job egress proxy (job VMs' only way out)
+After=camel-host-prep.service nftables.service
+Requires=camel-host-prep.service nftables.service
+
+[Service]
+# Its own user: the base rules keep this uid's traffic to public addresses on 443 (and Amazon's DNS).
+User=camel-proxy
+Group=camel-proxy
+ExecStart=/usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/jobhost/egress-proxy.ts --policies /run/camel/egress --listen 0.0.0.0
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/run/camel/egress
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

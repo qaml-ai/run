@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Every boot, before the host agent (camel-host-prep.service): the instance-store NVMe as XFS with reflink, the base
+# image copied onto it (a job's disk is a reflink clone, which needs the same filesystem), and the Nitro Sandboxes PCIe
+# slots. The NVMe is empty on each new instance, so it is formatted when it has no camel filesystem.
+set -euo pipefail
+source /etc/camel-jobhost.env
+mount_point=/var/lib/camel/nvme
+device=$(lsblk -dpno NAME,MODEL | awk '/Amazon EC2 NVMe Instance Storage/ {print $1; exit}')
+[[ -n $device ]] || { echo "No instance-store NVMe on this instance: a job host needs one (r8gd, c8gd)." >&2; exit 1; }
+if [[ $(blkid -s LABEL -o value "$device" 2>/dev/null) != camel-jobs ]]; then
+  mkfs.xfs -f -L camel-jobs -m reflink=1 "$device"
+fi
+mkdir -p "$mount_point"
+mountpoint -q "$mount_point" || mount -o noatime "$device" "$mount_point"
+mkdir -p "$mount_point/jobs" /run/camel/egress
+chmod 0755 /run/camel /run/camel/egress
+if ! cmp -s /var/lib/camel/images/base.ext4 "$mount_point/base.ext4"; then
+  cp --sparse=always /var/lib/camel/images/base.ext4 "$mount_point/base.ext4.tmp"
+  mv "$mount_point/base.ext4.tmp" "$mount_point/base.ext4"
+fi
+# Nitro Sandboxes: how many PCIe slots sandboxes may take (the spike's 36 of 80 on an r8gd.4xlarge).
+echo "${NE_PCIE_SLOTS:?}" > /sys/class/misc/nitro_enclaves/pcie_slots

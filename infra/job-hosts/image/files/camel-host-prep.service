@@ -1,0 +1,12 @@
+[Unit]
+Description=camelRun job host: NVMe, base image and Nitro Sandboxes slots
+After=local-fs.target
+Before=camel-egress-proxy.service camel-jobhost.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/camel-host-prep
+
+[Install]
+WantedBy=multi-user.target
