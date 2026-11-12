@@ -455,3 +455,21 @@ test("money: a redelivered ending is charged once, an ending after abort is char
   await assert.rejects(big.runner.land(g.key, g.attempt, { ok: true, value: "x".repeat(10_000) }, usage), /must be landed as a handle/);
   assert.equal(at(big).spent.usd, 0.25);
 });
+
+test("fail() ends a workflow once: what is out is cancelled, the executor aborted, and a later wake recovers nothing", { timeout: 30_000 }, async () => {
+  const h = harness();
+  let recovers = 0, aborts = 0;
+  h.world.recover = async () => { recovers++; };
+  h.world.abort = async () => { aborts++; };
+  h.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await h.wake();
+  assert.equal(recovers, 1);
+  await h.runner.fail("no origin", "missing_origin");
+  await h.runner.fail("no origin", "missing_origin");
+  assert.deepEqual([at(h).status, at(h).error], ["failed", "no origin"]);
+  assert.equal(h.runner.events().filter(event => event.type === "failed").length, 1, "once");
+  assert.deepEqual(h.world.cancelled, ["a:1"]);
+  assert.equal(aborts, 1);
+  await h.runner.wake();
+  assert.equal(recovers, 1, "an ended workflow does not recover its executor");
+});

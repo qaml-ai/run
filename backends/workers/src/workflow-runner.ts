@@ -378,7 +378,8 @@ export class WorkflowRunner {
 
   private async advance(recover = false) {
     try {
-      if (recover) await this.executor.recover?.();
+      // An ended workflow has nothing to recover: its executor was aborted, and a recover would start children again.
+      if (recover && !TERMINAL.has(this.state().status as WorkflowStatus)) await this.executor.recover?.();
       await this.capacityHousekeeping();
       // Effects held from before (a resume, a raised budget, a failed start, a slot granted) first; then each step's new ones.
       await this.startHeld();
@@ -892,6 +893,7 @@ export class WorkflowRunner {
         this.event("failed", { code, error });
       });
       await this.advance();
+      await this.executor.abort?.();
     });
   }
 
