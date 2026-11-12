@@ -67,6 +67,8 @@ export interface DefinitionSpec {
   delegate?: DelegateSettings;
   /** false: its agents get no decide tool; true: they get it even with no code mode and no other tools (decisions.ts). */
   decide?: boolean;
+  /** The workflows builtin of its agents (a Workers runtime's): false turns it off, { maxBudgetUsd } bounds one workflow. Kept, unused, here. */
+  workflows?: boolean | { maxBudgetUsd: number };
   /** Made for this channel, and deleted with it. */
   channel?: string;
   /** true: a save that makes a new revision also applies it to every live agent made from it, as `apply: "all"` does. */
@@ -86,7 +88,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate", "networking"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate", "networking", "workflows"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "runLimits", "queue", "networking"] as const;
 const PROVISION_FIELDS = ["definitionRevision", "humanInput", "name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -347,6 +349,8 @@ export class Definitions {
     if (spec.codeMode !== undefined && typeof spec.codeMode !== "boolean") throw new HttpError(400, "codeMode must be true or false");
     if (spec.applyOnUpdate !== undefined && typeof spec.applyOnUpdate !== "boolean") throw new HttpError(400, "applyOnUpdate must be true or false");
     if (spec.decide !== undefined) decideInput(spec.decide);
+    if (spec.workflows !== undefined && typeof spec.workflows !== "boolean" && !(spec.workflows && typeof spec.workflows === "object" && Object.keys(spec.workflows).every(key => key === "maxBudgetUsd") && typeof (spec.workflows as { maxBudgetUsd?: unknown }).maxBudgetUsd === "number" && (spec.workflows as { maxBudgetUsd: number }).maxBudgetUsd > 0))
+      throw new HttpError(400, "workflows is true, false or { maxBudgetUsd }");
     if (spec.applyOnUpdate === false) delete spec.applyOnUpdate;
     computerLimit(spec.computerLimit);
     if (spec.runLimits !== undefined && !runLimitsInput(spec.runLimits)) delete spec.runLimits;

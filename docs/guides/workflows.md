@@ -2,7 +2,7 @@
 
 A **workflow** is a JavaScript script that runs many sub-agents, durably,
 under a budget, and outlives the call that started it. The script says what
-to do (`agent()`, `parallel()`, `gate()`); the runtime runs each sub-agent
+to do (`agent()`, `parallel()`); the runtime runs each sub-agent
 exactly once, keeps every answer in a journal, and replays the script from the
 top as answers land. You can pause it, change its script while it runs, raise
 its budget, and resume it. A waiting workflow costs nothing.
@@ -32,7 +32,7 @@ Its globals:
 | `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
 | `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow: a workflow started with an API key gets `null` (`job_payer_unavailable`). Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
 | `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
-| `gate(opts)` | A decision for a person: `{ title, recommended?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. Returns the answer when it comes. Not wired on the hosted runtime yet: a `gate()` fails to start today |
+| `gate(opts)` | A decision for a person: `{ title, recommended?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. Returns the answer when it comes. **Not available yet**: today a `gate()` fails at once (the script gets `null`, and its item says `gate() is not available yet`) |
 | `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
 | `phase(name)` | Names the stage the workflow is in (`phase` on its summary, items and log lines) |
 | `log(...parts)` | A line in the workflow's log |
@@ -95,9 +95,9 @@ that. A `critic` or `lead` on `fast` is refused unless the start says
 `budget.usd` is a hard cap on what the workflow's sub-agents spend, enforced by
 its ledger (`spent` on the summary; `costUsd` on each item). `null` is no cap.
 A step that would start an effect past the cap stops the workflow with status
-`budget_exhausted`. Raise the budget (`POST …/budget`) above what was spent,
-then resume it: the effects the cap refused are issued again, under a new
-attempt.
+`budget_exhausted`. Raise the budget (`POST …/budget`) above what was spent
+and it runs again by itself: the effects the cap refused are issued again,
+under a new attempt.
 
 A workflow that stops without ending is `paused`, and `pauseReason` says why:
 
@@ -176,8 +176,7 @@ calls, and `wait` polls until the workflow settles: `completed`, `failed`,
 const wf = await agents.workflows.start({ script, args: { files }, budget: { usd: 20 }, name: "port" }, { idempotencyKey: "port-2026-11" });
 let done = await agents.workflows.wait(wf.id);
 if (done.status === "budget_exhausted") {
-  await agents.workflows.budget(wf.id, 40); // above what was spent
-  await agents.workflows.resume(wf.id);
+  await agents.workflows.budget(wf.id, 40); // above what was spent: it runs again by itself
   done = await agents.workflows.wait(wf.id);
 }
 const failed = await agents.workflows.items(wf.id, { status: "failed" });
@@ -190,8 +189,7 @@ console.log((await agents.workflows.wait(wf.id)).result);
 wf = await agents.workflows.start(script, args={"files": files}, budget_usd=20, name="port", idempotency_key="port-2026-11")
 done = await agents.workflows.wait(wf["id"])
 if done["status"] == "budget_exhausted":
-    await agents.workflows.budget(wf["id"], 40)  # above what was spent
-    await agents.workflows.resume(wf["id"])
+    await agents.workflows.budget(wf["id"], 40)  # above what was spent: it runs again by itself
     done = await agents.workflows.wait(wf["id"])
 failed = await agents.workflows.items(wf["id"], status="failed")
 await agents.workflows.edit(wf["id"], script2, reason="critics accepted stubs")

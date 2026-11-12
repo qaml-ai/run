@@ -54,6 +54,12 @@ export interface WorkflowAgentsHost {
   land(key: string, attempt: number, outcome: LandedOutcome, usage?: EffectUsage): Promise<void>;
   /** Everything that reaches outside the workflow object (workflowChildren for the real one). */
   children: WorkflowChildren;
+  /**
+   * Run a landing after the current call returns (the object's `ctx.waitUntil`). A start runs inside the runner's own
+   * step, and `land` waits for that step: a landing made from a start is deferred, never awaited, or the two wait on
+   * each other. A deferred landing lost to a crash is made again by `recover()` (the row is not marked landed).
+   */
+  defer?(task: () => Promise<void>): void;
   /** The workflow's class pins and whether judgment may run on the fast class (workflow-types.ts). */
   classes?(): { classes?: Partial<Record<AgentType, ModelClass>>; allowFastJudgment?: boolean };
   /**
@@ -84,7 +90,7 @@ export const workflowRun = (id: string) => `${id}:main`;
 
 const ROW_PREFIX = "workflow-";
 /** A child's row in the workflow's table: queued (no slot yet), running, or how it ended. */
-type Row = DelegatedChild & { effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number; resolved?: { type?: AgentType; modelClass?: ModelClass }; volumeResult?: Record<string, unknown> };
+type Row = DelegatedChild & { landed?: true; effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number; resolved?: { type?: AgentType; modelClass?: ModelClass }; volumeResult?: Record<string, unknown> };
 
 function owner(id: string): Owner { return { kind: "workflow", id }; }
 
@@ -144,14 +150,20 @@ export class WorkflowAgents implements EffectExecutor {
     const identity = await this.keyOf(effect), key = ROW_PREFIX + identity;
     const existing = await this.rows.get(key) as Row | undefined;
     if (existing) {
-      if (existing.status !== "running" && existing.status !== "queued") await this.settle(existing);
+      if (existing.status !== "running" && existing.status !== "queued") this.later(existing);
       return this.recover();
     }
-    if (!args || typeof args.prompt !== "string" || !args.prompt) return this.host.land(effect.key, effect.attempt, { ok: false, error: "agent() needs a prompt" });
-    if (args.computer !== undefined) return this.host.land(effect.key, effect.attempt, { ok: false, error: "A workflow's agents have no computer: run a job() for compute" });
+    // Refused options end the effect at once: a row, ended, then landed after this start returns.
+    const refuse = async (error: string) => {
+      const row = { id: "", key, effectKey: effect.key, attempt: effect.attempt, requestId: `workflow_${identity}`, parentRequestId: workflowRun(this.host.workflow.id), toolCallId: effect.key, name: "refused", depth: 1, createdAt: Date.now(), made: false, status: "failed", endedAt: Date.now(), error } as Row;
+      await this.rows.put(row);
+      this.later(row);
+    };
+    if (!args || typeof args.prompt !== "string" || !args.prompt) return refuse("agent() needs a prompt");
+    if (args.computer !== undefined) return refuse("A workflow's agents have no computer: run a job() for compute");
     let resolved: { type?: AgentType; modelClass?: ModelClass };
     try { resolved = resolveAgentOptions(args, this.host.classes?.() ?? {}); }
-    catch (error) { if (error instanceof AgentOptionsError) return this.host.land(effect.key, effect.attempt, { ok: false, error: error.message }); throw error; }
+    catch (error) { if (error instanceof AgentOptionsError) return refuse(error.message); throw error; }
     const row: Row = {
       id: "", key, effectKey: effect.key, attempt: effect.attempt, callId: effect.key, toolCallId: effect.key, outbox: true,
       owner: owner(this.host.workflow.id), rootOwner: owner(this.host.workflow.id), chain: [this.host.workflow.id], root: this.host.workflow.id,
@@ -184,6 +196,8 @@ export class WorkflowAgents implements EffectExecutor {
    * which it dedupes), then queued ones start. The workflow object calls this as it wakes.
    */
   async recover() {
+    // Landings deferred before a crash: an ended row not marked landed lands again (the runner keeps the first).
+    for (const row of await this.rows.all() as Row[]) if (!row.landed && row.effectKey && row.status !== "running" && row.status !== "queued" && row.status !== "input_required") this.later(row);
     const running = (await this.rows.withStatus("running")) as Row[];
     for (const row of running.filter(row => !row.accepted && !row.cancelRequested)) await this.launch(row, running.filter(other => other !== row));
     await this.pump();
@@ -198,7 +212,7 @@ export class WorkflowAgents implements EffectExecutor {
       await this.rows.put(next, tx);
       return next;
     });
-    if (ended) await this.settle(ended);
+    if (ended) this.later(ended);
   }
 
   private async launch(row: Row, running: Row[]) {
@@ -263,13 +277,22 @@ export class WorkflowAgents implements EffectExecutor {
     }
   }
 
-  /** Land an ended row on its effect, with what its child spent (the ledger keeps one row per `key:attempt`). */
+  /** Land `row` after the current call returns (see `defer`), then mark it landed. */
+  private later(row: Row) {
+    const task = async () => { await this.settle(row); };
+    if (this.host.defer) this.host.defer(task);
+    else void Promise.resolve().then(task).catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", key: row.effectKey, error: String(error) })));
+  }
+
+  /** Land an ended row on its effect, with what its child spent (the ledger keeps one row per `key:attempt`), and mark it landed. */
   private async settle(row: Row) {
     const usage = effectUsage(row.outcome ? { state: "completed", outcome: row.outcome } : undefined, row.endedAt && row.startedRun ? row.endedAt - row.startedRun : undefined);
     let outcome: LandedOutcome = row.refusal ?? (row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
     if (row.volumeResult && "ok" in outcome && outcome.ok && "value" in outcome)
       outcome = { ok: true, value: outcome.value && typeof outcome.value === "object" && !Array.isArray(outcome.value) ? { ...outcome.value as object, ...row.volumeResult } : { text: outcome.value, ...row.volumeResult } };
-    return this.host.land(row.effectKey, row.attempt ?? 1, outcome, usage);
+    await this.host.land(row.effectKey, row.attempt ?? 1, outcome, usage);
+    const current = await this.rows.get(row.key) as Row | undefined;
+    if (current && !current.landed && current.status === row.status) await this.rows.put({ ...current, landed: true } as Row);
   }
 
   /**

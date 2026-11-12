@@ -115,8 +115,8 @@ export async function workflowRoutes(request: Request, env: WorkflowEnv & { AGEN
       if (Object.keys(rest).length) throw new WorkflowInputError(`Unknown field ${Object.keys(rest)[0]}`);
       if (typeof script !== "string" || !script.trim() || script.length > WORKFLOW_SCRIPT_CHARS) throw new WorkflowInputError("script is the workflow's new JavaScript");
       if (typeof reason !== "string" || !reason.trim()) throw new WorkflowInputError("reason says why the script changed: it is kept with the revision");
-      if (rerunConfirmPercent !== undefined && (typeof rerunConfirmPercent !== "number" || rerunConfirmPercent < 0 || rerunConfirmPercent > 100)) throw new WorkflowInputError("rerunConfirmPercent is from 0 to 100");
-      const edited = await stub.edit({ code: script, reason, ...(rerunConfirmPercent !== undefined ? { rerunConfirmPercent } : {}) }) as { workflow?: unknown };
+      if (rerunConfirmPercent !== undefined && (!Number.isInteger(rerunConfirmPercent) || (rerunConfirmPercent as number) < 0 || (rerunConfirmPercent as number) > 100)) throw new WorkflowInputError("rerunConfirmPercent is an integer from 0 to 100");
+      const edited = await stub.edit({ code: script, reason, ...(rerunConfirmPercent !== undefined ? { rerunConfirmPercent: rerunConfirmPercent as number } : {}) }) as { workflow?: unknown };
       return json({ ...edited, workflow: await view() });
     }
     if (request.method !== "POST") return refuse(405, "Method not allowed", "METHOD_NOT_ALLOWED");

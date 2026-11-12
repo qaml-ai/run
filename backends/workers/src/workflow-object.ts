@@ -106,6 +106,16 @@ export const unwiredExecutor: EffectExecutor = {
 };
 
 /**
+ * `gate()` until it has an executor (an inbox item the workflow owns): it fails at once and clearly, so the script gets
+ * null with the reason on its item, instead of a start that is refused on every wake.
+ */
+export const GATE_UNAVAILABLE = "gate() is not available yet: a workflow cannot ask a person on this runtime. Remove the gate, or end the workflow and ask in your own reply";
+export function gateUnavailable(land: (key: string, attempt: number, outcome: EffectOutcome) => Promise<void>, defer: (task: () => Promise<void>) => void): ChildEffects {
+  // Landed after the start returns: a start runs inside the runner's step, which a landing waits for.
+  return { start: async effect => { defer(() => land(effect.key, effect.attempt, { ok: false, error: GATE_UNAVAILABLE })); } };
+}
+
+/**
  * One executor from several, by effect kind: `start` and `cancel` go to the kind's executor (a kind with none is
  * refused loudly), `recover` and `abort` to every one, and children's endings and progress to the `agent` executor.
  * Other lanes add a kind with one entry (job, commit, push).
@@ -181,6 +191,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       budget: () => { const summary = self.runner.get(); return summary.budget.usd === null ? Infinity : summary.budget.usd - summary.spent.usd; },
       get concurrency() { return self.runner.get().concurrency; },
       land: (key, attempt, outcome, usage) => self.land(key, attempt, outcome, usage),
+      defer: task => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) })))),
       classes: () => { const settings = self.settings(); return { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) }; },
       // A child of a repo (`agent(..., { repo })`) edits a fork of it at /repo, and answers with the fork, for commit().
       childVolume: async (effect, args) => {
@@ -200,7 +211,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       land: (...args) => self.land(...args), waitUntil: promise => ctx.waitUntil(promise), storage: ctx.storage,
     });
     const stub = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : undefined;
-    this.executor = byKind({ agent: stub ?? this.agents, ...(stub ? { gate: stub } : {}), job: jobs, commit: jobs, push: jobs });
+    this.executor = byKind({ agent: stub ?? this.agents, gate: stub ?? gateUnavailable((key, attempt, outcome) => this.land(key, attempt, outcome), task => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) }))))), job: jobs, commit: jobs, push: jobs });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
