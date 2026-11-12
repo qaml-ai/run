@@ -305,3 +305,37 @@ test('notification batches never combine different task payers or buckets', asyn
   assert.equal(f.submissions.length, 3);
   for (const { notice } of f.submissions) assert.deepEqual(notice.metadata.batch ?? [], []);
 });
+
+const workflowNotice = (workflow: string, seq: number, status: string, event: string) => ({
+  request: { id: `${workflow}_n${seq}`, method: 'prompt' as const, params: { text: JSON.stringify({ workflowId: workflow, status, seq }), allowDisconnected: true as const, whileRunning: 'followUp' as const } },
+  notice: { source: { kind: 'agent' as const, agentId: workflow, name: `name-${workflow}` }, root: 'owner', costUsd: 0, metadata: { kind: 'workflow', workflowId: workflow, status, event } },
+});
+
+test("workflow notices wait in the owner's outbox while it is busy, taking no queue slot, then land in one turn: each workflow's latest once", async () => {
+  const f = fixture();
+  const n = f.notifications();
+  // 25 workflows; wf_1 sends three notices (a phase, a gate, its ending), the others one each.
+  const sent = [workflowNotice('wf_1', 1, 'running', 'phase'), workflowNotice('wf_1', 2, 'waiting', 'gate_opened'), workflowNotice('wf_1', 3, 'completed', 'completed')];
+  for (let i = 2; i <= 25; i++) sent.push(workflowNotice(`wf_${i}`, 1, 'completed', 'completed'));
+  for (const { request, notice } of sent) assert.equal(await n.deliverMessage(request, notice), undefined, 'taken, not refused');
+  assert.equal(f.submissions.length, 0, 'the owner is busy: nothing queued as a request');
+  assert.deepEqual(f.staged, [], 'nor staged');
+  f.land();
+  await f.notifications().drain();
+  // One turn per WORKFLOW_NOTICE_BATCH + 1 workflows: the first carries 20 others, the next the rest.
+  assert.equal(f.submissions.length, 2);
+  const shown = f.submissions.flatMap(({ request, notice }) => [request.id, ...(notice.metadata.batch ?? []).map((item: any) => item.requestId)]);
+  assert.equal(new Set(shown.map(id => id.replace(/_n\d+$/, ''))).size, 25, 'every workflow heard');
+  assert.equal(new Set(shown).size, shown.length, 'none twice');
+  assert.ok(shown.includes('wf_1_n3') && !shown.includes('wf_1_n2'), "wf_1's latest is shown; its middle notice folded");
+  assert.ok(f.submissions.every(({ notice }) => (notice.metadata.batch ?? []).length <= 20));
+  // Sending them again (the workflow's outbox retried) changes nothing.
+  for (const { request, notice } of sent) await f.notifications().deliverMessage(request, notice);
+  await f.notifications().drain();
+  assert.equal(f.submissions.length, 2);
+  // As the model reads it: a <workflow_notification> block per workflow.
+  const [{ request, notice }] = f.submissions;
+  const text = (renderMessage({ role: 'user', content: request.params.text, timestamp: 0, source: notice.source, metadata: notice.metadata } as any) as any).content[0].text as string;
+  assert.equal(text.match(/<workflow_notification workflow="/g)?.length, 1 + notice.metadata.batch.length);
+  assert.match(text, /<workflow_notification workflow="wf_1" name="name-wf_1" status="completed" event="completed">/);
+});
