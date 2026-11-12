@@ -288,5 +288,21 @@ tofu init -backend=false && tofu validate && tofu fmt -check -recursive && tofu 
 
 - The AMIs (slice 1), the scaler's code and the runtime's demand and drain endpoints it calls, and runtime-side
   alarms on heartbeat loss and stuck leases.
-- Credentials for the runtime to presign snapshot and output uploads into the bucket (slice 5): whatever signs them
-  needs `s3:PutObject` under `snapshots/`/`outputs/` and `kms:GenerateDataKey` on `images_kms_key_arn`.
+- Snapshots on hosts (slice 5) need nothing from AWS: see "Snapshots" below.
+
+## Snapshots
+
+Slice 5 keeps job host snapshots in the runtime's own R2 bucket (the `BUCKET` binding), not in this module's S3
+bucket, and needs nothing from AWS: no IAM user, no key, no setting. A host moves a snapshot's bytes through the
+runtime's routes (`/v1/internal/job-hosts/snapshots/<job>`) with a token for that one job, so no host and no other
+service holds a storage credential. The `snapshots/` prefix and lifecycle rule in `bucket.tf` are unused by it; they
+can stay (harmless) or go in a later change.
+
+**Deletion.** The runtime deletes a snapshot when a newer save of the same name by the same payer completes, and its
+registry sweeps snapshots past their expiry (30 days after they were saved). As a backstop for anything the runtime
+misses (a sweep that keeps failing, an object whose record was lost), Miguel can add R2 lifecycle rules on the
+runtime's bucket, in the Cloudflare dashboard or with `wrangler r2 bucket lifecycle add` (not applied by anything
+here):
+- delete objects under `snapshots/` 31 days after they were written (a day past a handle's expiry);
+- abort incomplete multipart uploads after 1 day (the runtime aborts a job's unfinished upload when the job ends; this
+  catches one whose job object died first).

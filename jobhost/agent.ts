@@ -3,18 +3,24 @@
 // the credential as its first message, enrolls again before the credential ends, says how many jobs it takes, and runs the jobs the runtime sends: a VM per job from
 // a copy-on-write clone (vm.ts), the job's files synced in, its command run under its limits by the guest agent
 // (guest.ts), its outputs collected and sent back, the VM destroyed. A job the runtime cancels is destroyed at once.
+// Snapshots (slice 5, snapshots.ts): a job may start from one (downloaded once into the host's cache, checked, and
+// cloned like the base image), and may save its disk as one when its command exits 0 (PUT to a presigned URL). The
+// host reports the snapshots it holds, and placement prefers it for jobs from them.
 // While the socket is down, jobs keep running and their results wait to be sent when it is back.
 //
 //   node --experimental-strip-types jobhost/agent.ts --runtime https://run.example --attestor aws --slots 8 --firecracker
 //   node … --attestor test --name host-1 --fake      (JOB_HOST_TEST_SECRET from the environment: tests only)
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { frames, Frames, type HostMessage, type RuntimeMessage, type WireJob, type WireResult } from "../shared/job-host-protocol.ts";
 import { signGetCallerIdentity, type Attestation } from "../shared/job-host-attest.ts";
 import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
 import { firecrackerLauncher } from "./firecracker.ts";
+import { SnapshotCache, uploadSnapshot, SNAPSHOT_CACHE_BYTES } from "./snapshots.ts";
 
-export const AGENT_VERSION = "0.1.0";
+export const AGENT_VERSION = "0.2.0";
 /** Less free disk than this before the command fails the job `disk_low`, as a container job does. */
 const DISK_LOW_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -24,6 +30,12 @@ export type AgentOptions = {
   /** The pool this host serves (build or test: the image's POOL); placement sends it only that pool's jobs. */
   pool?: "build" | "test";
   launcher: VmLauncher; heartbeatMs?: number; diskLowBytes?: number; log?: (line: Record<string, unknown>) => void;
+  /** The snapshots this host holds (snapshots.ts); a temporary directory by default. */
+  cache?: SnapshotCache;
+  /** How snapshots are uploaded (tests swap it). */
+  fetcher?: typeof fetch;
+  /** Tests only (fake mode): a save stops after this many parts, as a host that dies mid-upload. */
+  testFailAfterParts?: number;
 };
 
 export class HostAgent {
@@ -36,7 +48,12 @@ export class HostAgent {
   private readonly options: AgentOptions;
   /** The host id the runtime bound this host's credential to (the attestation's, not one it chose). */
   name = "";
-  constructor(options: AgentOptions) { this.options = options; }
+  readonly cache: SnapshotCache;
+  constructor(options: AgentOptions) {
+    this.options = options;
+    this.cache = options.cache ?? new SnapshotCache({ dir: join(tmpdir(), `jobhost-snapshots-${process.pid}-${Date.now().toString(36)}`), kind: options.launcher.kind, log: line => this.log(line) });
+  }
+  private heartbeat(): HostMessage { return { type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size, cached: this.cache.ids() }; }
 
   /** Enroll: the attestation for this runtime, a credential back (shared/job-host-attest.ts, hosts.ts). */
   private async enroll() {
@@ -81,8 +98,8 @@ export class HostAgent {
         // The credential is the first message, not part of the URL: a URL lands in access logs.
         socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
         // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
-        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.pool ? { pool: this.options.pool } : {}) });
-        heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
+        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.pool ? { pool: this.options.pool } : {}), cached: this.cache.ids() });
+        heartbeat = setInterval(() => this.send(this.heartbeat()), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {
         let message: RuntimeMessage | undefined;
@@ -138,7 +155,15 @@ export class HostAgent {
     let startMs: number | undefined;
     try {
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
-      const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet });
+      // From a snapshot: its base from the cache (downloaded and checked on a miss), pinned while the VM clones it.
+      let base: { path: string; release(): void } | undefined;
+      if (spec.snapshot) {
+        try { base = await this.cache.acquire(spec.snapshot); }
+        catch (error) { result = { ok: false, code: "start_failed", message: `Snapshot: ${error instanceof Error ? error.message.slice(0, 300) : "it could not be read"}` }; return; }
+      }
+      let vm: Vm;
+      try { vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet, ...(base ? { from: base.path } : {}) }); }
+      finally { base?.release(); }
       if (job.cancelled) throw new Stopped();
       this.send({ type: "started", id, at: Date.now() });
       startMs = Date.now() - began;
@@ -159,7 +184,10 @@ export class HostAgent {
       if (job.cancelled) throw new Stopped();
       if (!ran.ok) { result = { ok: false, code: "container_failed", message: String(ran.error ?? "the command could not run") }; return; }
       const collected = await vm.request({ op: "collect", outputs: spec.outputs });
+      // Saved only after a clean exit; a failed save leaves the job's result as it is (a container job's rule).
+      const saved = spec.save && ran.exitCode === 0 && !ran.timedOut && !job.cancelled ? await this.save(vm, spec.save) : {};
       result = {
+        ...saved,
         ok: true, exitCode: ran.exitCode as number | null, timedOut: ran.timedOut as boolean, stdout: ran.stdout as never, stderr: ran.stderr as never,
         outputs: (collected.outputs ?? {}) as never, missing: (collected.missing ?? spec.outputs) as string[],
         timings: { startMs, syncMs: Number(synced.syncMs ?? 0), commandMs: Number(ran.commandMs ?? 0), collectMs: Number(collected.collectMs ?? 0), totalMs: Date.now() - began },
@@ -172,7 +200,24 @@ export class HostAgent {
       await job.vm?.destroy().catch(() => {});
       this.running.delete(id);
       const final: WireResult = result! ?? { ok: false, code: "container_failed", message: "No result" };
+      // Its slot, and what this host now holds, before its result: the next job (one from its snapshot) is placed on that.
+      this.send(this.heartbeat());
       this.send({ type: "result", id, result: !final.ok && startMs !== undefined ? { ...final, timings: { startMs, totalMs: Date.now() - began } } : final });
+    }
+  }
+
+  /** Save a job's disk: export it, upload it, keep a copy in the cache. Answers the snapshot, or why it was not saved. */
+  private async save(vm: Vm, save: NonNullable<WireJob["save"]>): Promise<{ snapshot?: { id: string; size: number; sha256: string }; snapshotError?: string }> {
+    const archive = await this.cache.scratch(`save-${vm.id}`);
+    try {
+      await vm.export(archive);
+      const uploaded = await uploadSnapshot(archive, save, { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), ...(this.options.testFailAfterParts !== undefined ? { failAfterParts: this.options.testFailAfterParts } : {}), log: line => this.log(line) });
+      await this.cache.adopt(save.id, archive, uploaded.sha256).catch(error => this.log({ type: "jobhost_snapshot_adopt_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+      return { snapshot: { id: save.id, ...uploaded } };
+    } catch (error) {
+      return { snapshotError: `The snapshot was not saved: ${error instanceof Error ? error.message.slice(0, 300) : "unknown"}` };
+    } finally {
+      await rm(archive, { force: true }).catch(() => {});
     }
   }
 }
@@ -267,13 +312,17 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     ...(arg("pool") === "build" || arg("pool") === "test" ? { pool: arg("pool") as "build" | "test" } : {}),
     vcpus: Number(arg("vcpus") ?? 4), memoryMiB: Number(arg("memory") ?? 8192),
     // A real host's paths are the image's (infra/job-hosts/image/files/jobhost.env).
-    launcher: fake ? fakeLauncher({ base: arg("base") }) : firecrackerLauncher({
+    launcher: fake ? fakeLauncher({ base: arg("base"), ...(arg("work") ? { work: arg("work") } : {}) }) : firecrackerLauncher({
       firecracker: arg("firecracker-bin") ?? "/usr/local/bin/firecracker", kernel: arg("kernel") ?? "/var/lib/camel/guest/vmlinux",
       initrd: arg("initrd") ?? "/var/lib/camel/guest/initrd.img", image: arg("image") ?? "/var/lib/camel/nvme/base.ext4",
       work: arg("work") ?? "/var/lib/camel/nvme/jobs", policyDir: arg("policies") ?? "/run/camel/egress", build: process.argv.includes("--build"),
       runtimeHost: new URL(arg("runtime") ?? "http://127.0.0.1:8787").hostname,
     }),
     diskLowBytes: Number(arg("disk-low") ?? DISK_LOW_BYTES),
+    // Snapshots are kept on the NVMe next to the job clones (a boot from one is a reflink), bounded by --cache-bytes.
+    ...(fake && !arg("cache") ? {} : { cache: new SnapshotCache({ dir: arg("cache") ?? "/var/lib/camel/nvme/snapshots", kind: fake ? "fake" : "firecracker", maxBytes: Number(arg("cache-bytes") ?? SNAPSHOT_CACHE_BYTES), log: line => console.log(JSON.stringify(line)) }) }),
+    // Tests only, in fake mode: a save that stops part-way (JOBHOST_TEST_SAVE_PARTS, a part count).
+    ...(fake && process.env.JOBHOST_TEST_SAVE_PARTS ? { testFailAfterParts: Number(process.env.JOBHOST_TEST_SAVE_PARTS) } : {}),
   });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { void agent.close().then(() => process.exit(0)); });
   await agent.start();
