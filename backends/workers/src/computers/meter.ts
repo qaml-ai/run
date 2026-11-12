@@ -165,6 +165,16 @@ export class ComputerMeter {
     await this.store.put<ComputerSession>(OPEN, { ...open, usedAt: Math.max(open.usedAt, at) });
     await this.schedule(at + this.idle(open) + SETTLE_MARGIN_MS);
   }
+  /**
+   * The open session really began at `at` (a host job's VM, which its host reports after it boots): its start moves
+   * there, never earlier than it was, never past now. A session only ever shrinks this way.
+   */
+  async startedAt(at: number) {
+    const open = await this.store.get<ComputerSession>(OPEN);
+    if (!open) return;
+    const startedAt = Math.min(this.now(), Math.max(open.startedAt, at));
+    if (startedAt !== open.startedAt) await this.store.put<ComputerSession>(OPEN, { ...open, startedAt, usedAt: Math.max(open.usedAt, startedAt), cpuAt: startedAt });
+  }
   /** The container was destroyed just now (sleep, restore, purge), with its last CPU reading if one was taken. */
   async stopped(cpuUsec?: number, at?: number) {
     await this.reading(cpuUsec);

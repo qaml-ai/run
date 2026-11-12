@@ -116,6 +116,16 @@ test("a session's rate fixed at its start, and its span as reported, are what it
   assert.equal(charges.length, 1);
   assert.equal(charges[0]!.seconds, 30, "from the reported start to the reported end");
   close(charges[0]!.costUsd, 0.03, "30 s at the fixed rate");
+  // Opened at dispatch, then trimmed to when the VM started: never earlier than it opened, never later than now.
+  await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j4", { rate: 0.001 });
+  const opened = now;
+  now += 10_000;
+  await meter.startedAt(opened - 5_000);
+  now += 10_000;
+  await meter.startedAt(opened + 4_000);
+  await meter.stopped(undefined, now);
+  assert.equal(charges.at(-1)!.seconds, 16, "from the reported start (4 s after dispatch) to its end");
+  charges.length = 1;
   // A start reported in the future is now; an end before it, nothing.
   await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j3", { at: now + 10_000, rate: 0.001 });
   await meter.stopped(undefined, now - 1_000);

@@ -14,7 +14,7 @@ pool and shape, for example `test-1vcpu-4096mib`.
   unrecovered.
 - At the defaults: a 1 vCPU / 4 GiB job costs about $0.17 an hour, a 2 vCPU / 8 GiB job about $0.33, and a 4 vCPU /
   8 GiB shard about $0.33.
-- That is more than a Cloudflare container of the same size (about $0.21 an hour for 2 vCPU / 8 GiB). With
+- That is more than a Cloudflare container of the same size (about $0.22 an hour for 2 vCPU / 8 GiB). With
   `JOB_PROVIDER=auto`, jobs that fit a container go there, and hosts take the larger ones.
 
 **Build pool** (`r8gd.4xlarge`, anything larger): a build host runs one job, so the job pays for the whole host, about

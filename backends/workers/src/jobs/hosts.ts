@@ -163,6 +163,10 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
       const known = this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0];
       if (!known || free > known.slots) throw new Error("Invalid host capacity");
     }
+    // A host with every slot free runs nothing: whatever memory its row still counts (a job object that died before it
+    // released its placement) is let go.
+    if (slots !== undefined ? free === slots : free === this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0]?.slots)
+      this.ctx.storage.sql.exec("UPDATE hosts SET used_mib = 0 WHERE name = ?", name);
     this.ctx.storage.sql.exec(`INSERT INTO hosts (name, slots, free, seen_at, pool) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
       name, slots ?? free, free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
@@ -455,6 +459,17 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     if (!host) { await release(); return fail("start_failed", `No ${pool} job host has a free slot`); }
     this.active = { host, id: spec.id };
     let wire: WireResult & { ranFrom?: number; ranUntil?: number } = { ok: false, code: "container_failed", message: "No result" }, costUsd = 0;
+    // A session is open from dispatch, at the rate fixed at admission, under the job's own name (a run made again is the
+    // same charge): if this object dies mid-job, its alarm charges it, at most to the job's lifetime. Once the result is
+    // in, the session is trimmed to the span its VM ran.
+    try { await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, `job:${spec.id}`, { rate }); }
+    catch (error) {
+      await release().catch(() => {});
+      await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
+      this.active = undefined;
+      return fail("start_failed", error instanceof Error ? error.message.slice(0, 300) : "The job could not be metered");
+    }
+    const dispatchedAt = Date.now();
     try {
       // A dispatch that throws (the host object unreachable, the RPC refused) is the job's result, never a throw out of
       // run(): a throw would leave the workflow's row to be run again, and fail again, on every restart.
@@ -464,15 +479,15 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
       }, lifetimeMs).catch((error: unknown): WireResult => ({ ok: false, code: "container_failed", message: `The job could not be sent to its host: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}` }));
     } finally {
-      // Charged for the span its VM ran, as its host reported it (from `started` to its result, or until the host was
-      // last heard from), at the rate fixed before it was sent, under the job's own session name: a run made again is
-      // the same charge. A VM that never started is not charged.
-      if (wire.ranFrom !== undefined) {
-        await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, `job:${spec.id}`, { at: wire.ranFrom, rate })
-          .then(() => meter.stopped(undefined, wire.ranUntil))
-          .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
-        costUsd = meter.spentUsd();
-      }
+      // Charged for the span its VM ran: from its host's `started` report (or, for a result that says it ran, what its
+      // timings say: a `started` lost on a reconnect never makes a job that ran free), to its result, or until its host
+      // was last heard from if it went away. A VM that never started (no report, no result that ran) is not charged.
+      const resultAt = Date.now();
+      const ranFrom = wire.ranFrom ?? (wire.ok ? Math.max(dispatchedAt, resultAt - Math.max(0, wire.timings.totalMs - wire.timings.startMs)) : undefined);
+      await (ranFrom === undefined ? meter.startedAt(resultAt) : meter.startedAt(ranFrom))
+        .then(() => meter.stopped(undefined, ranFrom === undefined ? resultAt : (wire.ranUntil ?? resultAt)))
+        .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
+      costUsd = meter.spentUsd();
       await release().catch(() => {});
       await registry(this.env).release(host, shape.memoryMiB).catch(() => {});
       this.active = undefined;
