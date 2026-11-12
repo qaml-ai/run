@@ -25,7 +25,8 @@ const STRIP = "--experimental-strip-types --disable-warning=ExperimentalWarning"
  * the image build and publish (Docker image, ECR) and the reuse of an already-tested tree; see the operations doc.
  */
 export const GATES = {
-  // sprite-test's full suite is its own 8 shards (expectShards: how many must report, not a flag to pass).
+  // sprite-test's full suite is its own shards: 8 unless SPRITE_SHARDS says otherwise (expectShards: how many must
+  // report when the log does not say; the [i/n] sprite-test prints wins).
   full: { what: "the full Node suite, 8 shards (ci.yml test)", expectShards: 8, args: [] },
   "workers-unit": { what: "Workers unit suite (workers-tests.yml)", args: ["bash", "backends/workers/scripts/validate-sprite.sh", "unit"] },
   "workers-integration": { what: "Workers integration suite, 3 shards (workers-tests.yml)", shards: 3, args: ["bash", "backends/workers/scripts/validate-sprite.sh", "integration", "{shard}/{shards}"] },
@@ -54,7 +55,11 @@ const PREFIX = String.raw`^(?:\[\d+\/\d+\] )?`;
  */
 export function readLog(text) {
   const totals = { pass: 0, fail: 0, cancelled: 0 }, failures = [], exits = [], shards = new Set(), lost = [];
+  let total = 0;
   for (const line of text.split("\n")) {
+    // How many shards sprite-test ran (SPRITE_SHARDS may change it): the n of any [i/n] it printed.
+    const of = /^\[\d+\/(\d+)\]/.exec(line);
+    if (of) total = Math.max(total, Number(of[1]));
     let match = new RegExp(`${PREFIX}# (pass|fail|cancelled) (\\d+)\\s*$`).exec(line);
     if (match) { totals[match[1]] += Number(match[2]); continue; }
     // Top level only: a subtest's `not ok` is indented and is counted by its parent.
@@ -70,7 +75,7 @@ export function readLog(text) {
     match = /== the coordinator lease on (\S+) was lost/.exec(line);
     if (match) lost.push(match[1]);
   }
-  return { totals, failures: [...new Set(failures)], exits, shards: [...shards].sort((a, b) => a - b), lost };
+  return { totals, failures: [...new Set(failures)], exits, shards: [...shards].sort((a, b) => a - b), total, lost };
 }
 
 /**
@@ -78,7 +83,10 @@ export function readLog(text) {
  * sharded gate whose shard reported no exit (its sprite's lease was lost, the job died) failed for that, not for its
  * tests: it says which shards died and where, and its counts are not a failure count.
  */
-export function verdict(name, exit, log, shards = 0) {
+export function verdict(name, exit, log, expected = 0) {
+  // A sharded gate (expected > 0): what sprite-test printed it ran wins over the gate's own number (SPRITE_SHARDS changes
+  // the full suite's 8). An unsharded gate expects no shards at all.
+  const shards = expected ? log.total || expected : 0;
   const died = shards ? Array.from({ length: shards }, (_, i) => i + 1).filter(shard => !(log.shards ?? []).includes(shard)) : [];
   const ok = exit === 0 && !died.length;
   const counts = died.length
@@ -91,7 +99,7 @@ export function verdict(name, exit, log, shards = 0) {
 /** The status description, at most 140 characters (GitHub's limit): failures first, then the passes. */
 export function describe(results) {
   const failed = results.filter(result => !result.ok), passed = results.filter(result => result.ok);
-  const parts = [...failed.map(result => result.died?.length ? `${result.name} ${result.counts}` : `${result.name} FAILED ${result.counts}`), ...passed.map(result => `${result.name} ${result.counts}`)];
+  const parts = [...failed.map(result => `${result.name} FAILED ${result.counts}`), ...passed.map(result => `${result.name} ${result.counts}`)];
   const head = failed.length ? `${failed.length}/${results.length} gates failed: ` : `${results.length}/${results.length} gates passed: `;
   let text = head + parts.join(", ");
   if (text.length > 140) text = `${text.slice(0, 137)}...`;
