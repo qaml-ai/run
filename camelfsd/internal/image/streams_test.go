@@ -324,3 +324,26 @@ func TestAckThenPublishFailure(t *testing.T) {
 		t.Fatal("partial mapping")
 	}
 }
+
+func TestConcurrentPromotion(t *testing.T) {
+	m, _ := unit3(t)
+	src := filepath.Join(m.Data, "source.img")
+	b := []byte("identical immutable image")
+	if e := os.WriteFile(src, b, 0600); e != nil {
+		t.Fatal(e)
+	}
+	id := root.Hash(b)
+	done := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		go func() { done <- m.promote(src, id) }()
+	}
+	for i := 0; i < 16; i++ {
+		if e := <-done; e != nil {
+			t.Fatal(e)
+		}
+	}
+	got, e := os.ReadFile(m.image(id))
+	if e != nil || !bytes.Equal(b, got) {
+		t.Fatal(e)
+	}
+}

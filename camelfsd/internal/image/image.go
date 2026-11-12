@@ -34,11 +34,12 @@ type Config struct {
 }
 type Manager struct {
 	Config
-	Store  store.Store
-	Cache  *cache.Cache
-	Refs   refs.Repository
-	mu     sync.Mutex
-	mounts map[string]*Mount
+	Store    store.Store
+	Cache    *cache.Cache
+	Refs     refs.Repository
+	deviceMu sync.Mutex // Serializes free NBD selection and attachment.
+	mu       sync.Mutex
+	mounts   map[string]*Mount
 }
 type Request struct {
 	JobID   string `json:"jobId"`
@@ -334,8 +335,12 @@ func (m *Manager) promote(src, id string) error {
 	if _, e := os.Stat(dst); e == nil {
 		return nil
 	}
-	tmp := dst + ".tmp"
-	_ = os.Remove(tmp)
+	dir, e := os.MkdirTemp(filepath.Dir(dst), "promote-")
+	if e != nil {
+		return e
+	}
+	defer os.RemoveAll(dir)
+	tmp := filepath.Join(dir, "image.img")
 	if e := clone(src, tmp); e != nil {
 		return e
 	}
@@ -349,6 +354,8 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
+	m.deviceMu.Lock()
+	defer m.deviceMu.Unlock()
 	f, e := os.OpenFile(v.Dest, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if e != nil {
 		return e
