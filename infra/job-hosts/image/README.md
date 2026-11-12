@@ -2,6 +2,13 @@
 
 The AMI a job host boots (docs/design/job-hosts-plan.md, slices 1 and 6). It is Amazon Linux 2023 on arm64 (kernel 6.18), set up to run one Firecracker microVM per job in Nitro Sandboxes direct mode. There is one image per pool, `build` or `test`, because the memory pool reserved for sandboxes differs.
 
+**No KVM.** The hosts don't use `/dev/kvm`, nested virtualization or `.metal` instances. Firecracker's Nitro Sandboxes mode (the `enclave` block of its config) runs a microVM through the Nitro Enclaves driver instead. Per Firecracker's [Nitro Sandboxes getting started](https://github.com/firecracker-microvm/firecracker/blob/main/docs/nitro-sandboxes/getting-started.md) ("Requirements"):
+- It runs on the [instance types that support AWS Nitro Enclaves](https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave.html#nitro-enclave-reqs), x86_64 or Graviton, launched with Enclaves enabled.
+- It does **not** run on bare-metal instances.
+- It needs the AL2023 `kernel6.18` from `6.18.51-120.162.amzn2023`. `check-image.sh` checks for it.
+
+See also the EC2 User Guide's [Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html) page. The 2026-11-11 spike ran this on an `r8gd.4xlarge`.
+
 Building the image launches a temporary instance in the camelRun account, so **only Miguel runs it**, after the go-ahead. Nothing here has been built yet.
 
 ## What is in it

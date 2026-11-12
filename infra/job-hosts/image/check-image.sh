@@ -13,5 +13,8 @@ systemctl is-enabled --quiet camel-host-prep camel-egress-proxy camel-jobhost nf
 ! systemctl is-enabled --quiet sshd 2>/dev/null || fail "sshd is enabled"
 dumpe2fs -h /var/lib/camel/images/base.ext4 2>/dev/null | grep -q 'Filesystem volume name:   camel-root' || fail "the base image is not the camel root"
 debugfs -R 'stat /sbin/camel-init' /var/lib/camel/images/base.ext4 2>/dev/null | grep -q 'Type: regular' || fail "the base image has no camel-init"
+# Nitro Sandboxes need the parent kernel's nitro_enclaves support: AL2023 kernel6.18 from 6.18.51-120.162.amzn2023.
+kernel=$(ls /lib/modules | sort -V | tail -1)
+[[ $(printf '%s\n' 6.18.51-120.162.amzn2023.aarch64 "$kernel" | sort -V | head -1) == 6.18.51-120.162.amzn2023.aarch64 ]] || fail "kernel $kernel predates Nitro Sandboxes support (6.18.51-120.162.amzn2023)"
 /usr/local/bin/node --version | grep -q '^v22\.' || fail "node is not 22"
 echo "check-image: ok"
