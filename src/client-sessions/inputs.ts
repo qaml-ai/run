@@ -6,6 +6,7 @@ import { errorText } from "../protocol.ts";
 import { canonical } from "../../shared/durable-json.ts";
 import { type ClientEvent, type RequestRecord } from "../../shared/client-protocol.ts";
 import { HttpError } from "../http.ts";
+import { agentGone, deliveryDropped } from "../agent-gone.ts";
 import { type McpResult } from "../mcp-results.ts";
 import { actorInput } from "../identity.ts";
 import { senderInput } from "../sender.ts";
@@ -217,9 +218,16 @@ async function deliverDecisions(ctx: InputContext, inputs: InputRow[]) {
   for (const [id, rows] of await store.deliveries(inputs[0].agent)) {
     const first = rows[0], text = decisionNotice(rows);
     const submit = ctx.options.submit ?? ((agent, tenant, request) => ctx.submit(agent, tenant, request));
-    await submit(first.agent, first.tenant, { id, method: "prompt", params: { text, allowDisconnected: true, notice: {
-      source: { kind: "agent", agentId: first.agent, name: "decision inbox" }, root: first.agent, costUsd: 0, metadata: { kind: "message", to: "decision" },
-    } } });
+    try {
+      await submit(first.agent, first.tenant, { id, method: "prompt", params: { text, allowDisconnected: true, notice: {
+        source: { kind: "agent", agentId: first.agent, name: "decision inbox" }, root: first.agent, costUsd: 0, metadata: { kind: "message", to: "decision" },
+      } } });
+    } catch (error) {
+      // Its agent was deleted or expired (it asked, so it existed): nothing will take these answers, and the expiry sweep
+      // would send them again every scan until the agent's purge. Any other failure is retried by that sweep.
+      if (!await agentGone(store.db, first.agent, { missing: true })) throw error;
+      deliveryDropped({ delivery: "decision_answers", agent: first.agent, tenant: first.tenant, request: id, status: (error as HttpError).status });
+    }
     await store.delivered(id);
   }
 }

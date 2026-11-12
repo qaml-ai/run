@@ -609,7 +609,8 @@ export class Delegation {
       if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
       if (lineage.owner.kind !== 'agent') throw new HttpError(400, "This run was started by a workflow, which can't receive messages. It reads your final answer when you finish; use report_progress to send updates before then.");
       const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'subagent', root: lineage.root }, args.text, 'parent');
-      const response = await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, endUser: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice) as { steer?: string; steeredInto?: string } | undefined;
+      const response = await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, endUser: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice) as { steer?: string; steeredInto?: string; gone?: boolean } | undefined;
+      if (response?.gone) throw new HttpError(410, 'Your parent agent was deleted, so it cannot receive messages.');
       return { sent: true, to: 'parent', into: response?.steer === 'accepted' || response?.steeredInto ? 'its running turn' : 'a new turn of its own' };
     }
     const children = await this.children();
@@ -636,7 +637,8 @@ export class Delegation {
     const delegation: Placement = { owner: agentOwner(id), rootOwner, chain, depth: child.depth, maxDepth, toolCallId: callId, ownerRun: run.id };
     const message = agentMessage({ agentId: id, name: 'parent', root: child.root ?? lineage?.root ?? id }, args.text, 'child');
     try {
-      await this.host.sendMessage(child.id, { id: requestId, method: 'prompt', params: { text: args.text, endUser: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, allowDisconnected: true, whileRunning: 'followUp', metadata } }, { ...message.notice, delegation });
+      const sent = await this.host.sendMessage(child.id, { id: requestId, method: 'prompt', params: { text: args.text, endUser: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, allowDisconnected: true, whileRunning: 'followUp', metadata } }, { ...message.notice, delegation }) as { gone?: boolean } | undefined;
+      if (sent?.gone) throw new HttpError(410, `${child.name} was deleted.`);
     } catch (error) {
       // As Node marks the message's row: it ends failed, with no notification to come. Left running, a later wait polled
       // a request the child never had and called the child deleted (a child DO reset while starting, on the pilot).

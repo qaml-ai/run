@@ -18,7 +18,14 @@ export const TriggerInput = z.object({
   budget: z.object({usd:z.number().positive().max(10000)}),
 }).strict();
 export type TriggerConfig = z.infer<typeof TriggerInput>;
-type Stored = { id:string; agent:string; tenant:string; config:TriggerConfig; sealed:any };
+type Stored = { id:string; agent:string; tenant:string; config:TriggerConfig; sealed:any; disabled_at?:number|null };
+/**
+ * Disable an agent's triggers as its purge removes it (`sql`: the purge's transaction). The rows stay, so their hook URLs
+ * answer 202 without dispatching (`receive`) rather than 404, which senders such as Stripe retry for days.
+ */
+export async function disableAgentTriggers(sql:Sql,agent:string,now=Date.now()){
+ await sql.query('update agent_triggers set disabled_at=coalesce(disabled_at,$2) where agent=$1',[agent,now]);
+}
 export interface TriggerHost {
  db:Db;
  transaction<T>(work:(sql:Sql)=>Promise<T>):Promise<T>;
@@ -80,6 +87,8 @@ export class Triggers {
  async receive(token:string,request:Request){
   checkHookLength(request);
   const row:Stored=(await this.host.db.query('select * from agent_triggers where token_hash=$1',[await sha256Hex(token)])).rows[0];if(!row)throw new HttpError(404,'Unknown hook');
+  // Its agent was purged: answered as accepted, so the sender stops retrying, and nothing is read, recorded or run.
+  if(row.disabled_at!=null){await request.body?.cancel().catch(()=>{});return {code:202,body:{status:'disabled',verified:false,deduped:false}};}
   const chunks:Uint8Array[]=[];let size=0;
   if(request.body){const reader=request.body.getReader();try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>MAX_HOOK_BYTES){await reader.cancel();throw new HttpError(413,'Request too large');}chunks.push(value);}}finally{reader.releaseLock();}}
   const bytes=new Uint8Array(size);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}
@@ -139,6 +148,11 @@ export class Triggers {
   await Promise.all(rows.map(async d=>{
    try{
     const row:Stored=(await this.host.db.query('select * from agent_triggers where id=$1',[d.trigger_id])).rows[0];if(!row)return;
+    // Queued before its agent's purge disabled it (or by a node that predates disabling): dropped, never sent.
+    if(row.disabled_at!=null){
+     await this.host.db.query("update trigger_deliveries set status='failed',error='Trigger disabled: its agent was deleted',data=null,claimed_until=null,lease=null where id=$1 and lease=$2",[d.id,lease]);
+     return;
+    }
     const agent=row.config.mode==='fresh'?await this.freshAgent(row,d,now):row.agent;
     await this.host.prepareRun?.(agent,row.tenant,{humanInput:{unattended:"decline"}});
     const files=d.data.raw.length>16000?[{path:(await this.host.upload(agent,row.tenant,`trigger-${d.id}`,d.data.raw)).path}]:[];

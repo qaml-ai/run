@@ -33,6 +33,24 @@ export function deletedDeadline(owed: { billing: boolean; events: boolean; outbo
   return Math.min(owed.billing ? now + 5000 : Infinity, owed.events ? now + 1000 : Infinity, owed.outbox ?? Infinity);
 }
 
+/**
+ * Plan a deleted agent's next wake, or let it go quiet. Only a confirmed tombstone counts (`deleted` read back true from
+ * its own storage): a read that fails throws, and an agent whose flag is not set is live ("live", nothing touched), so a
+ * transient failure never silences a live agent's schedules. A tombstoned agent that still owes something (`at`) wakes
+ * for it; one that owes nothing has its jobs (every capability's: nothing it would run can matter now) and its alarm
+ * removed, so nothing re-arms it.
+ */
+export async function settleDeleted(storage: DurableObjectStorage, at: number, push: (at: number) => Promise<unknown>): Promise<"live" | "armed" | "quiet"> {
+  if (await storage.get("deleted") !== true) return "live";
+  if (Number.isFinite(at)) { await push(at); return "armed"; }
+  // Pi's own wake job goes too: a turn still settling after a restart is fine, since the harness pushes its wake again
+  // on start, and its settle writes a receipt and calls arm(), which plans this agent for it.
+  if (storage.sql.exec<{ n: number }>("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_jobs'").one().n)
+    storage.sql.exec("DELETE FROM cf_agents_jobs");
+  await storage.deleteAlarm();
+  return "quiet";
+}
+
 /** Rows one flush delivers; the rest go in the next, at once if they are due. */
 export const OUTBOX_PAGE = 128;
 
