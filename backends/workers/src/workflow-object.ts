@@ -112,7 +112,11 @@ export const unwiredExecutor: EffectExecutor = {
 export const GATE_UNAVAILABLE = "gate() is not available yet: a workflow cannot ask a person on this runtime. Remove the gate, or end the workflow and ask in your own reply";
 export function gateUnavailable(land: (key: string, attempt: number, outcome: EffectOutcome) => Promise<void>, defer: (task: () => Promise<void>) => void): ChildEffects {
   // Landed after the start returns: a start runs inside the runner's step, which a landing waits for.
-  return { start: async effect => { defer(() => land(effect.key, effect.attempt, { ok: false, error: GATE_UNAVAILABLE })); } };
+  return {
+    start: async effect => { defer(() => land(effect.key, effect.attempt, { ok: false, error: GATE_UNAVAILABLE })); },
+    // A landing lost to a crash: the sweep's poll answers the same refusal.
+    poll: async () => ({ outcome: { ok: false, error: GATE_UNAVAILABLE } }),
+  };
 }
 
 /**

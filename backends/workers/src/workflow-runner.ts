@@ -175,6 +175,8 @@ type Row = Record<string, SqlStorageValue>;
 const bytesOf = (value: SqlStorageValue) => value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
 const text = (value: SqlStorageValue) => value === null || value === undefined ? undefined : String(value);
 const EXECUTED = new Set(["agent", "gate", "job", "commit", "push"]);
+/** The executed kinds as an SQL list: every one is swept, and keeps the sweep's alarm armed, until it lands. */
+const EXECUTED_SQL = [...EXECUTED].map(kind => `'${kind}'`).join(", ");
 /** The effects that hold a capacity slot while they run, and which kind: an agent a child's, a job or push a job's. */
 const SLOTTED: Record<string, "child" | "job"> = { agent: "child", job: "job", push: "job" };
 export const slotKind = (kind: string) => SLOTTED[kind];
@@ -947,7 +949,7 @@ export class WorkflowRunner {
           this.sql.exec("UPDATE workflow_state SET swept_at = ? WHERE id = 1", now);
           if (this.executor.poll) {
             const stale = this.sql.exec(
-              "SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind IN ('agent', 'gate') AND started_at <= ?",
+              `SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind IN (${EXECUTED_SQL}) AND started_at <= ?`,
               now - WORKFLOW_LIMITS.sweepMs,
             ).toArray();
             for (const row of stale) {
@@ -1001,7 +1003,7 @@ export class WorkflowRunner {
       // While the step window is full, the window's end (above) is when to try.
       const throttled = state.throttled_until !== null && Number(state.throttled_until) > this.now();
       if (!throttled && this.sql.exec("SELECT 1 FROM workflow_effects WHERE current = 1 AND delivered_step IS NULL AND landed IS NOT NULL LIMIT 1").toArray().length) candidates.push(this.now());
-      const unlanded = this.sql.exec("SELECT 1 FROM workflow_effects WHERE current = 1 AND status = 'pending' AND (kind IN ('agent', 'gate') OR started = 0) LIMIT 1").toArray().length > 0;
+      const unlanded = this.sql.exec(`SELECT 1 FROM workflow_effects WHERE current = 1 AND status = 'pending' AND (kind IN (${EXECUTED_SQL}) OR started = 0) LIMIT 1`).toArray().length > 0;
       if (unlanded) candidates.push((state.swept_at === null ? this.now() : Number(state.swept_at)) + WORKFLOW_LIMITS.sweepMs);
     }
     if (capacity) candidates.push(Number(state.renewed_at ?? this.now()) + capacity.leaseMs / 2);

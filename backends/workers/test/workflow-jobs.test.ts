@@ -16,7 +16,7 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 } });
 const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");
-const { byKind } = await import("../src/workflow-object.ts");
+const { byKind, gateUnavailable, GATE_UNAVAILABLE } = await import("../src/workflow-object.ts");
 const { forkChanges } = await import("../src/workflow-volumes.ts");
 const { ForkJanitor } = await import("../src/workflow-forks.ts");
 hooks.deregister();
@@ -292,4 +292,33 @@ test("a workflow's forks are deleted once it ends; a failed delete is tried agai
   // Nothing left: ending again does nothing.
   assert.equal(await forks.ended(), undefined);
   assert.equal(deleted.length, 3);
+});
+
+test("a job, commit or push whose landing a crash lost is found by the alarm's sweep, with no capacity alarm to wake it", { timeout: 60_000 }, async () => {
+  for (const kind of ["job", "commit", "push"] as const) {
+    const h = harness();
+    const call = kind === "job" ? `job({ key: "k", command: "true", timeoutSeconds: 5 })`
+      : kind === "commit" ? `commit("vol_fork", { key: "k" })` : `push({ key: "k", volume: "v", repo: "a/b", branch: "x", app: "gha_1" })`;
+    h.init({ code: `return await ${call};` });
+    await h.wake();
+    assert.deepEqual(h.world.queue.map(effect => effect.kind), [kind]);
+    // The landing is lost: nothing will deliver it. The sweep must still be armed for it.
+    h.world.queue.splice(0);
+    (h.world as unknown as { answer: (effect: StartedEffect) => EffectOutcome }).answer = () => ({ ok: true, value: { landed: kind } });
+    assert.notEqual(h.alarmAt, null, `${kind}: an unlanded ${kind} keeps the sweep's alarm armed`);
+    for (let guard = 0; guard < 5 && h.runner.get().status !== "completed"; guard++) {
+      h.clock = Math.max(h.clock, h.alarmAt!);
+      await h.runner.alarm();
+    }
+    assert.equal(h.runner.get().status, "completed", kind);
+    assert.deepEqual(h.runner.get().result, { landed: kind });
+  }
+});
+
+test("gate() while unavailable: a lost landing is answered by the sweep's poll with the same refusal", async () => {
+  const deferred: (() => Promise<void>)[] = [];
+  const gates = gateUnavailable(async () => {}, task => { deferred.push(task); });
+  await gates.start({ key: "g", attempt: 1, kind: "gate", args: {}, options: undefined, phase: undefined });
+  assert.equal(deferred.length, 1, "its landing is deferred past the start");
+  assert.deepEqual(await gates.poll!({ key: "g", attempt: 1, kind: "gate", args: {}, options: undefined, phase: undefined }), { outcome: { ok: false, error: GATE_UNAVAILABLE } });
 });
