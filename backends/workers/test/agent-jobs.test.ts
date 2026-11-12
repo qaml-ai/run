@@ -10,7 +10,7 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 } });
 const { agentJobId, agentJobTools, jobRunResult, jobRunSpec, runJob, JOB_RUN_INLINE_CHARS, JOB_RUN_MAX_SECONDS } = await import("../src/agent-jobs.ts");
-const { WORKFLOW_START_DESCRIPTION, workflowStartDescription } = await import("../src/workflow-tools.ts");
+const { WORKFLOW_START_DESCRIPTION, WORKFLOWS_PROMPT_SECTION, workflowStartDescription } = await import("../src/workflow-tools.ts");
 hooks.deregister();
 
 // The jobs builtin: an agent runs one command in a container of its own, paid by itself, once per tool call.
@@ -89,6 +89,9 @@ test("the builtin exists only where a job driver does; workflow_start points at 
   assert.deepEqual(tools.map(tool => tool.name), ["job_run"]);
   assert.ok(!WORKFLOW_START_DESCRIPTION.includes("job_run"));
   assert.match(workflowStartDescription(true), /Do not do the units yourself\. Run a single command with job_run, not a workflow\. Use delegate/);
+  // The builtin's prompt section says when to write one in the description's own terms.
+  for (const phrase of ["more than about 10 files, tables, documents or sources", "port, migration, audit or research sweep", "give each to its own agent()", "planning, checking and reporting"])
+    assert.ok(WORKFLOW_START_DESCRIPTION.includes(phrase) && WORKFLOWS_PROMPT_SECTION.includes(phrase), phrase);
 });
 
 test("job_run in a turn no request started (run id background) is refused and runs nothing", async () => {

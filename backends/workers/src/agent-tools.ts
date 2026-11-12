@@ -1,6 +1,6 @@
 import { jobDriver } from "./jobs/driver.ts";
 import { agentJobTools } from "./agent-jobs.ts";
-import { workflowTools } from "./workflow-tools.ts";
+import { workflowTools, WORKFLOWS_PROMPT_SECTION } from "./workflow-tools.ts";
 import { workflowsEnabled } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
 import { decisionInputs } from "./inbox-decisions.ts";
@@ -507,7 +507,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
               reopen: id => this.delegation.reopenWorkflow(id),
               forget: id => this.delegation.forgetWorkflow(id),
             },
-          }) });
+          }), sections: [{ key: "workflows", tag: false, render: async () => WORKFLOWS_PROMPT_SECTION }] });
         }
         // The jobs builtin (agent-jobs.ts): one command in a container of its own. On the tenants that have workflows and
         // where a job driver exists (the pilot), for every agent that may use a computer (not one whose computer is

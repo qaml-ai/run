@@ -7452,7 +7452,8 @@ workflow to planning, checking and reporting. When the units edit files, give
 each `repo` (the volume) and `commit()` its fork. Run a single command with
 `job_run`, not a workflow, and use [`delegate`](https://run.camelai.com/docs/guides/multi-agent.md) for a few
 sub-agents whose answers you need in this turn. The `workflows` builtin tells
-agents the same. An agent need not poll a workflow it started: a
+agents the same, in `workflow_start`'s description and in a short section of
+their system prompt. An agent need not poll a workflow it started: a
 `<workflow_notification>` tells it when the workflow finishes or stops.
 
 Workflows run on Workers runtimes only, and are **enabled per account**: ask
