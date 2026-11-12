@@ -62,3 +62,35 @@ test("a WorkflowObject runs a workflow through the sandbox Worker, its alarm and
   assert.equal(refused.status, 409);
   assert.match(((await refused.json()) as { error: string }).error, /aborted workflow cannot be resumed/);
 });
+
+test("a script with a syntax error is refused at start; a workflow with no origin to configure its agents fails once", { timeout: 240_000 }, async (t) => {
+  // No AGENT_PUBLIC_URL, and the TEST_MODE hook stores no start origin: a workflow as one started before #818 was.
+  const fixture = await startFixture({ noPublicUrl: true });
+  t.after(() => fixture.stop());
+  const call = (path: string, body?: unknown) => fetch(`${fixture.worker.url}/__test/workflows/${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const refused = await call("wf_syntax", { code: `log("a");\nlog("b" "c");` });
+  assert.equal(refused.ok, false);
+  assert.match(((await refused.json()) as { error: string }).error, /^script_error: SyntaxError at line 2, column 9/);
+  assert.equal(((await (await call("wf_syntax")).json()) as { refused?: unknown; error?: string }).error !== undefined, true, "nothing was created");
+
+  const created = await call("wf_no_origin", { code: `return (await agent("review the plan")).answer;` });
+  assert.equal(created.status, 201, await created.clone().text());
+  let summary: { status: string; error?: string } = await created.json();
+  for (let i = 0; i < 50 && summary.status !== "failed"; i++) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    summary = await (await call("wf_no_origin/wake", {})).json();
+  }
+  assert.equal(summary.status, "failed");
+  assert.match(summary.error ?? "", /AGENT_PUBLIC_URL is not set/);
+  const events = (await (await call("wf_no_origin/events")).json()) as { type: string; data?: { code?: string } }[];
+  assert.equal(events.filter(event => event.type === "failed" && event.data?.code === "missing_origin").length, 1);
+  // Woken again, it stays failed, once.
+  await call("wf_no_origin/alarm", {});
+  const again = (await (await call("wf_no_origin/events")).json()) as { type: string }[];
+  assert.equal(again.filter(event => event.type === "failed").length, 1);
+});

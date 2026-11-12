@@ -485,3 +485,21 @@ test("a gate's deadline: the executor closes it first; an answer that won the ra
   assert.equal(at(h).status, "completed");
   assert.deepEqual(at(h).result, { a: "hold", b: "ship" });
 });
+
+test("fail() ends a workflow once: what is out is cancelled, the executor aborted, and a later wake recovers nothing", { timeout: 30_000 }, async () => {
+  const h = harness();
+  let recovers = 0, aborts = 0;
+  h.world.recover = async () => { recovers++; };
+  h.world.abort = async () => { aborts++; };
+  h.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await h.wake();
+  assert.equal(recovers, 1);
+  await h.runner.fail("no origin", "missing_origin");
+  await h.runner.fail("no origin", "missing_origin");
+  assert.deepEqual([at(h).status, at(h).error], ["failed", "no origin"]);
+  assert.equal(h.runner.events().filter(event => event.type === "failed").length, 1, "once");
+  assert.deepEqual(h.world.cancelled, ["a:1"]);
+  assert.equal(aborts, 1);
+  await h.runner.wake();
+  assert.equal(recovers, 1, "an ended workflow does not recover its executor");
+});

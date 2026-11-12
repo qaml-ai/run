@@ -157,3 +157,44 @@ test("500 effects end to end, one step per effect", { timeout: 300_000 }, async 
   t.diagnostic(`500 effects: ${Math.round(ms)} ms in all, ${perStep.toFixed(1)} ms a step in the runner, last snapshot ${last.snapshot_bytes} bytes, ${Math.max(...steps.map(step => step.polls))} polls at most`);
   assert.ok(last.snapshot_bytes < 512 * 1024, `${last.snapshot_bytes}`);
 });
+
+test("a syntax error is a script_error naming the line and column, before a workflow starts and if one runs", { timeout: 30_000 }, async () => {
+  const { checkWorkflowScript } = await import("../codemode/workflow-vm.ts");
+  assert.deepEqual(await checkWorkflowScript(`const a = 1;\nconst b = "x" "y";`, WASM), { ok: false, message: "SyntaxError at line 2, column 15: expecting ';'", line: 2, column: 15 });
+  assert.deepEqual(await checkWorkflowScript(`await agent(;`, WASM), { ok: false, message: "SyntaxError at line 1, column 13: unexpected token in expression: ';'", line: 1, column: 13 });
+  assert.deepEqual(await checkWorkflowScript(`return await agent("ok");`, WASM), { ok: true });
+  // A script that reaches a step anyway (started before the check) faults as a script error, not a VM crash; a
+  // workflow's args line before it does not move the line.
+  const h = await drive(`const args = Object.freeze(null);\nlog("x");\nlog("y" "z");`);
+  assert.deepEqual([h.runner.get().status, h.runner.get().fault?.code, h.runner.get().fault?.message], ["paused", "script_error", "SyntaxError at line 2, column 9: Unexpected string"]);
+});
+
+test("the guest has TextEncoder, TextDecoder and Unicode-safe base64, deterministic across snapshots", { timeout: 30_000 }, async () => {
+  const code = `
+    const text = "héllo, 世界 🐪";
+    const bytes = new TextEncoder().encode(text);
+    const before = { length: bytes.length, base64: toBase64(text), fromBytes: toBase64(bytes) };
+    await agent("wait", { key: "w" }); // the VM is snapshotted and restored here
+    const after = new TextDecoder().decode(bytes);
+    return { ...before, after, back: fromBase64(before.base64), raw: Array.from(fromBase64("AAEC/w==", { as: "bytes" })), urlSafe: fromBase64(toBase64("??>>").replace(/\\+/g, "-").replace(/\\//g, "_")), lone: toBase64("\\ud800"), encoding: new TextDecoder("utf8").encoding };`;
+  const restored = await drive(code);
+  const replayed = await drive(code, { snapshotCap: 0 });
+  const expected = Buffer.from("héllo, 世界 🐪", "utf8");
+  assert.deepEqual(restored.runner.get().result, {
+    length: expected.length, base64: expected.toString("base64"), fromBytes: expected.toString("base64"),
+    after: "héllo, 世界 🐪", back: "héllo, 世界 🐪", raw: [0, 1, 2, 255], urlSafe: "??>>", lone: Buffer.from("�").toString("base64"), encoding: "utf-8",
+  });
+  assert.deepEqual(replayed.runner.get().result, restored.runner.get().result);
+  const bad = await drive(`try { fromBase64("!!!"); } catch (error) { return String(error); }`);
+  assert.match(String(bad.runner.get().result), /not base64/);
+});
+
+test("the script check only compiles: a script that closes its wrapper does not run or hang it; fromBase64 keeps every s", { timeout: 30_000 }, async () => {
+  const { checkWorkflowScript } = await import("../codemode/workflow-vm.ts");
+  const started = Date.now();
+  assert.deepEqual(await checkWorkflowScript(`})(); for (;;) {} ;(async () => {`, WASM), { ok: true }, "valid syntax, and never executed");
+  assert.deepEqual(await checkWorkflowScript(`})(); globalThis.ran = 1; while (true) {} ;(async () => {`, WASM), { ok: true });
+  assert.ok(Date.now() - started < 5_000, "the check returned at once");
+  const h = await drive(`return { sw: fromBase64("sw=="), round: fromBase64(toBase64("ss saas \\u{1F42A}s")), spaced: fromBase64("c3 Nz\\nc3M=") };`);
+  assert.deepEqual(h.runner.get().result, { sw: Buffer.from("sw==", "base64").toString(), round: "ss saas \u{1F42A}s", spaced: "sssss" });
+});
