@@ -32,6 +32,7 @@ func Run(args []string, out io.Writer) error {
 	ref := g.String("ref", "", "ref")
 	root := g.String("root", "", "root id")
 	tree := g.String("tree", "", "git tree SHA")
+	vsock := g.String("vsock", "", "vsock path")
 	hydrate := g.Bool("hydrate", false, "hydrate")
 	path := g.String("path", "", "import image")
 	name := g.String("name", "", "import ref name")
@@ -44,7 +45,7 @@ func Run(args []string, out io.Writer) error {
 	switch cmd {
 	case "mount":
 		route = "/v0/mounts"
-		body = map[string]any{"jobId": *job, "lineage": *lineage, "ref": *ref, "root": *root, "tree": *tree, "hydrate": *hydrate}
+		body = map[string]any{"jobId": *job, "lineage": *lineage, "ref": *ref, "root": *root, "tree": *tree, "hydrate": *hydrate, "vsock": *vsock}
 	case "checkpoint":
 		route += "/checkpoint"
 	case "release":

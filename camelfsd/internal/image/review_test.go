@@ -10,6 +10,7 @@ import (
 
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
+	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -33,7 +34,11 @@ func TestTreeMountReclaimsExpiredJobLease(t *testing.T) {
 	if e = os.WriteFile(path, make([]byte, root.ChunkSize), 0600); e != nil {
 		t.Fatal(e)
 	}
-	tree := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tr, err := m.objects().Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := tr.Tree
 	imp, e := m.Import(context.Background(), ImportRequest{Lineage: "l", Name: "main", Path: path, Tree: tree})
 	if e != nil {
 		t.Fatal(e)

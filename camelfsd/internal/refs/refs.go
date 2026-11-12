@@ -1,6 +1,7 @@
 package refs
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -44,7 +45,7 @@ func Open(path string) (*DB, error) {
 		return nil, e
 	}
 	d.SetMaxOpenConns(1)
-	_, e = d.Exec(`CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,kind TEXT,bytes BLOB,size INT,created_at INTEGER);
+	_, e = d.Exec(`CREATE TABLE IF NOT EXISTS tree_parents(tree TEXT PRIMARY KEY,parent TEXT); CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,kind TEXT,bytes BLOB,size INT,created_at INTEGER);
  CREATE TABLE IF NOT EXISTS lineage_blobs(lineage TEXT,sha256 TEXT,sha1 TEXT,size INT,created_at INTEGER,PRIMARY KEY(lineage,sha256));
  CREATE INDEX IF NOT EXISTS blob_sha1 ON lineage_blobs(sha1);
  CREATE TABLE IF NOT EXISTS refs(lineage TEXT,name TEXT,"commit" TEXT NOT NULL DEFAULT '',tree TEXT NOT NULL DEFAULT '',root TEXT NOT NULL DEFAULT '',owner TEXT NOT NULL DEFAULT '',holder TEXT,lease_epoch INTEGER NOT NULL DEFAULT 0,lease_deadline INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER,PRIMARY KEY(lineage,name)); CREATE TABLE IF NOT EXISTS mounts(job_id TEXT PRIMARY KEY,lineage TEXT,name TEXT,root TEXT,tree TEXT,image TEXT,warm INTEGER,state TEXT,lease_epoch INTEGER,created_at INTEGER); CREATE TABLE IF NOT EXISTS tree_roots(lineage TEXT,tree TEXT,root TEXT,created_at INTEGER); CREATE INDEX IF NOT EXISTS tree_lookup ON tree_roots(lineage,tree,created_at);`)
@@ -147,4 +148,28 @@ func (d *DB) Check(l, n string, f Fence) error {
 		return fmt.Errorf("%w", ErrFenced)
 	}
 	return nil
+}
+
+// Publish atomically fences the complete ref and records its image mapping.
+func (d *DB) Publish(ctx context.Context, l, n string, a, b Value, f Fence) error {
+	tx, e := d.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	r, e := tx.ExecContext(ctx, `UPDATE refs SET "commit"=?,tree=?,root=?,owner=?,updated_at=? WHERE lineage=? AND name=? AND "commit"=? AND tree=? AND root=? AND holder=? AND lease_epoch=? AND lease_deadline>?`, b.Commit, b.Tree, b.Root, b.Owner, d.Now().UnixMilli(), l, n, a.Commit, a.Tree, a.Root, f.Holder, f.LeaseEpoch, d.Now().UnixMilli())
+	if e != nil {
+		return e
+	}
+	nr, _ := r.RowsAffected()
+	if nr != 1 {
+		return ErrFenced
+	}
+	if b.Tree != "" {
+		_, e = tx.ExecContext(ctx, `INSERT INTO tree_roots VALUES(?,?,?,?)`, l, b.Tree, b.Root, d.Now().UnixNano())
+		if e != nil {
+			return e
+		}
+	}
+	return tx.Commit()
 }

@@ -2,6 +2,7 @@
 # Root-only integration test. The caller must check /nvme/host-free first.
 # Usage: sudo ./scripts/ec2-smoke.sh [clone|prehydrate]
 set -euo pipefail
+[[ -e /nvme/host-free ]] || { echo "unit 3 smoke skipped: /nvme/host-free is absent"; exit 0; }
 [[ $EUID == 0 ]] || { echo 'run as root' >&2; exit 1; }
 MODE=${1:-clone}
 [[ $MODE == clone || $MODE == prehydrate ]] || exit 2
@@ -21,7 +22,23 @@ now() { date +%s%N; }
 elapsed() { echo $(( ($(now)-$1)/1000000 )); }
 field() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
 assert() { python3 -c 'import json,sys; j=json.load(sys.stdin); assert eval(sys.argv[1]),j' "$1"; }
-client() { "$BIN" client --socket "$SOCK" "$@"; }
+client() {
+ if [[ $1 == checkpoint ]]; then
+  local j=$3 status
+  status=$("$BIN" client --socket "$SOCK" status --job "$j")
+  mount -o loop "$(field image <<<"$status")" "$W/mnt"
+  "$BIN" testguest apply --vsock-dir "$W/$j" --job "$j" --mount "$W/mnt" --index "$W/$j.idx.json"
+  "$BIN" testguest checkpoint --vsock-dir "$W/$j" --job "$j" --mount "$W/mnt" --index "$W/$j.idx.json" &
+  local guest=$! result
+  result=$("$BIN" client --socket "$SOCK" "$@")
+  wait "$guest"
+  "$BIN" testguest checkpointed --index "$W/$j.idx.json" --tree "$(field tree <<<"$result")"
+  umount "$W/mnt"
+  echo "$result"
+ else
+  "$BIN" client --socket "$SOCK" "$@"
+ fi
+}
 PID=
 AWAY=0
 cleanup() {
@@ -56,10 +73,11 @@ for ((i=0;i<100;i++)); do
   if curl -fsS --unix-socket "$SOCK" http://localhost/v0/health >/dev/null 2>&1; then break; fi
   kill -0 "$PID"; sleep .1
 done
-IMPORT=$(client import-image --lineage test --name main --path "$IMG")
+T1=$(client import-tree --lineage test --dir /nvme/bench/trees/medium | field tree)
+IMPORT=$(client import-image --lineage test --name main --path "$IMG" --tree "$T1")
 rec "import $IMPORT"
 ROOT=$(field root <<<"$IMPORT")
-MOUNT=$(client mount --job j1 --lineage test --ref main)
+MOUNT=$(client mount --job j1 --lineage test --ref main --vsock "$W/j1")
 assert 'j["warm"] is True and j["root"]=="'"$ROOT"'"' <<<"$MOUNT"
 rec "warm_mount $MOUNT"
 mount -o loop "$(field image <<<"$MOUNT")" "$W/mnt"
@@ -78,9 +96,11 @@ umount "$W/mnt"
 client release --job j1 >/dev/null
 client release --job j2 >/dev/null
 mv "$D/images" "$D/images.away"; AWAY=1
+mkdir -p "$D/images"
+cp --reflink=always "$D/images.away"/blank-*.img "$D/images/"
 # Drop the daemon's chunk cache as well as complete images to measure real cold S3.
 rm -rf "$D/cache"
-COLD=$(client mount --job j3 --lineage test --ref main --hydrate)
+COLD=$(client mount --job j3 --lineage test --ref main --hydrate --vsock "$W/j3")
 if [[ $MODE == clone ]]; then
   assert 'j["warm"] is False and j["image"]=="/dev/mapper/camelfs-j3"' <<<"$COLD"
 else
@@ -118,6 +138,8 @@ assert 'j["warm"] is True and j["root"]=="'"$NEW2"'"' <<<"$VERIFY"
 mount -o loop,ro "$(field image <<<"$VERIFY")" "$W/mnt"
 grep -q '^// smoke generation 2' "$W/mnt/src/m0/d0/f0.ts"
 umount "$W/mnt"; client release --job j2 >/dev/null
+source scripts/ec2-unit3.sh
+unit3
 cleanup; PID=; AWAY=0
 rec 'cleanup checks:'
 DM=$(dmsetup ls 2>&1); rec "$DM"

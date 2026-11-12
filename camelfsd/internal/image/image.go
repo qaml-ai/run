@@ -2,7 +2,6 @@ package image
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +28,9 @@ var ErrNoRoot = errors.New("no-root-for-tree")
 type Config struct {
 	Data, Cold, NBDListen, HostID string
 	ImportAllow                   []string
+	VirtualSize                   int64
+	MaxFiles                      int
+	MaxBytes, MaxPathsBytes       int64
 }
 type Manager struct {
 	Config
@@ -48,6 +50,11 @@ type Request struct {
 	Vsock   string `json:"vsock"`
 }
 type Mount struct {
+	mu      *sync.Mutex
+	streams *streams
+	Apply   *Apply  `json:"apply"`
+	Applied bool    `json:"applied"`
+	ApplyMs float64 `json:"applyMs"`
 	Request
 	Image                             string  `json:"image"`
 	Warm                              bool    `json:"warm"`
@@ -87,6 +94,24 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if len(entries) > 0 {
 		return nil, fmt.Errorf("existing mount state requires cleanup before restart")
 	}
+	if c.VirtualSize == 0 {
+		c.VirtualSize = 1 << 30
+	}
+	if c.MaxFiles == 0 {
+		c.MaxFiles = 200000
+	}
+	if c.MaxBytes == 0 {
+		c.MaxBytes = 8 << 30
+	}
+	if c.MaxPathsBytes == 0 {
+		c.MaxPathsBytes = 64 << 20
+	}
+	if c.VirtualSize < 1 || c.VirtualSize%512 != 0 || c.MaxFiles < 1 || c.MaxBytes < 1 || c.MaxPathsBytes < 1 {
+		return nil, fmt.Errorf("invalid size or checkpoint caps")
+	}
+	if e := blank(c); e != nil {
+		return nil, e
+	}
 	return &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}}, nil
 }
 func ms(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }
@@ -112,8 +137,6 @@ func (m *Manager) save(v *Mount) error {
 	return m.Refs.Mount(v.JobID, v.Lineage, v.Ref, v.Root, v.Tree, v.Image, v.State, v.Warm, v.LeaseEpoch)
 }
 func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	t := time.Now()
 	forms := 0
 	for _, v := range []string{q.Ref, q.Root, q.Tree} {
@@ -124,15 +147,26 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || q.Lineage == "" || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
 		return nil, fmt.Errorf("invalid mount request")
 	}
-	if m.mounts[q.JobID] != nil {
+	m.mu.Lock()
+	if _, exists := m.mounts[q.JobID]; exists {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("job already mounted")
 	}
+	if m.mounts == nil {
+		m.mounts = map[string]*Mount{}
+	}
+	m.mounts[q.JobID] = nil
+	m.mu.Unlock()
+	defer func() {
+		if err != nil {
+			m.mu.Lock()
+			delete(m.mounts, q.JobID)
+			m.mu.Unlock()
+		}
+	}()
 	var treeRoot string
 	if q.Tree != "" {
-		id, e := m.Refs.TreeRoot(q.Lineage, q.Tree)
-		if errors.Is(e, sql.ErrNoRows) {
-			return nil, ErrNoRoot
-		}
+		id, e := m.baseRoot(ctx, q.Lineage, q.Tree)
 		if e != nil {
 			return nil, e
 		}
@@ -142,7 +176,9 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		}
 		treeRoot = id
 	}
-	v := &Mount{Request: q}
+	v := &Mount{Request: q, mu: new(sync.Mutex)}
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if q.Ref != "" {
 		p, e := m.Refs.Get(q.Lineage, q.Ref)
 		if e != nil {
@@ -157,8 +193,11 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch})
 			return nil, e
 		}
-		if treeRoot != "" {
+		if q.Tree != "" {
 			set := refs.Value{Tree: q.Tree, Root: treeRoot, Owner: "job:" + q.JobID}
+			if p.Tree == q.Tree {
+				set.Commit = p.Commit
+			}
 			fence := refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
 			if p.Owner != "" && p.Owner != set.Owner {
 				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, fence)
@@ -184,14 +223,18 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			}
 		}()
 	}
-	r, e := m.load(ctx, v.Root)
+	r, e := m.mountRoot(ctx, v.Root)
 	if e != nil {
 		return nil, e
 	}
 	v.Tree = r.Tree
-	if v.Ref != "" && v.Parent.Tree != r.Tree {
-		return nil, fmt.Errorf("ref/root tree mismatch")
+	if v.Ref != "" {
+		v.Tree = v.Parent.Tree
 	}
+	if q.Tree != "" {
+		v.Tree = q.Tree
+	}
+
 	dir := filepath.Join(m.Data, "mounts", q.JobID)
 	if e = os.Mkdir(dir, 0700); e != nil {
 		return nil, e
@@ -200,12 +243,19 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	v.Image = v.Dest
 	defer func() {
 		if err != nil {
+			if v.streams != nil {
+				v.streams.close()
+			}
 			_ = m.cleanup(v)
 			_ = os.RemoveAll(dir)
 		}
 	}()
-	if _, e = os.Stat(m.image(v.Root)); e == nil {
-		e = clone(m.image(v.Root), v.Dest)
+	base := m.image(v.Root)
+	if v.Root == "" {
+		base = filepath.Join(m.Data, "images", fmt.Sprintf("blank-%d.img", m.VirtualSize))
+	}
+	if _, e = os.Stat(base); e == nil {
+		e = clone(base, v.Dest)
 		v.Warm = true
 		v.State = "warm"
 	} else if !os.IsNotExist(e) {
@@ -233,11 +283,16 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			return nil, e
 		}
 	}
+	if e = m.startStreams(ctx, v, r.Tree); e != nil {
+		return nil, e
+	}
 	v.MountMs = ms(t)
 	if e = m.save(v); e != nil {
 		return nil, e
 	}
+	m.mu.Lock()
 	m.mounts[q.JobID] = v
+	m.mu.Unlock()
 	copy := *v
 	return &copy, nil
 }
@@ -391,10 +446,13 @@ func (m *Manager) status(ctx context.Context, v *Mount) error {
 	return nil
 }
 func (m *Manager) Status(ctx context.Context, id string) (*Mount, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	v := m.mounts[id]
+	v := m.lookup(id)
 	if v == nil {
+		return nil, os.ErrNotExist
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.State == "released" {
 		return nil, os.ErrNotExist
 	}
 	if e := m.status(ctx, v); e != nil {
@@ -429,11 +487,17 @@ func (m *Manager) cleanup(v *Mount) error {
 	return nil
 }
 func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	v := m.mounts[id]
+	v := m.lookup(id)
 	if v == nil {
 		return false, os.ErrNotExist
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.State == "released" {
+		return false, os.ErrNotExist
+	}
+	if v.streams != nil {
+		v.streams.close()
 	}
 	if e := m.status(ctx, v); e != nil {
 		return false, e
@@ -474,7 +538,10 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	if v.stopRenew != nil {
 		close(v.stopRenew)
 	}
+	m.mu.Lock()
 	delete(m.mounts, id)
+	m.mu.Unlock()
+	v.State = "released"
 	return v.Promoted, nil
 }
 
@@ -529,3 +596,5 @@ func (m *Manager) matches(ctx context.Context, p, id string) (bool, error) {
 	})
 	return same, e
 }
+
+func (m *Manager) lookup(id string) *Mount { m.mu.Lock(); defer m.mu.Unlock(); return m.mounts[id] }

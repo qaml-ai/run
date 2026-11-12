@@ -3,3 +3,7 @@ EC2/S3 timings skipped: no EC2 SSH target was supplied or found.
 The workspace has no /nvme/host-free; the remote host gate could not be checked.
 Git tree and blob equality passed against system git in the unit tests.
 Real FICLONE checkpoint regression skipped on Sprites (operation not supported).
+
+unit 3
+2026-11-12: skipped in the development workspace: /nvme/host-free is absent.
+No EC2 smoke timings collected. Loop-mount Go test skips because the user is not root.

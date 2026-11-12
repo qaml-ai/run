@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -62,14 +63,14 @@ type Missing struct{ Hashes []string }
 func (m *Missing) Error() string { return "missing-blobs" }
 
 func Path(p string) error {
-	if len(p) == 0 || len(p) > 4096 || strings.ContainsRune(p, 0) {
+	if !utf8.ValidString(p) || len(p) == 0 || len(p) > 4096 || strings.ContainsRune(p, 0) {
 		return fmt.Errorf("invalid path")
 	}
 	for _, part := range strings.Split(p, "/") {
 		if part == ".git" {
 			return ErrIgnored
 		}
-		if part == "" || part == "." || part == ".." {
+		if len(part) > 255 || part == "" || part == "." || part == ".." {
 			return fmt.Errorf("invalid path")
 		}
 	}
@@ -305,6 +306,12 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 		return out, e
 	}
 	out.Blobs = len(q.Files)
+	if q.ParentTree != "" && q.ParentTree != out.Tree {
+		_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO tree_parents(tree,parent) VALUES(?,?)", out.Tree, q.ParentTree)
+		if e != nil {
+			return out, e
+		}
+	}
 	out.ImportMs = float64(time.Since(start).Microseconds()) / 1000
 	return out, nil
 }

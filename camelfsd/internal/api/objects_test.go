@@ -51,11 +51,6 @@ func TestTreeRoutes(t *testing.T) {
 	var result map[string]any
 	json.Unmarshal(w.Body.Bytes(), &result)
 	tree := result["tree"].(string)
-	mount, _ := json.Marshal(map[string]string{"jobId": "unmaterialized", "lineage": "l", "tree": tree})
-	w = call("POST", "/v0/mounts", mount, 404)
-	if !strings.Contains(w.Body.String(), "no-root-for-tree") {
-		t.Fatal(w.Body.String())
-	}
 	w = call("GET", "/v0/trees/"+tree+"/files/link", nil, 200)
 	if w.Body.String() != "target" || w.Header().Get("X-Camelfs-Mode") != "120000" {
 		t.Fatal(w)

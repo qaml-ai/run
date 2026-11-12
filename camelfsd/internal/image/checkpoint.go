@@ -9,6 +9,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,13 @@ import (
 )
 
 type Checkpoint struct {
+	FilesChanged   int     `json:"filesChanged"`
+	BytesReceived  int64   `json:"bytesReceived"`
+	WalkMs         float64 `json:"walkMs"`
+	StreamMs       float64 `json:"streamMs"`
+	FreezeMs       float64 `json:"freezeMs"`
+	PublishMs      float64 `json:"publishMs"`
+	Commit         string  `json:"commit"`
 	Root           string  `json:"root"`
 	Tree           string  `json:"tree"`
 	ParentRoot     string  `json:"parentRoot"`
@@ -30,20 +38,23 @@ type Checkpoint struct {
 }
 
 func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t := time.Now()
-	v := m.mounts[id]
+	v := m.lookup(id)
 	if v == nil {
 		return out, os.ErrNotExist
 	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return m.checkpoint(ctx, v, v.Tree)
+}
+func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadata ...CheckpointRequest) (out Checkpoint, err error) {
+	t := time.Now()
 	if v.Ref == "" {
 		return out, refs.ErrFenced
 	}
 	if e := m.Refs.Check(v.Lineage, v.Ref, v.Fence); e != nil {
 		return out, e
 	}
-	r, e := m.load(ctx, v.Root)
+	r, e := m.mountRoot(ctx, v.Root)
 	if e != nil {
 		return out, e
 	}
@@ -111,7 +122,8 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, er
 	}
 	pending := map[string][]byte{}
 	out.ParentRoot = v.Root
-	out.Tree = v.Tree
+	out.Tree = tree
+	r.Tree = tree
 	r.ParentRoot = v.Root
 	ht := time.Now()
 	e = (chunk.Chunker{}).Ranges(sf, r.VirtualSize, ranges, func(o int64, h string, b []byte) error {
@@ -148,21 +160,37 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, er
 	out.UploadMs = ms(ut)
 	set := v.Parent
 	set.Root = out.Root
-	set.Tree = v.Tree
-	if e = m.Refs.CAS(v.Lineage, v.Ref, v.Parent, set, v.Fence); e != nil {
-		return out, e
+	set.Tree = tree
+	if tree != "" && len(metadata) == 0 {
+		metadata = []CheckpointRequest{{}}
 	}
-	v.Parent = set
-	v.Root = out.Root
-	if e = m.Refs.RecordTree(v.Lineage, v.Tree, out.Root); e != nil {
-		return out, e
+	if len(metadata) > 0 {
+		out.Commit, e = m.writeCommit(ctx, v, tree, metadata[0])
+		if e != nil {
+			return out, e
+		}
+		set.Commit = out.Commit
 	}
 	if e = m.promote(snap, out.Root); e != nil {
 		return out, e
 	}
+	if e = ctx.Err(); e != nil {
+		return out, e
+	}
+	if db, ok := m.Refs.(*refs.DB); ok {
+		e = db.Publish(ctx, v.Lineage, v.Ref, v.Parent, set, v.Fence)
+	} else {
+		e = m.Refs.CAS(v.Lineage, v.Ref, v.Parent, set, v.Fence)
+	}
+	if e != nil {
+		return out, e
+	}
+	v.Parent = set
+	v.Root = out.Root
+	v.Tree = tree
 	v.Promoted = true
 	if e = m.save(v); e != nil {
-		return out, e
+		log.Printf("op=checkpoint-state jobId=%s error=%v", v.JobID, e)
 	}
 	if v.Snapshot > 1 {
 		_ = os.Remove(filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot-1)))
@@ -186,8 +214,6 @@ type ImportResult struct {
 }
 
 func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	t := time.Now()
 	if q.Lineage == "" || q.Name == "" || q.Tree != "" && !root.Hex(q.Tree, 40) || !filepath.IsAbs(q.Path) {
 		return out, fmt.Errorf("invalid import request")

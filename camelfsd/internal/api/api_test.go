@@ -2,9 +2,11 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
+	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -47,6 +49,11 @@ func TestLifecycleAndTree(t *testing.T) {
 	}
 	tree := strings.Repeat("a", 40)
 	call("POST", "/v0/mounts", map[string]any{"jobId": "missing", "lineage": "l", "tree": tree}, 404)
+	tr, err := (&objects.Repository{DB: db, Store: s, TempDir: data}).Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree = tr.Tree
 	path := filepath.Join(data, "base.img")
 	b := make([]byte, 3*root.ChunkSize)
 	b[100] = 1
@@ -65,7 +72,13 @@ func TestLifecycleAndTree(t *testing.T) {
 	}
 	f.WriteAt([]byte("changed"), root.ChunkSize+7)
 	f.Close()
-	cp := call("POST", "/v0/mounts/j1/checkpoint", map[string]any{}, 200)
+	cpResult, err := m.Checkpoint(context.Background(), "j1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(cpResult)
+	var cp map[string]any
+	json.Unmarshal(raw, &cp)
 	if cp["changedChunks"] != float64(1) || cp["root"] == imp["root"] {
 		t.Fatal(cp)
 	}

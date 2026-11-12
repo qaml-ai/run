@@ -12,6 +12,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/nbd"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"github.com/qaml-ai/run/camelfsd/internal/testguest"
 	"golang.org/x/sys/unix"
 	"log"
 	"net"
@@ -47,6 +48,8 @@ func run(args []string) error {
 		return fmt.Errorf("usage: camelfsd host|client|version")
 	}
 	switch args[0] {
+	case "testguest":
+		return testguest.Run(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -66,8 +69,13 @@ func host(args []string) error {
 	region := f.String("region", "us-west-2", "AWS region")
 	cold := f.String("cold", "clone", "clone or prehydrate")
 	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
-	depth := f.Int("prefetch-depth", 4, "prefetch lookahead")
+	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
+	virtualSize := f.Int64("virtual-size", 1<<30, "blank image size")
+	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
+	maxBytes := f.Int64("max-bytes", 8<<30, "checkpoint byte cap")
+	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
+	_ = f.Int64("hydration-pack-size", 4<<20, "reserved pack size")
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
@@ -104,7 +112,7 @@ func host(args []string) error {
 	}
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
-	m, e := image.New(image.Config{Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	m, e := image.New(image.Config{VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
