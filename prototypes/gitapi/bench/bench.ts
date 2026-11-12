@@ -126,7 +126,7 @@ for (const size of sizes) {
   out.worktree_read_dirty = summary(wtReads);
   out.worktree_checkpoint_50_files = summary([(await call(repo, "POST", "/worktree?branch=main&message=cp", undefined, "POST /worktree")).s]);
 
- Branch create is one row. Merge A: disjoint files on each side (tree-level). Merge B: the same
+  // Branch + merge. Branch create is one row. Merge A: disjoint files on each side (tree-level). Merge B: the same
   // file edited in disjoint hunks (diff3, reads three blobs from R2). Merge C: fast-forward.
   const branches: Sample[] = [];
   for (let k = 0; k < 10; k++) branches.push((await call(repo, "POST", "/branches", { name: `b/${k}`, from: "main", ttlSeconds: 3600 }, "POST /branches")).s);
