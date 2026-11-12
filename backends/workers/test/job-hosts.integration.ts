@@ -167,8 +167,9 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const refusedItem = ((await call(`/v1/workflows/${refused.id}/items`)).items as { key: string; reason?: string }[]).find(entry => entry.key === "after")!;
   assert.equal(refusedEnd.result, null);
   assert.match(refusedItem.reason ?? "", /^start_failed: No test job host/);
+  const allowedAt = Date.now();
   assert.equal((await admin("/v1/job-hosts/host-1/allow", "POST")).status, 200);
-  await until(async () => { const list = await call("/__test/job-hosts") as { name: string; revoked: number; seenAt: number }[]; const entry = list.find(item => item.name === "host-1"); return entry && !entry.revoked && entry.seenAt > Date.now() - 20_000 && entry; }, "host-1 back after it is allowed", 90_000);
+  await until(async () => { const list = await call("/__test/job-hosts") as { name: string; revoked: number; seenAt: number; free: number; slots: number }[]; const entry = list.find(item => item.name === "host-1"); return entry && !entry.revoked && entry.seenAt > allowedAt && entry.free === entry.slots && entry.slots > 0 && entry; }, "host-1 back after it is allowed", 90_000);
   // Only an admin account revokes.
   assert.equal((await fetch(`${fixture.url}/v1/job-hosts/host-1`, { method: "DELETE" })).status === 200, false);
 

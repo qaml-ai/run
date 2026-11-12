@@ -24,7 +24,7 @@ import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
-import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
+import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
 /** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
 export const HOSTS_PROVIDER = "camelrun-hosts";
@@ -482,10 +482,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       // Charged for the span its VM ran: from its host's `started` report (or, for a result that says it ran, what its
       // timings say: a `started` lost on a reconnect never makes a job that ran free), to its result, or until its host
       // was last heard from if it went away. A VM that never started (no report, no result that ran) is not charged.
-      const resultAt = Date.now();
-      const ranFrom = wire.ranFrom ?? (wire.ok ? Math.max(dispatchedAt, resultAt - Math.max(0, wire.timings.totalMs - wire.timings.startMs)) : undefined);
-      await (ranFrom === undefined ? meter.startedAt(resultAt) : meter.startedAt(ranFrom))
-        .then(() => meter.stopped(undefined, ranFrom === undefined ? resultAt : (wire.ranUntil ?? resultAt)))
+      const span = chargedSpan(wire, dispatchedAt, Date.now());
+      await meter.startedAt(span.from).then(() => meter.stopped(undefined, span.until))
         .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
       costUsd = meter.spentUsd();
       await release().catch(() => {});

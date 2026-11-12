@@ -119,3 +119,20 @@ export function hostShape(spec: JobSpec & { instance: keyof typeof INSTANCE_RESO
   };
 }
 
+
+/**
+ * The span a host job is charged, from dispatch to its result (`resultAt`): from its host's `started` report, or, for a
+ * result that says it ran, what its timings say (so a `started` lost on a reconnect, or held by a job object that was
+ * evicted, never makes a job that ran free); until its result, or until its host was last heard from if it went away.
+ * A VM that never started (no report, no result that ran) spans nothing; a result that ran spans at least a second.
+ */
+export function chargedSpan(wire: { ok: boolean; timings?: { totalMs: number; startMs: number }; ranFrom?: number; ranUntil?: number }, dispatchedAt: number, resultAt: number) {
+  const ranFrom = wire.ranFrom ?? (wire.ok && wire.timings ? resultAt - Math.max(0, wire.timings.totalMs - wire.timings.startMs) : undefined);
+  if (ranFrom === undefined && !wire.ok) return { from: resultAt, until: resultAt };
+  const until = Math.max(dispatchedAt, Math.min(resultAt, wire.ranUntil ?? resultAt));
+  let from = Math.min(until, Math.max(dispatchedAt, ranFrom ?? dispatchedAt));
+  // A job that ran is charged at least a second: its VM booted and ran its command.
+  if (wire.ok) from = Math.min(from, until - 1000);
+  return { from, until };
+}
+

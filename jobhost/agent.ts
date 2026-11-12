@@ -101,8 +101,9 @@ export class HostAgent {
 
   private send(message: HostMessage) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      // Results wait for the next connection; heartbeats and hellos are made again then.
-      if (message.type === "result") this.outbox.push(message);
+      // Results and starts wait for the next connection (a start is when a job's charge begins); heartbeats and hellos
+      // are made again then.
+      if (message.type === "result" || message.type === "started") this.outbox.push(message);
       return;
     }
     for (const frame of frames(message)) this.socket.send(frame);
