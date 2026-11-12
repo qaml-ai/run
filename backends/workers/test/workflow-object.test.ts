@@ -570,3 +570,30 @@ test("fail() ends a workflow once: what is out is cancelled, the executor aborte
   await h.runner.wake();
   assert.equal(recovers, 1, "an ended workflow does not recover its executor");
 });
+
+test("a fault, then an edit that reruns finished work holds at confirm_rerun, then an edit with confirm goes on and completes; a new effect beside kept ones is never a rerun", { timeout: 60_000 }, async () => {
+  const workers = `const done = await parallel(["a", "b", "c"], name => agent("work " + name, { key: "work:" + name }));`;
+  const h = harness();
+  // The pilot's script: three keyed workers, then an effect in parallel() without a key.
+  h.init({ code: `${workers} const combined = await parallel([() => agent("combine")]); return combined;` });
+  await h.wake();
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "key_required"]);
+  // The fix adds one keyed effect after the three finished ones: new work, not a rerun (the three are all still used).
+  await h.runner.edit({ code: `${workers} const combined = await agent("combine " + done.length, { key: "combine" }); return combined.answer;`, reason: "key the combine", rerunConfirmPercent: 25 });
+  assert.equal(at(h).status, "running", JSON.stringify(h.runner.events().at(-1)));
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).result], ["completed", "re: combine 3"]);
+
+  // An edit that redoes one finished worker under a new key reruns it: 1 of 4 finished results goes unused, past 20%.
+  const changed = `const done = await parallel(["a", "b", "c"], name => agent("work " + name, { key: (name === "a" ? "redo:" : "work:") + name }));`;
+  await h.runner.edit({ code: `${changed} const combined = await agent("combine " + done.length, { key: "combine" }); return combined.answer;`, reason: "redo a", rerunConfirmPercent: 20 });
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "confirm_rerun"]);
+  const held = h.runner.events().findLast(event => event.type === "confirm_rerun")!;
+  assert.deepEqual([held.data.reruns, held.data.finished], [1, 4]);
+  // The agent confirms with another edit (the same script): it goes on, and completes.
+  await h.runner.edit({ code: `${changed} const combined = await agent("combine " + done.length, { key: "combine" }); return combined.answer;`, reason: "confirmed", confirm: true });
+  assert.equal(at(h).status, "running");
+  await h.run();
+  assert.equal(at(h).status, "completed", JSON.stringify(at(h)));
+});

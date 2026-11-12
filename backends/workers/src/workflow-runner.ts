@@ -722,13 +722,19 @@ export class WorkflowRunner {
         this.event("snapshot_dropped", { step, bytes: ran.snapshotBytes, rawBytes: ran.snapshotRawBytes });
       }
       this.refreshLiveness();
-      // An edit that issues many new effects waits for a confirm (resume) before they start.
+      // An edit that reruns many finished effects waits for a confirm (resume, or an edit with confirm) before they start.
+      // A rerun is a new effect while a finished result goes unused (its key dropped, or its arguments changed): a new
+      // effect added beside finished ones that are all still used is new work, never a rerun.
       if (!revision.confirmed) {
         const issued = Number(this.sql.exec("SELECT COUNT(*) AS n FROM workflow_effects WHERE revision = ? AND origin = 'script' AND current = 1 AND issued_step >= ?", revision.revision, revision.start_step).one().n);
         const finished = Number(this.sql.exec("SELECT COUNT(*) AS n FROM workflow_revision_table WHERE revision = ? AND settled = 1", revision.revision).one().n);
-        if (finished > 0 && issued * 100 > Number(revision.rerun_confirm_percent) * finished) {
+        const kept = Number(this.sql.exec(
+          "SELECT COUNT(*) AS n FROM workflow_revision_table t JOIN workflow_effects e ON e.key = t.key AND e.attempt = t.attempt WHERE t.revision = ? AND t.settled = 1 AND e.seen_revision >= ?",
+          revision.revision, revision.revision).one().n);
+        const reruns = Math.min(issued, finished - kept);
+        if (finished > 0 && reruns * 100 > Number(revision.rerun_confirm_percent) * finished) {
           this.setStatus("paused", "confirm_rerun");
-          this.event("confirm_rerun", { revision: revision.revision, issued, finished, percent: Number(revision.rerun_confirm_percent) });
+          this.event("confirm_rerun", { revision: revision.revision, issued, reruns, finished, kept, percent: Number(revision.rerun_confirm_percent) });
           return false;
         }
       }
@@ -906,7 +912,7 @@ export class WorkflowRunner {
   }
 
   /** A new revision of the script. Effects whose keys it still asks for keep their results; the reason is kept with it. */
-  edit(options: { code: string; reason?: string; rerunConfirmPercent?: number }): Promise<{ revision: number }> {
+  edit(options: { code: string; reason?: string; rerunConfirmPercent?: number; confirm?: boolean }): Promise<{ revision: number }> {
     return this.serial(async () => {
       const percent = options.rerunConfirmPercent ?? WORKFLOW_LIMITS.rerunConfirmPercent;
       if (!Number.isInteger(percent) || percent < 0 || percent > 100) throw new WorkflowError("rerunConfirmPercent must be an integer from 0 to 100", 400);
@@ -915,9 +921,10 @@ export class WorkflowRunner {
       if (status === "aborted") throw new WorkflowError("An aborted workflow cannot be edited");
       let revision = 0;
       this.storage.transactionSync(() => {
-        revision = this.revise("edit", options.code, options.reason ?? null, percent, false);
-        // An edit is how a fault is fixed, and how a finished workflow goes on; other pauses stay until resume.
-        if (status === "completed" || status === "failed" || (status === "paused" && state.fault_code !== null)) this.setStatus("running");
+        revision = this.revise("edit", options.code, options.reason ?? null, percent, options.confirm === true);
+        // An edit is how a fault is fixed, how a finished workflow goes on, and how a held edit is replaced (the new
+        // revision is checked for its own reruns, or confirmed); other pauses (the user's, budget, payer) stay until resume.
+        if (status === "completed" || status === "failed" || (status === "paused" && (state.fault_code !== null || state.pause_reason === "confirm_rerun"))) this.setStatus("running");
         this.event("edited", { revision, reason: options.reason ?? null, rerunConfirmPercent: percent });
       });
       await this.advance();

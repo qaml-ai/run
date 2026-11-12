@@ -900,7 +900,7 @@ export const WorkflowStart = z.object({
 }).openapi("WorkflowStart");
 export const WorkflowItems = z.object({ items: z.array(z.record(z.string(), z.unknown())) }).passthrough().openapi("WorkflowItems");
 export const WorkflowEvents = z.object({ events: z.array(z.record(z.string(), z.unknown())) }).openapi("WorkflowEvents");
-export const WorkflowEdit = z.object({ script: z.string(), reason: z.string().openapi({ description: "Why it changed; kept with the revision" }), rerunConfirmPercent: z.number().min(0).max(100).optional() }).openapi("WorkflowEdit");
+export const WorkflowEdit = z.object({ script: z.string(), reason: z.string().openapi({ description: "Why it changed; kept with the revision" }), rerunConfirmPercent: z.number().min(0).max(100).optional(), confirm: z.boolean().optional().openapi({ description: "Go ahead even if the edit reruns many finished effects (also replaces an edit held at confirm_rerun)" }) }).openapi("WorkflowEdit");
 
 export const ChildAgents = z.object({
   children: z.array(ChildAgent).openapi({ description: "Newest first, at most 200" }),
