@@ -101,8 +101,9 @@ export const unwiredExecutor: EffectExecutor = {
  * null with the reason on its item, instead of a start that is refused on every wake.
  */
 export const GATE_UNAVAILABLE = "gate() is not available yet: a workflow cannot ask a person on this runtime. Remove the gate, or end the workflow and ask in your own reply";
-export function gateUnavailable(land: (key: string, attempt: number, outcome: EffectOutcome) => Promise<void>): ChildEffects {
-  return { start: effect => land(effect.key, effect.attempt, { ok: false, error: GATE_UNAVAILABLE }) };
+export function gateUnavailable(land: (key: string, attempt: number, outcome: EffectOutcome) => Promise<void>, defer: (task: () => Promise<void>) => void): ChildEffects {
+  // Landed after the start returns: a start runs inside the runner's step, which a landing waits for.
+  return { start: async effect => { defer(() => land(effect.key, effect.attempt, { ok: false, error: GATE_UNAVAILABLE })); } };
 }
 
 /**
@@ -178,10 +179,11 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       budget: () => { const summary = self.runner.get(); return summary.budget.usd === null ? Infinity : summary.budget.usd - summary.spent.usd; },
       get concurrency() { return self.runner.get().concurrency; },
       land: (key, attempt, outcome, usage) => self.land(key, attempt, outcome, usage),
+      defer: task => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) })))),
       classes: () => { const settings = self.settings(); return { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) }; },
       children: workflowChildren(env as unknown as Env, () => { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant! }; }, { runtimeOrigin: (env as { AGENT_PUBLIC_URL?: string }).AGENT_PUBLIC_URL }),
     });
-    this.executor = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : byKind({ agent: this.agents, gate: gateUnavailable((key, attempt, outcome) => this.land(key, attempt, outcome)) });
+    this.executor = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : byKind({ agent: this.agents, gate: gateUnavailable((key, attempt, outcome) => this.land(key, attempt, outcome), task => ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "workflow_landing_failed", workflow: name, error: String(error) }))))) });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,

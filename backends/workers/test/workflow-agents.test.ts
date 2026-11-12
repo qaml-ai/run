@@ -272,3 +272,37 @@ test('abort: an ending that lands during an earlier child\'s cancel is not writt
   assert.deepEqual(w.cancelled, [`${first!.childId}/${first!.request.id}`], 'an ended child is not cancelled');
   assert.equal((await w.agents.rows.withStatus('running')).length, 1, 'only a is still running (its ending to come)');
 });
+
+test('a landing from inside a start never waits on the step that called the start (the runner serializes both)', async () => {
+  // The runner calls start() inside its serialized step, and its land() waits for that step: a start that awaited its
+  // own landing would never return. Refusals and failures found by a start are landed after it returns.
+  const { WorkflowAgents } = await import('../src/workflow-agents.ts');
+  const values = new Map<string, unknown>();
+  const storage = {
+    async get(key: string) { return structuredClone(values.get(key)); },
+    async put(key: string, value: unknown) { values.set(key, structuredClone(value)); },
+    async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix))); },
+    async transaction(work: (tx: unknown) => unknown) { return work(storage); },
+  };
+  withSql(storage);
+  let queue: Promise<unknown> = Promise.resolve();
+  const serial = <T>(work: () => Promise<T>) => { const next = queue.then(work); queue = next.catch(() => undefined); return next; };
+  const landed: unknown[] = [], deferred: (() => Promise<void>)[] = [];
+  let crash = true;
+  const agents = new WorkflowAgents({
+    storage: storage as never, workflow: { id: 'wf_s', tenant: 't' }, budget: () => 0, concurrency: 2,
+    children: { config: async () => ({}), create: async () => ({ id: 'c' }), submit: async () => ({ ok: true }), cancel: async () => {} },
+    land: (key, attempt, outcome) => serial(async () => { landed.push([key, outcome]); }),
+    // The first deferred landing is lost to a crash; recover() lands it again.
+    defer: task => { if (crash) { crash = false; deferred.push(task); return; } void task(); },
+  });
+  await Promise.race([serial(() => agents.start({ key: 'a', attempt: 1, kind: 'agent', args: { prompt: 'x' }, options: {}, phase: undefined })), new Promise((_, reject) => setTimeout(() => reject(new Error('deadlock')), 2000))]);
+  assert.equal(landed.length, 0, 'the landing was lost to the crash');
+  await agents.recover();
+  await queue;
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(landed, [['a', { refused: "The workflow's budget is spent", code: 'budget_exhausted' }]]);
+  await agents.recover();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(landed.length, 1, 'landed once marked, recover leaves it');
+});
