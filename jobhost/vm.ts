@@ -7,7 +7,7 @@
 //   written and tested as data here; booting it needs the host image (slice 1) and AWS, after the go-ahead.
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -76,7 +76,13 @@ export function fakeLauncher(options: { base?: string; work?: string } = {}): Vm
         async destroy() {
           if (gone) return;
           gone = true;
-          child.kill("SIGKILL");
+          // The guest kills its command when its channel closes or it is told to stop; the command's group is also
+          // killed here, from the file the guest wrote, in case the guest itself is already gone.
+          const group = Number(await readFile(join(root, ".job.pgid"), "utf8").catch(() => ""));
+          child.stdin?.end();
+          child.kill("SIGTERM");
+          if (Number.isInteger(group) && group > 1) try { process.kill(-group, "SIGKILL"); } catch { /* already gone */ }
+          await new Promise(resolve => { const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(undefined); }, 2_000); child.once("exit", () => { clearTimeout(timer); resolve(undefined); }); });
           await rm(root, { recursive: true, force: true });
         },
       };

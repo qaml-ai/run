@@ -13,7 +13,7 @@
 // (ulimit -u: only meaningful where the guest owns the machine, so the host asks for it in a VM, not in fake mode);
 // stdout and stderr are kept to STREAM_BYTES each and counted past it; each output to OUTPUT_BYTES.
 import { spawn } from "node:child_process";
-import { mkdir, readFile, stat, statfs, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { dirname, join, normalize } from "node:path";
 
@@ -44,13 +44,25 @@ class Capped {
   result(): Stream { return { data: Buffer.concat(this.chunks).toString("base64"), size: this.size, truncated: this.size > this.kept }; }
 }
 
+/** Where a running command's process group is written, so whoever ends the VM can end the command too (vm.ts). */
+export const PGID_FILE = ".job.pgid";
+
 export class Guest {
   readonly repo: string;
   readonly out: string;
+  private readonly root: string;
   private readonly send: (line: unknown) => void;
+  /** The running command's process group, until it ends. */
+  private group?: number;
   constructor(root: string, send: (line: unknown) => void) {
     // In a VM the root is "/": /repo and /out, as a container job has them. In fake mode it is the job's directory.
-    this.repo = join(root, "repo"); this.out = join(root, "out"); this.send = send;
+    this.root = root; this.repo = join(root, "repo"); this.out = join(root, "out"); this.send = send;
+  }
+  /** End the running command's whole process group (the guest is told to stop, or its channel closed). */
+  killCommand() {
+    if (this.group === undefined) return;
+    try { process.kill(-this.group, "SIGKILL"); } catch { /* already gone */ }
+    this.group = undefined;
   }
 
   async handle(request: Request): Promise<unknown> {
@@ -85,6 +97,8 @@ export class Guest {
         env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: this.repo, JOB_OUT: this.out, ...request.env ?? {} },
       });
       let timedOut = false;
+      this.group = child.pid;
+      void writeFile(join(this.root, PGID_FILE), String(child.pid)).catch(() => {});
       const timer = setTimeout(() => { timedOut = true; try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } }, Math.max(1, request.timeoutSeconds) * 1000);
       const log = (stream: "stdout" | "stderr", capped: Capped) => (chunk: Buffer) => {
         capped.push(chunk);
@@ -94,6 +108,8 @@ export class Guest {
       child.stderr.on("data", log("stderr", stderr));
       child.on("close", code => {
         clearTimeout(timer);
+        this.group = undefined;
+        void rm(join(this.root, PGID_FILE), { force: true }).catch(() => {});
         resolve({ ok: true, exitCode: timedOut ? null : code, timedOut, stdout: stdout.result(), stderr: stderr.result(), commandMs: Date.now() - started });
       });
       child.on("error", error => { clearTimeout(timer); resolve({ ok: false, error: error.message.slice(0, 300) }); });
@@ -123,6 +139,10 @@ export class Guest {
 export async function serve(root: string, input: NodeJS.ReadableStream, output: NodeJS.WritableStream) {
   const send = (line: unknown) => output.write(`${JSON.stringify(line)}\n`);
   const guest = new Guest(root, send);
+  // A guest told to stop, or whose channel closes, takes its command with it: a detached group outlives its parent.
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => { guest.killCommand(); process.exit(143); });
+  input.on("end", () => guest.killCommand());
+  input.on("close", () => guest.killCommand());
   for await (const line of createInterface({ input, crlfDelay: Infinity })) {
     if (!line.trim()) continue;
     let request: Request;

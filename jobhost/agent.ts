@@ -55,7 +55,8 @@ export class HostAgent {
         this.socket = socket;
         // The token is the first message, not part of the URL: a URL lands in access logs.
         socket.send(JSON.stringify({ type: "auth", token: this.options.token }));
-        this.send({ type: "hello", host: this.options.name, slots: this.options.slots, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION });
+        // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
+        this.send({ type: "hello", host: this.options.name, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION });
         heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {

@@ -19,7 +19,7 @@ export type RuntimeMessage =
   | { type: "cancel"; id: string };
 /** Host → runtime. */
 export type HostMessage =
-  | { type: "hello"; host: string; slots: number; vcpus: number; memoryMiB: number; version: string }
+  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string }
   | { type: "heartbeat"; running: string[]; free: number }
   | { type: "started"; id: string; at: number }
   | { type: "result"; id: string; result: WireResult };
@@ -46,18 +46,28 @@ export function frames(message: unknown): string[] {
   return Array.from({ length: of }, (_, i) => JSON.stringify({ t: "part", n, i, of, data: text.slice(i * FRAME_CHARS, (i + 1) * FRAME_CHARS) }));
 }
 
-/** Assembles frames into messages: `add` answers a whole message, or undefined while one is incomplete. */
+/** Messages being assembled at once, at most: frames of more than this many messages interleaved are refused. */
+export const ASSEMBLIES_MAX = 4;
+
+/**
+ * Assembles frames into messages: `add` answers a whole message, or undefined while one is incomplete. Bounded: each
+ * frame's data is at most FRAME_CHARS, a message at most MESSAGE_MAX_CHARS, and at most ASSEMBLIES_MAX are open at once,
+ * so a peer cannot make it hold more than about ASSEMBLIES_MAX × MESSAGE_MAX_CHARS. A whole frame is at most a frame.
+ */
 export class Frames {
   private parts = new Map<string, { of: number; got: number; chunks: string[]; size: number }>();
   add(frame: string): unknown {
+    if (frame.length > FRAME_CHARS + 512) throw new Error("Invalid job host frame");
     const value = JSON.parse(frame) as { t?: string; n?: string; i?: number; of?: number; data?: string };
     if (value?.t !== "part") return value;
     const { n, i, of, data } = value;
-    if (typeof n !== "string" || !Number.isInteger(i) || !Number.isInteger(of) || typeof data !== "string" || of! < 1 || i! < 0 || i! >= of! || of! * FRAME_CHARS > MESSAGE_MAX_CHARS + FRAME_CHARS)
+    if (typeof n !== "string" || n.length > 64 || !Number.isInteger(i) || !Number.isInteger(of) || typeof data !== "string" || data.length > FRAME_CHARS || of! < 1 || i! < 0 || i! >= of! || of! * FRAME_CHARS > MESSAGE_MAX_CHARS + FRAME_CHARS)
       throw new Error("Invalid job host frame");
+    if (!this.parts.has(n) && this.parts.size >= ASSEMBLIES_MAX) throw new Error("Too many job host messages in flight");
     const entry = this.parts.get(n) ?? { of: of!, got: 0, chunks: [], size: 0 };
     if (entry.of !== of || entry.chunks[i!] !== undefined) throw new Error("Invalid job host frame");
     entry.chunks[i!] = data; entry.got++; entry.size += data.length;
+    if (entry.size > MESSAGE_MAX_CHARS) { this.parts.delete(n); throw new Error("A job host message is too large"); }
     if (entry.got < entry.of) { this.parts.set(n, entry); return undefined; }
     this.parts.delete(n);
     return JSON.parse(entry.chunks.join(""));
