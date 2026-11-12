@@ -93,6 +93,25 @@ test("api + git clients", async () => {
     assert.deepEqual(d.body.changes.map((c: { path: string; status: string }) => `${c.status} ${c.path}`).sort(), ["added fork.txt", "added new.txt", "added s.txt", "deleted src/deep/b.ts", "modified README.md", "modified src/a.ts"]);
     assert.ok((await api("GET", "/tree?recursive=1")).body.entries.length >= 6);
 
+    // worktree: writes are rows, reads see them, per-file CAS, checkpoint makes one commit
+    const wt = (path: string, init?: RequestInit) => fetch(`${base}/repos/${repo}/worktree${path}`, init);
+    assert.equal((await wt("/notes/a.md?branch=main", { method: "PUT", body: "one\n" })).status, 200);
+    const seen = await wt("/notes/a.md?branch=main");
+    assert.equal(await seen.text(), "one\n");
+    assert.equal(seen.headers.get("x-dirty"), "true");
+    const sha = seen.headers.get("x-sha")!;
+    assert.equal((await wt("/notes/a.md?branch=main", { method: "PUT", body: "two\n", headers: { "x-expect-sha": "0".repeat(40) } })).status, 409);
+    assert.equal((await wt("/notes/a.md?branch=main", { method: "PUT", body: "two\n", headers: { "x-expect-sha": sha } })).status, 200);
+    assert.equal((await wt("/README.md?branch=main", { method: "DELETE" })).status, 200);
+    const cp = await (await wt("?branch=main&message=cp", { method: "POST" })).json();
+    assert.ok(cp.commit);
+    assert.deepEqual(await (await wt("?branch=main")).json(), []);
+    assert.equal(await (await fetch(`${base}/repos/${repo}/files/notes/a.md`)).text(), "two\n");
+    assert.equal((await fetch(`${base}/repos/${repo}/files/README.md`)).status, 404);
+    // per-file expect on the commit API: a stale read of one file conflicts, an unrelated file does not
+    assert.equal((await api("POST", "/commits", { branch: "main", message: "s", expect: { "notes/a.md": sha }, files: { "notes/a.md": { content: "3" } } })).status, 409);
+    assert.equal((await api("POST", "/commits", { branch: "main", message: "s", expect: { "other.md": null }, files: { "other.md": { content: "3" } } })).status, 200);
+
     // expiry + GC: attempt/2 and attempt/3 die; attempt/3's s1 blob goes, attempt/2's README goes
     const beforeExpiry = (await api("GET", "/stats")).body;
     await api("PATCH", "/branches/attempt%2F2", { ttlSeconds: 1 });

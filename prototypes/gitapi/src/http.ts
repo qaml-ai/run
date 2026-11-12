@@ -27,6 +27,10 @@ export interface RepoApi {
   uploadPlan(body: Uint8Array): Awaitable<UploadPlan>;
   cachedClone(key: string): Awaitable<boolean>;
   recordClone(key: string, commit: string, bytes: number): Awaitable<void>;
+  wtWrite(branch: string, path: string, bytes: Uint8Array | null, expect?: string | null): Awaitable<unknown>;
+  wtRead(branch: string, path: string): Awaitable<{ sha: string; bytes: Uint8Array; dirty: boolean }>;
+  wtStatus(branch: string): Awaitable<unknown>;
+  checkpoint(branch: string, message: string): Awaitable<unknown>;
   gc(opts: { graceMs?: number; repackBelow?: number }): Awaitable<unknown>;
   stats(): Awaitable<unknown>;
   destroy(): Awaitable<void>;
@@ -128,7 +132,19 @@ export async function handle(request: Request, repoOf: (name: string) => RepoApi
     } else if (resource === "tree" && method === "GET") result = await repo.readTree(q("ref") ?? "main", q("path") ?? "", q("recursive") === "1");
     else if (resource === "diff" && method === "GET") result = await repo.diff(q("from") ?? "", q("to") ?? "main");
     else if (resource === "log" && method === "GET") result = await repo.log(q("ref") ?? "main", Number(q("limit") ?? 50));
-    else if (resource === "gc" && method === "POST") result = await repo.gc(await body());
+    else if (resource === "worktree") {
+      // /repos/:r/worktree/<path>?branch=b : PUT bytes (x-expect-sha: per-file CAS, "none" = must not exist), GET, DELETE;
+      // GET /repos/:r/worktree?branch=b : dirty paths; POST /repos/:r/worktree?branch=b&checkpoint=1 : commit them.
+      const branch = q("branch") ?? "main";
+      const ex = request.headers.get("x-expect-sha");
+      const expect = ex === null ? undefined : ex === "none" ? null : ex;
+      if (!rest && method === "GET") result = await repo.wtStatus(branch);
+      else if (!rest && method === "POST") result = await repo.checkpoint(branch, q("message") ?? "checkpoint");
+      else if (method === "PUT") result = await repo.wtWrite(branch, decodeURIComponent(rest), new Uint8Array(await request.arrayBuffer()), expect);
+      else if (method === "DELETE") result = await repo.wtWrite(branch, decodeURIComponent(rest), null, expect);
+      else if (method === "GET") { const f = await repo.wtRead(branch, decodeURIComponent(rest)); return new Response(f.bytes as BodyInit, { headers: { "x-sha": f.sha, "x-dirty": String(f.dirty), ...timing() } }); }
+      else return json({ error: "not found" }, 404);
+    } else if (resource === "gc" && method === "POST") result = await repo.gc(await body());
     else if (resource === "stats" && method === "GET") result = await repo.stats();
     else return json({ error: "not found" }, 404);
     return json(result ?? { ok: true }, 200, timing());

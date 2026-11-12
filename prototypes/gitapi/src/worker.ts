@@ -17,14 +17,14 @@ function r2Bucket(r2: R2Bucket): StreamBucket {
   };
 }
 
-const WRITES = new Set(["commit", "merge", "gc", "destroy", "createBranch", "extendBranch"]);
+const WRITES = new Set(["commit", "merge", "gc", "destroy", "createBranch", "extendBranch", "wtWrite", "checkpoint"]);
 
 export class GitApiRepo extends DurableObject<Env> {
   private core?: RepoCore;
   private lock: Promise<unknown> = Promise.resolve();
   private open(name: string) {
     if (!this.core) {
-      const sql: Sql = { exec: (q, ...p) => this.ctx.storage.sql.exec(q, ...p).toArray() as never };
+      const sql: Sql = { exec: (q, ...p) => this.ctx.storage.sql.exec(q, ...p).toArray() as never, tx: (fn) => this.ctx.storage.transactionSync(fn) };
       this.core = new RepoCore(sql, r2Bucket(this.env.BUCKET), `gitapi/${name}`);
       if (this.ctx.storage.kv.get("name") !== name) this.ctx.storage.kv.put("name", name);
     }

@@ -12,15 +12,17 @@ import {
   type Commit, type Mode, type ObjectType, type Person, type Sha, type TreeEntry,
 } from "./objects.ts";
 
-export interface Sql { exec<T = Record<string, unknown>>(query: string, ...params: unknown[]): T[] }
+export interface Sql { exec<T = Record<string, unknown>>(query: string, ...params: unknown[]): T[]; tx<T>(fn: () => T): T }
 export interface Bucket {
   put(key: string, bytes: Uint8Array): Promise<void>;
   get(key: string, range?: { offset: number; length: number }): Promise<Uint8Array | null>;
   delete(keys: string[]): Promise<void>;
 }
 
-export type FileChange = { content?: string; base64?: string; mode?: Mode } | null; // null deletes
-export type CommitRequest = { branch: string; files: Record<string, FileChange>; message: string; author?: Person; expectedHead?: Sha | null; from?: string };
+export type FileChange = { content?: string; base64?: string; mode?: Mode; sha?: Sha } | null; // null deletes; sha: an existing blob
+/** `expect` is per-file optimistic concurrency (path -> blob sha the writer read, null: must not exist), checked
+ *  against the branch head, so writers of different files never conflict; `expectedHead` is the whole-branch CAS. */
+export type CommitRequest = { branch: string; files: Record<string, FileChange>; message: string; author?: Person; expectedHead?: Sha | null; expect?: Record<string, Sha | null>; from?: string };
 export type CommitResult = { commit: Sha; tree: Sha; parents: Sha[]; objectsWritten: number; bytesWritten: number };
 export type MergeRequest = { into: string; from: string; expectedHead?: Sha; squash?: boolean; message?: string; author?: Person; deleteSource?: boolean };
 export type Conflict = { path: string; base: Sha | null; ours: Sha | null; theirs: Sha | null; reason: string };
@@ -35,6 +37,7 @@ export class HttpError extends Error {
 }
 
 type ObjRow = { sha: string; type: number; size: number; seg: string | null; off: number; len: number; hlen: number; raw: ArrayBuffer | Uint8Array | null };
+const INLINE_MAX = 1 << 20;
 const DEFAULT_AUTHOR: Person = { name: "camelRun", email: "volumes@camelai.com" };
 const bytesOf = (raw: ArrayBuffer | Uint8Array) => (raw instanceof Uint8Array ? raw : new Uint8Array(raw));
 
@@ -65,6 +68,7 @@ export class RepoCore {
     sql.exec(`CREATE TABLE IF NOT EXISTS refs (name TEXT PRIMARY KEY, sha TEXT NOT NULL, base TEXT, expires_at INTEGER, updated_at INTEGER NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS objects (sha TEXT PRIMARY KEY, type INTEGER NOT NULL, size INTEGER NOT NULL, seg TEXT, off INTEGER NOT NULL, len INTEGER NOT NULL, hlen INTEGER NOT NULL, raw BLOB, created_at INTEGER NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS segments (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS worktree (branch TEXT NOT NULL, path TEXT NOT NULL, data BLOB, sha TEXT, mode TEXT NOT NULL, PRIMARY KEY (branch, path))`);
     sql.exec(`CREATE TABLE IF NOT EXISTS clones (key TEXT PRIMARY KEY, commit_sha TEXT NOT NULL, bytes INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
   }
 
@@ -137,14 +141,17 @@ export class RepoCore {
     return inflateEntry(entry, r.hlen);
   }
 
-  private async flush(w: SegmentWriter): Promise<string | null> {
-    if (!w.rows.length) return null;
+  private async flush(w: SegmentWriter, andThen?: () => void): Promise<string | null> {
+    if (!w.rows.length) { andThen?.(); return null; }
     const key = `${this.prefix}/seg/${this.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
     // Segments hold every entry (trees and commits too) so a clone is pure byte copies.
     await this.bucket.put(key, concat(w.parts));
     const now = this.now();
-    this.sql.exec(`INSERT INTO segments (key, bytes, created_at) VALUES (?, ?, ?)`, key, w.bytes, now);
-    for (const r of w.rows) this.sql.exec(`INSERT OR IGNORE INTO objects (sha, type, size, seg, off, len, hlen, raw, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.sha, TYPE_CODE[r.type], r.size, key, r.off, r.len, r.hlen, r.raw, now);
+    this.sql.tx(() => {
+      this.sql.exec(`INSERT INTO segments (key, bytes, created_at) VALUES (?, ?, ?)`, key, w.bytes, now);
+      for (const r of w.rows) this.sql.exec(`INSERT OR IGNORE INTO objects (sha, type, size, seg, off, len, hlen, raw, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.sha, TYPE_CODE[r.type], r.size, key, r.off, r.len, r.hlen, r.raw, now);
+      andThen?.();
+    });
     return key;
   }
 
@@ -155,11 +162,16 @@ export class RepoCore {
     if (req.expectedHead !== undefined && head !== req.expectedHead) throw new HttpError(409, `branch ${req.branch} is at ${head ?? "nothing"}`, { current: head });
     const parentSha = head ?? (req.from ? this.resolve(req.from) : null);
     const baseTree = parentSha ? this.commitOf(parentSha).tree : EMPTY_TREE;
+    for (const [path, sha] of Object.entries(req.expect ?? {})) {
+      const current = this.lookup(baseTree, normalisePath(path));
+      if ((current?.sha ?? null) !== sha) throw new HttpError(409, `${path} changed`, { path, current: current?.sha ?? null });
+    }
     const w = new SegmentWriter((sha) => this.hasObject(sha));
     const changes = new Map<string, { sha: Sha; mode: Mode } | null>();
     for (const [rawPath, change] of Object.entries(req.files)) {
       const path = normalisePath(rawPath);
       if (change === null) { changes.set(path, null); continue; }
+      if (change.sha) { if (!this.hasObject(change.sha)) throw new HttpError(400, `no blob ${change.sha}`); changes.set(path, { sha: change.sha, mode: change.mode ?? "100644" }); continue; }
       const bytes = change.base64 !== undefined ? new Uint8Array(Buffer.from(change.base64, "base64")) : utf8(change.content ?? "");
       changes.set(path, { sha: w.add("blob", bytes), mode: change.mode ?? "100644" });
     }
@@ -167,8 +179,9 @@ export class RepoCore {
     if (parentSha && tree === baseTree) return { commit: parentSha, tree, parents: this.commitOf(parentSha).parents, objectsWritten: 0, bytesWritten: 0 };
     const parents = parentSha ? [parentSha] : [];
     const commit = w.add("commit", encodeCommit({ tree, parents, author: req.author ?? DEFAULT_AUTHOR, message: req.message }));
-    await this.flush(w);
-    this.setRef(req.branch, commit, head); // the R2 put awaited above: re-check the head under the same CAS
+    // Index rows and the ref move in one SQLite transaction after the segment is durable in R2; the ref CAS is
+    // re-checked there, so a racing writer cannot be overwritten (the object also serialises writers).
+    await this.flush(w, () => this.setRef(req.branch, commit, head));
     return { commit, tree, parents, objectsWritten: w.rows.length, bytesWritten: w.bytes };
   }
 
@@ -196,6 +209,48 @@ export class RepoCore {
     }
     if (!entries.size) return null;
     return w.add("tree", encodeTree([...entries.values()]));
+  }
+
+  // ---------- worktree: the working layer for agents' file tools ----------
+  // Per-branch dirty rows in the same object: a write is one SQLite row (no R2, no commit); reads see dirty rows over
+  // the branch head; `checkpoint` turns the rows into one commit. Files over INLINE_MAX go to R2 as their own segment
+  // at write time (a DO row is ≤2 MB) and the row keeps only the blob sha.
+  private wtRow(branch: string, path: string) { return this.sql.exec<{ data: ArrayBuffer | Uint8Array | null; sha: string | null; mode: Mode }>(`SELECT data, sha, mode FROM worktree WHERE branch = ? AND path = ?`, branch, path)[0]; }
+  /** The blob sha a reader sees at `path` (dirty row first), null when absent: what a writer passes as `expect`. */
+  wtStat(branch: string, rawPath: string): { sha: Sha | null; dirty: boolean } {
+    const path = normalisePath(rawPath), row = this.wtRow(branch, path);
+    if (row) return { sha: row.sha ?? (row.data ? hashObject("blob", bytesOf(row.data)) : null), dirty: true };
+    const head = this.ref(branch);
+    return { sha: head ? this.lookup(this.commitOf(head).tree, path)?.sha ?? null : null, dirty: false };
+  }
+  async wtWrite(branch: string, rawPath: string, bytes: Uint8Array | null, expect?: Sha | null, mode: Mode = "100644") {
+    const path = normalisePath(rawPath);
+    if (expect !== undefined && this.wtStat(branch, path).sha !== expect) throw new HttpError(409, `${path} changed`);
+    if (bytes === null) { this.sql.exec(`INSERT OR REPLACE INTO worktree (branch, path, data, sha, mode) VALUES (?, ?, NULL, NULL, ?)`, branch, path, mode); return { path, sha: null }; }
+    if (bytes.byteLength <= INLINE_MAX) { this.sql.exec(`INSERT OR REPLACE INTO worktree (branch, path, data, sha, mode) VALUES (?, ?, ?, NULL, ?)`, branch, path, bytes, mode); return { path, sha: hashObject("blob", bytes) }; }
+    const w = new SegmentWriter((sha) => this.hasObject(sha));
+    const sha = w.add("blob", bytes);
+    await this.flush(w);
+    this.sql.exec(`INSERT OR REPLACE INTO worktree (branch, path, data, sha, mode) VALUES (?, ?, X'', ?, ?)`, branch, path, sha, mode);
+    return { path, sha };
+  }
+  async wtRead(branch: string, rawPath: string): Promise<{ sha: Sha; bytes: Uint8Array; dirty: boolean }> {
+    const path = normalisePath(rawPath), row = this.wtRow(branch, path);
+    if (row?.sha) return { sha: row.sha, bytes: await this.readBlob(row.sha), dirty: true };
+    if (row && row.data) { const bytes = bytesOf(row.data); return { sha: hashObject("blob", bytes), bytes, dirty: true }; }
+    if (row) throw new HttpError(404, `${path} deleted in the worktree`);
+    const f = await this.readFile(branch, path);
+    return { sha: f.sha, bytes: f.bytes, dirty: false };
+  }
+  wtStatus(branch: string) { return this.sql.exec<{ path: string; deleted: number }>(`SELECT path, (data IS NULL AND sha IS NULL) AS deleted FROM worktree WHERE branch = ? ORDER BY path`, branch); }
+  async checkpoint(branch: string, message: string, author?: Person): Promise<CommitResult | { commit: null }> {
+    const rows = this.sql.exec<{ path: string; data: ArrayBuffer | Uint8Array | null; sha: string | null; mode: Mode }>(`SELECT path, data, sha, mode FROM worktree WHERE branch = ?`, branch);
+    if (!rows.length) return { commit: null };
+    const files: Record<string, FileChange> = {};
+    for (const r of rows) files[r.path] = r.sha ? { sha: r.sha, mode: r.mode } : r.data ? { base64: Buffer.from(bytesOf(r.data)).toString("base64"), mode: r.mode } : null;
+    const result = await this.commit({ branch, files, message, author });
+    this.sql.exec(`DELETE FROM worktree WHERE branch = ?`, branch);
+    return result;
   }
 
   // ---------- reads ----------
@@ -301,8 +356,7 @@ export class RepoCore {
     if (conflicts.length) return { status: "conflict", conflicts, base: base ?? ZERO, ours, theirs };
     const parents = req.squash ? [ours] : [ours, theirs];
     const commit = w.add("commit", encodeCommit({ tree, parents, author: req.author ?? DEFAULT_AUTHOR, message: req.message ?? `Merge ${req.from} into ${req.into}` }));
-    await this.flush(w);
-    this.setRef(req.into, commit, ours);
+    await this.flush(w, () => this.setRef(req.into, commit, ours));
     return done({ status: "merged", commit, tree });
   }
   /** git's per-path rule, descending only into directories both sides changed; diff3 on lines for text files. */
@@ -341,7 +395,7 @@ export class RepoCore {
   // ---------- git smart HTTP (read-only, for jobs) ----------
   advertise(): Uint8Array {
     const refs = this.refs();
-    const caps = "shallow no-progress allow-reachable-sha1-in-want allow-tip-sha1-in-want agent=camel-gitapi/0";
+    const caps = "multi_ack_detailed shallow no-progress allow-reachable-sha1-in-want allow-tip-sha1-in-want agent=camel-gitapi/0";
     const parts = [pkt("# service=git-upload-pack\n"), FLUSH];
     const main = refs.find((r) => r.name === "main") ?? refs[0];
     if (!main) parts.push(pkt(`${ZERO} capabilities^{}\0${caps}\n`));
@@ -379,17 +433,20 @@ export class RepoCore {
     }
     const prefixParts: Uint8Array[] = [];
     if (depth) { for (const s of shallowOut) prefixParts.push(pkt(`shallow ${s}\n`)); prefixParts.push(FLUSH); }
+    // multi_ack_detailed, stateless: a round answers `ACK x common` per have we hold, `ACK x ready` once there is
+    // one (we can always cut a pack from any common commit), then NAK; the client resends its commons with `done`.
     if (!done) {
-      // A negotiation round: tell the client what we share; it comes back with `done`.
-      // A round with no haves (a shallow clone's first request) gets only the shallow list: fetch-pack reads the
-      // next response's shallow list straight after it.
-      if (haves.length || !depth) prefixParts.push(pkt(haves.length ? `ACK ${haves[0]}\n` : "NAK\n"));
+      if (haves.length) { for (const h of haves) prefixParts.push(pkt(`ACK ${h} common\n`)); prefixParts.push(pkt(`ACK ${haves.at(-1)} ready\n`)); }
+      // A round with no haves during a shallow clone gets only the shallow list (fetch-pack reads the next
+      // response's shallow list straight after it).
+      if (haves.length || !depth) prefixParts.push(pkt("NAK\n"));
       return { prefix: concat(prefixParts), pack: null };
     }
-    prefixParts.push(pkt(haves.length ? `ACK ${haves[0]}\n` : "NAK\n"));
+    prefixParts.push(pkt(haves.length ? `ACK ${haves.at(-1)}\n` : "NAK\n"));
 
     // Objects: every tree/blob of the new commits, minus what the client's newest have-tree already holds.
-    const haveTree = haves.length ? this.commitOf(haves[0]).tree : null;
+    const newest = haves.reduce<Sha | null>((best, h) => (!best || this.commitOf(h).time > this.commitOf(best).time ? h : best), null);
+    const haveTree = newest ? this.commitOf(newest).tree : null;
     const need = new Set<Sha>(commits);
     const walk = (sha: Sha, other: Sha | null) => {
       if (sha === other || need.has(sha)) return;
@@ -446,7 +503,7 @@ export class RepoCore {
     }
     const rows = this.sql.exec<{ sha: string; seg: string; off: number; len: number; created_at: number }>(`SELECT sha, seg, off, len, created_at FROM objects`);
     const dead = rows.filter((r) => !live.has(r.sha) && r.created_at <= now - grace);
-    for (const r of dead) this.sql.exec(`DELETE FROM objects WHERE sha = ?`, r.sha);
+    this.sql.tx(() => { for (const r of dead) this.sql.exec(`DELETE FROM objects WHERE sha = ?`, r.sha); });
     const deadSet = new Set(dead.map((r) => r.sha));
     const segs = this.sql.exec<{ key: string; bytes: number }>(`SELECT key, bytes FROM segments`);
     const liveBytes = new Map<string, number>();
@@ -462,9 +519,10 @@ export class RepoCore {
       const keep = rows.filter((r) => r.seg === s.key && !deadSet.has(r.sha));
       const key = `${this.prefix}/seg/${now.toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
       let off = 0;
-      const parts = keep.map((r) => { const part = old.subarray(r.off, r.off + r.len); const at = off; off += r.len; this.sql.exec(`UPDATE objects SET seg = ?, off = ? WHERE sha = ?`, key, at, r.sha); return part; });
-      await this.bucket.put(key, concat(parts));
-      this.sql.exec(`INSERT INTO segments (key, bytes, created_at) VALUES (?, ?, ?)`, key, off, now);
+      const moves: [string, number][] = [];
+      const parts = keep.map((r) => { moves.push([r.sha, off]); off += r.len; return old.subarray(r.off, r.off + r.len); });
+      await this.bucket.put(key, concat(parts)); // the new segment is durable before any row points at it
+      this.sql.tx(() => { for (const [sha, at] of moves) this.sql.exec(`UPDATE objects SET seg = ?, off = ? WHERE sha = ?`, key, at, sha); this.sql.exec(`INSERT INTO segments (key, bytes, created_at) VALUES (?, ?, ?)`, key, off, now); });
       deleted.push(s.key); repacked++; reclaimed += s.bytes - off;
     }
     for (const key of deleted) this.sql.exec(`DELETE FROM segments WHERE key = ?`, key);
@@ -484,7 +542,7 @@ export class RepoCore {
   async destroy() {
     const keys = [...this.sql.exec<{ key: string }>(`SELECT key FROM segments`), ...this.sql.exec<{ key: string }>(`SELECT key FROM clones`)].map((r) => r.key);
     await this.bucket.delete(keys);
-    for (const t of ["refs", "objects", "segments", "clones"]) this.sql.exec(`DELETE FROM ${t}`);
+    for (const t of ["refs", "objects", "segments", "clones", "worktree"]) this.sql.exec(`DELETE FROM ${t}`);
   }
 }
 

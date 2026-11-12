@@ -35,10 +35,16 @@ export function sqliteAt(file: string): Sql {
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL");
   const cache = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
-  return { exec: (q, ...p) => { let s = cache.get(q); if (!s) { s = db.prepare(q); cache.set(q, s); } return (/^\s*SELECT/i.test(q) ? s.all(...(p as never[])) : (s.run(...(p as never[])), [])) as never; } };
+  let depth = 0;
+  const tx = <T>(fn: () => T): T => {
+    if (depth++) { try { return fn(); } finally { depth--; } }
+    db.exec("BEGIN");
+    try { const r = fn(); db.exec("COMMIT"); return r; } catch (e) { db.exec("ROLLBACK"); throw e; } finally { depth--; }
+  };
+  return { tx, exec: (q, ...p) => { let s = cache.get(q); if (!s) { s = db.prepare(q); cache.set(q, s); } return (/^\s*SELECT/i.test(q) ? s.all(...(p as never[])) : (s.run(...(p as never[])), [])) as never; } };
 }
 
-const WRITES = new Set(["commit", "merge", "gc", "destroy", "createBranch", "extendBranch"]);
+const WRITES = new Set(["commit", "merge", "gc", "destroy", "createBranch", "extendBranch", "wtWrite", "checkpoint"]);
 
 export function startServer(dataDir: string, port: number) {
   mkdirSync(join(dataDir, "db"), { recursive: true });
@@ -82,7 +88,7 @@ export function startServer(dataDir: string, port: number) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const dir = process.argv[2] ?? "./data", port = Number(process.argv[3] ?? 8793);
+  const dir = process.argv[2] ?? "./data", port = Number(process.argv[3] ?? 8795);
   startServer(dir, port);
   console.error(`gitapi on http://127.0.0.1:${port} (data ${dir})`);
 }
