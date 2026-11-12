@@ -1,0 +1,1 @@
+For a large task: first plan it by listing its units of work (files, tables, sources), then start a workflow that gives each unit to its own agent() with parallel(), and then check what comes back. Keep yourself to planning, checking and reporting.

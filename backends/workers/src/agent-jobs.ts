@@ -26,6 +26,8 @@ export const JOB_RUN_MAX_SECONDS = 900;
 export const JOB_RUN_INLINE_CHARS = 4_000;
 const DEFAULT_SECONDS = 300;
 const RESULT = "job-run:";
+/** The run id of a turn no request started (agent-turn-loop.ts currentRun). */
+export const BACKGROUND_RUN = "background";
 /** How long a call's answer is kept for a replay of it; older ones are pruned as later calls run. */
 export const JOB_RUN_KEPT_MS = 86_400_000;
 type Kept = { answer: unknown; at: number };
@@ -77,7 +79,13 @@ export function agentJobTools(host: AgentJobsHost): ToolRegistration[] {
       outputs: { type: "array", items: { type: "string" }, description: "Files under $JOB_OUT to return" },
       internet: { type: "boolean", description: "Allow Internet access (off by default)" },
     } } as never,
-    execute: async (args: Record<string, unknown>, api) => text(await runJob(host, `${await host.runId(api)}:${api.callId}`, args)),
+    execute: async (args: Record<string, unknown>, api) => {
+      const run = await host.runId(api);
+      // A call outside any request (the runtime's own background turn, "background") has no run to name its job by: the
+      // model's call ids repeat, so another background turn's job would answer it. Refused, never run.
+      if (run === BACKGROUND_RUN) return text({ ok: false, code: "JOB_UNAVAILABLE", error: "job_run runs only within a request; ask again from a prompt" });
+      return text(await runJob(host, `${run}:${api.callId}`, args));
+    },
   })];
 }
 

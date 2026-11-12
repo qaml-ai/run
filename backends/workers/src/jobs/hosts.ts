@@ -1,14 +1,19 @@
 // Jobs on our own hosts (docs/design/job-hosts-plan.md, slices 3 and 4), behind the JobDriver seam (driver.ts):
-// - JobHostRegistry: the hosts that are connected, their free slots and last heartbeat (one object, "hosts");
+// - JobHostRegistry: the hosts, their free slots and last heartbeat, and who may connect (one object, "hosts"). A host
+//   enrolls first (POST /v1/internal/job-hosts/enroll): it proves who it is with an attestation (shared/job-host-attest.ts:
+//   AWS sts:GetCallerIdentity in production, a test secret in tests), and gets a short-lived credential bound to the host
+//   id the attestation proves. A host can be revoked: its credentials go, its socket closes, it takes no job;
 // - JobHost: one per host. The host's agent (jobhost/agent.ts) dials out to it over a WebSocket; its first message is
-//   the shared host token (JOB_HOST_TOKEN). It sends the host jobs and takes their results;
+//   its credential, checked against the registry, and the socket closes when the credential expires. It sends the host
+//   only that host's jobs and takes their results;
 // - HostJob: one per job id, as ContainerComputer is for a container job: it admits the payer, takes a computer slot,
 //   places the job on a host, meters it from dispatch to result under the session `job:<id>` (so a job run again is
 //   charged once), and answers the JobResult.
-// Off by default: jobDriver() picks these only where the bindings and JOB_HOST_TOKEN are set (test configs today).
+// Off by default: jobDriver() picks these only where the bindings and JOB_HOST_ATTESTORS are set (test configs today).
 import { DurableObject } from "cloudflare:workers";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { releaseComputer, reserveComputer } from "../../../../src/core/computer-limit.ts";
+import { AttestationError, awsCaller, checkAwsAttestation } from "../../../../shared/job-host-attest.ts";
 import { Frames, frames, fromBase64, toBase64, type HostMessage, type WireFile, type WireJob, type WireResult, type WireStream } from "../../../../shared/job-host-protocol.ts";
 import { guardAlarms } from "../alarm-guard.ts";
 import { ComputerMeter } from "../computers/meter.ts";
@@ -30,24 +35,106 @@ const HOST_STALE_MS = 30_000;
  * larger tree waits for host-side sync.
  */
 export const HOST_SYNC_BYTES = 16 * 1024 * 1024;
-/** A socket that has not sent the host token by then is closed. */
+/** A socket that has not sent a valid credential by then is closed. */
 const AUTH_DEADLINE_MS = 10_000;
+/** How long a host's credential lasts; the host enrolls again before then, and its socket closes at the end. */
+export const HOST_CREDENTIAL_MS = 60 * 60_000;
+/** A signed STS request is accepted once, and remembered this long (past its own validity). */
+const ATTESTATION_MEMORY_MS = 20 * 60_000;
+export const HOST_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
 export type JobHostsEnv = KeyEnv & WebhookEnv & VolumeSyncEnv & {
-  JOB_HOST_TOKEN?: string;
+  /** Which attestors enroll hosts: "aws" (needs JOB_HOST_ROLE_ARNS), "test" (needs TEST_MODE and JOB_HOST_TEST_SECRET). */
+  JOB_HOST_ATTESTORS?: string;
+  /**
+   * Comma-separated IAM role ARNs a host's instance role must be (aws attestor). The host id is the role session name,
+   * which whoever assumes the role chooses: EC2 sets it to the instance id, but anyone else allowed to assume the role
+   * could name any instance and take its jobs. So each role here MUST trust only `ec2.amazonaws.com` (no user, role or
+   * account may hold sts:AssumeRole on it, and it must not trust itself). Slice 7's Terraform enforces this.
+   */
+  JOB_HOST_ROLE_ARNS?: string;
+  /** Enrollments per client address (a Cloudflare rate limiting binding). The aws attestor refuses to run without it outside TEST_MODE. */
+  JOB_HOST_ENROLL_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  AGENT_PUBLIC_URL?: string;
+  JOB_HOST_TEST_SECRET?: string;
+  /** TEST_MODE only: a credential's lifetime in seconds (to test its expiry), and where STS requests go (a fake). */
+  JOB_HOST_CREDENTIAL_SECONDS?: string;
+  JOB_HOST_STS_TEST_URL?: string;
   JOB_HOSTS?: DurableObjectNamespace<JobHost>;
   HOST_JOBS?: DurableObjectNamespace<HostJob>;
   JOB_HOST_REGISTRY?: DurableObjectNamespace<JobHostRegistry>;
   TEST_MODE?: string;
 };
+/** The message prefix a revoked host's refusal carries across Durable Object RPC. */
+const HOST_REVOKED = "HOST_REVOKED";
 
-/** The connected hosts and their free slots. One object, named "hosts". */
+const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+const sameText = (a: string, b: string) => { const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b); return x.length === y.length && timingSafeEqual(x, y); };
+
+/** The hosts, their capacity, their credentials and who is revoked. One object, named "hosts". */
 export class JobHostRegistry extends DurableObject<JobHostsEnv> {
   constructor(ctx: DurableObjectState, env: JobHostsEnv) {
     super(ctx, env);
-    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS hosts (name TEXT PRIMARY KEY, slots INTEGER NOT NULL, free INTEGER NOT NULL, seen_at INTEGER NOT NULL)");
+    const sql = ctx.storage.sql;
+    sql.exec("CREATE TABLE IF NOT EXISTS hosts (name TEXT PRIMARY KEY, slots INTEGER NOT NULL, free INTEGER NOT NULL, seen_at INTEGER NOT NULL)");
+    if (!sql.exec<{ name: string }>("PRAGMA table_info(hosts)").toArray().some(column => column.name === "revoked")) sql.exec("ALTER TABLE hosts ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0");
+    sql.exec("CREATE TABLE IF NOT EXISTS host_credentials (hash TEXT PRIMARY KEY, host TEXT NOT NULL, expires_at INTEGER NOT NULL)");
+    sql.exec("CREATE TABLE IF NOT EXISTS host_attestations (signature TEXT PRIMARY KEY, at INTEGER NOT NULL)");
+    sql.exec("CREATE INDEX IF NOT EXISTS host_attestations_at ON host_attestations (at)");
+    sql.exec("CREATE INDEX IF NOT EXISTS host_credentials_expires ON host_credentials (expires_at)");
+    sql.exec("CREATE INDEX IF NOT EXISTS host_credentials_host ON host_credentials (host, expires_at)");
   }
+  private revoked(name: string) { return !!this.ctx.storage.sql.exec<{ revoked: number }>("SELECT revoked FROM hosts WHERE name = ?", name).toArray()[0]?.revoked; }
+
+  /**
+   * Claim a signed STS request, once: false when it was claimed already (a replay). Claimed before STS is asked, so two
+   * concurrent replays cannot both pass; given back (`unclaim`) when STS refuses it, so a forged request leaves nothing.
+   */
+  claim(signature: string): boolean {
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM host_attestations WHERE at <= ?", Date.now() - ATTESTATION_MEMORY_MS);
+    if (sql.exec("SELECT 1 FROM host_attestations WHERE signature = ?", signature).toArray().length) return false;
+    sql.exec("INSERT INTO host_attestations (signature, at) VALUES (?, ?)", signature, Date.now());
+    return true;
+  }
+  unclaim(signature: string) { this.ctx.storage.sql.exec("DELETE FROM host_attestations WHERE signature = ?", signature); }
+
+  /**
+   * A credential for `host`, which an attestor proved (enrollHost, in the Worker). A host keeps at most its two newest
+   * credentials (the one it uses, and the next while it renews); older ones stop working.
+   */
+  issue(host: string): { ok: true; host: string; credential: string; expiresAt: number } | { ok: false; code: string; error: string } {
+    if (!HOST_NAME.test(host)) return { ok: false, code: "INVALID_HOST", error: "Invalid host id" };
+    if (this.revoked(host)) return { ok: false, code: "HOST_REVOKED", error: "This host is revoked" };
+    const sql = this.ctx.storage.sql;
+    const lifetime = this.env.TEST_MODE === "1" && Number(this.env.JOB_HOST_CREDENTIAL_SECONDS) >= 1 ? Number(this.env.JOB_HOST_CREDENTIAL_SECONDS) * 1000 : HOST_CREDENTIAL_MS;
+    const credential = `${host}.${randomBytes(32).toString("base64url")}`, expiresAt = Date.now() + lifetime;
+    sql.exec("DELETE FROM host_credentials WHERE expires_at <= ?", Date.now());
+    sql.exec("INSERT INTO host_credentials (hash, host, expires_at) VALUES (?, ?, ?)", digest(credential), host, expiresAt);
+    sql.exec("DELETE FROM host_credentials WHERE host = ? AND hash NOT IN (SELECT hash FROM host_credentials WHERE host = ? ORDER BY expires_at DESC LIMIT 2)", host, host);
+    return { ok: true, host, credential, expiresAt };
+  }
+
+  /** A credential, checked for `name`: its host, not expired, the host not revoked. */
+  verify(name: string, credential: unknown): { ok: true; expiresAt: number } | { ok: false } {
+    if (typeof credential !== "string" || !credential.startsWith(`${name}.`)) return { ok: false };
+    const row = this.ctx.storage.sql.exec<{ host: string; expires_at: number }>("SELECT host, expires_at FROM host_credentials WHERE hash = ?", digest(credential)).toArray()[0];
+    if (!row || row.host !== name || row.expires_at <= Date.now() || this.revoked(name)) return { ok: false };
+    return { ok: true, expiresAt: row.expires_at };
+  }
+
+  /** Revoke a host: its credentials go, it takes no job, and its socket is closed (JobHost.revoke). `allow` undoes it. */
+  async revoke(name: string) {
+    this.ctx.storage.sql.exec("INSERT INTO hosts (name, slots, free, seen_at, revoked) VALUES (?, 0, 0, 0, 1) ON CONFLICT(name) DO UPDATE SET revoked = 1, free = 0", name);
+    this.ctx.storage.sql.exec("DELETE FROM host_credentials WHERE host = ?", name);
+    await this.env.JOB_HOSTS?.getByName(name).revoke();
+    return { revoked: name };
+  }
+  allow(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET revoked = 0 WHERE name = ?", name); return { allowed: name }; }
+
   seen(name: string, slots: number | undefined, free: number) {
+    // A code in the message: an error's class does not survive Durable Object RPC (JobHost matches on it).
+    if (this.revoked(name)) throw new Error(`${HOST_REVOKED}: this host is revoked`);
     // What a host reports is checked: whole numbers, free within its slots (a host cannot claim more than it has).
     const whole = (value: unknown) => Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 1024;
     if (!whole(free) || (slots !== undefined && (!whole(slots) || free > slots))) throw new Error("Invalid host capacity");
@@ -58,23 +145,119 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
     this.ctx.storage.sql.exec(`INSERT INTO hosts (name, slots, free, seen_at) VALUES (?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at`, name, slots ?? free, free, Date.now(), slots ?? null);
   }
-  /** A fresh host with a free slot, which is taken; undefined: none. */
+  /** A fresh, allowed host with a free slot, which is taken; undefined: none. */
   place(): string | undefined {
-    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS).toArray()[0];
+    const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS).toArray()[0];
     if (!row) return undefined;
     this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1 WHERE name = ?", row.name);
     return row.name;
   }
-  release(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1) WHERE name = ?", name); }
-  list() { return this.ctx.storage.sql.exec("SELECT name, slots, free, seen_at AS seenAt FROM hosts ORDER BY name").toArray(); }
+  release(name: string) { this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1) WHERE name = ? AND revoked = 0", name); }
+  list() { return this.ctx.storage.sql.exec("SELECT name, slots, free, seen_at AS seenAt, revoked FROM hosts ORDER BY name").toArray(); }
 }
 
 const registry = (env: JobHostsEnv) => env.JOB_HOST_REGISTRY!.getByName("hosts");
-const sameToken = (given: unknown, want: string | undefined) => {
-  if (!want || typeof given !== "string") return false;
-  const a = new TextEncoder().encode(given), b = new TextEncoder().encode(want);
-  return a.length === b.length && timingSafeEqual(a, b);
-};
+
+/** What a host's attestation must be signed for: this runtime, by its public URL (the aws attestor needs one). */
+export function jobHostAudience(env: { AGENT_PUBLIC_URL?: string }) {
+  return env.AGENT_PUBLIC_URL ? `camelrun-job-host:${env.AGENT_PUBLIC_URL.replace(/\/+$/, "")}` : undefined;
+}
+
+/** A real attestation is about 1-2 KB; a body larger than this is refused unread. */
+const ENROLL_BODY_BYTES = 16 * 1024;
+
+/**
+ * POST /v1/internal/job-hosts/enroll, unauthenticated: an attestation in, a credential for the host it proves out. The
+ * attestor's work (the shape checks, STS) runs here in the Worker; the registry only claims the signed request (once)
+ * and issues the credential, so a flood of forged requests never holds the one registry object. The caller learns only
+ * a fixed refusal; why is logged.
+ */
+export async function enrollHost(request: Request, env: JobHostsEnv): Promise<Response> {
+  const refuse = (status = 403) => Response.json({ error: "Enrollment refused", code: "HOST_REFUSED" }, { status });
+  const log = (kind: unknown, reason: string) => console.error(JSON.stringify({ type: "jobhost_enroll_refused", kind: typeof kind === "string" ? kind.slice(0, 16) : null, reason: reason.slice(0, 200) }));
+  if (env.JOB_HOST_ENROLL_LIMITER) {
+    const address = request.headers.get("cf-connecting-ip") ?? "unknown";
+    if (!(await env.JOB_HOST_ENROLL_LIMITER.limit({ key: address })).success) return Response.json({ error: "Too many enrollments", code: "RATE_LIMITED" }, { status: 429 });
+  }
+  if (Number(request.headers.get("content-length") ?? NaN) > ENROLL_BODY_BYTES) return refuse(413);
+  // Read with a bound: a body sent without Content-Length (chunked) stops at the cap too, never buffered whole.
+  let input: { attestation?: Record<string, unknown> } | undefined;
+  try {
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    const reader = request.body?.getReader();
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > ENROLL_BODY_BYTES) { await reader.cancel().catch(() => {}); return refuse(413); }
+      chunks.push(value);
+    }
+    const body = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    input = JSON.parse(new TextDecoder().decode(body));
+  } catch { return refuse(400); }
+  const attestation = input?.attestation, kind = attestation?.kind;
+  const attestors = (env.JOB_HOST_ATTESTORS ?? "").split(",").map(name => name.trim()).filter(Boolean);
+  const hosts = registry(env);
+  let host: string;
+  try {
+    if (kind === "aws" && attestors.includes("aws")) {
+      const roles = (env.JOB_HOST_ROLE_ARNS ?? "").split(",").map(role => role.trim()).filter(Boolean), audience = jobHostAudience(env);
+      // Fail closed without its allowlist, its audience, or (outside tests) the enrollment rate limit.
+      if (!roles.length || !audience) throw new AttestationError("The aws attestor needs JOB_HOST_ROLE_ARNS and AGENT_PUBLIC_URL");
+      if (!env.JOB_HOST_ENROLL_LIMITER && env.TEST_MODE !== "1") throw new AttestationError("The aws attestor needs JOB_HOST_ENROLL_LIMITER");
+      const checked = checkAwsAttestation(attestation as never, audience);
+      if (!await hosts.claim(checked.signature)) throw new AttestationError("This attestation was used already");
+      try {
+        // Tests send the checked request to a fake STS; anywhere else it goes to the STS endpoint it was signed for.
+        const target = env.TEST_MODE === "1" && env.JOB_HOST_STS_TEST_URL ? env.JOB_HOST_STS_TEST_URL : checked.url;
+        const response = await fetch(target, { method: "POST", headers: checked.headers, body: checked.body, redirect: "manual", signal: AbortSignal.timeout(10_000) });
+        if (response.status !== 200) throw new AttestationError(`STS answered ${response.status}`);
+        host = awsCaller(await response.text(), roles).host;
+      } catch (error) {
+        // STS refused it (or could not be asked): the claim goes, so a forged request leaves nothing behind.
+        await hosts.unclaim(checked.signature);
+        throw error;
+      }
+    } else if (kind === "test" && attestors.includes("test") && env.TEST_MODE === "1" && env.JOB_HOST_TEST_SECRET) {
+      if (typeof attestation?.secret !== "string" || !sameText(attestation.secret, env.JOB_HOST_TEST_SECRET)) throw new AttestationError("Wrong test secret");
+      host = String(attestation.host);
+    } else throw new AttestationError("No attestor here takes this attestation");
+  } catch (error) {
+    log(kind, error instanceof AttestationError ? error.message : `attestation failed: ${error instanceof Error ? error.name : "unknown"}`);
+    return refuse();
+  }
+  try {
+    const issued = await hosts.issue(host);
+    if (!issued.ok) { log(kind, issued.error); return refuse(); }
+    return Response.json({ host: issued.host, credential: issued.credential, expiresAt: issued.expiresAt });
+  } catch (error) {
+    console.error(JSON.stringify({ type: "jobhost_enroll_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+    return Response.json({ error: "Enrollment failed", code: "UNAVAILABLE" }, { status: 503 });
+  }
+}
+
+/**
+ * The operators' routes (an admin account, ADMIN_TENANTS, with a full-scope key): GET /v1/job-hosts lists the hosts,
+ * DELETE /v1/job-hosts/:host revokes one (its credentials, its socket, its jobs in flight), POST
+ * /v1/job-hosts/:host/allow lets a revoked host enroll again.
+ */
+export async function jobHostRoutes(request: Request, env: JobHostsEnv & { ADMIN_TENANTS?: string }, auth: { tenantId: string; scopes: string[] }): Promise<Response | undefined> {
+  const match = /^\/v1\/job-hosts(?:\/([^/]+)(\/allow)?)?$/.exec(new URL(request.url).pathname);
+  if (!match || !env.JOB_HOST_REGISTRY) return undefined;
+  const admins = (env.ADMIN_TENANTS ?? "").split(",").map(value => value.trim()).filter(Boolean);
+  if (!admins.includes(auth.tenantId) || !auth.scopes.includes("*")) return Response.json({ error: "Admin account required", code: "FORBIDDEN" }, { status: 403 });
+  const [, raw, allow] = match, hosts = registry(env);
+  let host: string | undefined;
+  try { host = raw === undefined ? undefined : decodeURIComponent(raw); } catch { host = ""; }
+  if (host !== undefined && !HOST_NAME.test(host)) return Response.json({ error: "Invalid host id", code: "INVALID_REQUEST" }, { status: 400 });
+  if (!host && request.method === "GET") return Response.json({ hosts: await hosts.list() });
+  if (host && !allow && request.method === "DELETE") return Response.json(await hosts.revoke(host));
+  if (host && allow && request.method === "POST") return Response.json(await hosts.allow(host));
+  return Response.json({ error: "Not found", code: "NOT_FOUND" }, { status: 404 });
+}
 
 /** One host's connection: jobs out, results in. */
 export class JobHost extends DurableObject<JobHostsEnv> {
@@ -90,35 +273,63 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     this.attach(server, name);
     return new Response(null, { status: 101, webSocket: client });
   }
+  /** Bumped by each revoke: a credential check that began before it does not attach its socket. */
+  private generation = 0;
   private attach(socket: WebSocket, name: string) {
     const assembler = new Frames();
-    let authed = false;
-    const deadline = setTimeout(() => { if (!authed) try { socket.close(1008, "Unauthorized"); } catch { /* closed */ } }, AUTH_DEADLINE_MS);
+    let state: "new" | "checking" | "authed" = "new";
+    const queued: string[] = [];
+    const close = (code: number, reason: string) => { try { socket.close(code, reason); } catch { /* closed */ } };
+    const deadline = setTimeout(() => { if (state !== "authed") close(1008, "Unauthorized"); }, AUTH_DEADLINE_MS);
+    const handle = (text: string) => {
+      const message = assembler.add(text) as HostMessage | undefined;
+      if (message) void this.receive(name, message).catch(error => {
+        // A host that reports nonsense (its capacity, a frame), or is revoked, is cut off.
+        console.error(JSON.stringify({ type: "jobhost_message_refused", host: name, error: error instanceof Error ? error.message.slice(0, 100) : "unknown" }));
+        const revoked = error instanceof Error && error.message.startsWith(HOST_REVOKED);
+        close(revoked ? 1008 : 1007, revoked ? "Revoked" : "Invalid message");
+      });
+    };
     socket.addEventListener("message", event => {
       try {
         const text = typeof event.data === "string" ? event.data : "";
-        if (!authed) {
-          // The host's first message is its token; anything else closes the socket.
-          if (!sameToken((JSON.parse(text) as { token?: unknown }).token, this.env.JOB_HOST_TOKEN)) { socket.close(1008, "Unauthorized"); return; }
-          authed = true;
-          clearTimeout(deadline);
-          // A host that reconnects replaces its old socket; jobs in flight on it keep their pending results.
-          if (this.socket && this.socket !== socket) try { this.socket.close(1000, "Replaced"); } catch { /* already closed */ }
-          this.socket = socket;
+        if (state === "checking") { if (queued.length < 8) queued.push(text); else close(1008, "Unauthorized"); return; }
+        if (state === "new") {
+          // The host's first message is its credential, checked by the registry; until then what it sends waits.
+          state = "checking";
+          const credential = (JSON.parse(text) as { credential?: unknown }).credential;
+          // A revoke that lands while the registry checks (after its check, before this) must still win.
+          const generation = this.generation;
+          void registry(this.env).verify(name, credential).then(checked => {
+            if (!checked.ok || generation !== this.generation) { close(1008, checked.ok ? "Revoked" : "Unauthorized"); return; }
+            // Closed meanwhile (its auth deadline, or the host went): never the socket jobs go to.
+            if (socket.readyState !== WebSocket.OPEN) return;
+            state = "authed";
+            clearTimeout(deadline);
+            // A host that reconnects replaces its old socket; jobs in flight on it keep their pending results.
+            if (this.socket && this.socket !== socket) try { this.socket.close(1000, "Replaced"); } catch { /* already closed */ }
+            this.socket = socket;
+            // The credential's end is the socket's: the host enrolls again and reconnects before then.
+            const expiry = setTimeout(() => close(1008, "Credential expired"), Math.max(0, checked.expiresAt - Date.now()));
+            socket.addEventListener("close", () => clearTimeout(expiry));
+            for (const waiting of queued.splice(0)) handle(waiting);
+          }, () => close(1011, "Unavailable"));
           return;
         }
-        const message = assembler.add(text) as HostMessage | undefined;
-        if (message) void this.receive(name, message).catch(error => {
-          // A host that reports nonsense (its capacity, a frame) is cut off; it reconnects and says hello again.
-          console.error(JSON.stringify({ type: "jobhost_message_refused", host: name, error: error instanceof Error ? error.message.slice(0, 100) : "unknown" }));
-          try { socket.close(1007, "Invalid message"); } catch { /* closed */ }
-        });
+        handle(text);
       } catch (error) {
         console.error(JSON.stringify({ type: "jobhost_message_invalid", host: name, error: error instanceof Error ? error.name : "unknown" }));
-        socket.close(1007, "Invalid message");
+        close(1007, "Invalid message");
       }
     });
     socket.addEventListener("close", () => { if (this.socket === socket) this.socket = undefined; });
+  }
+  /** Revoked: the socket closes, and jobs waiting on this host end failed rather than at their deadline. */
+  revoke() {
+    this.generation++;
+    try { this.socket?.close(1008, "Revoked"); } catch { /* closed */ }
+    this.socket = undefined;
+    for (const [id, done] of this.pending) { this.pending.delete(id); done({ ok: false, code: "container_failed", message: "The job host was revoked" }); }
   }
   private async receive(name: string, message: HostMessage) {
     if (message.type === "hello") {

@@ -571,6 +571,10 @@ export class WorkflowRunner {
   private async startHeld() {
     const row = this.state();
     if (row.status !== "running" && row.status !== "waiting") return;
+    // A revision that has not had its first step yet has not said what it still asks for (that step cancels the rest):
+    // nothing starts before it, so a slot freed meanwhile never starts dropped work.
+    const firstStep = Number(this.sql.exec("SELECT start_step FROM workflow_revisions WHERE revision = ?", row.revision).one().start_step);
+    if (Number(row.step) < firstStep) return;
     const held = this.sql.exec("SELECT key, attempt, kind, args, options, phase, lease, start_failures, due_at FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
     if (!held.length) return;
     const budget = row.budget_usd === null ? null : Number(row.budget_usd);
@@ -632,7 +636,7 @@ export class WorkflowRunner {
     const revision = this.sql.exec("SELECT * FROM workflow_revisions WHERE revision = ?", state.revision).one();
     const rebuild = Number(revision.start_step) === step;
     const results = this.sql.exec(
-      "SELECT key, attempt, ok, result FROM workflow_effects WHERE current = 1 AND delivered_step IS NULL AND landed IS NOT NULL ORDER BY landed",
+      "SELECT key, attempt, ok, result, kind, args FROM workflow_effects WHERE current = 1 AND delivered_step IS NULL AND landed IS NOT NULL ORDER BY landed",
     ).toArray();
     if (!rebuild && results.length === 0) return false;
     const recent = this.sql.exec("SELECT COUNT(*) AS n, MIN(at) AS first FROM workflow_steps WHERE at > ?", at - 3_600_000).one();
@@ -650,7 +654,7 @@ export class WorkflowRunner {
       return false;
     }
     const started = performance.now();
-    const deliver: WorkflowBatch | undefined = results.length ? { at, results: results.map(row => ({ key: row.key as string, ok: row.ok === 1, value: row.result as string })) } : undefined;
+    const deliver: WorkflowBatch | undefined = results.length ? { at, results: results.map(row => ({ key: row.key as string, ok: row.ok === 1, value: row.result as string, kind: row.kind as string, args: row.args as string })) } : undefined;
     const request: WorkflowStepRequest = {
       protocol: WORKFLOW_STEP_PROTOCOL, code: revision.code as string, seed: Number(state.seed), startedAt: Number(state.started_at),
       snapshotCap: this.options.snapshotCap ?? WORKFLOW_LIMITS.snapshotCapBytes, deliver,
@@ -691,8 +695,10 @@ export class WorkflowRunner {
       this.sql.exec("UPDATE workflow_state SET step = ?, phase = COALESCE(?, phase), updated_at = ? WHERE id = 1", step, ran.phase ?? null, at);
       let ord = Number(this.sql.exec("SELECT COALESCE(MAX(ord), 0) AS ord FROM workflow_effects").one().ord);
       for (const effect of fresh) {
-        const before = this.sql.exec("SELECT attempt FROM workflow_effects WHERE key = ? AND current = 1", effect.key).toArray()[0];
+        const before = this.sql.exec("SELECT attempt, status FROM workflow_effects WHERE key = ? AND current = 1", effect.key).toArray()[0];
         if (before) this.sql.exec("UPDATE workflow_effects SET current = 0 WHERE key = ? AND current = 1", effect.key);
+        // Still out under its old arguments (an edit changed them): stopped, as a dropped effect is (cancelEnded).
+        if (before?.status === "pending") this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = 'its arguments changed', due_at = NULL, ended_at = ? WHERE key = ? AND attempt = ?", at, effect.key, before.attempt);
         this.sql.exec(
           `INSERT INTO workflow_effects (key, attempt, current, ord, origin, revision, kind, args, options, phase, status, reason, started, due_at, issued_step, seen_revision, issued_at, ended_at, version)
            VALUES (?, ?, 1, ?, 'script', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
@@ -703,6 +709,11 @@ export class WorkflowRunner {
         );
       }
       for (const effect of ran.issued) if (effect.reused) this.sql.exec("UPDATE workflow_effects SET seen_revision = ? WHERE key = ? AND current = 1", revision.revision, effect.key);
+      // A revision's first step: what the journal still had waiting to start (queued behind the concurrency cap, held for
+      // a confirm) that the new script did not ask for is cancelled, never started. One it asks for later is issued again.
+      if (step === Number(revision.start_step))
+        this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = 'the script no longer asks for it', due_at = NULL, ended_at = ? WHERE current = 1 AND status = 'pending' AND started = 0 AND seen_revision < ?",
+          at, revision.revision);
       for (const log of ran.logs) this.sql.exec("INSERT INTO workflow_log (step, phase, text) VALUES (?, ?, ?)", step, log.phase ?? null, log.text.slice(0, WORKFLOW_LIMITS.logChars));
       if (ran.logs.length) this.sql.exec("DELETE FROM workflow_log WHERE seq <= (SELECT MAX(seq) FROM workflow_log) - ?", WORKFLOW_LIMITS.keptLogs);
       if (ran.done) {
@@ -763,9 +774,12 @@ export class WorkflowRunner {
           return { code: "nondeterministic_script", message: `On replay the script's effect ${i + 1} is ${got ? `${got.kind} ${got.key}` : "missing"}, but the journal's is ${want ? `${want.kind} ${want.key}` : "missing"}` };
       }
     }
+    const revision = Number(this.state().revision);
     for (const effect of issued.filter(effect => !effect.replayed && !effect.reused)) {
-      const row = this.sql.exec("SELECT status FROM workflow_effects WHERE key = ? AND current = 1", effect.key).toArray()[0];
-      if (row && row.status !== "aborted" && row.status !== "refused" && row.status !== "cancelled")
+      const row = this.sql.exec("SELECT status, kind, args, revision FROM workflow_effects WHERE key = ? AND current = 1", effect.key).toArray()[0];
+      // An earlier revision's effect under this key with other arguments: the edit changed them, and this is its rerun.
+      const changed = row && Number(row.revision) < revision && (row.args !== effect.args || row.kind !== effect.kind);
+      if (row && !changed && row.status !== "aborted" && row.status !== "refused" && row.status !== "cancelled")
         return { code: "nondeterministic_script", message: `The script issued ${effect.kind} ${effect.key} again, which the journal already has` };
     }
     return undefined;
@@ -782,17 +796,17 @@ export class WorkflowRunner {
   /** A revision's table: what the journal held when it began, settled values or pending keys. */
   private table(revision: number): NonNullable<WorkflowStepRequest["table"]> {
     return this.sql.exec(
-      "SELECT t.key, t.settled, e.ok, e.result FROM workflow_revision_table t JOIN workflow_effects e ON e.key = t.key AND e.attempt = t.attempt WHERE t.revision = ? ORDER BY e.ord",
+      "SELECT t.key, t.settled, e.ok, e.result, e.kind, e.args FROM workflow_revision_table t JOIN workflow_effects e ON e.key = t.key AND e.attempt = t.attempt WHERE t.revision = ? ORDER BY e.ord",
       revision,
-    ).toArray().map(row => row.settled === 1 ? { key: row.key as string, ok: row.ok === 1, value: row.result as string } : { key: row.key as string });
+    ).toArray().map(row => ({ key: row.key as string, kind: row.kind as string, args: row.args as string, ...(row.settled === 1 ? { ok: row.ok === 1, value: row.result as string } : {}) }));
   }
 
   /** The batches of steps `from` through `through`, as first delivered. */
   private batches(from: number, through: number): WorkflowBatch[] {
     const steps = this.sql.exec("SELECT step, at FROM workflow_steps WHERE step >= ? AND step <= ? AND results > 0 ORDER BY step", from, through).toArray();
-    const rows = this.sql.exec("SELECT key, ok, result, delivered_step FROM workflow_effects WHERE delivered_step >= ? AND delivered_step <= ? ORDER BY delivered_step, landed", from, through).toArray();
+    const rows = this.sql.exec("SELECT key, ok, result, kind, args, delivered_step FROM workflow_effects WHERE delivered_step >= ? AND delivered_step <= ? ORDER BY delivered_step, landed", from, through).toArray();
     const byStep = new Map<number, WorkflowBatch>(steps.map(row => [Number(row.step), { at: Number(row.at), results: [] }]));
-    for (const row of rows) byStep.get(Number(row.delivered_step))?.results.push({ key: row.key as string, ok: row.ok === 1, value: row.result as string });
+    for (const row of rows) byStep.get(Number(row.delivered_step))?.results.push({ key: row.key as string, ok: row.ok === 1, value: row.result as string, kind: row.kind as string, args: row.args as string });
     return [...byStep.values()];
   }
 
@@ -930,7 +944,7 @@ export class WorkflowRunner {
         // An edit is how a fault is fixed, how a finished workflow goes on, and how a held edit is replaced (the new
         // revision is checked for its own reruns, or confirmed); other pauses (the user's, budget, payer) stay until resume.
         if (status === "completed" || status === "failed" || (status === "paused" && (state.fault_code !== null || state.pause_reason === "confirm_rerun"))) this.setStatus("running");
-        this.event("edited", { revision, reason: options.reason ?? null, rerunConfirmPercent: percent });
+        this.event("edited", { revision, reason: options.reason ?? null, rerunConfirmPercent: percent, confirm: options.confirm === true });
       });
       await this.advance();
       return { revision };

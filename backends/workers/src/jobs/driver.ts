@@ -18,7 +18,7 @@ export interface JobDriver {
   stop(id: string): Promise<{ stopped: boolean }>;
 }
 export type JobsUnavailable = { ok: false; code: "JOBS_UNAVAILABLE"; message: string };
-export type JobDriverEnv = { COMPUTER_CONTAINERS?: DurableObjectNamespace<ContainerComputer> } & Pick<JobHostsEnv, "JOB_HOST_TOKEN" | "HOST_JOBS" | "JOB_HOSTS" | "JOB_HOST_REGISTRY">;
+export type JobDriverEnv = { COMPUTER_CONTAINERS?: DurableObjectNamespace<ContainerComputer> } & Pick<JobHostsEnv, "JOB_HOST_ATTESTORS" | "HOST_JOBS" | "JOB_HOSTS" | "JOB_HOST_REGISTRY">;
 
 /** The container object a job runs in: one per job, of the same class (and image) as agents' native computers. */
 export const jobObjectName = (id: string) => `job:${id}`;
@@ -51,11 +51,11 @@ class HostsJobDriver implements JobDriver {
 }
 
 /**
- * This deployment's job driver: our own hosts where they are configured (the host bindings and JOB_HOST_TOKEN: test
+ * This deployment's job driver: our own hosts where they are configured (the host bindings and JOB_HOST_ATTESTORS: test
  * configs only, until phase 2's pools exist), else Cloudflare Containers, else JOBS_UNAVAILABLE.
  */
 export function jobDriver(env: JobDriverEnv): { ok: true; driver: JobDriver } | JobsUnavailable {
-  if (env.JOB_HOST_TOKEN && env.HOST_JOBS && env.JOB_HOSTS && env.JOB_HOST_REGISTRY) return { ok: true, driver: new HostsJobDriver(env.HOST_JOBS) };
+  if (env.JOB_HOST_ATTESTORS && env.HOST_JOBS && env.JOB_HOSTS && env.JOB_HOST_REGISTRY) return { ok: true, driver: new HostsJobDriver(env.HOST_JOBS) };
   if (!env.COMPUTER_CONTAINERS)
     return { ok: false, code: "JOBS_UNAVAILABLE", message: "Jobs need Cloudflare Containers, which this deployment does not have (pilot only in phase 1)." };
   return { ok: true, driver: new CloudflareContainersJobDriver(env.COMPUTER_CONTAINERS) };

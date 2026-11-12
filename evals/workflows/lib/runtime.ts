@@ -41,7 +41,9 @@ export const ORCHESTRATOR = "You are the lead agent on a large task. You may han
 const SPLIT_REQUIRED = " Do none of the item work yourself: split it among workers, have critics check their work, and send fixes back to workers.";
 
 export type WorkflowApiKind = "public" | "test-hook";
-export interface RunOptions { label: string; mode: Mode; workerClass: ModelClass; classes: Classes; run: number; dir: string; budgetUsd: number; split: "free" | "required"; workflowApi: "auto" | WorkflowApiKind }
+export interface RunOptions { label: string; mode: Mode; workerClass: ModelClass; classes: Classes; run: number; dir: string; budgetUsd: number; split: "free" | "required"; workflowApi: "auto" | WorkflowApiKind;
+  /** Candidate wording appended to the orchestrator's system prompt (`--guidance`), as the choice eval does. */
+  guidance?: { name: string; text: string } }
 
 export class Runtime {
   readonly client: AgentRuntime;
@@ -304,7 +306,7 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   writeFileSync(events, "");
   const log = (entry: unknown) => appendFileSync(events, JSON.stringify(entry) + "\n");
   const base: Omit<RunResult, "score" | "integrity"> = {
-    schema: 1, label: options.label, split: options.split, task: task.id, taskVersion: task.version, tier: task.tier, mode: options.mode, workerClass: options.workerClass, classes: options.classes,
+    schema: 1, label: options.label, split: options.split, ...(options.guidance ? { guidance: options.guidance.name } : {}), task: task.id, taskVersion: task.version, tier: task.tier, mode: options.mode, workerClass: options.workerClass, classes: options.classes,
     run: options.run, runtime: new URL(runtime.url).host, startedAt: new Date(started).toISOString(), wallMs: 0, status: "completed", cost: null, budgetUsd: options.budgetUsd,
     effects: { children: 0, grandchildren: 0, failedChildren: 0, byStatus: {} }, conflicts: 0, retries: 0,
     choice: { delegated: false, delegateCalls: 0, workflowStarted: false, workflowIds: [], toolCalls: {} }, artifacts: options.dir,
@@ -345,7 +347,7 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   const agent = await runtime.client.createAgent({
     // Dry mode's stand-in build tools; workflow mode has the real job().
     tools: options.mode === "dry" ? jobTools(runtime, task, volumeId, log, jobs) : {},
-    name: `wf-eval ${task.id}`, model: options.classes.orchestrator, systemPrompt: (options.mode === "dry" && task.jobs?.length ? ORCHESTRATOR.replace("You cannot run commands.", "You cannot run commands except through the build tools you are given.") : ORCHESTRATOR) + (options.split === "required" ? SPLIT_REQUIRED : ""), ttlSeconds: 86_400,
+    name: `wf-eval ${task.id}`, model: options.classes.orchestrator, systemPrompt: (options.mode === "dry" && task.jobs?.length ? ORCHESTRATOR.replace("You cannot run commands.", "You cannot run commands except through the build tools you are given.") : ORCHESTRATOR) + (options.split === "required" ? SPLIT_REQUIRED : "") + (options.guidance ? `\n\n${options.guidance.text.trim()}` : ""), ttlSeconds: 86_400,
     mounts: [{ volumeId, path: "/workspace", mode: "rw" }], spendLimit: { usd: options.budgetUsd }, subagents: true,
     delegate: { agents: Object.entries(types.keys).map(([name, definition]) => ({ name, definition })), maxParallel: 8, maxDepth: 1 },
     onEvent(event: AgentEvent) {

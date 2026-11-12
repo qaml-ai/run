@@ -14,7 +14,8 @@ export const WORKFLOW_STEP_PROTOCOL = 3;
 /** One step's results, applied in this order, while the VM's clock reads `at`. `value` is the result's JSON. */
 export interface WorkflowBatch {
   at: number;
-  results: { key: string; ok: boolean; value: string }[];
+  /** `kind`/`args`: the effect the result is for; a result for other arguments than the script now asks under its key is dropped. */
+  results: { key: string; ok: boolean; value: string; kind?: string; args?: string }[];
 }
 
 export interface WorkflowStepRequest {
@@ -29,9 +30,11 @@ export interface WorkflowStepRequest {
   /**
    * Without `restore`: the revision's adopted effects, which a VM started again knows before the script runs. A new
    * revision (an edit, a rerun) starts from the journal this way: an effect it asks for that the table holds is
-   * answered from it (`value`) or waits for its pending result (no `value`), and is never issued again.
+   * answered from it (`value`) or waits for its pending result (no `value`), and is never issued again. An entry with
+   * `kind`/`args` is adopted only by an effect of that kind with those arguments: the same key with other arguments is a
+   * new effect (a rerun of that result), never the old result.
    */
-  table?: { key: string; ok?: boolean; value?: string }[];
+  table?: { key: string; ok?: boolean; value?: string; kind?: string; args?: string }[];
   /** Without `restore`: the clock when the revision began (the VM's clock reads it until a batch moves it on). */
   beganAt?: number;
   /** Without `restore`: every earlier step's batch in this revision, in step order; absent for a revision's first step. */

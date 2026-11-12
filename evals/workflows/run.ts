@@ -6,11 +6,12 @@
 //   … run.ts score <task> <dir> [--sandbox host]                  score a tree you have
 //   AGENT_URL=https://run-pilot.camelai.dev AGENT_RUNTIME_TOKEN=… \
 //   … run.ts run [--tasks s-ts-port,s-esm-refactor] [--modes dry] [--workers fast,strong] [--runs 1] [--label name] [--max-usd 5]
-//               [--orchestrator camelrun/strong] [--classes critic=camelrun/fast,lead=camelrun/fast] [--budget-usd n] [--runtime-log file] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
+//               [--orchestrator camelrun/strong] [--classes critic=camelrun/fast,lead=camelrun/fast] [--budget-usd n] [--wall-minutes n] [--guidance file] [--runtime-log file] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
 //   … run.ts summary .agent-runtime/eval/workflows-<label>.jsonl [more.jsonl]
+//   … run.ts polling [--guidance none,evals/workflows/choice/guidance/no-poll.md] [--label name]   how the owner waits: polls vs notices
 //   … run.ts rescore .agent-runtime/eval/workflows-<label>.jsonl   score saved outputs again after a judge fix
 //   AGENT_URL=… AGENT_RUNTIME_TOKEN=… \
-//   … run.ts choice [--modes dry,workflow] [--guidance none,evals/workflows/choice/guidance-design-draft.md] [--prompts esm-400,typo] [--runs 1] [--label name] [--max-usd 3]
+//   … run.ts choice [--modes dry,workflow] [--guidance none,evals/workflows/choice/guidance/design-draft.md] [--prompts esm-400,typo] [--runs 1] [--label name] [--max-usd 3]
 //               scores whether the agent splits work when it should (evals/workflows/choice/prompts.json); stops each run at its first decision
 //
 // `run` appends one JSON line per run to .agent-runtime/eval/workflows-<label>.jsonl, writes
@@ -18,7 +19,7 @@
 // markdown summary to .agent-runtime/eval/workflows-<label>.md. Model calls cost money: not part of CI.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { choiceSummary, choose, loadPrompts } from "./lib/choice.ts";
+import { choiceSummary, choose, loadPolling, loadPrompts, pollingSummary, waitStyle } from "./lib/choice.ts";
 import { CLASS_MODELS, guardUrl, orchestrate, Runtime } from "./lib/runtime.ts";
 import { readResults, summary } from "./lib/report.ts";
 import { dockerReady, type Sandbox } from "./lib/score.ts";
@@ -61,6 +62,7 @@ async function main() {
     return;
   }
   if (command === "choice") return choiceCommand();
+  if (command === "polling") return pollingCommand();
   if (command === "rescore") {
     // After a judge fix: score each run's saved output again and rewrite its line (and result.json).
     const box = sandbox();
@@ -95,6 +97,7 @@ async function main() {
   const workers = list("workers", "fast") as ModelClass[];
   const runs = Number(arg("runs") ?? 1);
   const split = (arg("split") ?? "free") as "free" | "required";
+  const guidance = arg("guidance") ? { name: basename(arg("guidance")!, ".md"), text: readFileSync(arg("guidance")!, "utf8") } : undefined;
   const runtime = new Runtime(url, token);
   const out = join(DIR, `workflows-${label}`);
   mkdirSync(out, { recursive: true });
@@ -102,6 +105,8 @@ async function main() {
   // One run at a time: comparisons should not share a tenant's busy-agent slots or a provider's rate limit.
   for (const task of tasks) for (const mode of modes) for (const workerClass of workers) for (let run = 1; run <= runs; run++) {
     const budgetUsd = Number(arg("budget-usd") ?? task.budget.usd);
+    // --wall-minutes: a tighter wall cap, where splitting the work has to win on time.
+    if (arg("wall-minutes")) task.budget.wallMinutes = Number(arg("wall-minutes"));
     if (spent + budgetUsd > maxUsd) { console.log(`stopping: ${task.id} could take spend from $${spent.toFixed(2)} past --max-usd ${maxUsd}`); break; }
     // --classes critic=camelrun/fast,lead=… overrides a role's model (e.g. the all-fast arm of the class eval).
     const overrides = Object.fromEntries(list("classes", "").map(pair => pair.split("=") as [string, string]));
@@ -111,7 +116,7 @@ async function main() {
     // --runtime-log: the local runtime's log (local-runtime.ts's output); its new error lines join the run's failures.
     const runtimeLog = arg("runtime-log"), logFrom = runtimeLog && existsSync(runtimeLog) ? statSync(runtimeLog).size : 0;
     try {
-      const ran = await orchestrate(runtime, task, { label, mode, workerClass, classes, run, dir, budgetUsd, split, workflowApi: (arg("workflow-api") ?? "auto") as "auto" | "public" | "test-hook" });
+      const ran = await orchestrate(runtime, task, { label, mode, workerClass, classes, run, dir, budgetUsd, split, guidance, workflowApi: (arg("workflow-api") ?? "auto") as "auto" | "public" | "test-hook" });
       const { cleanup, volumeId, ...rest } = ran;
       let score = null;
       if (volumeId && rest.status !== "unavailable") {
@@ -168,6 +173,29 @@ async function choiceCommand() {
   const markdown = choiceSummary(readFileSync(`${out}.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line)));
   writeFileSync(`${out}.md`, markdown);
   console.log(`\n${markdown}\nTotal spend: $${spent.toFixed(3)}. Results: ${out}.jsonl, ${out}.md`);
+}
+
+async function pollingCommand() {
+  const url = process.env.AGENT_URL, token = process.env.AGENT_RUNTIME_TOKEN;
+  if (!url || !token) throw new Error("Set AGENT_URL and AGENT_RUNTIME_TOKEN");
+  guardUrl(url, arg("allow-host"));
+  const runtime = new Runtime(url, token);
+  const label = arg("label") ?? `polling-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}`;
+  const maxUsd = Number(arg("max-usd") ?? 2), runs = Number(arg("runs") ?? 1);
+  const guidance = list("guidance", "none").map(item => item === "none" ? undefined : { name: basename(item, ".md"), text: readFileSync(item, "utf8") });
+  const out = join(DIR, `workflows-${label}`);
+  mkdirSync(out, { recursive: true });
+  let spent = 0;
+  for (const wording of guidance) for (let run = 1; run <= runs; run++) for (const prompt of loadPolling()) {
+    if (spent >= maxUsd) { console.log(`stopping at $${spent.toFixed(2)}`); break; }
+    const result = await waitStyle(runtime, prompt, { label, guidance: wording, run, dir: out, capUsd: 0.5, capMs: 600_000, orchestrator: arg("orchestrator") ?? CLASS_MODELS.strong });
+    spent += result.costUsd;
+    appendFileSync(`${out}.jsonl`, JSON.stringify(result) + "\n");
+    console.log(`${prompt.id} ${wording?.name ?? "runtime"}: ${result.workflows} workflows, ${result.notices} notices, ${result.statusPolls} polls, replied ${result.replyAfterLast}, $${result.costUsd.toFixed(3)}${result.error ? ` (${result.error.split("\n")[0]})` : ""}`);
+  }
+  const markdown = pollingSummary(readFileSync(`${out}.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line)));
+  writeFileSync(`${out}.md`, markdown);
+  console.log(`\n${markdown}\nTotal spend: $${spent.toFixed(3)}.`);
 }
 
 // Exit explicitly: an agent client's sockets can outlive its agent and keep the process up.
