@@ -38,11 +38,14 @@ test("the pools' sandbox memory is what the image reserves (versions.env)", () =
 });
 
 test("a job's VM: its limits, else its instance type's resources, in whole vCPUs; its pool by size", () => {
-  const spec = (limits?: object) => jobSpec({ id: "j", command: "true", timeoutSeconds: 5, payer: { tenant: "t", agent: "a" }, ...(limits ? { limits } : {}) });
+  const spec = (limits?: object) => jobSpec({ id: "j", command: "true", timeoutSeconds: 5, payer: { tenant: "t", agent: "a" }, ...(limits ? { limits } : {}) }, { beyondContainers: true });
   assert.deepEqual(hostShape(spec()), { vcpus: 1, memoryMiB: 4096, diskMiB: Math.ceil(8e9 / 2 ** 20) }, "standard-1");
   assert.deepEqual(hostShape(spec({ cpus: 1.5 })), { vcpus: 2, memoryMiB: 8192, diskMiB: Math.ceil(16e9 / 2 ** 20) }, "fractional cpus round up; the instance that fits them (standard-3)");
   assert.equal(hostShape(spec({ memoryMiB: 2048 })).memoryMiB, 2048);
   assert.equal(hostPool(hostShape(spec({ cpus: 4, memoryMiB: 12288 }))), "test");
+  // Past a container (routing: JOB_PROVIDER), on hosts: memory past a test shard, or many vCPUs, is the build pool's.
+  assert.equal(hostPool(hostShape(spec({ cpus: 2, memoryMiB: 32768 }))), "build");
+  assert.equal(hostPool(hostShape(spec({ cpus: 16 }))), "build");
 });
 
 test("JOB_HOST_ROLE_ARNS: pool=arn entries; anything else fails the whole setting closed", () => {

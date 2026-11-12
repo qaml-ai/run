@@ -320,3 +320,41 @@ test("jobDriver: JOBS_UNAVAILABLE without the container binding; with it, one ob
   await assert.rejects(driver.run({ payer: PAYER, id: "bad id", command: "true", timeoutSeconds: 5 }), JobSpecError);
   assert.equal(specs.length, 1, "a bad spec never reaches the container object");
 });
+
+test("JOB_PROVIDER: containers, hosts or auto, each only where configured; auto sends a job to the one that suits it", async () => {
+  const calls: string[] = [];
+  const containerNs = { getByName: (name: string) => ({
+    runJob: async (spec: any) => { calls.push(`container ${name} ${spec.instance}`); return { ok: true, id: spec.id }; },
+    stopJob: async () => { calls.push(`container stop ${name}`); return { stopped: false }; },
+  }) } as never;
+  const hostNs = { getByName: (name: string) => ({
+    run: async (spec: any) => { calls.push(`host ${name} ${spec.instance} ${spec.limits?.cpus ?? ""}`); return { ok: true, id: spec.id }; },
+    stop: async () => { calls.push(`host stop ${name}`); return { stopped: true }; },
+  }) } as never;
+  const hostEnv = { JOB_HOST_ATTESTORS: "test", HOST_JOBS: hostNs, JOB_HOSTS: {} as never, JOB_HOST_REGISTRY: {} as never };
+  // Unset: hosts where they are configured, else containers; asked for and missing, unavailable, never another.
+  assert.equal((jobDriver({ COMPUTER_CONTAINERS: containerNs, ...hostEnv }) as any).driver.provider, "camelrun-hosts");
+  assert.equal((jobDriver({ COMPUTER_CONTAINERS: containerNs }) as any).driver.provider, "cloudflare-containers");
+  assert.equal((jobDriver({ COMPUTER_CONTAINERS: containerNs, ...hostEnv, JOB_PROVIDER: "containers" }) as any).driver.provider, "cloudflare-containers");
+  for (const env of [{ JOB_PROVIDER: "hosts", COMPUTER_CONTAINERS: containerNs }, { JOB_PROVIDER: "auto", COMPUTER_CONTAINERS: containerNs }, { JOB_PROVIDER: "auto", ...hostEnv }, { JOB_PROVIDER: "gpu", COMPUTER_CONTAINERS: containerNs, ...hostEnv }]) {
+    const found = jobDriver(env as never);
+    assert.equal(!found.ok && found.code, "JOBS_UNAVAILABLE", JSON.stringify(Object.keys(env)));
+  }
+  const auto = jobDriver({ COMPUTER_CONTAINERS: containerNs, ...hostEnv, JOB_PROVIDER: "auto" });
+  assert.ok(auto.ok);
+  // Fits a container: a container. Past it: a host, with its limits. Needs a snapshot or another image: a container.
+  await auto.driver.run({ payer: PAYER, id: "small", command: "true", timeoutSeconds: 5, limits: { cpus: 2 } });
+  await auto.driver.run({ payer: PAYER, id: "big", command: "true", timeoutSeconds: 5, limits: { cpus: 16, memoryMiB: 64 * 1024 } });
+  await auto.driver.run({ payer: PAYER, id: "snap", command: "true", timeoutSeconds: 5, saveSnapshot: "warm" });
+  assert.deepEqual(calls, ["container job:small standard-3", "host job:big standard-4 16", "container job:snap standard-1"]);
+  // Past even a build host: the spec error, before any object.
+  await assert.rejects(auto.driver.run({ payer: PAYER, id: "huge", command: "true", timeoutSeconds: 5, limits: { cpus: 32 } }), /No job host has these limits/);
+  // A stop reaches whichever driver ran it.
+  calls.length = 0;
+  assert.deepEqual(await auto.driver.stop("big"), { stopped: true });
+  assert.deepEqual(calls.sort(), ["container stop job:big", "host stop job:big"]);
+  // Containers alone still refuse what does not fit one.
+  const containersOnly = jobDriver({ COMPUTER_CONTAINERS: containerNs });
+  assert.ok(containersOnly.ok);
+  await assert.rejects(containersOnly.driver.run({ payer: PAYER, id: "big2", command: "true", timeoutSeconds: 5, limits: { cpus: 16 } }), /largest has 4 vCPUs/);
+});
