@@ -3,7 +3,10 @@ import { timingSafeEqual } from "node:crypto";
 import { Transform } from "node:stream";
 
 export type CamelfsMount = { image: string; warm: boolean; root: string; tree: string; mountMs: number; hydrating: boolean };
+export type CamelfsCheckpoint = { root: string; tree: string; parentRoot: string; changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; checkpointMs: number };
 export interface Camelfsd {
+  // Older daemon adapters can mount and apply without supporting checkpoints.
+  checkpoint?(jobId: string, timeoutMs: number): Promise<CamelfsCheckpoint>;
   mount(input: { jobId: string; lineage: string; tree: string; vsock: string }): Promise<CamelfsMount>;
   release(jobId: string): Promise<void>;
   health(): Promise<{ ok: boolean; version: string; data: string; store: string; hostId: string }>;
@@ -11,11 +14,11 @@ export interface Camelfsd {
 }
 
 /** The daemon owns storage; the host only passes its opaque image path to the VM. */
-export function camelfsdClient(socketPath: string): Camelfsd {
-  const call = (method: string, path: string, input?: unknown): Promise<unknown> => new Promise((resolve, reject) => {
+export function camelfsdClient(socketPath: string): Camelfsd & Required<Pick<Camelfsd, "checkpoint">> {
+  const call = (method: string, path: string, input?: unknown, timeoutMs = 120_000): Promise<unknown> => new Promise((resolve, reject) => {
     const req = request({ socketPath, method, path, headers: input === undefined ? {} : { "content-type": "application/json" } });
     // A wall-clock deadline also bounds a daemon that keeps trickling bytes.
-    const timer = setTimeout(() => req.destroy(new Error("camelfsd request timed out after 120 s")), 120_000);
+    const timer = setTimeout(() => req.destroy(new Error(`camelfsd request timed out after ${timeoutMs / 1000} s`)), timeoutMs);
     const fail = (error: Error) => { clearTimeout(timer); reject(error); };
     req.on("error", fail);
     req.on("response", res => {
@@ -48,6 +51,7 @@ export function camelfsdClient(socketPath: string): Camelfsd {
     return encodeURIComponent(id);
   };
   return {
+    checkpoint: async (id, timeoutMs) => await call("POST", `/v0/mounts/${jobId(id)}/checkpoint`, { timeoutMs }, timeoutMs + 30_000) as CamelfsCheckpoint,
     health: async () => await call("GET", "/v0/health") as { ok: boolean; version: string; data: string; store: string; hostId: string },
     mount: async input => { jobId(input.jobId); return await call("POST", "/v0/mounts", input) as CamelfsMount; },
     release: async id => { await call("DELETE", `/v0/mounts/${jobId(id)}`); },

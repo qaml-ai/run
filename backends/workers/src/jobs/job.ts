@@ -97,7 +97,9 @@ export type JobResult =
       /** Whether `limits.pids` was applied through the container's cgroup (pids.max). */
       /** How `limits.pids` was applied: the container's cgroup (pids.max), the job VM guest's ulimit, or not at all. */
       pids?: "cgroup" | "ulimit" | "unenforced";
-      camelfs?: { tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number };
+      camelfs?: { tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
+        checkpoint?: { walkMs: number; streamMs: number; freezeMs: number; files: number; bytes: number; skipped: number;
+          changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number } };
       snapshot?: ComputerSnapshot;
       /** saveSnapshot was asked for and failed; the result stands. */
       snapshotError?: string;
