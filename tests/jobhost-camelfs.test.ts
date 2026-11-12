@@ -108,14 +108,11 @@ test("a camelFS job mounts its repo, skips sync, reports timings and releases af
   assert.deepEqual(events, ["destroy", "release"]);
 });
 
-for (const [mode, commit, message, methods] of [
-  ["ok", true, "camelFS checkpoints are not supported on this host yet", []],
-  ["fail", false, "camelfsd 500: mount_failed: boom", ["POST", "DELETE"]],
-] as const) test(`camelFS refuses ${commit ? "checkpoints" : mode}`, async t => {
-  const d = await daemon(t, mode), h = await host(t, d.client);
-  await h.agent.run("job-1", { ...spec, camelfs: { ...spec.camelfs!, commit } });
-  assert.deepEqual(await h.result, { ok: false, code: "start_failed", message });
-  assert.deepEqual(d.calls.map(call => call.method), methods);
+test("camelFS refuses a failed mount", async t => {
+  const d = await daemon(t, "fail"), h = await host(t, d.client);
+  await h.agent.run("job-1", spec);
+  assert.deepEqual(await h.result, { ok: false, code: "start_failed", message: "camelfsd 500: mount_failed: boom" });
+  assert.deepEqual(d.calls.map(call => call.method), ["POST", "DELETE"]);
 });
 
 test("camelFS requires a daemon", async t => {

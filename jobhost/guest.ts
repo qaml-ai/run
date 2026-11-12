@@ -6,6 +6,8 @@
 //   { op: "files", files: [{ path, data, append? }] }  → { ok: true, syncMs }               write files under /repo
 //                                                         (append: add to the file: a large one comes in pieces)
 //   { op: "camelfs_apply", jobId, timeoutMs }            → { ok: true, applyMs, files, entries: count }
+//   { op: "camelfs_checkpoint", jobId, timeoutMs }        → { ok: true, walkMs, streamMs, freezeMs, files, bytes, skipped }
+//   { op: "camelfs_checkpointed", tree?, error? }         → { ok: true, entries }
 //   { op: "free" }                                      → { ok: true, freeBytes }            the disk's free bytes
 //   { op: "run", command, timeoutSeconds, pids?, env? } → { ok: true, exitCode, timedOut, stdout, stderr, commandMs }
 //   { op: "collect", outputs: [name] }                  → { ok: true, outputs, missing, collectMs }  from /out
@@ -17,11 +19,13 @@
 import { connect } from "node:net";
 import { FrameReader, WIRE, MODES, checkPath, encodeFrame, jsonFrame } from "./camelfs-wire.ts";
 import { spawn } from "node:child_process";
-import { chmod, lstat, mkdir, open, readdir, readFile, rename, rmdir, rm, stat, statfs, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rename, rmdir, rm, stat, statfs, symlink, unlink, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { dirname, join, normalize } from "node:path";
 
 export const GUEST_LIMITS = Object.freeze({ streamBytes: 8 * 1024 * 1024, outputBytes: 8 * 1024 * 1024, outputTotalBytes: 8 * 1024 * 1024, logChunkBytes: 16 * 1024 });
+
+type CheckpointOp = { path: string; op: "put" | "del" | "link" | "mode"; mode?: string; size?: number; target?: string };
 
 type Request = { op: string; [key: string]: unknown };
 type Stream = { data: string; size: number; truncated: boolean };
@@ -53,6 +57,8 @@ export const PGID_FILE = ".job.pgid";
 
 export class Guest {
   camelfsIndex?: { tree: string; entries: Record<string, unknown>[] };
+  private pendingCheckpoint?: CheckpointOp[];
+  private checkpointRunning = false;
   readonly repo: string;
   readonly out: string;
   private readonly root: string;
@@ -72,6 +78,8 @@ export class Guest {
 
   async handle(request: Request): Promise<unknown> {
     switch (request.op) {
+      case "camelfs_checkpoint": return this.checkpoint(request.jobId as string, request.timeoutMs as number);
+      case "camelfs_checkpointed": return this.checkpointed(request.tree as string | undefined, request.error as string | undefined);
       case "camelfs_apply": return this.apply(request.jobId as string, request.timeoutMs as number);
       case "files": return this.files(request.files as { path: string; data: string; append?: boolean }[]);
       case "free": { const fs = await statfs(this.repo); return { ok: true, freeBytes: Number(fs.bavail) * Number(fs.bsize) }; }
@@ -209,6 +217,162 @@ export class Guest {
     } finally {
       clearTimeout(timer); clearTimeout(connectTimer);
       input?.destroy(); child?.kill();
+    }
+  }
+
+  private async checkpointed(tree?: string, error?: string) {
+    if (!this.pendingCheckpoint || !this.camelfsIndex) return { ok: false, error: "no pending checkpoint" };
+    if (error !== undefined) { this.pendingCheckpoint = undefined; return { ok: true, entries: this.camelfsIndex.entries.length }; }
+    if (typeof tree !== "string" || !/^[a-fA-F0-9]{40}$/.test(tree)) return { ok: false, error: "invalid checkpoint tree" };
+    try {
+      const entries = new Map(this.camelfsIndex.entries.map(entry => [entry.path, entry]));
+      for (const op of this.pendingCheckpoint) {
+        if (op.op === "del") { entries.delete(op.path); continue; }
+        const info = await lstat(join(this.repo, checkPath(op.path)), { bigint: true });
+        entries.set(op.path, { path: op.path, mode: info.isSymbolicLink() ? "120000" : info.mode & 0o100n ? "100755" : "100644",
+          sha1: "", ino: String(info.ino), size: String(info.size), mtimeNs: String(info.mtimeNs), ctimeNs: String(info.ctimeNs) });
+      }
+      const index = { tree, entries: [...entries.values()] };
+      const dir = process.env.CAMEL_VSOCK_CONNECT === "1" ? "/run/camelfs" : join(this.root, ".camelfs");
+      await writeFile(join(dir, "index.json"), JSON.stringify(index));
+      this.camelfsIndex = index; this.pendingCheckpoint = undefined;
+      return { ok: true, entries: index.entries.length };
+    } catch (error) { return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 300) }; }
+  }
+
+  private async checkpoint(jobId: string, timeoutMs: number) {
+    if (!this.camelfsIndex) return { ok: false, error: "no camelFS index: apply did not run" };
+    if (this.pendingCheckpoint || this.checkpointRunning) return { ok: false, error: "checkpoint already pending" };
+    this.checkpointRunning = true;
+    const vm = process.env.CAMEL_VSOCK_CONNECT === "1", started = Date.now();
+    let freezeChild: ReturnType<typeof spawn> | undefined;
+    let success: { freezeMs: number } | undefined;
+    let expired = false, freezeStarted = started, frozen = false, trailerSent = false, ready = false;
+    let input: import("node:stream").Readable | undefined, output: import("node:stream").Writable | undefined;
+    let child: ReturnType<typeof spawn> | undefined, socket: ReturnType<typeof connect> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => { if (expired) throw new Error("camelFS checkpoint timed out"); };
+    const freeze = (flag: string) => new Promise<void>((resolve, reject) => {
+      const proc = spawn("fsfreeze", [flag, "/repo"], { stdio: "ignore" });
+      if (flag === "-f") freezeChild = proc;
+      proc.on("error", reject); proc.on("exit", code => code === 0 ? resolve() : reject(new Error(`fsfreeze ${flag} failed: ${code}`)));
+    });
+    const send = async (frame: object | Buffer) => {
+      check();
+      const encoded = encodeFrame(frame);
+      if (!(frame instanceof Buffer) && encoded.length - 4 > WIRE.jsonMax) throw new Error("JSON frame exceeds jsonMax");
+      await new Promise<void>((resolve, reject) => output!.write(encoded, error => error ? reject(error) : resolve())); check();
+    };
+    try {
+      const work = async () => {
+        if (vm && !(await readFile("/proc/self/mountinfo", "utf8")).split("\n").some(line => line.split(" ")[4] === "/repo")) throw new Error("the camelFS repo disk is not mounted");
+        let reader: FrameReader, streamStarted = Date.now();
+        // A transport connection can precede the POST. Only the ready frame arms this attempt.
+        for (;;) {
+          check();
+          const remaining = 10_000 - (Date.now() - started);
+          if (remaining <= 0) throw new Error("checkpoint connect timed out after 10 s");
+          streamStarted = Date.now();
+          if (vm) {
+            const attempt = spawn("socat", ["-", "VSOCK-CONNECT:2:5200,connect-timeout=10"], { stdio: ["pipe", "pipe", "ignore"] });
+            child = attempt; input = attempt.stdout!; output = attempt.stdin!;
+            const incoming = input;
+            attempt.on("error", error => incoming.destroy(error));
+            attempt.on("exit", () => incoming.destroy(new Error("checkpoint connection closed")));
+          } else {
+            socket = connect({ path: process.env.CAMEL_VSOCK_UDS + "_5200", allowHalfOpen: true });
+            input = socket; output = socket;
+          }
+          input.on("error", () => {}); output.on("error", () => {});
+          const incoming = input;
+          const deadline = setTimeout(() => incoming.destroy(new Error("checkpoint connect timed out after 10 s")), remaining);
+          try {
+            reader = new FrameReader(incoming);
+            const first = await reader.next(); check();
+            if (!first || jsonFrame(first).ready !== true) throw new Error("checkpoint connection closed without ready");
+            ready = true; break;
+          } catch (error) {
+            incoming.destroy(); socket?.destroy(); child?.kill();
+            check();
+            if (Date.now() - started >= 10_000) throw new Error("checkpoint connect timed out after 10 s");
+          } finally { clearTimeout(deadline); }
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        check(); freezeStarted = Date.now();
+        // Mark before invoking freeze so cleanup also thaws a partially completed freeze.
+        frozen = vm; if (vm) await freeze("-f"); check();
+        const walkStarted = Date.now(), ops: CheckpointOp[] = [], seen = new Set<string>();
+        const index = new Map(this.camelfsIndex!.entries.map(entry => [entry.path, entry]));
+        let skipped = 0, bytes = 0;
+        const walk = async (dir: string, prefix = ""): Promise<void> => {
+          for (const name of await readdir(dir)) {
+            check(); if ((!prefix && name === ".git") || name.startsWith(".camelfs-tmp-")) continue;
+            const path = checkPath(prefix + name), full = join(dir, name), info = await lstat(full, { bigint: true }); check();
+            if (info.isDirectory()) { await walk(full, path + "/"); continue; }
+            if (!info.isFile() && !info.isSymbolicLink()) { skipped++; continue; }
+            seen.add(path);
+            const old = index.get(path), mode = info.isSymbolicLink() ? "120000" : info.mode & 0o100n ? "100755" : "100644";
+            const same = old && old.ino === String(info.ino) && old.size === String(info.size) && old.mtimeNs === String(info.mtimeNs)
+              && (old.mode === "120000") === info.isSymbolicLink();
+            if (same && old.ctimeNs === String(info.ctimeNs) && old.mode === mode) continue;
+            if (same && old.mode !== mode && old.ctimeNs !== String(info.ctimeNs) && info.isFile()) ops.push({ path, op: "mode", mode });
+            else if (info.isSymbolicLink()) ops.push({ path, op: "link", target: await readlink(full) });
+            else {
+              const size = Number(info.size); if (!Number.isSafeInteger(size)) throw new Error(`file too large: ${path}`);
+              ops.push({ path, op: "put", mode, size }); bytes += size;
+            }
+          }
+        };
+        await walk(this.repo); check();
+        for (const path of index.keys()) {
+          const name = path as string;
+          if (name.split("/").some(part => part.startsWith(".camelfs-tmp-"))) continue;
+          if (!seen.has(name)) ops.push({ path: checkPath(name), op: "del" });
+        }
+        const walkMs = Date.now() - walkStarted;
+        await send({ v: 1, kind: "checkpoint", jobId, baseTree: this.camelfsIndex!.tree, walkMs });
+        for (const op of ops) {
+          await send(op);
+          if (op.op !== "put") continue;
+          const file = await open(join(this.repo, op.path), "r");
+          try {
+            let remaining = op.size!;
+            const buffer = Buffer.alloc(WIRE.rawMax);
+            while (remaining) {
+              check(); const { bytesRead } = await file.read(buffer, 0, Math.min(remaining, WIRE.rawMax)); check();
+              if (!bytesRead) throw new Error(`file shorter than walked size: ${op.path}`);
+              await send(buffer.subarray(0, bytesRead)); remaining -= bytesRead;
+            }
+            if ((await file.read(buffer, 0, 1)).bytesRead) throw new Error(`file larger than walked size: ${op.path}`);
+          } finally { await file.close(); }
+        }
+        await send({ end: true, files: ops.length, bytes, freezeMs: Date.now() - freezeStarted, skipped }); trailerSent = true;
+        const streamMs = Date.now() - streamStarted, frame = await reader.next(); check();
+        if (!frame) throw new Error("unexpected EOF awaiting checkpoint ack");
+        const ack = jsonFrame(frame);
+        if (ack.ack !== true) throw new Error(String(ack.error ?? "invalid checkpoint ack"));
+        this.pendingCheckpoint = ops;
+        const result = { ok: true, walkMs, streamMs, freezeMs: Date.now() - freezeStarted, files: ops.length, bytes, skipped };
+        success = result; return result;
+      };
+      return await Promise.race([work(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { expired = true; input?.destroy(); socket?.destroy(); child?.kill(); reject(new Error("camelFS checkpoint timed out")); }, Math.max(1, timeoutMs));
+      })]);
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      if (ready && !expired && !trailerSent && output && !output.destroyed) await send({ end: true, error: message }).catch(() => {});
+      return { ok: false, error: message };
+    } finally {
+      clearTimeout(timer); input?.destroy(); socket?.destroy(); child?.kill();
+      try {
+        if (freezeChild?.pid && freezeChild.exitCode === null && freezeChild.signalCode === null) {
+          await new Promise<void>(resolve => { freezeChild!.once("exit", () => resolve()); freezeChild!.kill("SIGKILL"); });
+        }
+        if (frozen) await freeze("-u");
+      } finally {
+        if (success) success.freezeMs = Date.now() - freezeStarted;
+        this.checkpointRunning = false;
+      }
     }
   }
 
