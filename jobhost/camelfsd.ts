@@ -2,7 +2,7 @@ import { createServer, request } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { Transform } from "node:stream";
 
-export type CamelfsMount = { image: string; warm: boolean; root: string; tree: string; mountMs: number; hydrating: boolean; apply?: unknown };
+export type CamelfsMount = { image: string; warm: boolean; root: string; tree: string; mountMs: number; hydrating: boolean };
 export interface Camelfsd {
   mount(input: { jobId: string; lineage: string; tree: string; vsock: string }): Promise<CamelfsMount>;
   release(jobId: string): Promise<void>;

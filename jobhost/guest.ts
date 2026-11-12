@@ -5,6 +5,7 @@
 //
 //   { op: "files", files: [{ path, data, append? }] }  → { ok: true, syncMs }               write files under /repo
 //                                                         (append: add to the file: a large one comes in pieces)
+//   { op: "camelfs_apply", jobId, timeoutMs }            → { ok: true, applyMs, files, index }
 //   { op: "free" }                                      → { ok: true, freeBytes }            the disk's free bytes
 //   { op: "run", command, timeoutSeconds, pids?, env? } → { ok: true, exitCode, timedOut, stdout, stderr, commandMs }
 //   { op: "collect", outputs: [name] }                  → { ok: true, outputs, missing, collectMs }  from /out
@@ -13,8 +14,10 @@
 // Limits: the command runs in its own process group, killed whole at its timeout; `pids` caps its processes
 // (ulimit -u: only meaningful where the guest owns the machine, so the host asks for it in a VM, not in fake mode);
 // stdout and stderr are kept to STREAM_BYTES each and counted past it; each output to OUTPUT_BYTES.
+import { connect } from "node:net";
+import { FrameReader, WIRE, MODES, checkPath, encodeFrame, jsonFrame } from "./camelfs-wire.ts";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rmdir, rm, stat, statfs, symlink, unlink, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { dirname, join, normalize } from "node:path";
 
@@ -49,6 +52,7 @@ class Capped {
 export const PGID_FILE = ".job.pgid";
 
 export class Guest {
+  camelfsIndex?: { tree: string; entries: Record<string, unknown>[] };
   readonly repo: string;
   readonly out: string;
   private readonly root: string;
@@ -68,12 +72,143 @@ export class Guest {
 
   async handle(request: Request): Promise<unknown> {
     switch (request.op) {
+      case "camelfs_apply": return this.apply(request.jobId as string, request.timeoutMs as number);
       case "files": return this.files(request.files as { path: string; data: string; append?: boolean }[]);
       case "free": { const fs = await statfs(this.repo); return { ok: true, freeBytes: Number(fs.bavail) * Number(fs.bsize) }; }
       case "run": return this.run(request as never);
       case "collect": return this.collect(request.outputs as string[]);
       case "exit": return { ok: true };
       default: return { ok: false, error: `Unknown op ${String(request.op).slice(0, 40)}` };
+    }
+  }
+
+  private async apply(jobId: string, timeoutMs: number) {
+    const started = Date.now(), vm = process.env.CAMEL_VSOCK_CONNECT === "1";
+    let input: import("node:stream").Readable | undefined, output: import("node:stream").Writable | undefined;
+    let child: ReturnType<typeof spawn> | undefined, socket: ReturnType<typeof connect> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined, connectTimer: ReturnType<typeof setTimeout> | undefined;
+    let expired = false, temp = 0, files = 0;
+    const check = () => { if (expired) throw new Error("camelFS apply timed out"); };
+    const mode = (value: unknown) => { if (!MODES.includes(value as never)) throw new Error("invalid mode"); return value as string; };
+    const size = (value: unknown) => { if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error("invalid size"); return value as number; };
+    const hex = (value: unknown) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+    // The fake repo itself is a symlink to its disk; only components below it are traversed.
+    const target = async (path: string) => {
+      const parts = checkPath(path).split("/"); let dir = this.repo;
+      for (const part of parts.slice(0, -1)) {
+        check(); dir = join(dir, part);
+        try { await mkdir(dir, { mode: 0o755 }); await chmod(dir, 0o755); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+        const info = await lstat(dir);
+        if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("parent is a symlink or not a directory");
+      }
+      return join(dir, parts.at(-1)!);
+    };
+    const cleanup = async (dir: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        check(); const path = join(dir, entry.name);
+        if (entry.isDirectory()) await cleanup(path);
+        else if (entry.name.startsWith(".camelfs-tmp-")) await unlink(path);
+      }
+    };
+    try {
+      const work = async () => {
+        if (vm && !(await readFile("/proc/self/mountinfo", "utf8")).split("\n").some(line => line.split(" ")[4] === "/repo")) throw new Error("the camelFS repo disk is not mounted");
+        check();
+        if (vm) {
+          child = spawn("socat", ["-", "VSOCK-CONNECT:2:5201"], { stdio: ["pipe", "pipe", "ignore"] });
+          input = child.stdout!; output = child.stdin!;
+          child.on("error", error => input!.destroy(error));
+          child.on("exit", () => input!.destroy(new Error("apply connection closed")));
+        } else {
+          socket = connect({ path: process.env.CAMEL_VSOCK_UDS + "_5201", allowHalfOpen: true }); input = socket; output = socket;
+        }
+        output.on("error", () => {});
+        const reader = new FrameReader(input);
+        // socat's spawn event does not mean vsock connected: the first header proves it.
+        connectTimer = setTimeout(() => input!.destroy(new Error("apply connect timed out after 10 s")), 10_000);
+        const next = async () => { check(); const payload = await reader.next(); if (payload === null) throw new Error("unexpected EOF in apply stream"); check(); return payload; };
+        const header = jsonFrame(await next()); clearTimeout(connectTimer);
+        if (header.v !== 1 || header.kind !== "apply" || header.jobId !== jobId || !hex(header.fromTree) || !hex(header.toTree)) throw new Error("invalid apply header or jobId");
+        const entries: Record<string, unknown>[] = [];
+        for (;;) {
+          const frame = jsonFrame(await next());
+          if (frame.indexEnd === true) { if (frame.count !== entries.length) throw new Error("index count mismatch"); break; }
+          if (!Array.isArray(frame.index)) throw new Error("expected index frame");
+          for (const entry of frame.index) {
+            if (!entry || typeof entry !== "object") throw new Error("invalid index entry");
+            checkPath(entry.path); mode(entry.mode); size(entry.size);
+            if (!hex(entry.sha1)) throw new Error("invalid index sha1");
+            if (entries.length >= 1_000_000) throw new Error("index exceeds 1000000 entries");
+            entries.push({ path: entry.path, mode: entry.mode, sha1: entry.sha1, size: entry.size });
+          }
+        }
+        await cleanup(this.repo);
+        for (;;) {
+          const op = jsonFrame(await next());
+          if (op.end === true) { if (op.error !== undefined) throw new Error(String(op.error)); break; }
+          const path = await target(op.path as string); check();
+          if (op.op === "put") {
+            if (mode(op.mode) === "120000") throw new Error("mode 120000 is invalid with put");
+            let remaining = size(op.size);
+            let temporary: string, file;
+            // Exclusive creation avoids following a leftover or daemon-supplied temporary symlink.
+            for (;;) {
+              temporary = join(dirname(path), `.camelfs-tmp-${++temp}`);
+              if (temporary === path) continue;
+              try { file = await open(temporary, "wx", 0o600); break; }
+              catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+            }
+            try {
+              while (remaining) {
+                const bytes = await next();
+                if (!bytes.length || bytes.length > WIRE.rawMax || bytes.length > remaining) throw new Error("raw frame crosses declared size or exceeds rawMax");
+                let offset = 0;
+                while (offset < bytes.length) { check(); const written = await file.write(bytes, offset); offset += written.bytesWritten; }
+                remaining -= bytes.length;
+              }
+              check(); await file.sync(); await file.close(); check();
+              await rename(temporary, path); await chmod(path, op.mode === "100755" ? 0o755 : 0o644);
+            } finally { await file.close(); await unlink(temporary).catch(() => {}); }
+          } else if (op.op === "del") {
+            await unlink(path);
+            let dir = dirname(path);
+            while (dir !== this.repo) {
+              try { await rmdir(dir); } catch (error) { if (["ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code!)) break; throw error; }
+              dir = dirname(dir);
+            }
+          } else if (op.op === "link") {
+            if (typeof op.target !== "string" || Buffer.byteLength(op.target) > 4096 || op.target.includes("\0")) throw new Error("invalid link target");
+            await unlink(path).catch(error => { if (error.code !== "ENOENT") throw error; }); await symlink(op.target, path);
+          } else if (op.op === "mode") {
+            if (mode(op.mode) === "120000" || (await lstat(path)).isSymbolicLink()) throw new Error("mode cannot change a symlink");
+            await chmod(path, op.mode === "100755" ? 0o755 : 0o644);
+          } else throw new Error("unknown apply op");
+          files++;
+        }
+        const indexed: Record<string, unknown>[] = [];
+        for (const entry of entries) {
+          const info = await lstat(await target(entry.path as string), { bigint: true });
+          indexed.push({ ...entry, ino: String(info.ino), size: String(info.size), mtimeNs: String(info.mtimeNs), ctimeNs: String(info.ctimeNs) });
+        }
+        check(); const index = { tree: header.toTree as string, entries: indexed };
+        const dir = vm ? "/run/camelfs" : join(this.root, ".camelfs");
+        await mkdir(dir, { recursive: true }); check(); await writeFile(join(dir, "index.json"), JSON.stringify(index)); check();
+        this.camelfsIndex = index;
+        return { ok: true, applyMs: Date.now() - started, files, index };
+      };
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { expired = true; reject(new Error("camelFS apply timed out")); }, Math.max(1, timeoutMs));
+      });
+      const result = await Promise.race([work(), deadline]);
+      if (output && !output.destroyed) await new Promise<void>(resolve => output!.end(encodeFrame({ applied: true, applyMs: result.applyMs }), resolve));
+      return result;
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      if (output && !output.destroyed) await new Promise<void>(resolve => output!.end(encodeFrame({ applied: false, error: message }), resolve));
+      return { ok: false, error: message };
+    } finally {
+      clearTimeout(timer); clearTimeout(connectTimer);
+      input?.destroy(); child?.kill();
     }
   }
 

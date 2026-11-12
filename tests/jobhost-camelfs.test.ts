@@ -1,13 +1,15 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { createServer as createNetServer } from "node:net";
+import { encodeFrame } from "../jobhost/camelfs-wire.ts";
 import { createServer, request } from "node:http";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
 import { HostAgent } from "../jobhost/agent.ts";
 import { camelfsdClient, serveImportProxy, type Camelfsd } from "../jobhost/camelfsd.ts";
@@ -28,7 +30,21 @@ async function daemon(t: TestContext, mode = "ok") {
       if (mode === "fail") { res.writeHead(500); res.end(JSON.stringify({ error: "mount_failed", detail: "boom" })); return; }
       const image = await mkdtemp(join(dir, "image-"));
       await writeFile(join(image, "hello.txt"), "hello from camelFS\n");
-      res.end(JSON.stringify({ image, warm: true, root: "root-1", tree: "tree-1", mountMs: 12, hydrating: false, ...(mode === "apply" ? { apply: null } : {}) }));
+      const { vsock, jobId } = JSON.parse(Buffer.concat(chunks).toString());
+      if (vsock) {
+        await mkdir(dirname(vsock), { recursive: true });
+        const apply = createNetServer(socket => {
+          socket.on("error", () => {}); socket.resume();
+          socket.write(Buffer.concat([
+            encodeFrame({ v: 1, kind: "apply", jobId, fromTree: "a".repeat(40), toTree: "b".repeat(40) }),
+            encodeFrame({ indexEnd: true, count: 0 }), encodeFrame({ end: true }),
+          ]));
+          socket.on("end", () => socket.end());
+        });
+        await new Promise<void>(resolve => apply.listen(vsock + "_5201", resolve));
+        t.after(() => new Promise<void>(resolve => apply.close(() => resolve())));
+      }
+      res.end(JSON.stringify({ image, warm: true, root: "root-1", tree: "tree-1", mountMs: 12, hydrating: false }));
     } else if (req.method === "DELETE") res.end(JSON.stringify({ released: true, promoted: false }));
     else if (req.url === "/v0/health") {
       if (mode === "health-fail") { res.writeHead(503); res.end(JSON.stringify({ error: "unavailable", detail: "store offline" })); }
@@ -82,7 +98,10 @@ test("a camelFS job mounts its repo, skips sync, reports timings and releases af
   if (!result.ok) return;
   assert.equal(result.exitCode, 0);
   assert.equal(base64Text(result.stdout.data), "hello from camelFS\n");
-  assert.deepEqual(result.camelfs, { warm: true, mountMs: 12, applyMs: 0 });
+  assert.equal(result.camelfs?.warm, true);
+  assert.equal(result.camelfs?.mountMs, 12);
+  assert.equal(typeof result.camelfs?.applyMs, "number");
+  assert.equal(ops[0], "camelfs_apply");
   assert.equal(ops.includes("files"), false);
   assert.deepEqual(d.calls.map(call => [call.method, call.path]), [["POST", "/v0/mounts"], ["DELETE", "/v0/mounts/job-1"]]);
   assert.deepEqual(JSON.parse(d.calls[0]!.body), { jobId: "job-1", lineage: "a:b", tree: "tree-1", vsock: join(d.dir, "job-1.vsock") });
@@ -91,7 +110,6 @@ test("a camelFS job mounts its repo, skips sync, reports timings and releases af
 
 for (const [mode, commit, message, methods] of [
   ["ok", true, "camelFS checkpoints are not supported on this host yet", []],
-  ["apply", false, "This camelFS tree needs a guest-side apply, not supported on this host yet", ["POST", "DELETE"]],
   ["fail", false, "camelfsd 500: mount_failed: boom", ["POST", "DELETE"]],
 ] as const) test(`camelFS refuses ${commit ? "checkpoints" : mode}`, async t => {
   const d = await daemon(t, mode), h = await host(t, d.client);
