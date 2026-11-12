@@ -169,36 +169,48 @@ alarm with the runner, #815) → `receiveAgentMessage` → the owner's notificat
 20, #824) → `<workflow_notification>`. Delegation already has every one of those parts for children, hardened by
 #848 and #858. The workflow becomes, to its owner, a background child.
 
-**Registration.** `workflow_start` writes a child row in the owner's children table before it creates the workflow
-(the tool runs in the owner, so this is the owner's own storage, in the tool call's commit as `delegate` does):
-`DelegatedChild { id: wf_id, key: wf_id, requestId: "workflow:1", parentRequestId: run.id, toolCallId, name,
-background: true, made: true, workflow: true, status: "running", depth: place.depth + 1 }`. `workflow: true` is a new
-flag on the row; it keeps `cancelRemote` off the agent path (abort goes to `WORKFLOWS`) and picks the rendering. An
-API-started workflow has no owner and registers nothing, as now.
+(wf-exchange, who implements this cut, proposed the shape below; it is adopted with one change, the budget and payer
+stops, explained there. Tracked in #859.)
 
-**Ending.** The workflow object keeps a `ChildOutbox` (ending-outbox.ts, unchanged) in its own SQLite instead of
-`WorkflowNotices`. When the runner reaches a terminal status, `WorkflowObject.told()` becomes: in the same
-transaction that wrote the status, `outbox.stageEnding(owner, { agentId: wf_id, requestId, record })`; the alarm
-flushes it (`outbox.flush()` → `AGENTS.getByName(owner).receiveEnding(...)`), with the outbox's backoff, 7-day give-up
-and `gone` answer. The one-alarm seam stays (`alarmAt(runner, outbox.deadline(), forks.retryAt())`). The record:
+**Registration.** `workflow_start` from an agent writes a child row in the owner's children table before it creates
+the workflow (the tool runs in the owner, so this is the owner's own storage, in the tool call's commit as `delegate`
+does): `DelegatedChild { id: wf_id, key: wf_id, requestId: <the owner's run id>, parentRequestId: run.id, toolCallId,
+name, background: true, made: true, workflow: true, status: "running", depth: place.depth + 1 }`, so the workflow is
+an ordinary background child. `workflow: true` is a new flag on the row; it keeps `cancelRemote` off the agent path
+(abort goes to `WORKFLOWS`) and picks the rendering. An API-started workflow has no owner and registers nothing, as now.
+
+**Ending.** The workflow object keeps a `ChildOutbox` (ending-outbox.ts, unchanged) in its own SQLite on its single
+alarm, instead of `WorkflowNotices`. A terminal end (completed, failed, aborted) stages a `ChildEnding` in the same
+commit as the end: `WorkflowObject.told()` becomes `outbox.stageEnding(owner, { agentId: wf_id, requestId, record })`
+inside the status transaction. On wake, a terminal end not yet staged is staged then (`workflow_state.ending_staged`
+records it; the outbox's `INSERT OR IGNORE` on the request id makes a repeat harmless). The alarm flushes
+(`outbox.flush()` → `AGENTS.getByName(owner).receiveEnding(...)`), with the outbox's backoff, 7-day give-up and `gone`
+answer. The one-alarm seam stays (`alarmAt(runner, outbox.deadline(), forks.retryAt())`). The record:
 
 ```ts
 record: { state: "completed", status: "completed" | "failed" | "aborted",
-  outcome: { result: { reply: <one line>, output: { workflowId, status, result?, error?, fault?: { code, message }, counts, spentUsd, budgetUsd }, usage: { costUsd: spent } },
+  outcome: { result: { reply: <one line>, output: { workflowId, status, result?, error?, fault?: { code, message }, counts, spentUsd, budgetUsd }, usage: { costUsd: 0 } },
              error?: <fault or error message> } }
 ```
 
-`reply` is the model-facing line, exact: `Workflow <name> completed.` / `Workflow <name> failed (<code>): <message>` /
-`Workflow <name> was aborted.` The result or fault message in `output` is cut at 16,000 characters as today
-(`workflow_status` has it whole).
+`usage.costUsd` is 0: the children bill their own usage and already roll up into the owner (#846), so the row's
+`spent` must not count it again. `reply` is the model-facing line, exact: `Workflow <name> completed.` /
+`Workflow <name> failed (<code>): <message>` / `Workflow <name> was aborted.` The result or fault message in `output`
+is cut at 16,000 characters as today (`workflow_status` has it whole).
 
-**Stops.** `budget_exhausted` and `payer_exhausted` are not endings but the owner must hear them. They end the row's
-current *attempt*: the same ending record with `status: "stopped"`, `outcome.result.stopped: "budget_exhausted" |
-"payer_exhausted"`. `workflow_budget` (and `workflow_resume`) re-open the row as the next attempt
-(`requestId: "workflow:<n+1>"`, `attempt: n+1`), which delegation already supports (`resumedRun`, `attempt`). A
-self-resumed payer stop re-opens the row from the workflow side: the next stage carries `attempt: n+1` and the owner's
-`resumedRun` adopts it. `capacity_refused` and a user pause tell the owner nothing (one waits for the account, the
-other is the owner's own act); `workflow_status` shows both.
+**Stops.** wf-exchange proposed every non-terminal stop (budget, payer, capacity) as `receiveProgress`. Progress rides
+on the owner's *next tool result* (delegation-progress.ts, `workers-progress-every-result`); it never wakes an idle
+owner. An owner that ended its turn to wait for the notification (#855 tells it to) would then never hear that its
+workflow stopped for budget, and the workflow would sit until the owner's next unrelated turn. So:
+- `capacity_refused` and a user pause are **progress** (nothing for the owner to do; one waits for the account, the
+  other is the owner's own act). `workflow_status` shows both.
+- `budget_exhausted` and `payer_exhausted` **end the row's current attempt**: the same ending record with
+  `status: "stopped"`, `outcome.result.stopped: "budget_exhausted" | "payer_exhausted"`, which gives the owner a turn
+  through the ordinary child notification. `workflow_budget` (and `workflow_resume`) re-open the row as the next attempt
+  (`attempt: n+1`, request id `<run id>:<n+1>`), which delegation already supports (`resumedRun`, `attempt`). A
+  self-resumed payer stop re-opens the row from the workflow side: its next stage carries `attempt: n+1` and the
+  owner's `resumedRun` adopts it. If `resumedRun` does not fit, the fallback is one row per stop (`key: wf_id:n`),
+  never progress.
 
 **Owner side.** `receiveEnding` → `complete()` → `finishChild()` → `host.notify()` → the ending outbox-and-batch of
 `delegation-notifications.ts`: waits while the owner is busy, batches with other children's endings, dedupes on
@@ -207,10 +219,18 @@ other is the owner's own act); `workflow_status` shows both.
 the `<workflow_notification workflow= name= status=>` block name (prompts and evals know it) but produces it from the
 row's `workflow` flag, through the same `noticeBlock` as `<agent_notification>`.
 
-**Deleted.** `workflow-notices.ts` and its test; `NoticeSummary`, `noticeEvent`, `workflowNext` (its two surviving
-lines move into `workflow-tools.ts` as `next` on the brief: "Its budget is spent: raise it with workflow_budget." and
-"To change it, abort it and start a new workflow: finished results are reused."); `workflow_notice_state` and
-`workflow_notices` tables (contract, next release); `receiveAgentMessage`'s `metadata.kind === "workflow"` handling.
+**Rolling deploy.** A workflow started before the deploy has no child row on its owner, so `receiveEnding` answers
+`accepted: false`. For that answer only, the workflow falls back **once** to the old notice (`WorkflowNotices.check`
+of the ending, delivered through `receiveAgentMessage` as today) and drops the outbox row; a throw stays a retry. So
+`workflow-notices.ts` survives this deploy as the fallback only: its `stage`, `gate_opened`, `phase` and pause events
+are removed with their features, and a later contract PR deletes the file, its test and the `workflow_notice_state`
+and `workflow_notices` tables.
+
+**Deleted now.** `NoticeSummary`'s pause/phase fields, `noticeEvent`'s stop and phase branches, `workflowNext` (its
+two surviving lines move into `workflow-tools.ts` as `next` on the brief: "Its budget is spent: raise it with
+workflow_budget." and "To change it, abort it and start a new workflow: finished results are reused."); the
+`workflowNotice` special cases in `delegation-notifications.ts`. `receiveAgentMessage`'s `metadata.kind === "workflow"`
+handling goes with the contract PR.
 
 **Facts kept.** Finished (with result), failed or fault (with code and message), aborted; spend and counts; the
 budget/payer stop. Lost on purpose: `phase` and `gate_opened` (their features), `pauseReason: user`.
@@ -228,8 +248,8 @@ goes 1 → 2; the version is stamped on `workflow_state`), once, in one transact
 | A script that calls `gate`/`sleep`/`phase` but has no such effect pending | Nothing now; the next step replays the script against the new prelude and faults `script_error` (ReferenceError), which is the same ending by the normal path |
 | `status = paused`, `pause_reason` a fault code | Ended `failed` with that fault (a fault is an ending now) |
 | `revision > 1` and running | Keeps running: the journal has every result; the current code is what it replays. No edit can follow, which is the new rule |
-| Rows in `workflow_notices` not yet taken | Converted once: a row whose event is an ending becomes an outbox ending; the rest are dropped and logged `workflow_notice_dropped reason=retired` |
-| The owner has no child row for it (every pre-deploy workflow) | `receiveEnding` answers `accepted: false` for an unknown run, which the outbox drops after logging. So pre-deploy workflows end quietly. To avoid that silence for the pilot's few live workflows, the migration also calls `AGENTS.getByName(owner).adoptWorkflow(row)` once to write the child row (a small RPC in PR-C; if it fails the ending is still dropped, never retried forever) |
+| Rows in `workflow_notices` not yet taken | Delivered by the old path, which stays this release as the fallback; rows whose event is a removed one (`phase`, `gate_opened`, a pause) are dropped and logged `workflow_notice_dropped reason=retired` |
+| The owner has no child row for it (every pre-deploy workflow) | `receiveEnding` answers `accepted: false`; the workflow falls back once to the old notice (cut 3, "Rolling deploy"), so the owner still hears the ending. No new RPC |
 
 Nothing loops: every branch either ends the workflow or leaves it on the normal path, and `runAlarm`'s loop guard
 (#834, #835) is unchanged.
@@ -312,14 +332,16 @@ Files are named so two engineers overlap only in `workflow-runner.ts`, `workflow
 
 ### PR-C: endings on the delegation path — merges last, rebases on A and B
 
-- `src/workflow-notices.ts` and `test/workflow-notices.test.ts` **deleted**; `src/workflow-object.ts` region: the
-  `notices` field and its constructor block, `told()` → `stageEnding`, the alarm's `notices` concern → `outbox.flush()`,
-  `alarmAt(…, outbox.deadline(), …)`; the one-off conversion of `workflow_notices` rows.
-- `src/delegation.ts` (`DelegatedChild.workflow`, `cancelRemote` → `WORKFLOWS.abort`, `resumedRun` for
-  `workflow:<n>`), `src/delegation-notifications.ts` (delete the workflow special cases), `src/sender.ts` (block from
-  the flag), `src/agent-runtime.ts` (`adoptWorkflow` RPC; `receiveAgentMessage` loses the workflow kind),
-  `src/workflow-tools.ts` region: `workflow_start` registers the row, `workflow_budget`/`workflow_resume` re-open it;
-  `workflowNext`'s two lines move here.
+- `src/workflow-notices.ts` cut down to the ending-only fallback (its test likewise); `src/workflow-object.ts`
+  region: `ChildOutbox` beside the trimmed notices, `told()` → `stageEnding` in the status transaction plus the
+  on-wake stage, the alarm's `notices` concern → `outbox.flush()`, `alarmAt(…, outbox.deadline(), …)`, the
+  `accepted: false` fallback.
+- `src/delegation.ts` (`DelegatedChild.workflow`, `cancelRemote` → `WORKFLOWS.abort`, `resumedRun` for the stop
+  attempts), `src/delegation-notifications.ts` (delete the workflow special cases), `src/sender.ts` (block from the
+  flag), `src/workflow-tools.ts` region: `workflow_start` registers the row, `workflow_budget`/`workflow_resume` re-open
+  it; `workflowNext`'s two lines move here.
+- Contract PR (one release later): delete `workflow-notices.ts`, its test and tables, and `receiveAgentMessage`'s
+  workflow kind.
 - Tests: `delegation-endings.test.ts`, `delegation-notifications.test.ts` (workflow cases rewritten as child endings),
   `workflow-object.test.ts` (the ending is staged in the status transaction), `workflows-e2e.integration.ts` (the owner
   hears completion once, and a budget stop then a resume as two attempts).
