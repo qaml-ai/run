@@ -228,24 +228,37 @@ The main way a workflow starts is not a person writing a script: an agent is
 given a task, decides it warrants many sub-agents, writes the workflow, and
 steers it. Every agent with [`delegate` settings](multi-agent.md) on a runtime
 with workflows enabled has the `workflows` builtin: `workflow_start`,
-`workflow_status` (with a `waitSeconds`), `workflow_items`, `workflow_pause`, `workflow_resume`, `workflow_abort` and `workflow_budget`.
-The agent that starts a workflow owns it: only its tools reach it. It need
-not poll: when the workflow ends (`completed`, `failed`, `aborted`), stops
-(`budget_exhausted`, or paused for its payer or capacity), the agent gets a
-message of its own, a turn, with a block only the runtime writes:
+`workflow_status` (with a `waitSeconds`), `workflow_items`, `workflow_pause`,
+`workflow_resume`, `workflow_abort` and `workflow_budget`.
+The agent that starts a workflow owns it: only its tools reach it. To its owner a
+workflow is a background child, like one `spawn_agent` starts: it is in the agent's
+`list_agents`, and its ending comes the way a sub-agent's does. It need not poll:
+when the workflow ends (`completed`, `failed`, `aborted`) or stops for its budget
+or its payer's credit, the agent gets a message of its own, a turn, with a block
+only the runtime writes: a line, then the workflow's facts.
 
 ```
-<workflow_notification workflow="wf_…" name="port" status="completed" event="completed">
-{"workflowId":"wf_…","status":"completed","counts":{"done":41},"spentUsd":12.4,"budgetUsd":20,"result":…}
+<workflow_notification workflow="wf_…" name="port" status="completed">
+Workflow port completed.
+{"workflowId":"wf_…","status":"completed","result":…,"counts":{"done":41},"spentUsd":12.4,"budgetUsd":20}
 </workflow_notification>
 ```
 
-Notifications take turns from the agent's wake budget, as its sub-agents'
-notifications do. They never fill the agent's request queue: while the agent
-is busy they wait in its own outbox, and the next one to land brings the
-others with it, one block per workflow (that workflow's latest notice; an
-earlier one it replaces is folded in), up to 20 workflows a turn. `workflow_status` and `workflow_items` read more when it
-needs to. Its budget may
+A failure reads `Workflow port failed (<code>): <message>`. A stop has `status="paused"`
+and says what it waits for: a spent budget waits for `workflow_budget`; a payer out of
+credit is tried again by itself (`workflow_resume` tries at once), and the agent hears it
+once, not at every retry. Each stop and the ending that follows
+it are separate attempts of the same child, so the agent hears each once. A person's
+pause, and a wait for the account's capacity, tell the agent nothing. A result longer
+than 16,000 characters is cut; `workflow_status` has it whole.
+
+Endings are durable: the workflow writes its ending with its status and delivers it
+until the agent takes it. The agent takes it once, however often it comes. Notifications
+take turns from the agent's wake budget, and while the agent is busy they wait and then
+land together with its sub-agents' endings, as [sub-agent notifications](multi-agent.md)
+do. A workflow is not stopped when its owner's turn is stopped: `workflow_abort` (or
+`interrupt_agent` on it) stops it. `send_message` cannot reach one. `workflow_status`
+and `workflow_items` read more when the agent needs to. Its budget may
 not exceed the least of the agent's remaining spend limit and `maxBudgetUsd`
 (default $100); above that, a person starts it through the API.
 

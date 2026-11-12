@@ -119,3 +119,10 @@ export const canonical = (value: unknown): string =>
 export type BillingReceipt = TurnReceipt;
 
 export const reqKey = (id: string) => `request:${id}`;
+
+/**
+ * A request that takes one of an agent's MAX_OPEN_REQUESTS slots: not ended, and not a runtime notice staged while the
+ * agent was busy (a child's or workflow's ending waiting for its turn, `noticeQueued`). Those land together in the next
+ * turn; counting them let many workflows ending at once refuse a person's prompt (#824).
+ */
+export const openRequest = (record: { state?: string; noticeQueued?: boolean }) => record.state !== "completed" && !record.noticeQueued;

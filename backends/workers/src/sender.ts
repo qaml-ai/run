@@ -82,15 +82,11 @@ const attribute = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_-
 function noticeBlock(source: MessageSource, metadata: Record<string, unknown> | undefined, parts: Part[]): Part[] {
   const text = escapeParts(parts).flatMap(part => part.type === "text" && part.text !== undefined ? [part.text] : []).join("\n");
   if (metadata?.kind === "message") return [{ type: "text", text: `<agent_message name="${attribute(source.name)}">\n${text}\n</agent_message>` }];
-  // A workflow the agent owns reporting a change (it ended, paused, or finished a phase): workflow-object.ts.
-  // Other workflows' notices that waited for this turn ride in it (delegation-notifications.ts): a block each.
-  if (metadata?.kind === "workflow") {
-    const workflowBlock = (meta: Record<string, unknown>, name: unknown, body: string) => `<workflow_notification workflow="${attribute(meta.workflowId)}" name="${attribute(name)}" status="${attribute(meta.status)}" event="${attribute(meta.event)}">\n${body}\n</workflow_notification>`;
-    const carried = Array.isArray(metadata.batch) ? metadata.batch as BatchedEnding[] : [];
-    return [{ type: "text", text: [workflowBlock(metadata, source.name, text), ...carried.map(other => workflowBlock(other, other.name, escapeMarkers(String(other.text ?? ""))))].join("\n") }];
-  }
-  const block = (name: unknown, meta: Record<string, unknown> | undefined, body: string) =>
-    `<agent_notification name="${attribute(name)}" status="${attribute(meta?.status)}"${runAttributes(meta)}>\n${body}\n</agent_notification>`;
+  // A child's ending: a sub-agent's as <agent_notification>, a workflow's (its row's `workflow` flag, the Workers
+  // backend's delegation.ts) as <workflow_notification>, which prompts and evals know by that name.
+  const block = (name: unknown, meta: Record<string, unknown> | undefined, body: string) => meta?.workflow === true
+    ? `<workflow_notification workflow="${attribute(meta.workflowId)}" name="${attribute(name)}" status="${attribute(meta.status)}">\n${body}\n</workflow_notification>`
+    : `<agent_notification name="${attribute(name)}" status="${attribute(meta?.status)}"${runAttributes(meta)}>\n${body}\n</agent_notification>`;
   // Endings of other sub-agents that rode in this turn (a batch, multi-agent.ts BatchedEnding): a block each.
   const batch = Array.isArray(metadata?.batch) ? metadata.batch as BatchedEnding[] : [];
   return [{ type: "text", text: [block(source.name, metadata, text), ...batch.map(ending => block(ending.name, ending, escapeMarkers(String(ending.text ?? ""))))].join("\n") }];

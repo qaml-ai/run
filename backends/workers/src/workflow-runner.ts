@@ -249,6 +249,11 @@ export interface RunnerOptions {
   now?: () => number;
   /** The object's one alarm: `set(at)` arms it, `set(null)` clears it. */
   alarm?: { set(at: number | null): void | Promise<void> };
+  /**
+   * A status was written, inside the transaction that wrote it (synchronous; it must not await): the object stages what
+   * the owner hears of it there, so the status and its ending commit together (workflow-endings.ts).
+   */
+  onStatus?(status: WorkflowStatus): void;
 }
 
 export class WorkflowRunner {
@@ -391,6 +396,7 @@ export class WorkflowRunner {
       const delay = reason !== "payer_exhausted" ? WORKFLOW_LIMITS.capacityRetryMs : Math.min(WORKFLOW_LIMITS.payerRetryMaxMs, WORKFLOW_LIMITS.payerRetryMs * 2 ** tries);
       this.sql.exec("UPDATE workflow_state SET resume_at = ? WHERE id = 1", this.now() + delay);
     } else this.sql.exec("UPDATE workflow_state SET resume_at = NULL WHERE id = 1");
+    this.options.onStatus?.(status);
   }
 
   private serial<T>(work: () => Promise<T>): Promise<T> {

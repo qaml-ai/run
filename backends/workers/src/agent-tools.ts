@@ -501,6 +501,12 @@ export function createHarness(this: AgentRuntime): PiHarness {
             ...(typeof workflowSettings === "object" && workflowSettings?.maxBudgetUsd !== undefined ? { maxBudgetUsd: workflowSettings.maxBudgetUsd } : {}),
             remaining: async () => { const spend = await this.agentSpend(await this.config()); return spend ? Math.max(0, spend.usd - spend.spent) : Infinity; },
             jobRun: jobDriver(this.env as never).ok,
+            // Its workflows are background children of its (workflow-endings.ts): their endings come as a child's.
+            children: {
+              register: (workflow, api) => this.delegation.registerWorkflow(workflow, api as never),
+              reopen: id => this.delegation.reopenWorkflow(id),
+              forget: id => this.delegation.forgetWorkflow(id),
+            },
           }) });
         }
         // The jobs builtin (agent-jobs.ts): one command in a container of its own. On the tenants that have workflows and

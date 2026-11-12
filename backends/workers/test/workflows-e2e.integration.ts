@@ -49,21 +49,26 @@ const verdict = await agent("CRITIC: check " + JSON.stringify(reviews), { key: "
 return { reviews, verdict, files: args.files };`;
 
 test("an agent starts a workflow of keyed workers and a critic, owned by the workflow, and reports its result; a spent budget pauses one until a raise", { timeout: 600_000 }, async t => {
-  let workflowId: string | undefined;
+  let workflowId: string | undefined, budgetWorkflowId: string | undefined;
   const model = provider(body => {
     const system = systemOf(body), user = lastUser(body), last = body.messages.at(-1);
     if (system.includes("You are a worker in a workflow")) return { content: `reviewed ${user.replace("REVIEW ", "")}` };
     if (system.includes("You are a critic in a workflow")) return { tool: { name: "final_output", args: { ok: true }, id: "verdict" } };
     if (user.includes("EXPENSIVE")) return { content: "costly answer", tokens: 600 };
     if (system.includes("You are a sub-agent")) return { content: `plain answer to ${user}` };
-    // The orchestrating agent: start the workflow and end its turn; it never polls. Its workflow's notifications
-    // come as messages of their own, each a turn: a pause is noted, the ending reported.
+    // The orchestrating agent: start the workflow and end its turn; it never polls. Its workflow's ending comes as a
+    // child's (workflow-endings.ts), a <workflow_notification> in a turn of its own: its line, then its facts as JSON.
+    if (last.role === "tool" && user.includes("<workflow_notification")) return { content: "RAISED" };
     if (user.includes("<workflow_notification")) {
-      // Notices that waited while it was busy come together, a block per workflow: any ending is reported.
-      const notices = [...user.matchAll(/<workflow_notification[^>]*status="([a-z_]+)"[^>]*event="([a-z_]+)"[^>]*>\n([\s\S]*?)\n<\/workflow_notification>/g)];
+      const notices = [...user.matchAll(/<workflow_notification workflow="([A-Za-z0-9_-]+)"[^>]*status="([a-z_]+)">\n([^\n]*)\n([\s\S]*?)\n<\/workflow_notification>/g)];
+      // A stop for its budget: raise it (workflow_budget), and the workflow goes on as the row's next attempt.
+      const stopped = notices.find(notice => notice[2] === "paused");
+      if (stopped) return { tool: { name: "workflow_budget", args: { workflowId: stopped[1], usd: 5 }, id: `raise-${stopped[1]}` } };
       const ending = notices.find(notice => notice[2] === "completed");
-      return { content: ending ? `REPORT ${ending[3]}` : `NOTED ${notices.map(notice => notice[2]).join(",")}` };
+      return { content: ending ? `REPORT ${ending[4]}` : `NOTED ${notices.map(notice => notice[2]).join(",")}` };
     }
+    if (user.includes("BUDGETED") && last.role === "tool") { budgetWorkflowId = JSON.parse(textOf(last)).workflowId; return { content: "started" }; }
+    if (user.includes("BUDGETED")) return { tool: { name: "workflow_start", args: { script: `const a = await agent("EXPENSIVE one", { key: "one", class: "fast" }); const b = await agent("cheap two", { key: "two", class: "fast" }); return [a, b];`, budgetUsd: 0.5, concurrency: 1, name: "budgeted" }, id: "start-budgeted" } };
     if (last.role === "tool") { workflowId = JSON.parse(textOf(last)).workflowId; return { content: "started" }; }
     return { tool: { name: "workflow_start", args: { script: SCRIPT, args: { files: 3 }, budgetUsd: 1, name: "review three" }, id: "start" } };
   });
@@ -95,18 +100,19 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
     const requests = (await ok(`/v1/agents/${agent.id}`)).requests as { id: string; state: string; outcome?: { result?: { reply?: string } } }[];
     return requests.find(request => request.state === "completed" && String(request.outcome?.result?.reply ?? "").startsWith("REPORT ")) ?? false;
   }, "the agent's report from its notification");
-  assert.match(reportRun.id, new RegExp(`^${workflowId}_n\\d+$`), "the notice's request is the workflow's");
+  // The notification's request is the workflow child's first (and only) attempt's.
+  assert.equal(reportRun.id, `child_${workflowId}_a000001`);
   const reply = String(reportRun.outcome!.result!.reply);
   const reported = JSON.parse(reply.slice("REPORT ".length));
   assert.equal(reported.status, "completed", reply);
   assert.deepEqual(reported.result, { reviews: ["reviewed a", "reviewed b", "reviewed c"], verdict: { ok: true }, files: 3 });
-  // It never asked for the workflow's status: everything it knew came in notifications.
+  // It never asked for the workflow's status: everything it knew came in its notification.
   const asked = model.bodies.flatMap(body => (body.messages as any[]).flatMap(message => (message.tool_calls ?? []).map((call: any) => call.function?.name)));
   assert.ok(!asked.includes("workflow_status"), JSON.stringify(asked));
-  const replies = ((await ok(`/v1/agents/${agent.id}`)).requests as { id: string; outcome?: { result?: { reply?: string } } }[]).filter(request => request.id.startsWith(`${workflowId}_n`)).map(request => request.outcome?.result?.reply);
-  // A notice that came while the agent was still busy folds into the ending's turn (one turn, the latest state).
-  // (A carried or folded notice's own request has no reply: it landed in another one's turn.)
-  assert.ok(replies.every(reply => reply === undefined || /^(NOTED|REPORT) /.test(String(reply))), JSON.stringify(replies));
+  // The owner heard it once: one notification, no other turn of the workflow's.
+  const notified = ((await ok(`/v1/agents/${agent.id}`)).requests as { id: string }[]).filter(request => request.id.startsWith(`child_${workflowId}`));
+  assert.deepEqual(notified.map(request => request.id), [`child_${workflowId}_a000001`]);
+
 
   // The workflow, through the public API: completed, its four effects done, its spend in its ledger.
   const workflow = await ok(`/v1/workflows/${workflowId}`);
@@ -151,4 +157,17 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   const finished = await until(async () => { const value = await ok(`/v1/workflows/${small.id}`); return value.status === "completed" && value; }, "the resumed workflow", 90_000,
     async () => ({ workflow: await ok(`/v1/workflows/${small.id}`), items: await ok(`/v1/workflows/${small.id}/items`) }));
   assert.deepEqual(finished.result, ["costly answer", "plain answer to cheap two"]);
+  // An agent's workflow that stops for its budget: the owner hears the stop (its row's first attempt, status paused),
+  // raises the budget with workflow_budget, and hears the ending as the row's second attempt. Two turns, in order.
+  const budgetAgent = await ok("/v1/agents", { model: "wf-fixture/wf-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
+  await ok(`/v1/agents/${budgetAgent.id}/prompt`, { text: "BUDGETED go" });
+  const budgetTurns = await until(async () => {
+    const requests = ((await ok(`/v1/agents/${budgetAgent.id}`)).requests as { id: string; state: string; outcome?: { result?: { reply?: string } } }[]).filter(request => budgetWorkflowId && request.id.startsWith(`child_${budgetWorkflowId}_a`));
+    return requests.length === 2 && requests.every(request => request.state === "completed") && requests;
+  }, "the budget stop and the ending", 180_000, async () => ({ workflow: budgetWorkflowId && await ok(`/v1/workflows/${budgetWorkflowId}`), requests: (await ok(`/v1/agents/${budgetAgent.id}`)).requests }));
+  assert.deepEqual(budgetTurns.map(request => [request.id, String(request.outcome?.result?.reply ?? "").split(" ")[0]]).sort(), [[`child_${budgetWorkflowId}_a000001`, "RAISED"], [`child_${budgetWorkflowId}_a000002`, "REPORT"]]);
+  const budgetReport = JSON.parse(String(budgetTurns.find(request => request.id === `child_${budgetWorkflowId}_a000002`)!.outcome!.result!.reply).slice("REPORT ".length));
+  assert.equal(budgetReport.status, "completed");
+  assert.deepEqual(budgetReport.result, ["costly answer", "plain answer to cheap two"]);
+  assert.equal((await ok(`/v1/workflows/${budgetWorkflowId}`)).budget.usd, 5);
 });

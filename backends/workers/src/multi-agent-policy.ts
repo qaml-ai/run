@@ -295,7 +295,8 @@ type Ended = { status?: string; error?: string; outcome?: { result?: unknown; er
 export function childStatus(record: Ended): ChildStatus {
   const result = record.outcome?.result as { code?: string; stopped?: string } | undefined;
   if (record.status === "aborted" || record.status === "cancelled" || result?.code === "aborted" || result?.code === "cancelled") return "aborted";
-  if (result?.stopped === "spend_limit") return "paused";
+  // A workflow child stopped for its budget or its payer (Workers, workflow-endings.ts): it goes on once that is resolved.
+  if (result?.stopped === "spend_limit" || record.status === "stopped") return "paused";
   if (result?.stopped === "input_required") return "input_required";
   return record.status === "completed" || record.status === "input_required" || record.status === "paused" ? record.status : "failed";
 }

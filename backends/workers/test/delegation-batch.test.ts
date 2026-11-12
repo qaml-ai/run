@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DelegationNotifications, type NotificationHost } from '../src/delegation-notifications.ts';
-import { Delegation, type DelegatedChild } from '../src/delegation.ts';
+import { Delegation, workflowRunId, type DelegatedChild } from '../src/delegation.ts';
+import { endingRecord } from '../src/workflow-endings.ts';
+import { childStatus } from '../src/multi-agent-policy.ts';
 import { renderMessage } from '../src/sender.ts';
 import { withSql } from './sql-storage.ts';
 
@@ -306,55 +308,39 @@ test('notification batches never combine different task payers or buckets', asyn
   for (const { notice } of f.submissions) assert.deepEqual(notice.metadata.batch ?? [], []);
 });
 
-const workflowNotice = (workflow: string, seq: number, status: string, event: string) => ({
-  request: { id: `${workflow}_n${seq}`, method: 'prompt' as const, params: { text: JSON.stringify({ workflowId: workflow, status, seq }), allowDisconnected: true as const, whileRunning: 'followUp' as const } },
-  notice: { source: { kind: 'agent' as const, agentId: workflow, name: `name-${workflow}` }, root: 'owner', costUsd: 0, metadata: { kind: 'workflow', workflowId: workflow, status, event } },
-});
+/** A workflow child (workflow_start) that ended or stopped, its record as its object stages it (workflow-endings.ts). */
+const workflowEnded = (id: string, name: string, summary: Parameters<typeof endingRecord>[2], attempt = 1): DelegatedChild => {
+  const record = endingRecord(id, name, summary)!;
+  return {
+    id, key: attempt === 1 ? `workflow-${id}` : `workflow-${id}:${attempt}`, requestId: workflowRunId(id, attempt), attempt, parentRequestId: 'parent-run', toolCallId: `call_${id}`, name, depth: 1, root: 'root',
+    background: true, made: true, workflow: true, outbox: true, accepted: true, createdAt: 1_000, endedAt: 21_000, status: childStatus(record), spent: 0,
+    outcome: record.outcome, ...(record.outcome?.error ? { error: record.outcome.error } : {}),
+  };
+};
 
-test("workflow notices wait in the owner's outbox while it is busy, taking no queue slot, then land in one turn: each workflow's latest once", async () => {
+test("workflow endings are child endings: they wait behind a busy owner, ride in one turn with a sub-agent's, render as <workflow_notification>, and charge nothing", async () => {
   const f = fixture();
-  const n = f.notifications();
-  // 25 workflows; wf_1 sends three notices (a phase, a gate, its ending), the others one each.
-  const sent = [workflowNotice('wf_1', 1, 'running', 'phase'), workflowNotice('wf_1', 2, 'waiting', 'gate_opened'), workflowNotice('wf_1', 3, 'completed', 'completed')];
-  for (let i = 2; i <= 25; i++) sent.push(workflowNotice(`wf_${i}`, 1, 'completed', 'completed'));
-  for (const { request, notice } of sent) assert.equal(await n.deliverMessage(request, notice), undefined, 'taken, not refused');
-  assert.equal(f.submissions.length, 0, 'the owner is busy: nothing queued as a request');
-  assert.deepEqual(f.staged, [], 'nor staged');
+  const done = await f.child(workflowEnded('wf_done', 'review', { status: 'completed', result: { ok: 1 }, counts: { done: 4 }, spent: { usd: 0.4 }, budget: { usd: 1 } }));
+  const stopped = await f.child(workflowEnded('wf_stop', 'port', { status: 'budget_exhausted', counts: { done: 2, refused: 1 }, spent: { usd: 1 }, budget: { usd: 1 } }));
+  const agent = await f.child(ended('a', 'helper', 'PR 1', 0.02));
+  for (const child of [done, stopped, agent]) await f.notifications().deliver(child);
+  assert.equal(f.submissions.length, 0, 'the owner is busy');
   f.land();
   await f.notifications().drain();
-  // One turn per WORKFLOW_NOTICE_BATCH + 1 workflows: the first carries 20 others, the next the rest.
-  assert.equal(f.submissions.length, 2);
-  // The blocks the owner reads: one per workflow, each its latest (wf_1's ending; its phase and gate folded).
-  const blocks = f.submissions.flatMap(({ notice }) => [notice.metadata, ...(notice.metadata.batch ?? [])].map((meta: any) => [meta.workflowId, meta.event]));
-  assert.equal(blocks.length, 25, JSON.stringify(blocks));
-  assert.equal(new Set(blocks.map(([workflow]) => workflow)).size, 25, 'every workflow heard, once');
-  assert.deepEqual(blocks.find(([workflow]) => workflow === 'wf_1'), ['wf_1', 'completed']);
-  assert.ok(f.submissions.every(({ notice }) => (notice.metadata.batch ?? []).length <= 20));
-  // An ending is never folded into a later notice of its workflow.
-  const g = fixture();
-  for (const { request, notice } of [workflowNotice('wf_x', 1, 'running', 'phase'), workflowNotice('wf_y', 1, 'failed', 'failed'), workflowNotice('wf_y', 2, 'running', 'phase'), workflowNotice('wf_y', 3, 'running', 'phase')])
-    await g.notifications().deliverMessage(request, notice);
-  g.land();
-  await g.notifications().drain();
-  assert.equal(g.submissions.length, 1, 'one turn, one wake');
-  assert.deepEqual(g.submissions[0]!.notice.metadata.batch.map((item: any) => item.requestId), ['wf_y_n1', 'wf_y_n3'], "wf_y's ending and its latest; its middle phase folded");
-  // One workflow alone: its first notice lands saying its latest, one block, under the first's request id.
-  const h = fixture();
-  for (const { request, notice } of [workflowNotice('wf_z', 1, 'running', 'phase'), workflowNotice('wf_z', 2, 'waiting', 'gate_opened')]) await h.notifications().deliverMessage(request, notice);
-  h.land();
-  await h.notifications().drain();
-  assert.equal(h.submissions.length, 1);
-  const [{ request: landed, notice: told }] = h.submissions;
-  assert.deepEqual([landed.id, told.metadata.event, told.metadata.batch ?? []], ['wf_z_n1', 'gate_opened', []]);
-  assert.match(landed.params.text, /"seq":2/);
-  assert.match(String(h.discarded.find(entry => entry.id === 'wf_z_n2')?.skipped), /workflow notice reached the agent already/);
-  // Sending them again (the workflow's outbox retried) changes nothing.
-  for (const { request, notice } of sent) await f.notifications().deliverMessage(request, notice);
-  await f.notifications().drain();
-  assert.equal(f.submissions.length, 2);
-  // As the model reads it: a <workflow_notification> block per workflow.
+  assert.equal(f.submissions.length, 1, 'one turn for all three');
+  assert.deepEqual(heard(f.submissions), ['child_spawn_a', 'child_wf_done_a000001', 'child_wf_stop_a000001'].sort());
   const [{ request, notice }] = f.submissions;
+  const all = [notice.metadata, ...notice.metadata.batch];
+  // A workflow's notice charges nothing: its own children billed what it spent.
+  const cost = (meta: any) => meta === notice.metadata ? notice.costUsd : meta.costUsd;
+  for (const meta of all) assert.equal(cost(meta), meta.workflow ? 0 : 0.02);
   const text = (renderMessage({ role: 'user', content: request.params.text, timestamp: 0, source: notice.source, metadata: notice.metadata } as any) as any).content[0].text as string;
-  assert.equal(text.match(/<workflow_notification workflow="/g)?.length, 1 + notice.metadata.batch.length);
-  assert.match(text, /<workflow_notification workflow="wf_1" name="name-wf_1" status="completed" event="completed">/);
+  assert.match(text, /<workflow_notification workflow="wf_done" name="review" status="completed">\nWorkflow review completed\.\n\{"workflowId":"wf_done","status":"completed","result":\{"ok":1\}/);
+  assert.match(text, /<workflow_notification workflow="wf_stop" name="port" status="paused">\nWorkflow port stopped: its budget is spent\. Raise it with workflow_budget to go on\./);
+  assert.match(text, /<agent_notification name="helper" status="completed"/);
+  assert.equal(text.match(/<workflow_notification /g)?.length, 2);
+  // Delivered again (an owner's outbox retried), nothing more lands.
+  for (const child of [done, stopped, agent]) await f.notifications().deliver(child);
+  await f.notifications().drain();
+  assert.equal(f.submissions.length, 1);
 });

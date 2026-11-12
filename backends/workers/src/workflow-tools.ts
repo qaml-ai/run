@@ -8,7 +8,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { agentOwner } from "../../../shared/owner.ts";
 import { startInput, startWorkflow, ownWorkflow, WorkflowInputError, WORKFLOW_SCRIPT_CHARS, type WorkflowStub } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
-import { shortFault, workflowNext } from "./workflow-notices.ts";
+import { shortFault } from "./workflow-endings.ts";
 
 /** The most a workflow an agent starts may spend, unless its configuration's `workflows.maxBudgetUsd` says otherwise. */
 export const DEFAULT_MAX_BUDGET_USD = 100;
@@ -27,11 +27,20 @@ export function workflowStartDescription(jobRun: boolean) {
   "When the units edit files, pass repo: your volume and commit() each fork. Do not do the units yourself. " +
   (jobRun ? "Run a single command with job_run, not a workflow. " : "") +
   "Use delegate for a few sub-agents whose answers you need in this turn. " +
-  "A workflow outlives your turn and reports back as it goes: when it ends or pauses you get a <workflow_notification> message, which only the runtime writes, so you need not poll it. You own it: you can stop it. " +
+  "A workflow outlives your turn: when it ends or stops for its budget you get a <workflow_notification> message, which only the runtime writes, so you need not poll it. You own it: you can stop it. " +
   "To change a running workflow, abort it and start a new one: finished agent() and job() results with the same arguments are reused, not paid for again. " +
   "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`. " +
   "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them. " +
   "job({ command, timeoutSeconds, at: volumeId, outputs }) runs one shell command on a copy of the volume in a container of its own and answers its exit code and output.";
+}
+/**
+ * What a stopped or failed workflow's owner can do next, as workflow_status shows it (the notification says it too).
+ * MODEL-FACING.
+ */
+export function workflowNext(view: { status?: string; fault?: unknown }): string | undefined {
+  if (view.status === "budget_exhausted") return "Its budget is spent: raise it with workflow_budget.";
+  if (view.fault) return "To change it, abort it and start a new workflow: finished results are reused.";
+  return undefined;
 }
 /** The description where the agent has no job_run. */
 export const WORKFLOW_START_DESCRIPTION = workflowStartDescription(false);
@@ -48,6 +57,16 @@ export interface WorkflowToolsHost {
   maxBudgetUsd?: number;
   /** The agent also has job_run: workflow_start says to use it for a single command. */
   jobRun?: boolean;
+  /**
+   * The agent's children table (delegation.ts): a workflow it starts is a background child of its, whose endings come
+   * as a child's. `register` writes its row before the workflow is made; `reopen` opens its next attempt once it goes
+   * on after a budget or payer stop; `forget` ends a row whose workflow was refused.
+   */
+  children?: {
+    register(workflow: { id: string; name: string; callId: string }, api: unknown): Promise<unknown>;
+    reopen(workflowId: string): Promise<unknown>;
+    forget(workflowId: string): Promise<unknown>;
+  };
 }
 
 const text = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }], structuredOutput: value as never });
@@ -65,11 +84,16 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
   const brief = (workflowId: string, view: Record<string, any>) => ({
     workflowId, status: view.status, ...(view.pauseReason ? { pauseReason: view.pauseReason } : {}),
     counts: view.counts, spent: view.spent?.usd, budget: view.budget?.usd, ...(view.result !== undefined ? { result: view.result } : {}), ...(view.error ? { error: view.error } : {}),
-    ...(view.fault ? { fault: shortFault(view.fault) } : {}), ...(workflowNext(view as never) ? { next: workflowNext(view as never) } : {}),
+    ...(view.fault ? { fault: shortFault(view.fault) } : {}), ...(workflowNext(view) ? { next: workflowNext(view) } : {}),
   });
-  const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[], run: (args: Record<string, any>, callId: string) => Promise<unknown>) =>
+  /** After workflow_budget or workflow_resume: a workflow going on after a stop is running again in the owner's list. */
+  const reopened = async (workflowId: string, view: Record<string, any>) => {
+    if (view.status === "running" || view.status === "waiting") await host.children?.reopen(workflowId);
+    return view;
+  };
+  const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[], run: (args: Record<string, any>, callId: string, api: unknown) => Promise<unknown>) =>
     defineTool({ name, description, parameters: { type: "object", properties, required, additionalProperties: false } as never, structuredOutputSchema: {}, replay: "safe",
-      execute: async (args: Record<string, unknown>, api) => text(await run(args, api.callId)) });
+      execute: async (args: Record<string, unknown>, api) => text(await run(args, api.callId, api)) });
 
   return [
     tool("workflow_start", workflowStartDescription(!!host.jobRun), {
@@ -79,12 +103,28 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       name: { type: "string", description: "A short name for it" },
       concurrency: { type: "integer", description: "Sub-agents at once, 1 to 64 (default 8)" },
       classes: { type: "object", description: "Pin a type's model class for the whole workflow, e.g. { \"worker\": \"strong\" }" },
-    }, ["script", "budgetUsd"], async (args, callId) => {
+    }, ["script", "budgetUsd"], async (args, callId, api) => {
       const cap = Math.min(host.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD, await host.remaining());
       if (typeof args.budgetUsd === "number" && args.budgetUsd > cap) throw new WorkflowInputError(`A budget above $${cap.toFixed(2)} is more than you may give a workflow: ask the person you work for to start it, or use a smaller budget`);
       const input = startInput({ script: args.script, budget: { usd: args.budgetUsd }, ...(args.args !== undefined ? { args: args.args } : {}), ...(args.name !== undefined ? { name: args.name } : {}), ...(args.concurrency !== undefined ? { concurrency: args.concurrency } : {}), ...(args.classes !== undefined ? { classes: args.classes } : {}) });
       // Keyed by the call: a replay of this call (after a restart) finds the same workflow.
-      const started = await startWorkflow(host.env, host.tenant, input, { owner: agentOwner(host.agentId), ...(host.bucket ? { bucket: host.bucket } : {}), ...(host.runtimeOrigin ? { runtimeOrigin: host.runtimeOrigin } : {}), idempotencyKey: `agent:${host.agentId}:${callId}` });
+      let registered: string | undefined;
+      const beforeCreate = host.children ? async (workflowId: string) => {
+        registered = workflowId;
+        await host.children!.register({ id: workflowId, name: typeof args.name === "string" && args.name ? args.name : workflowId, callId }, api);
+      } : undefined;
+      let started;
+      try {
+        started = await startWorkflow(host.env, host.tenant, input, { owner: agentOwner(host.agentId), ...(host.bucket ? { bucket: host.bucket } : {}), ...(host.runtimeOrigin ? { runtimeOrigin: host.runtimeOrigin } : {}), idempotencyKey: `agent:${host.agentId}:${callId}`, ...(beforeCreate ? { beforeCreate } : {}) });
+      } catch (error) {
+        // No workflow was made (refused, or its start failed before it existed): its row ends now. One that cannot be
+        // looked up stays running; interrupt_agent ends it once the workflow is known not to exist.
+        if (registered) {
+          const made = await ownWorkflow(host.env, host.tenant, registered).then(stub => !!stub, () => undefined);
+          if (made === false) await host.children!.forget(registered).catch(() => {});
+        }
+        throw error;
+      }
       return brief(started.id, started);
     }),
     tool("workflow_status", "A workflow's status, counts, spend and, once it ends, its result. With waitSeconds, waits until it ends, pauses or that time passes. You need not call this to wait: a <workflow_notification> tells you when a workflow finishes or stops, so end your turn instead.", {
@@ -106,7 +146,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       workflowId: id, stopChildren: { type: "boolean", description: "Stop its running sub-agents now" },
     }, ["workflowId"], async args => { const stub = await own(args.workflowId); await stub.pause(args.stopChildren ? { children: "abort" } : {}); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
     tool("workflow_resume", "Resume a workflow you paused.", { workflowId: id }, ["workflowId"],
-      async args => { const stub = await own(args.workflowId); await stub.resume(); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
+      async args => { const stub = await own(args.workflowId); await stub.resume(); return brief(args.workflowId, await reopened(args.workflowId, await stub.view() as Record<string, any>)); }),
     tool("workflow_abort", "Stop a workflow for good: its running sub-agents stop and nothing new starts. Its finished results stay reusable by a new workflow.", { workflowId: id }, ["workflowId"],
       async args => { const stub = await own(args.workflowId); await stub.abort(); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
     tool("workflow_budget", "Change a workflow's budget (USD). A workflow stopped for its budget runs again by itself once the new budget is above what it has spent.", {
@@ -117,7 +157,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       if (typeof args.usd !== "number" || !Number.isFinite(args.usd) || args.usd <= 0) throw new WorkflowInputError("usd is a positive number of USD");
       if (args.usd > cap) throw new WorkflowInputError(`A budget above $${cap.toFixed(2)} is more than you may give a workflow: ask the person you work for`);
       await stub.setBudget(args.usd);
-      return brief(args.workflowId, await stub.view() as Record<string, any>);
+      return brief(args.workflowId, await reopened(args.workflowId, await stub.view() as Record<string, any>));
     }),
   ];
 }

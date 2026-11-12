@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { startFixture } from './fixture.ts';
 
-// A deleted agent is gone for good: what other objects still owe it (a child's ending, a workflow's notices, a cancel)
+// A deleted agent is gone for good: what other objects still owe it (a child's ending, a workflow's ending, a cancel)
 // is answered once and dropped, never retried for days (the "Agent deleted" storm, 2026-11-12). A restart that wakes
 // every object again changes nothing.
 const textOf = (body: any) => body.messages.map((message: any) => typeof message.content === 'string' ? message.content : (message.content ?? []).map((part: any) => part.text ?? '').join('\n')).join('\n');
@@ -16,7 +16,7 @@ async function until(check: () => unknown | Promise<unknown>, description: strin
   throw new Error(`Timed out: ${description}`);
 }
 
-test('a deleted owner answers its child\'s ending and its workflow\'s notices once; nothing is retried, before or after a restart', { timeout: 300_000 }, async t => {
+test('a deleted owner answers its child\'s ending and its workflow\'s ending once; nothing is retried, before or after a restart', { timeout: 300_000 }, async t => {
   const gate = Promise.withResolvers<void>();
   t.after(() => gate.resolve());
   const bodies: any[] = [];
@@ -59,14 +59,14 @@ test('a deleted owner answers its child\'s ending and its workflow\'s notices on
   gate.resolve();
 
   const gone = () => (fixture.worker.logs().match(/\{"type":"deleted_agent_rpc"[^}]*\}/g) ?? []).map(line => JSON.parse(line));
-  // The workflow ends (5 s), and its notices meet the gone owner: one answer, all dropped.
-  await until(() => fixture.worker.logs().includes('"reason":"owner_gone"'), 'the workflow\'s notices dropped', 60_000);
-  // Long enough for the old backoff to have retried several times (1, 2, 4, 8, 16 s).
+  // The workflow ends (5 s), and its ending (a child's, from its outbox) meets the gone owner: one answer, dropped.
+  const endings = (agent: string) => gone().filter(entry => entry.method === 'receiveEnding' && entry.agent === agent);
+  await until(() => endings(workflowOwner).length, 'the workflow\'s ending answered', 60_000);
+  // Long enough for the outbox's backoff to have retried several times (1, 2, 4, 8, 16 s).
   await new Promise(resolve => setTimeout(resolve, 35_000));
   const before = gone();
-  const notices = before.filter(entry => entry.method === 'receiveAgentMessage' && entry.caller === 'workflow');
-  assert.equal(notices.length, 1, `one notice reached the gone owner: ${JSON.stringify(before)}`);
-  assert.ok(before.filter(entry => entry.method === 'receiveEnding').length <= 1, `the child's ending was answered at most once: ${JSON.stringify(before)}`);
+  assert.equal(endings(workflowOwner).length, 1, `one ending reached the gone owner: ${JSON.stringify(before)}`);
+  assert.ok(endings(parent).length <= 1, `the child's ending was answered at most once: ${JSON.stringify(before)}`);
   assert.doesNotMatch(fixture.worker.logs(), /Uncaught Error: Agent (deleted|expired)/);
   // Owing nothing more, the gone owners went quiet: no job and no alarm left to wake them.
   const quiet = (fixture.worker.logs().match(/\{"type":"deleted_agent_quiet"[^}]*\}/g) ?? []).map(line => JSON.parse(line).agent);
