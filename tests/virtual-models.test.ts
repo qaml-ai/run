@@ -405,7 +405,7 @@ test("strong: flex's 429 is asked again within the flex wait, then the default t
       firstFlexFailure ||= Date.now();
     }
     if ((body.service_tier === "flex" && flexFailures-- > 0) || (body.service_tier !== "flex" && defaultDown))
-      return res.writeHead(429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: flexError, code: 429 } }));
+      return res.writeHead(429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: body.service_tier === "flex" ? flexError : "google/gemini-4-carbon is temporarily rate-limited upstream", code: 429 } }));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: `From ${body.service_tier}.`, annotations: [] }] }]).events)
       res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);

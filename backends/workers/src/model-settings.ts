@@ -192,8 +192,8 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           if (event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && (isModelUnavailable(event.error) || !!(prepared.model as { firstTokenBudget?: unknown }).firstTokenBudget && providerStatus(event.error.errorMessage) === 429) && !options?.signal?.aborted) {
             const stalled = isStalled(event.error.errorMessage);
             if (!stalled) {
-            flex ??= new FlexWait(flexWaitMs(env, prepared.config.flexWaitSeconds), hooks.onRetryEvent);
-            if (await flex.retry(event.error, options?.signal)) { retry = true; continue; }
+              flex ??= new FlexWait(flexWaitMs(env, prepared.config.flexWaitSeconds), hooks.onRetryEvent);
+              if (await flex.retry(event.error, options?.signal)) { retry = true; continue; }
             }
             if (prepared.virtualNext) {
               fellBack = { model: `${prepared.model.provider}/${prepared.model.id}`, waitedMs: stalled ? 0 : flex!.waitedMs(), attempts: stalled ? 0 : flex!.attempts };
