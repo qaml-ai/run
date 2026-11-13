@@ -26,7 +26,6 @@ import { humanInputView, HumanInputs } from "./human.ts";
 import { answerList } from "./input-policy.ts";
 import { handleAgentFileRequest, handleAgentFilesRoute } from "./files.ts";
 import { ComputerService } from "./computers/service.ts";
-import { COMPUTER_ATTACHED } from "./agent-lifecycle.ts";
 import { deliverScheduledRun, scheduleDeliveries, type StoredSchedule as Schedule } from "./schedules.ts";
 import { keyServices } from "./security-services.ts";
 import { admissionHeaders, admissionError, errorFields, errorHeaders } from "./admission.ts";
@@ -345,7 +344,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (input.tenant !== conf.tenantId)
           return json({ error: "Forbidden" }, 403);
         // Connections change outside this object; recheck before skipping a lease deadline.
-        await this.ctx.storage.delete(COMPUTER_ATTACHED);
+        await this.clearComputerAttached();
         // The fork route: its snapshot takes the serial queue itself (forkChildComputers), so it runs outside it.
         if (input.operation === "fork")
           return json(await forkComputerInto(this.env, conf.tenantId, conf.id, input.args.agents, {

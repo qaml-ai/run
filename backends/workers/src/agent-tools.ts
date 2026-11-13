@@ -207,8 +207,10 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
 export async function computerNamesImpl(this: AgentRuntime) {
     if (!this.env.HYPERDRIVE) return new Set<string>();
     const conf = await this.config();
+    const generation = this.computerAttachmentGeneration;
     const tools = await new ComputerService(this.env, conf.tenantId).tools(conf.id);
-    await this.ctx.storage.put(COMPUTER_ATTACHED, tools.length > 0);
+    if (generation === this.computerAttachmentGeneration)
+      await this.ctx.storage.put(COMPUTER_ATTACHED, tools.length > 0);
     return new Set(
       tools.map(
         (tool) => tool.name,

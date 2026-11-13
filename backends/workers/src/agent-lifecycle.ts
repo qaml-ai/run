@@ -40,6 +40,7 @@ export async function purgeAccountDataImpl(this: AgentRuntime,
     await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
     await this.closeWatchers(tenant, id);
     await this.ctx.storage.deleteAlarm();
+    await this.clearComputerAttached();
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.put("deleted", true);
   }
@@ -221,6 +222,7 @@ export async function restorePendingImpl(this: AgentRuntime) {
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
     await timed(this, "restoreCancellations", () => this.restoreCancellations());
     await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
+    if (startConfig) await timed(this, "expireDecisions", () => expireDecisions(this));
     await timed(this, "delegation.recover", () => this.delegation.recover());
     await timed(this, "notifications.drain", () => this.notifications.drain());
     await timed(this, "outbox", async () => { await stageMissedEndings(this, await this.records()); await this.outbox.flush(); });
@@ -327,7 +329,8 @@ export async function wakeImpl(this: AgentRuntime) {
     const expire = this.admission.then(() => this.closeHumanInputs("expired"));
     this.admission = expire.catch(() => {});
     await expire;
-    await expireDecisions(this);
+    const decisionDeadline = await this.ctx.storage.get<number>("decision-input-deadline");
+    if (decisionDeadline !== undefined && decisionDeadline <= Date.now()) await expireDecisions(this);
     this.kickInputPrompts();
     await this.restoreHostAdmissions();
     // A call's live credit hold reserves its funds. Only check available credit
