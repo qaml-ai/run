@@ -3,8 +3,8 @@
 Two virtual models name a class of work: `camelrun/fast` (`openrouter/meta/muse-ember`), for bulk work, and
 `camelrun/strong` (`openrouter/google/gemini-4-carbon` on OpenRouter's flex service tier, half the default tier's
 price), for judgment. A `strong` request sends `service_tier: "flex"`; when flex has no capacity, the Workers backend
-asks again with backoff for up to `AGENT_FLEX_WAIT_SECONDS` (30 by default), then makes it on the default tier for the
-rest of the turn, logged as `model_flex_fallback` and `model_flex_fallback_cost`; the Node runtime moves at once. A
+asks again with backoff for up to `AGENT_FLEX_WAIT_SECONDS` (10 by default, and at most 10), then makes it on the default tier for the
+rest of the turn, logged as `model_flex_fallback` and `model_flex_fallback_cost`; the Node runtime waits the same 10 seconds at most. A
 response that asked flex and was served on another tier with no fallback is logged as `model_flex_unhonored`. The
 tier that served a response is on its usage (`serviceTier`, and `requestedServiceTier` when one was asked), its model
 attempt and its `usage.recorded` event, and the platform's price for it is that tier's. `GET /v1/models` lists each
@@ -16,5 +16,7 @@ Ember, which it priced as an unknown model.
 
 On the Workers backend, when every member of a virtual model fails a request, a retry of it starts again at the first
 member (as on the Node runtime) instead of failing with "Virtual model fallback chain is exhausted"; the request fails
-with the last member's own error, and `virtual_model_chain_failed` / `virtual_model_chain_restart` log each member's
+with the last member's own error except for strong (below), and `virtual_model_chain_failed` / `virtual_model_chain_restart` log each member's
 failure. An answer cut off at its output limit is passed through as truncated and logged (`model_output_cut`).
+
+When both strong members fail and the last is unavailable, the error is exactly `503 Service Unavailable: camelrun/strong has no member that can take this request now (flex and the default tier both failed); it is retried after a backoff`. Member names and errors appear only in the `virtual_model_chain_failed` log. The flex capacity window is wall-clock time from the first failure, including provider calls and backoff. A flex stall moves at once; Workers logs `model_flex_fallback` with `reason: "stall"` (capacity moves use `reason: "capacity"`) and `model_flex_fallback_cost` when the default tier answers. Thinking levels `xhigh` and `max` keep the 300-second first-token wait; `high` uses the input budget. An agent's own first-token limit still wins.

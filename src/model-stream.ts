@@ -26,13 +26,25 @@ export const STREAM_TIMEOUTS = Object.freeze({ firstTokenMs: 120_000, reasoningF
 const LONG_THINKING = ["high", "xhigh", "max"];
 
 /**
- * The timeouts for one request: the agent's own (seconds), else the runtime's, with the longer wait before the first
- * token for a reasoning model thinking hard.
+ * A model whose first token comes within a time that grows with its input (a virtual model's member says it,
+ * virtual-models.ts): `baseMs` plus `perKTokensMs` per thousand input tokens. Measured for Gemini 4 Carbon on OpenRouter
+ * (2026-11-12): 5-21 s at 12k tokens, 11-17 s at 60k, 63-71 s at 150k.
  */
-export function streamTimeouts(model: Pick<Model<Api>, "reasoning">, reasoning: string | undefined, own?: { firstTokenSeconds?: number; idleSeconds?: number } | null, runtime?: Partial<StreamTimeouts>): StreamTimeouts {
+export type FirstTokenBudget = { baseMs: number; perKTokensMs: number };
+
+/**
+ * The timeouts for one request: the agent's own (seconds), else the runtime's, with the longer wait before the first
+ * token for a reasoning model thinking hard. A model with a `firstTokenBudget`, asked with `inputTokens`, waits no longer
+ * for its first token than its budget for that input: a stall is found in seconds rather than minutes, so the next
+ * member takes the request sooner. Never longer than the wait it would have had, and never over the agent's own.
+ */
+export function streamTimeouts(model: Pick<Model<Api>, "reasoning"> & { firstTokenBudget?: FirstTokenBudget }, reasoning: string | undefined, own?: { firstTokenSeconds?: number; idleSeconds?: number } | null, runtime?: Partial<StreamTimeouts>, inputTokens?: number): StreamTimeouts {
   const thinkingHard = !!model.reasoning && !!reasoning && LONG_THINKING.includes(reasoning);
-  const firstTokenMs = own?.firstTokenSeconds !== undefined ? own.firstTokenSeconds * 1000
+  let firstTokenMs = own?.firstTokenSeconds !== undefined ? own.firstTokenSeconds * 1000
     : Math.max(runtime?.firstTokenMs ?? STREAM_TIMEOUTS.firstTokenMs, thinkingHard ? STREAM_TIMEOUTS.reasoningFirstTokenMs : 0);
+  const budget = model.firstTokenBudget;
+  if (reasoning !== "xhigh" && reasoning !== "max" && own?.firstTokenSeconds === undefined && budget && inputTokens !== undefined && Number.isFinite(inputTokens))
+    firstTokenMs = Math.min(firstTokenMs, Math.round(budget.baseMs + budget.perKTokensMs * Math.max(0, inputTokens) / 1000));
   return { firstTokenMs, idleMs: own?.idleSeconds !== undefined ? own.idleSeconds * 1000 : runtime?.idleMs ?? STREAM_TIMEOUTS.idleMs };
 }
 

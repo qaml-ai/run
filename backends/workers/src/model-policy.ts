@@ -45,19 +45,36 @@ export const VIRTUAL_PROVIDER = "camelrun";
 /**
  * Members share a provider: an agent holds one model key. A member may name the OpenRouter service tier it is asked on
  * (`service_tier`, sent by `withOpenRouterHosts`): `strong` asks Gemini 4 Carbon on flex, half the default tier's price,
- * and moves to the default tier when flex has no capacity (model-settings.ts waits a bounded window first on Workers).
+ * and moves to the default tier when flex has no capacity (both backends wait a bounded wall-clock window first).
  * - `fast` and `strong` are model classes (docs/design/swarm-workflows.md): bulk work and judgment. Decided 2026-11-10.
  */
-type Member = [provider: string, id: string, options?: { serviceTier: ServiceTier }];
+/**
+ * A member's options: the OpenRouter service tier it is asked on, and its first-token budget (model-stream.ts): a member
+ * that sends nothing within it for its input has stalled, and the next member takes the request.
+ */
+type Member = [provider: string, id: string, options?: { serviceTier: ServiceTier; firstTokenBudget?: FirstTokenBudget }];
+/**
+ * The longest a call asked on flex waits for flex capacity (asking again with backoff) before the default tier takes it,
+ * on both backends. Probed 2026-11-12: on OpenRouter's shared Google quota flex answered every 60k-token request with an
+ * immediate 429; on our own key it answered 8 of 10, but slowly (up to 95 s), while the default tier took 7-12 s. A long
+ * wait only delays the default tier. One constant, to change as flex's capacity does.
+ */
+export const STRONG_FLEX_WAIT_CAP_SECONDS = 10;
+/** Retry-safe public error; member details belong only in virtual_model_chain_failed logs. */
+export const STRONG_UNAVAILABLE_MESSAGE = "503 Service Unavailable: camelrun/strong has no member that can take this request now (flex and the default tier both failed); it is retried after a backoff";
+/** model-stream.ts `FirstTokenBudget`, restated: the Workers copy of this file is made without its first lines. */
+type FirstTokenBudget = { baseMs: number; perKTokensMs: number };
+/** Gemini 4 Carbon's first token comes within this for its input, with room (measured 2026-11-12, model-stream.ts). */
+const GEMINI_FIRST_TOKEN: FirstTokenBudget = { baseMs: 30_000, perKTokensMs: 400 };
 const VIRTUAL_MODELS: Record<string, { name: string; chain: Member[] }> = {
   default: { name: "camelRun default", chain: [["openrouter", "meta/muse-ember"], ["openrouter", "deepseek/deepseek-v4.1-flash-1017"]] },
   fast: { name: "camelRun fast", chain: [["openrouter", "meta/muse-ember"]] },
-  strong: { name: "camelRun strong", chain: [["openrouter", "google/gemini-4-carbon", { serviceTier: "flex" }], ["openrouter", "google/gemini-4-carbon", { serviceTier: "default" }]] },
+  strong: { name: "camelRun strong", chain: [["openrouter", "google/gemini-4-carbon", { serviceTier: "flex", firstTokenBudget: GEMINI_FIRST_TOKEN }], ["openrouter", "google/gemini-4-carbon", { serviceTier: "default", firstTokenBudget: GEMINI_FIRST_TOKEN }]] },
 };
 
 /** An OpenRouter service tier a virtual model's member is asked on (`service_tier`). */
 export type ServiceTier = "flex" | "default";
-export type VirtualSelection = Model<Api> & { virtual?: string; serviceTier?: ServiceTier };
+export type VirtualSelection = Model<Api> & { virtual?: string; serviceTier?: ServiceTier; firstTokenBudget?: FirstTokenBudget };
 /** Why a request is routed, as Pi says: `user` after a message someone wrote, `continuation` after tool results, `retry` after `failed`, `direct` outside the loop (a summary). */
 export type ModelRouteReason = "user" | "continuation" | "retry" | "direct";
 type Physical = { provider: string; model?: string; id?: string; serviceTier?: string };
@@ -65,7 +82,7 @@ type Physical = { provider: string; model?: string; id?: string; serviceTier?: s
 /** A member as it is called. One OpenRouter serves that the catalog lacks passes through: at its lookup's values when an agent is made on it as the head, else the defaults (openrouter-model.ts). */
 export const virtualMember = ([provider, id, options]: Member): Model<Api> => {
   const model = getModel(provider, id);
-  const tier = options ? { serviceTier: options.serviceTier } : {};
+  const tier = options ? { serviceTier: options.serviceTier, ...(options.firstTokenBudget ? { firstTokenBudget: options.firstTokenBudget } : {}) } : {};
   if (!model && provider === "openrouter") return { ...passthroughModel(id), ...tier };
   if (!model) throw new Error(`Virtual model member ${provider}/${id} is not in the catalog`);
   return provider === "openrouter" ? { ...model, api: openRouterApi(model.api, model), ...tier } as Model<Api> : model;

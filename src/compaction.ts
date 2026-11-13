@@ -291,22 +291,23 @@ function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefine
 
 /** `outbound` is the policy calls to endpoints tenants give go through: this process's unless given (its node's). */
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate,
-  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess(), attempt?: ModelAttemptHook,
+  timeouts?: (model: Model<Api>, reasoning: string | undefined, inputTokens?: number) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess(), attempt?: ModelAttemptHook,
   onRefused?: (stop: CreditStop) => void, supersede?: (message: AssistantMessage) => Superseded | undefined): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     // Includes Pi summary calls. Bound images before estimating or sending the request.
     context = { ...context, messages: capRequestImages(context.messages, model) };
     const apiKey = options.apiKey;
-    // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
-    const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
-    // What the request's context comes to, as the host estimates it: its end user's hold, and the input billed for a request cut short.
+    // What the request's context comes to, as the host estimates it: its end user's hold, the input billed for a request
+    // cut short, and how long a model with a first-token budget may take to start.
     const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
       ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
     // The prefix the previous response read from or wrote to the provider's cache is likely read from it now, at its rate.
     const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
     const inputTokens = input(), cachedTokens = Math.min(inputTokens, (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
     const estimate = { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
+    // A provider's stream that goes quiet is ended (model-stream.ts), sooner for a model whose first token comes within a budget for its input.
+    const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model), inputTokens) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model), undefined, undefined, inputTokens);
     const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, (sink, halt, affordable) => {
       const { signal, cut, done } = gatedSignal(gate, options.signal ? AbortSignal.any([options.signal, halt]) : halt);
       let requested = false;

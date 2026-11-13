@@ -1,3 +1,7 @@
+import { getEventListeners } from "node:events";
+import { isRetryableAssistantError, isContextOverflow } from "@earendil-works/pi-ai";
+import { errorClass } from "../src/metrics.ts";
+import { STRONG_UNAVAILABLE_MESSAGE } from "../src/virtual-models.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -336,9 +340,12 @@ test("strong: Gemini's reasoning from flex is refused on the default tier's othe
   const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
   const run = await r.prompt(agent, "Read the file");
   assert.equal(run.outcome.result.reply, "Read it: package main.", JSON.stringify(run.outcome));
-  // Turn 1 on flex, signed; the continuation on flex (down); the default tier refusing the other provider's reasoning; made again without it.
-  assert.deepEqual(requests.map(request => request.details), [false, true, true, false], JSON.stringify(requests));
-  assert.deepEqual(requests.map(request => request.tier === "flex"), [true, true, false, false], JSON.stringify(requests));
+  // Turn 1 on flex, signed; the continuation on flex (down, asked again within the flex wait); the default tier refusing
+  // the other provider's reasoning; made again without it.
+  const moves = requests.filter((request, index) => index === 0 || JSON.stringify(request) !== JSON.stringify(requests[index - 1]));
+  assert.deepEqual(moves.map(request => request.details), [false, true, true, false], JSON.stringify(requests));
+  assert.deepEqual(moves.map(request => request.tier === "flex"), [true, true, false, false], JSON.stringify(requests));
+  assert.ok(requests.filter(request => request.tier === "flex" && request.details).length >= 2, "flex was asked again before the move");
   assert.ok(r.logs.some(line => line.includes('"model_reasoning_replay_dropped"')), "logged");
 
   // Later calls drop it up front: the history keeps the signature, and asking with it first would be refused every call.
@@ -347,4 +354,181 @@ test("strong: Gemini's reasoning from flex is refused on the default tier's othe
   assert.equal(again.outcome.result.reply, "Read it: package main.", JSON.stringify(again.outcome));
   assert.deepEqual(requests.map(request => request.details), requests.map(() => false), JSON.stringify(requests));
   assert.equal(r.logs.filter(line => line.includes('"model_reasoning_replay_dropped"')).length, 1, "no second refusal");
+});
+
+test("strong's members wait for a first token within a budget for their input; other classes and an agent's own limit are unchanged", async () => {
+  const { streamTimeouts } = await import("../src/model-stream.ts");
+  const [flex, standard] = virtualChain("camelrun/strong")!;
+  for (const member of [flex, standard]) assert.deepEqual((member as { firstTokenBudget?: unknown }).firstTokenBudget, { baseMs: 30_000, perKTokensMs: 400 });
+  for (const reference of ["camelrun/fast", "camelrun/default"]) assert.ok(virtualChain(reference)!.every(member => !("firstTokenBudget" in member)), reference);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 12_000).firstTokenMs, 34_800);
+  assert.equal(streamTimeouts(flex, "high", undefined, undefined, 12_000).firstTokenMs, 34_800);
+  for (const level of ["xhigh", "max"]) assert.equal(streamTimeouts(flex, level, undefined, undefined, 12_000).firstTokenMs, 300_000);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 150_000).firstTokenMs, 90_000);
+  assert.equal(streamTimeouts(flex, undefined, undefined, undefined, 1_000_000).firstTokenMs, 120_000);
+  assert.equal(streamTimeouts(flex, undefined, { firstTokenSeconds: 200 }, undefined, 12_000).firstTokenMs, 200_000);
+});
+
+test("strong: flex that sends no first token in time is given up on, and the default tier answers the same call", async t => {
+  const requests: (string | undefined)[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    requests.push(body.service_tier);
+    // Flex hangs: headers and nothing more, as a stalled upstream does.
+    if (body.service_tier === "flex") { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders(); return; }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "From the default tier.", annotations: [] }] }]).events)
+      res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: url } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low", runLimits: { firstTokenSeconds: 1 } } })).json.id;
+  const run = await r.prompt(agent, "Say hello");
+  assert.equal(run.outcome.result.reply, "From the default tier.", JSON.stringify(run.outcome));
+  assert.deepEqual(requests, ["flex", "default"]);
+});
+
+test("strong: flex's 429 is asked again within the flex wait, then the default tier takes it; both-down errors exclude raw member text", { timeout: 180_000 }, async t => {
+  const requests: (string | undefined)[] = [];
+  let flexFailures = 1, defaultDown = false, slowFlex = false;
+  let firstFlexFailure = 0;
+  let flexError = "google/gemini-4-carbon is temporarily rate-limited upstream";
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    requests.push(body.service_tier);
+    if (body.service_tier === "flex" && slowFlex) {
+      await new Promise(resolve => setTimeout(resolve, 3_000));
+      firstFlexFailure ||= Date.now();
+    }
+    if ((body.service_tier === "flex" && flexFailures-- > 0) || (body.service_tier !== "flex" && defaultDown))
+      return res.writeHead(slowFlex ? 503 : 429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: body.service_tier === "flex" ? flexError : "google/gemini-4-carbon is temporarily rate-limited upstream", code: slowFlex ? 503 : 429 } }));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: `From ${body.service_tier}.`, annotations: [] }] }]).events)
+      res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: url } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
+  // Flex full once: asked again on flex, which answers; no move.
+  let run = await r.prompt(agent, "Say hello");
+  assert.equal(run.outcome.result.reply, "From flex.", JSON.stringify(run.outcome));
+  assert.deepEqual(requests, ["flex", "flex"]);
+  // Flex full throughout: asked again for up to STRONG_FLEX_WAIT_CAP_SECONDS, then the default tier answers.
+  flexFailures = 1_000;
+  slowFlex = true;
+  requests.length = 0;
+  const started = Date.now();
+  run = await r.prompt(agent, "Say hello again");
+  assert.equal(run.outcome.result.reply, "From default.", JSON.stringify(run.outcome));
+  assert.equal(requests.at(-1), "default");
+  assert.ok(requests.slice(0, -1).every(tier => tier === "flex") && requests.length >= 3, JSON.stringify(requests));
+  assert.ok(Date.now() - started >= 9_000 && Date.now() - started < 30_000, `waited ${Date.now() - started} ms`);
+  assert.ok(Date.now() - firstFlexFailure >= 10_000 && Date.now() - firstFlexFailure < 14_000);
+  slowFlex = false;
+  // Both tiers 429: details stay in the log.
+  for (flexError of ["429 Rate limited; check your billing settings", "429 Too many tokens per minute"]) {
+    defaultDown = true;
+    requests.length = 0;
+    const down = await r.prompt(agent, "Once more");
+    const error = String(down.outcome?.result?.error ?? JSON.stringify(down.outcome));
+    assert.equal(error, STRONG_UNAVAILABLE_MESSAGE);
+    const failure = { stopReason: "error", errorMessage: error } as any;
+    assert.equal(errorClass(error), "provider_5xx");
+    assert.equal(isModelUnavailable(failure), true);
+    assert.equal(isRetryableAssistantError(failure), true);
+    assert.equal(isContextOverflow(failure), false);
+    assert.ok(r.logs.some(line => line.includes("virtual_model_chain_failed") && line.includes(flexError)));
+  }
+});
+
+test("Node flex waits remove abort listeners after four sleeps", async t => {
+  const { NodeFlexWait } = await import("../src/model-fallback.ts");
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const controller = new AbortController(), wait = new NodeFlexWait();
+  const baseline = getEventListeners(controller.signal, "abort").length;
+  for (const [index, delay] of [2_000, 2_000, 4_000, 2_000].entries()) {
+    const retry = wait.retry(controller.signal);
+    t.mock.timers.tick(delay);
+    assert.equal(await retry, index < 3);
+    assert.equal(getEventListeners(controller.signal, "abort").length, baseline);
+  }
+});
+
+test("Node abort mid flex wait passes the original failure through without a fallback", async t => {
+  const { NodeFlexWait } = await import("../src/model-fallback.ts");
+  const controller = new AbortController(), wait = new NodeFlexWait();
+  let moves = 0, unavailable = 0;
+  const message = { role: "assistant", content: [], stopReason: "error", errorMessage: "503 flex unavailable" } as any;
+  const first = createAssistantMessageEventStream();
+  first.push({ type: "error", reason: "error", error: message }); first.end(message);
+  const output = await withModelFallback(first, async () => {
+    await wait.retry(controller.signal);
+    moves++; // Same position as recordModelFallback and the next member call in routedCall.
+    throw new Error("unexpected fallback");
+  }, { moves: () => true, blocked: () => {}, unavailable: () => { unavailable++; }, aborted: () => controller.signal.aborted });
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  const events = [];
+  for await (const event of output) events.push(event);
+  assert.equal(events.at(-1)?.type, "error");
+  assert.equal((events.at(-1) as any).error, message);
+  assert.equal(moves, 0);
+  assert.equal(unavailable, 0);
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+});
+
+test("Node passes an input estimate to the first-token budget without runLimits", async t => {
+  const { explicitKeyStream } = await import("../src/compaction.ts");
+  const { streamTimeouts } = await import("../src/model-stream.ts");
+  const { outboundFromEnvironment } = await import("../src/outbound.ts");
+  const url = await listen(t, async (req, res) => {
+    for await (const chunk of req) { /* drain */ }
+    res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders();
+  });
+  const model = { ...virtualChain("camelrun/strong")![0], baseUrl: url, firstTokenBudget: { baseMs: 200, perKTokensMs: 0 } };
+  let estimated: number | undefined;
+  const stream = explicitKeyStream(undefined, undefined, undefined, (on, reasoning, inputTokens) => {
+    estimated = inputTokens;
+    return streamTimeouts(on, reasoning, undefined, undefined, inputTokens);
+  }, undefined, outboundFromEnvironment(LOCAL));
+  const started = Date.now();
+  const events = [];
+  for await (const event of await stream(model, { messages: [{ role: "user", content: "hello", timestamp: 1 }] } as never, { apiKey: "fixture", reasoning: "low" })) events.push(event);
+  assert.ok(estimated !== undefined && estimated > 0);
+  assert.match((events.at(-1) as any).error.errorMessage, /stalled/);
+  assert.ok(Date.now() - started < 3_000);
+});
+
+test("Node abort during routedCall's flex wait makes no default request or fallback record", async t => {
+  const tiers: unknown[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    tiers.push(JSON.parse(text).service_tier);
+    res.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "503 flex unavailable", code: 503 } }));
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "fixture", baseUrl: url } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", model: "camelrun/strong", thinkingLevel: "low" } })).json.id;
+  const request = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "hello" } });
+  assert.equal(request.status, 202);
+  const started = Date.now();
+  while (!tiers.length) {
+    assert.ok(Date.now() - started < 10_000);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await r.call(`/v1/agents/${agent}/abort`, { method: "POST" })).status, 200);
+  while ((await r.call(`/v1/agents/${agent}/requests/${request.json.id}`)).json.state !== "completed") {
+    assert.ok(Date.now() - started < 10_000);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.deepEqual(tiers, ["flex"]);
+  assert.ok(!r.logs.some(line => line.includes('"type":"model_fallback"')), "no recordModelFallback after abort");
 });

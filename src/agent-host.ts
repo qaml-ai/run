@@ -22,10 +22,10 @@ import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } fro
 import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
-import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
-import { withModelFallback } from "./model-fallback.ts";
+import { MODEL_INTERRUPTED, providerStatus, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
+import { NodeFlexWait, withFailureSaid, withModelFallback } from "./model-fallback.ts";
 import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../shared/gemini-reasoning.ts";
-import { askedTier, routeModel, type ModelRouteReason } from "./virtual-models.ts";
+import { askedTier, STRONG_UNAVAILABLE_MESSAGE, routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, namespaceOf, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
@@ -930,16 +930,33 @@ export function createAgentHost(hostIO: HostIO) {
        */
       const routedCall = (reason: ModelRouteReason, call: (on: AgentConfig["model"]) => ReturnType<typeof stream>, signal: AbortSignal | undefined, selected: AgentConfig["model"], previous?: AssistantMessage): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
         if (!selected.virtual) return call(selected);
+        // Each member's failure this request moved past, for the error when the last one fails too.
+        const tried: { member: string; error: string }[] = [];
+        const flexWait = new NodeFlexWait();
         const attempt = (on: AgentConfig["model"]): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
           routed = on;
           const first = call(on);
           const next = routeModel(selected, { reason: "retry", failed: on });
-          if (!next) return first;
-          return withModelFallback(first, () => attempt(next), {
-            moves: (message, partial) => isModelUnavailable(message) && !partial?.content.length,
-            blocked: message => {
-              recordModelFallback({ tenant: config.tenant, agent: config.id, from: `${on.provider}/${on.id}`, to: `${next.provider}/${next.id}`, reason: "unavailable", errorClass: errorClass(message.errorMessage ?? "") });
-            },
+          const member = `${on.provider}/${on.id}${(on as { serviceTier?: string }).serviceTier ? ` (${(on as { serviceTier?: string }).serviceTier})` : ""}`;
+          // Only strong's budgeted chain replaces the public error; raw details stay in the log.
+          if (!next) return tried.length && (on as { firstTokenBudget?: unknown }).firstTokenBudget ? withFailureSaid(first, message => {
+            if (!isModelUnavailable(message)) return undefined;
+            console.log(JSON.stringify({ type: "virtual_model_chain_failed", tenant: config.tenant, agent: config.id, model: selected.virtual,
+              failures: [...tried, { member, error: (message.errorMessage ?? "failed").slice(0, 300) }] }));
+            return STRONG_UNAVAILABLE_MESSAGE;
+          }) : first;
+          let failure: AssistantMessage | undefined;
+          return withModelFallback(first, async () => {
+            if ((on as { serviceTier?: string }).serviceTier === "flex" && failure && !isStalled(failure.errorMessage)) {
+              if (await flexWait.retry(signal)) return attempt(on);
+            }
+            if (signal?.aborted) throw new Error("aborted");
+            tried.push({ member, error: (failure?.errorMessage ?? "failed").slice(0, 300) });
+            recordModelFallback({ tenant: config.tenant, agent: config.id, from: `${on.provider}/${on.id}`, to: `${next.provider}/${next.id}`, reason: "unavailable", errorClass: errorClass(failure?.errorMessage ?? "") });
+            return attempt(next);
+          }, {
+            moves: (message, partial) => (isModelUnavailable(message) || !!(on as { firstTokenBudget?: unknown }).firstTokenBudget && providerStatus(message.errorMessage) === 429) && !partial?.content.length,
+            blocked: message => { failure = message; },
             unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: `${on.provider}/${on.id}`, fallback: `${next.provider}/${next.id}`, error: safeError(error) })),
             aborted: () => !!signal?.aborted,
           });
@@ -954,15 +971,15 @@ export function createAgentHost(hostIO: HostIO) {
         return config.model.virtual && !message.content.length && isModelUnavailable(message) && routeModel(config.model, { reason: "retry", failed: { provider: message.provider, model: message.model, ...askedTier(message) } }) ? "unavailable" as const : undefined;
       };
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
-        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        (model, reasoning, inputTokens) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts, inputTokens),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, io.modelAttempt, creditStop, replaced);
       const viaFallback = explicitKeyStream(() => io.modelAuth(config.contentFilterFallback!.model.provider), () => config.modelHeaders, gate,
-        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        (model, reasoning, inputTokens) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts, inputTokens),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.contentFilterFallback!.model.provider, model: config.contentFilterFallback!.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
       const summaryAttempt: ModelAttemptHook | undefined = io.modelAttempt && (event => io.modelAttempt!(
         event.type === "begin" ? { ...event, kind: "compaction" } : event));
       const summaries = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
-        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        (model, reasoning, inputTokens) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts, inputTokens),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, summaryAttempt, creditStop, replaced);
       // A summary reads the conversation as a turn does: the agent's OpenRouter data policy goes on it too.
       const summaryStream: typeof summaries = (model, context, options) => routedCall("direct", on =>

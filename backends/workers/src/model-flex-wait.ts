@@ -3,22 +3,23 @@ import { getModel, tierCost } from "./model-catalog.ts";
 import { costAt } from "./platform-pricing.ts";
 import { modelFailure } from "./model-errors.ts";
 import type { ModelRetryEvent } from "./model-replay-retry.ts";
+import { STRONG_FLEX_WAIT_CAP_SECONDS } from "./model-policy.ts";
 
 /**
  * How long a call asked on OpenRouter's flex tier waits for flex capacity before it moves to the default tier, by
  * default. Google's flex endpoint is Gemini 4 Carbon's cheapest, so OpenRouter has nothing to fall back to and answers
  * a capacity error (https://openrouter.ai/docs/guides/features/service-tiers.md): the runtime asks flex again with
  * backoff for this long, then the virtual model's next member (the same model on the default tier) takes the call.
- * An ordinary agent's default; a workflow, which tolerates latency, sets its own (`flexWaitSeconds`).
+ * Both agents and workflows are capped at 10 seconds of wall time; a workflow can only lower it (`flexWaitSeconds`).
  */
-export const FLEX_WAIT_SECONDS = 30;
+export const FLEX_WAIT_SECONDS = STRONG_FLEX_WAIT_CAP_SECONDS;
 const FIRST_DELAY_MS = 2_000, MAX_DELAY_MS = 15_000;
 
-/** The flex wait for a call: the request's `flexWaitSeconds`, else AGENT_FLEX_WAIT_SECONDS, else FLEX_WAIT_SECONDS; 0 moves at once. */
+/** The flex wait for a call: the request's `flexWaitSeconds`, else AGENT_FLEX_WAIT_SECONDS, else FLEX_WAIT_SECONDS, at most STRONG_FLEX_WAIT_CAP_SECONDS; 0 moves at once. */
 export function flexWaitMs(env: { AGENT_FLEX_WAIT_SECONDS?: string }, requested?: number): number {
   const configured = env.AGENT_FLEX_WAIT_SECONDS === undefined || env.AGENT_FLEX_WAIT_SECONDS === "" ? NaN : Number(env.AGENT_FLEX_WAIT_SECONDS);
   const seconds = typeof requested === "number" && Number.isFinite(requested) && requested >= 0 ? requested : Number.isFinite(configured) && configured >= 0 ? configured : FLEX_WAIT_SECONDS;
-  return Math.min(seconds, 3_600) * 1_000;
+  return Math.min(seconds, STRONG_FLEX_WAIT_CAP_SECONDS) * 1_000;
 }
 
 /** Whether a model is a member asked on flex (virtual-models.ts). */
