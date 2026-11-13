@@ -31,6 +31,7 @@
         "name": "VOLUMES",
         "class_name": "Volume"
       },
+      { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
@@ -76,7 +77,8 @@
       "new_sqlite_classes": [
         "WorkflowResults"
       ]
-    }
+    },
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
   ],
   "hyperdrive": [
     {
