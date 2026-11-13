@@ -74,7 +74,7 @@ on the real host.
      │      g/<gen>      cold-generation tree packs │   │     FIEMAP delta → chunks → root → CAS        │
      │      p/<commit>   cached clone packs         │   │   host-wide NVMe cache (chunks, trees, shards)│
      │  DynamoDB refs (fenced CAS) · trees+commits  │   │  Firecracker on KVM: virtio-blk, vsock,       │
-     │      dirty rows · touches · warm-host hints  │   │   memory snapshot/restore                     │
+     │      touches · warm-host hints · lineage rows│   │   memory snapshot/restore                     │
      └──────────────────────────────────────────────┘   │   guest: ext4 + camel-guest (walk, stream)    │
                                                         └──────────────────────────────────────────────┘
 ```
@@ -82,7 +82,7 @@ on the real host.
 Three parts, one binary:
 
 - **The storage plane is managed services only.** S3 holds the bytes; DynamoDB holds every mutable fact (refs,
-  dirty rows, touches) and the hot content-addressed objects (trees, commits). No host holds truth. A published
+  touches, warm-host hints) and the hot content-addressed objects (trees, commits); refs live in the lineage object (§1.2). No host holds truth. A published
   version has RPO 0; a host can be terminated at any moment and the system loses only the unpublished part of the
   current turn on the branches it held live.
 - **`camelfsd` runs in two roles.** `api` on a small stateless tier behind an ALB (what Workers, laptops and git talk
@@ -424,9 +424,11 @@ isolation suite. The difference is the lease:
 | fork | freeze, reflink, a new VM, O(1) | the same; a child computer is a reflink and a boot (or a restore of the parent's memory snapshot, for a true fork of a running machine) |
 
 **Wake, step by step**, since it is the number that matters for computers: take the lease (one conditional write,
-fenced); fold or apply any `dirty` rows that landed while asleep (in the guest, before ready); reflink the image if
+fenced); apply, in the guest before ready, the delta between the image's tree and the ref's current version (API
+commits made while asleep); reflink the image if
 the host has it, else build the cold stack; restore the memory snapshot if one exists and the image is unchanged
-since it was taken, else boot; report ready. Warm host, no dirty rows, memory snapshot present: well under a second.
+since it was taken, else boot; report ready. Warm host, no API commits while asleep, memory snapshot present: well
+under a second.
 Cold host: the cold mount plus a boot, 2–4 s. The sleep path waits for the root publish before it returns, so a wake
 never has to rebuild from a tree.
 
@@ -440,20 +442,20 @@ computer has no volume at all: "Files are separate from agent volumes").
 
 `camelfsd api`, stateless, in us-west-2 behind an ALB (HTTP/1.1 from Workers: the 2026-10-24 Cloudflare→ALB HTTP/2
 stall), 2 AZs, autoscaled on CPU. A request carries a token (§1.10) naming the lineage and the refs it may read and
-write; the tier resolves the ref, reads `dirty` + trees from DynamoDB and blobs from S3 (an in-process LRU of trees
+write; the tier resolves the ref in the lineage object, reads trees from DynamoDB and blobs from S3 (an in-process LRU of trees
 and small blobs in front), and answers.
 
 | op | what it does | expected latency from a Worker (us-west-2 round trip ~20–60 ms included) |
 |---|---|---|
-| `read(ref, path)`, `stat`, `ls`, `glob` | `dirty` overlay over the tree; blob from S3; on a held branch, forwarded to the holder (v0: the last version, labelled stale) | 30–80 ms cold, ~25 ms for trees only; + the host hop when forwarded |
-| `write(ref, path, bytes, expectBlob?)` | the `{ConditionCheck, Put, Update}` transaction of §1.2; per-path optimistic concurrency; forwarded when held (v0: refused) | 30–60 ms |
-| `checkpoint(ref)` | fold `dirty` into trees, one commit, fenced CAS; two nodes folding at once are safe because each deletes only the rows it folded (`seq ≤ folded`) and the loser's CAS fails on `commit` | 50–150 ms |
+| `read(ref, path)`, `stat`, `ls`, `glob` | the ref's current tree (the lineage object's head-tree cache); blob from S3; on a held branch, forwarded to the holder (v0: the last version, labelled stale) | 30–80 ms cold, ~25 ms for trees only; + the host hop when forwarded |
+| `write(ref, path, bytes, expectBlob?)` | **one commit**: blob PUT, new trees on the path and a commit object (camel-fs-files.md §9.3), then the fenced CAS in the lineage object; `expectBlob` is the per-path precondition; forwarded when held (v0: refused) | 50–150 ms |
+| `commit(ref, files, expect?)` | several files as one commit with a whole-ref CAS (camel-fs-files.md §3); two writers racing are serialized by the lineage object and the loser's CAS fails on `commit` | 50–150 ms |
 | `fork(from, name, owner, ttl?)` | one conditional put; a held source is checkpointed first | 30 ms unheld |
 | `merge(into, from, mode)` | three-way on trees in the API node; diff3 on co-edited text; conflicts → 409 with both sides, nothing written; clean → two-parent commit + transactional ref move; `into` held → 409 `held`; `renames: true` runs stock `git merge-tree --write-tree` on the materialized repo (§1.8) | 50–200 ms for a few changed paths; proportional to changed paths, not tree size |
 | `diff`, `log`, `blame` | tree walk skipping equal subtrees; first-parent log; blame from history over cached blobs, or stock git for deep histories | 30–300 ms |
 | `grep` | §1.7 | 20–100 ms |
 
-Consistency: an unheld branch's readers see the last durable version plus its `dirty` rows; a held branch's readers
+Consistency: an unheld branch's readers see its current version, which is always durable (every write is a commit); a held branch's readers
 see what the guest sees when forwarded, and the last version when not. The result-cache key and every "is this the
 same content" question use the tree id (today's key is the volume's `seq`, `workflow-results.ts:65`).
 
@@ -477,7 +479,7 @@ blobs are content-addressed and immutable:
    whose trees name the same content (the key is the hash; the authorization to name it was checked when the tree
    was resolved). A repeat read of a hot file is single-digit milliseconds from the edge and costs no S3 GET; a
    swarm of children reading the same base tree pays for it once per colo. This is the Workers-side equivalent of
-   the hosts' NVMe cache. Tree and `dirty` lookups stay on the API tier, so a read is at most one edge hit plus one
+   the hosts' NVMe cache. Tree lookups stay on the API tier, so a read is at most one edge hit plus one
    small metadata call, and a path whose blob changed is seen immediately because its tree entry changed.
 
 Together they turn the Workers read path from "N × S3 latency" into "one metadata call plus edge hits", which is
@@ -538,11 +540,10 @@ content-addressed shards make a fork free and an old snapshot searchable forever
 
 Three things the prototype makes explicit, and the design's answer to each:
 
-- **Unsaved edits are invisible to the index until a checkpoint.** An API-held branch's `dirty` rows are few and in
-  hand, so `grep` scans them directly and overlays the result on the index (a dirty path masks its indexed blob);
-  a held branch's unpublished turn is reachable only inside the VM, where the agent's own `rg` sees it, or through a
-  forwarded `grep` to the holder; and a manual `checkpoint` closes the window on demand. Before launch the
-  dirty-row overlay is required; the forwarded grep comes with forwarding (phase 2).
+- **Unsaved edits are invisible to the index until a checkpoint.** An unheld branch has none: every API write is a
+  commit, and a commit's changed files are indexed as a delta shard. A held branch's unpublished turn is reachable
+  only inside the VM, where the agent's own `rg` sees it, or through a forwarded `grep` to the holder; a manual
+  `checkpoint` closes the window on demand. The forwarded grep comes with forwarding (phase 2).
 - **A cap of 2,000 matching files** per query, as the prototype has; the answer says it was capped, and the agent
   narrows with a path filter.
 - **Compaction** runs on the host or API node that made the delta, when a snapshot's delta shards pass a count
@@ -609,7 +610,7 @@ impossible rather than unlikely:
    creation. The sweep is the inventory minus the union of every lineage's live set, restricted to objects older than
    the grace (24 h) and not touched since the marks began.
 4. Roots of a mark: every unexpired `refs` row's `commit` and `root` (and the root's `parentRoot` chain back to the
-   lineage's base image root, so a delta root never loses its base), every `dirty` row's blob, every held lease's
+   lineage's base image root, so a delta root never loses its base), every held lease's
    last published snapshot root, every `mirror/*` ref's history.
 5. Owners: a workflow's end deletes every `owner = workflow:<id>` ref; a job's end deletes its `job:<id>` ref; a
    mount's end clears its lease; an expired `expiresAt` ref is dropped by the mark. There are no pins, no snapshot
@@ -643,7 +644,7 @@ live sets; the sweep is a sorted merge over the inventory (daily, a few cents pe
   caller's; cross-tenant dedupe is invisible (§1.1). The host cache is shared and unreachable by guests; timing
   side-channels on cache hits would reveal co-tenancy of public content only, and a tenant may opt into a private
   cache partition.
-- **Quotas** per lineage (bytes, files, refs, dirty rows, image virtual size) and per tenant; enforced on the host
+- **Quotas** per lineage (bytes, files, refs, image virtual size) and per tenant; enforced on the host
   by an XFS project quota per mount, so one VM filling its image stalls itself and never the host or another tenant;
   refused loudly, counted in usage.
 
@@ -653,7 +654,7 @@ live sets; the sweep is a sorted merge over the inventory (daily, a few cents pe
 |---|---|---|
 | RPO, published version | 0 | S3 (11 nines, versioned) and DynamoDB (3 AZs, PITR) hold it before the CAS is acknowledged |
 | RPO, held branch | the current turn (≤ 30 s of dirtiness, or less if the agent checkpointed manually); forwarded writes included | the window between checkpoints lives in the host's image file |
-| RPO, API-held branch | 0 | every write is a DynamoDB row |
+| RPO, API-held branch | 0 | every write is a commit: objects durable, then the fenced CAS |
 | RTO, API tier | 0 (multi-AZ, stateless) | any node serves any request |
 | RTO, a lost host | the job rerun / computer wake on another host: seconds to boot plus cache warmth | nothing on a host is truth; leases lapse at their deadline (30 s) and the owner re-places; the host-boot epoch kills stale leases instantly on a reboot |
 | RTO, S3 or DynamoDB down | checkpoints and API writes fail loudly; VMs keep running on **hydrated** images (an unhydrated region's read blocks until S3 answers); the host retries checkpoints with backoff and keeps its snapshots | no degraded "unreplicated" mode |
@@ -714,7 +715,7 @@ Baseline load ("today", the figure the prototypes share): 1,000 concurrent agent
 | item | baseline | 100× |
 |---|---:|---:|
 | durable versions: 14.6 M/month × (~4 trees of 1–3 KB + 1 commit ≈ 10 write units, ~2 blob PUTs, 1 fenced CAS ≈ 2 units) | ~$220 DynamoDB + ~$145 S3 | ~$37k |
-| API-held writes: 144 M/month, each a 2-item transaction (`dirty` row + ref counter) | ~$360 | ~$36k |
+| API writes, each a commit: 144 M/month × (1 blob PUT + ~4 tree and 1 commit writes ≈ 10 write units + 1 lineage-object CAS) | ~$3k (camel-fs-files.md §8 shows the arithmetic) | ~$300k, ~$100k with tree segments |
 | touches: ~1 per skipped object, ~2 per version | ~$35 | ~$3.5k |
 | root publishes: ~1/3 of versions, ~20 chunks each after the ext4 floor | ~$50 | ~$5k |
 | mounts: 1 M/month, cold ≈ the image's touched chunks (hundreds of GETs to a full image's ~2,000), warm ≈ 0 | ~$80–400 | ~$8–40k |
@@ -729,7 +730,8 @@ Baseline load ("today", the figure the prototypes share): 1,000 concurrent agent
 For comparison at the baseline: Artifacts ≈ $2,560, Pierre ≈ $1,800 of storage alone at $3.60/GB-month, the
 `gitsvc` fleet ≈ $800–900 with two stateful hosts to run, the Workers-only git server ≈ $160 but with every job
 paying seconds of clone. At 100× the two DynamoDB write lines are the ones to engineer down (tree segments: one
-item per checkpoint's trees, ~3× fewer units; a single-item working layer for small dirty sets, halving the other);
+item per checkpoint's or write's trees, ~3× fewer units; coalescing a VM-less agent's writes within a turn, if Miguel
+reverses the every-write-is-a-commit default);
 both are mechanical and neither is needed before 10×. A job or computer that checkpoints a build tree publishes only
 tracked files, so a 10k-file `target/` costs nothing in blobs (the ignore policy) and ~tens of chunks in the root.
 
@@ -965,7 +967,7 @@ purpose; v0's measurements will reshape them.
   job of a lineage on a host; `git fsck --strict` clean on every exported test lineage; the GC audit reports zero
   live objects marked garbage over a week.
 - AWS: S3 bucket `camelfs-prod` (SSE-KMS, versioning on with 35-day noncurrent expiry, Inventory daily, Batch
-  Operations role), DynamoDB tables (`refs`, `dirty`, `objects`, `touch`, `warm`, `lineages`; on-demand, PITR on),
+  Operations role), DynamoDB tables (`objects`, `touch`, `warm`, `lineages`; on-demand, PITR on; refs live in the lineage object),
   an ALB + target group, an ECS Fargate service or a 2-host ASG for `camelfsd api` (Graviton), IAM roles (api, host),
   Secrets Manager for the token key, CloudWatch alarms and dashboards; the x86 AMI pipeline and the `m8id`/`c8id`
   launch templates with nested virtualization enabled; the vCPU quota for the Intel families. Fixed cost ~$150/month
@@ -976,7 +978,7 @@ purpose; v0's measurements will reshape them.
 - `MicroVmComputer`: leases, forwarded reads and writes with guest-side CAS, sleep as checkpoint + memory snapshot,
   wake as restore or boot, fork as reflink + boot or restore, the watchdog, cold-path tuning
   (ublk, dm-clone or pre-hydration per v0's numbers, access-pattern prefetch).
-- Bar: wake ≤ 300 ms p50 and ≤ 4 s p99 (lease + dirty apply + reflink + restore; cold boots included in the p99);
+- Bar: wake ≤ 300 ms p50 and ≤ 4 s p99 (lease + delta apply + reflink + restore; cold boots included in the p99);
   fork of a computer ≤ 500 ms to a running child; durable version lag ≤ 30 s p99; a forwarded Worker write visible
   in the VM ≤ 200 ms; metadata-random reads of a hydrated lineage within 10 % of local; zero Cloudflare container
   minutes after cutover; the deletions below landed, so `JobDriver` and `ComputerProvider` each have one
@@ -1029,7 +1031,7 @@ computer providers in production. After phase 2 there is one substrate and nothi
 5. **Trusting the guest's walk.** The host hashes bytes but relies on the guest for *which* paths changed. A hostile
    guest can only make its own tree disagree with its own image. Recommendation: accept, with the verify job.
 6. **Workers' latency to us-west-2.** An agent on Workers pays ~20–60 ms per file op where the Volume DO paid ~0 for
-   dirty rows. v0 item 8 measures it. A DO write-back cache in front of camelFS for Workers only is the mitigation
+   a row write. v0 item 8 measures it. A DO write-back cache in front of camelFS for Workers only is the mitigation
    and a second working layer with its own coherence; recommendation: not unless the measurement says so.
 7. **DynamoDB write cost at 100×** (~$75k/month of the ~$100k). Tree segments and a single-item working layer cut it
    ~3× and are mechanical; not a v0–phase 2 concern.

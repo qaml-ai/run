@@ -98,11 +98,11 @@ signed link covers one blob or one path for minutes. There is no other access pa
 |---|---|
 | `GET …/files/:path?ref=\|version=` | the file at a version (`version` wins; `ref` resolves at request time); headers carry `x-blob` (the content id), `x-version`, `x-mode`; `Range` honoured |
 | `GET …/files?ref=\|version=&prefix=&glob=&after=&limit=&content=` | listing (`{ path, size, mode, blob }` per entry, paged); `content=true` returns the bytes too, up to the read-all cap, all from **one** version |
-| `POST …/files:batch { ref \| version, paths?: [...], blobs?: [...] }` | many files in one response, fetched from S3 in parallel; an agent opening twenty files pays one round trip, not twenty (camel-fs.md §1.6) |
+| `POST …/files:batch { ref \| version, paths: [...] }` | many files in one response, fetched in parallel through the daemon's batch read (§9.2); an agent opening twenty files pays one round trip, not twenty (camel-fs.md §1.6). Paths only: every part is authorized by resolving in the version's tree, never by a bare hash |
 | `PUT …/files/:path?ref=&expect=<blob \| "none">`, `DELETE …/files/:path?ref=&expect=` | one file, one commit; `expect` is the blob the writer read (`none`: must not exist), refused with 412 and the current blob otherwise |
 | `POST …/commit { ref, expect?: version, files: { path: { text \| data \| blob \| from: { repo, version, path } } \| null }, message? }` | several files as one commit; `blob` and `from` reference content the caller can already read, without re-sending bytes; `expect` is a whole-ref CAS |
 | `GET …/grep?ref=\|version=&q=&regex=&path=&limit=` | the trigram index over the version's shards (camel-fs.md §1.7); literal and regex, path filters, 2,000-match cap; an unheld ref's answer is exact, a held ref's is as of its last checkpoint |
-| `GET …/blobs/:sha` | the bytes of a content id, **immutable and cacheable forever**: this is the edge-cache path (Cloudflare Cache API keyed by `sha`), shared across repos, forks, agents and tenants that can name the blob; authorization happens when the tree is resolved, the blob fetch only needs a valid token for *some* repo (the id is the proof of knowledge) |
+| `GET …/blobs/:sha?version=&path=` | the bytes of a content id, **immutable and cacheable forever**, and the edge-cache path: the Worker first checks that the caller's repo reaches the blob (`path` resolves in `version`'s tree to exactly `sha`, confirmed by the repo object's head-tree cache or by the daemon, §9.1), **then** looks the bytes up in the Cloudflare Cache API by `sha` and fetches from the daemon on a miss. The cache stays shared across repos, forks, agents and tenants because it is keyed by content, but no request is served on the strength of knowing a hash: hashes leak through listings, git edges, logs, URLs and errors, and a known-content hash must never confirm a file's existence in another tenant. A request without a resolving `(version, path)` is `404` whether or not the bytes exist |
 | `POST …/links { path \| blob, method, expiresIn?, maxBytes?, contentType? }` | a signed URL for one download or one upload (an upload lands as a commit on the ref named at signing); today's `file_link`/`file_import` builtins keep their shape |
 
 Consistency: a version is immutable, so anything read by `version` is exact and cacheable; a read by `ref` is the
@@ -127,6 +127,23 @@ commit), and the branch `job:<id>` then points at the result. The workflow decid
 - `fast-forward` when `main` has not moved: the ref moves, zero bytes;
 - or nothing: the branch is owned by the workflow and dies with it.
 
+The host's result (`WireResult.camelfs`: `tree`, `root`, `commit`, `checkpointError`, the timings) stays as the
+transport and becomes the `job:<id>` branch's version plus its timings in the job result; `WireResult.camelfs` is
+not a public shape.
+
+**Inline files.** `job({ files })` and the agent's `job_run({ files })` (a job with a few inline files and no repo)
+become **one path**: the runtime commits the inline files onto a scratch `job:<id>` branch of the caller's repo (the
+workflow's repo, or the agent's workspace) and the job mounts it like any other; the guest `files` op and
+`WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override.
+
+**The agent's `job_run` tool** gains the same `at: ref | version` and `commit` as `job()`, and its model-facing text
+changes from "`at` (a volume id) starts it with that volume's files … (changes are not saved back)" to "`at` names a
+repo ref or version to start from; with `commit: true` the job's `/repo` is saved as a version you can `restore` or
+merge". That text is model-facing and is reviewed line by line, like `checkpoint`'s.
+
+**`push()`** keeps its script API (`push({ ref, to })`) and runs on the git edge's mirror (camel-fs.md §1.8) from the
+ref, with the App token the runtime mints; it is no longer a job running `PUSH_SCRIPT` with the token in a process.
+
 The result cache keys on the **tree** (`(tree, command, inputs)`), never a `seq`: equal content is a hit across
 rollbacks, no-op merges and undiverged forks. A workflow's children get branches (`fork/<effect>`, owner the
 workflow) instead of forked volumes; `commit()` in a script is `merge`. The `ForkJanitor`, `adopt`, fork pins,
@@ -149,7 +166,16 @@ workflow) instead of forked volumes; `commit()` in a script is `merge`. The `For
 | **Signed links** (`/v1/agents/:id/links`, `/v1/volumes/:id/links`, `file_link`, `file_import`) | the same, on repos: a link names a blob (download) or a ref+path (upload → commit); `file_import` lands as a commit |
 | **`notify`** on a mount (prompt the agent when others change files) | the repo object emits a change event when a ref it watches moves; the same coalescing |
 | **Console** (`pages/volumes.tsx` 145: list, create, delete volumes and snapshots; `components/files.tsx` 233: the file browser with list, upload, delete and signed-URL preview over `/v1/volumes/:id/files`; per-mount browsers in `agent.tsx`; counts in `account.tsx`) | a repos page: refs, history (first-parent, with attribution), a tree browser at any version (the file browser reads `files?version=` and previews through `blobs/:sha`), diff, restore, grep; the per-mount browser on the agent page points at the mount's repo and ref |
-| **`push()`** (`workflow-jobs.ts` `pushSpec`: a job whose `at` is the volume to push, with the GitHub token in the job's process) | the git edge's mirror (camel-fs.md §1.8) from a ref, with the App token the runtime mints; no job |
+| **`push()`** (`workflow-jobs.ts` `pushSpec`: a job whose `at` is the volume to push, with the GitHub token in the job's process) | the git edge's mirror (camel-fs.md §1.8) from a ref, with the App token the runtime mints; no job (§4) |
+| **`apply`** (declarative provisioning: `shared/apply.ts`, `apply.ts`, `apply-api.ts` create keyed volumes, cached per apply run) | an `apply` manifest names repos by key (`repos: [{ key, template? }]`); the same create-by-key, idempotent; mounts in manifests name `{ repo, ref? }` |
+| **Computers** (`computers/objects.ts:334` seeds a container from `inlineFiles` or `volumeFiles()` through `camel-sync`; `computers/policy.ts:30` and the `agent-tools.ts` computer text tell the model to `cp` results to a volume; Node `computers/transfers.ts` moves files volume ⇄ computer, 256 MiB) | a computer **mounts the agent's repo ref** as its disk (camel-fs.md §1.5), so there is nothing to seed or transfer: files written in the machine are commits at the turn checkpoint, and files written through the API appear in the machine; the model-facing computer text drops "cp to a volume" (reviewed line by line); `transfers.ts` goes |
+| **Agent fork of a workspace** (`agent-workspace.ts`: an R2 fork-claim object, `claimReadSet`/`copyReadSet` on the source workspace, `releaseReadSet("fork:<id>")`) | `POST /v1/repos { from: { repo: parent workspace, version } }` at the parent's current version: O(1), no claim, no copy; the child's history ref starts as the parent's (§2) |
+| **Images and media** (`media/images.ts:285–344` saves generated images to a volume when `volumeId` is given; `media-api.ts` takes and returns `volumeId` + `path` for images and transcriptions; `model.ts` ~81 reads image inputs for the model by decoding R2 `files/<tenant>/<volume>/…` keys) | the media API takes and returns `{ repo, ref?, path }` and `{ repo, version, path, blob }`; a generated image is a commit; the model layer reads an image input as a blob by `(repo, version, path)` through the files API, never by storage key |
+| **Channels** (`channels.ts` mounts, reads and signs links to volume files for channel messages, through `handleAgentFilesRoute` and `signVolumeLink`) | a channel attachment lands like an upload (a commit under `uploads/<request>/`); outgoing files are signed links to `(version, path)` |
+| **MCP `add_schedule` mounts** (`packages/cli/src/tools.ts:196`, `hosted-mcp-tools.ts:197`: the mounts schema names `volumeId`) | the schema names `{ repo, ref?, path, mode }`; nothing else changes |
+| **Evals** (`evals/workflows/lib/runtime.ts`, `choice.ts`, `run.ts` create volumes, write files, mount them, snapshot through the SDK) | the same through `RepoHandle`; the eval corpus is a repo per case made by key, forked per run |
+| **Admin usage** (`admin-usage.ts` on both backends counts volumes and storage per tenant) | counts repos, refs and reachable bytes from the repo objects' counters |
+| **Tool-result file shapes** (`file-output.ts`: `PresentedVolumeFile` / `WrittenVolumeFile` with signed links, the shape tool results use to hand files back) | `PresentedFile { repo, version, path, blob, size, link }`; the pinning half (`file-pin-volumes`, `releasePresentedFiles`) is the history ref |
 | **SDKs** (`VolumeHandle`: `info delete snapshot snapshots updateSnapshot deleteSnapshot archive restore commit fork changes list write read readText readAll`; Python `Volume`, `create_volume`, `read_all`) | `RepoHandle`: `info delete refs branch merge history diff blame restore commit write read readText list readAll export grep`; `agents.runtime.repos.create/get/list`; Python mirrors it; `projects.*` keeps its surface over repos |
 | **OpenAPI** (`/v1/volumes/*` twelve paths; schemas `Volume`, `VolumeFile`, `VolumeInput`, `VolumeSummary`, `Snapshot`, `SnapshotInput`, `SnapshotMade`, `SnapshotUpdate`) | `/v1/repos/*`; schemas `Repo`, `RepoFile`, `RepoInput`, `Ref`, `Version`, `Commit`, `Diff`, `Blame`, `MergeResult` |
 
@@ -181,8 +207,15 @@ changes.
 commits** in DynamoDB (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to
 S3 `g/`), **blobs** (file bytes), **chunks and roots** (the block images hosts mount), **packs** (the read tier for
 hydration; clone packs) and **search shards** in S3 under one bucket per environment (camel-fs.md §1.1). The hosts'
-`camelfsd` keeps the NVMe cache of chunks, images, trees and shards in front of them; the Workers read trees from
-DynamoDB and blobs from S3 directly (SigV4), with the edge cache by hash in front of blobs.
+`camelfsd` keeps the NVMe cache of chunks, images, trees and shards in front of them. The Workers reach the objects
+through the daemon's contract (§9) over the `CAMELFS` binding tonight and the API tier later; trees and commits can
+also be read from DynamoDB over HTTPS and edge-cached by id, since they are immutable; blobs are edge-cached by id
+after the (version, path) check of §3.
+
+**Tonight's interim (ledger L74).** Until Miguel creates the DynamoDB table, `camelfsd` writes trees and commits
+durably to S3 (`t/<sha1>`, `k/<sha1>`) and serves them from there and its cache; the swap to DynamoDB is internal to
+the daemon and changes nothing in §9. v0's daemon-local SQLite ref store on the m8id's instance-store NVMe (wiped by a
+stop; ledger L73) is replaced by the repo object as this design lands.
 
 **The single write path**, the same for a Worker's `PUT`, an agent's `edit`, a host's checkpoint and a merge:
 
@@ -226,7 +259,8 @@ Nothing in the model requires two refs to move together.
 | Jobs | `jobs/camel-sync.ts`, `jobs/host-sync-store.ts`, `jobs/camelfs.ts` (the import bridge), `JobSpec.volume`, `WireJob.files`/`sync`, `HostJob.files/fetch` and the `/v1/internal/job-hosts/sync/*` route, `pullFiles` and the guest `files` op past inline sizes | 150 + 37 + 82 + ~200 |
 | Node backend | `src/volumes.ts`, `src/volume-tools.ts`, `src/volume-env.ts`, `src/tool-files.ts`, `src/file-arguments.ts`, `src/core/file-arguments.ts`, `src/files.ts`, `src/storage-gc.ts`, `src/storage-usage.ts`, `src/storage-integrity.ts`, `src/gc-verify.ts`, `src/pin-backfill.ts`, `src/computers/transfers.ts`, `scripts/{backfill-pins,check-storage,reconcile-storage,verify-gc}.ts` | 1,192 + 406 + 150 + 314 + 106 + 103 + 278 + 115 + 175 + 85 + 94 + 86 + ~300 |
 | Daemon (proto-block's count) | `internal/refs/refs.go` and the `refs` table, the `job/<id>` ref creation in the tree-form mount, `POST /v0/forks`, the renew goroutine (~250 lines, one table); the import bridge `api/objects.go`, `client/trees.go` and the request handling of `objects.go` (~580 lines). The tree builder (~150 lines: trie → git-exact tree bytes, subtree reuse) and blob upload stay; so do `mounts`, `tree_roots`, `lineage_blobs`, `uploaded` and unit 8's `chunk_locations` as host-local cache | ~830 |
-| Clients and console | `clients/projects.ts`, `clients/python/camelai_run/projects.py` (dropped outright); `VolumeHandle`, `AgentFiles`' volume paths, `FileUrlClaims` in `clients/server.ts`, Python `Volume` (rewritten as `RepoHandle`); `console/web/pages/volumes.tsx`, `components/files.tsx` (rewritten over repos) | 203 + 176 + ~500 + 145 + 233 |
+| Other Workers callers | `apply.ts` and `shared/apply.ts`'s keyed-volume creation, `computers/objects.ts:334` seeding and `computers/policy.ts`' volume text, `media/images.ts:285–344` and `media-api.ts`'s `volumeId` fields, `model.ts`'s R2-key decoding for image inputs, `channels.ts`' volume file routes, `prompt-attachments.ts`' pin calls, `hosted-mcp-tools.ts`' mounts schema, `account-export.ts`/`account-deletion.ts`/`account-lifecycle.ts`'s volume walks, `admin/admin-usage.ts`' volume counts | ~600, rewritten over repos |
+| Clients and console | `clients/projects.ts`, `clients/python/camelai_run/projects.py` (dropped outright); `VolumeHandle`, `AgentFiles`' volume paths, `FileUrlClaims` in `clients/server.ts`, Python `Volume` (rewritten as `RepoHandle`); `console/web/pages/volumes.tsx`, `components/files.tsx` (rewritten over repos); `evals/workflows/lib/runtime.ts`, `choice.ts`, `run.ts` (over `RepoHandle`) | 203 + 176 + ~500 + 145 + 233 + ~150 |
 | Schema and docs | migrations to retire: `volumes`, `volume_snapshots`, `volume_watchers` (001), `storage_usage` (012), `storage_gc`/`chunk_touches`/`chunk_pins` (026), 058, 060, `agent_dreaming.volume` (129); OpenAPI's twelve volume paths and eighteen file/volume/snapshot/mount schemas (~1,000 lines); `docs/guides/files.md` "Volumes", `projects.md`, and the volume sections of `limits.md`, `errors.md`, `persistence.md`, `privacy.md`, `billing.md`, `apply.md`, `workflows.md`, `multi-agent.md`, `computers.md`, `tools.md`, `concepts.md` | rewritten |
 | Tests | `tests/volumes.test.ts` 778, `volume-commit` 140, `volume-env` 172, `storage-gc` 217, `prop-storage-gc` 218, `storage-limits` 178, `storage-integrity` 57, `storage` 179, `gc-verify` 56, `projects` 223, `files` 351, `tool-files` 282, `file-arguments` 295, `file-link-tools` 144, `purge` 214; Workers `volume-commit.integration` 278, `files.integration` 258, `file-*` 253, `tenant-storage` 93, `host-sync-store` 30, `camelfs-import` 127, `workflow-jobs` 407, `workflow-results` 122, `computer-fork` 190; the volume sections of `tests/python_sdk.py`; `tests/sim/corpus/storage.json` | ~5,300, rewritten over repos |
 
@@ -235,55 +269,66 @@ and console, plus the schema, docs and ~5,300 lines of tests that follow them. W
 (~800), the files API over it (~600), the tools rewrite (~400) and the SDK, console and OpenAPI rewrites, on top of
 `camelfsd` and the storage plane, which already exist.
 
-**Phases** (each a PR stack from `main`, each usable alone; v0's ledger continues throughout):
+**Phases** (each a PR stack onto the integration branch `camelfs/files-model`, each usable alone and stated by its
+bar, not a date: Miguel wants fast iteration, and the three lanes of §9 build in parallel; v0's ledger continues
+throughout):
 
-1. **The repo object and the API** (3 weeks): `RepoDO` with refs, fence, quota counters, head-tree cache; the
+1. **The repo object and the API**: `RepoDO` with refs, fence, quota counters, head-tree cache; the
    object store writers for trees, commits and blobs from Workers; `/v1/repos/*` including files, `files:batch`,
    `commit`, `history`, `diff`, `restore`, `branches`, `merge`; tokens; the Pi file tools over repos for agents
    without a VM (every write a commit); `checkpoint(message)`, `restore`, `history`, `diff` as tools; the edge cache
    on `blobs/:sha`. New agents get repos; nothing else changes yet.
    Bar: a Worker file write ≤ 80 ms p50; `files:batch` of 20 files ≤ 150 ms; fork ≤ 50 ms; merge of 3 disjoint
    edits ≤ 200 ms; `history`/`diff` ≤ 100 ms at 50k files.
-2. **Hosts, jobs and workflows on refs** (3 weeks): `camelfsd` takes its CAS from the runtime and drops its ref
+2. **Hosts, jobs and workflows on refs**: `camelfsd` takes its CAS from the runtime and drops its ref
    store; `job({ at: ref | version, commit })` mounts the tree with no import; the `job:<id>` branch, merge and
    fast-forward effects; result cache on the tree; `keep()` as one commit; computers mount the agent's ref with the
    lease (per camel-fs.md phase 2). The import bridge and `camel-sync` are deleted.
    Bar: job placement → first command ≤ 300 ms warm with no import leg (ledger L25, L43, L68 close); result leg
    (L70) ≤ 300 ms; a commit job's branch merges or fast-forwards in one effect.
-3. **Everything Volumes did** (3 weeks): the published-ref pattern as an SDK example (projects and `publishTool`
+3. **Everything Volumes did**: the published-ref pattern as an SDK example (projects and `publishTool`
    deleted); uploads and attachments as commits with the history ref; dreaming on a repo; signed links on blobs and
    versions; `notify` from the repo object; account export (tar + bundle) and deletion by refs; quota and billing
    from the repo object's counters; `grep` on the index for every agent; the console's repos page; SDKs and OpenAPI;
    the guides.
    Bar: the publish pattern's check-and-move round trip ≤ 1 s for a 5k-file repo; export of a tenant with 100 repos
    streams without buffering; a deleted tenant's objects are unreachable within one GC cycle.
-4. **Delete** (1 week): the Volume DO, the R2 layout, the Node volume files, the routes, the schemas, the console
-   pages, the fakes; the ledger rows they carried flip to `fixed`.
+4. **Delete**: the Volume DO, the R2 layout, the Node volume files, the routes, the schemas, the console pages, the
+   fakes; the ledger rows they carried flip to `fixed`. Bar: no reference to `VOLUMES`, `vol_` ids, `files/<tenant>/`
+   keys or `chunks/<tenant>/` keys remains in either backend; the integration branch merges to `main`.
 
 **Later** (not in scope): migration of existing volumes into repos (one commit per volume from its file table,
 a `published/<n>` ref per pinned snapshot, keyed ids preserved), done lazily on first touch or by a sweep when the
 new model has run for a while.
 
-## 8. Open questions for Miguel
+## 8. Decisions taken by default (Miguel may override)
 
-Decided already, and written as such above: the state split (§6) and dropping projects and `publishTool` (§5).
+Miguel is not reviewing tonight and wants this built, so each remaining question is decided as recommended and
+marked **default**; a reversal is a small change to the named section. Already decided by Miguel, and written as
+such above: the state split (§6) and dropping projects and `publishTool` (§5).
 
-1. **The word.** `repo` (recommended) or `workspace` for the user-facing noun; it names the API path, the SDK handle
-   and every doc.
-2. **Every API write is a commit.** It is the cleanest reading of the invariant and gives per-write history and
-   blame, at ~10 small writes per file write (about $2k/month of object writes at the 1,000-agent baseline of
-   camel-fs.md §1.13, falling ~3× with tree segments). The alternative is to coalesce a VM-less agent's writes within
-   a turn into one commit at turn end, which halves the cost and loses per-write history. Recommendation: every
-   write, with `commit` for multi-file tools.
-3. **What the history ref keeps.** §2 keeps every version an agent's transcript shows reachable for the agent's
-   life, which is today's rule ("a file an agent was sent or shown stays until the agent is deleted"). Keep the
-   rule, or let `rm` on `main` win and have the transcript's link fail after the fact?
-4. **The edge cache's trust boundary.** `blobs/:sha` serves a blob to any valid token that knows the hash
-   (knowledge of the id is the proof; the tree resolution is where authorization happened). It makes the cache
-   shareable across tenants, which is the point, and it means a leaked hash is a leaked file. Accept, or key the
-   cache per tenant and lose cross-tenant hits?
-5. **camel-bots' move** off project snapshots onto the published-ref pattern: with the first phase of this plan,
-   or only when migration starts?
+1. **The word: `repo`** (default). It names the API path (`/v1/repos`), the SDK handle (`RepoHandle`) and every doc.
+   Developers already know that a repo has branches, history, forks, diffs and restores; "workspace" collides with the
+   agent's own mount. Override cost: a rename.
+2. **Every API write is a commit** (default). Per write, under the decided split: one blob PUT to S3 ($5 per
+   million, $0.000005), about four tree writes and one commit write to DynamoDB (1–3 KB each, so ≈ 10 write units at
+   $1.25 per million, $0.0000125), and one `RepoDO` CAS (one DO request at $0.15 per million plus ~3 SQLite rows at
+   $1 per million, $0.0000032): **≈ $0.0000207 per write**, so the 144 M writes a month of camel-fs.md's 1,000-agent
+   baseline cost **≈ $3,000/month**, falling to ≈ $1,800 with tree segments (one item per write's trees). Tonight's
+   S3-only variant is ≈ $0.000033 per write (six PUTs plus the CAS), ≈ $4,800/month. The alternative, coalescing a
+   VM-less agent's writes within a turn into one commit at turn end, would cut the write line ~5× (to the ~20
+   checkpoints an hour the VM path pays) and lose per-write history and blame. Default: every write, with `commit`
+   for multi-file tools. Override cost: a turn-end coalescer in the files API; §3 and §2 change, §9 does not.
+3. **Published versions are refs** (default): `published` (or `published/<n>`) and `release/<label>` replace pinned
+   snapshots and labels; a repo with thousands of publishes has thousands of refs, which the repo object's SQLite
+   holds without strain and `refs?prefix=published/` lists. Override: a single `published` ref whose tree is a
+   manifest of versions.
+4. **The history ref keeps** (default): every version an agent's transcript shows stays reachable for the agent's
+   life, today's rule ("a file an agent was sent or shown stays until the agent is deleted"), so `rm` or `restore` on
+   `main` never breaks a message that showed a file. Override: let `main` win and have the transcript's link fail.
+
+Not a question any more: the edge cache's trust boundary is settled by §3 and §9.1 (authorization by `(version,
+path)` before any lookup by hash). camel-bots' move off project snapshots is migration, later (§5).
 
 ## 9. The storage-plane contract: what `camelfsd` exposes to the runtime
 
