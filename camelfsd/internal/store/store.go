@@ -92,7 +92,7 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
 		if e := v.acquire(ctx); e != nil {
 			return e
 		}
-		defer v.release()
+		defer v.release(ctx)
 		return PutBlobFile(ctx, v.Store, key, f)
 	case Local:
 		dst := filepath.Join(v.Dir, key)
@@ -334,6 +334,8 @@ func Depth(s Store) int {
 }
 
 type backgroundKey struct{}
+
+func IsBackground(ctx context.Context) bool { return ctx.Value(backgroundKey{}) == true }
 
 // Background shares a bounded speculative budget, leaving slots for demand.
 func Background(ctx context.Context) context.Context {

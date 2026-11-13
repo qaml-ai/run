@@ -19,23 +19,24 @@ type flight struct {
 	err  error
 }
 type Cache struct {
-	verified map[string]time.Time
-	Hashes   atomic.Int64
-	fdMu     sync.Mutex
-	fds      map[string]*list.Element
-	lru      list.List
-	Dir      string
-	Store    store.Store
-	mu       sync.Mutex
-	flights  map[string]*flight
-	slots    chan struct{}
+	verified   map[string]time.Time
+	Hashes     atomic.Int64
+	fdMu       sync.Mutex
+	fds        map[string]*list.Element
+	lru        list.List
+	Dir        string
+	Store      store.Store
+	mu         sync.Mutex
+	flights    map[string]*flight
+	slots      chan struct{}
+	background chan struct{}
 }
 
 func New(dir string, s store.Store, n int) *Cache {
 	if n < 1 {
 		n = 64
 	}
-	return &Cache{Dir: dir, Store: s, flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}, slots: make(chan struct{}, n)}
+	return &Cache{Dir: dir, Store: s, flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}, slots: make(chan struct{}, n), background: make(chan struct{}, max(1, n-min(8, max(1, n/4))))}
 }
 func (c *Cache) Ensure(h string) (string, error) { return c.EnsureContext(context.Background(), h) }
 func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
@@ -76,6 +77,15 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 			f.path = p
 			return p, nil
 		}
+	}
+	if store.IsBackground(ctx) {
+		select {
+		case c.background <- struct{}{}:
+		case <-ctx.Done():
+			f.err = ctx.Err()
+			return "", f.err
+		}
+		defer func() { <-c.background }()
 	}
 	select {
 	case c.slots <- struct{}{}:

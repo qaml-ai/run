@@ -28,7 +28,7 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	m, e := New(Config{Data: data, Cold: "prehydrate", HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
+	m, e := New(Config{Data: data, HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}

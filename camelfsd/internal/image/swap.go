@@ -53,3 +53,9 @@ func (m *Manager) swap(ctx context.Context, v *Mount) error {
 	v.HydrationError = ""
 	return m.save(v)
 }
+
+func resumeDM(name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return run(ctx, "dmsetup", "resume", name)
+}

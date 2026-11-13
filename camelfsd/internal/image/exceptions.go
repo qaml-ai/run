@@ -1,6 +1,7 @@
 package image
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
@@ -52,7 +53,7 @@ func readExceptions(r io.ReaderAt, cowSize, originSize int64) ([]exception, erro
 
 // Capture through the exception mapping rather than reading the suspended DM
 // device (which queues reads). This produces exactly the snapshot's bytes.
-func snapshotCopy(base, cow, dst string, size int64) ([]chunk.Range, error) {
+func snapshotCopy(ctx context.Context, base, cow, dst string, size int64) ([]chunk.Range, error) {
 	f, e := os.Open(cow)
 	if e != nil {
 		return nil, e
@@ -77,6 +78,9 @@ func snapshotCopy(base, cow, dst string, size int64) ([]chunk.Range, error) {
 	var ranges []chunk.Range
 	b := make([]byte, snapshotChunk)
 	for _, ex := range es {
+		if e := ctx.Err(); e != nil {
+			return nil, e
+		}
 		off := int64(ex.Old) * snapshotChunk
 		n := min(snapshotChunk, size-off)
 		if _, e = f.ReadAt(b[:n], int64(ex.New)*snapshotChunk); e != nil {

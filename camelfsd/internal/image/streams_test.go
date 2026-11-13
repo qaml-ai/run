@@ -30,7 +30,7 @@ func unit3(t *testing.T) (*Manager, string) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	m, e := New(Config{Data: data, Cold: "prehydrate", HostID: "test", VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
+	m, e := New(Config{Data: data, HostID: "test", VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
 	if e != nil {
 		t.Fatal(e)
 	}

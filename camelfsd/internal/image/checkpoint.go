@@ -70,55 +70,62 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e = m.awaitHydration(ctx, v); e != nil {
 		return out, e
 	}
-	suspended := false
-	if v.DM != "" {
-		if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
-			return out, e
+	var ranges []chunk.Range
+	snap := v.preparedSnapshot
+	if snap != "" {
+		ranges = v.preparedRanges
+		v.preparedSnapshot = ""
+		v.preparedRanges = nil
+	} else {
+		suspended := false
+		if v.DM != "" {
+			if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
+				return out, e
+			}
+			suspended = true
 		}
-		suspended = true
-	}
-	defer func() {
-		if suspended {
-			_, re := run(context.Background(), "dmsetup", "resume", v.DM)
-			if err == nil {
-				err = re
+		defer func() {
+			if suspended {
+				_, re := resumeDM(v.DM)
+				if err == nil {
+					err = re
+				}
+			}
+		}()
+
+		v.Snapshot++
+		snap = filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
+		rt := time.Now()
+		if v.DM != "" {
+			ranges, e = snapshotCopy(ctx, v.Dest, filepath.Join(filepath.Dir(v.Dest), "cow.img"), snap, r.VirtualSize)
+		} else {
+			f, err := os.OpenFile(v.Dest, os.O_RDWR, 0)
+			if err != nil {
+				return out, err
+			}
+			e = f.Sync()
+			if e == nil {
+				ranges, e = changedRanges(f, r.VirtualSize, r.Chunks)
+			}
+			f.Close()
+			if e == nil {
+				e = clone(v.Dest, snap)
 			}
 		}
-	}()
-
-	v.Snapshot++
-	snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
-	rt := time.Now()
-	var ranges []chunk.Range
-	if v.DM != "" {
-		ranges, e = snapshotCopy(v.Dest, filepath.Join(filepath.Dir(v.Dest), "cow.img"), snap, r.VirtualSize)
-	} else {
-		f, err := os.OpenFile(v.Dest, os.O_RDWR, 0)
-		if err != nil {
-			return out, err
-		}
-		e = f.Sync()
-		if e == nil {
-			ranges, e = changedRanges(f, r.VirtualSize, r.Chunks)
-		}
-		f.Close()
-		if e == nil {
-			e = clone(v.Dest, snap)
-		}
-	}
-	if e != nil {
-		os.Remove(snap)
-		return out, e
-	}
-	v.pendingRanges = append(v.pendingRanges, ranges...)
-	ranges = v.pendingRanges
-	out.ReflinkMs = ms(rt)
-	if suspended {
-		_, e = run(context.Background(), "dmsetup", "resume", v.DM)
 		if e != nil {
+			os.Remove(snap)
 			return out, e
 		}
-		suspended = false
+		v.pendingRanges = append(v.pendingRanges, ranges...)
+		ranges = v.pendingRanges
+		out.ReflinkMs = ms(rt)
+		if suspended {
+			_, e = resumeDM(v.DM)
+			if e != nil {
+				return out, e
+			}
+			suspended = false
+		}
 	}
 	sf, e := os.Open(snap)
 	if e != nil {

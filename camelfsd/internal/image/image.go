@@ -73,8 +73,6 @@ type Mount struct {
 	Warm                                       bool    `json:"warm"`
 	State                                      string  `json:"state"`
 	LeaseEpoch                                 int64   `json:"leaseEpoch"`
-	HydratedRegions                            int64   `json:"hydratedRegions"`
-	TotalRegions                               int64   `json:"totalRegions"`
 	MountMs                                    float64 `json:"mountMs"`
 	Hydrating                                  bool    `json:"hydrating"`
 	Dest, CowLoop, DestLoop, NBD, DM, OriginDM string
@@ -88,6 +86,8 @@ type Mount struct {
 	TotalBytes                                 int64   `json:"totalBytes"`
 	SwapMs                                     float64 `json:"swapMs"`
 	HydrationError                             string  `json:"hydrationError,omitempty"`
+	preparedSnapshot                           string
+	preparedRanges                             []chunk.Range
 	pendingRanges                              []chunk.Range
 }
 
@@ -282,7 +282,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	} else if !os.IsNotExist(e) {
 		return nil, e
 	} else {
-		if e = m.sweep(r.VirtualSize); e != nil {
+		if e = m.sweep(int64(len(r.Chunks)) * chunk.Size); e != nil {
 			return nil, e
 		}
 		if m.Origin != nil {
@@ -415,6 +415,7 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 		return e
 	}
 	if _, e = run(ctx, "dmsetup", "create", v.OriginDM, "--table", fmt.Sprintf("0 %d linear %s 0", r.VirtualSize/512, v.NBD)); e != nil {
+		v.OriginDM = ""
 		return e
 	}
 	cow := filepath.Join(filepath.Dir(v.Dest), "cow.img")

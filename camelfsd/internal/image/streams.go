@@ -480,6 +480,9 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	defer stopCancel()
 	deadline, _ := ctx.Deadline()
 	c = &wire.DeadlineConn{Conn: raw, Idle: m.StreamIdle, Overall: deadline}
+	if e := m.awaitHydration(ctx, v); e != nil {
+		return out, e
+	}
 	streamStart := time.Now()
 	prepared, e := m.prepareReceive(ctx, v)
 	if e != nil {
@@ -510,6 +513,36 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 		return out, fmt.Errorf("%w: %v", ErrBadStream, e)
 	}
 	defer os.RemoveAll(r.dir)
+	if v.DM != "" {
+		root, e := m.mountRoot(ctx, v.Root)
+		if e != nil {
+			return out, e
+		}
+		v.Snapshot++
+		snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
+		if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
+			return out, e
+		}
+		ranges, captureErr := snapshotCopy(ctx, v.Dest, filepath.Join(filepath.Dir(v.Dest), "cow.img"), snap, root.VirtualSize)
+		_, resumeErr := resumeDM(v.DM)
+		if captureErr != nil {
+			os.Remove(snap)
+			return out, captureErr
+		}
+		if resumeErr != nil {
+			os.Remove(snap)
+			return out, resumeErr
+		}
+		v.preparedSnapshot = snap
+		v.preparedRanges = ranges
+		defer func() {
+			if v.preparedSnapshot != "" {
+				os.Remove(v.preparedSnapshot)
+				v.preparedSnapshot = ""
+				v.preparedRanges = nil
+			}
+		}()
+	}
 	if err = wire.Send(c, map[string]bool{"ack": true}); err != nil {
 		return out, ErrStreamTimeout
 	}

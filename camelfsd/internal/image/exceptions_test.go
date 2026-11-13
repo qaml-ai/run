@@ -37,7 +37,7 @@ func TestExceptions(t *testing.T) {
 	}
 	for _, pos := range []int{0, 4, 8, 12} {
 		bad := append([]byte(nil), b...)
-		bad[pos] = 0
+		bad[pos] ^= 0xff
 		if _, e := readExceptions(bytes.NewReader(bad), int64(len(bad)), 8*snapshotChunk); e == nil {
 			t.Fatalf("accepted invalid header %d", pos)
 		}
@@ -62,7 +62,7 @@ func TestSnapshotCopy(t *testing.T) {
 	c := exceptionFixture([]exception{{1, 2}, {5, 3}})
 	copy(c[2*snapshotChunk:3*snapshotChunk], bytes.Repeat([]byte{9}, int(snapshotChunk)))
 	os.WriteFile(cow, c, 0600)
-	ranges, e := snapshotCopy(base, cow, dst, int64(len(b)))
+	ranges, e := snapshotCopy(context.Background(), base, cow, dst, int64(len(b)))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -180,5 +180,35 @@ func TestMaterializeSparseVirtualSize(t *testing.T) {
 	}
 	if n := m.Cache.Hashes.Load(); n != 1 {
 		t.Fatalf("cache refetched duplicate chunk: hashes=%d", n)
+	}
+}
+
+func TestExceptionsNextMetadataArea(t *testing.T) {
+	// A sparse file exercises the 16 GiB area stride without allocating data.
+	f, e := os.CreateTemp(t.TempDir(), "areas")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer f.Close()
+	const entries = snapshotChunk / 16
+	size := (entries + 4) * snapshotChunk
+	if e = f.Truncate(size); e != nil {
+		t.Fatal(e)
+	}
+	header := exceptionFixture(nil)[:16]
+	f.WriteAt(header, 0)
+	area := make([]byte, snapshotChunk)
+	for i := int64(0); i < entries; i++ {
+		binary.LittleEndian.PutUint64(area[i*16:], uint64(i))
+		binary.LittleEndian.PutUint64(area[i*16+8:], uint64(i+2))
+	}
+	f.WriteAt(area, snapshotChunk)
+	clear(area)
+	binary.LittleEndian.PutUint64(area, uint64(entries))
+	binary.LittleEndian.PutUint64(area[8:], uint64(entries+3))
+	f.WriteAt(area, (entries+2)*snapshotChunk)
+	es, e := readExceptions(f, size, (entries+1)*snapshotChunk)
+	if e != nil || len(es) != int(entries+1) || es[len(es)-1].Old != uint64(entries) {
+		t.Fatal(len(es), e)
 	}
 }
