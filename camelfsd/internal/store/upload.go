@@ -3,27 +3,66 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 )
+
+var opaqueUploadEpoch = time.Now().UnixNano()
 
 // Uploaded remembers durable content-addressed writes in this host's refs.db.
 type Uploaded struct {
 	Store
-	DB *sql.DB
+	DB        *sql.DB
+	scopeOnce sync.Once
+	scope     string
 }
 
+// Namespace upload inventory by its durable destination. Legacy unscoped rows
+// cannot prove an object exists after changing a bucket, prefix or local store.
+func uploadNamespace(s Store) string {
+	switch v := s.(type) {
+	case Local:
+		p, _ := filepath.Abs(v.Dir)
+		return "local\x00" + filepath.Clean(p)
+	case *S3:
+		return "s3\x00" + v.Bucket + "\x00" + v.Prefix
+	case *limited:
+		return uploadNamespace(v.Store)
+	case *Uploaded:
+		return uploadNamespace(v.Store)
+	default:
+		return ""
+	}
+}
+func (s *Uploaded) inventoryKey(k string) string {
+	s.scopeOnce.Do(func() {
+		scope := uploadNamespace(s.Store)
+		if scope == "" {
+			scope = fmt.Sprintf("opaque:%p:%d", s, time.Now().UnixNano())
+			if reflect.ValueOf(s.Store).Kind() == reflect.Pointer {
+				scope = fmt.Sprintf("opaque:%T:%p:%d", s.Store, s.Store, opaqueUploadEpoch)
+			}
+		}
+		s.scope = root.Hash([]byte(scope))
+	})
+	return s.scope + "/" + k
+}
 func (s *Uploaded) known(ctx context.Context, k string) (bool, error) {
 	var n int
-	e := s.DB.QueryRowContext(ctx, "SELECT 1 FROM uploaded WHERE key=?", k).Scan(&n)
+	e := s.DB.QueryRowContext(ctx, "SELECT 1 FROM uploaded WHERE key=?", s.inventoryKey(k)).Scan(&n)
 	if e == sql.ErrNoRows {
 		return false, nil
 	}
 	return e == nil, e
 }
 func (s *Uploaded) record(ctx context.Context, k string) error {
-	_, e := s.DB.ExecContext(ctx, "INSERT OR IGNORE INTO uploaded VALUES(?,?)", k, time.Now().UnixMilli())
+	_, e := s.DB.ExecContext(ctx, "INSERT OR IGNORE INTO uploaded VALUES(?,?)", s.inventoryKey(k), time.Now().UnixMilli())
 	return e
 }
 func (s *Uploaded) Get(ctx context.Context, k string) ([]byte, error) {

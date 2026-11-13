@@ -114,6 +114,9 @@ func (c *Cache) ensure(ctx context.Context, h string) (string, error) {
 		c.verified[h] = time.Now()
 		c.mu.Unlock()
 	}
+	if e != nil && e != context.Canceled {
+		return "", fmt.Errorf("fetch chunk %s: %w", h, e)
+	}
 	return f.path, e
 }
 func (c *Cache) Fetch(ctx context.Context, hashes []string, n int) error {
