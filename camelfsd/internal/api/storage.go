@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -105,8 +104,7 @@ func require(ctx context.Context, repo *objects.Repository, l, id, kind string, 
 	return nil
 }
 func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
-	if s.APIToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+s.APIToken)) != 1 {
-		jsonReply(w, 401, map[string]any{"error": map[string]string{"code": "unauthorized", "message": "bearer required"}})
+	if !s.authorize(w, r) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/lineages/"), "/")

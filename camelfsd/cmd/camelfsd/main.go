@@ -182,13 +182,7 @@ func host(args []string) error {
 			return err
 		}
 		defer al.Close()
-		runtimeAPI := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/v1/") {
-				http.NotFound(w, r)
-				return
-			}
-			handler.ServeHTTP(w, r)
-		}), ReadHeaderTimeout: 5 * time.Second}
+		runtimeAPI := &http.Server{Handler: handler.RuntimeHandler(), ReadHeaderTimeout: 5 * time.Second}
 		defer runtimeAPI.Close()
 		go func() {
 			if err := runtimeAPI.Serve(al); err != nil && err != http.ErrServerClosed {

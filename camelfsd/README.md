@@ -32,8 +32,12 @@ whole images. Privileged loop/reflink tests skip when unsupported.
 
 An absolute directory in --store substitutes the local store. S3 uses the SDK
 credential chain. No runtime TCP listener starts without --api-token-file.
-The runtime listener serves only /v1; host operations stay on the mode-0600
-Unix socket. Protect the loopback listener behind the runtime's private tunnel.
+The runtime listener serves /v1 plus exactly POST /v0/trees and
+PUT /v0/blobs/:sha256?lineage=... using the Unix socket handlers. Both import
+routes require the same bearer as /v1. Other /v0 paths return 404 on TCP;
+host operations stay on the mode-0600 Unix socket. This replaces jobhost's
+phase-1 import proxy on 127.0.0.1:8790: stop the proxy before enabling the
+daemon listener, leaving the pilot VPC service address unchanged. Protect the loopback listener behind the runtime's private tunnel.
 Never log the bearer. Health reports api: "127.0.0.1:8790".
 
 ## Durability and lineage scope
