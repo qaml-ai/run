@@ -4,7 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 image=amazon/dynamodb-local@sha256:1856c05cc66a0e49dc1099e483ad2851477eeebe2135250ac11a1d1227db54b1
 endpoint=http://127.0.0.1:8000
-container=$(docker run -d -p 127.0.0.1:8000:8000 "$image" -jar DynamoDBLocal.jar -inMemory -sharedDb)
+# Host networking: a sprite cannot start a bridge container whose image runs as non-root (scripts/sprite-test-core.sh).
+container=$(docker run -d --network host "$image" -jar DynamoDBLocal.jar -inMemory -sharedDb -port 8000)
 trap 'docker rm -f "$container" >/dev/null' EXIT
 
 for ((attempt = 0; attempt < 60; attempt++)); do
