@@ -62,7 +62,7 @@ func storageLogRoute(path string) (route, lineage string) {
 	return
 }
 
-func (s *Server) loggedStorage(w http.ResponseWriter, r *http.Request) {
+func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	route, lineage := storageLogRoute(r.URL.Path)
 	rw := &statusWriter{ResponseWriter: w}

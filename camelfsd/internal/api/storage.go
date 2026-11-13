@@ -133,8 +133,9 @@ func require(ctx context.Context, repo *objects.Repository, l, id, kind string, 
 	}
 	return nil
 }
-func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r) {
+func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
+	r = s.authorize(w, r)
+	if r == nil {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/lineages/"), "/")
@@ -144,10 +145,20 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 	}
 	l := parts[0]
 	route := strings.Join(parts[1:], "/")
-	repo := s.repository().ForLineage(l)
+	write := r.Method == "PUT" || r.Method == "POST" && route != "read"
+	if claims, ok := ClaimsFromContext(r.Context()); ok {
+		if claims.Lineage != l {
+			authFail(w, http.StatusForbidden, "forbidden", "token lineage does not match path")
+			return
+		}
+		if write && claims.Access != "w" {
+			authFail(w, http.StatusForbidden, "forbidden", "write access required")
+			return
+		}
+	}
+	repo := s.repo().ForLineage(l)
 	// Serialize keyed mutations through response publication. A failed request is
 	// retryable; only successful results enter the 24-hour response cache.
-	write := r.Method == "PUT" || r.Method == "POST" && route != "read"
 	if write && r.Header.Get("Idempotency-Key") != "" {
 		key := r.Header.Get("Idempotency-Key")
 		if len(key) > 256 {
@@ -187,7 +198,7 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.storageRoute(w, r, l, route, repo)
 }
-func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route string, repo *objects.Repository) {
+func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, route string, repo *objects.Repository) {
 	ctx := r.Context()
 	q := r.URL.Query()
 	fail := func(e error) { storageFail(w, e) }
@@ -508,7 +519,7 @@ type idempotencyLock struct {
 
 // The map mutex protects bookkeeping only, never request bodies or store I/O.
 // References include waiters so a lock cannot be replaced while still in use.
-func (s *Server) lockIdempotency(lineage, key string) func() {
+func (s *StorageServer) lockIdempotency(lineage, key string) func() {
 	k := idempotencyKey{lineage, key}
 	s.idemLocksMu.Lock()
 	if s.idemLocks == nil {

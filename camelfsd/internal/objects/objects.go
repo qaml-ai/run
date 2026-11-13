@@ -377,7 +377,7 @@ func (r *Repository) importTrees(ctx context.Context, q Request) (Result, error)
 	}
 	out.Blobs = len(q.Files)
 	if q.ParentTree != "" && q.ParentTree != out.Tree {
-		_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO tree_parents(tree,parent) VALUES(?,?)", out.Tree, q.ParentTree)
+		e = r.DB.RecordTreeParent(ctx, out.Tree, q.ParentTree)
 		if e != nil {
 			return out, e
 		}
