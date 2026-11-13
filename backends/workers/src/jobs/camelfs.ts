@@ -9,6 +9,13 @@ export function uploadTimeoutMs(size: number): number {
   return Math.min(60_000 + Math.ceil(size / (2 * 2 ** 20)) * 1000, 30 * 60_000);
 }
 
+/** Why the daemon refused: its error code (shape-checked) and detail (printable, bounded), with the bearer cut out. */
+function reason(value: { error?: unknown; detail?: unknown } | null, token: string) {
+  const code = typeof value?.error === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value.error) ? value.error : "";
+  const detail = typeof value?.detail === "string" ? value.detail.split(token).join("***").replace(/[^\x20-\x7e]/g, "").slice(0, 160) : "";
+  return [code, detail].filter(Boolean).join(": ").split(token).join("***");
+}
+
 /** Bound daemon responses without putting their contents or credentials in errors. */
 async function body(response: Response): Promise<unknown> {
   const bad = () => new Error(`camelFS status ${response.status}: malformed or oversized body`);
@@ -52,10 +59,7 @@ export async function importTree(env: CamelfsEnv, input: {
       body: JSON.stringify({ lineage: input.lineage, ...(input.parentTree ? { parentTree: input.parentTree } : {}), files }),
     });
     const value = await body(response) as { tree?: unknown; missing?: unknown; error?: unknown; detail?: unknown } | null;
-    // The daemon's error code (its shape checked) and detail (the token cut out, printable, bounded) say why it refused.
-    const code = typeof value?.error === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value.error) ? value.error : "";
-    const detail = typeof value?.detail === "string" ? value.detail.split(env.CAMELFS_API_TOKEN!).join("***").replace(/[^\x20-\x7e]/g, "").slice(0, 160) : "";
-    const said = [code, detail].filter(Boolean).join(": ").split(env.CAMELFS_API_TOKEN!).join("***");
+    const said = reason(value, env.CAMELFS_API_TOKEN!);
     const bad = () => new Error(`camelFS status ${response.status}: ${said || "invalid tree import response"}`);
     if (response.status === 200) {
       if (typeof value?.tree !== "string" || !/^[0-9a-f]{40}$/.test(value.tree)) throw bad();
@@ -66,14 +70,17 @@ export async function importTree(env: CamelfsEnv, input: {
     if (missing.some(hash => typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash) || !byHash.has(hash))) throw bad();
     for (let i = 0; i < missing.length; i += 8) {
       await Promise.all(missing.slice(i, i + 8).map(async hash => {
-        const { body, size } = await input.read(byHash.get(hash)!);
+        const { body: data, size } = await input.read(byHash.get(hash)!);
         const put = await request(`http://camelfs/v0/blobs/${hash}?lineage=${encodeURIComponent(input.lineage)}`, {
           method: "PUT", headers: { authorization, "content-type": "application/octet-stream", "content-length": String(size) },
-          signal: AbortSignal.timeout(uploadTimeoutMs(size)), body,
-          ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
+          signal: AbortSignal.timeout(uploadTimeoutMs(size)), body: data,
+          ...(data instanceof ReadableStream ? { duplex: "half" } : {}),
         });
+        if (put.status !== 200 && put.status !== 201) {
+          const said = reason(await body(put).catch(() => null) as Record<string, unknown> | null, env.CAMELFS_API_TOKEN!);
+          throw new Error(`camelFS status ${put.status}: blob upload failed${said ? `: ${said}` : ""}`);
+        }
         await put.body?.cancel();
-        if (put.status !== 200 && put.status !== 201) throw new Error(`camelFS status ${put.status}: blob upload failed`);
         uploaded++;
       }));
     }

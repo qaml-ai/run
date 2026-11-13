@@ -1,8 +1,8 @@
 # Runtime source revision; use a revision containing the nested-KVM launcher flags.
 RUN_REF=main
-# Daemon source revision, built separately from the runtime. Pin a commit: a branch rebuilds and restarts camelfsd
-# whenever it moves.
-CAMELFSD_REF=camelfs/daemon-v0
+# Daemon source revision: pin a commit of this repository (camelfsd/ is on main since #907; this job host needs its
+# unit 6 or later). A branch rebuilds and restarts camelfsd whenever it moves.
+CAMELFSD_REF=main
 # Runtime enrollment endpoint, e.g. https://run-pilot.camelai.dev (required).
 RUNTIME_URL=
 # aws uses the instance role; test needs JOB_HOST_TEST_SECRET in /etc/camel/jobhost-test.env.
@@ -19,6 +19,10 @@ JOB_MEMORY_MIB=2048
 CAMELFS_API_PORT=8790
 # Daemon object store URL (required; replace both placeholders).
 CAMELFSD_STORE='s3://<bucket>/camelfsd/<prefix>'
+# A new lineage's blank image size in bytes: sparse, so a high default costs nothing up front (no proactive caps). 64 GiB:
+# mkfs writes ~0.5 GB of inode tables at this size unless the daemon's mkfs uses lazy init (unit 7 does). There is
+# no online grow yet (ledger L67), so this is the most a job's /repo can hold.
+CAMELFSD_VIRTUAL_SIZE=68719476736
 # Region of the daemon store and AWS environment.
 AWS_REGION=us-west-2
 # Empty discovers instance store by model; an override still requires safety checks.
