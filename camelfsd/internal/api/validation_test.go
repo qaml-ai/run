@@ -15,7 +15,8 @@ func TestInvalidRequestNamesFieldOrRule(t *testing.T) {
 	id := c["commit"].(string)
 	for _, tc := range []struct{ method, route, body, key, message string }{
 		{"POST", "commits", `{"parent":null,"author":"a"}`, "", `unknown field parent`},
-		{"POST", "commits", `{"author":"a"}`, "", "parents"},
+		{"POST", "commits", `{"author":"a"}`, "", "missing field parents"},
+		{"POST", "commits", `{}`, "", "missing field parents"},
 		{"POST", "commits", `{"parents":null,"author":"a"}`, "", "parents"},
 		{"POST", "commits", fmt.Sprintf(`{"parents":[%q,%q,%q],"author":"a"}`, id, id, id), "", "parents: at most 2"},
 		{"POST", "commits", `{"parents":[],"author":""}`, "", "author"},
