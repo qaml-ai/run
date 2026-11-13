@@ -145,7 +145,8 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 	}
 	l := parts[0]
 	route := strings.Join(parts[1:], "/")
-	write := r.Method == "PUT" || r.Method == "POST" && route != "read"
+	// Fail closed: every method except GET/HEAD mutates, except the read-only POST /read.
+	write := r.Method != http.MethodGet && r.Method != http.MethodHead && !(r.Method == http.MethodPost && route == "read")
 	if claims, ok := ClaimsFromContext(r.Context()); ok {
 		if claims.Lineage != l {
 			authFail(w, http.StatusForbidden, "forbidden", "token lineage does not match path")
