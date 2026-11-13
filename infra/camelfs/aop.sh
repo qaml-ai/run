@@ -67,7 +67,8 @@ case "${1:-}" in
     aws secretsmanager get-secret-value --secret-id "$secret" --query SecretString --output text > "$work/secret.json" || { echo "No AOP CA yet: run aop.sh init." >&2; exit 1; }
     jq -r .caCertPem "$work/secret.json" > "$work/ca.pem"; jq -r .caKeyPem "$work/secret.json" > "$work/ca.key"
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/leaf.key" 2>/dev/null
-    openssl req -new -key "$work/leaf.key" -subj "/O=camelAI/CN=cloudflare-origin-pull/$hostname" -out "$work/leaf.csr"
+    # A slash in the CN would start a new RDN and openssl refuses it; a dot does the naming.
+    openssl req -new -key "$work/leaf.key" -subj "/O=camelAI/CN=cloudflare-origin-pull.$hostname" -out "$work/leaf.csr"
     printf 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' > "$work/leaf.ext"
     openssl x509 -req -in "$work/leaf.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key" -CAcreateserial -days 365 -sha256 -extfile "$work/leaf.ext" -out "$work/leaf.pem" 2>/dev/null
     openssl verify -purpose sslclient -CAfile "$work/ca.pem" "$work/leaf.pem" >/dev/null
@@ -94,9 +95,19 @@ case "${1:-}" in
     mode=$(jq -r '.Mode // "off"' <<<"$listener"); store=$(jq -r '.TrustStoreArn // ""' <<<"$listener"); ignore=$(jq -r '.IgnoreClientCertificateExpiry // false' <<<"$listener")
     echo "listener 443: mode=$mode trust_store=${store##*/} ignore_expiry=$ignore"
     [[ $mode == verify && $store == *":truststore/camelfs-prod-aop/"* && $ignore == false ]] || { echo "FAIL: the public listener is not verifying against the AOP trust store (apply aop_ca_version first)." >&2; exit 1; }
+    # Through Cloudflare. 200: the whole path works. 503 from the ALB with no healthy target (the service at
+    # api_min_count 0) still proves Cloudflare's certificate passed the handshake, since a TLS failure at the origin
+    # is Cloudflare's own 525 (handshake failed) or 526 (invalid certificate), never the ALB's 503.
+    running=$(aws ecs describe-services --cluster camelfs-prod --services camelfs-prod-api --query 'services[0].runningCount' --output text 2>/dev/null || echo 0)
     code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://$hostname/v0/health" || true)
-    echo "through Cloudflare: HTTP $code"
-    [[ $code == 200 ]] || { echo "FAIL: https://$hostname/v0/health did not answer 200 through Cloudflare (is the leaf uploaded and enabled? aop.sh status)." >&2; exit 1; }
+    echo "through Cloudflare: HTTP $code (running tasks: $running)"
+    case "$code" in
+      200) ;;
+      503) [[ "$running" == 0 ]] && echo "503 from the ALB with no healthy target: mTLS OK, no tasks yet (api_min_count 0)." \
+             || { echo "FAIL: 503 through Cloudflare with $running task(s) running: the targets are unhealthy, not a certificate problem." >&2; exit 1; } ;;
+      525|526) echo "FAIL: Cloudflare could not complete the TLS handshake with the origin ($code): the leaf is not what the listener's trust store expects (aop.sh status; aop_ca_version)." >&2; exit 1 ;;
+      *) echo "FAIL: https://$hostname/v0/health answered $code through Cloudflare (is the leaf uploaded and enabled? aop.sh status)." >&2; exit 1 ;;
+    esac
     # Straight at the ALB with the hostname as SNI and no client certificate. From an address the ranges group
     # admits this ends in a TLS alert (curl 35/56): the handshake itself is refused. From anywhere else the
     # connection times out (curl 28): that proves the security group, not mTLS; say which.
