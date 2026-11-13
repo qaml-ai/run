@@ -54,7 +54,7 @@ test("delta, path expectations, full diff, no-op, parent checks and watchers", a
   await cas(3, [2], [e("a", 2), e("c")]); assert.deepEqual(object.commit(id(3))?.paths, ["c"]);
   const count = object.events().length;
   await cas(3, [2], [e("a", 2), e("c")]); assert.equal(object.events().length, count); assert.equal(object.log().length, count);
-  await assert.rejects(cas(4, [99], []), error("unknown-parent"));
+  await assert.rejects(cas(4, [3, 99], []), error("unknown-parent"));
   await assert.rejects(cas(3, [2], [], {commit: {...v(3, [2]), tree: id(999)}}), error("conflict"));
   object.unwatch("main", "agent");
 });
@@ -176,4 +176,56 @@ test('all supported owner kinds including cache are accepted',async t=>{
   const {object,cas}=fixture(t);await object.init(init);await cas(1,[],[]);
   for(const kind of ['agent','workflow','job','user','api','cache'])await object.createRef({name:kind,from:'main',owner:`${kind}:x`,who:'api:test',why:'test'});
   await assert.rejects(object.createRef({name:'bad',from:'main',owner:'volume:x',who:'api:test',why:'test'}),error('bad-owner'));
+});
+
+test("new commits on an existing ref must start with the current version", async t => {
+  const {object, cas} = fixture(t);
+  await object.init(init);
+  await cas(1, [], [e("a")]);
+  await cas(2, [98, 99], [e("side")], {ref: "topic", expect: null});
+  const state = () => [object.ref("main"), object.list().entries, object.log(), object.events()];
+  const before = state();
+  for (const parents of [[], [2], [2, 1], [1, 2, 2]]) {
+    await assert.rejects(cas(3, parents, [e("b")]), err => {
+      error("bad-parent", 409)(err);
+      assert.deepEqual((err as InstanceType<typeof RepoError>).detail, { parents: parents.map(id), current: id(1) });
+      return true;
+    });
+    assert.deepEqual(state(), before);
+    assert.equal(object.commit(id(3)), null);
+  }
+  await cas(3, [1, 2], [e("b")]);
+  assert.deepEqual(object.commit(id(3))?.parents, [id(1), id(2)]);
+});
+
+test("fast-forward follows all parents and reaches a current fork base without a commit row", async t => {
+  const {object, cas, db} = fixture(t);
+  await object.init(init);
+  await cas(1, [], [e("a")]);
+  await cas(2, [99, 1], [e("b")], {ref: "topic", expect: null});
+  await cas(3, [2], [e("c")], {ref: "topic"});
+  db.prepare("DELETE FROM commits WHERE version=?").run(id(1));
+  await cas(3, [2], [e("c")], {expect: id(1)});
+  assert.equal(object.ref("main")?.version, id(3));
+});
+
+test("fast-forward fails closed past 50,000 visited versions", async t => {
+  const {object, cas, db} = fixture(t);
+  await object.init(init);
+  await cas(1, [], [e("a")]);
+  const insert = db.prepare("INSERT INTO commits VALUES(?,?,?,?,?,?,?)");
+  db.exec("BEGIN");
+  for (let n = 2; n <= 50_001; n++) {
+    const row = v(n, [n - 1]);
+    insert.run(row.version, row.tree, JSON.stringify(row.parents), row.author, row.message, "{}", row.at);
+  }
+  db.exec("COMMIT");
+  const state = () => [object.ref("main"), object.list().entries, object.log(), object.events()];
+  const before = state();
+  await assert.rejects(cas(50_001, [50_000], [e("b")]), err => {
+    error("not-fast-forward", 409)(err);
+    assert.deepEqual((err as InstanceType<typeof RepoError>).detail, { current: id(1), reason: "too_deep" });
+    return true;
+  });
+  assert.deepEqual(state(), before);
 });

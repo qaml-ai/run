@@ -1,0 +1,45 @@
+openapi: 3.1.0
+info:
+  title: camelRun Workers repository ref updates
+  version: "1"
+paths:
+  /v1/repos/{id}/refs/{name}:
+    put:
+      summary: Create or fast-forward a repository ref
+      description: >-
+        Updates to existing refs are fast-forward-only. Setting a ref to its current version
+        succeeds without a change. Use POST /v1/repos/{id}/restore to restore an earlier
+        version by creating a new commit.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version:
+                  type: string
+                expect:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: Ref created, fast-forwarded, or already at the requested version.
+        "409":
+          description: >-
+            not-fast-forward if the target does not descend from the current version or the
+            ancestry check exceeds 50,000 versions. Ref-moving writes that publish a new
+            commit return bad-parent if it has an invalid first parent or parent count.
+        "412":
+          description: stale if the ref does not match the supplied expect value.

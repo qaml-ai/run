@@ -31,13 +31,13 @@ Recommendation on the word: **repo**. Developers already know that a repo has br
 restores, which is exactly the surface; "workspace" collides with the agent's own mount, and "lineage" is a storage
 term. A repo need not contain code: a shared docs folder is a repo with one branch.
 
-**The API** (`/v1/repos`, replacing all twelve `/v1/volumes/*` paths):
+**The API** (`/v1/repos`, replacing all twelve `/v1/volumes/*` paths). The [Workers OpenAPI spec](../../backends/workers/openapi.repos.yaml) describes ref updates.
 
 | call | does |
 |---|---|
 | `POST /v1/repos { name?, key?, from?: { repo, ref? \| version? }, template? }` | creates a repo (idempotent by `key` or `Idempotency-Key`); `from` makes it a fork of another repo's version (O(1): the new repo's `main` points at that tree, nothing is copied); `template` seeds a first commit |
 | `GET /v1/repos`, `GET /v1/repos/:id`, `DELETE /v1/repos/:id` | list, inspect (`{ id, name, key, refs, bytes, files, createdAt }`), delete (every ref goes; objects follow by reachability) |
-| `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` |
+| `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | `PUT` creates a ref or fast-forwards an existing ref, with an optional CAS on `expect`. Use `POST /v1/repos/:id/restore` to restore an earlier version. |
 | `POST /v1/repos/:id/branches { name, from?: ref \| version, owner?, ttl? }` | an O(1) branch inside the repo (shares chunks on hosts); `owner` ties its life to a workflow, job or agent |
 | `GET /v1/repos/:id/history?ref=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts |
 | `GET /v1/repos/:id/diff?from=&to=&path=` | changed paths between any two versions, O(changed) |
@@ -46,6 +46,11 @@ term. A repo need not contain code: a shared docs folder is a repo with one bran
 | `POST /v1/repos/:id/merge { into, from, mode?: "merge" \| "squash" \| "ff", renames? }` | three-way merge by tree, diff3 on co-edited text, conflicts answered with both sides and nothing written |
 | files (§3) | `GET/PUT/DELETE …/files/:path`, `GET …/files`, `POST …/files:batch`, `POST …/commit`, `GET …/grep`, `GET …/blobs/:sha`, `POST …/links` |
 | `GET /v1/repos/:id/export?version=`, `GET /v1/repos/:id.git/…` | a tar of a version; stock-git clone and fetch of the repo |
+
+Ref updates return HTTP 409 `bad-parent` when a new commit on an existing ref does not have the current
+version as its first parent or has more than two parents. Moving an existing ref to a stored version
+returns HTTP 409 `not-fast-forward` if that version does not descend from the current version or the
+ancestry check exceeds 50,000 versions. Setting a ref to its current version succeeds without a change.
 
 **Attribution trailers** on every commit, written by the runtime, never by the model: `Camel-Agent`, `Camel-Run`,
 `Camel-Turn`, `Camel-Call`, `Camel-Job`, `Camel-Workflow`, `Camel-User` (an API key's subject or end user),

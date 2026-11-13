@@ -16,6 +16,7 @@ const { TenantRepos } = await import('../src/repos/tenant-repos.ts');
 const { commitChanges, setRefToVersion, branch, advanceRef } = await import('../src/repos/write.ts');
 const { mergeRefs } = await import('../src/repos/merge.ts');
 const { agentRepo, createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
+const { handleRepoRequest } = await import('../src/repos/routes.ts');
 hooks.deregister();
 const bytes = (s: string) => new TextEncoder().encode(s);
 const err = (code: string) => (e: any) => { assert.equal(e.code, code); return true; };
@@ -56,7 +57,7 @@ test('first and delta commits use daemon ids, blob authorization, path expectati
   const a = await write(ctx, { a: { bytes: bytes('hello') } });
   assert.ok(fake.commits.has(a.version!));
   const b = await write(ctx, { b: { bytes: bytes('world') }, a: { mode: '100755' } });
-  assert.equal((await ctx.stub.commit(b.version!))!.parents[0], a.version);
+  assert.deepEqual((await ctx.stub.commit(b.version!))!.parents, [a.version]);
   assert.equal((await write(ctx, { a: { mode: '100755' } })).changed, false);
   await assert.rejects(write(ctx, { a: { bytes: bytes('no') } }, { pathExpect: { a: 'none' } }), err('stale-path'));
   await assert.rejects(write(ctx, { a: { blob: 'a'.repeat(40) } }), err('unknown-blob'));
@@ -90,14 +91,20 @@ test('openBlob streams response, preserves ranges and maps fake authorization er
 });
 test('restore creates a commit; branch fallback loads old trees; advanceRef uses daemon metadata and diff', async (t) => {
   const { create, write } = fixture(t), ctx = await create(), a = await write(ctx, { a: { bytes: bytes('one') } });
-  await write(ctx, { a: { bytes: bytes('two') } });
+  const b = await write(ctx, { a: { bytes: bytes('two') } });
   await branch(ctx, { name: 'old', from: { version: a.version! }, who: 'api:t' });
   assert.equal((await ctx.stub.ref('old'))!.version, a.version);
   const r = await setRefToVersion(ctx, { ref: 'main', version: a.version!, newCommit: true, author: 'api:t', who: 'api:t', why: 'restore' });
   assert.notEqual(r.version, a.version);
+  assert.deepEqual((await ctx.stub.commit(r.version))?.parents, [b.version]);
   assert.equal((await ctx.stub.stat('main', ['a'])).entries.a!.blob, a.files.a!.blob);
   const blob = await ctx.storage.putBlob(ctx.lineage, bytes('checkpoint'));
   const commit = await ctx.storage.commit(ctx.lineage, { parents: [r.version], changes: [{ path: 'cp', blob: blob.blob, mode: '100644' }], author: 'api:t', message: 'checkpoint', trailers: {} });
+  for (const parents of [[], [a.version!]]) {
+    const invalid = await ctx.storage.commit(ctx.lineage, { parents, baseTree: commit.tree, changes: [], author: 'api:t', message: 'invalid checkpoint', trailers: {} });
+    await assert.rejects(advanceRef(ctx, { ref: 'main', expect: r.version, commit: invalid.commit, who: 'api:t', why: 'checkpoint' }), err('bad-parent'));
+    assert.equal((await ctx.stub.ref('main'))?.version, r.version);
+  }
   const advanced = await advanceRef(ctx, { ref: 'main', expect: r.version, commit: commit.commit, who: 'api:t', why: 'checkpoint' });
   assert.equal(advanced.files.cp!.size, 10);
   assert.equal((await ctx.storage.diff(ctx.lineage, a.tree!, commit.tree)).changes.length, 1);
@@ -106,15 +113,16 @@ test('merge clean, conflicts, ff, squash and already merged', async (t) => {
   const { create, write } = fixture(t), ctx = await create();
   await write(ctx, { a: { bytes: bytes('base\n') } });
   await branch(ctx, { name: 'topic', from: 'main', who: 'api:t' });
-  const theirs = await write(ctx, { b: { bytes: bytes('topic') } }, { ref: 'topic' });
+  await write(ctx, { b: { bytes: bytes('topic') } }, { ref: 'topic' });
+  const theirs = await write(ctx, { b: { bytes: bytes('topic tip') } }, { ref: 'topic' });
   const ff = await mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' });
   assert.equal(ff.version, theirs.version);
   assert.equal((await mergeRefs(ctx, { into: 'main', from: 'topic' })).changed, false);
-  await write(ctx, { c: { bytes: bytes('ours') } });
+  const ours = await write(ctx, { c: { bytes: bytes('ours') } });
   await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not-fast-forward'));
-  await write(ctx, { d: { bytes: bytes('theirs') } }, { ref: 'topic' });
+  const topic = await write(ctx, { d: { bytes: bytes('theirs') } }, { ref: 'topic' });
   const merged = await mergeRefs(ctx, { into: 'main', from: 'topic' });
-  assert.equal((await ctx.stub.commit(merged.version!))!.parents.length, 2);
+  assert.deepEqual((await ctx.stub.commit(merged.version!))!.parents, [ours.version, topic.version]);
   await write(ctx, { a: { bytes: bytes('ours\n') } });
   await write(ctx, { a: { bytes: bytes('theirs\n') } }, { ref: 'topic' });
   await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic' }), err('conflicts'));
@@ -237,4 +245,28 @@ test('every repo is born with main: an empty first commit by its creator; a seco
   const ctx = await repoContext(env, 't', info.id);
   const w = await commitChanges(ctx, { ref: 'main', changes: { a: { bytes: new TextEncoder().encode('x') } }, message: 'w', author: 'agent:ag1', who: 'agent:ag1', why: 'test' });
   assert.equal(w.previous, main.version);
+});
+
+test('PUT refs rejects backwards and sideways moves without changing the ref, head or log', async t => {
+  const { create, write, env } = fixture(t), ctx = await create();
+  const base = await write(ctx, { a: { bytes: bytes('base') } });
+  await branch(ctx, { name: 'topic', from: 'main', who: 'api:t' });
+  const main = await write(ctx, { a: { bytes: bytes('main') } });
+  const topic = await write(ctx, { a: { bytes: bytes('topic') } }, { ref: 'topic' });
+  const state = async () => [await ctx.stub.ref('main'), await ctx.stub.list({ ref: 'main' }), await ctx.stub.log()];
+  const before = await state();
+  for (const version of [base.version, topic.version, main.version]) {
+    const request = new Request(`https://example.test/v1/repos/${ctx.repoId}/refs/main`, {
+      method: 'PUT', body: JSON.stringify({ version, expect: main.version }),
+    });
+    const response = await handleRepoRequest(request, env, { tenantId: 't' });
+    if (version === main.version) {
+      assert.equal(response?.status, 200);
+      assert.equal((await response!.json() as { changed: boolean }).changed, false);
+    } else {
+      assert.equal(response?.status, 409);
+      assert.deepEqual(await response!.json(), { error: 'not-fast-forward', code: 'not-fast-forward', current: main.version });
+    }
+    assert.deepEqual(await state(), before);
+  }
 });
