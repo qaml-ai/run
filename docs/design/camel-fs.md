@@ -158,7 +158,7 @@ customers alike. The runtime holds no ref; it signs tokens and caches trees by i
 |---|---|---|
 | DynamoDB `refs` | `lineage`, `name` | `version` (the commit), `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`; the lease when a VM holds the branch: `holder` (host id, host boot epoch, mount id), `leaseEpoch`, `leaseDeadline`; `watchers`; `createdAt`, `createdBy`, `updatedAt` |
 | (no log table) | | every move extends the ref's history (a new commit on current, or a fast-forward; a restore is a new commit), `history` walks first parents, and who and why travel in each commit's author and trailers |
-| DynamoDB `deliveries` | `lineage`, `id` | a pending `notify` webhook, written in the same transaction as the move of a watched ref (camel-fs-files.md §9.11) |
+| DynamoDB `deliveries` | `shard`, `id` | a pending `notify` webhook, written in the same transaction as the move of a watched ref (camel-fs-files.md §9.11) |
 | DynamoDB `objects` | `id` | trees and commits (content-addressed; a put is unconditional and idempotent), `generation` |
 | DynamoDB `touch` | `id` | an object named by id without bytes since the last mark began (§1.9); TTL = 2 × grace |
 | DynamoDB `warm` | `lineage`, `host` | the image files this host holds, with the host's boot epoch, for placement |
