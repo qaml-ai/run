@@ -14,7 +14,7 @@ import { harness, FakeCapacity } from "./workflow-harness.ts";
 
 // The job and volume modules reach Durable Objects; a stand-in base class lets them load in Node.
 const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
-  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}", shortCircuit: true };
+  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {} export const waitUntil = p => p;", shortCircuit: true };
   return nextResolve(specifier, context);
 } });
 const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");

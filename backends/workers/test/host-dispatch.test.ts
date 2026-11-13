@@ -6,7 +6,7 @@ import { ComputerMeter, SETTLE_MARGIN_MS } from "../src/computers/meter.ts";
 import { applyScope } from "../../../shared/apply-scope.ts";
 import type { WireJob, WireResult } from "../../../shared/job-host-protocol.ts";
 const hooks = registerHooks({ resolve(specifier, context, next) {
-  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}", shortCircuit: true };
+  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {} export const waitUntil = p => p;", shortCircuit: true };
   return next(specifier, context);
 } });
 const { JobHost, HostJob } = await import("../src/jobs/hosts.ts");
@@ -280,6 +280,43 @@ test("a stop during recovery cancels the host and ends the one open charge at th
   assert.equal(charges[0].seconds, 9);
   assert.equal(await meter().openSession(), undefined);
   assert.equal(await store.get("dispatch:stop"), undefined);
+});
+
+test("repo dispatch recovery reuses the mounted tree and fence without resolving or acquiring again", async t => {
+  const store = storage(t), began = Date.now() - 1000, fence = { holder: "host:host/resume-repo", epoch: 4 };
+  const payer = { tenant: "test", agent: "wf_test", kind: "workflow" as const };
+  const source = { tenant: "test", repo: "repo_one", ref: "main", owner: "workflow:wf_test" };
+  const saved = { phase: "dispatched", host: "host", dispatchedAt: began, rate: 0.001, pool: "test", shape: { vcpus: 1, memoryMiB: 4096, diskMiB: 8192 }, lifetimeMs: 60_000,
+    repo: { repo: source, expect: "a".repeat(40), tree: "b".repeat(40), lineage: "test:repo_one", fence } };
+  await store.put("dispatch:resume-repo", saved);
+  const meter = () => new ComputerMeter({ store, billing: { admit: async () => { throw Error("admitted twice"); }, charge: async () => {} }, idleMs: 60_000, schedule: async () => {} });
+  await meter().started(payer, "test", 60_000, 0, "job:resume-repo", { rate: 0.001, at: began });
+  let renews = 0, releases = 0, dispatches = 0;
+  const stub = { renew: async (got: any, ttl: number) => { assert.deepEqual(got, { ref: "job/resume-repo", ...fence }); assert.equal(ttl, 600000); renews++; },
+    release: async (got: any) => { assert.deepEqual(got, { ref: "job/resume-repo", ...fence }); releases++; },
+    acquire: async () => { throw Error("acquired twice"); }, resolve: async () => { throw Error("resolved twice"); } };
+  const env = { CAMELFS: { fetch: async () => { throw Error("imported"); } }, CAMELFS_API_TOKEN: "test-only",
+    TENANTS: { getByName: () => ({ repoRow: async () => ({ deletedAt: null, lineage: "test:repo_one" }) }) }, REPOS: { getByName: () => stub },
+    JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {} }) },
+    JOB_HOSTS: { getByName: () => ({ dispatch: async (_: string, wire: WireJob) => {
+      dispatches++; assert.deepEqual(wire.camelfs, { lineage: "test:repo_one", tree: "b".repeat(40), fence }); assert.deepEqual(wire.files, []); assert.equal(wire.sync, undefined); return result;
+    } }) } };
+  const background: Promise<unknown>[] = [], ctx = { storage: store, waitUntil: (p: Promise<unknown>) => background.push(p) };
+  t.after(() => Promise.all(background));
+  const job = new HostJob(ctx as never, env as never); (job as any).meter = meter;
+  const input = { id: "resume-repo", command: "true", timeoutSeconds: 30, repo: source, payer };
+  assert.equal((await job.run(input)).ok, true); assert.equal(renews, 1); assert.equal(releases, 1); assert.equal(dispatches, 1);
+  await store.delete("result:resume-repo"); await store.put("dispatch:resume-repo", saved);
+  await job.alarm(); assert.equal(renews, 2, "live dispatch alarms renew its persisted fence");
+  stub.renew = async () => { throw Error("fenced"); };
+  const logs: any[] = [];
+  t.mock.method(console, "error", (line: string) => logs.push(JSON.parse(line)));
+  await job.alarm();
+  assert.equal(logs[0].type, "host_job_lease_renew_failed");
+  const recovered = new HostJob(ctx as never, env as never); (recovered as any).meter = meter;
+  const failed = await recovered.run(input);
+  assert.equal(failed.ok, false); if (!failed.ok) assert.match(failed.message, /fenced/);
+  assert.equal(dispatches, 1, "lost fence never redispatches or reacquires");
 });
 
 test("a result returns with its cost while accounting blocks, and replay charges once", async t => {

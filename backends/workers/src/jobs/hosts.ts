@@ -27,6 +27,7 @@ import type { Volume } from "../volume.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
+import { JOB_LEASE_MS, prepareRepo, openJobRepo, renewJobRepo, releaseJobRepo, finishJobRepo, type RepoDispatch } from "./repo.ts";
 import { HostSyncStore } from "./host-sync-store.ts";
 import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
@@ -649,7 +650,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
   private readonly cancelled = new Map<string, number>();
 }
 
-type HostDispatch = { phase: "dispatched"; host: string; dispatchedAt: number; rate: number; pool: HostPool; shape: HostShape; lifetimeMs: number };
+type HostDispatch = { repo?: RepoDispatch; phase: "dispatched"; host: string; dispatchedAt: number; rate: number; pool: HostPool; shape: HostShape; lifetimeMs: number };
 
 const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data), size: wire.size, truncated: wire.truncated });
 
@@ -671,7 +672,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const measure = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
       const from = Date.now();
       try { return await run(); }
-      finally { steps[name] = Date.now() - from; }
+      finally { steps[name] = (steps[name] ?? 0) + Date.now() - from; }
     };
     const timings = () => ({ steps, startedAt: at, endedAt: Date.now(), startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: Date.now() - at });
     const fail = (code: Extract<JobResult, { ok: false }>["code"], message: string, costUsd?: number): JobResult => ({ ok: false, id: spec.id, code, message, timings: timings(), ...(costUsd !== undefined ? { costUsd } : {}) });
@@ -704,7 +705,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       try { await measure("admitMs", () => meter.admit(spec.payer)); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
       if (waiting.stopped) return fail("stopped", "The job was stopped");
-      try { ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec))); }
+      try { if (!spec.repo) ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec))); }
       catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
       if (camelfs) steps.importMs = steps.filesMs!;
       if (waiting.stopped) return fail("stopped", "The job was stopped");
@@ -732,7 +733,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     } else {
       // Recovery may precede JobHost's first durable insert. Rebuild the same snapshot's wire spec in that case too.
       // Admission, placement and the computer reservation are already held.
-      ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec)));
+      if (!spec.repo) ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec)));
     }
     const placedHost = host!;
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
@@ -762,7 +763,27 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     }
     await registry(this.env).touch(spec.id).catch(() => {});
     const dispatch: HostDispatch = { phase: "dispatched", host: placedHost, dispatchedAt, rate, pool, shape, lifetimeMs };
+    if (spec.repo) {
+      try {
+        dispatch.repo = saved?.repo;
+        if (saved && !dispatch.repo) throw new Error("Recovered repo dispatch has no persisted fence");
+        if (!dispatch.repo) {
+          const ctx = await measure("resolveMs", () => openJobRepo(this.env, spec.repo!));
+          dispatch.repo = await prepareRepo(ctx, spec, placedHost, measure);
+        } else if (!completed && !dispatch.repo.finished) {
+          await measure("leaseMs", () => renewJobRepo(this.env, spec.id, dispatch.repo!));
+        }
+        camelfs = { lineage: dispatch.repo.lineage, tree: dispatch.repo.tree, fence: dispatch.repo.fence, ...(spec.commit ? { commit: true } : {}) };
+      } catch (error) {
+        await meter.startedAt(Date.now()).then(() => meter.stopped()).catch(() => {});
+        await release().catch(() => {});
+        await registry(this.env).release(placedHost, shape.memoryMiB, spec.id).catch(() => {});
+        this.active = undefined;
+        return fail("start_failed", `Repo dispatch failed: ${error instanceof Error ? error.message.slice(0, 300) : "unknown"}`);
+      }
+    }
     if (!completed) await this.ctx.storage.put(`dispatch:${spec.id}`, dispatch);
+    if (dispatch.repo && !completed) await this.ctx.storage.setAlarm(Math.min(Date.now() + JOB_LEASE_MS / 3, dispatchedAt + lifetimeMs + 5_000));
     active.sent = true;
     try {
       // A dispatch that throws (the host object unreachable, the RPC refused) is the job's result, never a throw out of
@@ -812,6 +833,22 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       pids: wire.pids === "enforced" ? "ulimit" : "unenforced",
       timings: { ...wire.timings, steps, startedAt: at, endedAt: Date.now() }, costUsd,
     };
+    if (dispatch.repo) {
+      if (dispatch.repo.finished) {
+        if (result.ok && dispatch.repo.result) result.camelfs = dispatch.repo.result;
+      } else {
+        try {
+          const ctx = await measure("advanceMs", () => openJobRepo(this.env, dispatch.repo!.repo));
+          await finishJobRepo(ctx, spec, dispatch.repo, result, measure);
+        } catch (error) {
+          if (result.ok && result.camelfs) result.camelfs.checkpointError = (`cas: ${error instanceof Error ? error.message : String(error)}`).slice(0, 300);
+        }
+        dispatch.repo.finished = true;
+        if (result.ok) dispatch.repo.result = result.camelfs;
+        await this.ctx.storage.put(`dispatch:${spec.id}`, dispatch);
+      }
+      await measure("leaseMs", () => releaseJobRepo(this.env, spec.id, dispatch.repo!));
+    }
     // Keep only receipt metadata here; large outputs stay in JobHost's SQL result row.
     if (!completed) await this.ctx.storage.put(`result:${spec.id}`, { at: Date.now(), dispatch, costUsd });
     await this.ctx.storage.delete(`dispatch:${spec.id}`);
@@ -931,12 +968,17 @@ export class HostJob extends DurableObject<JobHostsEnv> {
   }
   /** Charges a failed settle left, retried (computers/meter.ts). */
   async alarm() {
-    const dispatched = await this.ctx.storage.list<{ dispatchedAt: number; lifetimeMs: number }>({ prefix: "dispatch:", limit: 1 });
+    const dispatched = await this.ctx.storage.list<HostDispatch>({ prefix: "dispatch:", limit: 1 });
     const job = dispatched.values().next().value;
     if (job && Date.now() < job.dispatchedAt + job.lifetimeMs + 5_000) {
       // settle() only retries finished charges; it never opens, checkpoints or extends the open session. Its
       // original idle bound remains at most dispatchedAt + lifetimeMs. After the margin, alarm(false) closes it.
-      await this.ctx.storage.setAlarm(job.dispatchedAt + job.lifetimeMs + 5_000);
+      if (job.repo && !job.repo.finished && Date.now() < job.dispatchedAt + job.lifetimeMs) {
+        const id = [...dispatched.keys()][0].slice("dispatch:".length);
+        try { await renewJobRepo(this.env, id, job.repo); }
+        catch (error) { console.error(JSON.stringify({ type: "host_job_lease_renew_failed", job: id, error: (error instanceof Error ? error.message : String(error)).slice(0, 300) })); }
+      }
+      await this.ctx.storage.setAlarm(job.repo ? Math.min(Date.now() + JOB_LEASE_MS / 3, job.dispatchedAt + job.lifetimeMs + 5_000) : job.dispatchedAt + job.lifetimeMs + 5_000);
       await this.meter(60_000).settle();
       return;
     }

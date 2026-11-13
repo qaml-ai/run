@@ -297,3 +297,27 @@ test("mount heartbeats never overlap and release waits for an in-flight heartbea
   assert.equal((await h.result).ok, true);
   assert.equal(released, true);
 });
+
+test("a repo fence reaches the daemon mount JSON", async t => {
+  const d = await daemon(t), launcher = fakeLauncher({ work: d.dir });
+  const events: string[] = [], ops: unknown[] = [];
+  const wrapped: VmLauncher = { ...launcher, async boot(...args) {
+    const vm = await launcher.boot(...args);
+    return { ...vm, request: async request => { ops.push(request.op); return vm.request(request); }, destroy: async () => { await vm.destroy(); events.push("destroy"); } };
+  } };
+  const h = await host(t, { ...d.client, release: async id => { events.push("release"); await d.client.release(id); } }, wrapped);
+  await h.agent.run("job-1", { ...spec, camelfs: { ...spec.camelfs!, fence: { holder: "host:h/job-1", epoch: 7 } }, sync: { url: "http://invalid", token: "unused", files: [] } });
+  const result = await h.result;
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.exitCode, 0);
+  assert.equal(base64Text(result.stdout.data), "hello from camelFS\n");
+  assert.equal(result.camelfs?.warm, true);
+  assert.equal(result.camelfs?.mountMs, 12);
+  assert.equal(typeof result.camelfs?.applyMs, "number");
+  assert.equal(ops[0], "camelfs_apply");
+  assert.equal(ops.includes("files"), false);
+  assert.deepEqual(d.calls.map(call => [call.method, call.path]), [["POST", "/v0/mounts"], ["DELETE", "/v0/mounts/job-1"]]);
+  assert.deepEqual(JSON.parse(d.calls[0]!.body), { jobId: "job-1", lineage: "a:b", tree: "tree-1", fence: { holder: "host:h/job-1", epoch: 7 }, vsock: join(d.dir, "job-1.vsock") });
+  assert.deepEqual(events, ["destroy", "release"]);
+});
