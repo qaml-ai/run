@@ -5,15 +5,18 @@
 #      applies any <variable>=<value> arguments to them, showing the change;
 #   2. plans against them and lists every resource change, and the task definition's environment changes;
 #   3. refuses a plan that deletes or replaces anything, unless ALLOW_DESTROY names every such address (space
-#      separated); the Terraform-registered task definition revision is replaced by any change to it and is allowed
-#      (the service runs the revision infra/camelfs/deploy.sh registered; the change ships with the next deploy);
+#      separated), and a plan that updates an existing resource in place unless ALLOW_UPDATE names it (this module
+#      only ever adds to the account; an update means it is touching something it did not make, or drift); the
+#      Terraform-registered task definition revision is replaced by any change to it and is allowed (the service
+#      runs the revision infra/camelfs/deploy.sh registered; the change ships with the next deploy);
 #   4. applies the saved plan only after you type "apply" (or CONFIRM=apply when not at a terminal), and only then
 #      uploads the changed prod.tfvars.
 # Without "apply" (PLAN_ONLY=1 skips the prompt) it changes nothing.
 # Usage: PLAN_ONLY=1 infra/camelfs/apply.sh                     plan only
 #        infra/camelfs/apply.sh                                 plan and apply the configuration as it is
 #        infra/camelfs/apply.sh api_image_tag=0123456789ab      change a setting (it is saved to prod.tfvars)
-# Needs AWS credentials for the runtime's account, CLOUDFLARE_API_TOKEN (DNS edit on camelai.dev), tofu and jq.
+# Needs AWS credentials for the runtime's account, tofu and jq. No Cloudflare token: DNS is done by hand from the
+# outputs (README.md, "Commands").
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/../config.sh"
@@ -22,8 +25,6 @@ tfvars_s3=s3://camelai-terraform-state-$ACCOUNT_ID/agent-runtime/camelfs/prod.tf
 cd "$here/terraform"
 
 [[ "$(aws sts get-caller-identity --query Account --output text)" == "$ACCOUNT_ID" ]] || { echo "AWS credentials are not for $ACCOUNT_ID." >&2; exit 1; }
-[[ -n "${CLOUDFLARE_API_TOKEN:-}" && ${#CLOUDFLARE_API_TOKEN} -ge 20 && $CLOUDFLARE_API_TOKEN =~ ^[A-Za-z0-9_-]+$ ]] \
-  || { echo "Set CLOUDFLARE_API_TOKEN to a Cloudflare API token with DNS edit on camelai.dev (not a placeholder)." >&2; exit 1; }
 # A stale copy would be loaded too (*.auto.tfvars); the settings come from the bucket, every time.
 for stale in *.auto.tfvars terraform.tfvars; do [[ -e $stale ]] && { echo "Remove infra/camelfs/terraform/$stale first: this script uses the bucket's prod.tfvars." >&2; exit 1; }; done
 
@@ -63,7 +64,7 @@ if [[ -s "$plan.changes" ]]; then column -t -s $'\t' "$plan.changes"; else echo 
 grep -E '^Plan:|No changes' "$work/plan.log" || true
 
 # The environment is where most settings land; show it as name changes, not one JSON string.
-jq -r '.resource_changes[] | select(.address == "aws_ecs_task_definition.api[0]" and .change.actions != ["no-op"])
+jq -r '.resource_changes[] | select(.address == "aws_ecs_task_definition.api" and .change.actions != ["no-op"])
   | [.change.before, .change.after] | map(if . == null then {} else (.container_definitions // "[]" | fromjson | .[0].environment // [] | map({(.name): .value}) | add // {}) end)
   | . as [$before, $after] | ($before + $after | keys[]) as $name | select($before[$name] != $after[$name])
   | "    \($name): \($before[$name] // "(unset)") -> \($after[$name] // "(unset)")"' "$plan.json" > "$plan.env" 2>/dev/null || true
@@ -71,9 +72,14 @@ if [[ -s "$plan.env" ]]; then echo; echo "==> Task definition environment (ships
 
 # Deletes and replacements only by name. The Terraform-registered task definition revision is replaced by any
 # change to it; the service runs deploy.sh's revision, so that replacement is always allowed.
-allowed=" ${ALLOW_DESTROY:-} aws_ecs_task_definition.api[0] "
+allowed=" ${ALLOW_DESTROY:-} aws_ecs_task_definition.api "
 for address in $(awk -F'\t' '$1 ~ /delete/ {print $2}' "$plan.changes"); do
   [[ "$allowed" == *" $address "* ]] || { echo "!! The plan deletes or replaces $address. Not applying (name it in ALLOW_DESTROY if that is intended)." >&2; exit 1; }
+done
+# In-place updates only by name: this module adds to the account and changes nothing it did not create.
+allowed_updates=" ${ALLOW_UPDATE:-} "
+for address in $(awk -F'\t' '$1 == "update" {print $2}' "$plan.changes"); do
+  [[ "$allowed_updates" == *" $address "* ]] || { echo "!! The plan updates $address in place. Not applying (name it in ALLOW_UPDATE if that is intended)." >&2; exit 1; }
 done
 
 if [[ ! -s "$plan.changes" ]] && diff -q "$tfvars.orig" "$tfvars" >/dev/null; then echo "Nothing to do."; exit 0; fi

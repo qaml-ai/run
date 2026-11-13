@@ -1,5 +1,5 @@
-# All cloud calls are mocked: these runs never read or touch AWS or Cloudflare. Run with `tofu test` from
-# infra/camelfs/terraform (after `tofu init -backend=false`).
+# All cloud calls are mocked: these runs never read or touch AWS, nor fetch Cloudflare's ranges. Run with
+# `tofu test` from infra/camelfs/terraform (after `tofu init -backend=false`).
 
 mock_provider "aws" {
   mock_data "aws_vpc" {
@@ -70,24 +70,28 @@ mock_provider "aws" {
   }
 }
 
-mock_provider "cloudflare" {
-  mock_data "cloudflare_ip_ranges" {
-    defaults = { ipv4_cidrs = ["173.245.48.0/20", "103.21.244.0/22", "104.16.0.0/13"] }
+mock_provider "http" {
+  mock_data "http" {
+    defaults = { status_code = 200, response_body = "173.245.48.0/20\n103.21.244.0/22\n104.16.0.0/13\n104.24.0.0/14\n172.64.0.0/13\n131.0.72.0/22\n141.101.64.0/18\n108.162.192.0/18\n190.93.240.0/20\n188.114.96.0/20\n197.234.240.0/22\n198.41.128.0/17\n162.158.0.0/15\n" }
   }
 }
 
-# --- Foundation: everything but the service, with no image named ---
+# --- The first apply: certificate requested, no listener, no service ---
 
-run "foundation_without_an_image" {
+run "first_apply_before_the_certificate" {
   command = plan
 
   assert {
-    condition     = length(aws_ecs_task_definition.api) == 0 && length(aws_ecs_service.api) == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
-    error_message = "With api_image_tag empty there is no task definition, service, autoscaling or service alarm."
+    condition     = length(aws_acm_certificate_validation.api) == 0 && length(aws_lb_listener.api_https) == 0 && length(aws_ecs_service.api) == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
+    error_message = "Before certificate_issued there is no validation wait, no HTTPS listener, no service, no autoscaling and no service alarm: the first apply never hangs on DNS."
   }
   assert {
-    condition     = output.service_name == ""
-    error_message = "service_name is empty until an image is named."
+    condition     = output.service_name == "" && aws_acm_certificate.api.validation_method == "DNS" && aws_acm_certificate.api.domain_name == "fs.camelai.dev" && aws_acm_certificate.api.subject_alternative_names == toset(["fs-internal.camelai.dev"])
+    error_message = "The certificate covers both names and is DNS-validated; the service waits for the listeners."
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.hosts_compute_from_api) == 0 && length(aws_vpc_security_group_egress_rule.api_to_hosts_compute) == 0
+    error_message = "With no host security groups named, no compute-port rule exists on either side."
   }
   assert {
     condition     = aws_s3_bucket.objects.bucket == "camelfs-prod-904534089871"
@@ -139,11 +143,11 @@ run "balancers" {
     error_message = "One internet-facing balancer for the runtime, one internal balancer for the hosts."
   }
   assert {
-    condition     = alltrue([for listener in aws_lb_listener.api_https : listener.protocol == "HTTPS" && listener.port == 443])
-    error_message = "Both listeners are HTTPS on 443."
+    condition     = length(aws_lb_listener.api_https) == 0
+    error_message = "No listener before the certificate is issued."
   }
   assert {
-    condition     = length(aws_vpc_security_group_ingress_rule.alb_public_cloudflare) == 3 && alltrue([for rule in aws_vpc_security_group_ingress_rule.alb_public_cloudflare : rule.from_port == 443 && rule.to_port == 443])
+    condition     = length(aws_vpc_security_group_ingress_rule.alb_public_cloudflare) == 13 && alltrue([for rule in aws_vpc_security_group_ingress_rule.alb_public_cloudflare : rule.from_port == 443 && rule.to_port == 443])
     error_message = "The public balancer admits 443 from each Cloudflare IPv4 range and nothing else."
   }
   assert {
@@ -151,8 +155,8 @@ run "balancers" {
     error_message = "With no host security groups named, the internal balancer admits nothing."
   }
   assert {
-    condition     = cloudflare_dns_record.api_public.proxied == true && cloudflare_dns_record.api_internal.proxied == false
-    error_message = "The public name is proxied through Cloudflare; the internal name is DNS only."
+    condition     = output.dns_records["fs.camelai.dev"].proxied == true && output.dns_records["fs-internal.camelai.dev"].proxied == false && output.dns_records["fs.camelai.dev"].type == "CNAME"
+    error_message = "The DNS records to make by hand: the public name proxied, the internal name DNS only."
   }
   assert {
     condition     = alltrue([for group in aws_lb_target_group.api : group.health_check[0].path == "/v0/health" && group.health_check[0].matcher == "200"])
@@ -169,6 +173,14 @@ run "internal_balancer_admits_the_hosts" {
   assert {
     condition     = toset([for rule in aws_vpc_security_group_ingress_rule.alb_internal_hosts : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
     error_message = "Each host security group gets one 443 rule on the internal balancer."
+  }
+  assert {
+    condition = (
+      toset([for rule in aws_vpc_security_group_ingress_rule.hosts_compute_from_api : rule.security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
+      && alltrue([for rule in aws_vpc_security_group_ingress_rule.hosts_compute_from_api : rule.from_port == 8791 && rule.to_port == 8791])
+      && toset([for rule in aws_vpc_security_group_egress_rule.api_to_hosts_compute : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
+    )
+    error_message = "Each host security group admits the api tasks on the compute port, and the api group may reach it."
   }
 }
 
@@ -212,33 +224,59 @@ run "roles_and_policies" {
   }
   assert {
     condition = (
-      [for statement in jsondecode(aws_iam_role_policy.guest_image_publisher.policy).Statement : statement.Resource if statement.Sid == "PutGuestImages"] == [["arn:aws:s3:::camelfs-prod-904534089871/images/guest/*"]]
+      [for statement in jsondecode(aws_iam_role_policy.guest_image_publisher.policy).Statement : statement.Resource if statement.Sid == "PutGuestImages"] == [["arn:aws:s3:::camelfs-prod-904534089871/guest/*"]]
       && !anytrue([for statement in jsondecode(aws_iam_role_policy.guest_image_publisher.policy).Statement : anytrue([for action in flatten([statement.Action]) : action != "s3:PutObject" && action != "kms:GenerateDataKey"])])
       && jsondecode(aws_iam_role.guest_image_publisher.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == ["repo:qaml-ai@151090534/run@1384214784:environment:production"]
     )
-    error_message = "The guest-image publisher puts under images/guest/ only, from the repository's production environment only."
+    error_message = "The guest-image publisher puts under guest/ only, from the repository's production environment only."
   }
   assert {
     condition = (
-      !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
+      !anytrue([for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
+      && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Sid if anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])] == ["ServiceVerifyKeys"]
       && [for statement in jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement : statement.Action] == [["secretsmanager:GetSecretValue"]]
+      && length(jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement[0].Resource) == 2
     )
-    error_message = "Neither the api task role nor the host policy reads a secret; the execution role reads the one JWKS secret for the injection."
+    error_message = "The api task role reads no secret; the host policy reads only the service's public JWKS; the execution role reads the two secrets it injects."
   }
 }
 
-# --- The service, once an image is named ---
+# --- The second apply: certificate issued, listeners and the service (at 0 tasks) ---
+
+run "second_apply_with_the_certificate" {
+  command = plan
+  variables {
+    certificate_issued = true
+  }
+
+  assert {
+    condition     = length(aws_acm_certificate_validation.api) == 1 && length(aws_lb_listener.api_https) == 2 && alltrue([for listener in aws_lb_listener.api_https : listener.protocol == "HTTPS" && listener.port == 443])
+    error_message = "With the certificate issued: the validation wait and two HTTPS listeners on 443."
+  }
+  assert {
+    condition     = length(aws_ecs_service.api) == 1 && aws_ecs_service.api[0].desired_count == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
+    error_message = "The service exists with no task and no autoscaling until api_min_count is raised."
+  }
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:none"
+    error_message = "The placeholder image tag; nothing pulls it at 0 tasks."
+  }
+}
+
+# --- The service running, once an image is deployed and a minimum set ---
 
 run "service_with_an_image" {
   command = plan
   variables {
+    certificate_issued      = true
     api_image_tag           = "0123456789ab"
+    api_min_count           = 2
     host_security_group_ids = ["sg-0123456789abcdef0"]
   }
 
   assert {
-    condition     = length(aws_ecs_service.api) == 1 && length(aws_ecs_task_definition.api) == 1 && length(aws_appautoscaling_target.api) == 1 && length(aws_cloudwatch_metric_alarm.running_tasks) == 1
-    error_message = "Naming an image creates the task definition, service, autoscaling and service alarm."
+    condition     = length(aws_ecs_service.api) == 1 && aws_ecs_service.api[0].desired_count == 2 && length(aws_appautoscaling_target.api) == 1 && length(aws_cloudwatch_metric_alarm.running_tasks) == 1
+    error_message = "A minimum above 0 runs tasks, scales them and alarms on fewer than the minimum."
   }
   # The mock gives both target groups one ARN, so the service's load_balancer set collapses to one element here;
   # the dynamic block iterates every group (alb.tf has two), and each registration names the api container.
@@ -247,22 +285,22 @@ run "service_with_an_image" {
     error_message = "The service registers the api container with the target groups."
   }
   assert {
-    condition     = aws_ecs_task_definition.api[0].runtime_platform[0].cpu_architecture == "ARM64" && contains(aws_ecs_task_definition.api[0].requires_compatibilities, "FARGATE")
+    condition     = aws_ecs_task_definition.api.runtime_platform[0].cpu_architecture == "ARM64" && contains(aws_ecs_task_definition.api.requires_compatibilities, "FARGATE")
     error_message = "The tier is Fargate on Graviton."
   }
   assert {
     condition = (
-      jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:0123456789ab"
-      && jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
+      jsondecode(aws_ecs_task_definition.api.container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:0123456789ab"
+      && jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
     )
     error_message = "The task runs the named image as `camelfsd api` with the daemon's flags (proto-block, 2026-11-13)."
   }
   assert {
     condition = (
-      [for secret in jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].secrets : secret.name] == ["CAMELFS_JWKS"]
-      && !anytrue([for pair in jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].environment : startswith(pair.name, "CAMELFS_")])
+      [for secret in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets : secret.name] == ["CAMELFS_JWKS", "CAMELFS_SERVICE_SIGNING_KEY"]
+      && !anytrue([for pair in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : startswith(pair.name, "CAMELFS_")])
     )
-    error_message = "The JWKS is injected from Secrets Manager as CAMELFS_JWKS; no key material is in the environment."
+    error_message = "The runtime's JWKS and the service's signing key are injected from Secrets Manager; no key material is in the environment."
   }
   assert {
     condition     = aws_appautoscaling_target.api[0].min_capacity == 2 && aws_appautoscaling_target.api[0].max_capacity == 8

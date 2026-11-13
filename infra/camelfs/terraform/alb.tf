@@ -27,8 +27,10 @@ data "aws_subnets" "default" {
   }
 }
 
-# --- Certificate: one, for both names, validated through Cloudflare ---
+# --- Certificate: one, for both names, DNS-validated; the records go into Cloudflare by hand ---
 
+# The first apply (certificate_issued = false) requests it and outputs acm_validation_records; the second, once
+# the CNAMEs are in Cloudflare, waits for issuance and creates the listeners. Terraform never touches DNS here.
 resource "aws_acm_certificate" "api" {
   domain_name               = var.hostname
   subject_alternative_names = [var.internal_hostname]
@@ -40,29 +42,31 @@ resource "aws_acm_certificate" "api" {
   }
 }
 
-resource "cloudflare_dns_record" "api_cert_validation" {
-  for_each = {
-    for option in aws_acm_certificate.api.domain_validation_options : option.domain_name => option
-  }
-  zone_id = var.cloudflare_zone_id
-  name    = trimsuffix(each.value.resource_record_name, ".")
-  type    = each.value.resource_record_type
-  content = trimsuffix(each.value.resource_record_value, ".")
-  ttl     = 60
-  proxied = false
-  comment = "ACM validation for ${each.key} (${var.name}-${var.env} ALB)"
-}
-
 resource "aws_acm_certificate_validation" "api" {
-  certificate_arn         = aws_acm_certificate.api.arn
-  validation_record_fqdns = [for record in cloudflare_dns_record.api_cert_validation : record.name]
+  count = var.certificate_issued ? 1 : 0
+
+  certificate_arn = aws_acm_certificate.api.arn
+  # No validation_record_fqdns: the records are not Terraform's; ACM is polled until it reports ISSUED.
 }
 
 # --- Security groups ---
 
-# Cloudflare's IPv4 ranges, read at each plan: a range Cloudflare adds shows up as a rule to add. The balancer is
-# IPv4 only, so only those matter.
-data "cloudflare_ip_ranges" "cloudflare" {}
+# Cloudflare's IPv4 ranges, read at each plan over plain HTTPS (no Cloudflare credentials): a range Cloudflare adds
+# shows up as a rule to add. The balancer is IPv4 only, so only those matter.
+data "http" "cloudflare_ipv4" {
+  url = "https://www.cloudflare.com/ips-v4"
+
+  lifecycle {
+    postcondition {
+      condition     = self.status_code == 200 && length(regexall("\\d+\\.\\d+\\.\\d+\\.\\d+/\\d+", self.response_body)) >= 10
+      error_message = "https://www.cloudflare.com/ips-v4 did not return Cloudflare's IPv4 ranges."
+    }
+  }
+}
+
+locals {
+  cloudflare_ipv4_cidrs = [for line in split("\n", data.http.cloudflare_ipv4.response_body) : trimspace(line) if trimspace(line) != ""]
+}
 
 resource "aws_security_group" "alb_public" {
   name        = "${var.name}-${var.env}-alb-public"
@@ -72,7 +76,7 @@ resource "aws_security_group" "alb_public" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_public_cloudflare" {
-  for_each          = toset(data.cloudflare_ip_ranges.cloudflare.ipv4_cidrs)
+  for_each          = toset(local.cloudflare_ipv4_cidrs)
   security_group_id = aws_security_group.alb_public.id
   ip_protocol       = "tcp"
   from_port         = 443
@@ -114,6 +118,19 @@ resource "aws_vpc_security_group_egress_rule" "alb_internal_to_api" {
   from_port                    = var.api_port
   to_port                      = var.api_port
   description                  = "API tasks"
+}
+
+# The tier pushes boot/stop to the hosts' compute listener (K4): one rule on each host security group from the api
+# tasks' group, and the matching egress on the api group (ecs.tf). The hosts' groups are the pools' (job-hosts) or
+# the proto host's; the rules are this module's, so a plan only ever adds them.
+resource "aws_vpc_security_group_ingress_rule" "hosts_compute_from_api" {
+  for_each                     = toset(var.host_security_group_ids)
+  security_group_id            = each.value
+  referenced_security_group_id = aws_security_group.api.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.host_compute_port
+  to_port                      = var.host_compute_port
+  description                  = "camelFS api tier: boot/stop on the compute listener"
 }
 
 # --- Load balancers, target groups, listeners ---
@@ -185,13 +202,13 @@ resource "aws_lb_target_group" "api" {
 }
 
 resource "aws_lb_listener" "api_https" {
-  for_each = local.balancers
+  for_each = var.certificate_issued ? local.balancers : {}
 
   load_balancer_arn = aws_lb.api[each.key].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.api.certificate_arn
+  certificate_arn   = aws_acm_certificate_validation.api[0].certificate_arn
 
   default_action {
     type             = "forward"
@@ -201,28 +218,11 @@ resource "aws_lb_listener" "api_https" {
 
 # No port 80: nothing but machines call this service, and every client speaks HTTPS.
 
-# --- DNS ---
-
-# Proxied: the runtime's Workers reach the public balancer through Cloudflare's edge, from the ranges the public
-# security group admits; TLS is re-terminated on the ALB with its ACM certificate.
-resource "cloudflare_dns_record" "api_public" {
-  zone_id = var.cloudflare_zone_id
-  name    = var.hostname
-  type    = "CNAME"
-  content = aws_lb.api["public"].dns_name
-  ttl     = 1 # automatic, which Cloudflare requires for a proxied record
-  proxied = true
-  comment = "${var.name}-${var.env} public ALB"
-}
-
-# DNS only: the internal balancer's name resolves to private addresses, reachable from the VPC alone; proxying it
-# would be meaningless and would break the certificate's name match for hosts.
-resource "cloudflare_dns_record" "api_internal" {
-  zone_id = var.cloudflare_zone_id
-  name    = var.internal_hostname
-  type    = "CNAME"
-  content = aws_lb.api["internal"].dns_name
-  ttl     = 60
-  proxied = false
-  comment = "${var.name}-${var.env} internal ALB (private addresses; hosts only)"
-}
+# --- DNS (by hand, in Cloudflare; outputs.tf prints the records) ---
+#
+#   <hostname>           CNAME <public balancer's dns_name>    proxied: the runtime's Workers reach the balancer
+#                        through Cloudflare's edge, from the ranges the public security group admits; TLS is
+#                        re-terminated on the ALB with its ACM certificate.
+#   <internal_hostname>  CNAME <internal balancer's dns_name>  DNS only: the name resolves to private addresses,
+#                        reachable from the VPC alone; proxying it would be meaningless and would break the
+#                        certificate's name match for hosts.

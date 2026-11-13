@@ -7,24 +7,26 @@
 # wash at this size (2 × 1 vCPU/2 GiB ARM tasks ≈ $58/month against 2 × c8g.large ≈ $117/month, and 2 vCPU/4 GiB
 # tasks ≈ $116/month) and Fargate scales by one task where an ASG scales by one instance.
 #
-# The service exists only once api_image_tag names an image in this module's ECR repository (deploy.sh pushes
-# one): with an empty tag there is no task definition, service, autoscaling or service alarm, so the foundation
-# (bucket, tables, roles, secrets, balancers, registry) can be applied first and an empty image can never reach
-# a task. Terraform registers the first task definition revision; deploy.sh registers every later one and rolls
-# the service, so the service ignores task_definition.
+# The service is created with the listeners (certificate_issued: a target group must belong to a balancer with a
+# listener before a service can register with it) and runs api_min_count tasks: 0 by default, so it exists before
+# any image does and nothing pulls the placeholder tag; autoscaling exists only with a minimum above 0. Terraform
+# registers the first task definition revision; deploy.sh registers every later one and rolls the service, so the
+# service ignores task_definition.
 
 locals {
-  api_enabled    = var.api_image_tag != ""
-  container_name = "camelfsd"
-  cluster_name   = "${var.name}-${var.env}"
-  service_name   = "${var.name}-${var.env}-api"
-  api_image      = "${aws_ecr_repository.camelfsd.repository_url}:${var.api_image_tag}"
-  api_data_dir   = "/var/lib/camelfs"
+  service_enabled = var.certificate_issued
+  scaling_enabled = var.certificate_issued && var.api_min_count > 0
+  container_name  = "camelfsd"
+  cluster_name    = "${var.name}-${var.env}"
+  service_name    = "${var.name}-${var.env}-api"
+  api_image       = "${aws_ecr_repository.camelfsd.repository_url}:${var.api_image_tag}"
+  api_data_dir    = "/var/lib/camelfs"
 
   # The daemon's CLI (proto-block, 2026-11-13): `camelfsd api --listen --data --store --region --token-issuer
-  # --refs-table`; --objects-table and --lineages-table come with L74 (api_extra_args until then, or here once the
-  # flags exist). The JWKS is not a flag: ECS injects the verify-keys secret as CAMELFS_JWKS (the daemon also takes
-  # --jwks-file), so no key material is in the task definition and the task role reads no secret.
+  # --refs-table`; --objects-table and --lineages-table come with L74, the K4 tables with K4 (api_extra_args until
+  # then, or here once the flags exist). Keys are not flags: ECS injects the runtime's verify JWKS as CAMELFS_JWKS
+  # (the daemon also takes --jwks-file) and the service's own signing key (tier → host tokens, K4) as
+  # CAMELFS_SERVICE_SIGNING_KEY, so no key material is in the task definition and the task role reads no secret.
   api_command = concat([
     "api",
     "--listen", "0.0.0.0:${var.api_port}",
@@ -119,11 +121,20 @@ resource "aws_vpc_security_group_egress_rule" "api_https" {
   description       = "S3, DynamoDB, Secrets Manager, ECR, logs"
 }
 
-# --- Task definition and service (once an image is named) ---
+# The hosts' compute listener (K4): boot/stop pushed in-VPC. The matching ingress is on each host group (alb.tf).
+resource "aws_vpc_security_group_egress_rule" "api_to_hosts_compute" {
+  for_each                     = toset(var.host_security_group_ids)
+  security_group_id            = aws_security_group.api.id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = var.host_compute_port
+  to_port                      = var.host_compute_port
+  description                  = "Hosts' compute listener (boot/stop)"
+}
+
+# --- Task definition and service ---
 
 resource "aws_ecs_task_definition" "api" {
-  count = local.api_enabled ? 1 : 0
-
   family                   = local.service_name
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -150,8 +161,12 @@ resource "aws_ecs_task_definition" "api" {
     essential    = true
     portMappings = [{ containerPort = var.api_port, protocol = "tcp" }]
     environment  = [for name in sort(keys(local.api_environment)) : { name = name, value = local.api_environment[name] }]
-    # The runtime's public JWKS, read by the execution role at task start; a rotation is jwks.sh set + a roll.
-    secrets     = [{ name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn }]
+    # Read by the execution role at task start: the runtime's public JWKS (a rotation is jwks.sh set + a roll) and
+    # the service's own signing key (service-key.sh new + a roll).
+    secrets = [
+      { name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn },
+      { name = "CAMELFS_SERVICE_SIGNING_KEY", valueFrom = aws_secretsmanager_secret.service_signing_key.arn },
+    ]
     mountPoints = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
     # The image runs as a non-root user; everything but the data volume is read-only.
     readonlyRootFilesystem = true
@@ -172,11 +187,11 @@ resource "aws_ecs_task_definition" "api" {
 }
 
 resource "aws_ecs_service" "api" {
-  count = local.api_enabled ? 1 : 0
+  count = local.service_enabled ? 1 : 0
 
   name                   = local.service_name
   cluster                = aws_ecs_cluster.camelfs.id
-  task_definition        = aws_ecs_task_definition.api[0].arn
+  task_definition        = aws_ecs_task_definition.api.arn
   desired_count          = var.api_min_count
   launch_type            = "FARGATE"
   platform_version       = "LATEST"
@@ -229,7 +244,7 @@ resource "aws_ecs_service" "api" {
 # --- Autoscaling ---
 
 resource "aws_appautoscaling_target" "api" {
-  count = local.api_enabled ? 1 : 0
+  count = local.scaling_enabled ? 1 : 0
 
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.camelfs.name}/${aws_ecs_service.api[0].name}"
@@ -239,7 +254,7 @@ resource "aws_appautoscaling_target" "api" {
 }
 
 resource "aws_appautoscaling_policy" "api_cpu" {
-  count = local.api_enabled ? 1 : 0
+  count = local.scaling_enabled ? 1 : 0
 
   name               = "${local.service_name}-cpu"
   policy_type        = "TargetTrackingScaling"

@@ -48,21 +48,21 @@ variable "internal_hostname" {
   }
 }
 
-variable "cloudflare_zone_id" {
-  description = "Cloudflare zone id of camelai.dev (the runtime's infra/terraform uses the same)."
-  type        = string
-  default     = "3180d911f20372a279a4ea408aebc765"
+variable "certificate_issued" {
+  description = "false (the first apply): the certificate is requested and its validation records are output (acm_validation_records) for Cloudflare, and no HTTPS listener or service exists yet. true (the second apply, once the records are in DNS): the validation is awaited, the HTTPS listeners and the ECS service are created. Two applies, so the first never hangs on DNS."
+  type        = bool
+  default     = false
 }
 
 # --- API tier (camelfsd api on ECS Fargate, Graviton) ---
 
 variable "api_image_tag" {
-  description = "The camelfsd image tag in this module's ECR repository (infra/camelfs/deploy.sh pushes one). Empty: no task definition, service, autoscaling or service alarms are created; the load balancers answer 503 until a service registers."
+  description = "The camelfsd image tag in this module's ECR repository (infra/camelfs/deploy.sh pushes one). The default names no image: with api_min_count 0 the service runs no task, so nothing pulls it; the first deploy.sh registers the real one."
   type        = string
-  default     = ""
+  default     = "none"
   validation {
-    condition     = can(regex("^[A-Za-z0-9_.-]{0,128}$", var.api_image_tag))
-    error_message = "api_image_tag is an image tag or empty."
+    condition     = can(regex("^[A-Za-z0-9_.-]{1,128}$", var.api_image_tag))
+    error_message = "api_image_tag is an image tag."
   }
 }
 
@@ -107,12 +107,12 @@ variable "api_memory" {
 }
 
 variable "api_min_count" {
-  description = "Fewest API tasks (autoscaling minimum; the RTO-0 claim needs 2, one per AZ)."
+  description = "Fewest API tasks: the service's desired count and the autoscaling minimum (the RTO-0 claim needs 2, one per AZ). 0 (the default, until an image exists): the service exists with no task and no autoscaling."
   type        = number
-  default     = 2
+  default     = 0
   validation {
-    condition     = var.api_min_count >= 1
-    error_message = "api_min_count is at least 1."
+    condition     = var.api_min_count >= 0
+    error_message = "api_min_count is 0 or more."
   }
 }
 
@@ -141,21 +141,33 @@ variable "api_log_retention_days" {
 # --- Hosts ---
 
 variable "host_security_group_ids" {
-  description = "Security groups of the VM hosts that run camelfsd --role host (infra/job-hosts' hosts group once applied, the proto host's group meanwhile). Only these reach the internal load balancer; empty means no host reaches it yet."
+  description = "Security groups of the VM hosts that run camelfsd --role host (infra/job-hosts' hosts group once applied, the proto host's group meanwhile). Only these reach the internal load balancer, and the tier reaches only these on host_compute_port; empty means no host is wired yet."
   type        = list(string)
   default     = []
+}
+
+variable "host_compute_port" {
+  description = "The hosts' compute listener (camelfsd --role host --listen-compute): the tier pushes boot/stop there, in-VPC, with tokens it signs (K4). The rule is added to each host security group; the hosts' own egress rules are theirs."
+  type        = number
+  default     = 8791
 }
 
 # --- Bucket ---
 
 variable "guest_image_prefix" {
-  description = "Prefix in the bucket for the content-addressed guest image (K1: <prefix>guest/<sha256>.ext4.zst + .json). The CI publisher may put there and nowhere else; hosts read it with the host policy."
+  description = "Prefix in the bucket above the content-addressed guest image (K1: <prefix>guest/<sha256>.ext4.zst + .json; empty puts it at guest/ in the bucket root). The CI publisher may put under <prefix>guest/ and nowhere else; hosts read it with the host policy."
   type        = string
-  default     = "images/"
+  default     = ""
   validation {
-    condition     = can(regex("^[a-z0-9-]+/$", var.guest_image_prefix))
-    error_message = "guest_image_prefix is one lowercase path segment with a trailing slash."
+    condition     = var.guest_image_prefix == "" || can(regex("^[a-z0-9-]+/$", var.guest_image_prefix))
+    error_message = "guest_image_prefix is empty or one lowercase path segment with a trailing slash."
   }
+}
+
+variable "results_expiry_days" {
+  description = "VM results the tier writes to S3 (<lineage>/results/<vm>, tagged kind=result; K4) are deleted after this many days."
+  type        = number
+  default     = 7
 }
 
 variable "github_subjects" {

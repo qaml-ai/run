@@ -6,8 +6,9 @@
 #        infra/camelfs/deploy.sh <tag>     deploy an image already in ECR (no build)
 #        DEPLOY_PUSH_ONLY=1 infra/camelfs/deploy.sh   build and push, print the tag, deploy nothing
 #
-# The first image: there is no service until api_image_tag is set, so push first (DEPLOY_PUSH_ONLY=1), then
-# `infra/camelfs/apply.sh api_image_tag=<tag>` creates the service running it. Every later deploy is this script.
+# The first image: the service exists at 0 tasks with a placeholder tag, so this script registers the real image
+# (a deployment at 0 tasks completes at once), then `infra/camelfs/apply.sh api_min_count=2` starts the tasks and
+# the autoscaling. Every later deploy is this script alone.
 #
 # The new revision copies the family's latest revision and swaps only the image, so settings Terraform changed
 # (environment, cpu/memory) ship with the next deploy. To ship a settings change alone, redeploy the running tag.
@@ -50,7 +51,7 @@ fi
 if [[ ${DEPLOY_PUSH_ONLY:-} == 1 ]]; then echo "$tag"; exit 0; fi
 
 aws ecs describe-services --cluster "$cluster" --services "$service" --query 'services[0].status' --output text 2>/dev/null | grep -qx ACTIVE \
-  || die "No service $cluster/$service yet: run infra/camelfs/apply.sh api_image_tag=$tag to create it running this image."
+  || die "No service $cluster/$service yet: it is created by the second apply (certificate_issued=true); see infra/camelfs/README.md."
 
 log "Registering a new $family revision with $image"
 definition=$(aws ecs describe-task-definition --task-definition "$family" --output json \
@@ -75,9 +76,9 @@ while :; do
   sleep "$poll"
 done
 
-# Every running task runs exactly this image.
-mapfile -t running < <(aws ecs list-tasks --cluster "$cluster" --service-name "$service" --desired-status RUNNING --query 'taskArns[]' --output text | tr '\t' '\n')
-[[ ${#running[@]} -gt 0 ]] || die "No running task after the deployment completed."
+# Every running task runs exactly this image (none at all while api_min_count is 0).
+mapfile -t running < <(aws ecs list-tasks --cluster "$cluster" --service-name "$service" --desired-status RUNNING --query 'taskArns[]' --output text | tr '\t' '\n' | sed '/^$/d')
+if [[ ${#running[@]} -eq 0 ]]; then log "Registered $image; the service runs no task yet (api_min_count 0): raise it with infra/camelfs/apply.sh api_min_count=2"; exit 0; fi
 mismatched=$(aws ecs describe-tasks --cluster "$cluster" --tasks "${running[@]}" --output json \
   | jq -r --arg image "$image" --arg c "$container" '[.tasks[] | select(any(.containers[]; .name == $c and .image != $image))] | length')
 [[ "$mismatched" == 0 ]] || die "$mismatched running task(s) run another image."

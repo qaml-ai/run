@@ -9,8 +9,32 @@ output "internal_url" {
 }
 
 output "load_balancer_dns_names" {
-  description = "The two balancers' own names, by key (public, internal)."
+  description = "The two balancers' own names, by key (public, internal): the CNAME targets of hostname (proxied) and internal_hostname (DNS only) in Cloudflare."
   value       = { for key, balancer in aws_lb.api : key => balancer.dns_name }
+}
+
+output "dns_records" {
+  description = "The two CNAMEs to create in Cloudflare by hand: hostname → the public balancer (proxied), internal_hostname → the internal balancer (DNS only)."
+  value = {
+    (var.hostname)          = { type = "CNAME", target = aws_lb.api["public"].dns_name, proxied = true }
+    (var.internal_hostname) = { type = "CNAME", target = aws_lb.api["internal"].dns_name, proxied = false }
+  }
+}
+
+output "acm_validation_records" {
+  description = "The certificate's DNS validation records, to create in Cloudflare by hand (DNS only) after the first apply; then apply again with certificate_issued=true."
+  value = {
+    for option in aws_acm_certificate.api.domain_validation_options : option.domain_name => {
+      name   = trimsuffix(option.resource_record_name, ".")
+      type   = option.resource_record_type
+      target = trimsuffix(option.resource_record_value, ".")
+    }
+  }
+}
+
+output "certificate_status" {
+  description = "PENDING_VALIDATION until the validation records are in DNS and ACM has seen them; ISSUED after."
+  value       = aws_acm_certificate.api.status
 }
 
 output "bucket" {
@@ -64,13 +88,23 @@ output "cluster_name" {
 }
 
 output "service_name" {
-  description = "The ECS service; empty until api_image_tag is set."
+  description = "The ECS service; empty until certificate_issued (it registers with the listeners)."
   value       = try(aws_ecs_service.api[0].name, "")
 }
 
 output "token_verify_keys_secret_arn" {
   description = "Secrets Manager: the runtime's public JWKS the api tier verifies tokens with (injected as CAMELFS_JWKS; set with jwks.sh)."
   value       = aws_secretsmanager_secret.token_verify_keys.arn
+}
+
+output "service_signing_key_secret_arn" {
+  description = "Secrets Manager: the service's Ed25519 signing key for tier → host tokens (injected as CAMELFS_SERVICE_SIGNING_KEY; set with service-key.sh)."
+  value       = aws_secretsmanager_secret.service_signing_key.arn
+}
+
+output "service_verify_keys_secret_arn" {
+  description = "Secrets Manager: the public JWKS of the service signing key, which hosts read to verify boot/stop tokens (the host policy allows it)."
+  value       = aws_secretsmanager_secret.service_verify_keys.arn
 }
 
 output "api_command" {
@@ -84,6 +118,6 @@ output "guest_image_publisher_role_arn" {
 }
 
 output "guest_image_location" {
-  description = "Where camelfsd/scripts/publish-guest-image.sh puts the image (its <s3-prefix> argument) and where hosts fetch it."
-  value       = "s3://${aws_s3_bucket.objects.bucket}/${var.guest_image_prefix}guest"
+  description = "publish-guest-image.sh's <s3-prefix> argument (it appends guest/<sha256>…), and where hosts fetch the image from."
+  value       = trimsuffix("s3://${aws_s3_bucket.objects.bucket}/${var.guest_image_prefix}", "/")
 }

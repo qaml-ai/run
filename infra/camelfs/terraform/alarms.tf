@@ -140,7 +140,7 @@ resource "aws_cloudwatch_metric_alarm" "dynamodb_system_errors" {
 
 # Container Insights metric (the cluster setting in ecs.tf must stay enabled).
 resource "aws_cloudwatch_metric_alarm" "running_tasks" {
-  count = local.api_enabled ? 1 : 0
+  count = local.scaling_enabled ? 1 : 0
 
   alarm_name          = "${var.name}-${var.env}-api-running-tasks"
   alarm_description   = "Fewer camelFS api tasks are running than the service minimum"

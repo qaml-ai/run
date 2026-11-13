@@ -7,15 +7,16 @@
 #              task role reads no secret; the execution role reads that one secret for the injection.
 #   host       camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and
 #              commits a checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks
-#              its fence), reads no lineage registry and touches no control table. Delivered as a customer-managed
+#              its fence), reads no lineage registry and touches no control table; plus the service's public JWKS,
+#              to verify the tier's boot/stop tokens. Delivered as a customer-managed
 #              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
 #              host_managed_policies) and to the proto host's role, and as a role + instance profile of its own
 #              for hosts outside those pools. The role trusts ec2.amazonaws.com only, with the job-hosts
 #              invariant's guards (its session name is an instance id the tier may one day attest; nothing else
 #              may ever assume it).
 #   publisher  GitHub Actions (OIDC, the repository's production environment) publishing the content-addressed
-#              guest image (K1): PutObject under <guest_image_prefix>guest/ and nothing else — no read, no list,
-#              no delete. The key is the image's sha256 and the publisher puts with `If-None-Match: *`, so an
+#              guest image (K1): PutObject under <guest_image_prefix>guest/ (guest/ by default) and nothing else —
+#              no read, no list, no delete. The key is the image's sha256 and the publisher puts with `If-None-Match: *`, so an
 #              existing object is never overwritten (S3 refuses the put); IAM cannot express that condition, and
 #              the bucket's versioning keeps every prior version in any case.
 #
@@ -44,7 +45,8 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-# Used by ECS itself: pull the image, write logs, and read the one secret it injects as CAMELFS_JWKS.
+# Used by ECS itself: pull the image, write logs, and read the two secrets it injects (CAMELFS_JWKS,
+# CAMELFS_SERVICE_SIGNING_KEY).
 resource "aws_iam_role" "api_execution" {
   name               = "${var.name}-${var.env}-api-execution"
   description        = "camelFS api ECS task execution (image pull, logs, the JWKS injection)"
@@ -57,15 +59,15 @@ resource "aws_iam_role_policy_attachment" "api_execution" {
 }
 
 resource "aws_iam_role_policy" "api_execution_jwks" {
-  name = "camelfs-jwks-injection"
+  name = "camelfs-key-injection"
   role = aws_iam_role.api_execution.name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid      = "InjectTokenVerifyKeys"
+      Sid      = "InjectKeys"
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
+      Resource = [aws_secretsmanager_secret.token_verify_keys.arn, aws_secretsmanager_secret.service_signing_key.arn]
     }]
   })
 }
@@ -74,12 +76,13 @@ locals {
   table_arns = { for table, resource in aws_dynamodb_table.camelfs : table => resource.arn }
 
   # The bucket, read and write, never delete. CopyObject (a cross-lineage fork, camel-fs-files.md §9) is a GetObject
-  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject.
+  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject. PutObjectTagging: the tier
+  # tags VM results kind=result for the bucket's 7-day expiry rule (bucket.tf).
   bucket_rw_statements = [
     {
       Sid      = "ObjectsReadWrite"
       Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes", "s3:PutObjectTagging"]
       Resource = ["${aws_s3_bucket.objects.arn}/*"]
     },
     {
@@ -180,6 +183,13 @@ locals {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
+      },
+      # The service's public JWKS, to verify the tier's boot/stop tokens on the compute listener (K4).
+      {
+        Sid      = "ServiceVerifyKeys"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.service_verify_keys.arn]
       },
       # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref, a lineage or a
       # control table directly (it asks the tier, which checks the fence), and never assumes another role.

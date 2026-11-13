@@ -27,8 +27,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CC="$(cat /cc)" CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w" -o /camelfsd ./cmd/camelfsd
 
+# git: /v1/.../merge runs `git merge-file` for the three-way text merge (no repository, no config).
 FROM ${BASE_REGISTRY}/debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 camelfs && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin camelfs \
     && mkdir -p /var/lib/camelfs && chown camelfs:camelfs /var/lib/camelfs
 COPY --from=build /camelfsd /usr/local/bin/camelfsd

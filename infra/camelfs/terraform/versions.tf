@@ -6,9 +6,9 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 5.0"
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.4"
     }
   }
 
@@ -36,6 +36,5 @@ provider "aws" {
   }
 }
 
-# Reads CLOUDFLARE_API_TOKEN from the environment (DNS edit on camelai.dev): the certificate's validation records,
-# the two hostnames, and Cloudflare's address ranges for the public load balancer's security group.
-provider "cloudflare" {}
+# No Cloudflare provider: DNS (the certificate's validation records, the two hostnames) is done in Cloudflare by
+# hand from this module's outputs. Cloudflare's address ranges are read over plain HTTPS (alb.tf).
