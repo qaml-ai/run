@@ -23,7 +23,6 @@ type Server struct {
 	Cache      *cache.Cache
 	Prefetch   int
 	FetchDepth int
-	Packs      bool
 	Patterns   string
 	mu         sync.Mutex
 	origins    map[string]*origin
@@ -50,6 +49,7 @@ func (s *Server) load(id string) (*device, error) {
 	if e != nil {
 		return nil, e
 	}
+	r = r.Indexed()
 	release := s.Register(id, "", r)
 	s.mu.Lock()
 	p := s.origins[id]
@@ -79,6 +79,12 @@ func (d *device) readAt(buf []byte, offset int64) error {
 		if h == "" {
 			clear(buf[:n])
 		} else {
+			look := min(d.s.Prefetch, int((int64(len(buf))+in-1)/root.ChunkSize))
+			if look > 0 {
+				if e := d.s.Cache.PrefetchChunk(context.Background(), d.r, h, look); e != nil {
+					return e
+				}
+			}
 			if e := d.s.Cache.ReadAt(h, buf[:n], in); e != nil {
 				return e
 			}

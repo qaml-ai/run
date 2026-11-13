@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // Missing includes disk entries not yet trusted in this process only when absent.
@@ -22,66 +20,14 @@ func (c *Cache) Missing(h string) bool {
 	return e != nil
 }
 
-// Pack claims each missing chunk's single flight. Demand can join these flights.
-// No byte from a corrupt pack is published, including chunks preceding corruption.
-func (c *Cache) Pack(ctx context.Context, id string, hashes []string) (err error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	owned := map[string]*flight{}
-	c.mu.Lock()
-	for _, h := range hashes {
-		if _, ok := c.verified[h]; !ok && c.flights[h] == nil {
-			f := &flight{done: make(chan struct{}), cancel: cancel, pack: true}
-			c.flights[h] = f
-			owned[h] = f
-		}
+// Pack fetches a complete, known membership list through the shared flights.
+func (c *Cache) Pack(ctx context.Context, id string, hashes []string) error {
+	if root.PackID(hashes) != id {
+		return fmt.Errorf("pack id mismatch")
 	}
-	c.mu.Unlock()
-	if len(owned) == 0 {
-		return nil
-	}
-	defer func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for h, f := range owned {
-			f.err = err
-			delete(c.flights, h)
-			close(f.done)
-		}
-	}()
-	ctx = store.OnFetchStart(ctx, func() {
-		c.mu.Lock()
-		c.Fetches.Add(1)
-		for _, f := range owned {
-			f.started = true
-		}
-		c.mu.Unlock()
-	})
-	ctx = store.OnFetchFinish(ctx, func(n int64) { c.Bytes.Add(n) })
-	b, e := c.Store.Get(ctx, "p/"+id)
-	if e != nil {
-		return e
-	}
-	if len(b) != len(hashes)*int(root.ChunkSize) || root.PackID(hashes) != id {
-		return fmt.Errorf("pack size or id mismatch")
-	}
+	members := map[int]string{}
 	for i, h := range hashes {
-		if c.hash(b[int64(i)*root.ChunkSize:int64(i+1)*root.ChunkSize]) != h {
-			return fmt.Errorf("pack chunk hash mismatch: %s", h)
-		}
+		members[i] = h
 	}
-	for i, h := range hashes {
-		if f := owned[h]; f != nil {
-			p := filepath.Join(c.Dir, h[:2], h)
-			if e = store.Atomic(p, b[int64(i)*root.ChunkSize:int64(i+1)*root.ChunkSize]); e != nil {
-				return e
-			}
-			f.path = p
-			c.mu.Lock()
-			c.verified[h] = time.Now()
-			c.mu.Unlock()
-		}
-	}
-	c.Packs.Add(1)
-	return nil
+	return c.packSpan(ctx, id, members, 0, 0, true)
 }

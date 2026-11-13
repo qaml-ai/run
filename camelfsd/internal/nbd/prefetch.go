@@ -29,7 +29,6 @@ type origin struct {
 	rootOrder   []int64
 	rootNext    int
 	rootStarted bool
-	packPending map[int64]bool
 	pending     map[int64]bool
 	seen        map[int64]bool
 	touches     []int64
@@ -43,6 +42,8 @@ func (s *Server) pattern(lineage string) string {
 // Register shares one bounded pool across every NBD connection to a root.
 // Its owner releases it after disconnecting the mount's NBD device.
 func (s *Server) Register(id, lineage string, r root.Root) func() {
+	s.Cache.Locations(r.Locations)
+	r = r.Indexed()
 	s.mu.Lock()
 	if s.origins == nil {
 		s.origins = map[string]*origin{}
@@ -173,38 +174,8 @@ func (p *origin) worker() {
 			o = p.rootOrder[p.rootNext]
 			p.rootNext++
 		}
-		w := o / p.root.Window() * p.root.Window()
-		if p.packPending[w] {
-			delete(p.pending, o)
-			p.mu.Unlock()
-			continue
-		}
-		if p.packPending == nil {
-			p.packPending = map[int64]bool{}
-		}
-		id := p.root.Packs[strconv.FormatInt(w, 10)]
-		hs := p.root.WindowHashes(w)
-		missing := 0
-		if p.server.Packs && id != "" && !p.packPending[w] {
-			for _, h := range hs {
-				if p.server.Cache.Missing(h) {
-					missing++
-				}
-			}
-		}
-		usePack := missing >= 8
-		if usePack {
-			p.packPending[w] = true
-		}
 		p.mu.Unlock()
-		if usePack {
-			if e := p.server.Cache.Pack(p.ctx, id, hs); e != nil {
-				for _, h := range hs {
-					_, _ = p.server.Cache.EnsureContext(p.ctx, h)
-				}
-			}
-		}
-		_, _ = p.server.Cache.EnsureContext(p.ctx, p.root.Chunks[strconv.FormatInt(o, 10)])
+		_ = p.server.Cache.PrefetchChunk(p.ctx, p.root, p.root.Chunks[strconv.FormatInt(o, 10)], p.server.Prefetch)
 		p.mu.Lock()
 		delete(p.pending, o)
 		p.mu.Unlock()

@@ -22,6 +22,9 @@ type flight struct {
 	pack    bool
 }
 type Cache struct {
+	packSizes                   sync.Map
+	locations                   map[string]root.Location
+	RangeGets, PackGets         atomic.Int64
 	verified                    map[string]time.Time
 	Hashes                      atomic.Int64
 	Fetches, Bytes, Packs, Hits atomic.Int64
@@ -104,7 +107,17 @@ func (c *Cache) ensure(ctx context.Context, h string) (string, error) {
 	}
 	ctx = store.OnFetchStart(ctx, func() { c.mu.Lock(); c.Fetches.Add(1); f.started = true; c.mu.Unlock() })
 	ctx = store.OnFetchFinish(ctx, func(n int64) { c.Bytes.Add(n) })
-	b, e := c.Store.Get(ctx, "c/"+h)
+	c.mu.Lock()
+	l, located := c.locations[h]
+	c.mu.Unlock()
+	var b []byte
+	var e error
+	if located {
+		c.RangeGets.Add(1)
+		b, e = store.Range(ctx, c.Store, "p/"+l.Pack, int64(l.Index)*root.ChunkSize, root.ChunkSize)
+	} else {
+		b, e = c.Store.Get(ctx, "c/"+h)
+	}
 	if e == nil && (c.hash(b) != h || len(b) != int(root.ChunkSize)) {
 		e = fmt.Errorf("chunk hash mismatch")
 	}
