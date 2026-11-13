@@ -20,7 +20,7 @@ export type RuntimeMessage =
   | { type: "ack"; id: string };
 /** Host → runtime. */
 export type HostMessage =
-  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; features?: string[]; pool?: "build" | "test" }
+  | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; features?: string[]; running?: string[]; pool?: "build" | "test" }
   | { type: "heartbeat"; running: string[]; free: number }
   | { type: "started"; id: string; at: number }
   | { type: "result"; id: string; result: WireResult };
@@ -31,7 +31,7 @@ export type WireJob = {
   limits: { cpus?: number; memoryMiB?: number; diskMiB?: number; pids?: number };
   internet: boolean; files: WireFile[]; secretEnv?: Record<string, string>;
   /** The job's /repo as a camelFS tree: the host mounts a fork of it (no `files`, no `sync`). */
-  camelfs?: { lineage: string; tree: string; commit?: boolean };
+  camelfs?: { lineage: string; tree: string; fence?: { holder: string; epoch: number }; commit?: boolean };
   /**
    * A tree too large to send inline: the host fetches each file from the runtime itself (GET `url`/<index>, with
    * `token` as a bearer, one job's only), checks its size and sha256, and writes it into the VM in pieces.

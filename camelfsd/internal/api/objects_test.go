@@ -17,6 +17,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 )
 
 func TestTreeRoutes(t *testing.T) {
@@ -25,7 +26,7 @@ func TestTreeRoutes(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	s := &Server{Manager: &image.Manager{Refs: db, Store: store.Local{Dir: t.TempDir()}}}
+	s := &Server{Manager: &image.Manager{Refs: db, Store: testutil.TrackTreePuts(t, store.Local{Dir: t.TempDir()})}}
 	call := func(method, path string, b []byte, status int) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()

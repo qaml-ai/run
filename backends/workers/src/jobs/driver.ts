@@ -31,6 +31,7 @@ class CloudflareContainersJobDriver implements JobDriver {
   }
   async run(spec: JobSpec): Promise<JobResult> {
     const checked = jobSpec(spec);
+    if (checked.repo) throw new JobSpecError("repo needs camelFS job hosts; Cloudflare containers cannot mount repos");
     if (checked.commit) throw new JobSpecError("commit needs camelFS job hosts; Cloudflare containers cannot checkpoint a job's tree");
     return await this.namespace.getByName(jobObjectName(checked.id)).runJob(checked) as JobResult;
   }
@@ -73,8 +74,8 @@ class RoutingJobDriver implements JobDriver {
   /** Which driver runs `spec`; a spec neither can take throws the spec error, as a single driver's run would. */
   route(spec: JobSpec): JobDriver {
     const checked = jobSpec(spec, { beyondContainers: true });
-    if (checked.commit) {
-      if (needsContainer(checked)) throw new JobSpecError("commit cannot be combined with a snapshot or a custom image");
+    if (checked.commit || checked.repo) {
+      if (needsContainer(checked)) throw new JobSpecError(`${checked.repo ? "repo" : "commit"} cannot be combined with a snapshot or a custom image`);
       return this.hosts;
     }
     if (needsContainer(checked)) return this.containers;

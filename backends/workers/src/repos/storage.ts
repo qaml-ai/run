@@ -7,7 +7,7 @@ export type Change = { path: string; blob?: string; mode?: string; delete?: bool
 export type CommitInput = { time?: number; parents: string[]; baseTree?: string | null; changes: Change[]; author: string; message: string; trailers: Record<string, string> };
 export type CommitResult = { tree: string; commit: string; changed: number; bytes: number; parents: string[]; time: number };
 export type CommitInfo = { tree: string; parents: string[]; author: string; message: string; trailers: Record<string, string>; time: number };
-export type DiffChange = { path: string; status: "added" | "modified" | "deleted" | "mode"; oldBlob?: string; newBlob?: string; oldMode?: string; newMode?: string };
+export type DiffChange = { path: string; status: "added" | "modified" | "deleted" | "mode"; oldBlob?: string; newBlob?: string; oldMode?: string; newMode?: string; oldSize?: number; newSize?: number };
 export type Conflict = { path: string; base?: string; ours?: string; theirs?: string; reason: "both_modified" | "delete_modify" | "binary" | "mode" };
 export type MergeResult = { tree: string; merged: string[]; took: { ours: number; theirs: number } } | { conflicts: Conflict[] };
 export type GrepInput = { tree: string; q: string; regex?: boolean; ignoreCase?: boolean; path?: string; limit?: number; context?: number };
@@ -23,6 +23,9 @@ export interface StoragePlane {
   listTree(lineage: string, tree: string, opts?: ListOptions): Promise<{ entries: TreeEntry[]; next?: string }>;
   listAll(lineage: string, tree: string, path?: string): Promise<TreeEntry[]>;
   getCommit(lineage: string, commit: string): Promise<CommitInfo>;
+  isAncestor(lineage: string, a: string, b: string): Promise<boolean>;
+  mergeBase(lineage: string, a: string, b: string): Promise<{ base: string; tree: string } | null>;
+  entry(lineage: string, tree: string, path: string): Promise<{ path: string; mode: string; blob?: string; tree?: string; size?: number } | null>;
   diff(lineage: string, from: string, to: string, path?: string): Promise<{ changes: DiffChange[] }>;
   merge(lineage: string, input: { base: string; ours: string; theirs: string; mode: "merge" | "squash" }): Promise<MergeResult>;
   grep(lineage: string, input: GrepInput): Promise<GrepResult>;
@@ -169,6 +172,18 @@ export function camelfsStorage(env: CamelfsEnv): StoragePlane {
       return entries;
     },
     getCommit: (l, commit) => json(`${root(l)}/commits/${encodeURIComponent(commit)}`),
+    async isAncestor(l, a, b) {
+      const v = await json(`${root(l)}/commits/${encodeURIComponent(a)}/is-ancestor?${query({ of: b })}`);
+      return v.ancestor;
+    },
+    async mergeBase(l, a, b) {
+      const v = await json(`${root(l)}/merge-base?${query({ a, b })}`);
+      return v.base === null ? null : v;
+    },
+    async entry(l, tree, path) {
+      try { return await json(`${root(l)}/trees/${encodeURIComponent(tree)}/entry?${query({ path })}`); }
+      catch (e) { if (e instanceof StorageError && e.status === 404 && e.code === "not_in_tree") return null; throw e; }
+    },
     diff: (l, from, to, path) => json(`${root(l)}/diff?${query({ from, to, path })}`),
     merge: (l, input) => json(`${root(l)}/merge`, post(input), undefined, true),
     grep: (l, input) => json(`${root(l)}/grep?${query(input)}`),

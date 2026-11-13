@@ -198,3 +198,52 @@ test("the fake refuses fields the daemon refuses, and a refused call names itsel
   assert.equal(raw.status, 400);
   assert.deepEqual(((await raw.json()) as { error: { message: string } }).error.message, "missing field parents");
 });
+test("the fake answers is-ancestor, merge-base, tree entry and diff sizes as the daemon's contract test does", async () => {
+  const { fake, storage } = fixture();
+  const one = await storage.putBlob(lineage, enc("one\n")), two = await storage.putBlob(lineage, enc("two two\n")), three = await storage.putBlob(lineage, enc("3\n"));
+  const first = await storage.commit(lineage, input([{ path: "shared.txt", blob: one.blob }, { path: "dir/binary", blob: two.blob }]));
+  const ours = await storage.commit(lineage, input([{ path: "shared.txt", blob: two.blob }], { parents: [first.commit], time: 1700000001 }));
+  const theirs = await storage.commit(lineage, input([{ path: "shared.txt", blob: three.blob }], { parents: [first.commit], time: 1700000002 }));
+  const merge = await storage.commit(lineage, input([], { parents: [ours.commit, theirs.commit], time: 1700000003 }));
+  assert.deepEqual((await storage.diff(lineage, first.tree, ours.tree)).changes, [
+    { path: "shared.txt", status: "modified", oldBlob: one.blob, newBlob: two.blob, oldMode: "100644", newMode: "100644", oldSize: one.size, newSize: two.size },
+  ]);
+  assert.equal(await storage.isAncestor(lineage, first.commit, merge.commit), true);
+  assert.equal(await storage.isAncestor(lineage, theirs.commit, merge.commit), true);
+  assert.equal(await storage.isAncestor(lineage, ours.commit, theirs.commit), false);
+  assert.equal(await storage.isAncestor(lineage, first.commit, first.commit), true);
+  assert.deepEqual(await storage.mergeBase(lineage, ours.commit, theirs.commit), { base: first.commit, tree: first.tree });
+  assert.deepEqual(await storage.mergeBase(lineage, theirs.commit, merge.commit), { base: theirs.commit, tree: theirs.tree });
+  const disjoint = await storage.commit(lineage, input([], { message: "disjoint" }));
+  assert.equal(await storage.mergeBase(lineage, first.commit, disjoint.commit), null);
+  assert.equal(await storage.isAncestor(lineage, first.commit, disjoint.commit), false);
+  assert.deepEqual(await storage.entry(lineage, first.tree, "dir/binary"), { path: "dir/binary", mode: "100644", blob: two.blob, size: two.size });
+  assert.deepEqual(await storage.entry(lineage, first.tree, "dir"), (await storage.listTree(lineage, first.tree)).entries.find(e => e.path === "dir"));
+  assert.equal(await storage.entry(lineage, first.tree, "absent"), null);
+  assert.equal(await storage.entry(lineage, first.tree, "shared.txt/below"), null);
+  const sized = await storage.commit(lineage, input([{ path: "shared.txt", mode: "100755" }, { path: "dir/binary", delete: true }, { path: "symlink", blob: one.blob, mode: "120000" }], { parents: [first.commit] }));
+  assert.deepEqual((await storage.diff(lineage, first.tree, sized.tree)).changes, [
+    { path: "dir/binary", status: "deleted", oldBlob: two.blob, oldMode: "100644", oldSize: two.size },
+    { path: "shared.txt", status: "mode", oldBlob: one.blob, newBlob: one.blob, oldMode: "100644", newMode: "100755", oldSize: one.size, newSize: one.size },
+    { path: "symlink", status: "added", newBlob: one.blob, newMode: "120000", newSize: one.size },
+  ]);
+  for (const [op, run] of [
+    ["entry", () => storage.entry("other", first.tree, "dir")],
+    ["isAncestor", () => storage.isAncestor(lineage, "f".repeat(40), first.commit)],
+    ["isAncestor", () => storage.isAncestor(lineage, first.commit, "f".repeat(40))],
+    ["mergeBase", () => storage.mergeBase(lineage, first.commit, "f".repeat(40))],
+  ] as const) await assert.rejects(run(), (e: unknown) => e instanceof StorageError && e.status === 404 && e.code === "not_found" && e.op === op && e.reason.length > 0);
+  for (const [path, message] of [
+    [`commits/${first.commit}/is-ancestor`, "missing field of"],
+    ["merge-base", "missing field a"],
+    [`merge-base?a=${first.commit}`, "missing field b"],
+    [`merge-base?a=x&b=${first.commit}`, "invalid commit x"],
+    [`trees/${first.tree}/entry?path=`, "missing field path"],
+    [`trees/${first.tree}/entry?path=../x`, "invalid path ../x"],
+  ]) {
+    const r = await fake.fetch(new Request(`http://camelfs/v1/lineages/${encodeURIComponent(lineage)}/${path}`, { headers: { authorization: `Bearer ${token}` } }));
+    assert.equal(r.status, 400);
+    const v = await r.json() as { error: { code: string; message: string } };
+    assert.equal(v.error.code, "invalid_request"); assert(v.error.message.includes(message), JSON.stringify(v));
+  }
+});

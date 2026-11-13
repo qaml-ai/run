@@ -166,6 +166,33 @@ Size lookups are lineage-scoped and batched.
 curl -H "Authorization: Bearer $TOKEN" "$A/trees/$T?path=src&recursive=1&limit=10000"
 ```
 
+Single-entry stat descends one subtree per path component, without listing.
+The tree must belong to the lineage (`404 not_found` otherwise); a missing path
+returns `404 not_in_tree`. `path` is required: absent or empty is
+`400 invalid_request` with `missing field path`. Absolute paths, empty or dot
+components and trailing slashes return `400 invalid_request` with `invalid path …`.
+
+| GET route (under `/v1/lineages/{lineage}`) | 200 response |
+|---|---|
+| `/trees/{tree}/entry?path=<path>` | `{ "path": "a/b", "mode": "100644" \| "100755" \| "120000", "blob": "<sha1>", "size": 1234 }` or `{ "path": "a", "mode": "040000", "tree": "<sha1>" }` |
+| `/commits/{a}/is-ancestor?of=<b>` | `{ "ancestor": true \| false }` |
+| `/merge-base?a=<commit>&b=<commit>` | `{ "base": "<commit>", "tree": "<tree>" }` or `{ "base": null, "tree": null }` |
+
+Ancestry includes equality and follows every parent. Both commits must belong
+to the lineage; `404 not_found` names the missing commit. Missing `of`, `a` or
+`b` returns `400 invalid_request` with `missing field <field>`; malformed ids
+return `400 invalid_request` with `invalid commit <id>`.
+Is-ancestor walks only from `of`, stopping immediately when it reaches `a`;
+it never loads `a`'s parent history. Merge-base uses a bidirectional
+breadth-first walk marking generations. Both use the lineage-scoped commit
+loader and visit at most 50,000 distinct commits (across both sides for
+merge-base). Attempting to visit another returns `413 too_deep`, never false
+or a null base.
+Merge-base excludes common ancestors reachable from another common ancestor
+(Git's best-common-ancestor rule). Multiple best candidates are resolved by
+latest commit time, then lexicographically greatest commit id. Commit time
+never lets a dominated ancestor win. Disjoint histories return a null base.
+
 Read parsed commit metadata: tree, parents, author, message, trailers and time.
 
 ```sh
@@ -174,6 +201,21 @@ curl -H "Authorization: Bearer $TOKEN" "$A/commits/$K"
 
 Diff returns added, modified, deleted and mode changes. Equal subtree ids
 are pruned without reading their descendants; path filters to a prefix.
+The response is `{ "changes": [ { "path": "a", "status": "added" | "modified" |
+"deleted" | "mode", "oldBlob"?: "<sha1>", "newBlob"?: "<sha1>", "oldMode"?:
+"<mode>", "newMode"?: "<mode>", "oldSize"?: 1234, "newSize"?: 5678 } ] }`.
+Sizes come from loaded tree entries. Every side with a blob has a size,
+including zero: added omits oldSize, deleted omits newSize, and mode has both.
+Every tree writer (commits, imports, merges and checkpoints) publishes a
+lineage-scoped `ts/<tree>` JSON sidecar with path, mode, blob/tree id and size
+for each entry, in the same upload wave as `t/<tree>`. Its entries reconstruct
+the Git tree id on write; on read they must match the verified Git tree's
+entries in order, with nonnegative sizes. The daemon derives sizes from its
+blob index or stored blob HEAD metadata when writing, never blob GETs.
+Sidecars are the required size source for listings, entry stat and diff:
+a missing sidecar is `500 internal` with `missing tree sizes <tree>`, with no
+fallback to blob metadata or data.
+
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" "$A/diff?from=$BASE&to=$T&path=src"
@@ -267,7 +309,7 @@ block. Locations come from the superblock, descriptor and inode block mapping;
 the journal superblock is included for the usual internal journal. The
 verified cache serves these reads to NBD and later hydration without another
 fetch. Unsupported layouts such as meta_bg keep lazy reads.
-There is one cold path; `--cold` and `--hydration-pack-size` are removed.
+There is one cold path; `--hydration-pack-size` is removed.
 
 The guest device is a persistent dm-snapshot with 512 KiB chunks. Its COW
 store is a loop over sparse `mounts/<jobId>/cow.img`. `--cow-max` caps the
@@ -277,13 +319,19 @@ is a separate dm-linear device named `<prefix>-<jobId>-o`, initially over
 the read-only NBD root export.
 
 The daemon writes every non-hole 256 KiB root chunk into sparse `image.img`
-with up to 64 workers. Cached chunks are reused; fetched chunks are hash
-verified. Holes require no reads or writes. After fsync, the daemon suspends
+with up to 64 workers. Fetched chunks are hash verified before one image write.
+FICLONERANGE records the image range in the host cache without copying bytes.
+Unsupported range cloning and partial final chunks use a second cache write.
+Cached chunks are reused. Holes require no reads or writes. After fsync, the daemon suspends
 the linear origin, reloads it over a loop of `image.img`, resumes it, and
 detaches NBD. The snapshot and guest retain the same bytes. Subsequent reads
 use only the kernel, loops and local disk. There is no post-hydration scan.
 Status progresses from `cold` through `hydrating` to `hydrated` after the
-swap, with `hydratedBytes`, `totalBytes`, and `swapMs`. Byte counts describe
+swap, with `hydratedBytes`, `totalBytes`, `hydrationMBps`, and `swapMs`. Throughput is
+non-hole bytes divided by elapsed hydration seconds in decimal MB/s, frozen
+at completion. The caller measures `firstFileMs`. `GET /v0/stats` reports
+process-lifetime `prehydrateBytes` (successful image writes during hydration)
+and `reflinkedChunks` (successful chunk-cache range clones). Byte counts describe
 non-hole data, independent of the virtual size. Hydration errors are exposed
 as `hydrationError`; checkpoint fails rather than publishing partial data.
 
@@ -313,7 +361,8 @@ reclamation.
 
 The shared store budget defaults to 64 operations (`--fetch-depth`). All
 speculative fetches share a smaller budget, reserving eight slots for demand
-at the default depth. The cache also reserves slots. At depth one operations
+at the default depth. The same host pool and demand reserve cover every mount; the cache has no
+separate fetch pool. At depth one operations
 serialize. Prefetch lookahead is separately 64. A reserved slot cannot remove
 NIC or disk contention; demand latency targets need measurement on the host.
 A per-root bounded prefetch pool records first-touch patterns at release.
@@ -343,3 +392,43 @@ runs the root tests and harness. The demand samples include NBD misses and
 cache hits; they are not an isolated cache-hit microbenchmark.
 Host /v0 tree, blob and commit GETs now require ?lineage=NAME. The development
 CLI tree and cat commands take --lineage NAME before the tree id.
+
+## Host and API roles
+
+`camelfsd host` runs the block layer, cache, NBD and mounts. It serves
+the Unix socket and can expose the runtime and import routes over TCP with
+the existing shared bearer.
+
+`camelfsd api` serves `/v1/lineages/{lineage}/*` over TCP for the ALB.
+`GET /v0/health` needs no credentials and returns a JSON object containing
+only `version`. `GET /v0/stats` reports local SQLite connection counts and
+accepts a valid read or write token for any lineage.
+
+```sh
+camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfsd \
+  --store s3://bucket/prefix --region us-west-2 \
+  --jwks-file /etc/camelfsd/jwks.json --token-issuer https://runtime.example
+```
+
+Each API node keeps its own SQLite caches, including its idempotency response
+cache. Nodes can share the same object store, which is the durable source of
+storage objects. `--fetch-depth` bounds concurrent store operations.
+
+Send `Authorization: Bearer <jwt>` for storage requests. The runtime signs
+the JWT using Ed25519 with `alg: "EdDSA"`, `typ: "camelfs+jwt"` and a `kid`
+from its published JWKS. Claims include the configured `iss`,
+`aud: "camelrun:camelfs"`, the actor `sub`, integer Unix seconds `iat` and
+`exp`, the exact path lineage `lin`, and `acc` of `r` (read) or `w`
+(read and write). Tokens may live up to `--token-max-ttl` (15 minutes by
+default), with up to five seconds of future clock skew on `iat`. Include
+`refs` as an array of up to 64 ref globs, which may be empty. The optional
+`fence` contains a string `holder` and integer `epoch`. This release
+validates the shape of `refs` and `fence`.
+
+Provide exactly one JWKS source. Use `--jwks-file` for a local file or
+`CAMELFS_JWKS` for the JSON itself. Each key specifies `kty: "OKP"`,
+`crv: "Ed25519"`, `alg: "EdDSA"`, `use: "sig"`, `kid` and the base64url
+public key `x`. To rotate file-backed keys, add the new key, send SIGHUP,
+then remove the old key after its tokens expire and send SIGHUP again. A
+failed reload keeps the previous keys. Restart env-backed nodes to rotate
+their keys.

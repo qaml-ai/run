@@ -5,6 +5,12 @@ and remove concepts like the Volumes entirely. We'll figure out how to migrate."
 camelRun's file model with camelFS ([camel-fs.md](camel-fs.md)) as the **only** concept. Volumes are gone. There is
 no back-compat, and migration is out of scope except for one note at the end.
 
+**Decided (Miguel, 2026-11-13 ~17:00): option C.** camel-fs is one AWS service, `camelfsd --role api`, a stateless
+Go tier in us-west-2 holding refs, leases and fences as DynamoDB conditional writes and the objects in DynamoDB and
+S3. Hosts run `camelfsd --role host`, and the runtime holds no ref. `RepoDO`, the tunnel and the shared bearer go.
+§6 has the state split and §9 the contract; the sections in between say "the tier" where they said "the repo
+object".
+
 **The invariant.** Every file anywhere in camelRun lives in a camelFS lineage. A named, mutable **ref** points at
 an immutable **tree**, and every change is a **commit**: a new tree, a commit object naming its parent and who made
 it, and one fenced compare-and-swap of the ref. Nothing stores a file any other way: not an agent's workspace, not
@@ -24,7 +30,7 @@ Three nouns, one of them user-facing.
 | noun | what it is | user-facing word |
 |---|---|---|
 | **repo** | a lineage: a versioned tree with refs, history and a search index; the unit of ownership, quota and chunk sharing. Today's "volume" and "project" are both repos | **repo** (recommended, see §8) |
-| **ref** | a named, mutable pointer to a version; `main` by default; others for attempts, published versions, mirrors; every ref has an owner and dies with it. **Names** are `[A-Za-z0-9._-]` segments joined by `/` (`main`, `job/<id>`, `fork/<effect>`, `published/<n>`, `release/<label>`, `snap/<name>`, `dream/<key>`, `mirror/github/<branch>`), never a colon, no segment ending in `.lock`, at most 200 characters. `RepoDO` has no encoding of names, so a name that does not fit is refused, never rewritten: a cache ref is derived as `cache/<sha256(key)[:32]>` because cache keys carry arbitrary characters, and `mirror/github/<branch>` takes the GitHub branch name only when every segment is in the alphabet; a branch with other characters, a `.lock` segment or over the length is refused at mirror setup with a clear error. **Owners** keep their colons and come from a fixed prefix set, `(agent|workflow|job|user|api|cache):<id>`, which `RepoDO` enforces on every branch create (confirmed with wf-repos, 2026-11-13) | *branch* in the API where a user names one; `main` otherwise |
+| **ref** | a named, mutable pointer to a version; `main` by default; others for attempts, published versions, mirrors; every ref has an owner and dies with it. **Names** are `[A-Za-z0-9._-]` segments joined by `/` (`main`, `job/<id>`, `fork/<effect>`, `published/<n>`, `release/<label>`, `snap/<name>`, `dream/<key>`, `mirror/github/<branch>`), never a colon, no segment ending in `.lock`, at most 200 characters. The tier has no encoding of names, so a name that does not fit is refused, never rewritten: a cache ref is derived as `cache/<sha256(key)[:32]>` because cache keys carry arbitrary characters, and `mirror/github/<branch>` takes the GitHub branch name only when every segment is in the alphabet; a branch with other characters, a `.lock` segment or over the length is refused at mirror setup with a clear error. **Owners** keep their colons and come from a fixed prefix set, `(agent|workflow|job|user|api|cache):<id>`, which the tier enforces on every branch create (§9.9) | *branch* in the API where a user names one; `main` otherwise |
 | **version** | an immutable commit: a tree id (git-compatible), parents, author, message and the attribution trailers; the id every cache, diff, mount and restore names | **version** |
 
 Recommendation on the word: **repo**. Developers already know that a repo has branches, history, forks, diffs and
@@ -37,7 +43,7 @@ term. A repo need not contain code: a shared docs folder is a repo with one bran
 |---|---|
 | `POST /v1/repos { name?, key?, from?: { repo, ref? \| version? }, template? }` | creates a repo (idempotent by `key` or `Idempotency-Key`); `from` makes it a fork of another repo's version (O(1): the new repo's `main` points at that tree, nothing is copied); `template` seeds a first commit |
 | `GET /v1/repos`, `GET /v1/repos/:id`, `DELETE /v1/repos/:id` | list, inspect (`{ id, name, key, refs, bytes, files, createdAt }`), delete (every ref goes; objects follow by reachability) |
-| `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` |
+| `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` (§9.9's `cas`) under the ref-move rules (§6): a new commit's first parent is the current version, a move to a recorded commit is a fast-forward, and a rewind is a `restore`, a new commit |
 | `POST /v1/repos/:id/branches { name, from?: ref \| version, owner?, ttl? }` | an O(1) branch inside the repo (shares chunks on hosts); `owner` ties its life to a workflow, job or agent |
 | `GET /v1/repos/:id/history?ref=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts |
 | `GET /v1/repos/:id/diff?from=&to=&path=` | changed paths between any two versions, O(changed) |
@@ -89,8 +95,8 @@ or `rm` on `main` never breaks a message that showed the file. Deleting the agen
 
 ## 3. The files API for Workers and clients
 
-Served by the runtime (the Workers backend; the Node backend identically), reading objects from S3 and refs from
-the repo's object (§6). Access is by token: a repo token names `{ repo, read: [ref globs], write: [ref globs],
+Served by the camel-fs tier (§9; the public `/v1/repos` moves onto it in build step 5 of §6). The runtime calls the
+same API for its agents and keeps each agent's tree cache (§6). Access is by token: a repo token names `{ repo, read: [ref globs], write: [ref globs],
 exp, subject }` (camel-fs.md §1.10); an agent's token covers its mounts; an API key covers its tenant's repos; a
 signed link covers one blob or one path for minutes. There is no other access path.
 
@@ -102,7 +108,7 @@ signed link covers one blob or one path for minutes. There is no other access pa
 | `PUT …/files/:path?ref=&expect=<blob \| "none">`, `DELETE …/files/:path?ref=&expect=` | one file, one commit; `expect` is the blob the writer read (`none`: must not exist), refused with 412 and the current blob otherwise |
 | `POST …/commit { ref, expect?: version, files: { path: { text \| data \| blob \| from: { repo, version, path } } \| null }, message? }` | several files as one commit; `blob` and `from` reference content the caller can already read, without re-sending bytes; `expect` is a whole-ref CAS |
 | `GET …/grep?ref=\|version=&q=&regex=&path=&limit=` | the trigram index over the version's shards (camel-fs.md §1.7); literal and regex, path filters, 2,000-match cap; an unheld ref's answer is exact, a held ref's is as of its last checkpoint |
-| `GET …/blobs/:sha?version=&path=` | the bytes of a content id, **immutable and cacheable forever**, and the edge-cache path: the Worker first checks that the caller's repo reaches the blob (`path` resolves in `version`'s tree to exactly `sha`, confirmed by the repo object's head-tree cache or by the daemon, §9.1), **then** looks the bytes up in the Cloudflare Cache API by `sha` and fetches from the daemon on a miss. The cache stays shared across repos, forks, agents and tenants because it is keyed by content, but no request is served on the strength of knowing a hash: hashes leak through listings, git edges, logs, URLs and errors, and a known-content hash must never confirm a file's existence in another tenant. A request without a resolving `(version, path)` is `404` whether or not the bytes exist |
+| `GET …/blobs/:sha?version=&path=` | the bytes of a content id, **immutable and cacheable forever**, and the edge-cache path: the Worker first checks that the caller's repo reaches the blob (`path` resolves in `version`'s tree to exactly `sha`, confirmed by the agent's tree cache or by the tier, §9.1), **then** looks the bytes up in the Cloudflare Cache API by `sha` and fetches from the daemon on a miss. The cache stays shared across repos, forks, agents and tenants because it is keyed by content, but no request is served on the strength of knowing a hash: hashes leak through listings, git edges, logs, URLs and errors, and a known-content hash must never confirm a file's existence in another tenant. A request without a resolving `(version, path)` is `404` whether or not the bytes exist |
 | `POST …/links { path \| blob, method, expiresIn?, maxBytes?, contentType? }` | a signed URL for one download or one upload (an upload lands as a commit on the ref named at signing); today's `file_link`/`file_import` builtins keep their shape |
 
 Consistency: a version is immutable, so anything read by `version` is exact and cacheable; a read by `ref` is the
@@ -127,7 +133,7 @@ commit), and the branch `job/<id>` then points at the result. The workflow decid
 - `merge(into: "main", from: job.branch)`: the three-way merge; clean → one commit on `main` with two parents (the
   attempt's history stays reachable and attributable), conflicts → `{ conflicts }` for a fix stage, which edits the
   same branch and merges again;
-- `fast-forward` when `main` has not moved: the ref moves, zero bytes;
+- `fast-forward` when `main` has not moved: the ref moves, zero bytes (ref-move rule 2, §6);
 - or nothing: the branch is owned by the workflow and dies with it.
 
 The host's result (`WireResult.camelfs`: `tree`, `root`, `commit`, `checkpointError`, the timings) stays as the
@@ -169,7 +175,7 @@ workflow) instead of forked volumes; `commit()` in a script is `merge`. The `For
 | **Quotas and billing** (`storage-quota.ts` 507 `STORAGE_LIMIT`; `tenant-storage.ts` DO with `storage_objects`/`storage_total` and a daily R2 reconcile; Postgres `storage_usage(kind agent\|volume\|tenant, owner, bytes)`; `billing.ts` `storageLimit` from the plan, 1 GB free / 100 GB paid, 402 when the prepaid balance is gone; Node `chargeStorage` daily at $0.10/GB-month; `VOLUME_LIMITS`: 256 MiB/file, 100k files, 16 mounts, 100 snapshots, 10k pinned, 1,000-file listings) | only real bounds (Miguel: no proactive caps): the account's storage limit, now **bytes of live objects reachable from the tenant's refs**, counted by the repo object at each CAS (the tree's byte total is known) and reconciled from S3 Inventory, billed daily at the same $0.10/GB-month as one `storage` ledger line per tenant; S3's 5 GiB single PUT (multipart above); the read-all and listing page sizes as API paging; the model-facing caps a tool needs (read 1 MiB, grep 2,000 matches). No file-size cap, no file-count cap, no snapshot caps, no mount cap beyond the environment text's size. `storage_usage`, `TenantStorage` and the reconcile go |
 | **The Node backend's `VolumeService`** (`src/volumes.ts` 1,192: `volumes/<id>/tree` append log folded every 1,024 records, snapshots as blobs, 1 MiB chunks under `chunks/<tenant>/<aa>/<sha256>`, one node owning each volume with peer forwarding and idle release, `volume_watchers`; `volume-tools.ts`, `volume-env.ts`, `storage-gc.ts`, `storage-integrity.ts`, `gc-verify.ts`, `pin-backfill.ts`) | the same repo API over the same objects: refs in Postgres rows locked per repo (§6), objects in DynamoDB and S3, the daemon on the Node hosts; `VolumeEnv` becomes a repo-backed `ExecutionEnv`; the per-node ownership, forwarding, chunk pins and GC go, because nothing on a node is truth |
 | **Signed links** (`/v1/agents/:id/links`, `/v1/volumes/:id/links`, `file_link`, `file_import`) | the same, on repos: a link names a blob (download) or a ref+path (upload → commit); `file_import` lands as a commit |
-| **`notify`** on a mount (prompt the agent when others change files) | the repo object emits a change event when a ref it watches moves; the same coalescing |
+| **`notify`** on a mount (prompt the agent when others change files) | the tier sends a signed webhook when a watched ref moves, landing as an outbox row (§9.11); the same coalescing |
 | **Console** (`pages/volumes.tsx` 145: list, create, delete volumes and snapshots; `components/files.tsx` 233: the file browser with list, upload, delete and signed-URL preview over `/v1/volumes/:id/files`; per-mount browsers in `agent.tsx`; counts in `account.tsx`) | a repos page: refs, history (first-parent, with attribution), a tree browser at any version (the file browser reads `files?version=` and previews through `blobs/:sha`), diff, restore, grep; the per-mount browser on the agent page points at the mount's repo and ref |
 | **`push()`** (`workflow-jobs.ts` `pushSpec`: a job whose `at` is the volume to push, with the GitHub token in the job's process) | the git edge's mirror (camel-fs.md §1.8) from a ref, with the App token the runtime mints; no job (§4) |
 | **`apply`** (declarative provisioning: `shared/apply.ts`, `apply.ts`, `apply-api.ts` create keyed volumes, cached per apply run) | an `apply` manifest names repos by key (`repos: [{ key, template? }]`); the same create-by-key, idempotent; mounts in manifests name `{ repo, ref? }` |
@@ -179,77 +185,222 @@ workflow) instead of forked volumes; `commit()` in a script is `merge`. The `For
 | **Channels** (`channels.ts` mounts, reads and signs links to volume files for channel messages, through `handleAgentFilesRoute` and `signVolumeLink`) | a channel attachment lands like an upload (a commit under `uploads/<request>/`); outgoing files are signed links to `(version, path)` |
 | **MCP `add_schedule` mounts** (`packages/cli/src/tools.ts:196`, `hosted-mcp-tools.ts:197`: the mounts schema names `volumeId`) | the schema names `{ repo, ref?, path, mode }`; nothing else changes |
 | **Evals** (`evals/workflows/lib/runtime.ts`, `choice.ts`, `run.ts` create volumes, write files, mount them, snapshot through the SDK) | the same through `RepoHandle`; the eval corpus is a repo per case made by key, forked per run |
-| **Admin usage** (`admin-usage.ts` on both backends counts volumes and storage per tenant) | counts repos, refs and reachable bytes from the repo objects' counters |
+| **Admin usage** (`admin-usage.ts` on both backends counts volumes and storage per tenant) | counts repos, refs and stored bytes from the `lineages` items' counters |
 | **Tool-result file shapes** (`file-output.ts`: `PresentedVolumeFile` / `WrittenVolumeFile` with signed links, the shape tool results use to hand files back) | `PresentedFile { repo, version, path, blob, size, link }`; the pinning half (`file-pin-volumes`, `releasePresentedFiles`) is the history ref |
 | **SDKs** (`VolumeHandle`: `info delete snapshot snapshots updateSnapshot deleteSnapshot archive restore commit fork changes list write read readText readAll`; Python `Volume`, `create_volume`, `read_all`) | `RepoHandle`: `info delete refs branch merge history diff blame restore commit write read readText list readAll export grep`; `agents.runtime.repos.create/get/list`; Python mirrors it; `projects.*` keeps its surface over repos |
 | **OpenAPI** (`/v1/volumes/*` twelve paths; schemas `Volume`, `VolumeFile`, `VolumeInput`, `VolumeSummary`, `Snapshot`, `SnapshotInput`, `SnapshotMade`, `SnapshotUpdate`) | `/v1/repos/*`; schemas `Repo`, `RepoFile`, `RepoInput`, `Ref`, `Version`, `Commit`, `Diff`, `Blame`, `MergeResult` |
 
 ## 6. Where state lives
 
-**Decided (Miguel, 2026-11-13): the state split.** Refs, history, leases and fencing epochs live in the
-**per-lineage Durable Object's SQLite**; trees and commits live in **DynamoDB**, with cold generations packed to
-S3; blobs and chunks live in **S3**. camel-fs.md §1.2 is updated to match (it had refs in DynamoDB). The reasons:
+**Decided (Miguel, 2026-11-13 ~17:00): option C, camel-fs as one AWS service.** It replaces the earlier split of
+the same day, in which refs, the ref log, leases and fences lived in a per-repo Durable Object (`RepoDO`). The
+study behind it is the C-against-D comparison (C: one AWS service; D: `RepoDO` on a camel-fs Worker in front of a
+regional storage tier). The state is now:
 
-- every ref change already passes through a Durable Object: the agent's turn, a `HostJob`'s result, the API's
-  request; a second store for refs would be a second hop on every one of them;
-- Workers resolve ref → tree locally on every file-API call, and refs cannot be edge-cached because they are
-  mutable; trees and commits can, by hash;
-- one serial owner per lineage gives a transactional CAS, the lease fence, the quota counter and SQL history (the
-  ref's log is a table the console reads) without a cross-store protocol;
-- the immutable objects stay next to the hosts, in the region they are read from, in stores that scale without an
-  owner.
+| what | where | key |
+|---|---|---|
+| refs, leases, fences, watchers | DynamoDB `refs`, one item per ref | partition `lineage`, sort `name` |
+| lineages: tenant, kind, default branch | DynamoDB `lineages` | `lineage` |
+| trees and commits (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to S3 `g/`) | DynamoDB `objects` (S3 `t/`, `k/` until the table exists, ledger L74) | `lineage`, `id` |
+| pending deliveries (`notify`; compute's `vm.*` and `usage.*`) | DynamoDB `deliveries` | `shard`, `id` |
+| blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
+| the NVMe cache of chunks, images, trees and shards | each host's `camelfsd --role host` | content hash |
+| each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
+| the per-tenant repo list; the token signing keys (`RuntimeSigner`, Postgres `signing_keys`) | the runtime | tenant |
 
-**The repo object** (`RepoDO` on Workers, one per repo; a `repos`/`refs`/`ref_log` table set with row locks per
-repo on Node) holds everything mutable and small: the **refs** (`name → version, tree, root?, owner, expiresAt?`),
-the **ref log** (every move: from, to, who, when, why; what `history` reads before descending into commits), the
-**lease** of each held ref (`holder`, `leaseEpoch`, `leaseDeadline`, the host's boot epoch; every CAS is conditioned
-on it), the **quota counters** (bytes and files reachable at the current heads), the **watchers** for `notify`, and a
-**cache of the head trees** (path → blob, mode, size, for each ref's current version) so `ls`, `stat`, `glob` and
-the write-precondition check never leave the object. It is the authorization boundary and the only place a ref
-changes.
+**Deployed names** (fs-infra, #967, applied 2026-11-13; `infra/camelfs/README.md` is the source of truth). All
+of these are in account `904534089871`, `us-west-2`, with state at `agent-runtime/camelfs/terraform.tfstate`.
 
-**The object stores** hold everything immutable and large, content-addressed, with no owner: **trees and
-commits** in DynamoDB (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to
-S3 `g/`), **blobs** (file bytes), **chunks and roots** (the block images hosts mount), **packs** (the read tier for
-hydration; clone packs) and **search shards** in S3 under one bucket per environment (camel-fs.md §1.1). The hosts'
-`camelfsd` keeps the NVMe cache of chunks, images, trees and shards in front of them. The Workers reach the objects
-through the daemon's contract (§9) over the `CAMELFS` binding tonight and the API tier later; trees and commits can
-also be read from DynamoDB over HTTPS and edge-cached by id, since they are immutable; blobs are edge-cached by id
-after the (version, path) check of §3.
+- **Bucket:** `camelfs-prod-904534089871`. SSE-KMS, versioned with 35-day noncurrent expiry, daily Inventory
+  into `inventory/`.
+  - Keys: `<lineage>/{o,t,k,r,c,ts}/<hash>`.
+  - The guest image (K1) at `guest/<sha256>…`, put only by the GitHub OIDC role
+    `camelfs-prod-guest-image-publisher`.
+  - VM results at `<lineage>/results/<vm>`, tagged `kind=result`, expired after 7 days, written only by the tier.
+- **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
+  - `camelfs-prod-objects` (`lineage` + `id`);
+  - `camelfs-prod-refs` (`lineage` + `name`);
+  - `camelfs-prod-lineages` (`lineage`);
+  - `camelfs-prod-deliveries` (`shard` + `id`);
+  - `camelfs-prod-hosts` (`pool` + `host`);
+  - `camelfs-prod-vms` (`id`).
+- **Tier:** ECS Fargate (Graviton) service `camelfs-prod-api` behind two ALBs, both with HTTP/2 off: public
+  `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts'
+  security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
+- **Keys** (Secrets Manager):
+  - `camelfs/prod/token-verify-keys`: the runtime's Ed25519 JWKS, injected as `CAMELFS_JWKS`.
+  - `camelfs/prod/service-signing-key`: the service's own key for the tier → host family, injected as
+    `CAMELFS_SERVICE_SIGNING_KEY`.
+  - `camelfs/prod/service-verify-keys`: its public JWKS, read by hosts.
 
-**Tonight's interim (ledger L74).** Until Miguel creates the DynamoDB table, `camelfsd` writes trees and commits
-durably to S3 (`t/<sha1>`, `k/<sha1>`) and serves them from there and its cache; the swap to DynamoDB is internal to
-the daemon and changes nothing in §9. v0's daemon-local SQLite ref store on the m8id's instance-store NVMe (wiped by a
-stop; ledger L73) is replaced by the repo object as this design lands.
+  The api task role reads no secret.
+- **IAM:** the host policy `camelfs-prod-host` allows the bucket and `objects` only. It explicitly denies every
+  other table and any write to `*/results/*`, so a host moves a ref only through the tier's fence check.
+
+Nothing in the runtime holds a ref. `camelfsd --role api` is a stateless Go tier behind an ALB in us-west-2: the §9
+plane plus a `refs` package, any node serving any request. Hosts run `camelfsd --role host` (the block layer and the
+cache, no refs) and reach the tier in-VPC. The `CAMELFS` tunnel, the shared bearer (ledger L30) and `RepoDO` are
+deleted. The reasons, from the study:
+
+- **The ref-move rules are a storage condition.** Every move is one conditional `UpdateItem` on
+  `version = :expect`, after the tier has checked the approved rules below against immutable commits: a new commit's
+  `parents[0]` is the current version, and a move to a recorded commit is a fast-forward. A move can only land on
+  the version it was checked against.
+- **The dominant writer is a VM.** Per-turn checkpoints of `bash` VMs, computers and jobs are the writes that grow.
+  Under C the host's CAS is in-region (checkpoint ≈ 170 ms + ≈ 7 ms to the tier and DynamoDB). Under D it would
+  have travelled host → Worker → `RepoDO` → host (≈ 80–165 ms more on the per-turn path).
+- **It stands alone.** One binary, a bucket and a table. Node, Workers, hosts and customers call one API with the
+  same tokens. Self-host needs no Cloudflare. A runtime moved into AWS (celld) would be in-region on every path.
+- **Hot lineages.** There is no serial owner per repo. A swarm's thousand forks are a thousand items in one
+  partition key, which DynamoDB's adaptive capacity spreads; a single hot ref is the bound. A fork copies nothing,
+  because head trees are cached by tree id (L78 goes away).
+- **Cost is equal within the estimate:** ≈ 19.8–23.5 µ$ per write under C against 21.7 under D (§8).
+
+What C costs, recorded: a foreign version (another writer's latest ref) and a notification cross clouds from a
+runtime on Cloudflare, one round trip each (≈ 85 ms from an arbitrary colo, ≈ 25 from a DO placed `wnam`; both
+estimates until measured). The agent's own reads stay local (below). The calendar is 4–5 weeks against D's 1.5–3,
+and `RepoDO`'s internals freeze on day one.
+
+**A ref item** holds `version` (the commit), `tree`, `root?`, `owner`, `expiresAt?`, `createdAt`, `createdBy`,
+`updatedAt`, the lease (`holder`: host id, host boot epoch, mount id; `leaseEpoch`; `leaseDeadline`) and
+`watchers` (a set of watcher ids).
+
+**The ref-move rules** (wf-delegation's, lead-approved; the same as `RepoDO`'s CAS, and the tier's tests port its
+tests):
+
+1. **A new commit on an existing ref**: `parents[0]` is the current version, and `parents` has length 1, or 2 for a
+   merge `[current, other]`. Otherwise `409 bad_parent` with `{ parents, current }`, and nothing changes.
+2. **A move of an existing ref to an already-recorded commit** is fast-forward only. The tier walks breadth-first
+   over all parents from the target, and at each visited version compares with the current version *first*, before
+   requiring a commit record (so a fork whose base is a pre-fork version still fast-forwards). An unrecorded version
+   that is not current is a dead end. If current is never reached, the answer is `409 not_fast_forward` with
+   `{ current }`; past 50,000 visited it is `409 not_fast_forward` with `{ current, reason: "too_deep" }`, failing
+   closed.
+3. **The same version as current** is a no-op, and allowed.
+4. **A ref that does not exist** (branch, create, seed) may be created at any commit.
+
+Going back is never a move: `restore` is a new commit whose tree is the old version's and whose parent is current.
+A stale `expect` is `412 stale` with `{ current }`, and a held ref without the matching fence is `409 fenced`. In
+DynamoDB, rule 1 is the `parents[0]` check before the write, and rule 2 is the `is-ancestor` walk (§9.4) before
+the write. Both then write under the condition `version = :expect`, so a concurrent move between check and write
+fails the condition instead of landing.
+
+**There is no ref-log item.** Every move extends the history reachable from the ref, and `history` walks first
+parents from the head (with `merges: true` to descend). Who and why travel in each commit's author and trailers. A
+multi-step fast-forward (rule 2) adds the target's whole ancestry to the walk, as git's does. Only a ref's create
+and delete are outside history: `createdAt` and `createdBy` sit on the item, and a delete is final.
+
+**Leases and fences** sit on the ref item. A host's CAS is conditioned on
+`version = :expect AND holder = :holder AND leaseEpoch = :epoch`, where holder and epoch come **only from the
+verified token's `fence` claim**, never from a request body (§9.10). An API writer's CAS is conditioned on
+`attribute_not_exists(holder)`.
+A lease is taken with `attribute_not_exists(holder) OR leaseDeadline < :now`, and the new epoch is the old one + 1.
+`:now` is the tier node's clock (AWS Time Sync, sub-millisecond skew between nodes) against a 10-minute lease
+renewed every TTL/3, so skew is noise. A node whose clock disagrees with DynamoDB's own write time by more than a
+second refuses lease operations loudly. The rules of camel-fs.md §1.2 hold unchanged: one writer per branch,
+fenced; a held branch refuses API writes and merges into it; a reboot changes the boot epoch.
+
+**Per-path expect** (`PUT …/files/:path?expect=<blob>`) is checked by the tier against the tree at the head it read.
+Trees are immutable and addressed by id, and the conditional write pins that head, so the check holds. Two tier
+nodes racing on one ref are serialized by the condition. The loser re-reads the head and, when every per-path
+expect still holds on the new head, rebuilds its commit on it and tries once more (one extra round trip under
+contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` with the current version.
+
+**Quota** is checked inside the tier's write and is money-adjacent (the lead reviews it line by line).
+- The request carries `quota: { limitBytes, otherBytes }`, which the runtime computes from the tenant's other
+  repos.
+- The tier refuses `507 storage_limit` with `{ limit }`, with **no** ref change, when
+  `otherBytes + repoBytesAfter > limitBytes`.
+- `files` is the entry count of `main`. `bytes` and `files` come back in every write's result.
+
+**How repo bytes are kept: decided (Miguel, 2026-11-13 ~17:40), the mark count plus bytes written since.**
+`repoBytes` is the exact distinct-blob bytes reachable from all of the repo's heads, as measured by the last GC mark
+pass (camel-fs.md §1.9), plus the bytes written since that pass. It lives on the `lineages` item as
+`markedBytes`, `markedAt` and `writtenSince`.
+
+- **The mark pass** runs hourly. It also runs on demand when a write is refused, or when a repo crosses ~90 % of
+  its limit. It walks every head and writes the exact deduplicated base.
+  - The reset does not lose a concurrent write: the pass snapshots `S = writtenSince` when it starts, then commits
+    `SET markedBytes = :m, markedAt = :now, writtenSince = writtenSince - :S` conditioned on
+    `markedAt = :prev`.
+- **`writtenSince` increments at blob upload** (`PUT …/blobs`, 9.1), and only when that upload created
+  `<lineage>/o/<sha1>`.
+  - It is not part of the ref-move transaction, so a write stays one conditional write on the ref.
+  - A blob uploaded but never committed counts until the next mark, a conservative over-count.
+- **Between passes the count reads high, not low.** Deletes and moves away from a blob free quota only at the
+  next pass, so a repo near its limit may briefly be refused, and the next pass (or the on-demand recount the
+  refusal triggers) corrects it.
+- **The one bounded under-count:** a blob that was unreachable at the last mark but not yet swept, and is then
+  referenced again, is not new: its upload creates nothing, so it adds nothing until the next mark. The error is
+  bounded by one mark interval (hourly, or sooner through the 90 % or refusal recount).
+- **Quota is therefore a soft limit.** Storage billing does not use it: it uses the exact mark (`usage.storage`,
+  camel-fs-compute.md §4).
+- **Owner:** proto-block, in C3. The `writtenSince` counter is on the `lineages` item, and the mark pass writes the
+  base.
+
+The alternative, an exact per-blob refcount maintained by every ref move, was rejected: it is a transaction across
+the ref and its counters on every write. So was "distinct bytes ever written, never shrinking", because deleting
+files must free quota.
+
+**Notify** is a signed webhook from the tier to the runtime (§9.11), at least once, landing as an outbox row in the
+receiving object, which the receiver's alarm then drains, as wf-durable's design already does for host results. A
+move of a watched ref writes its delivery item in the same transaction as the move, so a crash between the two
+cannot lose a notification. A host checkpoint's result already carries `{version, tree}` and the diff to the
+`HostJob` that dispatched it, so the job's owner learns of the move without a webhook.
+
+**Agents cache trees by tree id** in their own Durable Object's SQLite. The cache is not a TTL cache: an id never
+changes meaning, and the cache is bounded by size, oldest tree first. After its own write the agent knows the new
+tree id and the changed entries (the write's reply carries them), and after a job, `bash` or computer checkpoint the
+result carries the tree and the diff. So `ls`, `stat`, `glob`, `read`'s blob lookup and the write precondition of
+the agent's own version never leave the object. A foreign version is one ref `GET` plus one diff by tree pair,
+O(changed).
 
 **The single write path**, the same for a Worker's `PUT`, an agent's `edit`, a host's checkpoint and a merge:
 
-1. write the new objects (blobs to S3; trees and the commit to DynamoDB): idempotent, content-addressed, unowned;
-2. `RepoDO.cas(ref, expectVersion, newVersion, fence)`: one SQLite transaction that checks the expected version
-   and the lease fence, moves the ref, appends the ref log, updates the head-tree cache and the quota counters, and
-   emits the change event. A host reaches it through the runtime (its WebSocket, or the internal HTTP route), so the
-   daemon never holds refs. From the daemon's side (proto-block): it is handed a fence `(holder, epoch)` at mount,
-   calls `check(fence)` before arming the checkpoint stream and `cas(fence, { tree, root, commit }, expect)` after
-   publishing, one round trip each inside the checkpoint wall; lease renewal, heartbeat and takeover move to the
-   runtime whole; the hydrated-image promotion and the host's `tree_roots` stay host-local; a mount without a fence
-   (a read-only `root`-form mount) refuses checkpoints, as today's "no ref" does.
+1. write the new objects (blobs to S3; trees and the commit to DynamoDB, S3 until L74 lands), in one parallel
+   wave: they are content-addressed and computable before any write, so nothing orders them but the CAS;
+2. one conditional write on the ref item, `version = :expect` plus the lease state the writer holds, after the
+   ref-move rules have been checked.
 
-Objects written for a CAS that loses are garbage; the collector (reachability from refs, generational, from S3
+An API write does both in one call to the tier (§9.9's `write`). A host does step 1 in its checkpoint and step 2
+with a `cas` to the tier over the VPC, using the fence-scoped token the runtime minted at dispatch (§9.7, §9.10),
+and reports the outcome in its result. The runtime never relays a CAS.
+
+Objects written for a CAS that loses are garbage. The collector (reachability from refs, generational, from S3
 Inventory; camel-fs.md §1.9) reclaims them, and a `touch` on every reference-by-id keeps a concurrent writer safe.
 
 **Cross-lineage operations without a global transaction.** Two operations touch more than one repo, and neither
-needs atomicity across objects:
+needs atomicity across items:
 
 - **Fork into a new repo** (`POST /v1/repos { from: { repo, version } }`): the source is a *version*, immutable, so
-  the new repo's object just sets `main` to that tree; nothing in the source changes, and a source deleted a moment
-  later leaves the version reachable from the new repo's ref (objects are unowned; the mark walks every repo's refs).
+  the new repo's `main` is created at that version; nothing in the source changes. A source deleted a moment later
+  leaves the version reachable from the new repo's ref: objects are unowned, and the mark walks every lineage's
+  refs. A fork inherits its source's lineage (§9), so it is one ref item.
 - **Cross-repo `commit … from: { repo, version, path }`** and **merge from another repo's version**: again a read of
-  an immutable version plus one CAS on the target; the only cross-object fact is that the referenced objects stay
+  an immutable version plus one CAS on the target. The only cross-repo fact is that the referenced objects stay
   alive, which the `touch` on reference-by-id guarantees across the GC's mark.
 
 Everything else (a mount of several repos, a workflow owning branches in several repos, an export) is a sequence of
-single-repo operations; a failure between them leaves each repo consistent and a ref unmoved, never half-moved.
-Nothing in the model requires two refs to move together.
+single-ref operations. A failure between them leaves each ref consistent and unmoved, never half-moved. Nothing in
+the model requires two refs to move together.
+
+**Build order** (from the study; each step a PR stack onto `camelfs/files-model`):
+
+1. `camelfsd --role api` behind an ALB (HTTP/2 off, after the 10-24 stalls) with runtime-signed tokens (§9.10), `CAMELFS`
+   switched to HTTPS, the tunnel and the shared bearer deleted (L30).
+2. Miguel creates the DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`; on demand, PITR) and the IAM
+   roles (api, host). Tokens reuse the runtime's `RuntimeSigner` keys; the tier gets their JWKS as a file (§9.10).
+3. The Go `refs` package with the ref-move rules checked before a `version = :expect` condition, leases, fences, watchers and
+   the quota check (its bookkeeping waits on Miguel). Its contract
+   tests are ported from `RepoDO`'s tests and the strict fake.
+4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted; `HostJob`'s lease and renew over
+   HTTPS; the agent-side tree cache.
+5. Hosts do the CAS in-VPC, notify arrives as webhooks into outbox rows, the public `/v1/repos` moves onto the tier,
+   and `RepoDO` is deleted.
+6. Node on the same API.
+
+**Measured first:** the Worker → us-west-2 round trip (far and `wnam`) and DynamoDB's conditional-write p50/p99 from
+the tier's seat. Step 1 does not wait for them.
 
 ## 7. What gets deleted, and the phases
 
@@ -259,7 +410,7 @@ Nothing in the model requires two refs to move together.
 |---|---|---:|
 | Workers volume model | `volume.ts` (the DO, its twelve tables, the R2 `files/<tenant>/<volume>/<uuid>/<sha>` layout, snapshots, pins, forwarded pins, read-set claims, `gc_candidates`, the daily alarm, `camelfs_trees`), `volume-commit.ts`, `volume-policy.ts`, `file-upload.ts` | 1,061 + 125 + 58 + 84 |
 | Workers routes, mounts, tools | `files.ts` (the twelve `/v1/volumes/*` routes, `handleAgentFilesRoute`, the Pi tools; ~400 lines of tool shape are rewritten over repos), `file-mounts.ts`, `file-links.ts`, `file-output.ts`, `file-versions.ts`, `tool-files.ts`, `tool-output-files.ts`, `fs-tools.ts`, `history-pins.ts`, `agent-workspace.ts` (the R2 fork-claim objects), the volume calls in `dreaming.ts` | 1,160 + 214 + 80 + 67 + 27 + 147 + 56 + 72 + 21 + 88 + ~70 |
-| Quotas | `storage-quota.ts`, `tenant-storage.ts`, `storage-usage.ts` (the limit stays, counted in the repo object) | 29 + 116 + 177 |
+| Quotas | `storage-quota.ts`, `tenant-storage.ts`, `storage-usage.ts` (the limit stays, counted on the `lineages` item) | 29 + 116 + 177 |
 | Workflows | `workflow-volumes.ts`, `workflow-forks.ts`, the fork-ownership half of `workflow-results.ts`, the `keep()` volume writes and `pushSpec` in `workflow-jobs.ts`, the `childVolume`/adopt paths in `workflow-object.ts` | 115 + 62 + ~100 + ~60 + ~40 |
 | Jobs | `jobs/camel-sync.ts`, `jobs/host-sync-store.ts`, `jobs/camelfs.ts` (the import bridge), `JobSpec.volume`, `WireJob.files`/`sync`, `HostJob.files/fetch` and the `/v1/internal/job-hosts/sync/*` route, `pullFiles` and the guest `files` op past inline sizes | 150 + 37 + 82 + ~200 |
 | Node backend | `src/volumes.ts`, `src/volume-tools.ts`, `src/volume-env.ts`, `src/tool-files.ts`, `src/file-arguments.ts`, `src/core/file-arguments.ts`, `src/files.ts`, `src/storage-gc.ts`, `src/storage-usage.ts`, `src/storage-integrity.ts`, `src/gc-verify.ts`, `src/pin-backfill.ts`, `src/computers/transfers.ts`, `scripts/{backfill-pins,check-storage,reconcile-storage,verify-gc}.ts` | 1,192 + 406 + 150 + 314 + 106 + 103 + 278 + 115 + 175 + 85 + 94 + 86 + ~300 |
@@ -270,31 +421,34 @@ Nothing in the model requires two refs to move together.
 | Tests | `tests/volumes.test.ts` 778, `volume-commit` 140, `volume-env` 172, `storage-gc` 217, `prop-storage-gc` 218, `storage-limits` 178, `storage-integrity` 57, `storage` 179, `gc-verify` 56, `projects` 223, `files` 351, `tool-files` 282, `file-arguments` 295, `file-link-tools` 144, `purge` 214; Workers `volume-commit.integration` 278, `files.integration` 258, `file-*` 253, `tenant-storage` 93, `host-sync-store` 30, `camelfs-import` 127, `workflow-jobs` 407, `workflow-results` 122, `computer-fork` 190; the volume sections of `tests/python_sdk.py`; `tests/sim/corpus/storage.json` | ~5,300, rewritten over repos |
 
 About **4,900 lines** of volume code go on Workers, **3,400** on Node, **830** in the daemon and **1,250** in clients
-and console, plus the schema, docs and ~5,300 lines of tests that follow them. What replaces them is the repo object
-(~800), the files API over it (~600), the tools rewrite (~400) and the SDK, console and OpenAPI rewrites, on top of
+and console, plus the schema, docs and ~5,300 lines of tests that follow them. What replaces them is the tier's Go `refs` package
+(~500), the files API over it (~600), the tools rewrite (~400) and the SDK, console and OpenAPI rewrites, on top of
 `camelfsd` and the storage plane, which already exist.
 
 **Phases** (each a PR stack onto the integration branch `camelfs/files-model`, each usable alone and stated by its
 bar, not a date: Miguel wants fast iteration, and the three lanes of §9 build in parallel; v0's ledger continues
 throughout):
 
-1. **The repo object and the API**: `RepoDO` with refs, fence, quota counters, head-tree cache; the
-   object store writers for trees, commits and blobs from Workers; `/v1/repos/*` including files, `files:batch`,
+1. **The service and the API** (option C, build steps 1–5 of §6): `camelfsd --role api` with the `refs` package
+   on DynamoDB (refs, leases, fences, quota, watchers), tokens and the notify webhook; `/v1/repos/*` including files, `files:batch`,
    `commit`, `history`, `diff`, `restore`, `branches`, `merge`; tokens; the Pi file tools over repos for agents
    without a VM (every write a commit); `checkpoint(message)`, `restore`, `history`, `diff` as tools; the edge cache
    on `blobs/:sha`. New agents get repos; nothing else changes yet.
-   Bar: a Worker file write ≤ 80 ms p50; `files:batch` of 20 files ≤ 150 ms; fork ≤ 50 ms; merge of 3 disjoint
+   Bar, per leg (restated under C, ledger L89): the tier's in-region write (objects in one wave + the conditional
+   write) ≤ 50 ms p50 once trees are in DynamoDB (L74), the study's floor of one S3 PUT ≈ 40 + one conditional
+   write ≈ 5; a Worker file write end to end = that + the measured Worker → us-west-2 round trip (estimated 85 ms
+   from an arbitrary colo, 25 placed `wnam`); `files:batch` of 20 files ≤ 150 ms; fork ≤ 50 ms; merge of 3 disjoint
    edits ≤ 200 ms; `history`/`diff` ≤ 100 ms at 50k files.
-2. **Hosts, jobs and workflows on refs**: `camelfsd` takes its CAS from the runtime and drops its ref
-   store; `job({ at: { repo, ref? | version? }, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
+2. **Hosts, jobs and workflows on refs**: hosts do their CAS in-VPC against the tier with a fence-scoped token
+   (§9.7); `job({ at: { repo, ref? | version? }, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
    fast-forward effects; result cache on the tree; `keep()` as one commit; computers mount the agent's ref with the
    lease (per camel-fs.md phase 2). The import bridge and `camel-sync` are deleted.
    Bar: job placement → first command ≤ 300 ms warm with no import leg (ledger L25, L43, L68 close); result leg
    (L70) ≤ 300 ms; a commit job's branch merges or fast-forwards in one effect.
 3. **Everything Volumes did**: the published-ref pattern as an SDK example (projects and `publishTool`
    deleted); uploads and attachments as commits with the history ref; dreaming on a repo; signed links on blobs and
-   versions; `notify` from the repo object; account export (tar + bundle) and deletion by refs; quota and billing
-   from the repo object's counters; `grep` on the index for every agent; the console's repos page; SDKs and OpenAPI;
+   versions; `notify` as signed webhooks into outbox rows (§9.11); account export (tar + bundle) and deletion by refs; quota and billing
+   from the `lineages` counters; `grep` on the index for every agent; the console's repos page; SDKs and OpenAPI;
    the guides.
    Bar: the publish pattern's check-and-move round trip ≤ 1 s for a 5k-file repo; export of a tenant with 100 repos
    streams without buffering; a deleted tenant's objects are unreachable within one GC cycle.
@@ -310,23 +464,25 @@ new model has run for a while.
 
 Miguel is not reviewing tonight and wants this built, so each remaining question is decided as recommended and
 marked **default**; a reversal is a small change to the named section. Already decided by Miguel, and written as
-such above: the state split (§6) and dropping projects and `publishTool` (§5).
+such above: the state split (§6, option C) and dropping projects and `publishTool` (§5).
 
 1. **The word: `repo`** (default). It names the API path (`/v1/repos`), the SDK handle (`RepoHandle`) and every doc.
    Developers already know that a repo has branches, history, forks, diffs and restores; "workspace" collides with the
    agent's own mount. Override cost: a rename.
 2. **Every API write is a commit** (default). Per write, under the decided split: one blob PUT to S3 ($5 per
    million, $0.000005), about four tree writes and one commit write to DynamoDB (1–3 KB each, so ≈ 10 write units at
-   $1.25 per million, $0.0000125), and one `RepoDO` CAS (one DO request at $0.15 per million plus ~3 SQLite rows at
-   $1 per million, $0.0000032): **≈ $0.0000207 per write**, so the 144 M writes a month of camel-fs.md's 1,000-agent
-   baseline cost **≈ $3,000/month**, falling to ≈ $1,800 with tree segments (one item per write's trees). Tonight's
+   $1.25 per million, $0.0000125), one conditional write on the ref item (one write unit, $0.00000125), one `writtenSince`
+   increment per new blob for quota (one more unit, $0.00000125), and the tier (≈ $0.000001 per write): **≈ $0.000021
+   per write** under option C (§6), so the 144 M writes and 14.6 M checkpoints a month of camel-fs.md's 1,000-agent
+   baseline cost **≈ $3,300/month**, less with tree segments (one item per write's trees); AWS's late-2024
+   on-demand price cut may halve the DynamoDB lines. Tonight's
    S3-only variant is ≈ $0.000033 per write (six PUTs plus the CAS), ≈ $4,800/month. The alternative, coalescing a
    VM-less agent's writes within a turn into one commit at turn end, would cut the write line ~5× (to the ~20
    checkpoints an hour the VM path pays) and lose per-write history and blame. Default: every write, with `commit`
    for multi-file tools. Override cost: a turn-end coalescer in the files API; §3 and §2 change, §9 does not.
 3. **Published versions are refs** (default): `published` (or `published/<n>`) and `release/<label>` replace pinned
-   snapshots and labels; a repo with thousands of publishes has thousands of refs, which the repo object's SQLite
-   holds without strain and `refs?prefix=published/` lists. Override: a single `published` ref whose tree is a
+   snapshots and labels; a repo with thousands of publishes has thousands of refs, which the lineage's partition in
+   `refs` holds without strain and `refs?prefix=published/` lists. Override: a single `published` ref whose tree is a
    manifest of versions.
 4. **The history ref keeps** (default): every version an agent's transcript shows stays reachable for the agent's
    life, today's rule ("a file an agent was sent or shown stays until the agent is deleted"), so `rm` or `restore` on
@@ -335,37 +491,41 @@ such above: the state split (§6) and dropping projects and `publishTool` (§5).
 Not a question any more: the edge cache's trust boundary is settled by §3 and §9.1 (authorization by `(version,
 path)` before any lookup by hash). camel-bots' move off project snapshots is migration, later (§5).
 
-## 9. The storage-plane contract: what `camelfsd` exposes to the runtime
+## 9. The storage-plane contract: the camel-fs service
 
-This section is the build contract for three lanes working in parallel: the runtime's repo object and files API
-(`wf-repos`), the daemon (`proto-block`), and jobs and hosts (`wf-delegation`). It is the exact HTTP API `camelfsd`
-serves to the runtime over the `CAMELFS` VPC binding (one named tunnel to the host's `127.0.0.1:8790` tonight; the
-API tier of camel-fs.md §1.6 later), plus the two host-side calls that change. Everything else about the daemon
-(mount, fork, release, the cache, the lazy origin, hydration, packs) is unchanged and stays on the host's Unix socket.
+This section is the build contract for the lanes working in parallel: the service (`proto-block`: the tier and its
+`refs` package), the runtime's files API and tools (`wf-repos`), and jobs and hosts (`wf-delegation`). Under option C
+(§6) it is the exact HTTP API of `camelfsd --role api`, a stateless Go tier behind an ALB in us-west-2. The
+callers are the runtime (Workers and Node, over HTTPS), the hosts (`camelfsd --role host` and `jobhost`, in-VPC) and,
+from build step 5, customers on the public `/v1/repos`. Until step 1 lands, the same routes are served by the m8id's
+daemon behind the `CAMELFS` tunnel with the shared bearer (L30). Everything else about a host's daemon (mount, fork,
+release, the cache, the lazy origin, hydration) is unchanged and stays on the host's Unix socket.
 
-**Division of ownership.** The repo object (`RepoDO`) owns refs, their log, leases and fences, the head-tree cache,
-quota counters and watchers, and performs every CAS. `camelfsd` holds **no refs**: it stores and serves immutable,
-content-addressed objects (blobs, trees, commits, chunks, roots, shards) and computes over them (commit, diff,
-merge, grep, read). The runtime is the authorizer; the daemon enforces lineage scoping and the (tree, path) rule
-below, and trusts nothing it is told about hashes.
+**Division of ownership.** The tier owns refs, leases, fences and watchers, checks quota, and performs every CAS
+(§9.9). It holds no state of its own: refs are DynamoDB items, objects are DynamoDB items and S3 objects, and any
+node answers any request. It also stores and serves the immutable, content-addressed objects (blobs, trees,
+commits, chunks, roots, shards) and computes over them (commit, diff, merge, grep, read). Hosts hold no refs: a host
+performs its own CAS through the tier with a fence-scoped token. The runtime is the authorizer, and it holds no
+ref either. It signs scoped tokens (§9.10), keeps each tenant's repo list, and caches trees by id in each agent's
+object. The tier enforces each token's scope, lineage scoping and the (tree, path) rule below, and trusts nothing it
+is told about hashes.
 
-**Tonight's storage.** Trees and commits are written durably to S3 by `camelfsd` (`t/<sha1>`, `k/<sha1>` beside
-`o/<sha1>` blobs and `c/<sha256>` chunks) before any call returns. DynamoDB for trees and commits stays the decided
-target (§6) and starts when Miguel creates the table; it is a storage-layer swap inside the daemon, invisible to this
-contract (ledger L74). The daemon's own SQLite ref store (`internal/refs`, the `refs` table, `POST /v0/forks`) goes;
-its host-local tables (`mounts`, `tree_roots`, `lineage_blobs`, `uploaded`, `chunk_locations`) stay as cache.
+**Storage.** Trees and commits are written durably before any call returns: to S3 tonight (`t/<sha1>`, `k/<sha1>`
+beside blobs and chunks), and to DynamoDB `objects` when the table exists (L74), a swap inside the tier that is
+invisible to this contract. A host's local tables (`mounts`, `tree_roots`, `lineage_blobs`, `uploaded`,
+`chunk_locations`) are cache only.
 
 **Conventions.** JSON over HTTPS; ids are hex (`blob`, `tree`, `commit`: git SHA-1; `root`, chunk: sha256).
-`Authorization: Bearer <token>` (one shared bearer tonight, the daemon listening on `127.0.0.1:8790` behind the
-`CAMELFS` tunnel with `--listen-api`; runtime-signed scoped tokens later). `Idempotency-Key` on every write: the
-daemon stores `key → response` and replays it, so a retry returns the first answer (and, with `time` always given, a
-retry the daemon has forgotten re-executes to the same ids; see **Idempotency** below). Errors on these `/v1` routes are
-`{ "error": { "code", "message", "details"? } }` with the codes in 9.8; the host socket's `/v0` routes keep their
-current `{ error, detail }` shape tonight because `jobhost` parses it. Sizes in bytes. Paths are lineage-relative,
-normalized, no leading slash.
+`Authorization: Bearer <token>`, a runtime-signed scoped token (§9.10), checked before any storage call.
+`Idempotency-Key` on every write: the tier stores `key → response` and replays it, so a retry returns the first
+answer, and with `time` always given, a retry the tier has forgotten re-executes to the same ids (see
+**Idempotency** below). Errors on these `/v1` routes are `{ "error": { "code", "message", "details"? } }` with the
+codes in 9.8. The host socket's `/v0` routes keep their current `{ error, detail }` shape because `jobhost` parses
+it. Sizes are in bytes. Paths are lineage-relative, normalized, with no leading slash. "The daemon" below means `camelfsd` in
+whichever role serves the call: the tier for every `/v1` route, a host's daemon for 9.7.
 
-**Lineage and reachability.** Every route is scoped by `lineage` in the path. A lineage is a string `RepoDO` assigns
-at repo creation, `<tenant>:<root repo id>`, and **a fork into a new repo inherits its source's lineage** (wf-repos),
+**Lineage and reachability.** Every route is scoped by `lineage` in the path. A lineage is a string the runtime assigns
+at repo creation, `<tenant>:<root repo id>`, and registers with `PUT /v1/lineages/{lineage}` (9.9); and **a fork into a new repo inherits its source's lineage** (wf-repos),
 so forks share one object set and a fork is O(1) in objects as well as in refs; a repo made from scratch starts a new
 lineage. The daemon records every object it writes for a lineage, trees **including subtrees** (listings hand out
 subtree ids) and blobs alike, and refuses any reference the lineage has not written or imported, with
@@ -433,7 +593,7 @@ not_in_tree` and no body. Limits: 256 paths, 64 MiB total (`413 too_large` with 
                 "Camel-Checkpoint": "api" } }
 ```
 → `201 { "tree": "<tree>", "commit": "<commit>", "parents": [...], "time": 1763046000, "changed": 3, "bytes": 4096 }`
-(so the repo object's commit index needs no follow-up `GET`). Rules: `parents` is a list (`[]` for a first commit;
+(so the caller needs no follow-up `GET`). Rules: `parents` is a list (`[]` for a first commit;
 two for a merge); `baseTree` defaults to `parents[0]`'s tree (the empty tree when there are none), and a **merge
 commit** is `parents: [ours, theirs]`, `baseTree` = 9.5's merged tree, `changes: []`; **`changes: []` is allowed**
 (a `checkpoint(message)` on an unheld ref, or a `restore`, whose `baseTree` is the old version's tree); every `blob`
@@ -449,8 +609,9 @@ section. A
 paths), the commit (git's bytes, `committer camelfs`, the trailers in the message) are written to S3 **before** the
 response. `time` (unix seconds) is chosen by the runtime and is part of the commit, so the commit id is a pure
 function of the request and a retry with the same body reproduces it; a retry with the same `Idempotency-Key` is
-replayed regardless. The tree id is deterministic either way. Caps: 10,000 changes per call (`413`). The daemon does
-not move any ref; the caller performs `RepoDO.cas(ref, expect, commit, fence, root?)` next.
+replayed regardless. The tree id is deterministic either way. Caps: 10,000 changes per call (`413`). This route moves
+no ref: a caller that wrote its own commit (a host's checkpoint does the equivalent) moves the ref with 9.9's `cas`, and
+the API's one-call `write`, `merge` and `restore` of 9.9 do the commit and the CAS together.
 
 ### 9.4 Trees, commits, diff
 
@@ -463,7 +624,28 @@ not move any ref; the caller performs `RepoDO.cas(ref, expect, commit, fence, ro
 
 `GET /v1/lineages/{lineage}/diff?from=<tree>&to=<tree>&path=<prefix>` →
 `{ "changes": [ { "path", "status": "added" | "modified" | "deleted" | "mode", "oldBlob"?, "newBlob"?, "oldMode"?,
-"newMode"? } ] }`, O(changed), descending only into subtrees whose ids differ.
+"newMode"?, "oldSize"?, "newSize"? } ] }`, O(changed), descending only into subtrees whose ids differ; each size is
+absent on the side with no blob and comes from the tree entries the diff already loaded, so the agent's tree cache is updated
+from the diff instead of re-listing every changed directory.
+
+**Single-entry lookup and history questions** (unit 12, #961, from wf-repos' ranked needs; before them it stat'ed a
+file at a non-head version by listing its directory recursively and authorized a pre-fork attachment by walking
+commits one at a time):
+
+`GET /v1/lineages/{lineage}/trees/{tree}/entry?path=<path>` → `{ "path", "mode", "blob", "size" }` for a file or
+symlink, `{ "path", "mode": "040000", "tree" }` for a directory, `404 not_in_tree` otherwise; an O(depth) descent,
+no listing.
+
+`GET /v1/lineages/{lineage}/commits/{a}/is-ancestor?of=<b>` → `{ "ancestor": true | false }`: true when `a == b` or
+`a` is reachable from `b` through parents; both must be commits of the lineage, else `404 not_found` naming which.
+
+`GET /v1/lineages/{lineage}/merge-base?a=<commit>&b=<commit>` → `{ "base": "<commit>" | null, "tree": "<tree>" |
+null }`: git's best common ancestor; several candidates → the latest `time`, then the greatest id; `null` when the histories are
+disjoint.
+
+Both walks are bounded at 50,000 distinct commits visited (for `merge-base`, counted across both sides together) and
+answer `413 too_deep` past that, so a pathological history
+cannot hold a request open; the caller treats `too_deep` as "not provable", never as "not an ancestor".
 
 ### 9.5 Merge
 
@@ -487,53 +669,245 @@ in parallel, cache first and S3 at 64 in flight, with this exact response shape 
 warm on the medium tree, about the NIC time cold on 500 MB. When the trigram shards of camel-fs.md §1.7 are wired
 in, the same call answers from them with `"indexed": "shards"`. A match cap of 2,000 is the only limit.
 
-### 9.7 Host-side calls that change
+### 9.7 Host-side calls
 
-Over the host's Unix socket (unchanged transport), two calls change shape because the daemon no longer owns refs:
+Over the host's Unix socket (unchanged transport):
 
-- `mount { jobId, lineage, tree, fence: { holder, epoch } | null, ... }` → `{ image, warm, mountMs }`: the fence is
-  what the runtime's lease handed the host; the daemon **stores and echoes it and does not check it** (the runtime's
-  CAS does); `null` means a read-only `root`-form mount that refuses checkpoints with `no_fence`. The mount no longer
-  creates a `job/<id>` ref or takes a lease; the daemon's `heartbeat` route and renewal goroutine go (the runtime
-  owns renewal, heartbeat and takeover; the 30 s heartbeat from #914 stays on the jobhost → runtime path). What
-  stays: the tree → root lookup (`tree_roots`), the nearest-ancestor base, the blank image and the guest apply.
+- `mount { jobId, lineage, tree, parent, fence: { holder, epoch } | null, token?, ... }` → `{ image, warm, mountMs }`. The
+  fence and its token are what the runtime handed the host at dispatch; the daemon stores them and does not check
+  them, because the tier's CAS does. `null` means a read-only `root`-form mount, which refuses checkpoints with
+  `no_fence`. A fenced mount must carry `parent`, the version it mounts, which becomes the checkpoint commit's
+  `parents[0]` (`400 invalid_request "missing field parent"` otherwise). The mount creates no ref and takes no lease. What stays: the tree → root lookup (`tree_roots`), the
+  nearest-ancestor base, the blank image and the guest apply.
 - `checkpoint { mount, message, trailers, time }` → `{ tree, root, commit, timings: { walkMs, streamMs, freezeMs,
-  reflinkMs, fiemapMs, hashMs, uploadMs, imageMs, wallMs } }`: the daemon runs the §1.3 contract of camel-fs.md,
-  writes blobs, trees, the commit and the root to S3, and returns; **it performs no CAS**.
+  reflinkMs, fiemapMs, hashMs, uploadMs, imageMs, wallMs } }`. The daemon runs the §1.3 contract of camel-fs.md,
+  writes blobs, trees, the commit (whose `parents[0]` is the mounted or last-checkpointed version) and the root,
+  and returns. The CAS is the next call, below.
 
-**Who performs the CAS, and when** (wf-delegation): the lease and the fence are the runtime's from the start.
-Before dispatch, `HostJob` creates the branch `job/<id>` at the version the job mounts (`branch(job/<id>, from:
-version, owner: job)`; for inline `files` that version is the scratch commit of §4), takes the lease on it from
-`RepoDO`, and puts `fence { holder, epoch }` into `WireJob.camelfs`; `jobhost` passes the fence to `mount`. A lease
-is capped at 10 minutes, so `HostJob` renews the `job/<id>` lease from its alarm every TTL/3 for the job's
-lifetime (agreed between wf-delegation and wf-repos); a renewal that finds the lease taken over fails the job's
-CAS later, never silently. Then:
+**Who does what** (wf-delegation, wf-durable):
 
-- **Jobs** checkpoint once, at the end, and the VM is destroyed right after, so there is no later reader of the
-  guest's index: `jobhost` sends `checkpointed { tree }` to the guest as soon as the daemon answers, and **`HostJob`
-  performs `RepoDO.cas("job/<id>", expect = the mounted version, commit, fence, root)` when the result arrives**, with
-  no synchronous round trip inside the checkpoint. A failed CAS becomes the job's `checkpointError`
-  (`"cas: <reason>"`) and the rest of the job's output stands. `HostJob` is already the durable owner of the
-  dispatch (ledger L72).
-- **Computers** (per-turn checkpoints in a long-lived VM) need the synchronous form: `jobhost` → runtime
-  (`RepoDO.cas`) → `jobhost` → `checkpointed { tree }` or `checkpointed { error }`, a WebSocket request with an id and
-  a reply, so the guest's index commits only after the ref moved. That is phase 2's computer mount, not tonight.
+- **Before dispatch**, `HostJob` creates the branch `job/<id>` at the version the job mounts (§9.9 `POST refs`,
+  `owner: job:<id>`; for inline `files` that version is the scratch commit of §4) and takes the lease
+  (`POST …/lease`). It mints a token scoped to that lineage and ref with the fence (§9.10), and puts
+  `{ fence, token }` into `WireJob.camelfs`. `HostJob` renews the lease from its alarm every TTL/3 for the job's
+  lifetime (10-minute cap). A renewal that finds the lease taken over fails the job's CAS later, never silently.
+- **Jobs** checkpoint once, at the end. `jobhost` then calls the tier's `cas` in-VPC with the fence token
+  (`expect` = the mounted version, `root` included), sends `checkpointed { tree }` to the guest, and puts the outcome
+  in the result: `{ version, tree, diff, cas: "ok" }` or `{ cas: "<code>" }`. The tier is the host's authority for
+  the move, and `HostJob` reads the outcome from the result rather than performing the CAS. A failed CAS becomes the
+  job's `checkpointError` (`"cas: <code>"`), and the rest of the job's output stands.
+- **Computers and `bash` VMs** (per-turn checkpoints in a long-lived VM) need the synchronous form: checkpoint →
+  `cas` (in-VPC, ≈ 2 ms to the tier + ≈ 5 ms in DynamoDB) → `checkpointed { tree }` or `checkpointed { error }`,
+  so the guest's index commits only after the ref moved. The runtime is not on this path.
 
-`RepoDO.cas` accepts the checkpoint's `root` so a later job at that version mounts warm without the daemon rebuilding
-the image; the ref record carries `root?` (§6).
+The CAS carries the checkpoint's `root`, so a later job at that version mounts warm without the daemon rebuilding
+the image; the ref item carries `root?` (§6).
 
 ### 9.8 Errors
 
 | code | HTTP | when |
 |---|---|---|
-| `invalid_request` | 400 | malformed JSON, bad id, unnormalized path, unknown mode |
+| `invalid_request` | 400 | malformed JSON, bad id, unnormalized path, unknown mode, unknown field, a ref name outside §1's alphabet |
+| `unauthorized` | 401 | missing, malformed, expired or unverifiable token (the message names the reason) |
+| `forbidden` | 403 | a valid token whose lineage, ref globs, ops or fence do not cover the request |
 | `unknown_blob` / `unknown_tree` / `unknown_commit` | 400 | an id the lineage cannot reach is named in a write |
 | `not_in_tree` | 404 | a read whose (tree, path) does not resolve to the requested blob, or a tree this lineage does not have |
+| `not_found` | 404 | a commit named in a history question (`is-ancestor`, `merge-base`) that this lineage does not have; the body names which |
+| `ref_not_found` | 404 | a ref route naming a ref the lineage does not have |
+| `ref_exists` | 409 | `POST refs` on a name that exists |
+| `stale` | 412 | the ref is not at `expect`, or a per-path `expectBlob` no longer holds; the body carries `current` (and `blob` for a path) |
+| `bad_parent` | 409 | a new commit on an existing ref whose `parents[0]` is not current, or whose `parents` is not 1 (2 for a merge) long; the body carries `{ parents, current }` |
+| `not_fast_forward` | 409 | a move to a recorded commit that does not reach current (ref-move rule 2), or `{ reason: "too_deep" }` past 50,000 visited (fails closed) |
+| `held` | 409 | an API write, merge, restore or delete on a ref a VM holds, or a lease on a held ref whose deadline has not passed |
+| `fenced` | 409 | a write to a held ref without a token whose `fence` claim matches the lease, or a `cas`, renew or release whose claimed holder or epoch is not the current lease |
+| `storage_limit` | 507 | `otherBytes + repoBytesAfter > limitBytes`; the body carries `{ limit }`, and nothing is moved |
 | `blob_mismatch` | 400 | `X-Camel-Sha256` did not match the bytes received |
-| `too_large` | 413 | a blob over the single-PUT cap, a batch over 256 paths or 64 MiB, a commit over 10,000 changes |
+| `too_large` | 413 | a blob over the single-PUT cap, a batch over 256 paths or 64 MiB, a commit over 10,000 changes, a `write` body over 8 MiB |
+| `too_deep` | 413 | a history walk (`is-ancestor`, `merge-base`) past 50,000 commits visited; not provable, not a negative answer |
 | `conflict` | 409 | a merge with conflicts (body lists them) |
 | `no_fence` | 409 | a checkpoint on a mount without a fence |
-| `unavailable` | 503 | S3 or the host's store unreachable; safe to retry with the same `Idempotency-Key` |
+| `unavailable` | 503 | S3 or DynamoDB unreachable, or throttled past the tier's retries; safe to retry with the same `Idempotency-Key` |
 
-Every error is loud and specific; nothing degrades to empty data. The daemon logs lineage, ids and sizes, never
-paths' contents.
+**These snake_case codes are canonical**, like every existing daemon code (`unknown_commit`, `too_deep`). The
+runtime's `/v1/repos` **adopts** them (the lead, 2026-11-13): wf-repos renames the public repo codes to snake_case
+after #954, so `RepoDO`'s kebab-case `bad-parent`, `not-fast-forward` and `storage-limit` go away.
+
+Every error is loud and specific; nothing degrades to empty data. The tier logs lineage, ref names, ids, sizes and
+token `sub`/`lin`/`acc`/`kid`, never file contents or tokens.
+
+### 9.9 Refs
+
+Every route below is one or two DynamoDB operations on the lineage's partition. Reads of a ref are strongly
+consistent. Each mutating route takes `Idempotency-Key`; a replayed key returns the first answer, and an
+unremembered retry of a move that already happened lands on ref-move rule 3 (same version, a no-op) when it names
+the moved-to commit, or answers `412 stale` with `current` equal to the retry's commit, which the caller reads as
+success.
+
+**Lineages.** `PUT /v1/lineages/{lineage}` `{ "tenant", "kind": "workspace" | "image", "defaultBranch": "main" }` → `201`, or `200` when it already exists with the same tenant (anything else `409`).
+The runtime calls it at repo creation, before the first commit. `GET` returns the item.
+
+**Read and list.** `GET /v1/lineages/{lineage}/refs/{name}` → `{ "name", "version", "tree", "root"?, "owner",
+"expiresAt"?, "holder"?, "leaseEpoch"?, "leaseDeadline"?, "createdAt", "createdBy", "updatedAt" }`.
+`GET /v1/lineages/{lineage}/refs?prefix=<p>&after=<name>&limit=1000` → `{ "refs": [ … ], "next"? }`, a `Query` on
+the partition (`refs?prefix=published/` lists a repo's publishes).
+
+**Create.** `POST /v1/lineages/{lineage}/refs` `{ "name", "version", "owner", "expiresAt"? }` → `201` with the
+item. Condition: `attribute_not_exists(name)`, else `409 ref_exists`. `version` must be a commit of the lineage
+(`400 unknown_commit`). A branch copies nothing, whatever the tree's size, and may be created at any commit (rule 4). The owner prefix set and the name
+alphabet of §1 are enforced here.
+
+**Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. Condition: `version = :expect`
+and no live lease (`held` otherwise). Final: the ref's history stays reachable only from other refs.
+
+**CAS (hosts, and any caller that wrote its own commit or moves to a recorded one).**
+`POST /v1/lineages/{lineage}/refs/{name}/cas` `{ "commit", "expect", "root"?, "quota"? }` →
+`200 { "version", "tree", "parents", "diff": [ …9.4's change shape… ], "bytes", "files" }`.
+- The commit must be the lineage's (`400 unknown_commit`).
+- `expect` must be current (`412 stale`). `commit == expect` is a no-op (rule 3).
+- A commit made for this move must pass rule 1 (`409 bad_parent`); any other recorded commit must pass rule 2
+  (`409 not_fast_forward`).
+- The ref is then written under `version = :expect`, plus `holder` and `leaseEpoch` equal to the token's `fence`
+  claim for a fenced token, else `attribute_not_exists(holder)` (`409 fenced` either way).
+- The reply's `diff` (from `expect`'s tree to the commit's) is what the host puts in its result and what the agent
+  folds into its tree cache.
+
+The refs `PUT` of §1 is this route.
+
+**Write (the API's one-call write).** `POST /v1/lineages/{lineage}/refs/{name}/write`
+```json
+{ "expect"?: "<version>", "quota"?: { "limitBytes", "otherBytes" },
+  "changes": [ { "path": "src/a.ts", "text"?: "…", "base64"?: "…", "blob"?: "<sha1>", "mode"?: "100644",
+                 "expectBlob"?: "<sha1>" | "none" },
+               { "path": "old.txt", "delete": true, "expectBlob"?: "<sha1>" } ],
+  "author": "agent:ag_123", "message": "edit src/a.ts", "time": 1763046000, "trailers": { … } }
+```
+→ `201 { "version", "tree", "parents", "time", "changed": [ { "path", "status", "oldBlob"?, "newBlob"?, "oldSize"?,
+"newSize"?, "mode" } ], "bytes", "files" }`. In one call the tier reads the head; checks `expect` (whole ref) and every
+`expectBlob` (per path, `none` = must not exist) against the head's tree (`412 stale`); writes inline bytes as blobs
+(9.1), the changed trees and the commit (`parents: [head]`) in one wave; and moves the ref with the condition
+`version = :head AND attribute_not_exists(holder)`, and refusing `507 storage_limit`
+first when `quota` is given and the write would exceed it. A lost condition retries once on the new head when no whole-ref `expect` was given and every
+`expectBlob` still holds (§6). Inline bytes are capped at 8 MiB per call; a larger file goes through 9.1 first and
+is named by `blob`. `changes` may be empty (a `checkpoint(message)` on an unheld ref). This is the route the files
+API's `PUT`/`DELETE …/files/:path` and `POST …/commit` map onto, and the agents' `write`/`edit` tools call it once
+per tool call.
+
+**Merge.** `POST /v1/lineages/{lineage}/refs/{name}/merge` `{ "theirs": "<version>", "mode": "merge" | "squash" |
+"ff-only", "author", "message", "time", "trailers"? }` → `201 { "version", "tree", "ff": true | false, "merged",
+"took" }` or `409 conflict` (9.5's body; nothing moved). When the head is an ancestor of `theirs` (rule 2's walk), `merge`
+and `ff-only` move the ref to `theirs`, a fast-forward with zero new bytes. Otherwise `ff-only` is
+`409 not_fast_forward`, and `merge` computes the merge base (9.4), merges the trees (9.5) and commits
+`parents: [head, theirs]` (`squash`: `[head]`) under rule 1. Either way the
+ref moves under the same condition as `write`.
+
+**Restore.** `POST /v1/lineages/{lineage}/refs/{name}/restore` `{ "version", "author", "message", "time" }` →
+`201 { "version", "tree" }`: a new commit whose tree is `version`'s tree and whose parent is the head. History is
+never rewritten.
+
+**Leases.** `POST /v1/lineages/{lineage}/refs/{name}/lease` `{ "holder": { "host", "boot", "mount" }, "ttlMs" }`
+(`ttlMs` ≤ 600,000) → `200 { "epoch", "deadline", "version", "tree" }`. Condition:
+`attribute_not_exists(holder) OR leaseDeadline < :now`, else `409 held`; the epoch is the previous epoch + 1.
+`POST …/lease/renew` `{ "ttlMs" }` → `200 { "deadline" }`, with the condition `holder = :holder
+AND leaseEpoch = :epoch AND leaseDeadline >= :now`, where holder and epoch come from the token's `fence` claim
+(`409 fenced`). `DELETE …/lease` → `204`, under the same condition. The lease's `POST` needs a runtime token (§9.10); the
+runtime then mints the fence-scoped token from its answer. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
+`leaseEpoch`.
+
+**Watchers.** `PUT /v1/lineages/{lineage}/refs/{name}/watchers/{watcher}` → `204`, and
+`DELETE …/watchers/{watcher}` → `204`. `watcher` is an owner-form id (`agent:<id>`, `workflow:<id>`). Delivery goes
+to the runtime's one notify endpoint, configured on the tier (§9.11), never to a URL a caller names.
+
+### 9.10 Tokens
+
+**Decided (the lead, 2026-11-13): camel-fs tokens are one more family of camelRun's existing `RuntimeSigner`**
+(`backends/workers/src/runtime-identity.ts`), not a second token system. That signer issues Ed25519 JWTs with a
+`kid`; its keys live in Postgres `signing_keys` and are published as a JWKS (`/.well-known/jwks.json`); and its
+families are separated by `typ` and `aud` (file URLs, for example, are `file+jwt` / `camelrun:file`). The runtime
+mints, and the tier only verifies. proto-block's C1 spec is the build contract, summarized here.
+
+```
+header: { "alg": "EdDSA", "typ": "camelfs+jwt", "kid": "…" }
+claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_123", "lin": "t_9:repo_4",
+          "acc": "r" | "w", "refs": ["main", "published/*"], "fence"?: { "holder": "…", "epoch": 7 },
+          "iat": 1763046000, "exp": 1763046900 }
+```
+
+**Verification on the tier:**
+- The keys come from a static JWKS file (`--jwks-file`, or the `CAMELFS_JWKS` env), loaded at start and reloaded
+  atomically on SIGHUP. A bad file keeps the old set and logs an error.
+- There is no network fetch of a JWKS and no cache. Rotation is: add the new key to the file, then remove the old.
+- **EdDSA only.**
+  - Rejected: `none`, `HS*`, `RS*`, and any `jwk`, `jku`, `x5u` or `crit` header.
+  - Also rejected: a signature over anything but the exact `header.payload` bytes, padded or non-url base64,
+    duplicate JSON keys, and a token over 8 KiB.
+- `typ`, `aud` and `iss` must match exactly. `exp` is required, and `exp − iat` is at most `--token-max-ttl`
+  (default 15 minutes). `iat` may be at most 5 s in the future.
+- `lin` must equal the path's `{lineage}` exactly.
+- `acc` is `r` or `w`, and `w` implies `r`. Read routes (9.1 `GET`, 9.2, 9.4, 9.6, ref reads) need `r`. Writes
+  (blobs, commits, merge, every mutating 9.9 route) need `w`.
+- Mutating ref routes also require the ref name to match one of `refs`. The globs are segments of
+  `[A-Za-z0-9._-]` and `*`, at most 64 of them.
+- Unknown claims are ignored; malformed known claims are refused.
+- Errors are `401 unauthorized` (missing, invalid or expired, with the specific reason) and `403 forbidden` (a
+  valid token whose `lin`, `acc` or `refs` does not cover the request). The tier logs `sub`, `lin`, `acc` and
+  `kid`, never the token.
+
+**The fence lives only inside the signed token.**
+- A token with `fence` writes exactly the one ref in its `refs`. Its `cas`, lease renew and release are conditioned
+  on that holder and epoch. A fence in a request body is never trusted, and the routes take none.
+- `HostJob` mints the host's token when it takes the lease, and mints a fresh one with each renewal (every TTL/3,
+  inside the 15-minute cap). The new token is pushed to the host with the renewal, and the host uses the latest.
+  The fence, not `exp`, is what stops a late host.
+
+**Who gets which token:**
+- An agent's tool calls: `acc: w` on its workspace's `main`, `r` elsewhere.
+- A workflow child: `w` on `fork/<effect>`, `r` on `main`.
+- A job's host: a fence token on `job/<id>`.
+- A customer: one from the runtime's token endpoint against their API key.
+- A laptop clone: `r` on one branch.
+
+The lease route and the watcher routes are runtime-only. They take a token whose `sub` is in the runtime's service
+namespace (`runtime:*`), a rule the refs PR (C2) enforces.
+
+**Revocation** is key rotation, since every token is short-lived. There is no deny-list. Unauthenticated routes
+are only the ALB's health check. The host role keeps its shared bearer on its socket and 8790 listener until L30
+closes.
+
+**The tier → host family** (approved by the lead, 2026-11-13, for compute: camel-fs-compute.md §3). When the tier
+calls a host (dispatch, stop, exec), it presents a second, narrow token that **it** mints:
+- **Header and audience:** `typ: camelfs-host+jwt`, `aud: camelfs:host:<hostId>`.
+- **Key:** the camel-fs service's own Ed25519 key, never the runtime's. It is a secret of the api role (fs-infra
+  provisions it), and hosts verify against its public JWKS by the same static-file rules as above.
+- **Lifetime:** at most 60 s.
+- **Claims:** scoped to `{ host, vm }`.
+- **Where it is accepted:** a host accepts **only** this audience, and only for its own host id, on its
+  `--listen-compute` listener. The tier never accepts this family on its client API.
+
+So "the tier only verifies" stays true for every client token: the runtime's tokens are minted by the runtime, and
+the tier mints only tokens addressed to its own hosts. The other direction, host → tier, uses the host's attested
+identity (K2 ports `shared/job-host-attest.ts`), not a token of either family.
+
+### 9.11 Notify webhook
+
+When a watched ref moves, the tier writes a `deliveries` item (`{ id, lineage, ref, from, to, tree, by, at,
+watchers }`) in the same `TransactWriteItems` as the move. The table's key is `shard` + `id`: `shard` is a fixed
+small range (`hash(id) mod 16`), so the tier nodes find pending deliveries with one `Query` per shard instead of a
+`Scan`; compute's events (camel-fs-compute.md §4) share the table. Any tier node then claims it (a conditional
+`claimedUntil`), POSTs it to the runtime's notify endpoint, and deletes it on a `2xx`.
+
+```
+POST {runtime}/v1/internal/camelfs/notify
+Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
+{ "id": "dlv_…", "lineage", "ref", "from": "<version>", "to": "<version>", "tree", "by": "agent:ag_123",
+  "at": 1763046000, "watchers": ["agent:ag_7", "workflow:wf_2"] }
+```
+
+- The runtime rejects a signature older than 5 minutes.
+- For each watcher it writes an outbox row keyed by `id` into the receiving object; the insert is idempotent, so
+  a redelivery is a no-op. It answers `2xx` only after the rows commit.
+- The receiver's alarm drains them, coalesced as today's `notify`.
+- The tier retries with backoff (1 s doubling to 5 min) for 24 h, then deletes the item and logs
+  `notify_dropped`, loud, never silent.
+- `notifyKey` is separate from the token key, and both sides hold it.
+- Delivery is at least once and unordered across refs. A receiver orders by the chain: `from` is the version it
+  should have, so a gap means it reads the ref.

@@ -6,7 +6,7 @@ import { ComputerMeter, SETTLE_MARGIN_MS } from "../src/computers/meter.ts";
 import { applyScope } from "../../../shared/apply-scope.ts";
 import type { WireJob, WireResult } from "../../../shared/job-host-protocol.ts";
 const hooks = registerHooks({ resolve(specifier, context, next) {
-  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}", shortCircuit: true };
+  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {} export const waitUntil = p => p;", shortCircuit: true };
   return next(specifier, context);
 } });
 const { JobHost, HostJob } = await import("../src/jobs/hosts.ts");
@@ -17,6 +17,7 @@ const result: WireResult = { ok: true, exitCode: 0, timedOut: false, stdout: emp
 function storage(t: any) {
   const db = new DatabaseSync(":memory:"); t.after(() => db.close());
   const values = new Map<string, any>();
+  let alarm: number | null = null;
   return {
     sql: { exec(query: string, ...args: any[]) {
       for (const arg of args) if (typeof arg === "string") assert.ok(Buffer.byteLength(arg) < 2 * 1024 * 1024, "SQLite value must fit within 2 MiB");
@@ -33,11 +34,13 @@ function storage(t: any) {
     async put(key: string, value: any) { values.set(key, structuredClone(value)); },
     async delete(key: string) { return values.delete(key); },
     async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix))); },
-    async setAlarm() {},
+    async getAlarm() { return alarm; },
+    async setAlarm(at: number) { alarm = at; },
+    async deleteAlarm() { alarm = null; },
   };
 }
 function host(store: ReturnType<typeof storage>) {
-  const instance = new JobHost({ storage: store } as never, {} as never), sent: any[] = [];
+  const instance = new JobHost({ storage: store, waitUntil: () => {} } as never, { TEST_MODE: "1", JOB_HOST_REGISTRY: { getByName: () => ({ seen: async () => {} }) } } as never), sent: any[] = [];
   (instance as any).socket = { send: (frame: string) => sent.push(JSON.parse(frame)) };
   return { instance, sent, receive: (message: any) => (instance as any).receive("host", message) };
 }
@@ -152,6 +155,7 @@ test("recovery before the first JobHost insert dispatches the job's files", asyn
   await store.put("dispatch:unsent", { phase: "dispatched", host: "host", dispatchedAt: began, rate: 0.001, pool: "test", shape: { vcpus: 1, memoryMiB: 4096, diskMiB: 8192 }, lifetimeMs: 60_000 });
   const env = { JOB_HOSTS: { getByName: () => ({ dispatch: async (id: string, wire: WireJob, deadline: number) => {
     const waiting = h.instance.dispatch(id, wire, deadline);
+    await new Promise(resolve => setImmediate(resolve));
     await h.receive({ type: "result", id, result });
     return waiting;
   } }) }, JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {}, want: async () => { throw new Error("placed twice"); } }) } };
@@ -282,6 +286,43 @@ test("a stop during recovery cancels the host and ends the one open charge at th
   assert.equal(await store.get("dispatch:stop"), undefined);
 });
 
+test("repo dispatch recovery reuses the mounted tree and fence without resolving or acquiring again", async t => {
+  const store = storage(t), began = Date.now() - 1000, fence = { holder: "host:host/resume-repo", epoch: 4 };
+  const payer = { tenant: "test", agent: "wf_test", kind: "workflow" as const };
+  const source = { tenant: "test", repo: "repo_one", ref: "main", owner: "workflow:wf_test" };
+  const saved = { phase: "dispatched", host: "host", dispatchedAt: began, rate: 0.001, pool: "test", shape: { vcpus: 1, memoryMiB: 4096, diskMiB: 8192 }, lifetimeMs: 60_000,
+    repo: { repo: source, expect: "a".repeat(40), tree: "b".repeat(40), lineage: "test:repo_one", fence } };
+  await store.put("dispatch:resume-repo", saved);
+  const meter = () => new ComputerMeter({ store, billing: { admit: async () => { throw Error("admitted twice"); }, charge: async () => {} }, idleMs: 60_000, schedule: async () => {} });
+  await meter().started(payer, "test", 60_000, 0, "job:resume-repo", { rate: 0.001, at: began });
+  let renews = 0, releases = 0, dispatches = 0;
+  const stub = { renew: async (got: any, ttl: number) => { assert.deepEqual(got, { ref: "job/resume-repo", ...fence }); assert.equal(ttl, 600000); renews++; },
+    release: async (got: any) => { assert.deepEqual(got, { ref: "job/resume-repo", ...fence }); releases++; },
+    acquire: async () => { throw Error("acquired twice"); }, resolve: async () => { throw Error("resolved twice"); } };
+  const env = { CAMELFS: { fetch: async () => { throw Error("imported"); } }, CAMELFS_API_TOKEN: "test-only",
+    TENANTS: { getByName: () => ({ repoRow: async () => ({ deletedAt: null, lineage: "test:repo_one" }) }) }, REPOS: { getByName: () => stub },
+    JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {} }) },
+    JOB_HOSTS: { getByName: () => ({ dispatch: async (_: string, wire: WireJob) => {
+      dispatches++; assert.deepEqual(wire.camelfs, { lineage: "test:repo_one", tree: "b".repeat(40), fence }); assert.deepEqual(wire.files, []); assert.equal(wire.sync, undefined); return result;
+    } }) } };
+  const background: Promise<unknown>[] = [], ctx = { storage: store, waitUntil: (p: Promise<unknown>) => background.push(p) };
+  t.after(() => Promise.all(background));
+  const job = new HostJob(ctx as never, env as never); (job as any).meter = meter;
+  const input = { id: "resume-repo", command: "true", timeoutSeconds: 30, repo: source, payer };
+  assert.equal((await job.run(input)).ok, true); assert.equal(renews, 1); assert.equal(releases, 1); assert.equal(dispatches, 1);
+  await store.delete("result:resume-repo"); await store.put("dispatch:resume-repo", saved);
+  await job.alarm(); assert.equal(renews, 2, "live dispatch alarms renew its persisted fence");
+  stub.renew = async () => { throw Error("fenced"); };
+  const logs: any[] = [];
+  t.mock.method(console, "error", (line: string) => logs.push(JSON.parse(line)));
+  await job.alarm();
+  assert.equal(logs[0].type, "host_job_lease_renew_failed");
+  const recovered = new HostJob(ctx as never, env as never); (recovered as any).meter = meter;
+  const failed = await recovered.run(input);
+  assert.equal(failed.ok, false); if (!failed.ok) assert.match(failed.message, /fenced/);
+  assert.equal(dispatches, 1, "lost fence never redispatches or reacquires");
+});
+
 test("a result returns with its cost while accounting blocks, and replay charges once", async t => {
   let now = 10_000, calls = 0, released = 0;
   t.mock.method(Date, "now", () => now);
@@ -394,4 +435,139 @@ test("a second host job follows admission while a previous charge is unsettled",
   if (!refused.ok) assert.equal(refused.code, "admission_refused");
   assert.equal(admissions, 2);
   assert.equal(dispatches, 1);
+});
+
+function insertOpen(store: ReturnType<typeof storage>, id: string, sent: number, deadline: number, started: number | null = sent, seen: number | null = null) {
+  store.sql.exec("INSERT INTO host_dispatches (id, sent_at, deadline_at, started_at, seen_at) VALUES (?, ?, ?, ?, ?)", id, sent, deadline, started, seen);
+}
+test("old dispatch tables acquire nullable durability columns idempotently", t => {
+  const store = storage(t);
+  store.sql.exec("CREATE TABLE host_dispatches (id TEXT PRIMARY KEY, sent_at INTEGER, deadline_at INTEGER, started_at INTEGER, result TEXT, answered_at INTEGER)");
+  store.sql.exec("INSERT INTO host_dispatches (id, sent_at, deadline_at) VALUES ('old', 1, 2)");
+  host(store); host(store);
+  const row = store.sql.exec("SELECT * FROM host_dispatches").toArray()[0]!;
+  assert.equal(row.seen_at, null); assert.equal(row.cancelled_at, null); assert.equal(row.id, "old");
+});
+test("socket close leaves rows open; a fresh alarm ends lost jobs at their last running evidence", async t => {
+  let now = 1_000_000; t.mock.method(Date, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = storage(t), h = host(store);
+  const socket = new EventTarget() as any; socket.send = () => {};
+  (h.instance as any).attach(socket, "host"); (h.instance as any).socket = socket;
+  insertOpen(store, "seen", now - 1000, now + 900_000, now - 900, now - 100);
+  insertOpen(store, "started", now - 1000, now + 900_000, now - 800);
+  insertOpen(store, "never-started", now - 1000, now + 900_000, null);
+  await h.receive({ type: "started", id: "seen", at: now });
+  socket.dispatchEvent(new Event("close"));
+  assert.equal(store.sql.exec("SELECT result FROM host_dispatches WHERE id = 'seen'").toArray()[0]!.result, null);
+  now += 300_001;
+  const fresh = host(store); await fresh.instance.alarm();
+  for (const [id, until] of [["seen", 999_900], ["started", 999_200]] as const) {
+    const answer = await fresh.instance.dispatch(id, spec, 1);
+    assert.equal(answer.ok, false); if (!answer.ok) assert.equal(answer.message, "The job host was lost");
+    assert.equal(answer.ranUntil, until);
+  }
+  assert.equal((await fresh.instance.dispatch("never-started", spec, 1)).ranUntil, undefined);
+  assert.equal(await store.getAlarm(), null);
+});
+test("a late fresh alarm caps deadlines, cancels, and arms only the next open row", async t => {
+  let now = 1_000_000; t.mock.method(Date, "now", () => now);
+  const store = storage(t); host(store);
+  insertOpen(store, "first", now - 1000, now - 100);
+  insertOpen(store, "next", now - 1000, now + 1000);
+  const h = host(store); await h.receive({ type: "started", id: "next", at: now });
+  await h.instance.alarm();
+  assert.equal((await h.instance.dispatch("first", spec, 1)).ranUntil, now - 100);
+  assert.ok(h.sent.some(m => m.type === "cancel" && m.id === "first"));
+  assert.equal(await store.getAlarm(), now + 1000);
+  now += 2000; await host(store).instance.alarm();
+  assert.equal(await store.getAlarm(), null);
+});
+test("heartbeat omission ends only old open rows, charged to the last listing", async t => {
+  let now = 1_000_000; t.mock.method(Date, "now", () => now);
+  const store = storage(t), h = host(store);
+  insertOpen(store, "missing", now - 100_000, now + 900_000);
+  insertOpen(store, "finished", now - 100_000, now + 900_000);
+  await h.receive({ type: "heartbeat", running: ["missing", "finished"], free: 1 });
+  // No await between these messages: storing the result precedes reconciliation.
+  const finished = h.receive({ type: "result", id: "finished", result });
+  now += 1000; insertOpen(store, "grace", now, now + 900_000);
+  const fresh = host(store);
+  await fresh.receive({ type: "heartbeat", running: [], free: 1 }); await finished;
+  const answer = await fresh.instance.dispatch("missing", spec, 1);
+  assert.equal(answer.ok, false); if (!answer.ok) assert.equal(answer.message, "The job host no longer runs it");
+  assert.equal(answer.ranUntil, now - 1000);
+  assert.equal(store.sql.exec("SELECT result FROM host_dispatches WHERE id = 'grace'").toArray()[0]!.result, null);
+  assert.equal((await fresh.instance.dispatch("finished", spec, 1)).ok, true);
+});
+test("hello and heartbeat kill every ended or unknown VM and preserve a live one", async t => {
+  let now = 1_000_000; t.mock.method(Date, "now", () => now);
+  const store = storage(t); host(store);
+  insertOpen(store, "deadline", now - 400_000, now - 1);
+  insertOpen(store, "lost", now - 400_000, now + 900_000);
+  await host(store).instance.alarm();
+  insertOpen(store, "cancelled", now - 100, now + 900_000);
+  const disconnected = new JobHost({ storage: store, waitUntil: () => {} } as never, {} as never);
+  assert.equal(disconnected.cancel("cancelled"), true);
+  insertOpen(store, "omitted", now - 100_000, now + 900_000);
+  await host(store).receive({ type: "heartbeat", running: [], free: 1 });
+  insertOpen(store, "live", now, now + 900_000);
+  insertOpen(store, "stopping", now, now + 900_000);
+  const connected = host(store); connected.instance.cancel("stopping");
+  const running = ["deadline", "lost", "cancelled", "unknown", "omitted", "live", "stopping"];
+  for (const type of ["hello", "heartbeat"]) {
+    const fresh = host(store);
+    await fresh.receive({ type, running, slots: 8, free: 1, vcpus: 8, memoryMiB: 16384 });
+    assert.deepEqual(fresh.sent.filter(m => m.type === "cancel").map(m => m.id).sort(), running.filter(id => id !== "live").sort());
+  }
+});
+test("fresh disconnected cancel stores stopped once; connected cancel waits for the host", async t => {
+  let now = 1_000_000; t.mock.method(Date, "now", () => now);
+  const store = storage(t); host(store);
+  insertOpen(store, "offline", now - 1000, now + 100_000);
+  const fresh = new JobHost({ storage: store, waitUntil: () => {} } as never, {} as never);
+  assert.equal(fresh.cancel("offline"), true);
+  const h = host(store); now += 1000;
+  await h.receive({ type: "result", id: "offline", result });
+  const answer = await h.instance.dispatch("offline", spec, 1);
+  assert.equal(answer.ok, false); if (!answer.ok) assert.equal(answer.code, "stopped");
+  assert.equal(answer.ranUntil, now - 1000); assert.equal(h.instance.cancel("offline"), false);
+  insertOpen(store, "online", now, now + 100_000);
+  assert.equal(h.instance.cancel("online"), true);
+  assert.equal(store.sql.exec("SELECT result FROM host_dispatches WHERE id = 'online'").toArray()[0]!.result, null);
+  assert.deepEqual(h.sent.at(-1), { type: "cancel", id: "online" });
+  await h.receive({ type: "result", id: "online", result });
+  assert.equal((await host(store).instance.dispatch("online", spec, 1)).ok, true);
+});
+test("resent started uses the original host time once and clamps invalid or skewed times", async t => {
+  const now = 1_000_000; t.mock.method(Date, "now", () => now);
+  const store = storage(t); host(store);
+  for (const [id, at, expected] of [["original", now - 500, now - 500], ["early", now - 2000, now - 1000], ["future", now + 1, now], ["invalid", NaN, now]] as const) {
+    insertOpen(store, id, now - 1000, now + 100_000, null);
+    const fresh = host(store);
+    await fresh.receive({ type: "started", id, at });
+    await fresh.receive({ type: "started", id, at: now });
+    await fresh.receive({ type: "result", id, result });
+    assert.equal((await fresh.instance.dispatch(id, spec, 1)).ranFrom, expected);
+  }
+});
+test("dispatch arms the earliest durable deadline and host loss can be configured", async t => {
+  const now = 1_000_000; t.mock.method(Date, "now", () => now);
+  const store = storage(t), h = host(store);
+  const first = h.instance.dispatch("later", spec, 10_000);
+  await h.receive({ type: "started", id: "later", at: now });
+  assert.equal(await store.getAlarm(), now + 10_000);
+  const second = h.instance.dispatch("sooner", spec, 5000);
+  await h.receive({ type: "started", id: "sooner", at: now });
+  assert.equal(await store.getAlarm(), now + 5000);
+  const fresh = new JobHost({ storage: store, waitUntil: () => {} } as never, { JOB_HOST_LOST_SECONDS: "1", TEST_MODE: "1" } as never);
+  t.mock.method(Date, "now", () => now + 1001);
+  await fresh.alarm();
+  assert.equal(await store.getAlarm(), null);
+  for (const id of ["later", "sooner"]) {
+    const answer = await fresh.dispatch(id, spec, 1);
+    assert.equal(answer.ok, false); if (!answer.ok) assert.equal(answer.message, "The job host was lost");
+  }
+  // The old process's waiters are disposable; its persisted results replay on a fresh instance.
+  void first; void second;
 });

@@ -6,6 +6,8 @@
 // output streams are kept in the workflow's volume, and the script gets a small result that names them. A commit lands
 // a child's fork on its base (workflow-volumes.ts). A push is a job that writes a volume to a GitHub branch with the
 // GitHub App's installation token, which only the job's process sees.
+import { createRepo, repoContext, type RepoEnv } from "./repos/registry.ts";
+import { branch, commitChanges } from "./repos/write.ts";
 import { createVolume } from "./file-mounts.ts";
 import { volume, type FileBindings } from "./files.ts";
 import { workerGitHubApps, type GitHubAppsEnv } from "./github-apps.ts";
@@ -60,7 +62,7 @@ const decoder = new TextDecoder();
 type JobArgs = {
   command: string; timeoutSeconds: number; outputs?: string[]; limits?: JobSpec["limits"]; internet?: boolean;
   /** A volume of the tenant's whose files the job starts with, in /repo (synced from a snapshot taken now). */
-  at?: string;
+  at?: string | { repo: string; ref?: string; version?: string };
   /** Checkpoint /repo when the command ends; needs `at` and camelFS job hosts. */
   commit?: boolean;
   /** Small files given inline, path to text. */
@@ -183,6 +185,7 @@ export class WorkflowJobs implements EffectExecutor {
     }
     const keepFrom = Date.now();
     const value = parse(result, await this.keep(id, result, secrets, { ...(snapshotMs !== undefined ? { snapshotMs } : {}), driverMs }, keepFrom));
+    if (spec.commit && result.camelfs?.version) Object.assign(value, { ref: result.camelfs.ref, version: result.camelfs.version });
     // The container time its payer was charged also counts in the workflow's ledger (its budget), once per key:attempt.
     await done({ ok: true, value }, { costUsd: result.costUsd ?? 0, model: `cloudflare/${result.instance}`, durationMs: result.timings.totalMs });
   }
@@ -199,22 +202,37 @@ export class WorkflowJobs implements EffectExecutor {
     const extra = Object.keys(args ?? {}).find(name => !known.includes(name));
     if (extra) throw new JobSpecError(`job() has no option ${extra}: it takes ${known.join(", ")}`);
     if (args.commit !== undefined && typeof args.commit !== "boolean") throw new JobSpecError("job() commit is true or false");
-    if (args.commit && args.at === undefined) throw new JobSpecError("job() commit needs at: the volume whose tree it checkpoints");
+    if (args.commit && args.at === undefined && !(args.files && this.env.CAMELFS)) throw new JobSpecError("job() commit needs at: the volume whose tree it checkpoints");
     if (args.commit && !camelfsConfigured(this.env)) throw new JobSpecError("job() commit needs camelFS job hosts, which this deployment does not have");
     if (args.at !== undefined && args.files !== undefined) throw new JobSpecError("job() takes at or files, not both");
     if (args.files !== undefined && (!args.files || typeof args.files !== "object" || Object.values(args.files).some(text => typeof text !== "string")))
       throw new JobSpecError("job() files maps paths to text");
     const tenant = this.host.workflow.tenant;
-    let source: Pick<JobSpec, "volume" | "files"> = {};
+    let source: Pick<JobSpec, "volume" | "files" | "repo"> = {};
     let snapshotMs: number | undefined;
     if (args.at !== undefined) {
-      if (typeof args.at !== "string") throw new JobSpecError("job() at is a volume id");
-      const at = args.at;
-      const base = await jobVolume(() => volume(this.env, tenant, at), at);
-      const snapshotFrom = Date.now();
-      const snapshot = await base.snapshot(`job ${id}`, { pinned: true, labels: { workflow: this.host.workflow.id }, expiresAt: Date.now() + SYNC_SNAPSHOT_TTL_MS });
-      snapshotMs = Date.now() - snapshotFrom;
-      source = { volume: { tenant, volume: args.at, snapshot: snapshot.id } };
+      if (typeof args.at !== "string") {
+        if (!args.at || typeof args.at !== "object") throw new JobSpecError("job() at is a volume id or repo target");
+        source = { repo: { ...args.at, tenant, owner: `workflow:${this.host.workflow.id}` } };
+      } else {
+        const at = args.at;
+        const base = await jobVolume(() => volume(this.env, tenant, at), at);
+        const snapshotFrom = Date.now();
+        const snapshot = await base.snapshot(`job ${id}`, { pinned: true, labels: { workflow: this.host.workflow.id }, expiresAt: Date.now() + SYNC_SNAPSHOT_TTL_MS });
+        snapshotMs = Date.now() - snapshotFrom;
+        source = { volume: { tenant, volume: args.at, snapshot: snapshot.id } };
+      }
+    } else if (args.files && this.env.CAMELFS) {
+      const env = this.env as RepoEnv, owner = `workflow:${this.host.workflow.id}`;
+      const { info } = await createRepo(env, tenant, { key: owner, author: owner });
+      const ctx = await repoContext(env, tenant, info.id), ref = `job/${id}`;
+      const prepared = `workflow-job-files:${id}`;
+      if (!await this.host.storage.get(prepared)) {
+        if (!await ctx.stub.ref(ref)) await branch(ctx, { name: ref, from: "main", owner, who: `job:${id}` });
+        await commitChanges(ctx, { ref, changes: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, { bytes: new TextEncoder().encode(text) }])), message: "job inline files", author: owner, who: `job:${id}`, why: "job inline files", allowEmpty: true, idempotencyKey: `job:${id}:files` });
+        await this.host.storage.put(prepared, true);
+      }
+      source = { repo: { tenant, repo: info.id, ref, owner } };
     } else if (args.files) source = { files: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, new TextEncoder().encode(text)])) };
     return { snapshotMs, spec: {
       id, command: args.command, timeoutSeconds: Math.ceil(args.timeoutSeconds), ...(args.outputs ? { outputs: args.outputs } : {}),

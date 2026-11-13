@@ -31,7 +31,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   // Volume jobs without camelFS: their trees cross inline or by host-side sync, not as camelFS imports.
   const fixture = await startFixture({ camelfsStub: false, vars: {
     AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "45",
-    JOB_HOST_WAIT_SECONDS: "8", JOB_HOST_SCALER_TOKEN: "scaler-token-for-the-fixture-at-least-32-characters",
+    JOB_HOST_WAIT_SECONDS: "8", JOB_HOST_LOST_SECONDS: "20", JOB_HOST_SCALER_TOKEN: "scaler-token-for-the-fixture-at-least-32-characters",
     JOB_HOST_ROLE_ARNS: "test=arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,
     ADMIN_TENANTS: "camelrun-proto-local",
   } });
@@ -218,7 +218,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   assert.equal(back.draining, false);
   assert.ok(back.lastSeenAt > Date.now() - 30_000);
 
-  // A host that dies mid-job: the job ends container_failed once the host has been gone HOST_STALE_MS (30 s), not at
+  // A host that dies mid-job: the job ends container_failed once the host has been silent for 20 s, not at
   // its deadline, and is charged only for the time its VM ran until the host was last heard from.
   const doomed = await call("/v1/workflows", { script: `return await job({ key: "doomed", command: "sleep 300", timeoutSeconds: 600 });`, budget: { usd: 1 } });
   await until(async () => { const list = await call("/__test/job-hosts") as { name: string; free: number; slots: number }[]; const entry = list.find(item => item.name === "host-1"); return entry && entry.free < entry.slots; }, "the doomed job running");
@@ -228,10 +228,10 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const doomedEnd = await until(async () => { const value = await call(`/v1/workflows/${doomed.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the job of a host that went away", 90_000);
   assert.ok(Date.now() - killedAt < 75_000, "ended long before its deadline");
   const doomedItem = ((await call(`/v1/workflows/${doomed.id}/items`)).items as { key: string; reason?: string }[]).find(entry => entry.key === "doomed")!;
-  assert.match(doomedItem.reason ?? "", /^container_failed: The job host went away/, JSON.stringify(doomedEnd));
+  assert.match(doomedItem.reason ?? "", /^container_failed: The job host was lost/, JSON.stringify(doomedEnd));
   const doomedCharge = (await fixture.db.query("select message from pi_usage_receipts where session_id=$1 and message->'_workersAuxiliary'->>'kind'='computer'", [doomed.id])).rows;
   // Its VM ran about 3 s before the host died, and is charged until the host was last heard from (its started report or a
-  // heartbeat since, at most 10 s apart): never the 30 s it took to call the host gone, nor its deadline.
+  // heartbeat since, at most 10 s apart): never the 20 s it took to call the host gone, nor its deadline.
   assert.ok(doomedCharge.length <= 1, JSON.stringify(doomedCharge));
   const seconds = Number(doomedCharge[0]?.message._workersAuxiliary.costUsd ?? 0) / hostSecondRate("test", { vcpus: 1, memoryMiB: 4096, diskMiB: 0 });
   assert.ok(seconds < 14, `charged ${seconds} s`);
@@ -387,4 +387,47 @@ test("a host job survives a Worker restart, re-enters by id and charges once", {
   assert.equal(jobs, 1);
   const charges = (await fixture.db.query("select message from pi_usage_receipts where session_id=$1 and message->'_workersAuxiliary'->>'kind'='computer'", [workflow.id])).rows;
   assert.equal(charges.length, 1, JSON.stringify(charges));
+});
+
+test("repo job mounts its version without import and advances its own ref", { timeout: 300_000 }, async t => {
+  const { serveFakeCamelfsd } = await import("./fake-camelfsd.ts");
+  const token = "repo-job-fixture-token", secret = "repo-job-fixture-secret-at-least-32-characters";
+  const api = await serveFakeCamelfsd(token); t.after(() => api.close());
+  const fixture = await startFixture({ camelfsStub: true, entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
+    JOB_HOST_ATTESTORS: "test", JOB_HOST_TEST_SECRET: secret, JOB_HOST_WAIT_SECONDS: "5", AGENT_WORKFLOW_TENANTS: "*",
+    TEST_CAMELFS_URL: api.url, CAMELFS_API_TOKEN: token,
+  } }); t.after(() => fixture.stop());
+  const call = async (path: string, body?: unknown) => {
+    const response = await fetch(fixture.url + path, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    assert.ok(response.ok, `${path}: ${response.status} ${await response.clone().text()}`); return await response.json() as any;
+  };
+  const workflow = await call("/v1/workflows", { script: "return null;", budget: { usd: 1 } });
+  const repo = await call("/v1/repos", { name: "job source" });
+  const repoId = repo.id ?? repo.repo?.id;
+  assert.ok(repoId, JSON.stringify(repo));
+  await call(`/v1/repos/${repoId}/commit`, { files: { "seed.txt": { text: "seed" } }, message: "init" });
+  const head = (await call(`/v1/repos/${repoId}/refs`)).find((r: any) => r.name === "main");
+  const checkpoint = await fetch(`${api.url}/v1/lineages/${encodeURIComponent(repo.lineage ?? `camelrun-proto-local:${repoId}`)}/commits`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ parents: [head.version], changes: [], message: "job checkpoint", author: "job:repo-integration", trailers: {}, time: Math.floor(Date.now() / 1000) }) });
+  assert.ok(checkpoint.ok, `${checkpoint.status} ${await checkpoint.clone().text()}`); const c = await checkpoint.json() as any;
+  const enrolled = await call("/v1/internal/job-hosts/enroll", { attestation: { kind: "test", host: "repo-host", secret } });
+  const socket = new WebSocket(`${fixture.url.replace(/^http/, "ws")}/v1/internal/job-hosts/connect?host=repo-host`);
+  t.after(() => socket.close());
+  await new Promise((resolve, reject) => { socket.addEventListener("open", resolve); socket.addEventListener("error", reject); });
+  const registered = Promise.withResolvers<void>(); let mounted: any;
+  socket.addEventListener("message", event => {
+    const message = JSON.parse(String(event.data));
+    if (message.type === "registered") registered.resolve();
+    if (message.type !== "job") return;
+    mounted = message.spec;
+    const stream = { data: "", size: 0, truncated: false };
+    socket.send(JSON.stringify({ type: "result", id: message.id, result: { ok: true, exitCode: 7, timedOut: false, stdout: stream, stderr: stream, outputs: {}, missing: [], pids: "enforced", timings: { startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 0 }, camelfs: { commit: c.commit, tree: c.tree, root: "a".repeat(64), warm: true, mountMs: 0, applyMs: 0 } } }));
+  });
+  socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
+  socket.send(JSON.stringify({ type: "hello", host: "repo-host", slots: 1, free: 1, vcpus: 1, memoryMiB: 4096, version: "test", features: ["camelfs"] }));
+  await registered.promise;
+  const result = await call("/__test/camelfs-job", { id: "repo-integration", command: "true", timeoutSeconds: 30, commit: true, repo: { tenant: "camelrun-proto-local", repo: repoId, owner: "job:repo-integration" }, payer: { tenant: "camelrun-proto-local", agent: workflow.id, kind: "workflow" } });
+  assert.equal(result.ok, true); assert.equal(result.exitCode, 7);
+  assert.equal(result.camelfs.ref, "job/repo-integration"); assert.equal(result.camelfs.version, c.commit);
+  assert.equal(mounted.camelfs.tree, head.tree); assert.ok(mounted.camelfs.fence);
+  assert.deepEqual(mounted.files, []); assert.equal(mounted.sync, undefined);
 });
