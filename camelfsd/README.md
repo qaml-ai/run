@@ -43,7 +43,10 @@ routes require the same bearer as /v1. Other /v0 paths return 404 on TCP;
 host operations stay on the mode-0600 Unix socket. This replaces jobhost's
 phase-1 import proxy on 127.0.0.1:8790: stop the proxy before enabling the
 daemon listener, leaving the pilot VPC service address unchanged. Protect the loopback listener behind the runtime's private tunnel.
-Never log the bearer. Health reports api: "127.0.0.1:8790".
+Never log the bearer. Every /v1 request, including a 401, logs one access line:
+op=<METHOD>:/v1/<route> lineage=<l> status=<code> ms=<n>. Routes are templates;
+object ids, file paths, query values and bodies are omitted. Lineages are
+escaped to keep each request on one line. Health reports api: "127.0.0.1:8790".
 
 ## Durability and lineage scope
 
@@ -129,16 +132,27 @@ The limits are 256 paths and 64 MiB (or a smaller maxBytes). Fetches use
 curl -H "Authorization: Bearer $TOKEN" -d "{\"tree\":\"$T\",\"paths\":[\"src/a\",\"missing\"]}" "$A/read"
 ```
 
-Commit changes without moving a ref. Omitted baseTree uses the parent's tree;
-explicit null starts empty. Omitted/null parent creates a first commit.
+Commit changes without moving a ref. parents is an ordered array of zero, one
+or two commit ids, each reachable in the lineage. Omitted/null parents or []
+creates a first commit. Three or more parents returns 400 invalid_request;
+an unknown parent returns 400 unknown_commit. Each parent becomes a Git parent
+header in the supplied order. Omitted baseTree uses the first parent's tree,
+or the empty tree when there are no parents; explicit null starts empty.
+For one release, parent: string|null is accepted as a legacy alias for one or
+zero parents. Supplying both parent and parents, even null, returns 400
+invalid_request. The parent alias will be removed in the next release.
 A mode-only change preserves the blob; deleting a missing path does nothing.
 At most 10,000 changes are accepted. The author is supplied by the caller,
 the committer is camelfs, and trailers are sorted Key: value lines.
-The response is {tree, commit, changed, bytes}.
+The 201 response is {tree, commit, parents, time, changed, bytes}. parents is
+always an array in the supplied order; time is the Unix seconds used in the
+commit (the supplied time or the daemon's current time). tree and commit are
+the Git object ids; changed counts changed paths and bytes counts supplied
+blob bytes.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Idempotency-Key: commit-1' \
-  -d "{\"parent\":null,\"baseTree\":null,\"changes\":[{\"path\":\"src/a\",\"blob\":\"$B\"}],\"author\":\"agent:a\",\"message\":\"first\",\"trailers\":{},\"time\":123}" "$A/commits"
+  -d "{\"parents\":[],\"baseTree\":null,\"changes\":[{\"path\":\"src/a\",\"blob\":\"$B\"}],\"author\":\"agent:a\",\"message\":\"first\",\"trailers\":{},\"time\":123}" "$A/commits"
 ```
 
 List a tree in Git order. Nonrecursive listings include directories with
