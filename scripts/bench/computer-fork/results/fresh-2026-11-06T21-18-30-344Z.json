@@ -1,0 +1,258 @@
+{
+  "provider": "fresh",
+  "prefix": "cfork-h862x",
+  "startedAt": "2026-11-06T21:18:30.345Z",
+  "rounds": [
+    {
+      "n": 1,
+      "ok": 1,
+      "firstCommandMs": {
+        "n": 1,
+        "p50": 1423,
+        "p95": 1423,
+        "max": 1423
+      },
+      "readyToBuildMs": {
+        "n": 1,
+        "p50": 63276,
+        "p95": 63276,
+        "max": 63276
+      },
+      "allReadyMs": 76975,
+      "buildMs": {
+        "n": 1,
+        "p50": 13409,
+        "p95": 13409,
+        "max": 13409
+      },
+      "detail": [
+        {
+          "firstMs": 1423,
+          "readyMs": 63276,
+          "clone_ms": "5755",
+          "root_ci_ms": "10804",
+          "workers_ci_ms": "44825",
+          "size_kb": "1742880",
+          "files": "88119",
+          "build_ms": 13409
+        }
+      ]
+    },
+    {
+      "n": 5,
+      "ok": 5,
+      "firstCommandMs": {
+        "n": 5,
+        "p50": 863,
+        "p95": 876,
+        "max": 876
+      },
+      "readyToBuildMs": {
+        "n": 5,
+        "p50": 43074,
+        "p95": 62989,
+        "max": 62989
+      },
+      "allReadyMs": 77411,
+      "buildMs": {
+        "n": 5,
+        "p50": 14783,
+        "p95": 20700,
+        "max": 20700
+      },
+      "detail": [
+        {
+          "firstMs": 863,
+          "readyMs": 29044,
+          "clone_ms": "4680",
+          "root_ci_ms": "10949",
+          "workers_ci_ms": "12148",
+          "size_kb": "1742884",
+          "files": "88119",
+          "build_ms": 14783
+        },
+        {
+          "firstMs": 762,
+          "readyMs": 43074,
+          "clone_ms": "4882",
+          "root_ci_ms": "17909",
+          "workers_ci_ms": "18915",
+          "size_kb": "1742880",
+          "files": "88119",
+          "build_ms": 20700
+        },
+        {
+          "firstMs": 870,
+          "readyMs": 62989,
+          "clone_ms": "5354",
+          "root_ci_ms": "12025",
+          "workers_ci_ms": "44419",
+          "size_kb": "1742880",
+          "files": "88119",
+          "build_ms": 13059
+        },
+        {
+          "firstMs": 876,
+          "readyMs": 29847,
+          "clone_ms": "4388",
+          "root_ci_ms": "10463",
+          "workers_ci_ms": "13744",
+          "size_kb": "1742884",
+          "files": "88119",
+          "build_ms": 15636
+        },
+        {
+          "firstMs": 797,
+          "readyMs": 59565,
+          "clone_ms": "6395",
+          "root_ci_ms": "11842",
+          "workers_ci_ms": "39381",
+          "size_kb": "1742888",
+          "files": "88119",
+          "build_ms": 14350
+        }
+      ]
+    },
+    {
+      "n": 10,
+      "ok": 10,
+      "firstCommandMs": {
+        "n": 10,
+        "p50": 793,
+        "p95": 861,
+        "max": 861
+      },
+      "readyToBuildMs": {
+        "n": 10,
+        "p50": 61962,
+        "p95": 76651,
+        "max": 76651
+      },
+      "allReadyMs": 101350,
+      "buildMs": {
+        "n": 10,
+        "p50": 14371,
+        "p95": 24426,
+        "max": 24426
+      },
+      "detail": [
+        {
+          "firstMs": 718,
+          "readyMs": 76651,
+          "clone_ms": "7222",
+          "root_ci_ms": "14574",
+          "workers_ci_ms": "53775",
+          "size_kb": "1742884",
+          "files": "88119",
+          "build_ms": 24426
+        },
+        {
+          "firstMs": 775,
+          "readyMs": 59468,
+          "clone_ms": "6443",
+          "root_ci_ms": "10928",
+          "workers_ci_ms": "40146",
+          "size_kb": "1742892",
+          "files": "88119",
+          "build_ms": 14268
+        },
+        {
+          "firstMs": 822,
+          "readyMs": 61962,
+          "clone_ms": "6695",
+          "root_ci_ms": "10032",
+          "workers_ci_ms": "43840",
+          "size_kb": "1742880",
+          "files": "88119",
+          "build_ms": 13591
+        },
+        {
+          "firstMs": 789,
+          "readyMs": 61744,
+          "clone_ms": "7533",
+          "root_ci_ms": "11924",
+          "workers_ci_ms": "41016",
+          "size_kb": "1742884",
+          "files": "88119",
+          "build_ms": 16211
+        },
+        {
+          "firstMs": 784,
+          "readyMs": 63421,
+          "clone_ms": "6182",
+          "root_ci_ms": "11227",
+          "workers_ci_ms": "45333",
+          "size_kb": "1742888",
+          "files": "88119",
+          "build_ms": 15936
+        },
+        {
+          "firstMs": 793,
+          "readyMs": 63552,
+          "clone_ms": "7515",
+          "root_ci_ms": "11722",
+          "workers_ci_ms": "43602",
+          "size_kb": "1742888",
+          "files": "88119",
+          "build_ms": 16854
+        },
+        {
+          "firstMs": 850,
+          "readyMs": 66384,
+          "clone_ms": "5921",
+          "root_ci_ms": "11351",
+          "workers_ci_ms": "47391",
+          "size_kb": "1742884",
+          "files": "88119",
+          "build_ms": 12753
+        },
+        {
+          "firstMs": 859,
+          "readyMs": 60174,
+          "clone_ms": "5737",
+          "root_ci_ms": "11167",
+          "workers_ci_ms": "41884",
+          "size_kb": "1742888",
+          "files": "88119",
+          "build_ms": 14371
+        },
+        {
+          "firstMs": 861,
+          "readyMs": 59641,
+          "clone_ms": "6767",
+          "root_ci_ms": "11403",
+          "workers_ci_ms": "39883",
+          "size_kb": "1742896",
+          "files": "88119",
+          "build_ms": 15583
+        },
+        {
+          "firstMs": 854,
+          "readyMs": 66839,
+          "clone_ms": "8477",
+          "root_ci_ms": "11966",
+          "workers_ci_ms": "45098",
+          "size_kb": "1742884",
+          "files": "88119",
+          "build_ms": 13994
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "leftovers": [
+    "bx_eb3q79r8:cfork-h862x-n10-5:idle",
+    "bx_tdg5p4km:cfork-h862x-n10-6:idle",
+    "bx_basphv85:cfork-h862x-n10-4:idle",
+    "bx_t537bpds:cfork-h862x-n10-9:idle",
+    "bx_6wb2xrh2:cfork-h862x-n10-7:idle",
+    "bx_p2bh32uc:cfork-h862x-n10-8:idle",
+    "bx_ksh9ha53:cfork-h862x-n10-3:idle",
+    "bx_3raz4jsf:cfork-h862x-n10-1:idle",
+    "bx_m4nc26qe:cfork-h862x-n10-2:idle",
+    "bx_nea4fzkr:cfork-h862x-n10-0:idle",
+    "bx_hm5pbt2x:cfork-h862x-n5-0:idle",
+    "bx_wtyrcagw:cfork-h862x-src:idle"
+  ],
+  "finishedAt": "2026-11-06T21:22:50.535Z"
+}

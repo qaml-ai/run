@@ -1,0 +1,84 @@
+{
+  "provider": "sprites",
+  "prefix": "cfork-h862x",
+  "startedAt": "2026-11-06T21:18:30.345Z",
+  "rounds": [],
+  "errors": [],
+  "source": {
+    "createMs": 569,
+    "firstCommandMs": 773,
+    "prepare": {
+      "clone_ms": "5203",
+      "root_ci_ms": "18390",
+      "workers_ci_ms": "11518",
+      "size_kb": "1737980",
+      "files": "88077"
+    },
+    "build": {
+      "root_tsc_ms": "9464",
+      "workers_tsc_ms": "16927",
+      "test_ms": "16599",
+      "build_ms": "42990",
+      "exits": "0,0,0"
+    }
+  },
+  "snapshot": {
+    "ms": 576,
+    "handle": {
+      "sprite": "cfork-h862x-src",
+      "create": "● Creating checkpoint...\n✓ Checkpoint v2 created\n  Restore with: sprite restore v2",
+      "list": ""
+    }
+  },
+  "restore": {
+    "version": "v2",
+    "callMs": 23116,
+    "output": "camelai: Restoring checkpoint v2 for sprite cfork-h862x-src\n\n● Restoring checkpoint v2...\n✓ Restored to checkpoint v2\n",
+    "firstCommandMs": 23308,
+    "after": {
+      "fork_id": "none",
+      "branch": "main",
+      "node_modules": "yes",
+      "boot": "321f17bf"
+    },
+    "build": {
+      "root_tsc_ms": "8633",
+      "workers_tsc_ms": "13012",
+      "test_ms": "17232",
+      "build_ms": "38877",
+      "exits": "0,0,0"
+    }
+  },
+  "probeRestored": {
+    "mounts": "--- df -T /home/sprite/ws\nFilesystem     Type    1K-blocks    Used Available Use% Mounted on\noverlay        overlay 103069272 2119392 100933496   3% /\n--- findmnt\nTARGET SOURCE  FSTYPE  OPTIONS\n/      overlay overlay rw,relatime,lowerdir=/mnt/languages-image:/system:/mnt/system-base,upperdir=/mnt/user-data/root-upper/upper,workdir=/mnt/user-data/root-upper/work\n--- /proc/mounts (non-pseudo)\noverlay / overlay rw,relatime,lowerdir=/mnt/languages-image:/system:/mnt/system-base,upperdir=/mnt/user-data/root-upper/upper,workdir=/mnt/user-data/root-upper/work 0 0\ntmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k 0 0\ntmpfs /run tmpfs rw,nosuid,size=65536k,mode=755 0 0\ntmpfs /mnt tmpfs rw,nosuid,size=65536k,mode=755 0 0\n/dev/vdb /tmp ext4 rw,nosuid,nodev,noatime 0 0\n/dev/root /.pilot/tini squashfs ro,relatime,errors=continue 0 0\nnone /etc/resolv.conf overlay ro,nosuid,nodev,noexec,relatime,lowerdir=/bundles/sprite/.pilot-lower:/lower/dev/vdc/sprite:/lower/dev/vdf:/lower/dev/vdg,upperdir=/upper/dev/vdb/upper-sprite,workdir=/upper/dev/vdb/workdir-sprite,uuid=on 0 0\ntmpfs /.sprite/tmp tmpfs rw,relatime,size=65536k 0 0\nnone /.sprite/api.sock overlay ro,relatime,lowerdir=/bundles/sprite/.pilot-lower:/lower/dev/vdc/sprite:/lower/dev/vdf:/lower/dev/vdg,upperdir=/upper/dev/vdb/upper-sprite,workdir=/upper/dev/vdb/workdir-sprite,uuid=on 0 0\ntmpfs /.sprite/checkpoints tmpfs rw,relatime 0 0\n/dev/vdb /.sprite/logs ext4 ro,noatime 0 0\nnone /.sprite/policy overlay ro,relatime,lowerdir=/bundles/sprite/.pilot-lower:/lower/dev/vdc/sprite:/lower/dev/vdf:/lower/dev/vdg,upperdir=/upper/dev/vdb/upper-sprite,workdir=/upper/dev/vdb/workdir-sprite,uuid=on 0 0\n/dev/nbd0 /var/lib/docker ext4 rw,lazytime,nosuid,nodev,noatime,discard,errors=remount-ro,commit=60,stripe=1024,data=ordered 0 0\ntmpfs /proc/kcore tmpfs ro,size=65536k,mode=755 0 0\ntmpfs /proc/keys tmpfs ro,size=65536k,mode=755 0 0\ntmpfs /proc/timer_list tmpfs ro,size=65536k,mode=755 0 0\ntmpfs /sys/firmware tmpfs ro,size=65536k,mode=755 0 0\ntmpfs /proc/scsi tmpfs ro,size=65536k,mode=755 0 0\n--- lsblk\nNAME   SIZE TYPE FSTYPE MOUNTPOINT\nnbd0   100G disk        /var/lib/docker\nnbd1     0B disk        \nnbd2     0B disk        \nnbd3     0B disk        \nnbd4     0B disk        \nnbd5     0B disk        \nnbd6     0B disk        \nnbd7     0B disk        \nvda    138M disk        /.pilot/tini\nvdb     20G disk        /.sprite/logs\nvdc      4K disk        \nvdd      8G disk        \nvde      8G disk        \nvdf      8G disk        \nvdg    1.3M disk        \nnbd8     0B disk        \nnbd9     0B disk        \nnbd10    0B disk        \nnbd11    0B disk        \n--- kernel\n6.12.115-fly\n8\n               total        used        free      shared  buff/cache   available\nMem:            8192         446         276           0        7619        7745\n",
+    "io": {
+      "dropped_caches": "yes",
+      "tree_read_bytes": "1475429194",
+      "tree_read_ms": "88433",
+      "tree_read_mbps": "15",
+      "tree_stat_files": "77573",
+      "tree_stat_ms": "116",
+      "seq_write_mbps": "148.2",
+      "seq_read_mbps": "6930.8",
+      "k_iops": "311069",
+      "_iops": "1508",
+      "k_ms": "81"
+    },
+    "ioRaw": "dropped_caches=yes\ntree_read_bytes=1475429194 tree_read_ms=88433 tree_read_mbps=15\ntree_stat_files=77573 tree_stat_ms=116\nseq_write_mbps=148.2 seq_read_mbps=6930.8 rand_read_4k_iops=311069 rand_write_4k_sync32_iops=1508 small_create_5k_ms=177 small_read_5k_ms=65 small_rm_5k_ms=81\nWarning: stdin is being forwarded implicitly; automatic exec reconnection is disabled.\nPass --stdin to confirm or --no-stdin for reconnectable execution.\n/home/sprite/.bashrc: line 22: bind: warning: line editing not enabled\n/home/sprite/.bashrc: line 23: bind: warning: line editing not enabled\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\n",
+    "realwork": {
+      "git_status_ms": "106",
+      "git_log_ms": "36",
+      "npm_ci_warm_ms": "16439",
+      "npm_ci_warm_exit": "0",
+      "npm_ci_cold_ms": "22507",
+      "npm_ci_cold_exit": "0",
+      "typecheck_ms": "14638",
+      "typecheck_exit": "0",
+      "test_ms": "15967",
+      "test_exit": "0"
+    },
+    "realworkRaw": "git_status_ms=106 git_log_ms=36\nnpm_ci_warm_ms=16439 npm_ci_warm_exit=0\nnpm_ci_cold_ms=22507 npm_ci_cold_exit=0\ntypecheck_ms=14638 typecheck_exit=0\ntest_ms=15967 test_exit=0\n"
+  },
+  "leftovers": [],
+  "finishedAt": "2026-11-06T21:24:43.593Z"
+}

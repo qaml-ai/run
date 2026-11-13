@@ -1,0 +1,126 @@
+{
+  "provider": "worktrees",
+  "prefix": "cfork-n96ia7",
+  "startedAt": "2026-11-06T21:30:14.202Z",
+  "rounds": [
+    {
+      "n": 1,
+      "setup": {
+        "worktree_add_ms": "207",
+        "parallel_install_ms": "35908",
+        "disk_kb": "3412912"
+      },
+      "allBuiltMs": 15020,
+      "buildMs": {
+        "n": 1,
+        "p50": 14614,
+        "p95": 14614,
+        "max": 14614
+      },
+      "builds": [
+        {
+          "exit": 0,
+          "root_tsc_ms": "2759",
+          "workers_tsc_ms": "5340",
+          "test_ms": "6515",
+          "build_ms": "14614",
+          "exits": "0,0,0"
+        }
+      ],
+      "ports": {
+        "port_8787_bound": "1",
+        "port_8787_clash": "0"
+      },
+      "load": {
+        "load1": "4.74",
+        "nproc": "4"
+      }
+    },
+    {
+      "n": 5,
+      "setup": {
+        "worktree_add_ms": "909",
+        "parallel_install_ms": "350431",
+        "disk_kb": "10092176"
+      },
+      "allBuiltMs": 211756,
+      "buildMs": {
+        "n": 5,
+        "p50": 209664,
+        "p95": 209919,
+        "max": 209919
+      },
+      "builds": [
+        {
+          "exit": 0,
+          "root_tsc_ms": "104560",
+          "workers_tsc_ms": "89905",
+          "test_ms": "13996",
+          "build_ms": "208461",
+          "exits": "137,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "183591",
+          "workers_tsc_ms": "14019",
+          "test_ms": "12054",
+          "build_ms": "209664",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "183621",
+          "workers_tsc_ms": "13996",
+          "test_ms": "12066",
+          "build_ms": "209683",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "179816",
+          "workers_tsc_ms": "15892",
+          "test_ms": "13136",
+          "build_ms": "208844",
+          "exits": "137,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "183753",
+          "workers_tsc_ms": "13630",
+          "test_ms": "12536",
+          "build_ms": "209919",
+          "exits": "0,0,0"
+        }
+      ],
+      "ports": {
+        "port_8787_bound": "1",
+        "port_8787_clash": "4"
+      },
+      "load": {
+        "load1": "17.64",
+        "nproc": "4"
+      }
+    }
+  ],
+  "errors": [
+    "fatal: TypeError: fetch failed\n    at node:internal/deps/undici/undici:14900:13\n    at async api (file:///Users/miguelsalinas/agent-runtime-wt/computer-fork/scripts/bench/computer-fork/providers.ts:40:17)\n    at async Object.exec (file:///Users/miguelsalinas/agent-runtime-wt/computer-fork/scripts/bench/computer-fork/providers.ts:64:17)\n    at async file:///Users/miguelsalinas/agent-runtime-wt/computer-fork/scripts/bench/computer-fork/bench.ts:229:102\n    at async Promise.all (index 5)\n    at async worktreeScenario (file:///Users/miguelsalinas/agent-runtime-wt/computer-fork/scripts/bench/computer-fork/bench.ts:229:20)\n    at async file:///Users/miguelsalinas/agent-runtime-wt/computer-fork/scripts/bench/computer-fork/bench.ts:268:35"
+  ],
+  "source": {
+    "prepare": {
+      "clone_ms": "12455",
+      "root_ci_ms": "13274",
+      "workers_ci_ms": "44674",
+      "size_kb": "1743144",
+      "files": "88119"
+    },
+    "build": {
+      "root_tsc_ms": "4895",
+      "workers_tsc_ms": "6527",
+      "test_ms": "7247",
+      "build_ms": "18669",
+      "exits": "0,0,0"
+    }
+  },
+  "leftovers": [],
+  "finishedAt": "2026-11-06T21:56:44.578Z"
+}
