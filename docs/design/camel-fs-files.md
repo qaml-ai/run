@@ -690,8 +690,8 @@ the image; the ref item carries `root?` (§6).
 | `unavailable` | 503 | S3 or DynamoDB unreachable, or throttled past the tier's retries; safe to retry with the same `Idempotency-Key` |
 
 **These snake_case codes are canonical**, like every existing daemon code (`unknown_commit`, `too_deep`). The
-runtime's `/v1/repos` either adopts them or maps them in one place. `RepoDO`'s kebab-case `bad-parent`,
-`not-fast-forward` and `storage-limit` are the ones that differ.
+runtime's `/v1/repos` **adopts** them (the lead, 2026-11-13): wf-repos renames the public repo codes to snake_case
+after #954, so `RepoDO`'s kebab-case `bad-parent`, `not-fast-forward` and `storage-limit` go away.
 
 Every error is loud and specific; nothing degrades to empty data. The tier logs lineage, ref names, ids, sizes and
 token `sub`/`lin`/`acc`/`kid`, never file contents or tokens.
