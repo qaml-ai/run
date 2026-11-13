@@ -202,7 +202,8 @@ regional storage tier). The state is now:
 | refs, leases, fences, watchers | DynamoDB `refs`, one item per ref | partition `lineage`, sort `name` |
 | lineages: tenant, kind, default branch | DynamoDB `lineages` | `lineage` |
 | trees and commits (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to S3 `g/`) | DynamoDB `objects` (S3 `t/`, `k/` until the table exists, ledger L74) | `lineage`, `id` |
-| pending deliveries (`notify`; compute's `vm.*` and `usage.*`) | DynamoDB `deliveries` | `shard`, `id` |
+| pending deliveries (`notify`; compute's `vm.*` hints) | DynamoDB `deliveries` | `shard`, `id` |
+| usage events (`usage.vm`, `usage.storage`), pulled by the runtime (§9.13) | DynamoDB `usage`, TTL 35 days | `shard`, `id` (ULID) |
 | blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
 | the NVMe cache of chunks, images, trees and shards | each host's `camelfsd --role host` | content hash |
 | each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
@@ -224,6 +225,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - `camelfs-prod-deliveries` (`shard` + `id`);
   - `camelfs-prod-hosts` (`pool` + `host`);
   - `camelfs-prod-vms` (`id`).
+  - Still to create (fs-infra): `camelfs-prod-usage` (`shard` + `id`), the one table with DynamoDB TTL (35 days),
+    for §9.13.
 - **Tier:** ECS Fargate (Graviton) service `camelfs-prod-api` behind two ALBs, both with HTTP/2 off: public
   `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts'
   security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
@@ -881,7 +884,8 @@ them all.
 When a watched ref moves, the tier writes a `deliveries` item (`{ id, lineage, ref, from, to, tree, by, at,
 watchers }`) in the same `TransactWriteItems` as the move. The table's key is `shard` + `id`: `shard` is a fixed
 small range (`hash(id) mod 16`), so the tier nodes find pending deliveries with one `Query` per shard instead of a
-`Scan`; compute's events (camel-fs-compute.md §4) share the table. Any tier node then claims it (a conditional
+`Scan`; compute's `vm.*` events (camel-fs-compute.md §2) share the table. Usage events never use it: they are pulled
+(§9.13). Any tier node then claims it (a conditional
 `claimedUntil`), POSTs it to the runtime's notify endpoint, and deletes it on a `2xx`.
 
 ```
@@ -898,6 +902,7 @@ Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
 - The tier retries with backoff (1 s doubling to 5 min) for 24 h, then deletes the item and logs
   `notify_dropped`, loud, never silent.
 - `notifyKey` is separate from the token key, and both sides hold it.
+- Nothing on this webhook carries money: usage is pulled (§9.13).
 - Delivery is at least once and unordered across refs. A receiver orders by the chain: `from` is the version it
   should have, so a gap means it reads the ref.
 
@@ -966,3 +971,38 @@ Should Workers also present a client certificate (the `mtls_certificates` bindin
 limits the public ALB to traffic through our zone, the token already identifies and scopes the caller, and a
 Worker certificate would add a second credential that authorizes nothing new. Revisit if the tier ever serves a
 route without a token, or if anything other than the runtime gets a proxied hostname in front of the same ALB.
+
+### 9.13 Usage: pulled, never pushed
+
+**Decided (Miguel, 2026-11-13 ~18:50).** camel-fs never pushes money data. It records usage durably next to the
+state that produced it, and the runtime pulls it. Owners:
+- **wf-durable** (K4b): the `usage` table and the deadline lease (camel-fs-compute.md §4).
+- **wf-durable** (K4d): this route.
+- **wf-durable** (K5): the runtime's poller.
+
+**The table.** `usage`, key `shard` (S, `"0"`..`"15"`, `hash(id) mod 16`, as for `deliveries`) + `id` (S, a ULID),
+DynamoDB TTL 35 days.
+- Each event is written in the **same** `TransactWriteItems` as the state change it accounts for. For a VM that
+  is the `vms` row's `billedTo` advancing under the condition `billedTo = :prev`, so an interval can be neither
+  lost nor written twice.
+- There is no `deliveries` item for usage.
+- **The ULID's time is the write's time.** A tier write that would commit later than its ULID's time plus one
+  heartbeat is aborted and retried with a fresh ULID. That is what lets the watermark below be safe.
+
+**The route.** `GET /v1/usage?after=<cursor>&limit=1000` →
+`{ "events": [ … ], "cursor": "<opaque>", "watermark": "<ulid-time>" }`.
+- It returns events in ULID order across the 16 shards, only those **below the watermark**
+  (`now − 2 × heartbeat`), so a writer still committing cannot be skipped by a reader that has already passed it.
+- The cursor encodes the 16 shard positions. An empty page with an advanced watermark is normal.
+- **Runtime tokens only** (`sub` in `runtime:*`, §9.10). Customers reconcile their own bill from the same events
+  through the runtime's API, filtered to their payer.
+
+**The poller.** The runtime runs one leased poller per camel-fs deployment, every ≈ 20 s.
+- One Postgres transaction per page: `INSERT … ON CONFLICT (id) DO NOTHING` for every event, plus the cursor
+  advance. A crash replays the page, and the insert absorbs the replay.
+- Pricing and charging then run from those rows exactly as the meter does today.
+- The inbound usage webhook is deleted. A poller that falls behind by more than the 35-day TTL loses events, so its
+  lag is an alarm (`usage_poll_lag`) long before that.
+
+**Notifications stay pushed.** `vm.ended` and ref moves remain on §9.11's webhook outbox. `vm.ended` is a hint:
+if one is lost, the next poll's final `usage.vm` event and `GET /v1/vms/{id}` reconcile the job.
