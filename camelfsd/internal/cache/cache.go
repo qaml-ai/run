@@ -14,10 +14,11 @@ import (
 )
 
 type flight struct {
-	done   chan struct{}
-	path   string
-	err    error
-	cancel context.CancelFunc
+	done    chan struct{}
+	path    string
+	err     error
+	cancel  context.CancelFunc
+	started bool
 }
 type Cache struct {
 	verified                    map[string]time.Time
@@ -30,20 +31,19 @@ type Cache struct {
 	Store                       store.Store
 	mu                          sync.Mutex
 	flights                     map[string]*flight
-	slots                       chan struct{}
 }
 
 func New(dir string, s store.Store, n int) *Cache {
 	if n < 1 {
 		n = 64
 	}
-	return &Cache{Dir: dir, Store: s, flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}, slots: make(chan struct{}, n)}
+	return &Cache{Dir: dir, Store: store.WithDepth(s, n), flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}}
 }
 func (c *Cache) Ensure(h string) (string, error) { return c.EnsureContext(context.Background(), h) }
 func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 	for {
 		p, e := c.ensure(ctx, h)
-		if e == context.Canceled && ctx.Err() == nil {
+		if e == context.Canceled && ctx.Err() == nil && !store.IsBackground(ctx) {
 			continue
 		}
 		return p, e
@@ -66,7 +66,7 @@ func (c *Cache) ensure(ctx context.Context, h string) (string, error) {
 		return p, nil
 	}
 	if f := c.flights[h]; f != nil {
-		if !store.IsBackground(ctx) && f.cancel != nil {
+		if !store.IsBackground(ctx) && f.cancel != nil && !f.started {
 			f.cancel()
 		}
 		c.mu.Unlock()
@@ -98,9 +98,9 @@ func (c *Cache) ensure(ctx context.Context, h string) (string, error) {
 			return p, nil
 		}
 	}
+	ctx = store.OnFetchStart(ctx, func() { c.mu.Lock(); c.Fetches.Add(1); f.started = true; c.mu.Unlock() })
+	ctx = store.OnFetchFinish(ctx, func(n int64) { c.Bytes.Add(n) })
 	b, e := c.Store.Get(ctx, "c/"+h)
-	c.Fetches.Add(1)
-	c.Bytes.Add(int64(len(b)))
 	if e == nil && (c.hash(b) != h || len(b) != int(root.ChunkSize)) {
 		e = fmt.Errorf("chunk hash mismatch")
 	}

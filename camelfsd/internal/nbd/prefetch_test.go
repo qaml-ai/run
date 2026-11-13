@@ -113,3 +113,63 @@ func TestBoundedPoolAndPatternReplay(t *testing.T) {
 		t.Fatal(s.peak)
 	}
 }
+
+func TestRootPrefetchOrderAndPackThreshold(t *testing.T) {
+	for _, missing := range []int{7, 8, 16} {
+		t.Run(fmt.Sprint(missing), func(t *testing.T) {
+			ctx := context.Background()
+			local := store.Local{Dir: t.TempDir()}
+			r := root.Root{V: 1, FSType: "ext4", VirtualSize: 16 * root.ChunkSize, Chunks: map[string]string{}, Packs: map[string]string{}}
+			var data []byte
+			for i := 0; i < 16; i++ {
+				b := make([]byte, root.ChunkSize)
+				b[0] = byte(i + 1)
+				h := root.Hash(b)
+				r.Chunks[strconv.FormatInt(int64(i)*root.ChunkSize, 10)] = h
+				data = append(data, b...)
+				if e := local.Put(ctx, "c/"+h, b); e != nil {
+					t.Fatal(e)
+				}
+			}
+			hs := r.WindowHashes(0)
+			id := root.PackID(hs)
+			r.Packs["0"] = id
+			if e := local.Put(ctx, "p/"+id, data); e != nil {
+				t.Fatal(e)
+			}
+			measured := &measuredStore{Store: local, started: make(chan string, 32)}
+			c := cache.New(t.TempDir(), measured, 64)
+			defer c.Close()
+			for _, h := range hs[missing:] {
+				if _, e := c.Ensure(h); e != nil {
+					t.Fatal(e)
+				}
+			}
+			for len(measured.started) > 0 {
+				<-measured.started
+			}
+			s := &Server{Store: local, Cache: c, FetchDepth: 1, Packs: true}
+			release := s.Register("root", "", r)
+			defer release()
+			s.PrefetchRoot("root")
+			want := missing
+			if missing >= 8 {
+				want = 1
+			}
+			for i := 0; i < want; i++ {
+				select {
+				case k := <-measured.started:
+					expected := "c/" + hs[i]
+					if missing >= 8 {
+						expected = "p/" + id
+					}
+					if k != expected {
+						t.Fatalf("got %s want %s", k, expected)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("prefetch stalled")
+				}
+			}
+		})
+	}
+}

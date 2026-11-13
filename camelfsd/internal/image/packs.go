@@ -73,7 +73,17 @@ func (m *Manager) queuePack(id string) {
 	}()
 }
 func (m *Manager) packRoot(id string) error {
-	ctx := store.Background(context.Background())
+	ctx, cancel := context.WithCancel(store.LowestPriority(context.Background()))
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-m.stop:
+			cancel()
+		case <-done:
+		}
+	}()
 	b, e := m.Store.Get(ctx, "r/"+id)
 	if e != nil {
 		return e
@@ -105,7 +115,7 @@ func (m *Manager) packRoot(id string) error {
 	if e = m.Store.Put(ctx, "r/"+next, b); e != nil {
 		return e
 	}
-	if e = clone(m.image(id), m.image(next)); e != nil && !os.IsExist(e) {
+	if e = m.promote(m.image(id), next); e != nil {
 		return e
 	}
 	if db, ok := m.Refs.(interface{ Packed(string, string) error }); ok {

@@ -134,6 +134,13 @@ func (p *origin) enqueue(o int64) {
 func (p *origin) touch(o int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for i, queued := range p.queue {
+		if queued == o {
+			p.queue = append(p.queue[:i], p.queue[i+1:]...)
+			delete(p.pending, o)
+			break
+		}
+	}
 	if !p.seen[o] && len(p.touches) < patternLimit {
 		p.seen[o] = true
 		p.touches = append(p.touches, o)
@@ -166,9 +173,12 @@ func (p *origin) worker() {
 			o = p.rootOrder[p.rootNext]
 			p.rootNext++
 		}
-		p.mu.Unlock()
 		w := o / p.root.Window() * p.root.Window()
-		p.mu.Lock()
+		if p.packPending[w] {
+			delete(p.pending, o)
+			p.mu.Unlock()
+			continue
+		}
 		if p.packPending == nil {
 			p.packPending = map[int64]bool{}
 		}
@@ -188,7 +198,11 @@ func (p *origin) worker() {
 		}
 		p.mu.Unlock()
 		if usePack {
-			_ = p.server.Cache.Pack(p.ctx, id, hs)
+			if e := p.server.Cache.Pack(p.ctx, id, hs); e != nil {
+				for _, h := range hs {
+					_, _ = p.server.Cache.EnsureContext(p.ctx, h)
+				}
+			}
 		}
 		_, _ = p.server.Cache.EnsureContext(p.ctx, p.root.Chunks[strconv.FormatInt(o, 10)])
 		p.mu.Lock()

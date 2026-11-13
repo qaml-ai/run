@@ -5,7 +5,24 @@ import (
 	"sync"
 )
 
+type fetchFinishKey struct{}
+
+func OnFetchFinish(ctx context.Context, fn func(int64)) context.Context {
+	return context.WithValue(ctx, fetchFinishKey{}, fn)
+}
+
+type fetchStartKey struct{}
+
+func OnFetchStart(ctx context.Context, fn func()) context.Context {
+	return context.WithValue(ctx, fetchStartKey{}, fn)
+}
+
 type backgroundKey struct{}
+type lowestKey struct{}
+
+func LowestPriority(ctx context.Context) context.Context {
+	return context.WithValue(Background(ctx), lowestKey{}, true)
+}
 
 func Background(ctx context.Context) context.Context {
 	return context.WithValue(ctx, backgroundKey{}, true)
@@ -53,7 +70,8 @@ func (b *budget) acquire(ctx context.Context) (context.Context, func(), error) {
 		if bg && (demand > 0 || b.waiting > 0) {
 			limit = b.depth - b.reserved
 		}
-		allowed := len(b.active) < b.depth && (!bg || (b.waiting == 0 && len(b.active)-demand < limit))
+		lowest, _ := ctx.Value(lowestKey{}).(bool)
+		allowed := (!lowest || len(b.active) == 0) && len(b.active) < b.depth && (!bg || (b.waiting == 0 && len(b.active)-demand < limit))
 		if allowed {
 			if !bg {
 				b.waiting--
