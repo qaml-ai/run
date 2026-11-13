@@ -15,7 +15,7 @@ SLOTS=1
 JOB_VCPUS=2
 # Advertised total host memory capacity in MiB, not a per-guest allocation.
 JOB_MEMORY_MIB=2048
-# Authenticated import API, listening on host loopback.
+# camelfsd's runtime API (bearer from /etc/camel/camelfs-api.env), on host loopback; the tunnel points here.
 CAMELFS_API_PORT=8790
 # Daemon object store URL (required; replace both placeholders).
 CAMELFSD_STORE='s3://<bucket>/camelfsd/<prefix>'

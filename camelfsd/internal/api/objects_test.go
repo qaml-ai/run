@@ -29,6 +29,9 @@ func TestTreeRoutes(t *testing.T) {
 	call := func(method, path string, b []byte, status int) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
+		if method == "GET" {
+			path += "?lineage=l"
+		}
 		req := httptest.NewRequest(method, path, bytes.NewReader(b))
 		if method == "PUT" {
 			req.Header.Set("Content-Length", strconv.Itoa(len(b)))
@@ -107,7 +110,7 @@ func TestChunkedBlobUploadHTTP(t *testing.T) {
 		if e != nil || resp.StatusCode != 201 || blob.Size != int64(len(payload)) || blob.SHA1 != store.GitHash("blob", []byte(payload)) {
 			t.Fatal(resp.StatusCode, blob, e)
 		}
-		resp, e = ts.Client().Get(ts.URL + "/v0/blobs/" + blob.SHA1)
+		resp, e = ts.Client().Get(ts.URL + "/v0/blobs/" + blob.SHA1 + "?lineage=chunked")
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -168,8 +171,8 @@ func TestBlobUploadLengthAndCap(t *testing.T) {
 	if e := db.DB.QueryRow("SELECT count(*) FROM lineage_blobs").Scan(&count); e != nil || count != 1 {
 		t.Fatal("failed upload published metadata", count, e)
 	}
-	entries, e := os.ReadDir(filepath.Join(storage, "o"))
-	if e != nil || len(entries) != 1 {
+	entries, e := os.ReadDir(filepath.Join(storage, "l", "o"))
+	if e != nil || len(entries) != 2 {
 		t.Fatal("failed upload published object", entries, e)
 	}
 }

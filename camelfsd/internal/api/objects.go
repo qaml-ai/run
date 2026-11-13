@@ -12,6 +12,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 func (s *Server) objects(w http.ResponseWriter, r *http.Request, reply func(int, any), fail func(error)) {
@@ -20,7 +21,11 @@ func (s *Server) objects(w http.ResponseWriter, r *http.Request, reply func(int,
 		fail(fmt.Errorf("objects require SQLite"))
 		return
 	}
-	repo := objects.Repository{DB: db, Store: s.Manager.Store, TempDir: s.Manager.Data}
+	if r.Method == "GET" && !store.Lineage(r.URL.Query().Get("lineage")) {
+		fail(apierr.Invalid("lineage required"))
+		return
+	}
+	repo := (&objects.Repository{DB: db, Store: s.Manager.Store, TempDir: s.Manager.Data}).ForLineage(r.URL.Query().Get("lineage"))
 	handle := func(e error) {
 		var missing *objects.Missing
 		switch {

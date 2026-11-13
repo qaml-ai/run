@@ -6,7 +6,7 @@ unit3() {
   local lineage=unit3-$(date +%s) t1 t2 response checkpoint image j
   t1=$(client import-tree --lineage "$lineage" --dir /nvme/bench/trees/medium | field tree)
   for j in j1 j2; do
-    response=$(client mount --job "$j" --lineage "$lineage" --tree "$t1" --vsock "$W/unit3-$j")
+    response=$(client mount --job "$j" --lineage "$lineage" --tree "$t1" --holder smoke --epoch 1 --vsock "$W/unit3-$j")
     echo "unit3 mount $j $response" | tee -a "$RESULT" "$report"
     image=$(field image <<<"$response")
     mount -o loop "$image" "$W/mnt"
@@ -45,10 +45,9 @@ unit3() {
     umount "$W/mnt"
     client release --job "$j" >/dev/null
   done
-  response=$(curl -fsS --unix-socket "$SOCK" -d "{\"lineage\":\"$lineage\",\"fromTree\":\"$t2\",\"name\":\"exp/1\",\"owner\":\"smoke\"}" http://localhost/v0/forks)
-  response=$(client mount --job j3 --lineage "$lineage" --ref exp/1 --vsock "$W/unit3-j3")
+  response=$(client mount --job j3 --lineage "$lineage" --tree "$t2" --holder smoke --epoch 1 --vsock "$W/unit3-j3")
   assert 'j["warm"] is True and j["apply"] is None' <<<"$response"
-  echo "unit3 fork mount $response" | tee -a "$RESULT" "$report"
+  echo "unit3 tree mount $response" | tee -a "$RESULT" "$report"
   mount -o loop "$(field image <<<"$response")" "$W/mnt"
   "$BIN" testguest apply --vsock-dir "$W/unit3-j3" --job j3 --mount "$W/mnt" --index "$W/unit3-j3.idx.json"
   grep -q '^// unit 3 changed' "$W/mnt/src/m0/d0/f0.ts"

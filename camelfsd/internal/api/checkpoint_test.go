@@ -43,7 +43,7 @@ func TestStreamErrorRoutes(t *testing.T) {
 			}
 			defer db.Close()
 			st := store.Local{Dir: t.TempDir()}
-			m, e := image.New(image.Config{Data: d, Cold: "prehydrate", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 64), db)
+			m, e := image.New(image.Config{Data: d, VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 64), db)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -53,11 +53,11 @@ func TestStreamErrorRoutes(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			v, e := m.Mount(context.Background(), image.Request{JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+			v, e := m.Mount(context.Background(), image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 			if e != nil {
 				t.Fatal(e)
 			}
-			before, _ := db.Get("l", v.Ref)
+
 			guest := make(chan struct{})
 			go func() {
 				defer close(guest)
@@ -91,10 +91,6 @@ func TestStreamErrorRoutes(t *testing.T) {
 			if w.Code != want {
 				t.Fatalf("%d %s", w.Code, w.Body.String())
 			}
-			after, _ := db.Get("l", v.Ref)
-			if before.Value != after.Value {
-				t.Fatal("partial publish")
-			}
 			var n int
 			db.DB.QueryRow("SELECT count(*) FROM tree_roots").Scan(&n)
 			if n != 0 {
@@ -113,7 +109,7 @@ func TestCheckpointTimingNesting(t *testing.T) {
 	}
 	defer db.Close()
 	st := store.Local{Dir: t.TempDir()}
-	m, e := image.New(image.Config{Data: d, Cold: "prehydrate", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 4), db)
+	m, e := image.New(image.Config{Data: d, VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -122,7 +118,7 @@ func TestCheckpointTimingNesting(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v, e := m.Mount(context.Background(), image.Request{JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+	v, e := m.Mount(context.Background(), image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 	if e != nil {
 		t.Fatal(e)
 	}

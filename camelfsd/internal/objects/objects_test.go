@@ -24,7 +24,7 @@ func repository(t *testing.T) *Repository {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	return &Repository{DB: db, Store: store.Local{Dir: t.TempDir()}, TempDir: t.TempDir()}
+	return (&Repository{DB: db, Store: store.Local{Dir: t.TempDir()}, TempDir: t.TempDir()}).ForLineage("l")
 }
 func TestGitTrees(t *testing.T) {
 	r := repository(t)
@@ -187,7 +187,7 @@ func TestLargeConcurrentTree(t *testing.T) {
 	}
 	wg.Wait()
 	var count int
-	r.DB.DB.QueryRow("SELECT count(*) FROM objects WHERE bytes IS NULL").Scan(&count)
+	r.DB.DB.QueryRow("SELECT count(*) FROM objects WHERE kind='tree' AND bytes IS NOT NULL").Scan(&count)
 	if count != 1 {
 		t.Fatal(count)
 	}
@@ -256,9 +256,9 @@ type uploadSpy struct {
 	puts, heads int
 }
 
-func (s *uploadSpy) Has(context.Context, string) (bool, error) {
+func (s *uploadSpy) Has(c context.Context, k string) (bool, error) {
 	s.heads++
-	return false, fmt.Errorf("unexpected HEAD")
+	return s.Store.Has(c, k)
 }
 func (s *uploadSpy) Put(c context.Context, k string, b []byte) error {
 	s.puts++
@@ -274,7 +274,7 @@ func TestUploadedPersists(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	if spy.puts != 1 || spy.heads != 0 {
+	if spy.puts != 1 || spy.heads != 2 {
 		t.Fatalf("puts=%d heads=%d", spy.puts, spy.heads)
 	}
 }

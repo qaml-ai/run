@@ -2,6 +2,7 @@ package cache
 
 import (
 	"container/list"
+	"context"
 	"os"
 	"path/filepath"
 )
@@ -22,16 +23,25 @@ func (c *Cache) retire(f *cachedFile) {
 	}
 }
 func (c *Cache) ReadAt(h string, b []byte, offset int64) error {
+	return c.ReadAtLineage("", h, b, offset)
+}
+func (c *Cache) ReadAtLineage(lineage, h string, b []byte, offset int64) error {
 	for attempt := 0; ; attempt++ {
-		retry, e := c.readAt(h, b, offset)
+		retry, e := c.readAt(lineage, h, b, offset)
 		if !retry || attempt == 1 {
 			return e
 		}
 		c.Invalidate(h)
 	}
 }
-func (c *Cache) readAt(h string, b []byte, offset int64) (bool, error) {
-	p, e := c.Ensure(h)
+func (c *Cache) readAt(lineage, h string, b []byte, offset int64) (bool, error) {
+	var p string
+	var e error
+	if lineage == "" {
+		p, e = c.Ensure(h)
+	} else {
+		p, e = c.EnsureLineage(context.Background(), lineage, h)
+	}
 	if e != nil {
 		return false, e
 	}

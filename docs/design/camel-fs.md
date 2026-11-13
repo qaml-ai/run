@@ -244,9 +244,15 @@ reads are served at once. Meanwhile the daemon **prehydrates** the root into a s
 ceiling, 64 chunks in flight, writing only the chunks the root names (holes cost nothing, so the work is the root's
 bytes, not the virtual size), and when the file is complete it **reloads the linear layer onto the local file**:
 identical bytes, transparent to the snapshot and to the guest. From then on every read is kernel-only from NVMe.
-Demand reads before the swap pay the lazy device's round trip; the swap on the large 670 MB root should take about
-the NIC time (≈ 3 s at 250 MB/s is the ceiling-derived estimate, to be replaced by the `hydration_ms` and `swap_ms`
-that 7b's harness reports). **A cold-started mount stays on dm-snapshot for its whole lifetime**: a live device cannot
+Demand reads before the swap pay the lazy device's round trip. **Measured** (7b at `8bda793d`, m8id.xlarge, the
+large root of ≈ 660 MB of chunks, real S3): hydration 5.2–5.8 s at 4, 16 and 64 GiB virtual size, **independent of
+the virtual size** (the property dm-clone lacked, L76), which is ≈ 120 MB/s against the 250–275 MB/s NIC because the
+prehydrator writes each chunk twice, cache then image (the next gain, L85); the swap itself 21–29 ms; demand 4 KiB
+reads during hydration 18–19 µs mean and 77–88 µs p99 at ≈ 52k IOPS, so a guest working through the hydration feels
+local NVMe; the first cold file 209–285 ms, above the 100 ms target because the ext4 mount goes through the origin
+with a few serial chunk fetches (fix: prefetch the superblock and group-descriptor chunks at mount, L84); a full read
+after the swap 5.1–6.0 s, this host's local cold read. The base root is promoted as a plain image on release at every
+size. **A cold-started mount stays on dm-snapshot for its whole lifetime**: a live device cannot
 be flipped from the snapshot to a reflink file without the guest seeing a different device, and the swap only changes
 the origin underneath. So every checkpoint of such a mount takes its delta from the snapshot's exception table (under a
 millisecond-scale `dmsetup suspend` of the snapshot while the guest is frozen anyway), and its **promotion writes a

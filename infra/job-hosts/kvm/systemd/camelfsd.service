@@ -5,10 +5,10 @@ After=network-online.target camel-kvm-prep.service
 Requires=camel-kvm-prep.service
 
 [Service]
-Environment=AWS_REGION=us-west-2 CAMELFSD_VIRTUAL_SIZE=68719476736
+Environment=AWS_REGION=us-west-2 CAMELFSD_VIRTUAL_SIZE=68719476736 CAMELFS_API_PORT=8790
 EnvironmentFile=/etc/camel/kvm-host.conf
 ExecStartPre=/usr/local/bin/camelfsd cleanup --data /nvme/camelfs
-ExecStart=/usr/local/bin/camelfsd host --socket /run/camelfsd/api.sock --data /nvme/camelfs --store ${CAMELFSD_STORE} --region ${AWS_REGION} --virtual-size ${CAMELFSD_VIRTUAL_SIZE}
+ExecStart=/usr/local/bin/camelfsd host --socket /run/camelfsd/api.sock --data /nvme/camelfs --store ${CAMELFSD_STORE} --region ${AWS_REGION} --virtual-size ${CAMELFSD_VIRTUAL_SIZE} --listen-api 127.0.0.1:${CAMELFS_API_PORT} --api-token-file /etc/camel/camelfs-api.env
 Restart=on-failure
 RestartSec=5
 

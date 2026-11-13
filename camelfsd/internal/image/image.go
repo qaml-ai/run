@@ -23,23 +23,29 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
 	"time"
 )
 
 var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
 
+// TEMPORARY: removed with jobhost phase 2
+var legacyMounts atomic.Uint64
+
+// TEMPORARY: removed with jobhost phase 2
+func LegacyMounts() uint64 { return legacyMounts.Load() }
+
 type Config struct {
-	StreamIdle, ApplyMax          time.Duration
-	LeaseTTL                      time.Duration
-	Now                           func() time.Time
-	Origin                        *nbd.Server
-	HydrationPackSize             int64
-	Data, Cold, NBDListen, HostID string
-	ImportAllow                   []string
-	VirtualSize                   int64
-	MaxFiles                      int
-	MaxBytes, MaxPathsBytes       int64
+	StreamIdle, ApplyMax    time.Duration
+	Now                     func() time.Time
+	Origin                  *nbd.Server
+	CowMax                  int64
+	Data, NBDListen, HostID string
+	ImportAllow             []string
+	VirtualSize             int64
+	MaxFiles                int
+	MaxBytes, MaxPathsBytes int64
 }
 type Manager struct {
 	pins map[string]map[string]bool
@@ -54,49 +60,48 @@ type Manager struct {
 	sweepMu  sync.Mutex
 }
 type Request struct {
-	JobID   string `json:"jobId"`
-	Lineage string `json:"lineage"`
-	Ref     string `json:"ref"`
-	Root    string `json:"root"`
-	Tree    string `json:"tree"`
-	Hydrate bool   `json:"hydrate"`
-	Vsock   string `json:"vsock"`
+	// TEMPORARY: removed with jobhost phase 2
+	legacyFence bool
+	JobID       string      `json:"jobId"`
+	Lineage     string      `json:"lineage"`
+	Fence       *refs.Fence `json:"fence"`
+	Root        string      `json:"root"`
+	Tree        string      `json:"tree"`
+	Hydrate     bool        `json:"hydrate"`
+	Vsock       string      `json:"vsock"`
 }
 type Mount struct {
 	NBDListen string `json:"nbdListen"`
-	activity  *atomic.Int64
-	fenced    *atomic.Bool
 	mu        *sync.Mutex
 	streams   *streams
 	Apply     *Apply  `json:"apply"`
 	Applied   bool    `json:"applied"`
 	ApplyMs   float64 `json:"applyMs"`
 	Request
-	Image                             string  `json:"image"`
-	Warm                              bool    `json:"warm"`
-	State                             string  `json:"state"`
-	LeaseEpoch                        int64   `json:"leaseEpoch"`
-	HydratedRegions                   int64   `json:"hydratedRegions"`
-	TotalRegions                      int64   `json:"totalRegions"`
-	MountMs                           float64 `json:"mountMs"`
-	Hydrating                         bool    `json:"hydrating"`
-	Dest, MetaLoop, DestLoop, NBD, DM string
-	Parent                            refs.Value
-	Fence                             refs.Fence
-	Snapshot                          int
-	Promoted                          bool
-	stopRenew                         chan struct{}
-	stopPoll                          chan struct{}
-	releaseOrigin                     func()
-	hydrated                          string
-	hydrationRoot                     string
-	early                             *earlyResult
-	earlyCancel                       context.CancelFunc
-	earlyConsumed                     bool
-	pendingRanges                     []chunk.Range
+	Image                                      string  `json:"image"`
+	Warm                                       bool    `json:"warm"`
+	State                                      string  `json:"state"`
+	LeaseEpoch                                 int64   `json:"leaseEpoch"`
+	MountMs                                    float64 `json:"mountMs"`
+	Hydrating                                  bool    `json:"hydrating"`
+	Dest, CowLoop, DestLoop, NBD, DM, OriginDM string
+	Parent                                     refs.Value
+	Snapshot                                   int
+	Promoted                                   bool
+	releaseOrigin                              func()
+	hydrationRoot                              string
+	hydration                                  *hydration
+	HydratedBytes                              int64   `json:"hydratedBytes"`
+	TotalBytes                                 int64   `json:"totalBytes"`
+	SwapMs                                     float64 `json:"swapMs"`
+	HydrationError                             string  `json:"hydrationError,omitempty"`
+	preparedSnapshot                           string
+	preparedRanges                             []chunk.Range
+	pendingRanges                              []chunk.Range
 }
 
-// Hydration defaults on for JSON callers while retaining the Go bool API.
+// Hydration defaults on for JSON callers. Only an absent JSON fence enables
+// phase-1 compatibility; explicit null (and a nil Go fence) remain read-only.
 func (q *Request) UnmarshalJSON(b []byte) error {
 	type plain Request
 	v := plain{Hydrate: true}
@@ -105,6 +110,12 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	if e := decoder.Decode(&v); e != nil {
 		return e
 	}
+	// TEMPORARY: removed with jobhost phase 2
+	var fields struct{ Fence json.RawMessage }
+	if e := json.Unmarshal(b, &fields); e != nil {
+		return e
+	}
+	v.legacyFence = fields.Fence == nil
 	*q = Request(v)
 	return nil
 }
@@ -120,18 +131,6 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	}
 	if c.Now == nil {
 		c.Now = time.Now
-	}
-	if c.LeaseTTL == 0 {
-		c.LeaseTTL = 5 * time.Minute
-	}
-	if c.LeaseTTL < 5*time.Millisecond {
-		return nil, apierr.Invalid("invalid lease ttl")
-	}
-	if db, ok := r.(*refs.DB); ok {
-		db.TTL = c.LeaseTTL
-	}
-	if c.Cold != "clone" && c.Cold != "prehydrate" {
-		return nil, apierr.Invalid("invalid cold mode")
 	}
 	for _, d := range []string{c.Data, filepath.Join(c.Data, "images"), filepath.Join(c.Data, "mounts")} {
 		if e := os.MkdirAll(d, 0700); e != nil {
@@ -169,11 +168,8 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e := blank(c); e != nil {
 		return nil, e
 	}
-	if c.HydrationPackSize == 0 {
-		c.HydrationPackSize = 4 << 20
-	}
-	if c.HydrationPackSize < chunk.Size || c.HydrationPackSize%chunk.Size != 0 {
-		return nil, apierr.Invalid("invalid hydration pack size")
+	if c.CowMax < 0 || c.CowMax%512 != 0 {
+		return nil, apierr.Invalid("invalid cow-max")
 	}
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
@@ -183,8 +179,8 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	return m, nil
 }
 func ms(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }
-func (m *Manager) load(ctx context.Context, id string) (root.Root, error) {
-	b, e := m.Store.Get(ctx, "r/"+id)
+func (m *Manager) load(ctx context.Context, lineage, id string) (root.Root, error) {
+	b, e := store.ForLineage(m.Store, lineage).Get(ctx, "r/"+id)
 	if e != nil {
 		return root.Root{}, e
 	}
@@ -202,17 +198,17 @@ func (m *Manager) save(v *Mount) error {
 	if e = store.Atomic(filepath.Join(filepath.Dir(v.Dest), "state.json"), b); e != nil {
 		return e
 	}
-	return m.Refs.Mount(v.JobID, v.Lineage, v.Ref, v.Root, v.Tree, v.Image, v.State, v.Warm, v.LeaseEpoch)
+	return m.Refs.Mount(v.JobID, v.Lineage, "", v.Root, v.Tree, v.Image, v.State, v.Warm, v.LeaseEpoch)
 }
 func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) {
 	t := time.Now()
 	forms := 0
-	for _, v := range []string{q.Ref, q.Root, q.Tree} {
+	for _, v := range []string{q.Root, q.Tree} {
 		if v != "" {
 			forms++
 		}
 	}
-	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || q.Lineage == "" || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
+	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || !store.Lineage(q.Lineage) || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
 		return nil, apierr.Invalid("invalid mount request")
 	}
 	m.mu.Lock()
@@ -232,74 +228,49 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			m.mu.Unlock()
 		}
 	}()
+	// TEMPORARY: removed with jobhost phase 2
+	if q.legacyFence {
+		q.Fence = &refs.Fence{Holder: m.HostID + "/" + q.JobID, Epoch: 0}
+	}
+	if q.Fence != nil && (q.Fence.Holder == "" || q.Fence.Epoch < 0) {
+		return nil, apierr.Invalid("invalid fence")
+	}
+	if q.Root != "" {
+		ok, e := m.objects(q.Lineage).Reachable(ctx, q.Lineage, q.Root, "root")
+		if e != nil {
+			return nil, e
+		}
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+	}
 	var treeRoot string
 	if q.Tree != "" {
+		ok, e := m.objects(q.Lineage).Reachable(ctx, q.Lineage, q.Tree, "tree")
+		if e != nil {
+			return nil, e
+		}
+		if !ok {
+			return nil, os.ErrNotExist
+		}
 		id, e := m.baseRoot(ctx, q.Lineage, q.Tree)
 		if e != nil {
 			return nil, e
 		}
-		q.Ref = "job/" + q.JobID
-		if e = m.Refs.Ensure(q.Lineage, q.Ref); e != nil {
-			return nil, e
-		}
 		treeRoot = id
 	}
-	v := &Mount{activity: &atomic.Int64{}, fenced: &atomic.Bool{}, NBDListen: m.NBDListen, Request: q, mu: new(sync.Mutex)}
+	v := &Mount{NBDListen: m.NBDListen, Request: q, mu: new(sync.Mutex)}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if q.Ref != "" {
-		p, e := m.Refs.Get(q.Lineage, q.Ref)
-		if e != nil {
-			return nil, e
-		}
-		epoch, e := m.Refs.Lease(q.Lineage, q.Ref, m.HostID+"/"+q.JobID)
-		if e != nil {
-			return nil, e
-		}
-		p, e = m.Refs.Get(q.Lineage, q.Ref)
-		if e != nil {
-			_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch})
-			return nil, e
-		}
-		if q.Tree != "" {
-			set := refs.Value{Tree: q.Tree, Root: treeRoot, Owner: "job:" + q.JobID}
-			if p.Tree == q.Tree {
-				set.Commit = p.Commit
-			}
-			fence := refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
-			if p.Owner != "" && p.Owner != set.Owner {
-				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, fence)
-				return nil, refs.ErrFenced
-			}
-			if e = m.Refs.CAS(q.Lineage, q.Ref, p.Value, set, fence); e != nil {
-				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, fence)
-				return nil, e
-			}
-			p.Value = set
-		}
-		v.Fence = refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
-		v.stopRenew = make(chan struct{})
-		v.activity.Store(m.Now().UnixNano())
-		go m.renewMount(v, v.stopRenew)
-		v.LeaseEpoch = epoch
-		v.Parent = p.Value
-		v.Root = p.Root
-		v.Tree = p.Tree
-		defer func() {
-			if err != nil {
-				close(v.stopRenew)
-				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, v.Fence)
-			}
-		}()
+	if q.Tree != "" {
+		v.Root = treeRoot
 	}
-	r, e := m.mountRoot(ctx, v.Root)
+	v.Parent = refs.Value{Tree: q.Tree, Root: v.Root}
+	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
 	if e != nil {
 		return nil, e
 	}
 	v.Tree = r.Tree
-	if v.Ref != "" {
-		v.Tree = v.Parent.Tree
-	}
 	if q.Tree != "" {
 		v.Tree = q.Tree
 	}
@@ -339,18 +310,11 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		v.State = "warm"
 	} else if !os.IsNotExist(e) {
 		return nil, e
-	} else if m.Cold == "prehydrate" {
-		if e = m.sweep(r.VirtualSize); e != nil {
+	} else {
+		if e = m.sweep(int64(len(r.Chunks)) * chunk.Size); e != nil {
 			return nil, e
 		}
-		e = m.materialize(ctx, r, v.Dest)
-		v.Warm = true
-		v.State = "warm"
-		if e == nil {
-			e = m.promote(v.Dest, v.Root)
-		}
-	} else {
-		if e = m.sweep(r.VirtualSize); e != nil {
+		if e = m.prefetchMount(ctx, v.Lineage, r); e != nil {
 			return nil, e
 		}
 		if m.Origin != nil {
@@ -361,7 +325,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e != nil {
 		return nil, e
 	}
-	if v.Ref == "" {
+	if v.Fence == nil {
 		if v.DM != "" {
 			_, e = run(ctx, "blockdev", "--setro", v.Image)
 		} else {
@@ -382,13 +346,16 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	m.mounts[q.JobID] = v
 	m.mu.Unlock()
 	if v.DM != "" {
-		v.stopPoll = make(chan struct{})
-		go m.poll(v, v.stopPoll)
+		m.startHydration(v, r)
+	}
+	// TEMPORARY: removed with jobhost phase 2
+	if q.legacyFence {
+		log.Printf("op=mount legacy-fence jobId=%s count=%d", q.JobID, legacyMounts.Add(1))
 	}
 	copy := *v
 	return &copy, nil
 }
-func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error {
+func (m *Manager) materialize(ctx context.Context, lineage string, r root.Root, p string) error {
 	f, e := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if e != nil {
 		return e
@@ -397,28 +364,22 @@ func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error 
 	if e = f.Truncate(r.VirtualSize); e != nil {
 		return e
 	}
-	windows := packWindows(r, m.HydrationPackSize)
-	keys := make([]string, len(windows))
-	for i := range keys {
-		keys[i] = strconv.Itoa(i)
+	keys := make([]string, 0, len(r.Chunks))
+	for key := range r.Chunks {
+		keys = append(keys, key)
 	}
-	e = store.Parallel(ctx, 32, keys, func(key string) error {
-		i, _ := strconv.Atoi(key)
-		for _, o := range windows[i] {
-			p, e := m.Cache.EnsureContext(ctx, r.Chunks[o])
-			if e != nil {
-				return e
-			}
-			b, e := os.ReadFile(p)
-			if e != nil {
-				return e
-			}
-			off, _ := strconv.ParseInt(o, 10, 64)
-			if _, e = f.WriteAt(b[:min(int64(len(b)), r.VirtualSize-off)], off); e != nil {
-				return e
-			}
+	e = store.Parallel(store.Background(ctx), 64, keys, func(key string) error {
+		p, e := m.Cache.EnsureLineage(store.Background(ctx), lineage, r.Chunks[key])
+		if e != nil {
+			return e
 		}
-		return nil
+		b, e := os.ReadFile(p)
+		if e != nil {
+			return e
+		}
+		off, _ := strconv.ParseInt(key, 10, 64)
+		_, e = f.WriteAt(b[:min(int64(len(b)), r.VirtualSize-off)], off)
+		return e
 	})
 	if e == nil {
 		e = f.Sync()
@@ -478,95 +439,83 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 	if e != nil {
 		return e
 	}
-	if _, e = run(ctx, "nbd-client", "-N", v.Root, host, port, v.NBD, "-C", "4"); e != nil {
+	if _, e = run(ctx, "nbd-client", "-N", v.Lineage+"/"+v.Root, host, port, v.NBD, "-C", "4"); e != nil {
 		v.NBD = ""
 		return e
 	}
 	if e = m.save(v); e != nil {
 		return e
 	}
-	v.DestLoop, e = run(ctx, "losetup", "-f", "--show", v.Dest)
-	if e != nil {
-		return e
-	}
+	v.OriginDM = DMPrefix(m.Data) + v.JobID + "-o"
 	if e = m.save(v); e != nil {
 		return e
 	}
-	meta := filepath.Join(filepath.Dir(v.Dest), "clone-meta.img")
-	f, e = os.OpenFile(meta, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if _, e = run(ctx, "dmsetup", "create", v.OriginDM, "--table", fmt.Sprintf("0 %d linear %s 0", r.VirtualSize/512, v.NBD)); e != nil {
+		v.OriginDM = ""
+		return e
+	}
+	cow := filepath.Join(filepath.Dir(v.Dest), "cow.img")
+	f, e = os.OpenFile(cow, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if e != nil {
 		return e
 	}
-	_, e = f.Write(make([]byte, 64<<20))
+	size := m.CowMax
+	if size == 0 {
+		size = r.VirtualSize
+	}
+	e = f.Truncate(size)
 	f.Close()
 	if e != nil {
 		return e
 	}
-	v.MetaLoop, e = run(ctx, "losetup", "-f", "--show", meta)
+	v.CowLoop, e = run(ctx, "losetup", "-f", "--show", cow)
 	if e != nil {
 		return e
 	}
 	if e = m.save(v); e != nil {
 		return e
 	}
-	dm := DMPrefix(m.Data) + v.JobID
-	table := fmt.Sprintf("0 %d clone %s %s %s 512 1 no_hydration", r.VirtualSize/512, v.MetaLoop, v.DestLoop, v.NBD)
-	if _, e = run(ctx, "dmsetup", "create", dm, "--table", table); e != nil {
-		return e
-	}
-	v.DM = dm
+	v.DM = DMPrefix(m.Data) + v.JobID
 	if e = m.save(v); e != nil {
 		return e
 	}
-	v.Image = "/dev/mapper/" + dm
+	table := fmt.Sprintf("0 %d snapshot /dev/mapper/%s %s P 1024", r.VirtualSize/512, v.OriginDM, v.CowLoop)
+	if _, e = run(ctx, "dmsetup", "create", v.DM, "--table", table); e != nil {
+		v.DM = ""
+		return e
+	}
+	v.Image = "/dev/mapper/" + v.DM
 	v.State = "cold"
-	v.TotalRegions = (r.VirtualSize + chunk.Size - 1) / chunk.Size
-	if v.Hydrate {
-		for _, msg := range []string{"hydration_batch_size 64", "hydration_threshold 64", "enable_hydration"} {
-			if _, e = run(ctx, "dmsetup", "message", dm, "0", msg); e != nil {
-				return e
-			}
-		}
-		v.State = "hydrating"
-		v.Hydrating = true
+	v.Hydrating = true
+	v.hydrationRoot = v.Root
+	for key := range r.Chunks {
+		off, _ := strconv.ParseInt(key, 10, 64)
+		v.TotalBytes += min(chunk.Size, r.VirtualSize-off)
 	}
 	return nil
 }
 func (m *Manager) status(ctx context.Context, v *Mount) error {
-	if v.DM == "" || v.State == "hydrated" || v.State == "released" {
+	if v.hydration == nil {
 		return nil
 	}
-	s, e := run(ctx, "dmsetup", "status", v.DM)
-	if e != nil {
-		return e
-	}
-	fields := strings.Fields(s)
-	if len(fields) < 7 {
-		return apierr.Invalid("invalid clone status: %s", s)
-	}
-	a, b, ok := strings.Cut(fields[6], "/")
-	if !ok {
-		return apierr.Invalid("invalid hydration status")
-	}
-	v.HydratedRegions, e = strconv.ParseInt(a, 10, 64)
-	if e != nil {
-		return e
-	}
-	v.TotalRegions, e = strconv.ParseInt(b, 10, 64)
-	if e != nil {
-		return e
-	}
-	if v.TotalRegions > 0 && v.HydratedRegions == v.TotalRegions {
-		v.State = "hydrated"
-		v.Hydrating = false
-		if e = m.hydratedSnapshot(ctx, v); e != nil {
-			return e
+	v.HydratedBytes = v.hydration.bytes.Load()
+	select {
+	case <-v.hydration.done:
+		if v.hydration.err != nil {
+			v.HydrationError = v.hydration.err.Error()
+			v.Hydrating = false
+			return v.hydration.err
 		}
+		if v.State != "hydrated" {
+			return m.swap(ctx, v)
+		}
+	default:
+		v.State = "hydrating"
 	}
 	return nil
 }
+
 func (m *Manager) Status(ctx context.Context, id string) (*Mount, error) {
-	_ = m.Heartbeat(id)
 	v := m.lookup(id)
 	if v == nil {
 		return nil, os.ErrNotExist
@@ -575,9 +524,6 @@ func (m *Manager) Status(ctx context.Context, id string) (*Mount, error) {
 	defer v.mu.Unlock()
 	if v.State == "released" {
 		return nil, os.ErrNotExist
-	}
-	if v.fenced.Load() {
-		return &Mount{State: "fenced", Image: v.Image, Request: Request{Root: v.Root}, LeaseEpoch: v.LeaseEpoch}, nil
 	}
 	if e := m.status(ctx, v); e != nil {
 		return nil, e
@@ -594,7 +540,13 @@ func (m *Manager) cleanup(v *Mount) error {
 		}
 		v.DM = ""
 	}
-	for _, p := range []*string{&v.MetaLoop, &v.DestLoop} {
+	if v.OriginDM != "" {
+		if _, e := run(ctx, "dmsetup", "remove", v.OriginDM); e != nil {
+			return e
+		}
+		v.OriginDM = ""
+	}
+	for _, p := range []*string{&v.CowLoop, &v.DestLoop} {
 		if *p != "" {
 			if _, e := run(ctx, "losetup", "-d", *p); e != nil {
 				return e
@@ -624,32 +576,18 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 		v.streams.close()
 	}
 
-	if v.early != nil {
-		select {
-		case <-v.early.done:
-			if v.early.err == nil && v.early.clean {
-				if e := m.promote(v.hydrated, v.hydrationRoot); e != nil {
-					return false, e
-				}
-				v.Promoted = true
+	if v.hydration != nil {
+		v.hydration.cancel()
+		<-v.hydration.done
+		if v.hydration.err == nil {
+			if e := m.promote(v.Dest, v.hydrationRoot); e != nil {
+				return false, e
 			}
-		default:
+			v.Promoted = true
 		}
-		v.earlyCancel()
-		<-v.early.done
 	}
-
 	if e := m.cleanup(v); e != nil {
 		return false, e
-	}
-	if v.Ref != "" {
-		if e := m.Refs.ReleaseLease(v.Lineage, v.Ref, v.Fence); e != nil && !errors.Is(e, refs.ErrFenced) {
-			return false, e
-		}
-	}
-	if v.stopPoll != nil {
-		close(v.stopPoll)
-		v.stopPoll = nil
 	}
 	if v.releaseOrigin != nil {
 		v.releaseOrigin()
@@ -661,46 +599,12 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	if e := m.Refs.DropMount(id); e != nil {
 		return false, e
 	}
-	if v.stopRenew != nil {
-		close(v.stopRenew)
-	}
 	m.mu.Lock()
 	delete(m.mounts, id)
 	m.mu.Unlock()
 	m.unprotect(v.JobID)
 	v.State = "released"
 	return v.Promoted, nil
-}
-
-// Renewal must not wait on the operation mutex: hashing or hydration can take
-// longer than a lease, including while another mount is being prepared.
-func (m *Manager) renewOnce(v *Mount) {
-	if m.Now().Sub(time.Unix(0, v.activity.Load())) > 2*(m.LeaseTTL/5) {
-		return
-	}
-	if e := m.Refs.Renew(v.Lineage, v.Ref, v.Fence); errors.Is(e, refs.ErrFenced) {
-		v.fenced.Store(true)
-	}
-}
-func (m *Manager) renewMount(v *Mount, stop <-chan struct{}) {
-	t := time.NewTicker(m.LeaseTTL / 5)
-	defer t.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-t.C:
-			m.renewOnce(v)
-		}
-	}
-}
-func (m *Manager) Heartbeat(id string) error {
-	v := m.lookup(id)
-	if v == nil {
-		return os.ErrNotExist
-	}
-	v.activity.Store(m.Now().UnixNano())
-	return nil
 }
 
 func (m *Manager) Close() {

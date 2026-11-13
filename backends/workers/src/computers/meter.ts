@@ -185,6 +185,12 @@ export class ComputerMeter {
     await this.close(at);
     await this.settle();
   }
+  /** Persist the finished charge without waiting for accounting; the alarm retries if background settlement is lost. */
+  async closed(cpuUsec?: number, at?: number): Promise<void> {
+    await this.reading(cpuUsec);
+    await this.close(at);
+    await this.schedule(this.now() + SETTLE_MARGIN_MS);
+  }
   /**
    * The alarm: settle the open session once it must have idled out (`running` says whether a container still runs:
    * a running one is checkpointed and checked again), then retry unsettled charges.

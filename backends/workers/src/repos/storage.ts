@@ -31,9 +31,12 @@ export class StorageError extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: unknown;
+  /** The daemon's own message (redacted, bounded), and the StoragePlane call that failed: what makes a 4xx diagnosable. */
+  readonly reason: string;
+  op?: string;
   constructor(status: number, code: string, message = code, details?: unknown) {
     super(`camelFS status ${status}: ${message}`); this.name = "StorageError";
-    this.status = status; this.code = code; this.details = details;
+    this.status = status; this.code = code; this.details = details; this.reason = message;
   }
 }
 export function uploadTimeoutMs(size: number): number {
@@ -170,5 +173,11 @@ export function camelfsStorage(env: CamelfsEnv): StoragePlane {
     merge: (l, input) => json(`${root(l)}/merge`, post(input), undefined, true),
     grep: (l, input) => json(`${root(l)}/grep?${query(input)}`),
   };
+  // Every failure names the call it came from.
+  for (const [op, fn] of Object.entries(plane) as [keyof StoragePlane, (...a: unknown[]) => Promise<unknown>][])
+    (plane as unknown as Record<string, unknown>)[op] = async (...args: unknown[]) => {
+      try { return await fn(...args); }
+      catch (e) { if (e instanceof StorageError) e.op ??= op; throw e; }
+    };
   return plane;
 }

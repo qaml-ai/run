@@ -11,9 +11,11 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { camelfsdClient, serveImportProxy } from "../jobhost/camelfsd.ts";
 import { Guest } from "../jobhost/guest.ts";
+import { camelfsStorage, StorageError } from "../backends/workers/src/repos/storage.ts";
+import type { CommitInput, CommitResult } from "../backends/workers/src/repos/storage.ts";
 
 // Only a real binary enables this test. CI requires it so a broken setup cannot skip.
-test("camelFS contract: runtime import, jobhost proxy and guest against real camelfsd", {
+test("camelFS contract: runtime storage, import, jobhost proxy and guest against real camelfsd", {
   skip: !process.env.CAMELFSD_BIN && process.env.CAMELFS_CONTRACT_REQUIRED !== "1"
     ? "set CAMELFSD_BIN to a camelfsd built from camelfsd/" : false,
   timeout: 120_000,
@@ -32,17 +34,22 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
     for (const close of cleanup.reverse()) await close();
   });
   const socketPath = join(dir, "api.sock"), vsock = join(dir, "job.vsock");
-  // Reserve an ephemeral loopback port; NBD is unused by this tree/stream test.
-  const portServer = createServer();
-  await new Promise<void>((resolve, reject) => {
-    portServer.once("error", reject);
-    portServer.listen(0, "127.0.0.1", resolve);
-  });
-  const port = (portServer.address() as { port: number }).port;
-  await new Promise<void>((resolve, reject) => portServer.close(error => error ? reject(error) : resolve()));
+  // Reserve separate loopback ports for NBD and the daemon's runtime listener.
+  const portServers = [createServer(), createServer()];
+  await Promise.all(portServers.map(server => new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  })));
+  const [port, apiPort] = portServers.map(server => (server.address() as { port: number }).port);
+  await Promise.all(portServers.map(server => new Promise<void>((resolve, reject) =>
+    server.close(error => error ? reject(error) : resolve()))));
+  const token = createHash("sha256").update(randomUUID()).digest("hex");
+  const tokenFile = join(dir, "camelfs-api.env");
+  await writeFile(tokenFile, `# jobhost env format\nCAMELFS_API_TOKEN=${token}\n`, { mode: 0o600 });
   const daemon = spawn(binary, ["host", "--socket", socketPath, "--data", join(dir, "data"),
     "--store", join(dir, "store"), "--nbd-listen", `127.0.0.1:${port}`,
-    "--cold", "prehydrate", "--virtual-size", String(16 * 1024 * 1024)], {
+    "--listen-api", `127.0.0.1:${apiPort}`, "--api-token-file", tokenFile,
+    "--virtual-size", String(16 * 1024 * 1024)], {
     env: { ...process.env, CAMELFSD_TEST_NO_REFLINK: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let logs = "", spawnError: Error | undefined, completed = false;
@@ -67,6 +74,120 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
     }
   });
 
+  await timed("daemon TCP import bridge and auth", async () => {
+    const origin = `http://127.0.0.1:${apiPort}`;
+    const blob = "tcp import\n", sha256 = createHash("sha256").update(blob).digest("hex");
+    const blobPath = `/v0/blobs/${sha256}?lineage=contract:tcp`;
+    const treeBody = JSON.stringify({ lineage: "contract:tcp", files: { "tcp.txt": { sha256 } } });
+    for (const [method, path, body] of [["PUT", blobPath, blob], ["POST", "/v0/trees", treeBody]]) {
+      const denied = await fetch(origin + path, { method, body });
+      assert.equal(denied.status, 401);
+      await denied.arrayBuffer();
+      const allowed = await fetch(origin + path, { method, body, headers: { authorization: `Bearer ${token}` } });
+      assert.equal(allowed.status, method === "PUT" ? 201 : 200, await allowed.text());
+    }
+    const deniedHost = await fetch(origin + "/v0/health", { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(deniedHost.status, 404);
+    await deniedHost.arrayBuffer();
+  });
+
+  await timed("runtime storage client: every section 9 call", async () => {
+    const origin = `http://127.0.0.1:${apiPort}`;
+    const statuses: { method: string; path: string; status: number }[] = [];
+    const storage = camelfsStorage({ CAMELFS_API_TOKEN: token, CAMELFS: { async fetch(input, init) {
+      const url = new URL(typeof input === "string" ? input : input.url);
+      const response = await fetch(origin + url.pathname + url.search, init);
+      statuses.push({ method: init?.method ?? "GET", path: url.pathname, status: response.status });
+      return response;
+    } } });
+    const lineage = "contract:storage";
+    const bytes = (s: string) => new TextEncoder().encode(s);
+    const text = (b: Uint8Array) => new TextDecoder().decode(b);
+    const input = (parents: string[], changes: CommitInput["changes"] = [], extra: Partial<CommitInput> = {}): CommitInput => ({
+      parents, changes, author: "agent:contract", message: "contract", trailers: { "Camel-Test": "storage" }, time: 123, ...extra,
+    });
+    const shape = (c: CommitResult, parents: string[]) => {
+      assert.deepEqual(Object.keys(c).sort(), ["bytes", "changed", "commit", "parents", "time", "tree"]);
+      assert.match(c.tree, /^[a-f0-9]{40}$/); assert.match(c.commit, /^[a-f0-9]{40}$/);
+      assert.deepEqual(c.parents, parents); assert.equal(c.time, 123);
+      assert.equal(typeof c.changed, "number"); assert.equal(typeof c.bytes, "number");
+    };
+    const empty = await storage.commit(lineage, input([]));
+    shape(empty, []);
+    assert.equal(empty.tree, "4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+    assert.equal(empty.changed, 0); assert.equal(empty.bytes, 0);
+    const content = "one\ntwo\nthree\nfour\nfive\n";
+    const blob = await storage.putBlob(lineage, bytes(content));
+    assert.deepEqual(blob, { blob: createHash("sha1").update(`blob ${bytes(content).length}\0`).update(content).digest("hex"),
+      sha256: createHash("sha256").update(content).digest("hex"), size: bytes(content).length });
+    assert.deepEqual(await storage.putBlob(lineage, bytes(content)), blob);
+    const binaryBytes = Uint8Array.from([0, 255, 13, 10, 128, 45, 45]);
+    const binary = await storage.putBlob(lineage, binaryBytes);
+    const firstInput = input([empty.commit], [{ path: "shared.txt", blob: blob.blob }, { path: "dir/binary", blob: binary.blob }]);
+    const first = await storage.commit(lineage, firstInput, "contract-first");
+    shape(first, [empty.commit]);
+    assert.equal(first.changed, 2); assert.equal(first.bytes, blob.size + binary.size);
+    assert.deepEqual(await storage.commit(lineage, firstInput, "contract-first"), first);
+    const noEdits = await storage.commit(lineage, input([first.commit]));
+    shape(noEdits, [first.commit]); assert.equal(noEdits.tree, first.tree); assert.equal(noEdits.changed, 0); assert.equal(noEdits.bytes, 0);
+    assert.equal(text(await storage.readBlob(lineage, blob.blob, first.tree, "shared.txt")), content);
+    const ranged = await storage.openBlob(lineage, blob.blob, first.tree, "shared.txt", "bytes=0-2");
+    assert.equal(ranged.status, 206); assert.equal(ranged.headers.get("x-camel-blob"), blob.blob);
+    assert.equal(ranged.headers.get("x-camel-size"), String(blob.size)); assert.equal(await ranged.text(), "one");
+    assert.deepEqual(await storage.readBatch(lineage, first.tree, ["dir/binary", "missing", "shared.txt"]), [
+      { path: "dir/binary", blob: binary.blob, mode: "100644", size: binary.size, bytes: binaryBytes },
+      { path: "missing", error: "not_in_tree" },
+      { path: "shared.txt", blob: blob.blob, mode: "100644", size: blob.size, bytes: bytes(content) },
+    ]);
+    assert.deepEqual(await storage.readBatch(lineage, first.tree, []), []);
+    const page = await storage.listTree(lineage, first.tree, { limit: 1 });
+    assert.equal(page.entries.length, 1); assert.equal(page.entries[0].path, "dir"); assert.equal(page.entries[0].mode, "040000");
+    assert("tree" in page.entries[0]); assert.match(page.entries[0].tree, /^[a-f0-9]{40}$/); assert.equal(page.next, "dir");
+    assert.deepEqual(await storage.listTree(lineage, first.tree, { after: page.next }), { entries: [
+      { path: "shared.txt", blob: blob.blob, mode: "100644", size: blob.size },
+    ] });
+    assert.deepEqual(await storage.listAll(lineage, first.tree, "dir"), [
+      { path: "dir/binary", blob: binary.blob, mode: "100644", size: binary.size },
+    ]);
+    const oursBlob = await storage.putBlob(lineage, bytes("ONE\ntwo\nthree\nfour\nfive\n"));
+    const theirsBlob = await storage.putBlob(lineage, bytes("one\ntwo\nthree\nfour\nFIVE\n"));
+    const ours = await storage.commit(lineage, input([first.commit], [{ path: "shared.txt", blob: oursBlob.blob }]));
+    const theirs = await storage.commit(lineage, input([first.commit], [{ path: "shared.txt", blob: theirsBlob.blob }]));
+    assert.deepEqual(await storage.diff(lineage, first.tree, ours.tree), { changes: [
+      { path: "shared.txt", status: "modified", oldBlob: blob.blob, newBlob: oursBlob.blob, oldMode: "100644", newMode: "100644" },
+    ] });
+    assert.deepEqual(await storage.diff(lineage, first.tree, ours.tree, "dir"), { changes: [] });
+    const merged = await storage.merge(lineage, { base: first.tree, ours: ours.tree, theirs: theirs.tree, mode: "merge" });
+    assert("tree" in merged); assert.match(merged.tree, /^[a-f0-9]{40}$/);
+    assert.deepEqual(merged.merged, ["shared.txt"]); assert.equal(typeof merged.took.ours, "number"); assert.equal(typeof merged.took.theirs, "number");
+    const squash = await storage.merge(lineage, { base: first.tree, ours: ours.tree, theirs: theirs.tree, mode: "squash" });
+    assert.deepEqual(squash, merged);
+    const mergeCommit = await storage.commit(lineage, input([ours.commit, theirs.commit], [], { baseTree: merged.tree, message: "merge" }));
+    shape(mergeCommit, [ours.commit, theirs.commit]); assert.equal(mergeCommit.tree, merged.tree);
+    assert.deepEqual(await storage.getCommit(lineage, mergeCommit.commit), { tree: merged.tree, parents: [ours.commit, theirs.commit],
+      author: "agent:contract", message: "merge", trailers: { "Camel-Test": "storage" }, time: 123 });
+    assert.deepEqual((await storage.getCommit(lineage, empty.commit)).parents, []);
+    assert.deepEqual((await storage.getCommit(lineage, first.commit)).parents, [empty.commit]);
+    const entries = await storage.listAll(lineage, merged.tree);
+    const shared = entries.find(e => e.path === "shared.txt"); assert(shared && "blob" in shared);
+    assert.equal(text(await storage.readBlob(lineage, shared.blob, merged.tree, shared.path)), "ONE\ntwo\nthree\nfour\nFIVE\n");
+    const conflictBlob = await storage.putBlob(lineage, bytes("OTHER\ntwo\nthree\nfour\nfive\n"));
+    const conflictSide = await storage.commit(lineage, input([first.commit], [{ path: "shared.txt", blob: conflictBlob.blob }]));
+    const conflict = await storage.merge(lineage, { base: first.tree, ours: ours.tree, theirs: conflictSide.tree, mode: "merge" });
+    assert.deepEqual(conflict, { conflicts: [{ path: "shared.txt", base: blob.blob, ours: oursBlob.blob, theirs: conflictBlob.blob, reason: "both_modified" }] });
+    const grep = await storage.grep(lineage, { tree: merged.tree, q: "^one$", regex: true, ignoreCase: true, path: "*.txt", context: 1 });
+    assert.deepEqual(grep, { matches: [{ path: "shared.txt", line: 1, text: "ONE", after: ["two"] }], files: 1, truncated: false, indexed: "scan" });
+    const current = await storage.commit(lineage, input([first.commit], [], { time: undefined }));
+    assert(Number.isSafeInteger(current.time)); assert(Math.abs(current.time - Date.now() / 1000) < 10);
+    for (const [badInput, field] of [[{ ...input([]), parents: undefined }, "parents"], [{ ...input([]), parent: null }, 'unknown field parent']] as const) {
+      await assert.rejects(storage.commit(lineage, badInput as unknown as CommitInput), (e: unknown) =>
+        e instanceof StorageError && e.status === 400 && e.code === "invalid_request" && e.message.includes(field));
+    }
+    await assert.rejects(storage.commit("other", input([first.commit])), (e: unknown) => e instanceof StorageError && e.status === 400 && e.code === "unknown_commit");
+    assert(statuses.some(s => s.method === "PUT" && s.status === 201)); assert(statuses.some(s => s.method === "PUT" && s.status === 200));
+    assert(statuses.some(s => s.path.endsWith("/merge") && s.status === 409));
+  });
+
   // Read-only routes are deliberately absent from the import proxy.
   const get = <T>(path: string): Promise<T> => new Promise((resolve, reject) => {
     const req = request({ socketPath, path }, res => {
@@ -83,7 +204,7 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
     req.setTimeout(5000, () => req.destroy(new Error(`GET ${path} timed out`)));
     req.on("error", reject); req.end();
   });
-  const token = randomUUID(), lineage = "contract:first-mount";
+  const lineage = "contract:first-mount";
   const proxy = await serveImportProxy({ socketPath, token, host: "127.0.0.1", port: 0 });
   cleanup.push(() => proxy.close());
   const proxyOrigin = `http://127.0.0.1:${proxy.port}`;
@@ -115,7 +236,12 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
   const second = await timed("re-import unchanged files", () => importTree(env, input));
   assert.deepEqual(second, { tree: first.tree, uploaded: 0 });
 
-  await timed("mount from empty parent", () => client.mount({ jobId: "contract-1", lineage, tree: first.tree, vsock }));
+  // TEMPORARY: removed with jobhost phase 2
+  await timed("phase-1 mount and heartbeat", async () => {
+    await client.mount({ jobId: "contract-1", lineage, tree: first.tree, vsock });
+    await client.heartbeat("contract-1");
+    assert.equal((await get<{ legacyMounts: number }>("/v0/health")).legacyMounts, 1);
+  });
   const guestroot = join(dir, "guestroot"), repo = join(guestroot, "repo");
   await mkdir(repo, { recursive: true });
   const oldUDS = process.env.CAMEL_VSOCK_UDS, oldConnect = process.env.CAMEL_VSOCK_CONNECT;
@@ -150,11 +276,11 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
   assert.equal(confirmed.ok, true, JSON.stringify(confirmed));
   assert.equal(confirmed.entries, 3);
   await timed("verify published tree and commit", async () => {
-    const listing = await get<{ entries: { path: string; mode: string }[] }>(`/v0/trees/${checkpoint.tree}`);
+    const listing = await get<{ entries: { path: string; mode: string }[] }>(`/v0/trees/${checkpoint.tree}?lineage=${encodeURIComponent(lineage)}`);
     assert.deepEqual(listing.entries.map(entry => entry.path).sort(), ["README.md", "src/a.txt", "src/new/c.txt"]);
     assert.equal(listing.entries.find(entry => entry.path === "src/a.txt")?.mode, "100755");
     assert.match(checkpoint.commit, /^[a-f0-9]{40}$/, "the daemon answers the commit it wrote");
-    const commit = await get<{ trailers: Record<string, string> }>(`/v0/commits/${checkpoint.commit}`);
+    const commit = await get<{ trailers: Record<string, string> }>(`/v0/commits/${checkpoint.commit}?lineage=${encodeURIComponent(lineage)}`);
     assert.equal(commit.trailers["Camel-Job"], "contract-1");
     assert.equal(commit.trailers["Camel-Exit"], "0");
   });

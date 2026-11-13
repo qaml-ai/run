@@ -16,6 +16,7 @@ import (
 const patternLimit = 64 << 10
 
 type origin struct {
+	lineage  string
 	mu       sync.Mutex
 	cond     *sync.Cond
 	ctx      context.Context
@@ -38,14 +39,15 @@ func (s *Server) pattern(lineage string) string {
 // Register shares one bounded pool across every NBD connection to a root.
 // Its owner releases it after disconnecting the mount's NBD device.
 func (s *Server) Register(id, lineage string, r root.Root) func() {
+	id = lineage + "/" + id
 	s.mu.Lock()
 	if s.origins == nil {
 		s.origins = map[string]*origin{}
 	}
 	p := s.origins[id]
 	if p == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		p = &origin{ctx: ctx, cancel: cancel, server: s, root: r, pending: map[int64]bool{}, seen: map[int64]bool{}, lineages: map[string]bool{}}
+		ctx, cancel := context.WithCancel(store.Background(context.Background()))
+		p = &origin{lineage: lineage, ctx: ctx, cancel: cancel, server: s, root: r, pending: map[int64]bool{}, seen: map[int64]bool{}, lineages: map[string]bool{}}
 		p.cond = sync.NewCond(&p.mu)
 		if s.Patterns != "" && lineage != "" {
 			if b, e := os.ReadFile(s.pattern(lineage)); e == nil && len(b) <= 2<<20 {
@@ -130,7 +132,7 @@ func (p *origin) worker() {
 		o := p.queue[0]
 		p.queue = p.queue[1:]
 		p.mu.Unlock()
-		_, _ = p.server.Cache.EnsureContext(p.ctx, p.root.Chunks[strconv.FormatInt(o, 10)])
+		_, _ = p.server.Cache.EnsureLineage(p.ctx, p.lineage, p.root.Chunks[strconv.FormatInt(o, 10)])
 		p.mu.Lock()
 		delete(p.pending, o)
 		p.mu.Unlock()

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHooks } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { ComputerMeter } from "../src/computers/meter.ts";
+import { ComputerMeter, SETTLE_MARGIN_MS } from "../src/computers/meter.ts";
 import { applyScope } from "../../../shared/apply-scope.ts";
 import type { WireJob, WireResult } from "../../../shared/job-host-protocol.ts";
 const hooks = registerHooks({ resolve(specifier, context, next) {
@@ -80,7 +80,7 @@ test("HostJob resumes the persisted meter once, skips admission and replays its 
   await store.put("dispatch:resume", { phase: "dispatched", host: "host", dispatchedAt: began, rate: 0.001, pool: "test", shape: { vcpus: 1, memoryMiB: 4096, diskMiB: 8192 }, lifetimeMs: 60_000 });
   let calls = 0;
   const env = { JOB_HOSTS: { getByName: () => ({ dispatch: async () => { calls++; return { ...result, ranFrom: began + 10, ranUntil: began + 1900 }; } }) }, JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {} }) } };
-  const job = new HostJob({ storage: store } as never, env as never); (job as any).meter = meter;
+  const job = new HostJob({ storage: store, waitUntil: () => {} } as never, env as never); (job as any).meter = meter;
   const input = { id: "resume", command: "true", timeoutSeconds: 30, outputs: [], payer };
   const running = job.run(input);
   const concurrent = await job.run(input);
@@ -90,7 +90,7 @@ test("HostJob resumes the persisted meter once, skips admission and replays its 
   assert.equal(answer.ok, true); assert.equal(charges.length, 1);
   assert.equal(charges[0].id, "job:resume"); assert.equal(charges[0].seconds, 1.89);
   assert.equal(await store.get("dispatch:resume"), undefined);
-  const again = new HostJob({ storage: store } as never, env as never); (again as any).meter = meter;
+  const again = new HostJob({ storage: store, waitUntil: () => {} } as never, env as never); (again as any).meter = meter;
   const replay = await again.run(input);
   assert.equal(replay.ok, true); assert.equal(replay.costUsd, answer.costUsd);
   assert.equal(calls, 2); assert.equal(charges.length, 1);
@@ -155,7 +155,7 @@ test("recovery before the first JobHost insert dispatches the job's files", asyn
     await h.receive({ type: "result", id, result });
     return waiting;
   } }) }, JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {}, want: async () => { throw new Error("placed twice"); } }) } };
-  const job = new HostJob({ storage: store } as never, env as never); (job as any).meter = meter;
+  const job = new HostJob({ storage: store, waitUntil: () => {} } as never, env as never); (job as any).meter = meter;
   const bytes = new TextEncoder().encode("hello from the original files");
   const answer = await job.run({ id: "unsent", command: "cat hello.txt", timeoutSeconds: 30, outputs: [], files: { "hello.txt": bytes }, payer });
   assert.equal(answer.ok, true);
@@ -200,14 +200,14 @@ test("a crash after meter.started but before dispatch persistence reuses one ses
   const input = { id: "crash", command: "true", timeoutSeconds: 30, outputs: [], payer: { tenant: "test", agent: "wf_test", kind: "workflow" } };
   // Exercise admission and reserveComputer without opening a Postgres connection.
   const sql = { async query() { return { rows: [{ n: 0 }], rowCount: 0 }; } };
-  const first = new HostJob({ storage: store } as never, env as never); (first as any).meter = meter;
+  const first = new HostJob({ storage: store, waitUntil: () => {} } as never, env as never); (first as any).meter = meter;
   await applyScope.run({ sql: sql as never }, () => assert.rejects(first.run(input), /crashed before dispatch put/));
   assert.equal(await store.get("dispatch:crash"), undefined);
   const original = await meter().openSession();
   assert.equal(original?.id, "job:crash");
   assert.equal(charges.length, 0);
   now = 20_000;
-  const recovered = new HostJob({ storage: store } as never, env as never); (recovered as any).meter = meter;
+  const recovered = new HostJob({ storage: store, waitUntil: () => {} } as never, env as never); (recovered as any).meter = meter;
   assert.equal((await applyScope.run({ sql: sql as never }, () => recovered.run(input))).ok, true);
   assert.equal(starts, 1, "recovery never closes and reopens the named session");
   assert.equal(charges.length, 1);
@@ -261,7 +261,7 @@ test("a stop during recovery cancels the host and ends the one open charge at th
       dispatch: async () => { now = 25_000; return { ok: false, code: "stopped", message: "The job was stopped", ranFrom: 11_000, ranUntil: now }; },
     }) },
   };
-  const job = new HostJob({ storage: store } as never, env as never); (job as any).meter = meter;
+  const job = new HostJob({ storage: store, waitUntil: () => {} } as never, env as never); (job as any).meter = meter;
   (job as any).files = async () => { entered.resolve(); await resume.promise; return { files: [] }; };
   now = 20_000;
   const running = job.run({ id: "stop", command: "true", timeoutSeconds: 30, outputs: [], payer });
@@ -301,7 +301,9 @@ test("repo dispatch recovery reuses the mounted tree and fence without resolving
     JOB_HOSTS: { getByName: () => ({ dispatch: async (_: string, wire: WireJob) => {
       dispatches++; assert.deepEqual(wire.camelfs, { lineage: "test:repo_one", tree: "b".repeat(40), fence }); assert.deepEqual(wire.files, []); assert.equal(wire.sync, undefined); return result;
     } }) } };
-  const job = new HostJob({ storage: store } as never, env as never); (job as any).meter = meter;
+  const background: Promise<unknown>[] = [], ctx = { storage: store, waitUntil: (p: Promise<unknown>) => background.push(p) };
+  t.after(() => Promise.all(background));
+  const job = new HostJob(ctx as never, env as never); (job as any).meter = meter;
   const input = { id: "resume-repo", command: "true", timeoutSeconds: 30, repo: source, payer };
   assert.equal((await job.run(input)).ok, true); assert.equal(renews, 1); assert.equal(releases, 1); assert.equal(dispatches, 1);
   await store.delete("result:resume-repo"); await store.put("dispatch:resume-repo", saved);
@@ -311,8 +313,122 @@ test("repo dispatch recovery reuses the mounted tree and fence without resolving
   t.mock.method(console, "error", (line: string) => logs.push(JSON.parse(line)));
   await job.alarm();
   assert.equal(logs[0].type, "host_job_lease_renew_failed");
-  const recovered = new HostJob({ storage: store } as never, env as never); (recovered as any).meter = meter;
+  const recovered = new HostJob(ctx as never, env as never); (recovered as any).meter = meter;
   const failed = await recovered.run(input);
   assert.equal(failed.ok, false); if (!failed.ok) assert.match(failed.message, /fenced/);
   assert.equal(dispatches, 1, "lost fence never redispatches or reacquires");
+});
+
+test("a result returns with its cost while accounting blocks, and replay charges once", async t => {
+  let now = 10_000, calls = 0, released = 0;
+  t.mock.method(Date, "now", () => now);
+  const store = storage(t), background: Promise<unknown>[] = [], charges: any[] = [];
+  const gate = Promise.withResolvers<void>();
+  const payer = { tenant: "test", agent: "wf_test", kind: "workflow" as const };
+  const meter = () => new ComputerMeter({ store, idleMs: 60_000, now: () => now, schedule: async () => {}, billing: {
+    admit: async () => { throw new Error("admitted twice"); },
+    charge: async charge => { calls++; await gate.promise; charges.push(charge); },
+  } });
+  await meter().started(payer, "test", 60_000, 0, "job:background", { rate: 0.001 });
+  await store.put("dispatch:background", { phase: "dispatched", host: "host", dispatchedAt: now, rate: 0.001, pool: "test", shape: { vcpus: 1, memoryMiB: 4096, diskMiB: 8192 }, lifetimeMs: 60_000 });
+  const env = {
+    JOB_HOSTS: { getByName: () => ({ dispatch: async () => { now = 15_000; return { ...result, ranFrom: 11_000, ranUntil: now }; } }) },
+    JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => { released++; } }) },
+  };
+  const job = new HostJob({ storage: store, waitUntil: (p: Promise<unknown>) => background.push(p) } as never, env as never);
+  (job as any).meter = meter;
+  const input = { id: "background", command: "true", timeoutSeconds: 30, outputs: [], payer };
+  try {
+    const answer = await job.run(input);
+    assert.equal(answer.ok, true);
+    assert.equal(answer.costUsd, 0.004);
+    assert.equal(released, 1);
+    assert.equal(charges.length, 0, "accounting still blocks when run resolves");
+    assert.equal(await meter().isOpen(), false);
+    assert.equal((await store.list({ prefix: "meter:unsettled:" })).size, 1);
+    assert.equal((await job.run(input)).costUsd, answer.costUsd);
+    assert.equal(calls, 1, "replay starts no additional settlement");
+  } finally { gate.resolve(); await Promise.all(background); }
+  assert.equal(charges.length, 1);
+  assert.equal(charges[0].id, "job:background");
+  assert.equal(charges[0].costUsd, 0.004);
+  assert.equal(await meter().settled(), true);
+});
+
+test("HostJob alarm recovers a closed charge with no dispatch and backs off failures", async t => {
+  let now = 10_000, attempts = 0;
+  t.mock.method(Date, "now", () => now);
+  const store = storage(t), scheduled: number[] = [], charges: any[] = [];
+  const meter = () => new ComputerMeter({ store, idleMs: 60_000, now: () => now, schedule: async at => { scheduled.push(at); }, billing: {
+    admit: async () => {}, charge: async charge => { attempts++; if (attempts <= 2) throw new Error("database unavailable"); charges.push(charge); },
+  } });
+  const value = meter();
+  await value.started({ tenant: "test", agent: "wf_test", kind: "workflow" }, "test", 60_000, 0, "job:lost", { rate: 0.001 });
+  now += 4_000;
+  await value.closed(); // Crash here: no background settle starts; only durable state survives.
+  assert.equal(value.spentUsd(), 0.004);
+  assert.equal(attempts, 0);
+  assert.equal(scheduled.at(-1), now + SETTLE_MARGIN_MS);
+  assert.equal(await store.get("dispatch:lost"), undefined);
+  const job = new HostJob({ storage: store } as never, {} as never);
+  (job as any).meter = meter;
+  const logs: string[] = [];
+  t.mock.method(console, "error", (line: string) => logs.push(line));
+  now = scheduled.at(-1)!;
+  await job.alarm();
+  assert.equal(scheduled.at(-1), now + 60_000);
+  assert.equal(charges.length, 0);
+  now = scheduled.at(-1)!;
+  await job.alarm();
+  assert.equal(scheduled.at(-1), now + 120_000);
+  assert.equal(charges.length, 0);
+  now = scheduled.at(-1)!;
+  await job.alarm();
+  await job.alarm();
+  assert.equal(attempts, 3);
+  assert.equal(charges.length, 1);
+  assert.equal(charges[0].costUsd, 0.004);
+  assert.equal(charges[0].id, "job:lost");
+  assert.equal(await meter().settled(), true);
+  assert.equal(logs.length, 2);
+});
+
+test("a second host job follows admission while a previous charge is unsettled", async t => {
+  let now = 10_000, balance = 0.001, admissions = 0, dispatches = 0;
+  t.mock.method(Date, "now", () => now);
+  const payer = { tenant: "test", agent: "wf_test", kind: "workflow" as const };
+  const pendingStore = storage(t), store = storage(t), background: Promise<unknown>[] = [];
+  const billing = {
+    admit: async (who: typeof payer) => { assert.deepEqual(who, payer); admissions++; if (balance <= 0) throw new Error("credit spent"); },
+    charge: async (charge: { costUsd: number }) => { balance -= charge.costUsd; },
+  };
+  const previous = new ComputerMeter({ store: pendingStore, billing, idleMs: 60_000, now: () => now, schedule: async () => {} });
+  await previous.started(payer, "test", 60_000, 0, "job:previous", { rate: 0.001 });
+  now += 4_000;
+  await previous.closed();
+  const env = {
+    JOB_HOST_REGISTRY: { getByName: () => ({ want: async () => "host", unwant: async () => {}, touch: async () => {}, release: async () => {} }) },
+    JOB_HOSTS: { getByName: () => ({ dispatch: async () => { dispatches++; return { ...result, ranFrom: now, ranUntil: now }; } }) },
+  };
+  const job = new HostJob({ storage: store, waitUntil: (p: Promise<unknown>) => background.push(p) } as never, env as never);
+  (job as any).meter = () => new ComputerMeter({ store, billing, idleMs: 60_000, now: () => now, schedule: async () => {} });
+  const sql = { async query() { return { rows: [{ n: 0 }], rowCount: 0 }; } };
+  const input = { id: "second", command: "true", timeoutSeconds: 30, outputs: [], payer };
+  // Admission sees recorded balance, not another DO's unsettled charges. The window is this payer's jobs
+  // finished since settlement caught up: normally background accounting latency, at worst until alarm retries
+  // succeed. Containers already have an equivalent window while an open session accrues cost, until its
+  // checkpoint or stop charges it (objects.ts and meter.ts).
+  const answer = await applyScope.run({ sql: sql as never }, () => job.run(input));
+  assert.equal(answer.ok, true);
+  assert.equal(admissions, 1);
+  assert.equal(dispatches, 1);
+  assert.equal(balance, 0.001);
+  assert.equal(await previous.settled(), false);
+  await Promise.all(background);
+  await previous.settle();
+  const refused = await job.run({ ...input, id: "third" });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.equal(refused.code, "admission_refused");
+  assert.equal(admissions, 2);
+  assert.equal(dispatches, 1);
 });

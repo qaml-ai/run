@@ -14,7 +14,7 @@ export function repoFailure(e: unknown): Response {
   if (r)
     return json({ error: r.code, code: r.code, ...r.detail }, r.status);
   if (e instanceof StorageError)
-    return json({ error: e.code, code: e.code, ...(e.details ? { detail: e.details } : {}) }, e.status >= 400 ? e.status : e.status === 0 ? 503 : 502);
+    return json({ error: `storage ${e.op ?? 'call'}: ${e.reason}`, code: e.code, storage: e.op ?? null, ...(e.details ? { detail: e.details } : {}) }, e.status >= 400 ? e.status : e.status === 0 ? 503 : 502);
   if (e instanceof SyntaxError || e instanceof URIError)
     return json({ error: 'bad-input', code: 'bad-input' }, 400);
   if (e && typeof e === 'object' && 'status' in e && typeof e.status === 'number')

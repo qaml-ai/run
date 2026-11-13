@@ -817,9 +817,10 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       // was last heard from if it went away. A VM that never started (no report, no result that ran) is not charged.
       const span = chargedSpan(wire, dispatchedAt, Date.now());
       const until = Math.min(span.until, dispatchedAt + lifetimeMs, active.stoppedAt ?? Infinity);
-      if (!completed) await meter.startedAt(Math.min(span.from, until)).then(() => meter.stopped(undefined, until))
+      if (!completed) await meter.startedAt(Math.min(span.from, until)).then(() => meter.closed(undefined, until))
         .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
       if (!completed) costUsd = meter.spentUsd();
+      if (!completed) this.ctx.waitUntil(meter.settle().catch(error => console.error(JSON.stringify({ type: "host_job_settle_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" }))));
       steps.meterMs = Date.now() - returnedAt;
       await release().catch(() => {});
       await registry(this.env).release(placedHost, shape.memoryMiB, spec.id).catch(() => {});
