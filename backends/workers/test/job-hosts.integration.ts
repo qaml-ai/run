@@ -319,3 +319,61 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
   assert.equal(refused.message, "This job host cannot mount camelFS trees");
   assert.equal(received.length, 3); assert.equal(calls, 3);
 });
+
+test("a host job survives a Worker restart, re-enters by id and charges once", { timeout: 120_000 }, async t => {
+  const secret = "restart-test-host-secret-at-least-32-characters";
+  const fixture = await startFixture({ entrypoint: fileURLToPath(new URL("./host-dispatch-worker.ts", import.meta.url)), vars: {
+    JOB_HOST_ATTESTORS: "test", JOB_HOST_TEST_SECRET: secret, JOB_HOST_WAIT_SECONDS: "5", AGENT_WORKFLOW_TENANTS: "*",
+  } });
+  t.after(() => fixture.stop());
+  const call = async (path: string, body: unknown) => {
+    const response = await fetch(fixture.url + path, { method: "POST", headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+    assert.ok(response.ok, `${path}: ${response.status}`); return response.json() as Promise<any>;
+  };
+  const until = async (read: () => boolean | Promise<boolean>) => {
+    for (let i = 0; i < 400; i++) { if (await read()) return; await new Promise(resolve => setTimeout(resolve, 25)); }
+    assert.fail("timed out waiting for fake host");
+  };
+  let jobs = 0, started = false, registered = false;
+  let socket: WebSocket;
+  const connect = async () => {
+    const enrolled = await call("/v1/internal/job-hosts/enroll", { attestation: { kind: "test", host: "restart-host", secret } });
+    socket = new WebSocket(`${fixture.url.replace(/^http/, "ws")}/v1/internal/job-hosts/connect?host=restart-host`);
+    await new Promise((resolve, reject) => { socket.addEventListener("open", resolve); socket.addEventListener("error", reject); });
+    registered = false;
+    socket.addEventListener("message", event => {
+      const message = JSON.parse(String(event.data));
+      if (message.type === "registered") registered = true;
+      if (message.type === "job") { jobs++; socket.send(JSON.stringify({ type: "started", id: message.id, at: Date.now() })); started = true; }
+    });
+    socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
+    socket.send(JSON.stringify({ type: "hello", host: "restart-host", slots: 1, free: started ? 0 : 1, vcpus: 1, memoryMiB: 4096, version: "test" }));
+    await until(() => registered);
+  };
+  t.after(() => socket?.close());
+  await connect();
+  const workflow = await call("/v1/workflows", { script: "return null;", budget: { usd: 1 } });
+  const spec = { id: "restart-job", command: "true", timeoutSeconds: 60, outputs: [], payer: { tenant: "camelrun-proto-local", agent: workflow.id, kind: "workflow" } };
+  // The original HTTP request dies with workerd. Recovery issues a new call with the same stable id.
+  const original = call("/__test/host-job", spec).catch(() => undefined);
+  await until(() => started);
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  await fixture.restart({}, true);
+  await original;
+  await connect();
+  const empty = { data: "", size: 0, truncated: false };
+  const result = { ok: true, exitCode: 0, timedOut: false, stdout: empty, stderr: empty, outputs: {}, missing: [], pids: "unenforced", timings: { startMs: 1, syncMs: 0, commandMs: 1200, collectMs: 0, totalMs: 1201 } };
+  let acked = false;
+  socket!.addEventListener("message", event => { const message = JSON.parse(String(event.data)); if (message.type === "ack" && message.id === spec.id) acked = true; });
+  socket!.send(JSON.stringify({ type: "result", id: spec.id, result }));
+  await until(() => acked); // Stored before anyone resumes waiting.
+  const recovered = await call("/__test/host-job", spec);
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  const replay = await call("/__test/host-job", spec);
+  assert.equal(replay.ok, true); assert.equal(replay.costUsd, recovered.costUsd);
+  const wireSpec = { command: "true", timeoutSeconds: 60, outputs: [], files: [], internet: false, limits: {} };
+  assert.equal((await call("/__test/host-dispatch", { id: spec.id, spec: wireSpec })).ok, true);
+  assert.equal(jobs, 1);
+  const charges = (await fixture.db.query("select message from pi_usage_receipts where session_id=$1 and message->'_workersAuxiliary'->>'kind'='computer'", [workflow.id])).rows;
+  assert.equal(charges.length, 1, JSON.stringify(charges));
+});
