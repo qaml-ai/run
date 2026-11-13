@@ -229,9 +229,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
 - **Keys** (Secrets Manager):
   - `camelfs/prod/token-verify-keys`: the runtime's Ed25519 JWKS, injected as `CAMELFS_JWKS`.
-  - `camelfs/prod/service-signing-key`: the service's own key for the tier → host family, injected as
-    `CAMELFS_SERVICE_SIGNING_KEY`.
-  - `camelfs/prod/service-verify-keys`: its public JWKS, read by hosts.
+  - `camelfs/prod/service-signing-key` and `camelfs/prod/service-verify-keys`: the tier → host token family's keys,
+    retired by §9.12's mTLS (fs-infra removes them with the CA work).
 
   The api task role reads no secret.
 - **IAM:** the host policy `camelfs-prod-host` allows the bucket and `objects` only. It explicitly denies every
@@ -873,19 +872,9 @@ namespace (`runtime:*`), a rule the refs PR (C2) enforces.
 are only the ALB's health check. The host role keeps its shared bearer on its socket and 8790 listener until L30
 closes.
 
-**The tier → host family** (approved by the lead, 2026-11-13, for compute: camel-fs-compute.md §3). When the tier
-calls a host (dispatch, stop, exec), it presents a second, narrow token that **it** mints:
-- **Header and audience:** `typ: camelfs-host+jwt`, `aud: camelfs:host:<hostId>`.
-- **Key:** the camel-fs service's own Ed25519 key, never the runtime's. It is a secret of the api role (fs-infra
-  provisions it), and hosts verify against its public JWKS by the same static-file rules as above.
-- **Lifetime:** at most 60 s.
-- **Claims:** scoped to `{ host, vm }`.
-- **Where it is accepted:** a host accepts **only** this audience, and only for its own host id, on its
-  `--listen-compute` listener. The tier never accepts this family on its client API.
-
-So "the tier only verifies" stays true for every client token: the runtime's tokens are minted by the runtime, and
-the tier mints only tokens addressed to its own hosts. The other direction, host → tier, uses the host's attested
-identity (K2 ports `shared/job-host-attest.ts`), not a token of either family.
+**Tier ↔ host calls use no token.** They are authenticated by mutual TLS (§9.12). The `camelfs-host+jwt` family
+that #971 added here is replaced by it, so "the tier only verifies" holds for every token: the runtime mints
+them all.
 
 ### 9.11 Notify webhook
 
@@ -911,3 +900,69 @@ Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
 - `notifyKey` is separate from the token key, and both sides hold it.
 - Delivery is at least once and unordered across refs. A receiver orders by the chain: `from` is the version it
   should have, so a gap means it reads the ref.
+
+### 9.12 Transport identity: mutual TLS
+
+**Decided (Miguel, 2026-11-13 ~18:10): mTLS, "probably safer and simpler".** A connection's certificate proves
+*which machine* is calling. The token of §9.10 still decides *what* a runtime caller may do, per lineage. Owners:
+- **fs-infra:** the ALB trust stores, Authenticated Origin Pulls, the CAs.
+- **proto-block:** the host side (K2).
+- **wf-durable:** the tier side (K4c).
+
+**1. Cloudflare → the public ALB (`fs.camelai.dev`): Authenticated Origin Pulls with a zone-specific certificate.**
+Cloudflare's *default* origin-pull certificate is the same for every Cloudflare customer. An ALB that trusts it
+proves only "this came through Cloudflare", and anyone can proxy their own zone to our address. So we use a
+**zone-level AOP certificate of our own**, uploaded to the `camelai.dev` zone. (A per-hostname certificate on
+`fs.camelai.dev` would be narrower still, and is the option if other hostnames in the zone ever share the origin.)
+- The certificate is issued by a small dedicated AOP CA (below).
+- The public ALB's HTTPS listener runs **mTLS in verify mode**, with a trust store holding only that CA. A
+  handshake without our zone's certificate fails at the ALB, before any HTTP.
+- The Cloudflare-ranges-only security group stays as a second lock.
+- Rotating the AOP certificate: upload the new one to Cloudflare, add its CA to the trust store if it changed,
+  then remove the old.
+
+**2. Tier ↔ host, both directions: mutual TLS with a private CA.**
+- **Host → tier.** Hosts call `fs-internal.camelai.dev` (the internal ALB). Its listener runs mTLS in verify
+  mode against the private CA.
+  - A host certificate carries the host id as a URI SAN, `spiffe://camelfs/host/<hostId>`. **That certificate is
+    the host's identity.** It replaces the attested identity for every host → tier call.
+  - The ALB strips any client-supplied `X-Amzn-Mtls-Clientcert-*` headers and sets its own from the verified leaf.
+    The tier reads the host id from them, and only the ALBs' security groups reach the tasks.
+  - A call from host A about host B's VM is refused: the host id in the path must equal the certificate's.
+- **Tier → host** (port 8792, `--listen-compute`).
+  - The tier presents its own client certificate (URI SAN `spiffe://camelfs/tier`).
+  - The host serves a certificate with its own id, which the tier checks against the host it meant to call
+    (verification by SAN, not by IP hostname).
+  - The host accepts only a peer whose certificate chains to the private CA and names the tier.
+- **This replaces the `camelfs-host+jwt` family** of §9.10 (#971): one mechanism and no service signing key.
+- **The per-call `{ host, vm }` scoping goes too.** The tier is the only caller the host accepts, and it is
+  trusted with every VM on the host anyway. A token scoped to one VM would bound nothing a compromised tier could
+  not mint for itself. The host still checks that a named VM is one of its own, as state, not as authorization.
+
+**3. The CA: AWS Private CA in short-lived certificate mode, with the tier as the registration authority
+(recommended).** Either option needs something that decides *which host id* a certificate may carry, because IAM
+cannot constrain a certificate's subject. That something is the tier's enrollment call.
+- **Enrollment.** A new host presents its STS attestation (`shared/job-host-attest.ts`: a signed
+  `GetCallerIdentity`) once at boot. It does so on a separate internal listener without client certificates,
+  which serves only `POST /v1/hosts/enroll`.
+- **Issuance.** The tier checks the attestation's instance against the pool and issues a 24-hour certificate for
+  that host id. Renewal every 8 h is the same call over the host's current mTLS certificate.
+
+| | AWS Private CA, short-lived mode | self-run CA (key in Secrets Manager, Go `crypto/x509` in the tier) |
+|---|---|---|
+| CA key | in AWS's HSM, never exportable; a compromised tier can issue only while compromised and loses that when its IAM role is cut | a file the tier reads; a compromised tier can copy it, and every certificate it ever signs stays valid until the CA is replaced |
+| cost | ≈ $50/month per CA plus ≈ $0.06 per certificate: tens of hosts × 3 renewals a day ≈ 1–3 k certificates ≈ $60–180/month, plus the tier's own | ≈ $0.40/month (one secret) |
+| rotation | AWS rotates nothing for you either, but a new CA is an API call; the trust stores hold old + new during the overlap; leaf certificates expire within a day, so revocation is expiry plus removing the host from `hosts` | the same procedure, plus generating and protecting the key ourselves |
+| code | `IssueCertificate` / `GetCertificate` from the tier | ≈ 150 lines of issuance, serials and CSR checks we own |
+
+**Recommendation: AWS Private CA (short-lived mode).** The difference that matters is the key: with Private CA, a
+tier compromise cannot outlive itself by stealing the CA. For ≈ $100–200 a month, that is the safer of the two and
+not the more complex one. Certificate validity is capped at 7 days in this mode, so the **AOP certificate**, which
+must live in Cloudflare for months, comes from a separate small offline CA. fs-infra keeps its key in Secrets
+Manager, used only to sign the yearly AOP certificate, and trusted only by the public ALB.
+
+**4. Runtime → tier stays on tokens.** Per-lineage authorization needs the token whatever the transport proves.
+Should Workers also present a client certificate (the `mtls_certificates` binding)? **Not now.** AOP already
+limits the public ALB to traffic through our zone, the token already identifies and scopes the caller, and a
+Worker certificate would add a second credential that authorizes nothing new. Revisit if the tier ever serves a
+route without a token, or if anything other than the runtime gets a proxied hostname in front of the same ALB.

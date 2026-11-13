@@ -117,7 +117,8 @@ Every transition is a conditional write:
 
 Placement is warm- and feature-aware, from the `warm` table camel-fs.md §1.2 already names (L32).
 
-Hosts reach the tier in-VPC. They register with their attested identity, heartbeat with `running`, and pull or
+Hosts reach the tier in-VPC over mutual TLS (camel-fs-files.md §9.12). They enroll once with their STS
+attestation for a host certificate, which is then their identity, heartbeat with `running`, and pull or
 receive work over the VPC.
 - **Reconcile:** the tier checks each heartbeat's `running` list against `vms`, so a VM the host lost ends
   `host_lost` within one heartbeat.
