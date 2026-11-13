@@ -9,9 +9,9 @@ class Fault extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: unknown;
-  constructor(status: number, code: string, details?: unknown) { super(code); this.status = status; this.code = code; this.details = details; }
+  constructor(status: number, code: string, details?: unknown, message = code) { super(message); this.status = status; this.code = code; this.details = details; }
 }
-const bad = (code = "invalid_request", status = 400, details?: unknown): never => { throw new Fault(status, code, details); };
+const bad = (code = "invalid_request", status = 400, details?: unknown, message?: string): never => { throw new Fault(status, code, details, message); };
 const validPath = (p: unknown): p is string => typeof p === "string" && !!p && !/[\0\r\n]/.test(p) && !p.split("/").some(s => !s || s === "." || s === ".." || s === ".git");
 const hash = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{40}$/.test(v);
 const compare = (a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b));
@@ -48,7 +48,8 @@ export function fakeCamelfsd(token: string) {
     if (!hash(id)) bad();
     if (!scope(l).commits.has(id)) return bad(write ? "unknown_commit" : "not_in_tree", write ? 400 : 404);
     const parsed = parseCommit(commits.get(id)!);
-    return { tree: parsed.tree, parents: parsed.parents, author: parsed.author, message: parsed.message, trailers: parsed.trailers,
+    // As the daemon: `author` is what the commit was made with, not the git identity line.
+    return { tree: parsed.tree, parents: parsed.parents, author: parsed.author.slice(0, parsed.author.lastIndexOf(" <")), message: parsed.message, trailers: parsed.trailers,
       time: Number(/> (-?\d+) \+0000$/.exec(parsed.author)?.[1]) };
   }
   async function build(l: string, files: Map<string, FileEntry>): Promise<string> {
@@ -98,7 +99,15 @@ export function fakeCamelfsd(token: string) {
     const match = /^\/v1\/lineages\/([^/]+)\/(.+)$/.exec(url.pathname);
     if (!match) bad("not_in_tree", 404);
     const l = decodeURIComponent(match![1]), route = match![2], own = scope(l);
-    const q = async (): Promise<any> => { try { const v = await request.json(); if (!v || typeof v !== "object" || Array.isArray(v)) bad(); return v; } catch { return bad(); } };
+    // Strict like the daemon's decoder (DisallowUnknownFields): an unknown or missing required field is a 400 naming it.
+    const q = async (allowed: string[], required: string[] = []): Promise<any> => {
+      let v: any;
+      try { v = await request.json(); } catch { return bad(); }
+      if (!v || typeof v !== "object" || Array.isArray(v)) bad();
+      for (const k of Object.keys(v)) if (!allowed.includes(k)) bad("invalid_request", 400, { field: k }, `unknown field ${k}`);
+      for (const k of required) if (!(k in v)) bad("invalid_request", 400, { field: k }, `missing field ${k}`);
+      return v;
+    };
     if (request.method === "PUT" && route === "blobs") {
       const length = request.headers.get("content-length");
       if (length && Number(length) > 5 * 1024 ** 3) bad("too_large", 413);
@@ -126,7 +135,7 @@ export function fakeCamelfsd(token: string) {
       return new Response(data, { status, headers });
     }
     if (request.method === "POST" && route === "read") {
-      const input = await q();
+      const input = await q(["tree", "paths", "maxBytes"], ["tree", "paths"]);
       if (!Array.isArray(input.paths) || input.paths.some((p: unknown) => !validPath(p)) || (input.maxBytes !== undefined && (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0))) bad();
       if (input.paths.length > 256) bad("too_large", 413, { path: input.paths[256] });
       // Unknown trees produce the same per-path misses as inaccessible paths.
@@ -147,7 +156,8 @@ export function fakeCamelfsd(token: string) {
       return new Response(Buffer.concat(parts), { headers: { "content-type": `multipart/mixed; boundary="${boundary}"` } });
     }
     if (request.method === "POST" && route === "commits") {
-      const input = await q(); const parents = input.parents ?? (input.parent ? [input.parent] : []);
+      const input = await q(["parents", "baseTree", "changes", "author", "message", "trailers", "time"], ["parents", "changes", "author", "message", "trailers", "time"]);
+      const parents: string[] = input.parents;
       if (!Number.isSafeInteger(input.time) || !Array.isArray(parents) || parents.length > 2 || parents.some(p => !hash(p)) || !Array.isArray(input.changes) ||
         typeof input.author !== "string" || !input.author || /[\r\n\0<>]/.test(input.author) || typeof input.message !== "string" ||
         !input.trailers || typeof input.trailers !== "object" || Array.isArray(input.trailers) || Object.entries(input.trailers).some(([k, v]) => !k || /[\r\n:]/.test(k) || typeof v !== "string" || /[\r\n]/.test(v))) bad();
@@ -161,18 +171,20 @@ export function fakeCamelfsd(token: string) {
       const parentInfo = parents.map(p => info(l, p, true));
       const baseId = input.baseTree ?? parentInfo[0]?.tree ?? EMPTY_TREE;
       const base = tree(l, baseId, true), files = new Map(base.files);
+      let named = 0; // As the daemon: `bytes` counts the blobs this commit names, not the whole tree.
       for (const c of input.changes as Change[]) {
         if (!c || !validPath(c.path) || (c.mode !== undefined && !["100644", "100755", "120000"].includes(c.mode))) bad();
         if (c.delete) { files.delete(c.path); continue; }
         const old = files.get(c.path), blob = c.blob ?? old?.blob;
         if (!blob || !own.blobs.has(blob)) bad("unknown_blob");
+        if (c.blob) named += blobs.get(c.blob)!.length;
         files.set(c.path, { path: c.path, blob, mode: c.mode ?? old?.mode ?? "100644", size: blobs.get(blob)!.length });
       }
       const id = await build(l, files);
       const object = await commitObject({ tree: id, parents, author: input.author, at: input.time * 1000, message: input.message, trailers: input.trailers });
       commits.set(object.id, object.bytes); own.commits.add(object.id);
       const result = { tree: id, commit: object.id, changed: changes(base, trees.get(id)!).length,
-        bytes: [...files.values()].reduce((n, f) => n + f.size, 0), parents, time: input.time };
+        bytes: named, parents, time: input.time };
       if (key) writes.set(cacheKey, { input: fingerprint, result });
       return json(result, 201);
     }
@@ -193,7 +205,7 @@ export function fakeCamelfsd(token: string) {
     }
     if (request.method === "GET" && route === "diff") return json({ changes: changes(tree(l, s.get("from") ?? ""), tree(l, s.get("to") ?? ""), s.get("path") ?? "") });
     if (request.method === "POST" && route === "merge") {
-      const input = await q(); if (!["merge", "squash"].includes(input.mode)) bad();
+      const input = await q(["base", "ours", "theirs", "mode"], ["base", "ours", "theirs", "mode"]); if (!["merge", "squash"].includes(input.mode)) bad();
       const base = tree(l, input.base, true), ours = tree(l, input.ours, true), theirs = tree(l, input.theirs, true);
       const files = new Map<string, FileEntry>(), conflicts: Conflict[] = [], merged: string[] = [], took = { ours: 0, theirs: 0 };
       for (const path of [...new Set([...base.files.keys(), ...ours.files.keys(), ...theirs.files.keys()])].sort(compare)) {
