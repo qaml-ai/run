@@ -666,8 +666,8 @@ live sets; the sweep is a sorted merge over the inventory (daily, a few cents pe
 - **Hosts** hold an instance role scoped to the bucket prefixes and tables, as the job-hosts plan's role is scoped,
   and enroll with the STS attestation already landed (`shared/job-host-attest.ts`). They accept one mTLS port from
   the API tier's security group and nothing from the internet.
-- **Tokens** are signed by camelRun (ES256: the runtime holds the private key, the API tier only the public keys;
-  camel-fs-files.md §9.10): `{ lineage, read:
+- **Tokens** are signed by camelRun (Ed25519 JWTs from the runtime's existing `RuntimeSigner`, family `camelfs+jwt`;
+  the API tier verifies against a static JWKS file; camel-fs-files.md §9.10): `{ lineage, read:
   [ref globs], write: [ref globs], scope, exp, subject }`. A workflow child's token writes `fork/<effect>` and reads
   `main`; a job's token reads one commit and writes `job/<id>`; a laptop clone token reads one branch for an hour.
   The API tier is the authorization boundary; the storage plane is reached by nothing else. Revocation is a key

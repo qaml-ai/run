@@ -206,7 +206,7 @@ regional storage tier). The state is now:
 | blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
 | the NVMe cache of chunks, images, trees and shards | each host's `camelfsd --role host` | content hash |
 | each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
-| the per-tenant repo list, tokens' signing key | the runtime | tenant |
+| the per-tenant repo list; the token signing keys (`RuntimeSigner`, Postgres `signing_keys`) | the runtime | tenant |
 
 Nothing in the runtime holds a ref. `camelfsd --role api` is a stateless Go tier behind an ALB in us-west-2: the §9
 plane plus a `refs` package, any node serving any request. Hosts run `camelfsd --role host` (the block layer and the
@@ -287,11 +287,21 @@ contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` wi
 - No upper-bound shortcut is allowed, since a false refusal is a bug.
 - Deleting files must free quota, so "distinct bytes ever written, never shrinking" is ruled out.
 
-**Open, held for Miguel (2026-11-13, a product decision; not designed here).** An exact deduplicated count across
-all heads cannot be recomputed per write at 50k files × N refs. It needs a maintained per-lineage blob refcount
-(blob → number of ref heads holding it), updated by the tree diff on every move. In DynamoDB that is either a
-transaction across the ref and its counters, or a race. Until Miguel decides, the routes below carry the request
-and the refusal, and say nothing about how `repoBytesAfter` is kept.
+**How `repoBytesAfter` is kept: pending Miguel's decision (2026-11-13).** The contract above stands either way:
+the `quota` request, `507 storage_limit` with no ref change, and `bytes` and `files` in every write's result. An
+exact deduplicated count across all heads cannot be recomputed per write at 50k files × N refs. The options:
+
+1. **Exact, maintained refcounts.** A per-lineage refcount (blob → number of ref heads holding it) is updated by
+   the tree diff on every move. In DynamoDB that is a transaction across the ref and its counters (or a race), on
+   every write.
+2. **Exact recomputed by the GC mark pass, plus bytes written since** (the lead's recommendation). The mark
+   (camel-fs.md §1.9) already walks every head, so it records the exact deduplicated bytes per lineage. Each write
+   adds the new blobs' bytes since that mark. The count is exact at each mark and never under-counts between marks.
+   Deletes free quota at the next mark. Between marks the count can only over-count, so a write can be refused that
+   an exact count would admit. That is the price against the "no false refusals" requirement above, and Miguel's
+   call.
+
+"Distinct bytes ever written, never shrinking" is ruled out: deleting files must free quota.
 
 **Notify** is a signed webhook from the tier to the runtime (§9.11), at least once, landing as an outbox row in the
 receiving object, which the receiver's alarm then drains, as wf-durable's design already does for host results. A
@@ -337,10 +347,10 @@ the model requires two refs to move together.
 
 **Build order** (from the study; each step a PR stack onto `camelfs/files-model`):
 
-1. `camelfsd --role api` behind an ALB (HTTP/2 off, after the 10-24 stalls) with runtime-signed tokens, `CAMELFS`
+1. `camelfsd --role api` behind an ALB (HTTP/2 off, after the 10-24 stalls) with runtime-signed tokens (§9.10), `CAMELFS`
    switched to HTTPS, the tunnel and the shared bearer deleted (L30).
-2. Miguel creates the DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`; on demand, PITR), the IAM roles
-   (api, host) and the token key.
+2. Miguel creates the DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`; on demand, PITR) and the IAM
+   roles (api, host). Tokens reuse the runtime's `RuntimeSigner` keys; the tier gets their JWKS as a file (§9.10).
 3. The Go `refs` package with the ref-move rules checked before a `version = :expect` condition, leases, fences, watchers and
    the quota check (its bookkeeping waits on Miguel). Its contract
    tests are ported from `RepoDO`'s tests and the strict fake.
@@ -659,7 +669,7 @@ the image; the ref item carries `root?` (§6).
 | code | HTTP | when |
 |---|---|---|
 | `invalid_request` | 400 | malformed JSON, bad id, unnormalized path, unknown mode, unknown field, a ref name outside §1's alphabet |
-| `unauthorized` | 401 | missing, malformed, expired or unverifiable token, or a revoked `jti` |
+| `unauthorized` | 401 | missing, malformed, expired or unverifiable token (the message names the reason) |
 | `forbidden` | 403 | a valid token whose lineage, ref globs, ops or fence do not cover the request |
 | `unknown_blob` / `unknown_tree` / `unknown_commit` | 400 | an id the lineage cannot reach is named in a write |
 | `not_in_tree` | 404 | a read whose (tree, path) does not resolve to the requested blob, or a tree this lineage does not have |
@@ -679,8 +689,12 @@ the image; the ref item carries `root?` (§6).
 | `no_fence` | 409 | a checkpoint on a mount without a fence |
 | `unavailable` | 503 | S3 or DynamoDB unreachable, or throttled past the tier's retries; safe to retry with the same `Idempotency-Key` |
 
+**These snake_case codes are canonical**, like every existing daemon code (`unknown_commit`, `too_deep`). The
+runtime's `/v1/repos` either adopts them or maps them in one place. `RepoDO`'s kebab-case `bad-parent`,
+`not-fast-forward` and `storage-limit` are the ones that differ.
+
 Every error is loud and specific; nothing degrades to empty data. The tier logs lineage, ref names, ids, sizes and
-token `sub`/`jti`, never file contents or tokens.
+token `sub`/`lin`/`acc`/`kid`, never file contents or tokens.
 
 ### 9.9 Refs
 
@@ -756,8 +770,8 @@ never rewritten.
 `attribute_not_exists(holder) OR leaseDeadline < :now`, else `409 held`; the epoch is the previous epoch + 1.
 `POST …/lease/renew` `{ "ttlMs" }` → `200 { "deadline" }`, with the condition `holder = :holder
 AND leaseEpoch = :epoch AND leaseDeadline >= :now`, where holder and epoch come from the token's `fence` claim
-(`409 fenced`). `DELETE …/lease` → `204`, under the same condition. The lease's `POST` needs a runtime token with
-`ops: ["lease"]`; the runtime then mints the fence-scoped token from its answer. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
+(`409 fenced`). `DELETE …/lease` → `204`, under the same condition. The lease's `POST` needs a runtime token (§9.10); the
+runtime then mints the fence-scoped token from its answer. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
 `leaseEpoch`.
 
 **Watchers.** `PUT /v1/lineages/{lineage}/refs/{name}/watchers/{watcher}` → `204`, and
@@ -766,34 +780,59 @@ to the runtime's one notify endpoint, configured on the tier (§9.11), never to 
 
 ### 9.10 Tokens
 
-Every call carries a token the runtime signed. **ES256 JWS**: the runtime holds the private key (a runtime secret;
-Miguel creates it in Secrets Manager), and the tier holds only the public keys by `kid`, so the tier can verify and
-never mint. Claims:
+**Decided (the lead, 2026-11-13): camel-fs tokens are one more family of camelRun's existing `RuntimeSigner`**
+(`backends/workers/src/runtime-identity.ts`), not a second token system. That signer issues Ed25519 JWTs with a
+`kid`; its keys live in Postgres `signing_keys` and are published as a JWKS (`/.well-known/jwks.json`); and its
+families are separated by `typ` and `aud` (file URLs, for example, are `file+jwt` / `camelrun:file`). The runtime
+mints, and the tier only verifies. proto-block's C1 spec is the build contract, summarized here.
 
-```json
-{ "v": 1, "kid": "k2", "sub": "agent:ag_123", "lineage": "t_9:repo_4",
-  "read": ["main", "published/*"], "write": ["main"], "ops": ["read", "write", "merge"],
-  "fence": { "holder": { "host", "boot", "mount" }, "epoch": 7 }?,
-  "iat": 1763046000, "exp": 1763049600, "jti": "tok_…" }
+```
+header: { "alg": "EdDSA", "typ": "camelfs+jwt", "kid": "…" }
+claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_123", "lin": "t_9:repo_4",
+          "acc": "r" | "w", "refs": ["main", "published/*"], "fence"?: { "holder": "…", "epoch": 7 },
+          "iat": 1763046000, "exp": 1763046900 }
 ```
 
-- The tier checks the signature, `exp` (≤ 1 h after `iat`, ±60 s skew), that the path's `{lineage}` equals the
-  claim, and the ref route's name against `read`/`write` globs (`*` within one segment, `**` across).
-  - Object routes (9.1–9.6) need any `read` glob for reads and any `write` glob for writes, then the (tree, path)
-    rule.
-  - `ops` narrows further: `lease` and `watch` must be listed to call those routes.
-- **Fence-scoped tokens** carry `fence`, and the fence is read **only** from this signed claim, never from a request
-  body: their `cas`, renew and release are conditioned on exactly that holder and epoch, and they write only the one ref named in `write`. `HostJob` mints one per dispatch with `exp` = the job's
-  deadline + 10 minutes. The fence, not `exp`, is the guard against a late host.
-- **Who gets which token:**
-  - An agent's token covers its mounts.
-  - A workflow child's writes `fork/<effect>` and reads `main`.
-  - A job's reads its commit and writes `job/<id>`.
-  - A customer's comes from the runtime's token endpoint against their API key.
-  - A laptop clone's reads one branch for an hour.
-- **Revocation** is key rotation (two `kid`s valid during rollover) or a `jti` in a small DynamoDB deny-list read
-  through a per-node cache that is refreshed on every rotation event. Unauthenticated routes are only the ALB's
-  health check.
+**Verification on the tier:**
+- The keys come from a static JWKS file (`--jwks-file`, or the `CAMELFS_JWKS` env), loaded at start and reloaded
+  atomically on SIGHUP. A bad file keeps the old set and logs an error.
+- There is no network fetch of a JWKS and no cache. Rotation is: add the new key to the file, then remove the old.
+- **EdDSA only.**
+  - Rejected: `none`, `HS*`, `RS*`, and any `jwk`, `jku`, `x5u` or `crit` header.
+  - Also rejected: a signature over anything but the exact `header.payload` bytes, padded or non-url base64,
+    duplicate JSON keys, and a token over 8 KiB.
+- `typ`, `aud` and `iss` must match exactly. `exp` is required, and `exp − iat` is at most `--token-max-ttl`
+  (default 15 minutes). `iat` may be at most 5 s in the future.
+- `lin` must equal the path's `{lineage}` exactly.
+- `acc` is `r` or `w`, and `w` implies `r`. Read routes (9.1 `GET`, 9.2, 9.4, 9.6, ref reads) need `r`. Writes
+  (blobs, commits, merge, every mutating 9.9 route) need `w`.
+- Mutating ref routes also require the ref name to match one of `refs`. The globs are segments of
+  `[A-Za-z0-9._-]` and `*`, at most 64 of them.
+- Unknown claims are ignored; malformed known claims are refused.
+- Errors are `401 unauthorized` (missing, invalid or expired, with the specific reason) and `403 forbidden` (a
+  valid token whose `lin`, `acc` or `refs` does not cover the request). The tier logs `sub`, `lin`, `acc` and
+  `kid`, never the token.
+
+**The fence lives only inside the signed token.**
+- A token with `fence` writes exactly the one ref in its `refs`. Its `cas`, lease renew and release are conditioned
+  on that holder and epoch. A fence in a request body is never trusted, and the routes take none.
+- `HostJob` mints the host's token when it takes the lease, and mints a fresh one with each renewal (every TTL/3,
+  inside the 15-minute cap). The new token is pushed to the host with the renewal, and the host uses the latest.
+  The fence, not `exp`, is what stops a late host.
+
+**Who gets which token:**
+- An agent's tool calls: `acc: w` on its workspace's `main`, `r` elsewhere.
+- A workflow child: `w` on `fork/<effect>`, `r` on `main`.
+- A job's host: a fence token on `job/<id>`.
+- A customer: one from the runtime's token endpoint against their API key.
+- A laptop clone: `r` on one branch.
+
+The lease route and the watcher routes are runtime-only. They take a token whose `sub` is in the runtime's service
+namespace (`runtime:*`), a rule the refs PR (C2) enforces.
+
+**Revocation** is key rotation, since every token is short-lived. There is no deny-list. Unauthenticated routes
+are only the ALB's health check. The host role keeps its shared bearer on its socket and 8790 listener until L30
+closes.
 
 ### 9.11 Notify webhook
 
