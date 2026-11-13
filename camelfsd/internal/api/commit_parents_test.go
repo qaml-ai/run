@@ -74,7 +74,7 @@ func TestCommitParentsRoundTrip(t *testing.T) {
 	} {
 		v := response(t, callStorage(t, s, "l", "POST", "commits", []byte(`{`+tc.fields+`,"author":"a"}`), "", 400))
 		err := v["error"].(map[string]any)
-		if tc.code == "invalid_request" && !strings.Contains(err["message"].(string), "parent") {
+		if tc.code == "invalid_request" && !strings.Contains(strings.ToLower(err["message"].(string)), "parent") {
 			t.Fatal(tc.fields, v)
 		}
 		if err["code"] != tc.code {
