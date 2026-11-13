@@ -33,6 +33,8 @@ export async function versionEntries(ctx: RepoContext, version: string, tree: st
 export async function createRepo(env: RepoEnv, tenant: string, input: {
   name?: string;
   key?: string;
+  /** Who the first commit is attributed to (default `api:<tenant>`). */
+  author?: string;
   from?: {
     repo: string;
     ref?: string;
@@ -56,9 +58,21 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
   const { row, existing } = await index.registerRepo({ id, name, key: input.key ?? null, lineage, createdAt: Date.now(), deletedAt: null, bytes: 0, files: 0 });
   if (row.deletedAt !== null)
     throw new RepoError('deleted-key', 409, 'deleted-key');
-  const info = await env.REPOS.getByName(`${tenant}:${id}`).init({ tenant, ...row, ...(seed ? { seed } : {}) });
+  const stub = env.REPOS.getByName(`${tenant}:${id}`);
+  if (existing) {
+    // Registered earlier; init is idempotent, so only a create that stopped before it falls through.
+    try { return { info: await stub.info(), existing }; }
+    catch (e) { if (repoErrorFrom(e)?.code !== 'uninitialized') throw e; }
+  }
+  // Every repo has main from birth: a fork's at the source version, otherwise an empty first commit.
+  if (!seed) {
+    const author = input.author ?? `api:${tenant}`, message = 'create', trailers = { 'Camel-Checkpoint': 'api' };
+    const c = await camelfsStorage(env).commit(row.lineage, { parents: [], changes: [], author, message, trailers });
+    seed = { version: { version: c.commit, tree: c.tree, parents: [], author, message, trailers, at: c.time * 1000 }, entries: [] };
+  }
+  const info = await stub.init({ tenant, ...row, seed });
   await index.repoUsage(id, info.bytes, info.files);
   return { info, existing };
 }
-export const agentRepo = (env: RepoEnv, tenant: string, agentId: string) => createRepo(env, tenant, { key: `agent:${agentId}`, name: `agent ${agentId}` });
+export const agentRepo = (env: RepoEnv, tenant: string, agentId: string) => createRepo(env, tenant, { key: `agent:${agentId}`, name: `agent ${agentId}`, author: `agent:${agentId}` });
 export async function deleteRepo(env: RepoEnv, tenant: string, id: string) { const ctx = await repoContext(env, tenant, id); await ctx.stub.delete(); await env.TENANTS.getByName(tenant).markRepoDeleted(id); return { deleted: true }; }
