@@ -61,7 +61,7 @@ func storageFail(w http.ResponseWriter, e error) {
 	} else if errors.As(e, &se) {
 		status, code, details = se.status, se.code, se.details
 	} else if errors.As(e, &ae) {
-		status, code = ae.Status, "invalid_request"
+		status, code, message = ae.Status, "invalid_request", ae.Error()
 		if status == 413 {
 			code = "too_large"
 		}
@@ -70,7 +70,7 @@ func storageFail(w http.ResponseWriter, e error) {
 	} else if errors.Is(e, store.ErrUnavailable) {
 		status, code = 503, "unavailable"
 	} else if errors.Is(e, objects.ErrIgnored) {
-		status, code = 400, "invalid_request"
+		status, code, message = 400, "invalid_request", "path: .git components are forbidden"
 	}
 	if status == 500 {
 		log.Printf("op=storage error=%v", e)
@@ -88,20 +88,24 @@ func decodeStorage(r *http.Request, v any) error {
 	d := json.NewDecoder(io.LimitReader(r.Body, 64<<20))
 	d.DisallowUnknownFields()
 	if e := d.Decode(v); e != nil {
-		return invalid("%s", strings.TrimPrefix(e.Error(), "json: "))
+		return invalid("JSON body: %s", strings.TrimPrefix(e.Error(), "json: "))
 	}
 	var extra any
 	if d.Decode(&extra) != io.EOF {
-		return bad("invalid_request")
+		return invalid("JSON body: expected exactly one object")
 	}
 	return nil
 }
 func (s *Server) repository() *objects.Repository {
 	return &objects.Repository{DB: s.Manager.Refs.(*refs.DB), Store: s.Manager.Store, TempDir: s.Manager.Data}
 }
-func require(ctx context.Context, repo *objects.Repository, l, id, kind string, write bool) error {
+func require(ctx context.Context, repo *objects.Repository, l, id, kind string, write bool, field ...string) error {
 	if !root.Hex(id, 40) {
-		return bad("invalid_request")
+		name := kind
+		if len(field) > 0 {
+			name = field[0]
+		}
+		return invalid("%s: expected a 40-character Git id", name)
 	}
 	ok, e := repo.Reachable(ctx, l, id, kind)
 	if e != nil {
@@ -121,7 +125,7 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/lineages/"), "/")
 	if len(parts) < 2 || !store.Lineage(parts[0]) {
-		storageFail(w, bad("invalid_request"))
+		storageFail(w, invalid("lineage: expected /v1/lineages/{lineage}/{route} with a valid lineage"))
 		return
 	}
 	l := parts[0]
@@ -133,7 +137,7 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 	if write && r.Header.Get("Idempotency-Key") != "" {
 		key := r.Header.Get("Idempotency-Key")
 		if len(key) > 256 {
-			storageFail(w, bad("invalid_request"))
+			storageFail(w, invalid("Idempotency-Key: at most 256 bytes"))
 			return
 		}
 		unlock := s.lockIdempotency(l, key)
@@ -284,7 +288,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 		jsonReply(w, 200, v)
 	case route == "diff" && r.Method == "GET":
 		for _, id := range []string{q.Get("from"), q.Get("to")} {
-			if e := require(ctx, repo, l, id, "tree", false); e != nil {
+			if e := require(ctx, repo, l, id, "tree", false, "from/to"); e != nil {
 				fail(e)
 				return
 			}
@@ -316,7 +320,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 		cap := int64(64 << 20)
 		if v.MaxBytes != nil {
 			if *v.MaxBytes < 0 {
-				fail(bad("invalid_request"))
+				fail(invalid("maxBytes: must be nonnegative"))
 				return
 			}
 			cap = min(cap, *v.MaxBytes)
@@ -327,7 +331,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 		var size int64
 		for i, p := range v.Paths {
 			if objects.Path(p) != nil || !safeLine(p) {
-				fail(bad("invalid_request"))
+				fail(invalid("bad path %q", p))
 				return
 			}
 			f, e := repo.File(ctx, v.Tree, p)

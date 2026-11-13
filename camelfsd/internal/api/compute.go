@@ -37,8 +37,11 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if len(q.Changes) > 10000 {
 		return nil, large("")
 	}
-	if q.Author == "" || !safeLine(q.Author) || strings.ContainsRune(q.Message, 0) {
-		return nil, bad("invalid_request")
+	if q.Author == "" || !safeLine(q.Author) {
+		return nil, invalid("author: required single line without NUL")
+	}
+	if strings.ContainsRune(q.Message, 0) {
+		return nil, invalid("message: NUL is forbidden")
 	}
 	if q.Parents == nil {
 		return nil, invalid("parents: required array of commit ids")
@@ -67,7 +70,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		base = *q.BaseTree
 	}
 	if base != "" {
-		if e := require(ctx, r, l, base, "tree", true); e != nil {
+		if e := require(ctx, r, l, base, "tree", true, "baseTree"); e != nil {
 			return nil, e
 		}
 	}
@@ -95,13 +98,16 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	changed := 0
 	var bytes int64
 	for _, c := range q.Changes {
-		if objects.Path(c.Path) != nil || c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
-			return nil, bad("invalid_request")
+		if objects.Path(c.Path) != nil {
+			return nil, invalid("bad path %q", c.Path)
+		}
+		if c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
+			return nil, invalid("bad mode %q", c.Mode)
 		}
 		prev, exists := files[c.Path]
 		if c.Delete {
 			if c.Blob != "" || c.Mode != "" {
-				return nil, bad("invalid_request")
+				return nil, invalid("delete: blob and mode must be absent")
 			}
 			if exists {
 				delete(files, c.Path)
@@ -121,7 +127,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 			next.SHA256 = b.SHA256
 			bytes += b.Size
 		} else if !exists {
-			return nil, bad("invalid_request")
+			return nil, invalid("blob: required for new path %q", c.Path)
 		}
 		if c.Mode != "" {
 			next.Mode = c.Mode
@@ -135,8 +141,11 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		files[c.Path] = next
 	}
 	for k, v := range q.Trailers {
-		if k == "" || !safeLine(k) || strings.Contains(k, ":") || !safeLine(v) {
-			return nil, bad("invalid_request")
+		if k == "" || !safeLine(k) || strings.Contains(k, ":") {
+			return nil, invalid("bad trailer key")
+		}
+		if !safeLine(v) {
+			return nil, invalid("bad trailer value for %q", k)
 		}
 	}
 	r = r.BeginPublication()
@@ -240,13 +249,13 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 	if lim != "" {
 		n, e := strconv.Atoi(lim)
 		if e != nil || n < 1 || n > 10000 {
-			return nil, bad("invalid_request")
+			return nil, invalid("limit: must be between 1 and 10000")
 		}
 		limit = n
 	}
 	if dir != "" {
 		if objects.Path(dir) != nil {
-			return nil, bad("invalid_request")
+			return nil, invalid("bad path %q", dir)
 		}
 		for _, p := range strings.Split(dir, "/") {
 			es, e := r.ReadTree(ctx, id)
@@ -304,7 +313,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			}
 		}
 		if !found {
-			return nil, bad("invalid_request")
+			return nil, invalid("after: must name a path in the tree")
 		}
 	}
 	page := es[start:min(len(es), start+limit)]
@@ -406,7 +415,7 @@ type diffChange struct {
 
 func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) ([]diffChange, error) {
 	if prefix != "" && objects.Path(prefix) != nil {
-		return nil, bad("invalid_request")
+		return nil, invalid("bad path %q", prefix)
 	}
 	out := []diffChange{}
 	var walk func(string, string, string) error

@@ -27,10 +27,10 @@ type mergeConflict struct {
 func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeRequest) (any, error) {
 	r = r.ForLineage(l)
 	if q.Mode != "merge" && q.Mode != "squash" {
-		return nil, bad("invalid_request")
+		return nil, invalid("mode: must be merge or squash")
 	}
 	for _, id := range []string{q.Base, q.Ours, q.Theirs} {
-		if e := require(ctx, r, l, id, "tree", true); e != nil {
+		if e := require(ctx, r, l, id, "tree", true, "base/ours/theirs"); e != nil {
 			return nil, e
 		}
 	}

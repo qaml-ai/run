@@ -197,7 +197,8 @@ are a later unit.
 curl -H "Authorization: Bearer $TOKEN" "$A/grep?tree=$T&q=hello&regex=0&ignoreCase=1&path=src/*&limit=2000&context=1"
 ```
 
-Errors use {error:{code,message,details?}}. Codes are invalid_request (400),
+Errors use {error:{code,message,details?}}. Every invalid_request message names
+the invalid field or rule, including unknown JSON fields. Codes are invalid_request (400),
 unknown_blob/unknown_tree/unknown_commit (400 on writes), blob_mismatch (400),
 not_in_tree (404 on reads), too_large (413), conflict (409), no_fence (409),
 unavailable (503). Conflict lists are in error.details.conflicts.
