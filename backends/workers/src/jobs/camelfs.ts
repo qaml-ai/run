@@ -9,6 +9,13 @@ export function uploadTimeoutMs(size: number): number {
   return Math.min(60_000 + Math.ceil(size / (2 * 2 ** 20)) * 1000, 30 * 60_000);
 }
 
+/** Why the daemon refused: its error code (shape-checked) and detail (printable, bounded), with the bearer cut out. */
+function reason(value: { error?: unknown; detail?: unknown } | null, token: string) {
+  const code = typeof value?.error === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value.error) ? value.error : "";
+  const detail = typeof value?.detail === "string" ? value.detail.split(token).join("***").replace(/[^\x20-\x7e]/g, "").slice(0, 160) : "";
+  return [code, detail].filter(Boolean).join(": ").split(token).join("***");
+}
+
 /** Bound daemon responses without putting their contents or credentials in errors. */
 async function body(response: Response): Promise<unknown> {
   const bad = () => new Error(`camelFS status ${response.status}: malformed or oversized body`);
@@ -43,15 +50,17 @@ export async function importTree(env: CamelfsEnv, input: {
   const request = fetcher ?? ((input, init) => env.CAMELFS!.fetch(input, init));
   const authorization = `Bearer ${env.CAMELFS_API_TOKEN}`;
   const byHash = new Map(input.files.map(file => [file.sha256, file]));
-  const files = Object.fromEntries(input.files.map(file => [file.path, { sha256: file.sha256 }]));
+  // camelFS paths are relative ("src/a.ts"); a Volume's are absolute ("/src/a.ts").
+  const files = Object.fromEntries(input.files.map(file => [file.path.replace(/^\/+/, ""), { sha256: file.sha256 }]));
   let uploaded = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await request("http://camelfs/v0/trees", {
       method: "POST", headers: { authorization, "content-type": "application/json" }, signal: AbortSignal.timeout(60_000),
       body: JSON.stringify({ lineage: input.lineage, ...(input.parentTree ? { parentTree: input.parentTree } : {}), files }),
     });
-    const value = await body(response) as { tree?: unknown; missing?: unknown } | null;
-    const bad = () => new Error(`camelFS status ${response.status}: invalid tree import response`);
+    const value = await body(response) as { tree?: unknown; missing?: unknown; error?: unknown; detail?: unknown } | null;
+    const said = reason(value, env.CAMELFS_API_TOKEN!);
+    const bad = () => new Error(`camelFS status ${response.status}: ${said || "invalid tree import response"}`);
     if (response.status === 200) {
       if (typeof value?.tree !== "string" || !/^[0-9a-f]{40}$/.test(value.tree)) throw bad();
       return { tree: value.tree, uploaded };
@@ -61,14 +70,17 @@ export async function importTree(env: CamelfsEnv, input: {
     if (missing.some(hash => typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash) || !byHash.has(hash))) throw bad();
     for (let i = 0; i < missing.length; i += 8) {
       await Promise.all(missing.slice(i, i + 8).map(async hash => {
-        const { body, size } = await input.read(byHash.get(hash)!);
+        const { body: data, size } = await input.read(byHash.get(hash)!);
         const put = await request(`http://camelfs/v0/blobs/${hash}?lineage=${encodeURIComponent(input.lineage)}`, {
           method: "PUT", headers: { authorization, "content-type": "application/octet-stream", "content-length": String(size) },
-          signal: AbortSignal.timeout(uploadTimeoutMs(size)), body,
-          ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
+          signal: AbortSignal.timeout(uploadTimeoutMs(size)), body: data,
+          ...(data instanceof ReadableStream ? { duplex: "half" } : {}),
         });
+        if (put.status !== 200 && put.status !== 201) {
+          const said = reason(await body(put).catch(() => null) as Record<string, unknown> | null, env.CAMELFS_API_TOKEN!);
+          throw new Error(`camelFS status ${put.status}: blob upload failed${said ? `: ${said}` : ""}`);
+        }
         await put.body?.cancel();
-        if (put.status !== 200 && put.status !== 201) throw new Error(`camelFS status ${put.status}: blob upload failed`);
         uploaded++;
       }));
     }

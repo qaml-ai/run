@@ -175,3 +175,25 @@ test("mode refuses a final symlink", async t => {
   assert.equal(r.result.code, "sync_failed"); assert.match(r.result.message, /symlink/);
   assert.equal(r.reply?.applied, false); assert.equal((await lstat(join(r.repo, "file"))).mode & 0o777, 0o644);
 });
+
+test("a lineage's first mount: an empty fromTree applies every file as a put", async t => {
+  const frames = [{ ...header, fromTree: "" }, { index: [entry("hello")] }, { indexEnd: true, count: 1 },
+    { op: "put", path: "hello", mode: "100644", size: 3 }, Buffer.from("new"), { end: true }];
+  const r = await setup(t, frames, { command: "cat hello" });
+  assert.equal(r.result.ok, true); if (!r.result.ok) return;
+  assert.equal(base64Text(r.result.stdout.data), "new"); assert.equal(r.reply?.applied, true);
+});
+
+test("apply refuses a malformed fromTree", async t => {
+  const r = await setup(t, [{ ...header, fromTree: "not-a-tree" }]);
+  assert.equal(r.result.ok, false); if (r.result.ok) return;
+  assert.match(r.result.message, /invalid apply header/);
+});
+
+test("the daemon's trailer carries an empty error on success, as its encoder writes every field", async t => {
+  const frames = [{ ...header, fromTree: "", baseTree: "", walkMs: 0 }, { index: [entry("hello")] }, { indexEnd: true, count: 1 },
+    { op: "put", path: "hello", mode: "100644", size: 3, target: "", end: false }, Buffer.from("new"), { path: "", op: "", mode: "", size: 0, target: "", end: true, error: "" }];
+  const r = await setup(t, frames, { command: "cat hello" });
+  assert.equal(r.result.ok, true, JSON.stringify(r.result)); if (!r.result.ok) return;
+  assert.equal(base64Text(r.result.stdout.data), "new");
+});
