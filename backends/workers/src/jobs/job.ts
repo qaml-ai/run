@@ -53,7 +53,8 @@ export type JobSpec = {
   snapshot?: ComputerSnapshot;
   files?: JobFiles;
   volume?: JobVolumeSource;
-  /** Checkpoint /repo when the command ends (camelFS hosts only); needs `volume`. */
+  repo?: { tenant: string; repo: string; ref?: string; version?: string; owner: string };
+  /** Checkpoint /repo when the command ends (camelFS hosts only); needs `volume` or `repo`. */
   commit?: boolean;
   /** A shell command (`bash -lc`), run in /repo. */
   command: string;
@@ -102,7 +103,7 @@ export type JobResult =
       /** Whether `limits.pids` was applied through the container's cgroup (pids.max). */
       /** How `limits.pids` was applied: the container's cgroup (pids.max), the job VM guest's ulimit, or not at all. */
       pids?: "cgroup" | "ulimit" | "unenforced";
-      camelfs?: { commit?: string; tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
+      camelfs?: { ref?: string; version?: string; commit?: string; tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
         checkpoint?: { walkMs: number; streamMs: number; freezeMs: number; files: number; bytes: number; skipped: number;
           changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; imageMs?: number } };
       snapshot?: ComputerSnapshot;
@@ -188,7 +189,7 @@ const positive = (value: unknown, name: string, max: number, integer = false) =>
 export function jobSpec(value: unknown, options: { beyondContainers?: boolean } = {}): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
   const v = value as Partial<JobSpec> | null;
   if (!v || typeof v !== "object") throw bad("A job is an object");
-  const known = ["id", "image", "snapshot", "files", "volume", "commit", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
+  const known = ["id", "image", "snapshot", "files", "volume", "repo", "commit", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
   const extra = Object.keys(v).find(key => !known.includes(key));
   if (extra) throw bad(`Unknown job field: ${extra}`);
   if (typeof v.id !== "string" || !JOB_ID.test(v.id)) throw bad("A job id is 1-100 letters, digits, _ or -");
@@ -226,8 +227,19 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
       throw bad("A job volume source names a tenant, a volume and a snapshot");
     volume = { tenant: s.tenant, volume: s.volume, snapshot: s.snapshot };
   }
+  let repo: JobSpec["repo"];
+  if (v.repo !== undefined) {
+    const r = v.repo;
+    if (!r || typeof r !== "object" || typeof r.tenant !== "string" || !r.tenant || typeof r.repo !== "string" || !r.repo.trim()) throw bad("repo needs tenant and a non-empty repo");
+    if (v.volume !== undefined || v.files !== undefined) throw bad("repo excludes volume and files");
+    if (r.ref !== undefined && (typeof r.ref !== "string" || !r.ref)) throw bad("repo ref is a non-empty string");
+    if (r.version !== undefined && (typeof r.version !== "string" || !/^[a-fA-F0-9]{40}$/.test(r.version))) throw bad("repo version is 40 hex characters");
+    if (r.ref !== undefined && r.version !== undefined) throw bad("Give repo ref or version, not both");
+    if (typeof r.owner !== "string" || !/^(agent|workflow|job|user|api|cache):[A-Za-z0-9._:-]{1,200}$/.test(r.owner)) throw bad("Invalid repo owner");
+    repo = { tenant: r.tenant, repo: r.repo, owner: r.owner, ...(r.ref !== undefined ? { ref: r.ref } : {}), ...(r.version !== undefined ? { version: r.version } : {}) };
+  }
   if (v.commit !== undefined && typeof v.commit !== "boolean") throw bad("commit is true or false");
-  if (v.commit && !volume) throw bad("A job commits only a volume's tree: commit needs volume");
+  if (v.commit && !volume && !repo) throw bad("A job commits only a volume's tree: commit needs volume");
   if (v.outputs !== undefined && (!Array.isArray(v.outputs) || v.outputs.length > JOB_LIMITS.outputs)) throw bad(`outputs is a list of at most ${JOB_LIMITS.outputs} paths under /out`);
   const outputs = [...new Set((v.outputs ?? []).map(path => jobPath(path, "output path")))];
   const l = v.limits as JobLimits | undefined;
@@ -251,6 +263,7 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
   if (v.payer.kind !== undefined && (v.payer.kind !== "workflow" || !/^wf_[A-Za-z0-9_-]{1,80}$/.test(v.payer.agent))) throw bad('A job\'s payer kind is "workflow", with the workflow\'s id as its agent');
   const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent, ...(v.payer.kind ? { kind: v.payer.kind } : {}) };
   if (volume && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
+  if (repo && repo.tenant !== payer.tenant) throw bad("A job reads repos of its payer's tenant only");
   let secretEnv: Record<string, string> | undefined;
   if (v.secretEnv !== undefined) {
     const entries = v.secretEnv && typeof v.secretEnv === "object" && !Array.isArray(v.secretEnv) ? Object.entries(v.secretEnv) : undefined;
@@ -264,7 +277,7 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
   if (given !== undefined && given !== instance) throw bad(`instance is derived from limits (${instance}), not set`);
   return {
     id: v.id, image: v.image ?? "workspace", command: v.command, timeoutSeconds: v.timeoutSeconds!, outputs,
-    ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {},
+    ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {}, ...repo ? { repo } : {},
     ...Object.keys(limits).length ? { limits } : {}, ...v.internet ? { internet: true } : {},
     ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer, ...secretEnv ? { secretEnv } : {},
     ...(v.commit ? { commit: true } : {}), instance,
