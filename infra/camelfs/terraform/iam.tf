@@ -2,14 +2,16 @@
 # and tables, as the job-hosts plan's role is scoped"; the api tier is the authorization boundary):
 #
 #   api        the Fargate task role of camelfsd api: every table and the bucket (no delete; results/ for VM
-#              results that outgrow an item). The only principal that touches refs, lineages, deliveries, hosts
-#              and vms. The token verification keys reach the task as an injected environment variable, so the
-#              task role reads no secret; the execution role reads that one secret for the injection.
+#              results that outgrow an item), and the hosts' Private CA as registration authority (issue and fetch
+#              end-entity certificates, nothing else on the CA). The only principal that touches refs, lineages,
+#              deliveries, hosts and vms. The token verification keys reach the task as an injected environment
+#              variable, so the task role reads no secret; the execution role reads that one secret for the
+#              injection.
 #   host       camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and
 #              commits a checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks
 #              its fence), reads no lineage registry, touches no control table and writes no VM result (the tier
-#              does, from the host's "ended" call); plus the service's public JWKS, to verify the tier's boot/stop
-#              tokens. Delivered as a customer-managed
+#              does, from the host's "ended" call); no secret at all: its identity is the certificate the tier
+#              issues it at enrollment (§9.12). Delivered as a customer-managed
 #              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
 #              host_managed_policies) and to the proto host's role, and as a role + instance profile of its own
 #              for hosts outside those pools. The role trusts ec2.amazonaws.com only, with the job-hosts
@@ -46,8 +48,7 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-# Used by ECS itself: pull the image, write logs, and read the two secrets it injects (CAMELFS_JWKS,
-# CAMELFS_SERVICE_SIGNING_KEY).
+# Used by ECS itself: pull the image, write logs, and read the one secret it injects (CAMELFS_JWKS).
 resource "aws_iam_role" "api_execution" {
   name               = "${var.name}-${var.env}-api-execution"
   description        = "camelFS api ECS task execution (image pull, logs, the JWKS injection)"
@@ -68,7 +69,7 @@ resource "aws_iam_role_policy" "api_execution_jwks" {
       Sid      = "InjectKeys"
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.token_verify_keys.arn, aws_secretsmanager_secret.service_signing_key.arn]
+      Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
     }]
   })
 }
@@ -118,6 +119,28 @@ locals {
         Action   = local.dynamodb_item_actions
         Resource = values(local.table_arns)
       },
+      # Registration authority for the hosts' CA (mtls.tf): issue a host's or its own end-entity certificate from a
+      # CSR, and fetch it. IssueCertificate is restricted to the two end-entity templates (never a CA template,
+      # never passthrough of arbitrary extensions); validity is capped by the CA's short-lived mode (7 days). Which
+      # host id a certificate may carry is the tier's enrollment check: IAM cannot constrain a subject.
+      {
+        Sid      = "IssueHostCertificates"
+        Effect   = "Allow"
+        Action   = ["acm-pca:IssueCertificate"]
+        Resource = [aws_acmpca_certificate_authority.hosts.arn]
+        Condition = {
+          StringEquals = { "acm-pca:TemplateArn" = [
+            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1",
+            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityClientAuthCertificate/V1",
+          ] }
+        }
+      },
+      {
+        Sid      = "FetchIssuedCertificates"
+        Effect   = "Allow"
+        Action   = ["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate"]
+        Resource = [aws_acmpca_certificate_authority.hosts.arn]
+      },
       {
         Sid    = "EcsExec"
         Effect = "Allow"
@@ -146,8 +169,8 @@ resource "aws_iam_role_policy" "api" {
 
   lifecycle {
     precondition {
-      condition     = !anytrue([for statement in local.api_policy.Statement : contains(flatten([statement.Action]), "s3:DeleteObject") || contains(flatten([statement.Action]), "s3:*") || anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
-      error_message = "The api role must not delete objects (deletion is the collector's, under its own role) and reads no secret (the JWKS is injected by the execution role)."
+      condition     = !anytrue([for statement in local.api_policy.Statement : contains(flatten([statement.Action]), "s3:DeleteObject") || contains(flatten([statement.Action]), "s3:*") || anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:") || action == "acm-pca:*" || startswith(action, "acm-pca:Create") || startswith(action, "acm-pca:Delete") || startswith(action, "acm-pca:Update") || startswith(action, "acm-pca:Import")])])
+      error_message = "The api role must not delete objects (deletion is the collector's, under its own role), reads no secret (the JWKS is injected by the execution role), and only issues and fetches certificates on the CA."
     }
   }
 }
@@ -184,14 +207,6 @@ locals {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
-      },
-      # The service's public JWKS, to verify the tier's boot/stop tokens on the compute listener (K4). The host's
-      # boot unit fetches it to /etc/camel/camelfs-service-jwks.json (camelfsd host --service-jwks-file).
-      {
-        Sid      = "ServiceVerifyKeys"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.service_verify_keys.arn]
       },
       # VM results are the tier's to write (the host hands the body to the tier in its "ended" call, K4): a host
       # never puts under <lineage>/results/, whatever the shared bucket statement allows.

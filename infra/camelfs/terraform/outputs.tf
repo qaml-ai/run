@@ -97,14 +97,35 @@ output "token_verify_keys_secret_arn" {
   value       = aws_secretsmanager_secret.token_verify_keys.arn
 }
 
-output "service_signing_key_secret_arn" {
-  description = "Secrets Manager: the service's Ed25519 signing key for tier → host tokens (injected as CAMELFS_SERVICE_SIGNING_KEY; set with service-key.sh)."
-  value       = aws_secretsmanager_secret.service_signing_key.arn
+output "hosts_ca_arn" {
+  description = "The hosts' Private CA (short-lived mode): camelfsd api --hosts-ca; hosts trust its certificate (hosts_ca_certificate_s3) on --listen-compute."
+  value       = aws_acmpca_certificate_authority.hosts.arn
 }
 
-output "service_verify_keys_secret_arn" {
-  description = "Secrets Manager: the public JWKS of the service signing key, which hosts read to verify boot/stop tokens (the host policy allows it)."
-  value       = aws_secretsmanager_secret.service_verify_keys.arn
+output "hosts_ca_certificate_s3" {
+  description = "The hosts' CA certificate (PEM) in the trust bucket, the object the internal listener's trust store pins; hosts fetch it to verify the tier's client certificate."
+  value       = "s3://${aws_s3_bucket.trust.bucket}/${aws_s3_object.hosts_ca.key}"
+}
+
+output "trust_bucket" {
+  description = "Public CA certificates only: hosts-ca.pem (written by Terraform) and aop-ca.pem (written by aop.sh init; its VersionId is aop_ca_version)."
+  value       = aws_s3_bucket.trust.bucket
+}
+
+output "aop_ca_secret_arn" {
+  description = "Secrets Manager: the offline AOP CA (key + certificate) that aop.sh uses; nothing in AWS reads it."
+  value       = aws_secretsmanager_secret.aop_ca.arn
+}
+
+output "mtls" {
+  description = "Mutual TLS status: the public listener's mode (off until aop_ca_version pins the AOP CA), the internal listener's (verify from the first listener), the enrollment listener and port."
+  value = {
+    public_mode          = var.aop_ca_version == null ? "off" : "verify"
+    internal_mode        = "verify"
+    aop_ca_version       = var.aop_ca_version
+    enroll_listener_port = var.enroll_listener_port
+    enroll_port          = var.enroll_port
+  }
 }
 
 output "api_command" {

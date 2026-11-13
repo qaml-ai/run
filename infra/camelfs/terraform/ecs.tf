@@ -24,12 +24,15 @@ locals {
 
   # The daemon's CLI (proto-block, 2026-11-13): `camelfsd api --listen --data --store --region --token-issuer
   # --refs-table`; --objects-table and --lineages-table come with L74, the K4 tables with K4 (api_extra_args until
-  # then, or here once the flags exist). Keys are not flags: ECS injects the runtime's verify JWKS as CAMELFS_JWKS
-  # (the daemon also takes --jwks-file) and the service's own signing key (tier → host tokens, K4) as
-  # CAMELFS_SERVICE_SIGNING_KEY, so no key material is in the task definition and the task role reads no secret.
+  # then, or here once the flags exist). --listen-enroll (§9.12): the enrollment-only port behind the plain-TLS
+  # listener. --hosts-ca: the Private CA the tier issues host certificates from. The runtime's verify JWKS is not a
+  # flag: ECS injects it as CAMELFS_JWKS (the daemon also takes --jwks-file), so no key material is in the task
+  # definition and the task role reads no secret. The tier's own client certificate comes from the CA at boot.
   api_command = concat([
     "api",
     "--listen", "0.0.0.0:${var.api_port}",
+    "--listen-enroll", "0.0.0.0:${var.enroll_port}",
+    "--hosts-ca", aws_acmpca_certificate_authority.hosts.arn,
     "--data", local.api_data_dir,
     "--store", "s3://${aws_s3_bucket.objects.bucket}",
     "--region", var.region,
@@ -159,14 +162,10 @@ resource "aws_ecs_task_definition" "api" {
     image        = local.api_image
     command      = local.api_command
     essential    = true
-    portMappings = [{ containerPort = var.api_port, protocol = "tcp" }]
+    portMappings = [{ containerPort = var.api_port, protocol = "tcp" }, { containerPort = var.enroll_port, protocol = "tcp" }]
     environment  = [for name in sort(keys(local.api_environment)) : { name = name, value = local.api_environment[name] }]
-    # Read by the execution role at task start: the runtime's public JWKS (a rotation is jwks.sh set + a roll) and
-    # the service's own signing key (service-key.sh new + a roll).
-    secrets = [
-      { name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn },
-      { name = "CAMELFS_SERVICE_SIGNING_KEY", valueFrom = aws_secretsmanager_secret.service_signing_key.arn },
-    ]
+    # Read by the execution role at task start: the runtime's public JWKS (a rotation is jwks.sh set + a roll).
+    secrets     = [{ name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn }]
     mountPoints = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
     # The image runs as a non-root user; everything but the data volume is read-only.
     readonlyRootFilesystem = true
@@ -233,7 +232,14 @@ resource "aws_ecs_service" "api" {
     }
   }
 
-  depends_on = [aws_lb_listener.api_https]
+  # The enrollment port, behind the internal balancer's plain-TLS listener (mtls.tf).
+  load_balancer {
+    target_group_arn = aws_lb_target_group.enroll.arn
+    container_name   = local.container_name
+    container_port   = var.enroll_port
+  }
+
+  depends_on = [aws_lb_listener.api_https, aws_lb_listener.enroll]
 
   lifecycle {
     # deploy.sh rolls new task definition revisions; autoscaling owns the count.
