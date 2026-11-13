@@ -183,6 +183,22 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 	_ = store.Atomic(filepath.Join(local.Dir, "a", "t", tree), []byte("corrupt"))
 	callStorage(t, fresh, "a", "GET", "trees/"+tree, nil, "", 500)
 }
+func TestEmptyBatchHasNoMultipartPreamble(t *testing.T) {
+	s := storageServer(t, store.Local{Dir: t.TempDir()})
+	c := commit(t, s, "l", "", nil)
+	w := callStorage(t, s, "l", "POST", "read", map[string]any{"tree": c["tree"], "paths": []string{}}, "", 200)
+	_, params, err := mime.ParseMediaType(w.Header().Get("Content-Type"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Body.String() != "--"+params["boundary"]+"--\r\n" {
+		t.Fatal(w.Body.String())
+	}
+	if _, err := multipart.NewReader(w.Body, params["boundary"]).NextPart(); err != io.EOF {
+		t.Fatal(err)
+	}
+}
+
 func TestStorageBatchGrepAndDiff(t *testing.T) {
 	s := storageServer(t, store.Local{Dir: t.TempDir()})
 	blob := put(t, s, "l", strings.Repeat("hello world\n", 2002))

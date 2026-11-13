@@ -373,6 +373,13 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 		}
 		mw := multipart.NewWriter(w)
 		w.Header().Set("Content-Type", "multipart/mixed; boundary="+mw.Boundary())
+		if len(v.Paths) == 0 {
+			// mime/multipart.Close prefixes its terminator with CRLF even when
+			// no part was written. Emit the initial boundary without a preamble,
+			// matching the runtime client's binary multipart parser.
+			_, _ = fmt.Fprintf(w, "--%s--\r\n", mw.Boundary())
+			return
+		}
 		for i, p := range v.Paths {
 			h := textproto.MIMEHeader{"X-Camel-Path": []string{p}}
 			if entries[i].SHA1 == "" {
