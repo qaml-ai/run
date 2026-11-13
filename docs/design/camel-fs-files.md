@@ -208,6 +208,35 @@ regional storage tier). The state is now:
 | each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
 | the per-tenant repo list; the token signing keys (`RuntimeSigner`, Postgres `signing_keys`) | the runtime | tenant |
 
+**Deployed names** (fs-infra, #967, applied 2026-11-13; `infra/camelfs/README.md` is the source of truth). All
+of these are in account `904534089871`, `us-west-2`, with state at `agent-runtime/camelfs/terraform.tfstate`.
+
+- **Bucket:** `camelfs-prod-904534089871`. SSE-KMS, versioned with 35-day noncurrent expiry, daily Inventory
+  into `inventory/`.
+  - Keys: `<lineage>/{o,t,k,r,c,ts}/<hash>`.
+  - The guest image (K1) at `guest/<sha256>…`, put only by the GitHub OIDC role
+    `camelfs-prod-guest-image-publisher`.
+  - VM results at `<lineage>/results/<vm>`, tagged `kind=result`, expired after 7 days, written only by the tier.
+- **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
+  - `camelfs-prod-objects` (`lineage` + `id`);
+  - `camelfs-prod-refs` (`lineage` + `name`);
+  - `camelfs-prod-lineages` (`lineage`);
+  - `camelfs-prod-deliveries` (`shard` + `id`);
+  - `camelfs-prod-hosts` (`pool` + `host`);
+  - `camelfs-prod-vms` (`id`).
+- **Tier:** ECS Fargate (Graviton) service `camelfs-prod-api` behind two ALBs, both with HTTP/2 off: public
+  `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts'
+  security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
+- **Keys** (Secrets Manager):
+  - `camelfs/prod/token-verify-keys`: the runtime's Ed25519 JWKS, injected as `CAMELFS_JWKS`.
+  - `camelfs/prod/service-signing-key`: the service's own key for the tier → host family, injected as
+    `CAMELFS_SERVICE_SIGNING_KEY`.
+  - `camelfs/prod/service-verify-keys`: its public JWKS, read by hosts.
+
+  The api task role reads no secret.
+- **IAM:** the host policy `camelfs-prod-host` allows the bucket and `objects` only. It explicitly denies every
+  other table and any write to `*/results/*`, so a host moves a ref only through the tier's fence check.
+
 Nothing in the runtime holds a ref. `camelfsd --role api` is a stateless Go tier behind an ALB in us-west-2: the §9
 plane plus a `refs` package, any node serving any request. Hosts run `camelfsd --role host` (the block layer and the
 cache, no refs) and reach the tier in-VPC. The `CAMELFS` tunnel, the shared bearer (ledger L30) and `RepoDO` are
