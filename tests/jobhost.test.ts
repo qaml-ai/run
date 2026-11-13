@@ -143,3 +143,36 @@ test("host results survive repeated reconnects until acknowledged and expire aft
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(results, 3); assert.equal((agent as any).results.size, 0);
 });
+
+test("a reconnect hello lists running jobs and registered resends their original started time", { timeout: 15_000 }, async t => {
+  const { createServer } = await import("node:http");
+  const { WebSocketServer } = await import("ws");
+  const { HostAgent, AGENT_VERSION } = await import("../jobhost/agent.ts");
+  const server = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ host: "test", credential: "fixture-only", expiresAt: Date.now() + 3600_000 })); });
+  const sockets = new WebSocketServer({ server });
+  server.listen(0, "127.0.0.1"); await new Promise<void>(resolve => server.once("listening", resolve));
+  const messages: any[] = [], repeated = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const stream = { data: "", size: 0, truncated: false };
+  const launcher = { kind: "fake" as const, async boot() { return { id: "running", async destroy() { finish.resolve(); }, async request(request: any) {
+    if (request.op === "run") await finish.promise;
+    return { ok: true, exitCode: 0, timedOut: false, stdout: stream, stderr: stream, freeBytes: 1e12 };
+  } }; } };
+  sockets.on("connection", socket => socket.on("message", data => {
+    const message = JSON.parse(String(data)); messages.push(message);
+    if (message.type === "hello") {
+      socket.send(JSON.stringify({ type: "registered", host: "test" }));
+      if (messages.filter(m => m.type === "hello").length === 1) socket.send(JSON.stringify({ type: "job", id: "running", spec: { command: "true", files: [], outputs: [], timeoutSeconds: 30, limits: {}, internet: false } }));
+    }
+    if (message.type === "started") {
+      if (messages.filter(m => m.type === "started").length === 1) socket.close();
+      else repeated.resolve();
+    }
+  }));
+  const agent = new HostAgent({ runtime: `http://127.0.0.1:${(server.address() as { port: number }).port}`, attest: async () => ({ kind: "test", host: "test", secret: "fixture-only" }), slots: 1, vcpus: 1, memoryMiB: 512, diskLowBytes: 0, launcher, log: () => {} });
+  t.after(async () => { finish.resolve(); await agent.close(); for (const socket of sockets.clients) socket.terminate(); await new Promise<void>(resolve => sockets.close(() => server.close(() => resolve()))); });
+  await agent.start(); await repeated.promise;
+  const hellos = messages.filter(m => m.type === "hello"), starts = messages.filter(m => m.type === "started");
+  assert.equal(AGENT_VERSION, "0.3.0");
+  assert.deepEqual(hellos[0].running, []); assert.deepEqual(hellos[1].running, ["running"]);
+  assert.deepEqual(starts[1], starts[0]);
+});
