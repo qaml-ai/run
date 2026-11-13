@@ -15,21 +15,21 @@ func TestVerifiedKeys(t *testing.T) {
 	b := make([]byte, root.ChunkSize)
 	b[0] = 1
 	h := root.Hash(b)
-	if e := s.Put(ctx, "c/"+h, b); e != nil {
+	if e := s.Put(ctx, "l/c/"+h, b); e != nil {
 		t.Fatal(e)
 	}
-	if ok, e := s.Has(ctx, "c/"+h); !ok || e != nil {
+	if ok, e := s.Has(ctx, "l/c/"+h); !ok || e != nil {
 		t.Fatal(ok, e)
 	}
 	b[1] = 2
-	if e := s.Put(ctx, "c/"+h, b); e == nil {
+	if e := s.Put(ctx, "l/c/"+h, b); e == nil {
 		t.Fatal("accepted wrong hash")
 	}
 	if _, e := s.Get(ctx, "../../etc/passwd"); e == nil {
 		t.Fatal("accepted invalid key")
 	}
 	blob := []byte("blob")
-	if e := s.Put(ctx, BlobKey(blob), blob); e != nil {
+	if e := s.Put(ctx, "l/"+BlobKey(blob), blob); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -97,4 +97,23 @@ func TestSharedFetchBudget(t *testing.T) {
 	if len(b.started) != 0 {
 		t.Fatal("exceeded shared budget")
 	}
+}
+
+func TestUploadInventoryScope(t *testing.T) {
+	a := &Uploaded{Store: WithDepth(&S3{Bucket: "bucket", Prefix: "before"}, 64)}
+	same := &Uploaded{Store: &S3{Bucket: "bucket", Prefix: "before"}}
+	other := &Uploaded{Store: &S3{Bucket: "bucket", Prefix: "after"}}
+	bucket := &Uploaded{Store: &S3{Bucket: "other", Prefix: "before"}}
+	key := "l/c/" + root.Hash([]byte("chunk"))
+	if a.inventoryKey(key) != same.inventoryKey(key) {
+		t.Fatal("same store lost stable scope")
+	}
+	if a.inventoryKey(key) == other.inventoryKey(key) || a.inventoryKey(key) == bucket.inventoryKey(key) || a.inventoryKey(key) == key {
+		t.Fatal("upload inventory crosses namespaces")
+	}
+}
+
+func (s blockedStore) Head(ctx context.Context, k string) (Info, error) {
+	_, e := s.Has(ctx, k)
+	return Info{}, e
 }

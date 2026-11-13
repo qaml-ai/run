@@ -196,8 +196,8 @@ test("every Wrangler config adds WorkflowObject and WorkflowResults with their o
     // After the existing ones: last, or followed only by the job hosts' (test configs, docs/design/job-hosts-plan.md).
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
-    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results" && tag !== "repos"), [], `${name}: nothing but the job hosts' and the result cache's after it`);
-    // The result cache (workflow-results.ts): bound, with only the pilot's job hosts after its migration.
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results" && tag !== "repos"), [], `${name}: nothing but the job hosts', the result cache's and the repos' after it`);
+    // The result cache (workflow-results.ts): bound, with only the pilot's job hosts and then the repos (repos/repo-do.ts) after its migration.
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
     assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
       { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },

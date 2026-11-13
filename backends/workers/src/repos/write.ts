@@ -1,4 +1,4 @@
-import { notifyRepoWatchers } from "./notify.ts";
+import { notifyRepoWatchers } from './notify.ts';
 import { keyServices } from '../security-services.ts';
 import { RepoError, check, normalizeRepoPath, repoErrorFrom, type Entry, type Mode, type Fence, type Version } from './repo-policy.ts';
 import { repoContext, versionEntries, type RepoContext } from './registry.ts';
@@ -32,6 +32,7 @@ export type WriteInput = {
   allowEmpty?: boolean;
   idempotencyKey?: string;
 };
+// Awaited (not waitUntil): the next write's quota check reads it, and the tool import graph runs outside cloudflare:workers in tests.
 export async function reportUsage(ctx: RepoContext) {
   const info = await ctx.stub.info();
   await Promise.resolve(ctx.env.TENANTS.getByName(ctx.tenant).repoUsage(ctx.repoId, info.bytes, info.files))
@@ -44,17 +45,7 @@ export async function quota(ctx: RepoContext, bytes: number) {
     throw new RepoError('storage-limit', 507, 'storage-limit', { limit });
 }
 /** RepoDO accounts for each blob once across all heads. */
-export async function addedBytes(ctx: RepoContext, incoming: Entry[]) {
-  const known = new Set<string>();
-  for (const ref of await ctx.stub.refs()) {
-    for (const entry of await versionEntries(ctx, ref.version, ref.tree)) known.add(entry.blob);
-  }
-  let bytes = 0;
-  for (const entry of incoming) {
-    if (!known.has(entry.blob)) { known.add(entry.blob); bytes += entry.size; }
-  }
-  return bytes;
-}
+export const addedBytes = (ctx: RepoContext, incoming: Entry[]) => ctx.stub.unseenBytes(incoming.map(({ blob, size }) => ({ blob, size })));
 export async function commitChanges(ctx: RepoContext, input: WriteInput) {
   const prepared: Record<string, {
     blob?: string;
@@ -81,7 +72,9 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
       }
       else if ('from' in c) {
         const src = await repoContext(ctx.env, ctx.tenant, c.from.repo), v = await src.stub.resolve(c.from.version ?? c.from.ref ?? 'main');
-        const sourcePath = normalizeRepoPath(c.from.path), e = (await versionEntries(src, v.version, v.tree)).find(e => e.path === sourcePath);
+        const sourcePath = normalizeRepoPath(c.from.path);
+        const e = v.ref ? (await src.stub.stat(v.ref, [sourcePath])).entries[sourcePath]
+          : (await src.storage.listAll(src.lineage, v.tree, sourcePath.includes('/') ? sourcePath.slice(0, sourcePath.lastIndexOf('/')) : undefined)).find((x): x is Entry => 'blob' in x && x.path === sourcePath);
         if (!e)
           throw new RepoError('no-file', 404, 'no-file');
         const b = src.lineage === ctx.lineage ? e : await ctx.storage.putBlob(ctx.lineage, await src.storage.readBlob(src.lineage, e.blob, v.tree, sourcePath));
@@ -95,8 +88,18 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
     const head = await ctx.stub.ref(input.ref), current = head?.version ?? null;
     if (input.expect !== undefined && input.expect !== current)
       throw new RepoError('stale', 412, 'stale', { current });
-    const entries = head ? await versionEntries(ctx, current!, head.tree) : [];
-    const old = new Map(entries.map(e => [e.path, e]));
+    // Only the paths this write names leave the object: never the whole head.
+    const named = [...new Set([...Object.keys(prepared), ...Object.keys(input.pathExpect ?? {}).map(normalizeRepoPath)])];
+    const old = new Map<string, Entry>();
+    let moved = false;
+    for (let i = 0; head && i < named.length; i += 1000) {
+      const stat = await ctx.stub.stat(input.ref, named.slice(i, i + 1000));
+      if (stat.version !== current) { moved = true; break; }
+      for (const e of Object.values(stat.entries)) if (e) old.set(e.path, e);
+    }
+    // The ref moved between reading it and its paths: read again (a caller's expect then fails above).
+    if (moved && attempt < 3) continue;
+    if (moved) throw new RepoError('stale', 412, 'stale', { current: null });
     const pathExpect: Record<string, string | 'none'> = Object.create(null);
     for (const [raw, expected] of Object.entries(input.pathExpect ?? {})) {
       const path = normalizeRepoPath(raw);
@@ -112,10 +115,10 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
       if (c) {
         let blob = c.blob ?? prev?.blob, size = c.size ?? prev?.size;
         if (c.blob && c.size === undefined) {
-          const named = entries.find(e => e.blob === c.blob);
-          if (!named)
+          const known = await ctx.stub.blobSize(c.blob);
+          if (known === null)
             throw new RepoError('unknown-blob', 400, 'unknown-blob');
-          size = named.size;
+          size = known;
         }
         if (!blob || size === undefined)
           throw new RepoError('no-file', 404, 'no-file');
@@ -175,8 +178,8 @@ export async function setRefToVersion(ctx: RepoContext, input: {
       const result = await ctx.stub.cas({ ref: input.ref, expect: current, commit, entries, who: input.who, why: input.why });
       await reportUsage(ctx);
       if (result.previous !== result.version && result.watchers.length) {
-        const changes=head ? await diffEntries(ctx,head.tree,commit.tree) : Object.fromEntries(entries.map(e=>[e.path,e]));
-        await notifyRepoWatchers(ctx,input.ref,result,changes,input.author);
+        const changes = head ? await diffEntries(ctx, head.tree, commit.tree) : Object.fromEntries(entries.map(e => [e.path, e]));
+        await notifyRepoWatchers(ctx, input.ref, result, changes, input.author);
       }
       return { ...result, tree: commit.tree, changed: result.previous !== result.version };
     }

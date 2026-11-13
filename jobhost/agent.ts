@@ -33,9 +33,13 @@ export type AgentOptions = {
 
 export class HostAgent {
   private socket?: WebSocket;
-  private readonly frames = new Frames();
+  private frames = new Frames();
   private readonly running = new Map<string, { vm?: Vm; cancelled: boolean }>();
   private readonly outbox: HostMessage[] = [];
+  private readonly results = new Map<string, { message: Extract<HostMessage, { type: "result" }>; at: number }>();
+  private pruneResults() {
+    for (const [id, entry] of this.results) if (entry.at < Date.now() - 24 * 3600_000) this.results.delete(id);
+  }
   private closed = false;
   private registered = Promise.withResolvers<void>();
   private readonly options: AgentOptions;
@@ -72,6 +76,7 @@ export class HostAgent {
   }
 
   private async connectOnce() {
+    this.frames = new Frames();
     const enrolled = await this.enroll();
     this.name = enrolled.host;
     return new Promise<void>((resolve, reject) => {
@@ -106,21 +111,27 @@ export class HostAgent {
   }
 
   private send(message: HostMessage) {
+    this.pruneResults();
+    if (message.type === "result" && !this.results.has(message.id)) this.results.set(message.id, { message, at: Date.now() });
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       // Results and starts wait for the next connection (a start is when a job's charge begins); heartbeats and hellos
       // are made again then.
-      if (message.type === "result" || message.type === "started") this.outbox.push(message);
+      if (message.type === "started") this.outbox.push(message);
       return;
     }
-    for (const frame of frames(message)) this.socket.send(frame);
+    try { for (const frame of frames(message)) this.socket.send(frame); }
+    catch { this.socket.close(); }
   }
 
   private receive(message: RuntimeMessage) {
     if (message.type === "registered") {
       this.log({ type: "jobhost_registered", host: message.host });
+      this.pruneResults();
       for (const pending of this.outbox.splice(0)) this.send(pending);
+      for (const entry of this.results.values()) this.send(entry.message);
       this.registered.resolve();
-    } else if (message.type === "job") void this.run(message.id, message.spec);
+    } else if (message.type === "ack") this.results.delete(message.id);
+    else if (message.type === "job") void this.run(message.id, message.spec);
     else if (message.type === "cancel") void this.cancel(message.id);
   }
 
@@ -133,6 +144,9 @@ export class HostAgent {
 
   /** One job, start to stop. Every outcome is a result; the VM is destroyed whatever happened. */
   async run(id: string, spec: WireJob) {
+    this.pruneResults();
+    const finished = this.results.get(id);
+    if (finished) { this.send(finished.message); return; }
     if (this.running.has(id)) return;
     if (this.running.size >= this.options.slots) { this.send({ type: "result", id, result: { ok: false, code: "start_failed", message: "This host has no free slot" } }); return; }
     const job: { vm?: Vm; cancelled: boolean } = { cancelled: false };

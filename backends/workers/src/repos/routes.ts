@@ -290,7 +290,12 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
       params.set('ref', b.ref);
     if (b.version)
       params.set('version', b.version);
-    const target = await resolved(ctx, params), all = new Map((await versionEntries(ctx, target.version, target.tree)).map(e => [e.path, e])), paths = b.paths.map(normalizeRepoPath) as string[], entries = paths.flatMap(p => all.get(p) ? [all.get(p)!] : []);
+    const target = await resolved(ctx, params), paths = b.paths.map(normalizeRepoPath) as string[];
+    const stat = target.ref ? await ctx.stub.stat(target.ref, paths) : null;
+    // A head is answered from the object's cache; an older version lists its tree.
+    const all = stat?.version === target.version ? new Map(Object.values(stat.entries).flatMap(e => e ? [[e.path, e] as const] : []))
+      : new Map((await versionEntries(ctx, target.version, target.tree)).map(e => [e.path, e]));
+    const entries = paths.flatMap(p => all.get(p) ? [all.get(p)!] : []);
     return json({ version: target.version, files: await contents(ctx, target.tree, entries), missing: paths.filter(p => !all.has(p)) });
   }
   const v = await resolved(ctx, s);
@@ -302,8 +307,14 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   }
   if (tail === 'files' && method === 'GET') {
     const prefix = s.get('prefix') ? normalizeRepoPath(s.get('prefix')!.replace(/\/$/, '')) : undefined, after = s.get('after') ?? '', limit = page(number('limit'), 1000, 10000);
-    const all = (await versionEntries(ctx, v.version, v.tree)).filter(e => (!prefix || e.path === prefix || e.path.startsWith(prefix + '/')) && e.path > after), entries = all.slice(0, limit);
-    return json({ version: v.version, entries: s.get('content') === 'true' ? await contents(ctx, v.tree, entries) : entries, next: all.length > limit ? entries.at(-1)!.path : null });
+    let entries: Entry[], next: string | null;
+    const listed = v.ref ? await ctx.stub.list({ ref: v.ref, prefix, after: after || undefined, limit }) : null;
+    if (listed && listed.version === v.version) ({ entries, next } = listed);
+    else {
+      const all = (await versionEntries(ctx, v.version, v.tree)).filter(e => (!prefix || e.path === prefix || e.path.startsWith(prefix + '/')) && e.path > after);
+      entries = all.slice(0, limit); next = all.length > limit ? entries.at(-1)!.path : null;
+    }
+    return json({ version: v.version, entries: s.get('content') === 'true' ? await contents(ctx, v.tree, entries) : entries, next });
   }
   if (tail === 'grep' && method === 'GET')
     return json(await ctx.storage.grep(ctx.lineage, { tree: v.tree, q: s.get('q') ?? '', regex: s.get('regex') === 'true' || s.get('regex') === '1', ignoreCase: s.get('ignoreCase') === 'true' || s.get('ignoreCase') === '1', path: s.get('path') ?? undefined, limit: number('limit') }));

@@ -100,6 +100,14 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
     for (const input of paths) { const path = normalizeRepoPath(input); entries[path] = this.rows<Entry>("SELECT path,blob,mode,size FROM head WHERE ref=? AND path=?", ref, path)[0] ?? null; }
     return {version: r.version, tree: r.tree, entries: {...entries}};
   }
+  /** The size of a blob some ref's head names, or null: a write may only name blobs the repo already reaches. */
+  blobSize(blob: string): number | null { sha1(blob); return this.rows<{size: number}>("SELECT size FROM head WHERE blob=? LIMIT 1", blob)[0]?.size ?? null; }
+  /** Bytes the given blobs would add: each distinct blob no ref's head names yet, once. */
+  unseenBytes(blobs: {blob: string; size: number}[]): number {
+    check(Array.isArray(blobs) && blobs.length <= 100000); const seen = new Set<string>(); let bytes = 0;
+    for (const {blob, size} of blobs) { sha1(blob); if (seen.has(blob)) continue; seen.add(blob); if (!this.rows("SELECT 1 FROM head WHERE blob=? LIMIT 1", blob).length) bytes += size; }
+    return bytes;
+  }
   async cas(input: Cas) { const result = this.ctx.storage.transactionSync(() => this.apply(input)); await this.arm(); return result; }
   private apply(input: Cas) {
     this.alive(); refName(input.ref); version(input.commit); ownership(input.owner, input.expiresAt);

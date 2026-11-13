@@ -73,6 +73,8 @@ func run(args []string) error {
 }
 func host(args []string) error {
 	f := flag.NewFlagSet("host", flag.ContinueOnError)
+	apiListen := f.String("listen-api", "127.0.0.1:8790", "runtime API address (requires api-token-file)")
+	apiTokenFile := f.String("api-token-file", "", "raw bearer or CAMELFS_API_TOKEN env file; enables runtime API")
 	socket := f.String("socket", "/run/camelfsd/api.sock", "Unix socket")
 	data := f.String("data", "/nvme/camelfs", "data directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
@@ -87,7 +89,6 @@ func host(args []string) error {
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
 	streamIdle := f.Duration("stream-idle", 30*time.Second, "guest stream idle timeout")
 	applyMax := f.Duration("apply-max", 30*time.Minute, "apply overall cap")
-	leaseTTL := f.Duration("lease-ttl", 5*time.Minute, "lease lifetime; renewal is ttl/5")
 	packSize := f.Int64("hydration-pack-size", 4<<20, "hydration window size")
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
@@ -127,7 +128,7 @@ func host(args []string) error {
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
@@ -163,7 +164,30 @@ func host(args []string) error {
 	if e = os.Chmod(*socket, 0600); e != nil {
 		return e
 	}
-	server := http.Server{Handler: &api.Server{Manager: m, Version: version, Store: *url}, ReadHeaderTimeout: 5 * time.Second}
+	token := ""
+	if *apiTokenFile != "" {
+		token, e = readAPIToken(*apiTokenFile)
+		if e != nil {
+			return e
+		}
+	}
+	handler := &api.Server{Manager: m, Version: version, Store: *url, APIToken: token}
+	if token != "" {
+		al, err := net.Listen("tcp", *apiListen)
+		if err != nil {
+			return err
+		}
+		defer al.Close()
+		runtimeAPI := &http.Server{Handler: handler.RuntimeHandler(), ReadHeaderTimeout: 5 * time.Second}
+		defer runtimeAPI.Close()
+		go func() {
+			if err := runtimeAPI.Serve(al); err != nil && err != http.ErrServerClosed {
+				log.Printf("runtime API stopped: %v", err)
+				cancel()
+			}
+		}()
+	}
+	server := http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		<-ctx.Done()

@@ -151,6 +151,10 @@ export class ComputerMeter {
   async isOpen() {
     return !!(await this.store.get(OPEN));
   }
+  /** The persisted session, including its stable job name, for recovery before a caller saved its own state. */
+  openSession(): Promise<ComputerSession | undefined> {
+    return this.store.get<ComputerSession>(OPEN);
+  }
   /** Who the open session bills, or undefined: none open. */
   async openPayer(): Promise<ComputerPayer | undefined> {
     const open = await this.store.get<ComputerSession>(OPEN);
@@ -180,6 +184,12 @@ export class ComputerMeter {
     await this.reading(cpuUsec);
     await this.close(at);
     await this.settle();
+  }
+  /** Persist the finished charge without waiting for accounting; the alarm retries if background settlement is lost. */
+  async closed(cpuUsec?: number, at?: number): Promise<void> {
+    await this.reading(cpuUsec);
+    await this.close(at);
+    await this.schedule(this.now() + SETTLE_MARGIN_MS);
   }
   /**
    * The alarm: settle the open session once it must have idled out (`running` says whether a container still runs:

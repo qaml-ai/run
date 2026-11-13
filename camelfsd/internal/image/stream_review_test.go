@@ -23,10 +23,10 @@ func TestPreparedReceiveNeedsNoDatabaseOrStore(t *testing.T) {
 	m, tree := unit3(t)
 	b := []byte("base")
 	sha := fmtHash(b)
-	if _, e := m.objects().Upload(context.Background(), "l", sha, int64(len(b)), bytes.NewReader(b)); e != nil {
+	if _, e := m.objects("l").Upload(context.Background(), "l", sha, int64(len(b)), bytes.NewReader(b)); e != nil {
 		t.Fatal(e)
 	}
-	tr, e := m.objects().Import(context.Background(), objects.Request{Lineage: "l", ParentTree: tree, Files: map[string]objects.File{"base": {SHA256: sha}}})
+	tr, e := m.objects("l").Import(context.Background(), objects.Request{Lineage: "l", ParentTree: tree, Files: map[string]objects.File{"base": {SHA256: sha}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -138,17 +138,17 @@ func TestApplyStreamsBeforeBatchCompletes(t *testing.T) {
 	ctx := context.Background()
 	a, b := []byte("fast"), []byte("slow")
 	ha, hb := store.GitHash("blob", a), store.GitHash("blob", b)
-	m.Store.Put(ctx, "o/"+ha, a)
-	m.Store.Put(ctx, "o/"+hb, b)
+	m.Store.Put(ctx, "l/o/"+ha, a)
+	m.Store.Put(ctx, "l/o/"+hb, b)
 	unblock := make(chan struct{})
 	defer close(unblock)
-	m.Store = slowApplyStore{m.Store, "o/" + hb, unblock}
+	m.Store = slowApplyStore{m.Store, "l/o/" + hb, unblock}
 	server, client := net.Pipe()
 	defer client.Close()
 	client.SetDeadline(time.Now().Add(time.Second))
 	done := make(chan error, 1)
 	go func() {
-		done <- m.sendApply(server, "j", Apply{Files: 2, Bytes: 8}, []objects.Entry{{Path: "a", SHA1: ha, Size: 4}, {Path: "b", SHA1: hb, Size: 4}}, []wire.Op{{Path: "a", Op: "put", Size: 4}, {Path: "b", Op: "put", Size: 4}})
+		done <- m.sendApply(server, "l", "j", Apply{Files: 2, Bytes: 8}, []objects.Entry{{Path: "a", SHA1: ha, Size: 4}, {Path: "b", SHA1: hb, Size: 4}}, []wire.Op{{Path: "a", Op: "put", Size: 4}, {Path: "b", Op: "put", Size: 4}})
 		server.Close()
 	}()
 	for i := 0; i < 3; i++ {

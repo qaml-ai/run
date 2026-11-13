@@ -1,7 +1,7 @@
 [Unit]
 Description=camelFS API Cloudflare Tunnel
 Wants=network-online.target
-After=network-online.target camel-jobhost.service
+After=network-online.target camelfsd.service
 
 [Service]
 ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run --token-file /etc/cloudflared/camelfs.token
