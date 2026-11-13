@@ -25,11 +25,13 @@ func (c *Cache) Missing(h string) bool {
 // Pack claims each missing chunk's single flight. Demand can join these flights.
 // No byte from a corrupt pack is published, including chunks preceding corruption.
 func (c *Cache) Pack(ctx context.Context, id string, hashes []string) (err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	owned := map[string]*flight{}
 	c.mu.Lock()
 	for _, h := range hashes {
 		if _, ok := c.verified[h]; !ok && c.flights[h] == nil {
-			f := &flight{done: make(chan struct{})}
+			f := &flight{done: make(chan struct{}), cancel: cancel}
 			c.flights[h] = f
 			owned[h] = f
 		}
@@ -47,9 +49,16 @@ func (c *Cache) Pack(ctx context.Context, id string, hashes []string) (err error
 			close(f.done)
 		}
 	}()
+	ctx = store.OnFetchStart(ctx, func() {
+		c.mu.Lock()
+		c.Fetches.Add(1)
+		for _, f := range owned {
+			f.started = true
+		}
+		c.mu.Unlock()
+	})
+	ctx = store.OnFetchFinish(ctx, func(n int64) { c.Bytes.Add(n) })
 	b, e := c.Store.Get(ctx, "p/"+id)
-	c.Fetches.Add(1)
-	c.Bytes.Add(int64(len(b)))
 	if e != nil {
 		return e
 	}

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type counted struct {
@@ -103,4 +104,119 @@ func TestDescriptorLRUBounded(t *testing.T) {
 	if len(c.fds) != openLimit {
 		t.Fatal(len(c.fds))
 	}
+}
+
+// A background flight waiting for network capacity must not pin a demand read.
+func TestDemandDisplacesQueuedBackground(t *testing.T) {
+	ctx := context.Background()
+	local := store.Local{Dir: t.TempDir()}
+	b := make([]byte, root.ChunkSize)
+	b[0] = 42
+	h := root.Hash(b)
+	if e := local.Put(ctx, "c/"+h, b); e != nil {
+		t.Fatal(e)
+	}
+	// Hold the only background slot with an unrelated GET.
+	s := &priorityStore{Store: local, started: make(chan struct{}), gate: make(chan struct{})}
+	c := New(t.TempDir(), s, 2)
+	defer c.Close()
+	defer close(s.gate)
+	go c.EnsureContext(store.Background(ctx), root.Hash([]byte("blocked")))
+	<-s.started
+	done := make(chan error, 1)
+	go func() { _, e := c.Ensure(h); done <- e }()
+	select {
+	case e := <-done:
+		if e != nil {
+			t.Fatal(e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("demand waited behind background")
+	}
+}
+
+type priorityStore struct {
+	store.Store
+	started chan struct{}
+	gate    chan struct{}
+	once    sync.Once
+}
+
+func (s *priorityStore) Get(ctx context.Context, k string) ([]byte, error) {
+	if k == "c/"+root.Hash([]byte("blocked")) {
+		s.once.Do(func() { close(s.started) })
+		select {
+		case <-s.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.Store.Get(ctx, k)
+}
+
+func TestDemandPromotesSameQueuedChunk(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	local := store.Local{Dir: t.TempDir()}
+	b := make([]byte, root.ChunkSize)
+	b[0] = 81
+	h := root.Hash(b)
+	if e := local.Put(ctx, "c/"+h, b); e != nil {
+		t.Fatal(e)
+	}
+	s := &queuedStore{Store: local, target: "c/" + h, started: make(chan struct{}, 64)}
+	c := New(t.TempDir(), s, 64)
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait(); c.Close() }()
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = c.EnsureContext(store.Background(ctx), root.Hash([]byte{byte(i)}))
+		}(i)
+	}
+	for i := 0; i < 64; i++ {
+		select {
+		case <-s.started:
+		case <-time.After(time.Second):
+			t.Fatal("background pool did not fill")
+		}
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); _, _ = c.EnsureContext(store.Background(ctx), h) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		c.mu.Lock()
+		queued := c.flights[h] != nil
+		c.mu.Unlock()
+		if queued {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background target not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	demand, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	if _, e := c.EnsureContext(demand, h); e != nil {
+		t.Fatal("queued target did not jump background", e)
+	}
+}
+
+type queuedStore struct {
+	store.Store
+	target  string
+	started chan struct{}
+}
+
+func (s *queuedStore) Get(ctx context.Context, k string) ([]byte, error) {
+	if k != s.target {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.Store.Get(ctx, k)
 }

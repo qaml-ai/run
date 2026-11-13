@@ -56,7 +56,7 @@ Tree import walks directories without following symlinks, skips `.git`, uploads 
 Tree paths are relative and slash-separated, at most 4096 bytes, with no empty, dot, dot-dot, NUL or `.git` segment. Modes are 100644 (default), 100755 and 120000; gitlinks are refused. Listings accept at most 200,000 files and 64 MiB of JSON. Empty directories are dropped. Absent paths are removed; parentTree is only a reuse hint. Imported trees without a tree/root mapping apply from an ancestor or blank image. Trees use Git's header-prefixed SHA-1, exact binary entry encoding and directory sorting rule. SQLite stores small trees inline and large trees as stub rows referencing the store. New tree rows commit together. Set B to a 40-character blob SHA-1 for the raw-blob example above.
 
 
-The s3speed defaults are 64 concurrent blob/chunk fetches and uploads per host (`host --fetch-depth 64`) and 64 blob uploads per import client (`import-tree --fetch-depth 64`). A shared store budget covers foreground reads, prefetch and hydration. S3 keeps connections alive, with MaxIdleConnsPerHost and MaxConnsPerHost set to the host fetch depth (64 by default). Prefetch lookahead remains separate at `--prefetch-depth 64`. Chunk size stays 256 KiB. Clone hydration is driven exclusively by dm-clone, enabled immediately with batch size 64 and threshold 64. Direct writes to an unmarked destination region would race dm-clone and cannot safely update its bitmap. There are no S3 range requests across separate chunk objects. Prehydrate mode groups offsets into aligned `--hydration-pack-size` windows (default 4 MiB), with 32 windows in flight and the shared 64-operation store budget.
+The s3speed defaults are 64 concurrent blob/chunk fetches and uploads per host (`host --fetch-depth 64`) and 64 blob uploads per import client (`import-tree --fetch-depth 64`). A shared store budget covers foreground reads, prefetch and hydration. S3 keeps connections alive, with MaxIdleConnsPerHost and MaxConnsPerHost set to the host fetch depth (64 by default). Prefetch lookahead remains separate at `--prefetch-depth 64`. Chunk size stays 256 KiB. Clone hydration is driven exclusively by dm-clone, enabled immediately with batch size 256 and threshold 256. Direct writes to an unmarked destination region would race dm-clone and cannot safely update its bitmap. There are no S3 range requests across separate chunk objects. Prehydrate mode groups offsets into aligned `--hydration-pack-size` windows (default 4 MiB), with 32 windows in flight and the shared 64-operation store budget.
 
 ## Tree mounts and guest streams (unit 3)
 
@@ -255,3 +255,8 @@ mean latency is below 60% of NBD and QD16 IOPS exceed twice NBD, it warrants a
 separate unit. Otherwise record `NBD stays; ublk is v1 (L19)`. L19's decision is
 pending the reviewer table. L2's cold read/hydration numbers are likewise pending;
 L61 was removed by unit 6.
+
+The packer publishes idle refs with a fenced CAS. Held refs keep their current
+root so an accelerator rewrite cannot fence an active checkpoint. Packed roots
+are recorded for tree resolution, and release retries publication after dropping
+the lease. Pack import responses include `packMs` and `packBytes`.

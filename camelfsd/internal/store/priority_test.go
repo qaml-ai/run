@@ -44,3 +44,27 @@ func TestDemandReservationAndBorrow(t *testing.T) {
 	}
 	release()
 }
+
+func TestBorrowedSlotPreemptedForDemand(t *testing.T) {
+	b := budget{depth: 2, reserved: 1}
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		child, release, e := b.acquire(Background(ctx))
+		if e != nil {
+			t.Fatal(e)
+		}
+		go func() { <-child.Done(); release() }()
+	}
+	deadline, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_, release, e := b.acquire(deadline)
+	if e != nil {
+		t.Fatal(e)
+	}
+	release()
+	b.mu.Lock()
+	for p := range b.active {
+		p.cancel()
+	}
+	b.mu.Unlock()
+}

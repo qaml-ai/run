@@ -178,6 +178,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e != nil {
 		return out, e
 	}
+	r.Packs = nil
 	ut := time.Now()
 	out.UploadedChunks, e = store.PutChunks(ctx, m.Store, pending)
 	if e != nil {
@@ -252,6 +253,8 @@ type ImportRequest struct {
 	Tree    string `json:"tree"`
 }
 type ImportResult struct {
+	PackMs         float64 `json:"packMs"`
+	PackBytes      int64   `json:"packBytes"`
 	Root           string  `json:"root"`
 	Tree           string  `json:"tree"`
 	Chunks         int     `json:"chunks"`
@@ -330,9 +333,15 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 		return out, e
 	}
 	if m.Packs {
+		pt := time.Now()
 		r, e = m.buildPacks(ctx, r, f)
 		if e != nil {
 			return out, e
+		}
+		out.PackMs = ms(pt)
+		for k := range r.Packs {
+			o, _ := strconv.ParseInt(k, 10, 64)
+			out.PackBytes += int64(len(r.WindowHashes(o))) * root.ChunkSize
 		}
 	}
 	b, e := root.Encode(r)

@@ -13,3 +13,18 @@ Not run in this workspace: /nvme/host-free is absent.
 5k-file freeze window before: unavailable (no authorized EC2/loop host).
 5k-file freeze window after: unavailable (same gate).
 Sprite checks: loop freeze test skipped (requires root); hydrated FIEMAP test skipped (FICLONE unsupported).
+
+unit 7 — instance type: reviewer runs
+NIC ceiling (64 parallel GETs): reviewer runs
+Before (unit 6 81ee7ec8) / after: reviewer runs
+first_file_cold_ms, cold_full_read_ms (hydration off), hydration_ms,
+full_read_during_hydration_ms, demand latency during hydration: reviewer runs
+Fetches / payload bytes / packs used / cache hits: reviewer runs
+Pack build time / pack S3 bytes / total S3 bytes: reviewer runs
+loop / ublk / warm local-store NBD / hydrated dm-clone fio QD1,16: reviewer runs
+L2: pending reviewer timings; no new performance claim.
+L19: pending reviewer comparison. If QD1 mean <60% NBD and QD16 IOPS >2x NBD,
+ublk merits a separate unit; otherwise "NBD stays; ublk is v1 (L19)".
+L61: removed in unit 6. Unit 1–5 real-host smokes above remain verified.
+Run scripts/ec2-unit7.sh in the reviewer slot; it appends measured results here.
+Packs add up to one copy of chunk bytes for each packed root; GC v1 must trace p/.

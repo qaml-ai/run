@@ -130,6 +130,7 @@ func host(args []string) error {
 	// v0-limitation: L16
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
+	store.SetDemandSlots(c.Store, *demandSlots)
 	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, FetchDepth: *fetchDepth, Packs: *packs, Patterns: filepath.Join(*data, "patterns")}
 	m, e := image.New(image.Config{Packs: *packs, PackWindow: *packWindow, StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {

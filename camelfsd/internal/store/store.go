@@ -93,11 +93,12 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
 	case *Uploaded:
 		return v.putFile(ctx, key, f)
 	case *limited:
-		if e := v.acquire(ctx); e != nil {
+		child, release, e := v.budget.acquire(ctx)
+		if e != nil {
 			return e
 		}
-		defer v.release()
-		return PutBlobFile(ctx, v.Store, key, f)
+		defer release()
+		return PutBlobFile(child, v.Store, key, f)
 	case Local:
 		dst := filepath.Join(v.Dir, key)
 		if e := os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
@@ -317,41 +318,45 @@ const DefaultDepth = 64
 // One shared budget covers foreground reads, prefetch, hydration and uploads.
 type limited struct {
 	Store
-	slots  chan struct{}
 	budget budget
 }
 
 func WithDepth(s Store, n int) Store {
+	switch v := s.(type) {
+	case *limited:
+		return v
+	case *Uploaded:
+		if _, ok := v.Store.(*limited); ok {
+			return s
+		}
+	}
 	if n < 1 {
 		n = DefaultDepth
 	}
-	return &limited{Store: s, slots: make(chan struct{}, n), budget: budget{depth: n, reserved: min(16, max(0, n-1))}}
+	return &limited{Store: s, budget: budget{depth: n, reserved: min(16, max(0, n-1))}}
 }
 func Depth(s Store) int {
 	if v, ok := s.(*Uploaded); ok {
 		return Depth(v.Store)
 	}
 	if v, ok := s.(*limited); ok {
-		return cap(v.slots)
+		return v.budget.depth
 	}
 	return DefaultDepth
 }
-func (s *limited) acquire(ctx context.Context) error {
-	select {
-	case s.slots <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-func (s *limited) release() { <-s.slots }
 func (s *limited) Get(ctx context.Context, k string) ([]byte, error) {
 	for {
 		child, release, e := s.budget.acquire(ctx)
 		if e != nil {
 			return nil, e
 		}
+		if fn, ok := ctx.Value(fetchStartKey{}).(func()); ok {
+			fn()
+		}
 		b, e := s.Store.Get(child, k)
+		if fn, ok := ctx.Value(fetchFinishKey{}).(func(int64)); ok {
+			fn(int64(len(b)))
+		}
 		preempted := child.Err() != nil && ctx.Err() == nil
 		release()
 		if preempted && IsBackground(ctx) {

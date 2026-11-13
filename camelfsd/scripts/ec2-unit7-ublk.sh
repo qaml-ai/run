@@ -3,8 +3,10 @@
 ublk_table() {
  local file=$1 nbd=$2 dm=$3 loopdev ublkdev id ublk_pid
  loopdev=$(losetup --find --show --read-only --direct-io=on "$file")
+ LOOP_DEV=$loopdev
  fio_pair loop "$loopdev"
  losetup -d "$loopdev"
+ LOOP_DEV=
  local src=$W/libublk
  if [[ ! -x /home/ubuntu/.cargo/bin/cargo ]] && ! runuser -u ubuntu -- sh -c 'command -v cargo' >/dev/null; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$W/rustup.sh"

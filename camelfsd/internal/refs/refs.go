@@ -232,7 +232,7 @@ func (d *DB) Packed(old, next string) error {
 		}
 		value := ref.Value
 		value.Root = next
-		e = d.CAS(v.l, v.t, ref.Value, value, Fence{ref.Holder, ref.LeaseEpoch})
+		e = d.CAS(v.l, v.t, ref.Value, value, Fence{})
 		if e != nil && !errors.Is(e, ErrFenced) {
 			return e
 		}

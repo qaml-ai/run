@@ -66,6 +66,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(200, v)
+	case r.Method == "GET" && r.URL.Path == "/v0/stats":
+		reply(200, map[string]int64{"fetches": m.Cache.Fetches.Load(), "bytes": m.Cache.Bytes.Load(), "packsUsed": m.Cache.Packs.Load(), "cacheHits": m.Cache.Hits.Load()})
 	case r.Method == "GET" && r.URL.Path == "/v0/health":
 		reply(200, map[string]any{"dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID})
 	case r.Method == "POST" && r.URL.Path == "/v0/mounts":

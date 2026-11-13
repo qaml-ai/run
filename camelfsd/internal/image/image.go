@@ -360,6 +360,9 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		v.State = "warm"
 		if e == nil {
 			e = m.promote(v.Dest, v.Root)
+			if e == nil {
+				m.queuePack(v.Root)
+			}
 		}
 	} else {
 		if e = m.sweep(r.VirtualSize); e != nil {
@@ -460,7 +463,6 @@ func (m *Manager) promote(src, id string) error {
 	if e := os.Rename(tmp, dst); e != nil {
 		return e
 	}
-	m.queuePack(id)
 	return nil
 }
 func run(ctx context.Context, name string, args ...string) (string, error) {
@@ -692,6 +694,12 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	delete(m.mounts, id)
 	m.mu.Unlock()
 	m.unprotect(v.JobID)
+	if v.Promoted {
+		m.queuePack(v.Root)
+		if v.hydrationRoot != "" {
+			m.queuePack(v.hydrationRoot)
+		}
+	}
 	v.State = "released"
 	return v.Promoted, nil
 }
