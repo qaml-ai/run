@@ -31,3 +31,34 @@ func TestCanonical(t *testing.T) {
 		t.Fatal("accepted invalid root")
 	}
 }
+
+func TestLocationEncoding(t *testing.T) {
+	h := strings.Repeat("a", 64)
+	p := strings.Repeat("b", 64)
+	r := Root{V: 1, FSType: "ext4", VirtualSize: ChunkSize, Chunks: map[string]string{"0": h}, Locations: map[string]Location{h: {Pack: p, Index: 2}}}
+	b, e := Encode(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(string(b), `"`+h+`":["`+p+`",2]`) {
+		t.Fatal(string(b))
+	}
+	rr, e := Decode(b)
+	if e != nil || !reflect.DeepEqual(r, rr) {
+		t.Fatal(rr, e)
+	}
+	for _, idx := range []int{-1, 64} {
+		r.Locations[h] = Location{Pack: p, Index: idx}
+		if _, e = Encode(r); e == nil {
+			t.Fatal("invalid index", idx)
+		}
+	}
+	r.Locations = map[string]Location{}
+	if _, e = Encode(r); e == nil {
+		t.Fatal("accepted incomplete locations")
+	}
+	r.Locations = nil
+	if _, e = Encode(r); e != nil {
+		t.Fatal("legacy root refused", e)
+	}
+}

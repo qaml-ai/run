@@ -12,14 +12,14 @@ import (
 const ChunkSize int64 = 256 << 10
 
 type Root struct {
-	V           int               `json:"v"`
-	ParentRoot  string            `json:"parentRoot"`
-	Tree        string            `json:"tree"`
-	VirtualSize int64             `json:"virtualSize"`
-	FSType      string            `json:"fsType"`
-	Chunks      map[string]string `json:"chunks"`
-	Packs       map[string]string `json:"packs,omitempty"`
-	PackWindow  int64             `json:"packWindow,omitempty"`
+	members     map[string]map[int]string
+	V           int                 `json:"v"`
+	ParentRoot  string              `json:"parentRoot"`
+	Tree        string              `json:"tree"`
+	VirtualSize int64               `json:"virtualSize"`
+	FSType      string              `json:"fsType"`
+	Chunks      map[string]string   `json:"chunks"`
+	Locations   map[string]Location `json:"locations,omitempty"`
 }
 
 func Hex(s string, n int) bool {
@@ -47,35 +47,31 @@ func (r Root) Validate() error {
 			return fmt.Errorf("invalid chunk")
 		}
 	}
-	for k, h := range r.Packs {
-		o, e := strconv.ParseInt(k, 10, 64)
-		w := r.Window()
-		if e != nil || o < 0 || o >= r.VirtualSize || o%w != 0 || !Hex(h, 64) || strconv.FormatInt(o, 10) != k {
-			return fmt.Errorf("invalid pack")
+	used := map[string]bool{}
+	for _, h := range r.Chunks {
+		used[h] = true
+	}
+	positions := map[Location]string{}
+	for h, l := range r.Locations {
+		if !used[h] {
+			return fmt.Errorf("unreferenced location")
 		}
-		if PackID(r.WindowHashes(o)) != h || len(r.WindowHashes(o)) < 2 {
-			return fmt.Errorf("invalid pack members")
+		if old, ok := positions[l]; ok && old != h {
+			return fmt.Errorf("conflicting location")
+		}
+		positions[l] = h
+		if !Hex(h, 64) || !Hex(l.Pack, 64) || l.Index < 0 || l.Index >= 64 {
+			return fmt.Errorf("invalid location")
 		}
 	}
-	if r.PackWindow < 0 || r.Window()%ChunkSize != 0 {
-		return fmt.Errorf("invalid pack window")
+	if r.Locations != nil {
+		for _, h := range r.Chunks {
+			if _, ok := r.Locations[h]; !ok {
+				return fmt.Errorf("missing location")
+			}
+		}
 	}
 	return nil
-}
-func (r Root) Window() int64 {
-	if r.PackWindow == 0 {
-		return 4 << 20
-	}
-	return r.PackWindow
-}
-func (r Root) WindowHashes(o int64) []string {
-	var out []string
-	for x := o; x < min(o+r.Window(), r.VirtualSize); x += ChunkSize {
-		if h := r.Chunks[strconv.FormatInt(x, 10)]; h != "" {
-			out = append(out, h)
-		}
-	}
-	return out
 }
 func PackID(h []string) string {
 	var b []byte
@@ -92,11 +88,8 @@ func Encode(r Root) ([]byte, error) {
 		return nil, e
 	}
 	m := map[string]any{"v": r.V, "parentRoot": r.ParentRoot, "tree": r.Tree, "virtualSize": r.VirtualSize, "fsType": r.FSType, "chunks": r.Chunks}
-	if len(r.Packs) > 0 {
-		m["packs"] = r.Packs
-		if r.PackWindow != 0 {
-			m["packWindow"] = r.PackWindow
-		}
+	if r.Locations != nil {
+		m["locations"] = r.Locations
 	}
 	return json.Marshal(m)
 }
@@ -127,4 +120,44 @@ func Diff(a, b Root) []int64 {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// Location encodes as [packId, chunkIndex].
+type Location struct {
+	Pack  string
+	Index int
+}
+
+func (l Location) MarshalJSON() ([]byte, error) { return json.Marshal([2]any{l.Pack, l.Index}) }
+func (l *Location) UnmarshalJSON(b []byte) error {
+	var parts []json.RawMessage
+	if e := json.Unmarshal(b, &parts); e != nil {
+		return e
+	}
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid location")
+	}
+	if e := json.Unmarshal(parts[0], &l.Pack); e != nil {
+		return e
+	}
+	return json.Unmarshal(parts[1], &l.Index)
+}
+
+// Indexed builds a read plan once per root, rather than scanning all locations
+// for every cold chunk. Writers encode only the public root fields.
+func (r Root) Indexed() Root {
+	r.members = map[string]map[int]string{}
+	for h, l := range r.Locations {
+		if r.members[l.Pack] == nil {
+			r.members[l.Pack] = map[int]string{}
+		}
+		r.members[l.Pack][l.Index] = h
+	}
+	return r
+}
+func (r Root) Members(pack string) map[int]string {
+	if r.members == nil {
+		r = r.Indexed()
+	}
+	return r.members[pack]
 }

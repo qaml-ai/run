@@ -54,10 +54,6 @@ func (s *Uploaded) inventoryKey(k string) string {
 	return s.scope + "/" + k
 }
 func (s *Uploaded) known(ctx context.Context, k string) (bool, error) {
-	// Packs may disappear independently of the durable chunk inventory.
-	if strings.HasPrefix(k, "p/") {
-		return s.Store.Has(ctx, k)
-	}
 	var n int
 	e := s.DB.QueryRowContext(ctx, "SELECT 1 FROM uploaded WHERE key=?", s.inventoryKey(k)).Scan(&n)
 	if e == sql.ErrNoRows {
@@ -74,6 +70,9 @@ func (s *Uploaded) Get(ctx context.Context, k string) ([]byte, error) {
 		var b []byte
 		e := s.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='root'", strings.TrimPrefix(k, "r/")).Scan(&b)
 		if e == nil {
+			if e = s.learn(ctx, k, b); e != nil {
+				return nil, e
+			}
 			return b, nil
 		}
 		if e != sql.ErrNoRows {
@@ -87,6 +86,9 @@ func (s *Uploaded) Get(ctx context.Context, k string) ([]byte, error) {
 	if e = s.rememberRoot(ctx, k, b); e != nil {
 		return nil, e
 	}
+	if e = s.learn(ctx, k, b); e != nil {
+		return nil, e
+	}
 	return b, s.record(ctx, k)
 }
 func (s *Uploaded) rememberRoot(ctx context.Context, k string, b []byte) error {
@@ -97,17 +99,34 @@ func (s *Uploaded) rememberRoot(ctx context.Context, k string, b []byte) error {
 	return e
 }
 func (s *Uploaded) Put(ctx context.Context, k string, b []byte) error {
+	_, e := s.put(ctx, k, b)
+	return e
+}
+func (s *Uploaded) put(ctx context.Context, k string, b []byte) (bool, error) {
 	ok, e := s.known(ctx, k)
 	if e != nil || ok {
-		return e
+		return false, e
 	}
 	if e = s.Store.Put(ctx, k, b); e != nil {
-		return e
+		return false, e
 	}
 	if e = s.rememberRoot(ctx, k, b); e != nil {
-		return e
+		return true, e
 	}
-	return s.record(ctx, k)
+	if e = s.learn(ctx, k, b); e != nil {
+		return true, e
+	}
+	return true, s.record(ctx, k)
+}
+
+// PutPack reports whether a payload was sent, so process byte accounting excludes
+// idempotent writes skipped by the durable upload inventory.
+func PutPack(ctx context.Context, s Store, id string, b []byte) (bool, error) {
+	if u, ok := s.(*Uploaded); ok {
+		return u.put(ctx, "p/"+id, b)
+	}
+	e := s.Put(ctx, "p/"+id, b)
+	return e == nil, e
 }
 func (s *Uploaded) putFile(ctx context.Context, k string, f *os.File) error {
 	ok, e := s.known(ctx, k)
@@ -118,4 +137,28 @@ func (s *Uploaded) putFile(ctx context.Context, k string, f *os.File) error {
 		return e
 	}
 	return s.record(ctx, k)
+}
+
+func (s *Uploaded) learn(ctx context.Context, k string, b []byte) error {
+	if strings.HasPrefix(k, "r/") {
+		if root.Hash(b) != strings.TrimPrefix(k, "r/") {
+			return fmt.Errorf("root hash mismatch")
+		}
+		r, e := root.Decode(b)
+		if e != nil {
+			return e
+		}
+		return s.RememberLocations(ctx, r.Locations)
+	}
+	if strings.HasPrefix(k, "p/") {
+		if e := verify(k, b); e != nil {
+			return e
+		}
+		ls := map[string]root.Location{}
+		for o := int64(0); o < int64(len(b)); o += root.ChunkSize {
+			ls[root.Hash(b[o:o+root.ChunkSize])] = root.Location{Pack: strings.TrimPrefix(k, "p/"), Index: int(o / root.ChunkSize)}
+		}
+		return s.RememberLocations(ctx, ls)
+	}
+	return nil
 }

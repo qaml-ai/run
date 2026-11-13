@@ -37,7 +37,7 @@ func verify(k string, b []byte) error {
 	p, h, _ := strings.Cut(k, "/")
 	actual := root.Hash(b)
 	if p == "p" {
-		if len(b) < 2*int(root.ChunkSize) || len(b)%int(root.ChunkSize) != 0 {
+		if len(b) < int(root.ChunkSize) || len(b) > 16<<20 || len(b)%int(root.ChunkSize) != 0 {
 			return fmt.Errorf("invalid pack size")
 		}
 		var hashes []string

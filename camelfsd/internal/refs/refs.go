@@ -47,7 +47,7 @@ func Open(path string) (*DB, error) {
 		return nil, e
 	}
 	d.SetMaxOpenConns(1)
-	_, e = d.Exec(`CREATE TABLE IF NOT EXISTS uploaded(key TEXT PRIMARY KEY,at INTEGER); CREATE TABLE IF NOT EXISTS tree_parents(tree TEXT PRIMARY KEY,parent TEXT); CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,kind TEXT,bytes BLOB,size INT,created_at INTEGER);
+	_, e = d.Exec(`CREATE TABLE IF NOT EXISTS chunk_locations(sha256 TEXT PRIMARY KEY,pack TEXT NOT NULL,idx INTEGER NOT NULL,created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS uploaded(key TEXT PRIMARY KEY,at INTEGER); CREATE TABLE IF NOT EXISTS tree_parents(tree TEXT PRIMARY KEY,parent TEXT); CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,kind TEXT,bytes BLOB,size INT,created_at INTEGER);
  CREATE TABLE IF NOT EXISTS lineage_blobs(lineage TEXT,sha256 TEXT,sha1 TEXT,size INT,created_at INTEGER,PRIMARY KEY(lineage,sha256));
  CREATE INDEX IF NOT EXISTS blob_sha1 ON lineage_blobs(sha1);
  CREATE TABLE IF NOT EXISTS refs(lineage TEXT,name TEXT,"commit" TEXT NOT NULL DEFAULT '',tree TEXT NOT NULL DEFAULT '',root TEXT NOT NULL DEFAULT '',owner TEXT NOT NULL DEFAULT '',holder TEXT,lease_epoch INTEGER NOT NULL DEFAULT 0,lease_deadline INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER,PRIMARY KEY(lineage,name)); CREATE TABLE IF NOT EXISTS mounts(job_id TEXT PRIMARY KEY,lineage TEXT,name TEXT,root TEXT,tree TEXT,image TEXT,warm INTEGER,state TEXT,lease_epoch INTEGER,created_at INTEGER); CREATE TABLE IF NOT EXISTS tree_roots(lineage TEXT,tree TEXT,root TEXT,created_at INTEGER); CREATE INDEX IF NOT EXISTS tree_lookup ON tree_roots(lineage,tree,created_at);`)
@@ -176,66 +176,4 @@ func (d *DB) Publish(ctx context.Context, l, n string, a, b Value, f Fence) erro
 		}
 	}
 	return tx.Commit()
-}
-
-// Packed records accelerator roots even when a ref moved. CAS preserves fencing.
-func (d *DB) Packed(old, next string) error {
-	rows, e := d.DB.Query(`SELECT DISTINCT lineage,tree FROM tree_roots WHERE root=?`, old)
-	if e != nil {
-		return e
-	}
-	type mapping struct{ l, t string }
-	var mappings []mapping
-	for rows.Next() {
-		var v mapping
-		if e = rows.Scan(&v.l, &v.t); e != nil {
-			rows.Close()
-			return e
-		}
-		mappings = append(mappings, v)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return e
-	}
-	for _, v := range mappings {
-		if e = d.RecordTree(v.l, v.t, next); e != nil {
-			return e
-		}
-	}
-	rows, e = d.DB.Query(`SELECT lineage,name FROM refs WHERE root=?`, old)
-	if e != nil {
-		return e
-	}
-	var names []mapping
-	for rows.Next() {
-		var v mapping
-		if e = rows.Scan(&v.l, &v.t); e != nil {
-			rows.Close()
-			return e
-		}
-		names = append(names, v)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return e
-	}
-	for _, v := range names {
-		ref, e := d.Get(v.l, v.t)
-		if e != nil {
-			return e
-		}
-		if ref.Root != old {
-			continue
-		}
-		value := ref.Value
-		value.Root = next
-		e = d.CAS(v.l, v.t, ref.Value, value, Fence{})
-		if e != nil && !errors.Is(e, ErrFenced) {
-			return e
-		}
-	}
-	return nil
 }
