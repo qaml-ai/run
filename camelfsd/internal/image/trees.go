@@ -31,7 +31,14 @@ func blank(c Config) error {
 	if e != nil {
 		return e
 	}
-	if _, e = run(context.Background(), "mkfs.ext4", "-q", "-F", tmp); e != nil {
+	args := []string{"-q", "-F", "-E", "lazy_itable_init=1,lazy_journal_init=1", "-O", "^inline_data"}
+	// mke2fs takes journal sizes in MiB, without a suffix. Tiny development
+	// images need its automatic smaller journal; production blanks use 128 MiB.
+	if c.VirtualSize >= 256<<20 {
+		args = append(args, "-J", "size=128")
+	}
+	args = append(args, tmp)
+	if _, e = run(context.Background(), "mkfs.ext4", args...); e != nil {
 		return e
 	}
 	f, e = os.OpenFile(tmp, os.O_RDWR, 0)

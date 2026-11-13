@@ -82,8 +82,11 @@ func Path(p string) error {
 
 func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int64, body io.Reader) (Blob, error) {
 	b := Blob{SHA256: hash, Size: size}
-	if lineage == "" || !root.Hex(hash, 64) || size < 0 || size > MaxBlob {
+	if lineage == "" || !root.Hex(hash, 64) || size < -1 {
 		return b, apierr.Invalid("invalid blob request")
+	}
+	if size > MaxBlob {
+		return b, &apierr.Error{Status: 413, Code: "blob-too-large", Cause: fmt.Errorf("blob exceeds %d bytes", MaxBlob)}
 	}
 	f, e := os.CreateTemp(r.TempDir, "camelfsd-blob-")
 	if e != nil {
@@ -92,13 +95,38 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 	defer os.Remove(f.Name())
 	defer f.Close()
 	h256, h1 := sha256.New(), sha1.New()
-	fmt.Fprintf(h1, "blob %d\x00", size)
-	n, e := io.Copy(io.MultiWriter(f, h256, h1), io.LimitReader(body, size+1))
+	limit := size
+	var dst io.Writer = io.MultiWriter(f, h256)
+	if size >= 0 {
+		fmt.Fprintf(h1, "blob %d\x00", size)
+		dst = io.MultiWriter(dst, h1)
+	} else {
+		limit = MaxBlob
+	}
+	n, e := io.Copy(dst, io.LimitReader(body, limit+1))
+	if n > MaxBlob {
+		return b, &apierr.Error{Status: 413, Code: "blob-too-large", Cause: fmt.Errorf("blob exceeds %d bytes", MaxBlob)}
+	}
 	if e != nil {
+		if size >= 0 && errors.Is(e, io.ErrUnexpectedEOF) {
+			return b, apierr.Invalid("invalid content length")
+		}
 		return b, e
 	}
-	if n != size {
+	if size >= 0 && n != size {
 		return b, apierr.Invalid("invalid content length")
+	}
+	if size < 0 {
+		size = n
+		b.Size = n
+		// Git's blob hash prefixes the measured length. Replay the bounded temp file.
+		fmt.Fprintf(h1, "blob %d\x00", size)
+		if _, e = f.Seek(0, io.SeekStart); e != nil {
+			return b, e
+		}
+		if _, e = io.Copy(h1, f); e != nil {
+			return b, e
+		}
 	}
 	if fmt.Sprintf("%x", h256.Sum(nil)) != hash {
 		return b, ErrHash
