@@ -43,3 +43,11 @@ test('end retains held refs and retries with backoff, then deletes only workflow
   assert.equal(await ctx.stub.ref(fork.ref),null);
   assert.ok(await ctx.stub.ref('main'));
 });
+test('two workflows with the same effect key on one repo get their own branches', async t => {
+  const f = fixture(t), ctx = await f.create();
+  const one = await childBranch(f.env,'t',memory() as never,{workflow:'wf_one',key:'edit',attempt:1},repoAt(ctx.repoId));
+  const two = await childBranch(f.env,'t',memory() as never,{workflow:'wf_two',key:'edit',attempt:1},repoAt(ctx.repoId));
+  assert.notEqual(one.ref,two.ref);
+  assert.equal((await ctx.stub.ref(one.ref))!.owner,'workflow:wf_one');
+  assert.equal((await ctx.stub.ref(two.ref))!.owner,'workflow:wf_two');
+});

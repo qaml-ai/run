@@ -80,7 +80,7 @@ export class WorkflowResults extends DurableObject<FileBindings> {
     let expiresAt: number | null = null;
     if (fork) {
       const ctx = await repoContext(this.env as RepoEnv, fork.tenant, fork.repo);
-      const name = `cache/${hash.slice(0, 16)}`, owner = `cache:${fork.tenant}:${fork.owner}`;
+      const owner = `cache:${fork.tenant}:${fork.owner}`, name = `cache/${(await sha256(`${owner}\0${hash}`)).slice(0, 16)}`;
       let retained = await ctx.stub.ref(name);
       if (retained && retained.owner !== owner) throw new RepoError('Cache ref belongs to another owner', 409, 'exists');
       if (retained && (retained.version !== fork.version || retained.expiresAt! <= Date.now())) {

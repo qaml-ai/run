@@ -281,9 +281,14 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       landed: async effect => {
         const { tenant, cache } = scope();
         const fork = effect.kind === 'agent' && parse(effect.args).repo !== undefined ? (effect.value as { fork?: WorkflowFork })?.fork : undefined;
-        const version = fork ? (await (await repoContext(env as unknown as RepoEnv, tenant, fork.repo)).stub.resolve(fork.ref)).version : undefined;
-        const owner = this.settings().owner;
-        await cache.put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(fork ? { fork: { tenant, owner: owner?.kind === 'agent' ? owner.id : 'api', repo: fork.repo, version: version! } } : {}) });
+        // Awaited so the cache ref exists before the end deletes the fork branch; a cache failure only loses the entry.
+        try {
+          const version = fork ? (await (await repoContext(env as unknown as RepoEnv, tenant, fork.repo)).stub.resolve(fork.ref)).version : undefined;
+          const owner = this.settings().owner;
+          await cache.put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(fork ? { fork: { tenant, owner: owner?.kind === 'agent' ? owner.id : 'api', repo: fork.repo, version: version! } } : {}) });
+        } catch (error) {
+          console.error(JSON.stringify({ type: 'workflow_cache_put_failed', workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+        }
       },
     };
   }

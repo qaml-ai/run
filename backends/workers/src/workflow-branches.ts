@@ -8,7 +8,8 @@ export { repoAt, type RepoAt } from './repos/target.ts';
 export type WorkflowFork = { repo: string; ref: string; base: { ref?: string; version: string } };
 export async function childBranch(env: RepoEnv, tenant: string, storage: Pick<DurableObjectStorage, 'put' | 'get'>, effect: { workflow: string; key: string; attempt: number }, at: RepoAt, cached?: string): Promise<WorkflowFork> {
   const ctx = await repoContext(env, tenant, at.repo);
-  const name = `fork/${createHash('sha256').update(effect.key).digest('hex').slice(0, 16)}-${effect.attempt}`;
+  // The workflow id is in the hash: two workflows with the same effect key on one repo get different branches.
+  const name = `fork/${createHash('sha256').update(`${effect.workflow}\0${effect.key}`).digest('hex').slice(0, 16)}-${effect.attempt}`;
   await storage.put(`workflow-repo:${at.repo}`, true);
   const row = `workflow-base:${at.repo}:${name}`;
   let base = await storage.get<{ version: string }>(row);
