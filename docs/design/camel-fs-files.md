@@ -112,7 +112,10 @@ so (`landed: "forwarded"`).
 
 ## 4. Jobs and workflows
 
-`job({ at: ref | version, commit?: true | { onto: ref } })`. The host mounts the version's tree as the job's `/repo`
+`job({ at: { repo, ref?, version? }, commit?: true | { onto: ref } })`. `at` is a place in a repo, the same shape as
+`POST /v1/repos`' `from` (§1): `repo` is the repo id, and at most one of `ref` (a name, default `main`) or `version`
+(40 hex) picks the version; a bare ref or version means nothing without its repo, so neither is accepted alone
+(wf-delegation, 2026-11-13). The host mounts the version's tree as the job's `/repo`
 (a reflink of the image when warm, the lazy origin when cold; camel-fs.md §1.3) on a `job/<id>` branch of the
 repo. Nothing is imported, synced or snapshotted: there is no per-job import (`/v0/trees`, `/v0/blobs`, the
 `camelfs_trees` cache, the pinned volume snapshot) and no snapshot cache, because the tree the job wants is already
@@ -133,13 +136,15 @@ not a public shape.
 
 **Inline files.** `job({ files })` and the agent's `job_run({ files })` (a job with a few inline files and no repo)
 become **one path**: the runtime commits the inline files onto a scratch `job/<id>` branch of the caller's repo (the
-workflow's repo, or the agent's workspace) and the job mounts it like any other; the guest `files` op and
-`WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override.
+workflow's repo, keyed `workflow:<id>`, or the agent's workspace) and the job runs at that ref like any other; the
+guest `files` op and `WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override. During the
+cut-over a plain string `at` still means a volume id, until the deletion phase removes volumes.
 
-**The agent's `job_run` tool** gains the same `at: ref | version` and `commit` as `job()`, and its model-facing text
-changes from "`at` (a volume id) starts it with that volume's files … (changes are not saved back)" to "`at` names a
-repo ref or version to start from; with `commit: true` the job's `/repo` is saved as a version you can `restore` or
-merge". That text is model-facing and is reviewed line by line, like `checkpoint`'s.
+**The agent's `job_run` tool** gains the same `at: { repo?, ref?, version? }` and `commit` as `job()`, with `repo`
+defaulting to the agent's own workspace, and its model-facing text changes from "`at` (a volume id) starts it with
+that volume's files … (changes are not saved back)" to "`at` picks the version to start from: `ref` (a branch name,
+default `main`) or `version`, in your workspace unless `repo` names another; with `commit: true` the job's `/repo` is
+saved as a version you can `restore` or merge". That text is model-facing and is reviewed line by line, like `checkpoint`'s.
 
 **`push()`** keeps its script API (`push({ ref, to })`) and runs on the git edge's mirror (camel-fs.md §1.8) from the
 ref, with the App token the runtime mints; it is no longer a job running `PUSH_SCRIPT` with the token in a process.
@@ -281,7 +286,7 @@ throughout):
    Bar: a Worker file write ≤ 80 ms p50; `files:batch` of 20 files ≤ 150 ms; fork ≤ 50 ms; merge of 3 disjoint
    edits ≤ 200 ms; `history`/`diff` ≤ 100 ms at 50k files.
 2. **Hosts, jobs and workflows on refs**: `camelfsd` takes its CAS from the runtime and drops its ref
-   store; `job({ at: ref | version, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
+   store; `job({ at: { repo, ref? | version? }, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
    fast-forward effects; result cache on the tree; `keep()` as one commit; computers mount the agent's ref with the
    lease (per camel-fs.md phase 2). The import bridge and `camel-sync` are deleted.
    Bar: job placement → first command ≤ 300 ms warm with no import leg (ledger L25, L43, L68 close); result leg
