@@ -314,6 +314,9 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		if e = m.sweep(int64(len(r.Chunks)) * chunk.Size); e != nil {
 			return nil, e
 		}
+		if e = m.prefetchMount(ctx, v.Lineage, r); e != nil {
+			return nil, e
+		}
 		if m.Origin != nil {
 			v.releaseOrigin = m.Origin.Register(v.Root, v.Lineage, r)
 		}

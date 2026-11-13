@@ -244,8 +244,14 @@ validation and Camel-* mapping.
 ## Cold path
 
 A warm mount is a writable reflink of `images/<root>.img`. A cold mount returns
-`/dev/mapper/<prefix>-<jobId>` immediately, with `warm: false` and
+`/dev/mapper/<prefix>-<jobId>` with `warm: false` and
 `hydrating: true`. The accepted `hydrate` request field is ignored.
+Before returning a cold mount, the daemon prefetches ext4 chunk 0, group
+descriptors, group 0's inode table and bitmaps, and the root directory's first
+block. Locations come from the superblock, descriptor and inode block mapping;
+the journal superblock is included for the usual internal journal. The
+verified cache serves these reads to NBD and later hydration without another
+fetch. Unsupported layouts such as meta_bg keep lazy reads.
 There is one cold path; `--cold` and `--hydration-pack-size` are removed.
 
 The guest device is a persistent dm-snapshot with 512 KiB chunks. Its COW
