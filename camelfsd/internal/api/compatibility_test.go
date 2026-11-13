@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http/httptest"
 	"path/filepath"
@@ -38,6 +39,7 @@ func TestPhase1MountFenceCompatibility(t *testing.T) {
 		t.Fatal(e)
 	}
 	s := &Server{Manager: m}
+	before := image.LegacyMounts()
 	var logs bytes.Buffer
 	previous := log.Writer()
 	log.SetOutput(&logs)
@@ -92,8 +94,13 @@ func TestPhase1MountFenceCompatibility(t *testing.T) {
 			}
 		})
 	}
-	if !strings.Contains(logs.String(), "op=mount legacy-fence jobId=missing") || strings.Count(logs.String(), "legacy-fence") != 1 {
+	if !strings.Contains(logs.String(), fmt.Sprintf("op=mount legacy-fence jobId=missing count=%d", before+1)) || strings.Count(logs.String(), "legacy-fence") != 1 {
 		t.Fatal(logs.String())
+	}
+	w := call("GET", "/v0/health", nil)
+	var health struct{ LegacyMounts uint64 }
+	if e := json.Unmarshal(w.Body.Bytes(), &health); e != nil || w.Code != 200 || health.LegacyMounts != before+1 {
+		t.Fatal(w.Code, w.Body.String(), e)
 	}
 	var n int
 	if e = db.DB.QueryRow("SELECT count(*) FROM sqlite_master WHERE name='refs'").Scan(&n); e != nil || n != 0 {

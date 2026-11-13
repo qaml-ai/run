@@ -22,12 +22,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"time"
 )
 
 var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
+
+// TEMPORARY: removed with jobhost phase 2
+var legacyMounts atomic.Uint64
+
+// TEMPORARY: removed with jobhost phase 2
+func LegacyMounts() uint64 { return legacyMounts.Load() }
 
 type Config struct {
 	StreamIdle, ApplyMax          time.Duration
@@ -53,6 +60,7 @@ type Manager struct {
 	sweepMu  sync.Mutex
 }
 type Request struct {
+	// TEMPORARY: removed with jobhost phase 2
 	legacyFence bool
 	JobID       string      `json:"jobId"`
 	Lineage     string      `json:"lineage"`
@@ -102,6 +110,7 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	if e := decoder.Decode(&v); e != nil {
 		return e
 	}
+	// TEMPORARY: removed with jobhost phase 2
 	var fields struct{ Fence json.RawMessage }
 	if e := json.Unmarshal(b, &fields); e != nil {
 		return e
@@ -225,9 +234,9 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			m.mu.Unlock()
 		}
 	}()
+	// TEMPORARY: removed with jobhost phase 2
 	if q.legacyFence {
 		q.Fence = &refs.Fence{Holder: m.HostID + "/" + q.JobID, Epoch: 0}
-		log.Printf("op=mount legacy-fence jobId=%s", q.JobID)
 	}
 	if q.Fence != nil && (q.Fence.Holder == "" || q.Fence.Epoch < 0) {
 		return nil, apierr.Invalid("invalid fence")
@@ -352,6 +361,10 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if v.DM != "" {
 		v.stopPoll = make(chan struct{})
 		go m.poll(v, v.stopPoll)
+	}
+	// TEMPORARY: removed with jobhost phase 2
+	if q.legacyFence {
+		log.Printf("op=mount legacy-fence jobId=%s count=%d", q.JobID, legacyMounts.Add(1))
 	}
 	copy := *v
 	return &copy, nil

@@ -75,7 +75,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(200, v)
 	case r.Method == "GET" && r.URL.Path == "/v0/health":
-		reply(200, map[string]any{"api": "127.0.0.1:8790", "dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID})
+		// TEMPORARY: removed with jobhost phase 2
+		reply(200, map[string]any{"api": "127.0.0.1:8790", "dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID, "legacyMounts": image.LegacyMounts()})
 	case r.Method == "POST" && r.URL.Path == "/v0/mounts":
 		var q image.Request
 		if e := decode(&q); e != nil {
@@ -128,7 +129,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			v.RefreshTimings()
 			reply(200, v)
 		} else if len(parts) == 2 && parts[1] == "heartbeat" && r.Method == "POST" {
-			// Phase-1 compatibility; removed with jobhost phase 2.
+			// TEMPORARY: removed with jobhost phase 2
 			reply(200, map[string]bool{"ok": true, "deprecated": true})
 		} else if len(parts) == 1 && r.Method == "GET" {
 			v, e := m.Status(r.Context(), id)

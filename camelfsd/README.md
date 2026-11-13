@@ -196,7 +196,10 @@ Mount accepts exactly one of tree or root. fence is stored and echoed in
 status. Explicit null makes the image read-only and checkpoint returns
 409 no_fence. A missing fence enables phase-1 compatibility, removed with
 jobhost phase 2: the daemon synthesizes {holder: "<hostId>/<jobId>", epoch: 0},
-logs op=mount legacy-fence jobId=..., and permits checkpoints.
+logs op=mount legacy-fence jobId=... count=N, and permits checkpoints. The
+process counter counts successful legacy mounts and is exposed as legacyMounts
+in /v0/health; it resets when the daemon restarts. Every shim site is tagged
+// TEMPORARY: removed with jobhost phase 2.
 POST /v0/mounts/:id/heartbeat returns 200 {"ok":true,"deprecated":true} as
 a no-op for one release: phase-1 compatibility, removed with jobhost phase 2.
 No job ref is created. There is no forks route, lease TTL, or renewal goroutine.
