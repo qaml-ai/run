@@ -12,20 +12,23 @@ import (
 )
 
 type hydration struct {
-	done   chan struct{}
-	cancel context.CancelFunc
-	bytes  atomic.Int64
-	err    error
+	done    chan struct{}
+	cancel  context.CancelFunc
+	bytes   atomic.Int64
+	err     error
+	started time.Time
+	elapsed atomic.Int64
 }
 
 // Fetch verified, non-hole chunks only. Completion never needs the mount lock:
 // checkpoint and release may wait while holding it.
 func (m *Manager) startHydration(v *Mount, r root.Root) {
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &hydration{done: make(chan struct{}), cancel: cancel}
+	h := &hydration{done: make(chan struct{}), cancel: cancel, started: time.Now()}
 	v.hydration = h
 	go func() {
 		defer close(h.done)
+		defer func() { h.elapsed.Store(time.Since(h.started).Nanoseconds()) }()
 		f, e := os.OpenFile(v.Dest, os.O_RDWR, 0)
 		if e != nil {
 			h.err = e
@@ -42,6 +45,7 @@ func (m *Manager) startHydration(v *Mount, r root.Root) {
 			n, e := m.Cache.Hydrate(ctx, v.Lineage, r.Chunks[key], f, off, min(root.ChunkSize, r.VirtualSize-off))
 			if e == nil {
 				h.bytes.Add(int64(n))
+				m.PrehydrateBytes.Add(int64(n))
 			}
 			return e
 		})
@@ -76,4 +80,16 @@ func (m *Manager) awaitHydration(ctx context.Context, v *Mount) error {
 	case <-v.hydration.done:
 	}
 	return m.status(ctx, v)
+}
+
+// Freeze the average at completion so polling does not make it decay.
+func (h *hydration) mbps() float64 {
+	elapsed := time.Duration(h.elapsed.Load())
+	if elapsed == 0 {
+		elapsed = time.Since(h.started)
+	}
+	if elapsed <= 0 {
+		return 0
+	}
+	return float64(h.bytes.Load()) / elapsed.Seconds() / 1e6
 }

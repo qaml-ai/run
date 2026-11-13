@@ -96,7 +96,13 @@ func TestLifecycleAndTree(t *testing.T) {
 	call("POST", "/v0/mounts", map[string]any{"jobId": "..", "lineage": "l", "root": got}, 400)
 	call("POST", "/v0/mounts", map[string]any{"jobId": "r", "lineage": "l", "root": got, "fence": nil}, 200)
 	call("POST", "/v0/mounts/r/checkpoint", map[string]any{}, 409)
-	call("GET", "/v0/mounts/treejob", nil, 200)
+	status := call("GET", "/v0/mounts/treejob", nil, 200)
+	if _, ok := status["hydrationMBps"].(float64); !ok {
+		t.Fatal("missing hydration throughput", status)
+	}
+	if _, ok := status["firstFileMs"]; ok {
+		t.Fatal("firstFileMs belongs to caller")
+	}
 	call("POST", "/v0/trees", map[string]any{}, 400)
 	call("PUT", "/v0/blobs/"+strings.Repeat("a", 64), map[string]any{}, 400)
 	for _, j := range []string{"j1", "treejob", "r"} {

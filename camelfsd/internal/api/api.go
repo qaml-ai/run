@@ -74,6 +74,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(200, v)
+	case r.Method == "GET" && r.URL.Path == "/v0/stats":
+		reply(200, map[string]any{"prehydrateBytes": m.PrehydrateBytes.Load(), "reflinkedChunks": m.Cache.ReflinkedChunks.Load()})
 	case r.Method == "GET" && r.URL.Path == "/v0/health":
 		// TEMPORARY: removed with jobhost phase 2
 		reply(200, map[string]any{"api": "127.0.0.1:8790", "dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID, "legacyMounts": image.LegacyMounts()})
@@ -137,7 +139,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fail(e)
 				return
 			}
-			reply(200, map[string]any{"applied": v.Applied, "applyMs": v.ApplyMs, "state": v.State, "image": v.Image, "root": v.Root, "hydratedBytes": v.HydratedBytes, "totalBytes": v.TotalBytes, "swapMs": v.SwapMs, "hydrating": v.Hydrating, "hydrationError": v.HydrationError, "fence": v.Fence})
+			reply(200, map[string]any{"applied": v.Applied, "applyMs": v.ApplyMs, "state": v.State, "image": v.Image, "root": v.Root, "hydratedBytes": v.HydratedBytes, "hydrationMBps": v.HydrationMBps, "totalBytes": v.TotalBytes, "swapMs": v.SwapMs, "hydrating": v.Hydrating, "hydrationError": v.HydrationError, "fence": v.Fence})
 		} else if len(parts) == 1 && r.Method == "DELETE" {
 			p, e := m.Release(r.Context(), id)
 			if e != nil {
