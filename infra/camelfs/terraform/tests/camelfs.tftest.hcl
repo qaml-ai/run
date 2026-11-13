@@ -120,8 +120,8 @@ run "first_apply_before_the_certificate" {
     error_message = "The bucket is camelfs-<env>-<account id>: globally unique, and not the prototype's."
   }
   assert {
-    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages", deliveries = "camelfs-prod-deliveries", hosts = "camelfs-prod-hosts", vms = "camelfs-prod-vms" }
-    error_message = "Six tables: objects, refs, lineages, deliveries, hosts, vms."
+    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages", deliveries = "camelfs-prod-deliveries", hosts = "camelfs-prod-hosts", vms = "camelfs-prod-vms", usage = "camelfs-prod-usage" }
+    error_message = "Seven tables: objects, refs, lineages, deliveries, hosts, vms, usage."
   }
 }
 
@@ -138,16 +138,20 @@ run "tables_keys_and_protection" {
       && aws_dynamodb_table.camelfs["deliveries"].hash_key == "shard" && aws_dynamodb_table.camelfs["deliveries"].range_key == "id"
       && aws_dynamodb_table.camelfs["hosts"].hash_key == "pool" && aws_dynamodb_table.camelfs["hosts"].range_key == "host"
       && aws_dynamodb_table.camelfs["vms"].hash_key == "id" && aws_dynamodb_table.camelfs["vms"].range_key == null
+      && aws_dynamodb_table.camelfs["usage"].hash_key == "shard" && aws_dynamodb_table.camelfs["usage"].range_key == "ulid"
     )
-    error_message = "Key schemas: objects (lineage, id), refs (lineage, name), lineages (lineage), deliveries (shard, id), hosts (pool, host), vms (id)."
+    error_message = "Key schemas: objects (lineage, id), refs (lineage, name), lineages (lineage), deliveries (shard, id), hosts (pool, host), vms (id), usage (shard, ulid)."
   }
   assert {
     condition     = alltrue([for table in aws_dynamodb_table.camelfs : table.billing_mode == "PAY_PER_REQUEST" && table.point_in_time_recovery[0].enabled && table.deletion_protection_enabled])
     error_message = "Every table is on-demand, with PITR and deletion protection."
   }
   assert {
-    condition     = alltrue([for table in aws_dynamodb_table.camelfs : length(table.ttl) == 0 || !try(table.ttl[0].enabled, false)])
-    error_message = "No DynamoDB TTL on any table: expiry is the service's decision."
+    condition = (
+      alltrue([for name, table in aws_dynamodb_table.camelfs : length(table.ttl) == 0 || !try(table.ttl[0].enabled, false) if name != "usage"])
+      && try(aws_dynamodb_table.camelfs["usage"].ttl[0].enabled, false) && try(aws_dynamodb_table.camelfs["usage"].ttl[0].attribute_name, "") == "expiresAt"
+    )
+    error_message = "A DynamoDB TTL on the usage table only (expiresAt: pulled copies); expiry everywhere else is the service's decision."
   }
 }
 
@@ -240,9 +244,9 @@ run "roles_and_policies" {
   assert {
     condition = (
       length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Effect == "Allow" && contains(flatten([statement.Action]), "dynamodb:PutItem")]) == 1
-      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 5]) == 1
+      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 6]) == 1
     )
-    error_message = "The host policy writes the objects table only and explicitly denies the five other tables."
+    error_message = "The host policy writes the objects table only and explicitly denies the six other tables."
   }
   assert {
     condition     = [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "NoResults" && statement.Effect == "Deny"] == [["arn:aws:s3:::camelfs-prod-904534089871/*/results/*"]]
