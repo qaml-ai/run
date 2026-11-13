@@ -249,6 +249,10 @@ run "roles_and_policies" {
     error_message = "A host never writes a VM result: the tier does."
   }
   assert {
+    condition     = [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "ReadHostsCaCertificate"] == [["arn:aws:s3:::camelfs-prod-904534089871/hosts-ca.pem"]]
+    error_message = "A host reads the hosts' CA certificate from the trust bucket and nothing else there (the mock gives both buckets one ARN)."
+  }
+  assert {
     condition = (
       [for statement in jsondecode(aws_iam_role_policy.guest_image_publisher.policy).Statement : statement.Resource if statement.Sid == "PutGuestImages"] == [["arn:aws:s3:::camelfs-prod-904534089871/guest/*"]]
       && !anytrue([for statement in jsondecode(aws_iam_role_policy.guest_image_publisher.policy).Statement : anytrue([for action in flatten([statement.Action]) : action != "s3:PutObject" && action != "kms:GenerateDataKey"])])

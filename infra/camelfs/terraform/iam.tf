@@ -208,6 +208,14 @@ locals {
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
       },
+      # The hosts' CA certificate, to verify the tier's client certificate on --listen-compute (§9.12). The one
+      # object of the trust bucket a host may read; the AOP CA next to it is the public listener's business.
+      {
+        Sid      = "ReadHostsCaCertificate"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${aws_s3_bucket.trust.arn}/hosts-ca.pem"]
+      },
       # VM results are the tier's to write (the host hands the body to the tier in its "ended" call, K4): a host
       # never puts under <lineage>/results/, whatever the shared bucket statement allows.
       {
