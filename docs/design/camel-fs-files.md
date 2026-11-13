@@ -24,7 +24,7 @@ Three nouns, one of them user-facing.
 | noun | what it is | user-facing word |
 |---|---|---|
 | **repo** | a lineage: a versioned tree with refs, history and a search index; the unit of ownership, quota and chunk sharing. Today's "volume" and "project" are both repos | **repo** (recommended, see §8) |
-| **ref** | a named, mutable pointer to a version; `main` by default; others for attempts, published versions, mirrors; every ref has an owner and dies with it | *branch* in the API where a user names one; `main` otherwise |
+| **ref** | a named, mutable pointer to a version; `main` by default; others for attempts, published versions, mirrors; every ref has an owner and dies with it. **Names** are `[A-Za-z0-9._-]` segments joined by `/` (`main`, `job/<id>`, `fork/<effect>`, `published/<n>`, `release/<label>`, `snap/<name>`, `dream/<key>`, `mirror/github/<branch>`), never a colon; **owners** keep their colons (`workflow:<id>`, `agent:<id>`, `job:<id>`, `cache:<key>`) | *branch* in the API where a user names one; `main` otherwise |
 | **version** | an immutable commit: a tree id (git-compatible), parents, author, message and the attribution trailers; the id every cache, diff, mount and restore names | **version** |
 
 Recommendation on the word: **repo**. Developers already know that a repo has branches, history, forks, diffs and
@@ -68,7 +68,7 @@ version, if the mount names one).
 | agent | the ref is | writes | the turn checkpoint |
 |---|---|---|---|
 | on a computer (our hosts, [camel-fs.md](camel-fs.md) §1.5) | held: the VM mounts the ref's version as its disk, the host holds the lease | native ext4 writes in the VM | the automatic checkpoint at the end of every turn that wrote, after 30 s of dirtiness, before a fork, job, merge or sleep (§1.3 of the design): freeze → walk → stream → publish → fenced CAS |
-| in a job | held, on a `job:<id>` branch | the same | at job end (`commit: true`), and periodically for long jobs |
+| in a job | held, on a `job/<id>` branch | the same | at job end (`commit: true`), and periodically for long jobs |
 | without a VM (Workers; most agents today) | unheld | **every file-tool write is a commit**: `write`/`edit` make a new tree and commit on the ref and CAS it; a tool that writes several files uses `commit` for one version | none needed: the ref is always durable |
 
 The agent's tools keep their names (`read`, `write`, `edit`, `ls`, `glob`, `grep`, `present_file`) and the
@@ -113,13 +113,13 @@ so (`landed: "forwarded"`).
 ## 4. Jobs and workflows
 
 `job({ at: ref | version, commit?: true | { onto: ref } })`. The host mounts the version's tree as the job's `/repo`
-(a reflink of the image when warm, the lazy origin when cold; camel-fs.md §1.3) on a `job:<id>` branch of the
+(a reflink of the image when warm, the lazy origin when cold; camel-fs.md §1.3) on a `job/<id>` branch of the
 repo. Nothing is imported, synced or snapshotted: there is no per-job import (`/v0/trees`, `/v0/blobs`, the
 `camelfs_trees` cache, the pinned volume snapshot) and no snapshot cache, because the tree the job wants is already
 an object in S3 and the ref already names it.
 
 A **commit job** checkpoints `/repo` at its end, **even when the command fails** (the exit status is in the
-commit), and the branch `job:<id>` then points at the result. The workflow decides what happens to it:
+commit), and the branch `job/<id>` then points at the result. The workflow decides what happens to it:
 
 - `merge(into: "main", from: job.branch)`: the three-way merge; clean → one commit on `main` with two parents (the
   attempt's history stays reachable and attributable), conflicts → `{ conflicts }` for a fix stage, which edits the
@@ -128,11 +128,11 @@ commit), and the branch `job:<id>` then points at the result. The workflow decid
 - or nothing: the branch is owned by the workflow and dies with it.
 
 The host's result (`WireResult.camelfs`: `tree`, `root`, `commit`, `checkpointError`, the timings) stays as the
-transport and becomes the `job:<id>` branch's version plus its timings in the job result; `WireResult.camelfs` is
+transport and becomes the `job/<id>` branch's version plus its timings in the job result; `WireResult.camelfs` is
 not a public shape.
 
 **Inline files.** `job({ files })` and the agent's `job_run({ files })` (a job with a few inline files and no repo)
-become **one path**: the runtime commits the inline files onto a scratch `job:<id>` branch of the caller's repo (the
+become **one path**: the runtime commits the inline files onto a scratch `job/<id>` branch of the caller's repo (the
 workflow's repo, or the agent's workspace) and the job mounts it like any other; the guest `files` op and
 `WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override.
 
@@ -281,7 +281,7 @@ throughout):
    Bar: a Worker file write ≤ 80 ms p50; `files:batch` of 20 files ≤ 150 ms; fork ≤ 50 ms; merge of 3 disjoint
    edits ≤ 200 ms; `history`/`diff` ≤ 100 ms at 50k files.
 2. **Hosts, jobs and workflows on refs**: `camelfsd` takes its CAS from the runtime and drops its ref
-   store; `job({ at: ref | version, commit })` mounts the tree with no import; the `job:<id>` branch, merge and
+   store; `job({ at: ref | version, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
    fast-forward effects; result cache on the tree; `keep()` as one commit; computers mount the agent's ref with the
    lease (per camel-fs.md phase 2). The import bridge and `camel-sync` are deleted.
    Bar: job placement → first command ≤ 300 ms warm with no import leg (ledger L25, L43, L68 close); result leg
@@ -466,13 +466,16 @@ Over the host's Unix socket (unchanged transport), two calls change shape becaus
   writes blobs, trees, the commit and the root to S3, and returns; **it performs no CAS**.
 
 **Who performs the CAS, and when** (wf-delegation): the lease and the fence are the runtime's from the start.
-Before dispatch, `HostJob` creates the branch `job:<id>` at the version the job mounts (`branch(job:<id>, from:
+Before dispatch, `HostJob` creates the branch `job/<id>` at the version the job mounts (`branch(job/<id>, from:
 version, owner: job)`; for inline `files` that version is the scratch commit of §4), takes the lease on it from
-`RepoDO`, and puts `fence { holder, epoch }` into `WireJob.camelfs`; `jobhost` passes the fence to `mount`. Then:
+`RepoDO`, and puts `fence { holder, epoch }` into `WireJob.camelfs`; `jobhost` passes the fence to `mount`. A lease
+is capped at 10 minutes, so `HostJob` renews the `job/<id>` lease from its alarm every TTL/3 for the job's
+lifetime (agreed between wf-delegation and wf-repos); a renewal that finds the lease taken over fails the job's
+CAS later, never silently. Then:
 
 - **Jobs** checkpoint once, at the end, and the VM is destroyed right after, so there is no later reader of the
   guest's index: `jobhost` sends `checkpointed { tree }` to the guest as soon as the daemon answers, and **`HostJob`
-  performs `RepoDO.cas("job:<id>", expect = the mounted version, commit, fence, root)` when the result arrives**, with
+  performs `RepoDO.cas("job/<id>", expect = the mounted version, commit, fence, root)` when the result arrives**, with
   no synchronous round trip inside the checkpoint. A failed CAS becomes the job's `checkpointError`
   (`"cas: <reason>"`) and the rest of the job's output stands. `HostJob` is already the durable owner of the
   dispatch (ledger L72).
