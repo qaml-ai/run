@@ -28,8 +28,6 @@ type Cache struct {
 	Store           store.Store
 	mu              sync.Mutex
 	flights         map[string]*flight
-	slots           chan struct{}
-	background      chan struct{}
 	atomic          func(string, []byte) error
 	writeAt         func(*os.File, []byte, int64) (int, error)
 	cloneRange      func(*os.File, *os.File, int64) error
@@ -40,7 +38,7 @@ func New(dir string, s store.Store, n int) *Cache {
 	if n < 1 {
 		n = 64
 	}
-	return &Cache{atomic: store.Atomic, writeAt: func(f *os.File, b []byte, off int64) (int, error) { return f.WriteAt(b, off) }, cloneRange: cloneRange, Dir: dir, Store: s, flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}, slots: make(chan struct{}, n), background: make(chan struct{}, max(1, n-min(8, max(1, n/4))))}
+	return &Cache{atomic: store.Atomic, writeAt: func(f *os.File, b []byte, off int64) (int, error) { return f.WriteAt(b, off) }, cloneRange: cloneRange, Dir: dir, Store: store.WithDepth(s, n), flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}}
 }
 func (c *Cache) Ensure(h string) (string, error) { return c.EnsureContext(context.Background(), h) }
 func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
@@ -88,22 +86,6 @@ func (c *Cache) ensure(ctx context.Context, h string, source store.Store, publis
 			return p, nil
 		}
 	}
-	if store.IsBackground(ctx) {
-		select {
-		case c.background <- struct{}{}:
-		case <-ctx.Done():
-			f.err = ctx.Err()
-			return "", f.err
-		}
-		defer func() { <-c.background }()
-	}
-	select {
-	case c.slots <- struct{}{}:
-	case <-ctx.Done():
-		f.err = ctx.Err()
-		return "", f.err
-	}
-	defer func() { <-c.slots }()
 	b, e := source.Get(ctx, "c/"+h)
 	if e == nil && (c.hash(b) != h || len(b) != int(root.ChunkSize)) {
 		e = fmt.Errorf("chunk hash mismatch")

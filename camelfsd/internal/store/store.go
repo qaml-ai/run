@@ -363,7 +363,22 @@ type limited struct {
 	background chan struct{}
 }
 
+// Reuse an existing host budget through wrappers; never create per-mount slots.
+func hasDepth(s Store) bool {
+	switch v := s.(type) {
+	case *limited:
+		return true
+	case *scoped:
+		return hasDepth(v.Store)
+	case *Uploaded:
+		return hasDepth(v.Store)
+	}
+	return false
+}
 func WithDepth(s Store, n int) Store {
+	if hasDepth(s) {
+		return s
+	}
 	if n < 1 {
 		n = DefaultDepth
 	}
