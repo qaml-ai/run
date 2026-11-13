@@ -1,0 +1,14 @@
+{
+ "hosted-mcp-tools.ts": [
+  [
+   "    mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),\n",
+   "    mounts: z.array(z.union([z.object({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).optional(),\n"
+  ]
+ ],
+ "runtime-identity.ts": [
+  [
+   "  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version?: number; snapshot?: string;\n",
+   "  tenant: string; agent: string; call: string; tool: string; repo: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version: string;\n"
+  ]
+ ]
+}

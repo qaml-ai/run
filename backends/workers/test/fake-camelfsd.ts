@@ -5,6 +5,7 @@ import type { FileEntry, TreeEntry, Change, CommitInfo, CommitResult, DiffChange
 type Tree = { bytes: Uint8Array; files: Map<string, FileEntry>; dirs: Map<string, string> };
 type Node = { dirs: Map<string, Node>; files: Map<string, FileEntry> };
 const node = (): Node => ({ dirs: new Map(), files: new Map() });
+const ANCESTRY_LIMIT = 50000;
 const json = (v: unknown, status = 200) => Response.json(v, { status });
 class Fault extends Error {
   readonly status: number;
@@ -90,8 +91,56 @@ export function fakeCamelfsd(token: string) {
       const old = a.files.get(path), next = b.files.get(path);
       if (!under(path, prefix) || same(old, next)) return [];
       return [{ path, status: !old ? "added" : !next ? "deleted" : old.blob !== next.blob ? "modified" : "mode",
-        ...(old ? { oldBlob: old.blob, oldMode: old.mode } : {}), ...(next ? { newBlob: next.blob, newMode: next.mode } : {}) } as DiffChange];
+        ...(old ? { oldBlob: old.blob, oldMode: old.mode } : {}), ...(next ? { newBlob: next.blob, newMode: next.mode } : {}),
+        ...(old ? { oldSize: old.size } : {}), ...(next ? { newSize: next.size } : {}) } as DiffChange];
     });
+  }
+  // As the daemon (ancestry.go): a commit outside the lineage is 404 not_found naming it; a walk past
+  // ANCESTRY_LIMIT distinct commits is 413 too_deep, never a false or null answer.
+  const ancestryCommit = (l: string, id: string) => {
+    if (!scope(l).commits.has(id)) bad("not_found", 404, { commit: id }, `commit ${id} not found`);
+    return info(l, id);
+  };
+  function isAncestor(l: string, a: string, b: string): boolean {
+    if (!scope(l).commits.has(a)) bad("not_found", 404, { commit: a }, `commit ${a} not found`);
+    const seen = new Set<string>(), queue = [b];
+    while (queue.length) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      if (seen.size === ANCESTRY_LIMIT) bad("too_deep", 413);
+      seen.add(id);
+      if (id === a) return true;
+      queue.push(...ancestryCommit(l, id).parents);
+    }
+    return false;
+  }
+  function mergeBase(l: string, a: string, b: string): { base: string; tree: string } | { base: null; tree: null } {
+    const nodes = new Map<string, { parents: string[]; tree: string; time: number; generations: [number, number] }>();
+    const queues: [string[], string[]] = [[a], [b]], seen = [new Set([a]), new Set([b])];
+    for (let generation = 0; queues[0].length + queues[1].length; generation++) for (const side of [0, 1] as const) {
+      const next: string[] = [];
+      for (const id of queues[side]) {
+        let n = nodes.get(id);
+        if (!n) {
+          if (nodes.size === ANCESTRY_LIMIT) bad("too_deep", 413);
+          const c = ancestryCommit(l, id);
+          n = { parents: c.parents, tree: c.tree, time: c.time, generations: [-1, -1] }; nodes.set(id, n);
+        }
+        n.generations[side] = generation;
+        for (const p of n.parents) if (!seen[side].has(p)) { seen[side].add(p); next.push(p); }
+      }
+      queues[side] = next;
+    }
+    const dominated = new Set<string>(), queue: string[] = [];
+    for (const n of nodes.values()) if (n.generations[0] >= 0 && n.generations[1] >= 0) queue.push(...n.parents);
+    while (queue.length) { const id = queue.shift()!; if (dominated.has(id)) continue; dominated.add(id); queue.push(...nodes.get(id)!.parents); }
+    let best: string | undefined;
+    for (const [id, n] of nodes) {
+      if (n.generations[0] < 0 || n.generations[1] < 0 || dominated.has(id)) continue;
+      const b = best && nodes.get(best)!;
+      if (!b || n.time > b.time || (n.time === b.time && id > best!)) best = id;
+    }
+    return best ? { base: best, tree: nodes.get(best)!.tree } : { base: null, tree: null };
   }
   async function handle(request: Request): Promise<Response> {
     const url = new URL(request.url), s = url.searchParams;
@@ -188,6 +237,26 @@ export function fakeCamelfsd(token: string) {
         bytes: named, parents, time: input.time };
       if (key) writes.set(cacheKey, { input: fingerprint, result });
       return json(result, 201);
+    }
+    if (request.method === "GET" && (route === "merge-base" || (route.startsWith("commits/") && route.endsWith("/is-ancestor")))) {
+      const ancestor = route !== "merge-base";
+      const ids = ancestor ? [route.slice(8, -"/is-ancestor".length), s.get("of") ?? ""] : [s.get("a") ?? "", s.get("b") ?? ""];
+      const fields = ancestor ? ["commit", "of"] : ["a", "b"];
+      ids.forEach((id, i) => { if (!id) bad("invalid_request", 400, undefined, `missing field ${fields[i]}`); });
+      for (const id of ids) if (!hash(id)) bad("invalid_request", 400, undefined, `invalid commit ${id}`);
+      return json(ancestor ? { ancestor: isAncestor(l, ids[0], ids[1]) } : mergeBase(l, ids[0], ids[1]));
+    }
+    if (request.method === "GET" && route.startsWith("trees/") && route.endsWith("/entry")) {
+      const id = route.slice(6, -"/entry".length), path = s.get("path") ?? "";
+      if (!path) bad("invalid_request", 400, undefined, "missing field path");
+      if (!validPath(path)) bad("invalid_request", 400, undefined, `invalid path ${path}`);
+      if (!hash(id) || !own.trees.has(id)) bad("not_found", 404);
+      const t = trees.get(id)!, file = t.files.get(path);
+      if (file) return json(file);
+      const parts = path.split("/"); let dir: Tree | undefined = t;
+      for (const part of parts.slice(0, -1)) { const sub: string | undefined = dir.dirs.get(part); dir = sub ? trees.get(sub) : undefined; if (!dir) break; }
+      const sub = dir?.dirs.get(parts.at(-1)!);
+      return sub ? json({ path, mode: "040000", tree: sub }) : bad("not_in_tree", 404);
     }
     if (request.method === "GET" && route.startsWith("commits/")) return json(info(l, route.slice(8)));
     if (request.method === "GET" && route.startsWith("trees/")) {

@@ -37,3 +37,4 @@ export class CamelAgent extends RuntimeAgent {
     return super.fetch(request);
   }
 }
+export { CamelfsStub } from "./camelfs-stub.ts";

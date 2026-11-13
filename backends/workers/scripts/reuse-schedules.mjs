@@ -1,3 +1,4 @@
+import { diverge } from './repo-divergence.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 const source = await readFile(new URL('../../../src/scheduler.ts',import.meta.url),'utf8');
 const extract=(a,b)=>{const start=source.indexOf(a),end=b?source.indexOf(b,start):source.length;if(start<0||end<0)throw Error('Schedule source boundaries changed');return source.slice(start,end);};
@@ -6,5 +7,5 @@ extract('export interface Schedule {','export type Deliver =')+'\n'+extract('exp
 output=output.replace('volumeId?:string;path?:string;', 'repo?:string;ref?:string;instructions?:string;path?:string;');
 output=output.replace(/^  const mounts = body.mounts[^\n]+/m,"  const mounts = body.mounts === undefined ? undefined : z.array(z.union([z.strictObject({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum(['ro','rw']),subpath:z.string().optional(),notify:z.boolean().optional()}),z.strictObject({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).parse(body.mounts);");
 const path=new URL('../src/schedule-policy.ts',import.meta.url);
-if(process.argv.includes('--check')) {if(await readFile(path,'utf8')!==output)throw Error('Schedule policy differs from src');} else await writeFile(path,output);
+if(process.argv.includes('--check')) {if(await readFile(path,'utf8')!==diverge('schedule-policy.ts',output))throw Error('Schedule policy differs from src');} else await writeFile(path,diverge('schedule-policy.ts',output));
 console.log('Schedule policy matches src/');

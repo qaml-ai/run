@@ -3,6 +3,7 @@ package objects
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -88,6 +89,21 @@ func (r *Repository) PutObject(ctx context.Context, l, kind string, b []byte) (s
 	key := "t/"
 	if kind == "commit" {
 		key = "k/"
+	}
+	if kind == "tree" {
+		es, e := decodeTree(b)
+		if e != nil {
+			return "", e
+		}
+		es, e = r.fillSizes(ctx, es)
+		if e != nil {
+			return "", e
+		}
+		sizes, e := json.Marshal(es)
+		if e != nil {
+			return "", e
+		}
+		batch.publication.puts["ts/"+id] = sizes
 	}
 	batch.publication.puts[key+id] = b
 	batch.publication.objects[id] = cachedObject{kind, b}

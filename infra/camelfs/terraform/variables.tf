@@ -1,0 +1,215 @@
+variable "region" {
+  description = "Region of the camelFS service (the runtime's and the job hosts' region)."
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "account_id" {
+  description = "The only AWS account this configuration may touch (camelRun prod)."
+  type        = string
+  default     = "904534089871"
+}
+
+variable "env" {
+  description = "Environment suffix for names (camelfs-<env>-..., camelfs/<env>/... secrets)."
+  type        = string
+  default     = "prod"
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,15}$", var.env))
+    error_message = "env is a short lowercase name."
+  }
+}
+
+variable "name" {
+  description = "Prefix for every resource name."
+  type        = string
+  default     = "camelfs"
+}
+
+# --- Hostnames (Cloudflare zone camelai.dev) ---
+
+variable "hostname" {
+  description = "The public hostname of the API tier, proxied through Cloudflare: what the runtime (Workers, Node) calls. In the cloudflare_zone_id zone."
+  type        = string
+  default     = "fs.camelai.dev"
+  validation {
+    condition     = can(regex("^[a-z0-9.-]+$", var.hostname))
+    error_message = "hostname is a bare DNS name."
+  }
+}
+
+variable "internal_hostname" {
+  description = "The in-VPC hostname of the API tier (a DNS-only record to the internal load balancer; its name resolves to private addresses): what camelfsd --role host on the job hosts calls. In the cloudflare_zone_id zone."
+  type        = string
+  default     = "fs-internal.camelai.dev"
+  validation {
+    condition     = can(regex("^[a-z0-9.-]+$", var.internal_hostname))
+    error_message = "internal_hostname is a bare DNS name."
+  }
+}
+
+variable "certificate_issued" {
+  description = "false (the first apply): the certificate is requested and its validation records are output (acm_validation_records) for Cloudflare, and no HTTPS listener or service exists yet. true (the second apply, once the records are in DNS): the validation is awaited, the HTTPS listeners and the ECS service are created. Two applies, so the first never hangs on DNS."
+  type        = bool
+  default     = false
+}
+
+# --- API tier (camelfsd api on ECS Fargate, Graviton) ---
+
+variable "api_image_tag" {
+  description = "The camelfsd image tag in this module's ECR repository (infra/camelfs/deploy.sh pushes one). The default names no image: with api_min_count 0 the service runs no task, so nothing pulls it; the first deploy.sh registers the real one."
+  type        = string
+  default     = "none"
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]{1,128}$", var.api_image_tag))
+    error_message = "api_image_tag is an image tag."
+  }
+}
+
+variable "api_extra_args" {
+  description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
+  type        = list(string)
+  default     = []
+}
+
+variable "token_issuer" {
+  description = "The runtime that signs camelFS tokens (its AGENT_PUBLIC_URL; the JWT issuer the tier checks, and where jwks.sh fetches /.well-known/jwks.json). Must equal infra/job-hosts' runtime_public_url."
+  type        = string
+  default     = "https://run-pilot.camelai.dev"
+  validation {
+    condition     = can(regex("^https://[a-z0-9.-]+$", var.token_issuer))
+    error_message = "token_issuer is an https origin with no path or trailing slash, exactly as AGENT_PUBLIC_URL."
+  }
+}
+
+variable "api_port" {
+  description = "The port camelfsd api listens on (the same the host role's --listen-api uses today)."
+  type        = number
+  default     = 8790
+}
+
+variable "api_health_path" {
+  description = "The unauthenticated health route both target groups probe; must answer 200 on a ready node."
+  type        = string
+  default     = "/v0/health"
+}
+
+variable "api_cpu" {
+  description = "Fargate CPU units per task (1024 = 1 vCPU). The tier is CPU-light (hashing, tree walks, merges) and memory-light; its in-process LRU of trees and small blobs is what api_memory sizes."
+  type        = number
+  default     = 1024
+}
+
+variable "api_memory" {
+  description = "Fargate memory per task, MiB."
+  type        = number
+  default     = 2048
+}
+
+variable "api_min_count" {
+  description = "Fewest API tasks: the service's desired count and the autoscaling minimum (the RTO-0 claim needs 2, one per AZ). 0 (the default, until an image exists): the service exists with no task and no autoscaling."
+  type        = number
+  default     = 0
+  validation {
+    condition     = var.api_min_count >= 0
+    error_message = "api_min_count is 0 or more."
+  }
+}
+
+variable "api_max_count" {
+  description = "Most API tasks (the spend cap of the tier)."
+  type        = number
+  default     = 8
+  validation {
+    condition     = var.api_max_count >= 1 && var.api_max_count <= 32
+    error_message = "api_max_count is between 1 and 32; raise this bound in the same change that raises it."
+  }
+}
+
+variable "api_cpu_target" {
+  description = "Target-tracking CPU utilisation (percent) for the tier's autoscaling."
+  type        = number
+  default     = 60
+}
+
+variable "api_log_retention_days" {
+  description = "CloudWatch Logs retention of the api tasks' output (access lines carry op, lineage, status, ms; never paths, ids or bodies)."
+  type        = number
+  default     = 30
+}
+
+# --- Hosts ---
+
+variable "host_security_group_ids" {
+  description = "Security groups of the VM hosts that run camelfsd --role host (infra/job-hosts' hosts group once applied, the proto host's group meanwhile). Only these reach the internal load balancer, and the tier reaches only these on host_compute_port; empty means no host is wired yet."
+  type        = list(string)
+  default     = []
+}
+
+variable "host_compute_port" {
+  description = "The hosts' compute listener (camelfsd host --listen-compute 0.0.0.0:8792; proto-block, 2026-11-13): the tier pushes boot/stop there, in-VPC, with tokens it signs (K4). The rule is added to each host security group; the hosts' own egress rules are theirs."
+  type        = number
+  default     = 8792
+}
+
+# --- Bucket ---
+
+variable "guest_image_prefix" {
+  description = "Prefix in the bucket above the content-addressed guest image (K1: <prefix>guest/<sha256>.ext4.zst + .json; empty puts it at guest/ in the bucket root). The CI publisher may put under <prefix>guest/ and nowhere else; hosts read it with the host policy."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.guest_image_prefix == "" || can(regex("^[a-z0-9-]+/$", var.guest_image_prefix))
+    error_message = "guest_image_prefix is empty or one lowercase path segment with a trailing slash."
+  }
+}
+
+variable "results_expiry_days" {
+  description = "VM results the tier writes to S3 (<lineage>/results/<vm>, tagged kind=result; K4) are deleted after this many days."
+  type        = number
+  default     = 7
+}
+
+variable "github_subjects" {
+  description = "OIDC subject prefixes of the repository whose GitHub Actions may publish the guest image (the runtime's infra/terraform uses the same immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub)."
+  type        = list(string)
+  default     = ["qaml-ai@151090534/run@1384214784"]
+}
+
+variable "github_environment" {
+  description = "The GitHub Actions environment whose jobs may assume the publisher role (required reviewers on it gate the publish)."
+  type        = string
+  default     = "production"
+}
+
+variable "noncurrent_expiry_days" {
+  description = "Overwritten and deleted objects stay recoverable this long (camel-fs.md §5 phase 1: 35, the PITR window of the tables)."
+  type        = number
+  default     = 35
+}
+
+variable "inventory_expiry_days" {
+  description = "Daily S3 Inventory reports (inventory/ in the bucket; the GC's input, camel-fs.md §1.9) are deleted after this many days."
+  type        = number
+  default     = 30
+}
+
+variable "alb_access_logs_bucket" {
+  description = "An existing bucket for the load balancers' access logs (the runtime's mTLS-logs bucket showed the 2026-10-24 h2 stall; nothing else did). Null: no access logs."
+  type        = string
+  default     = null
+}
+
+# --- Alarms ---
+
+variable "alerts_topic_name" {
+  description = "The runtime's us-west-2 alerts topic (infra/terraform/alarms.tf, aws_sns_topic.alerts_regional), which emails Miguel. Looked up by name, not managed here."
+  type        = string
+  default     = "camelai-agent-runtime-alerts"
+}
+
+variable "api_latency_p99_ms" {
+  description = "Alarm when the public load balancer's target p99 response time exceeds this for 3 of 5 minutes (camel-fs.md §1.6 budgets 50–200 ms per write or merge from the tier's seat)."
+  type        = number
+  default     = 1000
+}

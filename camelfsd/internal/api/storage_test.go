@@ -19,6 +19,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 )
 
 type countedStore struct {
@@ -84,7 +85,7 @@ func commit(t *testing.T, s *Server, l, base string, changes []change) map[strin
 }
 func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 	st := &countedStore{Store: store.Local{Dir: t.TempDir()}}
-	s := storageServer(t, st)
+	s := storageServer(t, testutil.TrackTreePuts(t, st))
 	r := httptest.NewRecorder()
 	s.ServeHTTP(r, httptest.NewRequest("GET", "/v1/lineages/a/trees/no", nil))
 	if r.Code != 401 {
@@ -260,7 +261,7 @@ func TestStorageMerge(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := &countedStore{Store: store.Local{Dir: t.TempDir()}}
-			s := storageServer(t, st)
+			s := storageServer(t, testutil.TrackTreePuts(t, st))
 			b := put(t, s, "l", tc.base)
 			base := commit(t, s, "l", "", []change{{Path: "x", Blob: b}})["tree"].(string)
 			var o, th string
