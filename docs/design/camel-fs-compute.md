@@ -70,11 +70,12 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
 | route | semantics |
 |---|---|
 | `POST /v1/vms` `{ id, lineage, ref, version?, mode: "job" \| "session", image, shape: { vcpus, memoryMiB, diskGiB }, pool, job?: { command, timeoutS, env, outputs, commit }, session?: { idleStopS }, network, usage: { payer } }` | idempotent by `id` (the runtime's job id or computer id). It takes the lease on `ref` (§9.9; `job/<id>` branches are created by the caller first), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/repo` or `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase |
-| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, exit?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended` |
+| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, exit?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended`. Ended codes: `exit`, `stopped`, `timeout`, `host_lost`, `start_failed` (admission is the runtime's, before `POST /v1/vms`, so it is never an ended code) |
+| `GET /v1/vms/{id}/result` | the full result body (`acc: r` on the VM's lineage): `{ exit, timedOut, stdout, stderr, outputs, version?, checkpointError?, timings }`, capped as `WireResult` today (up to 1 MiB). The host writes it to the bucket at `<lineage>/results/<vm id>` (tagged `camelfs-kind=result`, expired by a 7-day lifecycle rule on that tag; the runtime lands it within seconds of `vm.ended`, and a read after expiry is a loud `404`) **before** it reports the VM ended, so the `vms` row and `vm.ended` never carry the body (DynamoDB's 400 KB item limit, L93) |
 | `POST /v1/vms/{id}/exec` `{ command, shell?, timeoutS, env?, stdin? }` | runs a command. Output streams as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`); a client that drops the stream can re-read the tail with `GET …/exec/{execId}`. `shell` names a persistent shell from `POST /v1/vms/{id}/shells` (cwd, env and shell state survive between calls: the `bash` tool's semantics). A `job`-mode VM runs its `job.command` once by itself and refuses `exec` |
 | `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the in-VPC `cas` on the VM's ref under its lease (§9.7, §9.9). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved. This is the per-turn checkpoint of the `bash` VM |
 | `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. A `session` stops by itself after `idleStopS` with no `exec`, with a checkpoint first; memory-snapshot sleep (§1.5) is a later addition behind the same call |
-| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { exit, timedOut, stdout, stderr (capped as `WireResult` today), outputs, version?, checkpointError? }`, `usage.vm` (§4). Delivered at least once as signed webhooks into outbox rows (camel-fs-files.md §9.11's pipeline) |
+| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, exit, timedOut, resultRef, version?, checkpointError? }` (the body is read with `GET …/result`), `usage.vm` (§4). Delivered at least once as signed webhooks into outbox rows (camel-fs-files.md §9.11's pipeline) |
 
 **Mapping:**
 - `job({ at, commit })` is `POST /v1/vms` in `job` mode, followed by `vm.ended`.
@@ -103,9 +104,12 @@ semantics. `HostJob` becomes a thin client of the compute API.
 - **proto-block** owns the host-agent merge (§1) and K1–K3.
 
 **The tier owns VMs end to end.** New tables:
-- `hosts` (`host`: boot epoch, pool, shape, free slots, `lastSeenAt`, features; written by host heartbeats in-VPC);
-- `vms` (`id`: the §2 phase row, host, lease epoch, `stopRequested`, result reference, `payer`);
-- `deliveries` already exists for notify and carries `vm.*` and `usage.*` events.
+- `hosts` (key `pool` + `host`): boot epoch, shape, `free` slots, the string set `vms` of the VMs placed on it,
+  `lastSeenAt`, features. Heartbeats write it in-VPC, and every placement and every end update `free` and `vms`
+  in the same transaction as the VM's row. A reconcile is then one strongly consistent `GetItem`, with no index.
+- `vms` (key `id`): the §2 phase row, host, lease epoch, `stopRequested`, `resultRef`, `payer`, `usageSeq`.
+- `deliveries` (key `shard` + `id`, camel-fs-files.md §9.11) already exists for notify, and carries `vm.*` and
+  `usage.*` events.
 
 Every transition is a conditional write:
 - `requested → placed` names the host and takes a slot on the `hosts` item in one transaction.
@@ -159,9 +163,11 @@ compute could not run without camelRun's runtime, and two control planes would t
 camel-fs emits usage, and the runtime bills. Money stays in Postgres, and camel-fs never sees a balance, a price or
 a credit.
 
-- **`usage.vm`** has one event per VM per interval and a final one at `ended`: `{ id, vm, payer, pool, shape:
-  { vcpus, memoryMiB }, host, from, to, seconds, final }`. Intervals are closed on the host's heartbeat clock and
-  written in the same transaction as the `vms` row they extend, so an event cannot be lost or doubled by a crash.
+- **`usage.vm`** has one event per VM per 60 s of host-reported run time, closed on the heartbeat that crosses the
+  boundary, and a final one at `ended`: `{ id: "<vm>:<seq>", vm, payer, pool, shape: { vcpus, memoryMiB }, host,
+  from, to, seconds, final }`. Each is written under the condition `usageSeq = :n` in the same `TransactWriteItems`
+  as the `vms` row it extends, so an event cannot be lost or doubled by a crash or a racing tier node. On host loss,
+  the final event's `to` is the last heartbeat that listed the VM (the rule #968 applies to `JobHost` today).
   `payer` is the opaque string the runtime passed in `POST /v1/vms`.
 - **`usage.storage`** has one event per lineage per GC mark: the exact deduplicated bytes the mark measured
   (camel-fs-files.md §6, quota). It is the billing basis for storage, independent of how quota is enforced between

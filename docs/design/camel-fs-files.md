@@ -202,7 +202,7 @@ regional storage tier). The state is now:
 | refs, leases, fences, watchers | DynamoDB `refs`, one item per ref | partition `lineage`, sort `name` |
 | lineages: tenant, kind, default branch | DynamoDB `lineages` | `lineage` |
 | trees and commits (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to S3 `g/`) | DynamoDB `objects` (S3 `t/`, `k/` until the table exists, ledger L74) | `lineage`, `id` |
-| pending `notify` deliveries | DynamoDB `deliveries` | `lineage`, `id` |
+| pending deliveries (`notify`; compute's `vm.*` and `usage.*`) | DynamoDB `deliveries` | `shard`, `id` |
 | blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
 | the NVMe cache of chunks, images, trees and shards | each host's `camelfsd --role host` | content hash |
 | each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
@@ -837,7 +837,9 @@ closes.
 ### 9.11 Notify webhook
 
 When a watched ref moves, the tier writes a `deliveries` item (`{ id, lineage, ref, from, to, tree, by, at,
-watchers }`) in the same `TransactWriteItems` as the move. Any tier node then claims it (a conditional
+watchers }`) in the same `TransactWriteItems` as the move. The table's key is `shard` + `id`: `shard` is a fixed
+small range (`hash(id) mod 16`), so the tier nodes find pending deliveries with one `Query` per shard instead of a
+`Scan`; compute's events (camel-fs-compute.md §4) share the table. Any tier node then claims it (a conditional
 `claimedUntil`), POSTs it to the runtime's notify endpoint, and deletes it on a `2xx`.
 
 ```
