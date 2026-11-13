@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { createServer as createNetServer, type Socket } from "node:net";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, lstat, rm, writeFile } from "node:fs/promises";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
@@ -35,11 +36,11 @@ async function host(t: TestContext, camelfsd?: Camelfsd, launcher = fakeLauncher
 }
 
 const tree = "a".repeat(40), newTree = "b".repeat(40);
-const published = { commit: "c".repeat(40), tree: newTree, root: "new-root", parentRoot: "old-root", checkpointMs: 17,
+const published = { commit: "c".repeat(40), tree: newTree, root: "new-root", parentRoot: "old-root", wallMs: 99, checkpointMs: 99, imageMs: 7,
   changedChunks: 2, uploadedChunks: 1, changedBytes: 9, reflinkMs: 1, fiemapMs: 2, hashMs: 3, uploadMs: 4 };
 type Stream = { header: Record<string, unknown>; ops: Record<string, unknown>[]; data: Record<string, string>; trailer: Record<string, unknown> };
 
-async function setup(t: TestContext, options: { command?: string; scenario?: string; second?: boolean; postDelayMs?: number; timeoutSeconds?: number } = {}) {
+async function setup(t: TestContext, options: { command?: string; scenario?: string; second?: boolean; postDelayMs?: number; timeoutSeconds?: number; legacyTiming?: boolean; aliasTiming?: number } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "cfs-cp-")), repo = join(dir, "disk"), vsock = join(dir, "job-1.vsock");
   await mkdir(repo);
   const streams: Stream[] = [], peers = new Set<Socket>(), servers: ReturnType<typeof createNetServer>[] = [];
@@ -74,7 +75,8 @@ async function setup(t: TestContext, options: { command?: string; scenario?: str
     socket.write(encodeFrame({ ready: true }));
     void receive(socket).then(() => {
       response.statusCode = options.scenario === "fenced" ? 409 : 200;
-      response.end(JSON.stringify(options.scenario === "fenced" ? { error: "fenced" } : published));
+      const { wallMs, imageMs, ...legacy } = published;
+      response.end(JSON.stringify(options.scenario === "fenced" ? { error: "fenced" } : options.legacyTiming ? legacy : { ...published, checkpointMs: options.aliasTiming ?? published.checkpointMs }));
     }).catch(error => { response.statusCode = 422; response.end(JSON.stringify({ error: "bad-stream", detail: String(error) })); })
       .finally(() => { pending = undefined; });
   });
@@ -137,8 +139,9 @@ test("round trip publishes index, exact operations and metrics; next checkpoint 
   const r = await setup(t, { second: true });
   assert.equal(r.result.ok, true); if (!r.result.ok) return;
   const c = r.result.camelfs!;
+  assert.equal(c.checkpoint?.imageMs, 7);
   assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, trailers: { kind: "job", job: "job-1", exitCode: 0 } }, { timeoutMs: 600_000 }]);
-  assert.equal(c.checkpointError, undefined); assert.equal(c.commit, published.commit); assert.equal(c.tree, newTree); assert.equal(c.root, published.root); assert.equal(c.checkpointMs, 17);
+  assert.equal(c.checkpointError, undefined); assert.equal(c.commit, published.commit); assert.equal(c.tree, newTree); assert.equal(c.root, published.root); assert.equal(c.checkpointMs, 99);
   for (const key of ["walkMs", "streamMs", "freezeMs", "files", "bytes", "skipped"] as const) assert.equal(typeof c.checkpoint?.[key], "number");
   for (const key of ["changedChunks", "uploadedChunks", "changedBytes", "reflinkMs", "fiemapMs", "hashMs", "uploadMs"] as const) assert.equal(c.checkpoint?.[key], published[key]);
   const s = r.streams[0]!;
@@ -177,7 +180,13 @@ test("FIFO is counted; git and temporary names are skipped", async t => {
   assert.equal(r.result.ok, true); if (!r.result.ok) return;
   assert.equal(r.result.camelfs!.checkpoint?.skipped, 1); assert.deepEqual(r.streams[0]!.ops, []);
 });
-test("unreadable file fails loudly", { skip: process.getuid?.() === 0 }, async t => {
+// Root, or a process with CAP_DAC_OVERRIDE (sprites run tests that way), reads a mode-000 file: the case cannot happen there.
+const canReadUnreadable = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "cfs-perm-")), file = join(dir, "f");
+  try { writeFileSync(file, "x"); chmodSync(file, 0); readFileSync(file); return true; } catch { return false; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+})();
+test("unreadable file fails loudly", { skip: canReadUnreadable && "this process reads mode-000 files (root or CAP_DAC_OVERRIDE)" }, async t => {
   const r = await setup(t, { command: "echo x > unreadable; chmod 000 unreadable" });
   assert.equal(r.result.ok, true); if (!r.result.ok) return; assert.match(r.result.camelfs!.checkpointError!, /^guest: .*EACCES/);
 });
@@ -212,4 +221,19 @@ test("timed out command checkpoints with exitCode -1 in commit trailers", async 
   assert.deepEqual(r.streams[0]!.data, { created: "partial" });
   assert.equal(r.result.camelfs!.checkpointError, undefined); assert.equal(r.result.camelfs!.tree, newTree);
   assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, trailers: { kind: "job", job: "job-1", exitCode: -1 } }]);
+});
+
+
+test("older daemon checkpointMs is reported without imageMs", async t => {
+  const r = await setup(t, { legacyTiming: true });
+  assert.equal(r.result.ok, true); if (!r.result.ok) return;
+  assert.equal(r.result.camelfs!.checkpointMs, 99);
+  assert.equal(Object.hasOwn(r.result.camelfs!.checkpoint!, "imageMs"), false);
+});
+
+test("wallMs takes precedence over the checkpointMs alias", async t => {
+  const r = await setup(t, { aliasTiming: 17 });
+  assert.equal(r.result.ok, true); if (!r.result.ok) return;
+  assert.equal(r.result.camelfs!.checkpointMs, 99);
+  assert.equal(r.result.camelfs!.checkpoint?.imageMs, 7);
 });

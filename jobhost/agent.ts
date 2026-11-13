@@ -15,6 +15,8 @@ import { fakeLauncher, type Vm, type VmLauncher } from "./vm.ts";
 import { firecrackerLauncher } from "./firecracker.ts";
 import { camelfsdClient, serveImportProxy, type Camelfsd, type CamelfsMount } from "./camelfsd.ts";
 
+export const CAMELFS_HEARTBEAT_MS = 30_000;
+
 export const AGENT_VERSION = "0.2.0";
 /** Less free disk than this before the command fails the job `disk_low`, as a container job does. */
 const DISK_LOW_BYTES = 2 * 1024 * 1024 * 1024;
@@ -25,6 +27,7 @@ export type AgentOptions = {
   /** The pool this host serves (build or test: the image's POOL); placement sends it only that pool's jobs. */
   pool?: "build" | "test";
   camelfsd?: Camelfsd;
+  camelfsHeartbeatMs?: number;
   launcher: VmLauncher; heartbeatMs?: number; diskLowBytes?: number; log?: (line: Record<string, unknown>) => void;
 };
 
@@ -152,6 +155,8 @@ export class HostAgent {
     let result: WireResult;
     let mounted: CamelfsMount | undefined;
     let mountAttempted = false;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeat: Promise<void> | undefined;
     // Set once its VM has started: every result from then on says when (its charge, if its `started` report was lost).
     let startMs: number | undefined;
     try {
@@ -161,6 +166,12 @@ export class HostAgent {
         // A failed request may still have created a lease in the daemon.
         mountAttempted = true;
         mounted = await this.options.camelfsd.mount({ jobId: id, lineage: spec.camelfs.lineage, tree: spec.camelfs.tree, vsock: this.options.launcher.vsockPath?.(id) ?? "" });
+        heartbeatTimer = setInterval(() => {
+          if (heartbeat) return;
+          heartbeat = Promise.resolve().then(() => this.options.camelfsd!.heartbeat?.(id))
+            .catch(error => this.log({ type: "jobhost_camelfs_heartbeat_failed", id, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) }))
+            .finally(() => { heartbeat = undefined; });
+        }, this.options.camelfsHeartbeatMs ?? CAMELFS_HEARTBEAT_MS);
         if (job.cancelled) throw new Stopped();
       }
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
@@ -219,9 +230,9 @@ export class HostAgent {
         if (error) cfs.checkpointError = error;
         else if (daemon.status === "fulfilled" && guest.status === "fulfilled") {
           const d = daemon.value, g = guest.value;
-          cfs.commit = d.commit; cfs.tree = d.tree; cfs.root = d.root; cfs.checkpointMs = d.checkpointMs;
+          cfs.commit = d.commit; cfs.tree = d.tree; cfs.root = d.root; cfs.checkpointMs = d.wallMs ?? d.checkpointMs;
           cfs.checkpoint = { walkMs: Number(g.walkMs), streamMs: Number(g.streamMs), freezeMs: Number(g.freezeMs), files: Number(g.files), bytes: Number(g.bytes), skipped: Number(g.skipped),
-            changedChunks: d.changedChunks, uploadedChunks: d.uploadedChunks, changedBytes: d.changedBytes, reflinkMs: d.reflinkMs, fiemapMs: d.fiemapMs, hashMs: d.hashMs, uploadMs: d.uploadMs };
+            changedChunks: d.changedChunks, uploadedChunks: d.uploadedChunks, changedBytes: d.changedBytes, reflinkMs: d.reflinkMs, fiemapMs: d.fiemapMs, hashMs: d.hashMs, uploadMs: d.uploadMs, ...(d.imageMs !== undefined ? { imageMs: d.imageMs } : {}) };
         }
         result.timings.totalMs = Date.now() - began;
       }
@@ -230,6 +241,9 @@ export class HostAgent {
         : { ok: false, code: job.vm ? "container_failed" : "start_failed", message: error instanceof Error ? error.message.slice(0, 300) : "The VM failed" };
     } finally {
       await job.vm?.destroy().catch(() => {});
+      clearInterval(heartbeatTimer);
+      // Finish any request already sent before releasing the mount.
+      await heartbeat;
       if (mountAttempted) await this.options.camelfsd!.release(id).catch(() => this.log({ type: "jobhost_camelfs_release_failed", id }));
       this.running.delete(id);
       const final: WireResult = result! ?? { ok: false, code: "container_failed", message: "No result" };

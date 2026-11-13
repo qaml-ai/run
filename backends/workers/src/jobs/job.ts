@@ -75,7 +75,10 @@ export type JobSpec = {
 };
 export type JobStream = { bytes: Uint8Array; size: number; truncated: boolean };
 export type JobOutput = { bytes: Uint8Array; size: number; truncated: boolean };
-export type JobTimings = { startedAt: number; endedAt: number; startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number };
+export type JobTimings = { startedAt: number; endedAt: number; startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number;
+  /** Where the time went, by step, for diagnosis; names are stable but the set may grow. Milliseconds, integers. */
+  steps?: Record<string, number>;
+};
 export type JobFailureCode =
   /** The payer may not start compute (credit, spend limit) or its tree is at its computer limit. */
   | "admission_refused"
@@ -101,7 +104,7 @@ export type JobResult =
       pids?: "cgroup" | "ulimit" | "unenforced";
       camelfs?: { commit?: string; tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
         checkpoint?: { walkMs: number; streamMs: number; freezeMs: number; files: number; bytes: number; skipped: number;
-          changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number } };
+          changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; imageMs?: number } };
       snapshot?: ComputerSnapshot;
       /** saveSnapshot was asked for and failed; the result stands. */
       snapshotError?: string;

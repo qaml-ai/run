@@ -46,7 +46,7 @@ export type WireResult =
       timings: { startMs: number; syncMs: number; commandMs: number; collectMs: number; totalMs: number }; pids: "enforced" | "unenforced";
       camelfs?: { commit?: string; tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
         checkpoint?: { walkMs: number; streamMs: number; freezeMs: number; files: number; bytes: number; skipped: number;
-          changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number } } }
+          changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; imageMs?: number } } }
   | { ok: false; code: "start_failed" | "sync_failed" | "container_failed" | "disk_low" | "stopped"; message: string;
       /** For a failure after its VM started: when it started (after `startMs`) and ended (`totalMs`), from dispatch. */
       timings?: { startMs: number; totalMs: number } };

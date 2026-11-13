@@ -667,7 +667,13 @@ export class HostJob extends DurableObject<JobHostsEnv> {
   async run(value: unknown): Promise<JobResult> {
     const spec = jobSpec(value, { beyondContainers: true });
     const at = Date.now();
-    const timings = () => ({ startedAt: at, endedAt: Date.now(), startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: Date.now() - at });
+    const steps: Record<string, number> = {};
+    const measure = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+      const from = Date.now();
+      try { return await run(); }
+      finally { steps[name] = Date.now() - from; }
+    };
+    const timings = () => ({ steps, startedAt: at, endedAt: Date.now(), startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: Date.now() - at });
     const fail = (code: Extract<JobResult, { ok: false }>["code"], message: string, costUsd?: number): JobResult => ({ ok: false, id: spec.id, code, message, timings: timings(), ...(costUsd !== undefined ? { costUsd } : {}) });
     // Running, or still waiting for a host (a workflow that restarted asks again): the earlier run lands it.
     if (this.active || this.waiting) return fail("job_running", `Job ${spec.id} is running`);
@@ -692,11 +698,12 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     if (!saved) {
       try { rate = hostSecondRate(pool, shape, this.env); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Pricing is misconfigured"); }
-      try { await meter.admit(spec.payer); }
+      try { await measure("admitMs", () => meter.admit(spec.payer)); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
       if (waiting.stopped) return fail("stopped", "The job was stopped");
-      try { ({ files, sync, camelfs } = await this.files(spec)); }
+      try { ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec))); }
       catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
+      if (camelfs) steps.importMs = steps.filesMs!;
       if (waiting.stopped) return fail("stopped", "The job was stopped");
       // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
       const stopped = async (host?: string, slot = false) => {
@@ -705,14 +712,14 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         this.waiting = undefined;
         return fail("stopped", "The job was stopped");
       };
-      host = await this.waitForHost(waiting, pool, shape.memoryMiB);
+      host = await measure("waitMs", () => this.waitForHost(waiting, pool, shape.memoryMiB));
       if (host === "stopped") return stopped();
       if (!host) { this.waiting = undefined; return fail("start_failed", `No ${pool} job host was free within ${Math.round(this.waitMs() / 1000)} s`); }
       if (waiting.stopped) return stopped(host);
       // The computer slot from here: a job waiting for a host holds none.
       try {
         const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(spec.payer.tenant);
-        await transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit));
+        await measure("reserveMs", () => transaction(this.env, async sql => reserveComputer(sql, spec.payer.tenant, spec.payer.agent, machine, Date.now() + lifetimeMs, Date.now(), await limit)));
       } catch (error) {
         await registry(this.env).release(host, shape.memoryMiB, spec.id).catch(() => {});
         this.waiting = undefined;
@@ -722,7 +729,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     } else {
       // Recovery may precede JobHost's first durable insert. Rebuild the same snapshot's wire spec in that case too.
       // Admission, placement and the computer reservation are already held.
-      ({ files, sync, camelfs } = await this.files(spec));
+      ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec)));
     }
     const placedHost = host!;
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
@@ -775,6 +782,9 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       }
       active.answered = true;
     } finally {
+      const returnedAt = Date.now();
+      steps.hostMs = returnedAt - dispatchedAt;
+      if (wire.ranFrom !== undefined) steps.dispatchMs = wire.ranFrom - dispatchedAt;
       // Charged for the span its VM ran: from its host's `started` report (or, for a result that says it ran, what its
       // timings say: a `started` lost on a reconnect never makes a job that ran free), to its result, or until its host
       // was last heard from if it went away. A VM that never started (no report, no result that ran) is not charged.
@@ -782,6 +792,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       if (!completed) await meter.startedAt(span.from).then(() => meter.stopped(undefined, span.until))
         .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
       if (!completed) costUsd = meter.spentUsd();
+      steps.meterMs = Date.now() - returnedAt;
       await release().catch(() => {});
       await registry(this.env).release(placedHost, shape.memoryMiB, spec.id).catch(() => {});
     }
@@ -791,7 +802,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       outputs: Object.fromEntries(Object.entries(wire.outputs).map(([name, output]) => [name, stream(output)])),
       ...(wire.camelfs ? { camelfs: wire.camelfs } : {}),
       pids: wire.pids === "enforced" ? "ulimit" : "unenforced",
-      timings: { ...wire.timings, startedAt: at, endedAt: Date.now() }, costUsd,
+      timings: { ...wire.timings, steps, startedAt: at, endedAt: Date.now() }, costUsd,
     };
     // Keep only receipt metadata here; large outputs stay in JobHost's SQL result row.
     if (!completed) await this.ctx.storage.put(`result:${spec.id}`, { at: Date.now(), dispatch, costUsd });
