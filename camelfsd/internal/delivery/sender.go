@@ -272,7 +272,8 @@ func (s Sender) Run(ctx context.Context) error {
 			break
 		}
 		if err != nil {
-			s.log("delivery_pass_failed", nil)
+			// DynamoDB errors carry no delivery body; the error is the only signal of a failing pass.
+			s.log("delivery_pass_failed", map[string]any{"error": err.Error()})
 		} else if sent > 0 {
 			continue
 		}
