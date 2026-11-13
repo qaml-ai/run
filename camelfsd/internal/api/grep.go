@@ -27,14 +27,17 @@ func grepTree(ctx context.Context, r *objects.Repository, l string, q url.Values
 		if q.Get(k) != "" {
 			v, e := strconv.Atoi(q.Get(k))
 			if e != nil || v < 0 {
-				return nil, bad("invalid_request")
+				return nil, invalid("%s: must be a nonnegative integer", k)
 			}
 			*dst = v
 		}
 	}
 	limit = min(limit, 2000)
-	if limit < 1 || contextLines > 2000 {
-		return nil, bad("invalid_request")
+	if limit < 1 {
+		return nil, invalid("limit: must be at least 1")
+	}
+	if contextLines > 2000 {
+		return nil, invalid("context: at most 2000")
 	}
 	pattern := q.Get("q")
 	if q.Get("regex") != "1" {
@@ -45,12 +48,12 @@ func grepTree(ctx context.Context, r *objects.Repository, l string, q url.Values
 	}
 	re, e := regexp.Compile(pattern)
 	if e != nil {
-		return nil, bad("invalid_request")
+		return nil, invalid("q: bad regular expression: %s", e)
 	}
 	glob := q.Get("path")
 	if glob != "" {
 		if _, e = path.Match(glob, ""); e != nil {
-			return nil, bad("invalid_request")
+			return nil, invalid("path: bad glob %q", glob)
 		}
 	}
 	es, e := r.Entries(ctx, q.Get("tree"))

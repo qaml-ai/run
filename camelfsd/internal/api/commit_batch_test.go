@@ -32,7 +32,7 @@ func TestCommitBatchesBaseBlobMetadata(t *testing.T) {
 			queries++
 		}
 	}
-	_, e = makeCommit(ctx, repo, "l", commitRequest{BaseTree: &base.Tree, Author: "a", Changes: []change{{Path: "file0000", Mode: "100755"}}})
+	_, e = makeCommit(ctx, repo, "l", commitRequest{Parents: []string{}, BaseTree: &base.Tree, Author: "a", Changes: []change{{Path: "file0000", Mode: "100755"}}})
 	if e != nil {
 		t.Fatal(e)
 	}
