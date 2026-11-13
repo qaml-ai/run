@@ -237,9 +237,17 @@ reads are served at once. Meanwhile the daemon **prehydrates** the root into a s
 ceiling, 64 chunks in flight, writing only the chunks the root names (holes cost nothing, so the work is the root's
 bytes, not the virtual size), and when the file is complete it **reloads the linear layer onto the local file**:
 identical bytes, transparent to the snapshot and to the guest. From then on every read is kernel-only from NVMe.
-Demand reads before the swap pay the lazy device's round trip; the swap on the large 670 MB root is about the NIC
-time (≈ 3 s at 250 MB/s). A cold checkpoint's delta comes from the snapshot's exception table rather than FIEMAP,
-since the writes live in the COW file; after the swap and the next reflink the warm path's FIEMAP applies as before.
+Demand reads before the swap pay the lazy device's round trip; the swap on the large 670 MB root should take about
+the NIC time (≈ 3 s at 250 MB/s is the ceiling-derived estimate, to be replaced by the `hydration_ms` and `swap_ms`
+that 7b's harness reports). **A cold-started mount stays on dm-snapshot for its whole lifetime**: a live device cannot
+be flipped from the snapshot to a reflink file without the guest seeing a different device, and the swap only changes
+the origin underneath. So every checkpoint of such a mount takes its delta from the snapshot's exception table (under a
+millisecond-scale `dmsetup suspend` of the snapshot while the guest is frozen anyway), and its **promotion writes a
+reflink copy of the local image with the delta chunks applied**, O(delta), as `images/<new root>.img`; the lineage's
+**next** mount of that root is a warm reflink mount, and the warm path's FIEMAP applies as before. Two consequences:
+dm-snapshot passes no discards through, so `fstrim` in the guest is a no-op on a cold-started mount (space comes back
+when the promoted image's holes are preserved by the reflink-plus-delta write), while warm mounts keep
+discard-as-punch-hole; and a cold-started mount's checkpoints never need FIEMAP at all.
 
 Why not dm-clone, which the earlier revision chose: measured on the v0 host, dm-clone hydrates **every region of the
 virtual size, holes included**, at ~0.8 ms per 256 KiB region even from a warm origin, and writes them all to NVMe:
