@@ -19,6 +19,8 @@ gofmt -l .
 ```
 
 Host image operations require FICLONE under --data (normally XFS with reflink).
+Image import hashes only chunks intersecting SEEK_DATA/SEEK_HOLE extents.
+Unsupported filesystems fall back to scanning the image.
 Cold mounts require NBD and dm-snapshot modules, nbd-client, losetup, dmsetup
 and root. Hydration always runs in the background.
 CAMELFSD_TEST_NO_REFLINK=1 is for unprivileged tests: it uses copies and hashes

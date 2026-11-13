@@ -279,7 +279,7 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 		pending = map[string][]byte{}
 		return e
 	}
-	e = (chunk.Chunker{}).File(f, st.Size(), func(o int64, h string, b []byte) error {
+	e = (chunk.Chunker{}).Data(f, st.Size(), func(o int64, h string, b []byte) error {
 		if h != "" {
 			r.Chunks[strconv.FormatInt(o, 10)] = h
 			pending[h] = append([]byte(nil), b...)
