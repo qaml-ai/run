@@ -74,7 +74,7 @@ func put(t *testing.T, s *Server, l, text string) string {
 	return response(t, callStorage(t, s, l, "PUT", "blobs", []byte(text), "", 201))["blob"].(string)
 }
 func commit(t *testing.T, s *Server, l, base string, changes []change) map[string]any {
-	q := commitRequest{Author: "agent:test", Message: "test", Changes: changes}
+	q := commitRequest{Parents: []string{}, Author: "agent:test", Message: "test", Changes: changes}
 	now := int64(123)
 	q.Time = &now
 	if base != "" {
@@ -92,7 +92,7 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 	}
 	blob := put(t, s, "a", "hello\nworld\n")
 	callStorage(t, s, "a", "PUT", "blobs", []byte("hello\nworld\n"), "", 200)
-	q := commitRequest{Author: "agent:test", Message: "message", Changes: []change{{Path: "src/a.txt", Blob: blob}}, Trailers: map[string]string{"Camel-Run": "r"}}
+	q := commitRequest{Parents: []string{}, Author: "agent:test", Message: "message", Changes: []change{{Path: "src/a.txt", Blob: blob}}, Trailers: map[string]string{"Camel-Run": "r"}}
 	now := int64(123)
 	q.Time = &now
 	first := callStorage(t, s, "a", "POST", "commits", q, "key", 201)
@@ -136,10 +136,10 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 	callStorage(t, s, "b", "GET", get, nil, "", 404)
 	callStorage(t, s, "a", "GET", "blobs/"+strings.Repeat("a", 40)+"?tree="+tree+"&path=src/a.txt", nil, "", 404)
 	callStorage(t, s, "b", "GET", "trees/"+tree, nil, "", 404)
-	callStorage(t, s, "b", "POST", "commits", commitRequest{Author: "x", BaseTree: &tree}, "", 400)
+	callStorage(t, s, "b", "POST", "commits", commitRequest{Parents: []string{}, Author: "x", BaseTree: &tree}, "", 400)
 	other := put(t, s, "b", "private")
-	callStorage(t, s, "a", "POST", "commits", commitRequest{Author: "x", Changes: []change{{Path: "x", Blob: other}}}, "", 400)
-	callStorage(t, s, "a", "POST", "commits", commitRequest{Author: "x", Parent: &other}, "", 400)
+	callStorage(t, s, "a", "POST", "commits", commitRequest{Parents: []string{}, Author: "x", Changes: []change{{Path: "x", Blob: other}}}, "", 400)
+	callStorage(t, s, "a", "POST", "commits", commitRequest{Parents: []string{other}, Author: "x"}, "", 400)
 	// A fresh SQLite cache recovers both bytes and authorization from the store.
 	fresh := storageServer(t, st)
 	callStorage(t, fresh, "a", "GET", "commits/"+id, nil, "", 200)
@@ -147,7 +147,7 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 	callStorage(t, fresh, "a", "PUT", "blobs", []byte("hello\nworld\n"), "", 200)
 	callStorage(t, fresh, "a", "GET", "trees/"+tree+"?recursive=1", nil, "", 200)
 	parent := id
-	child := response(t, callStorage(t, fresh, "a", "POST", "commits", commitRequest{Author: "x", Parent: &parent, Changes: []change{{Path: "src/a.txt", Mode: "100755"}, {Path: "absent", Delete: true}}}, "", 201))
+	child := response(t, callStorage(t, fresh, "a", "POST", "commits", commitRequest{Parents: []string{parent}, Author: "x", Changes: []change{{Path: "src/a.txt", Mode: "100755"}, {Path: "absent", Delete: true}}}, "", 201))
 	if child["changed"] != float64(1) {
 		t.Fatal(child)
 	}
@@ -164,7 +164,7 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 		t.Fatal(rw.Body.String())
 	}
 	// Explicit null differs from omitted baseTree when a parent is present.
-	empty := response(t, callStorage(t, fresh, "a", "POST", "commits", []byte(fmt.Sprintf(`{"parent":%q,"baseTree":null,"author":"x","message":"empty"}`, id)), "", 201))
+	empty := response(t, callStorage(t, fresh, "a", "POST", "commits", []byte(fmt.Sprintf(`{"parents":[%q],"baseTree":null,"author":"x","message":"empty"}`, id)), "", 201))
 	if empty["tree"] != "4b825dc642cb6eb9a060e54bf8d69288fbee4904" {
 		t.Fatal(empty)
 	}
@@ -286,7 +286,7 @@ func TestStorageMerge(t *testing.T) {
 }
 func TestStorageCapsAndInvalid(t *testing.T) {
 	s := storageServer(t, store.Local{Dir: t.TempDir()})
-	callStorage(t, s, "l", "POST", "commits", commitRequest{Author: "a", Changes: make([]change, 10001)}, "", 413)
+	callStorage(t, s, "l", "POST", "commits", commitRequest{Parents: []string{}, Author: "a", Changes: make([]change, 10001)}, "", 413)
 	for _, raw := range []string{`{"author":"a","changes":[{"path":"../x","blob":"x"}]}`, `{"author":"a","time":"bad"}`, `{} {}`} {
 		callStorage(t, s, "l", "POST", "commits", []byte(raw), "", 400)
 	}

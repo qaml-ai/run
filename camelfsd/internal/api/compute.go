@@ -22,9 +22,7 @@ type change struct {
 	Delete bool   `json:"delete,omitempty"`
 }
 type commitRequest struct {
-	Parents []string `json:"parents,omitempty"`
-	// TEMPORARY: parent is an alias for one release; remove next release.
-	Parent   *string           `json:"parent,omitempty"`
+	Parents  []string          `json:"parents"`
 	BaseTree *string           `json:"baseTree,omitempty"`
 	Changes  []change          `json:"changes"`
 	Author   string            `json:"author"`
@@ -42,15 +40,12 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if q.Author == "" || !safeLine(q.Author) || strings.ContainsRune(q.Message, 0) {
 		return nil, bad("invalid_request")
 	}
-	parents := append([]string{}, q.Parents...)
-	if q.Parent != nil {
-		if q.Parents != nil {
-			return nil, bad("invalid_request")
-		}
-		parents = append(parents, *q.Parent)
+	if q.Parents == nil {
+		return nil, invalid("parents: required array of commit ids")
 	}
+	parents := append([]string{}, q.Parents...)
 	if len(parents) > 2 {
-		return nil, bad("invalid_request")
+		return nil, invalid("parents: at most 2")
 	}
 	base := ""
 	for i, parent := range parents {
@@ -506,20 +501,11 @@ func (q *commitRequest) UnmarshalJSON(raw []byte) error {
 	if e := json.Unmarshal(raw, &fields); e != nil {
 		return e
 	}
-	hasParent, hasParents := false, false
 	for name, b := range fields {
-		switch {
-		case strings.EqualFold(name, "parent"):
-			hasParent = true
-		case strings.EqualFold(name, "parents"):
-			hasParents = true
-		case strings.EqualFold(name, "baseTree") && string(b) == "null":
+		if strings.EqualFold(name, "baseTree") && string(b) == "null" {
 			empty := ""
 			v.BaseTree = &empty
 		}
-	}
-	if hasParent && hasParents {
-		return bad("invalid_request")
 	}
 	*q = commitRequest(v)
 	return nil

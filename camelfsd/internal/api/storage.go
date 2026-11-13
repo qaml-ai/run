@@ -28,6 +28,11 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
+type invalidRequest string
+
+func (e invalidRequest) Error() string         { return string(e) }
+func invalid(format string, args ...any) error { return invalidRequest(fmt.Sprintf(format, args...)) }
+
 type storageError struct {
 	status  int
 	code    string
@@ -49,7 +54,11 @@ func storageFail(w http.ResponseWriter, e error) {
 	status, code, details := 500, "internal", any(nil)
 	var se *storageError
 	var ae *apierr.Error
-	if errors.As(e, &se) {
+	var validation invalidRequest
+	message := ""
+	if errors.As(e, &validation) {
+		status, code, message = 400, "invalid_request", validation.Error()
+	} else if errors.As(e, &se) {
 		status, code, details = se.status, se.code, se.details
 	} else if errors.As(e, &ae) {
 		status, code = ae.Status, "invalid_request"
@@ -66,7 +75,10 @@ func storageFail(w http.ResponseWriter, e error) {
 	if status == 500 {
 		log.Printf("op=storage error=%v", e)
 	}
-	v := map[string]any{"code": code, "message": code}
+	if message == "" {
+		message = code
+	}
+	v := map[string]any{"code": code, "message": message}
 	if details != nil {
 		v["details"] = details
 	}
@@ -76,7 +88,7 @@ func decodeStorage(r *http.Request, v any) error {
 	d := json.NewDecoder(io.LimitReader(r.Body, 64<<20))
 	d.DisallowUnknownFields()
 	if e := d.Decode(v); e != nil {
-		return bad("invalid_request")
+		return invalid("%s", strings.TrimPrefix(e.Error(), "json: "))
 	}
 	var extra any
 	if d.Decode(&extra) != io.EOF {

@@ -132,15 +132,15 @@ The limits are 256 paths and 64 MiB (or a smaller maxBytes). Fetches use
 curl -H "Authorization: Bearer $TOKEN" -d "{\"tree\":\"$T\",\"paths\":[\"src/a\",\"missing\"]}" "$A/read"
 ```
 
-Commit changes without moving a ref. parents is an ordered array of zero, one
-or two commit ids, each reachable in the lineage. Omitted/null parents or []
-creates a first commit. Three or more parents returns 400 invalid_request;
-an unknown parent returns 400 unknown_commit. Each parent becomes a Git parent
-header in the supplied order. Omitted baseTree uses the first parent's tree,
-or the empty tree when there are no parents; explicit null starts empty.
-For one release, parent: string|null is accepted as a legacy alias for one or
-zero parents. Supplying both parent and parents, even null, returns 400
-invalid_request. The parent alias will be removed in the next release.
+Commit changes without moving a ref. parents is a required ordered array of
+zero, one or two commit ids, each reachable in the lineage. An empty array
+creates a root commit. Missing or null parents returns 400 invalid_request;
+three or more parents returns 400 invalid_request; an unknown parent returns
+400 unknown_commit. The singular parent field is rejected as an unknown field.
+Each parent becomes a Git parent header in the supplied order. Omitted
+baseTree uses the first parent's tree, or the empty tree for a root commit;
+explicit null starts empty. changes may be an empty array to commit the base
+tree without edits.
 A mode-only change preserves the blob; deleting a missing path does nothing.
 At most 10,000 changes are accepted. The author is supplied by the caller,
 the committer is camelfs, and trailers are sorted Key: value lines.

@@ -44,10 +44,6 @@ func TestCommitParentsRoundTrip(t *testing.T) {
 		parents            []any
 	}{
 		{"empty", `"parents":[],`, "4b825dc642cb6eb9a060e54bf8d69288fbee4904", []any{}},
-		{"null", `"parents":null,`, "4b825dc642cb6eb9a060e54bf8d69288fbee4904", []any{}},
-		{"absent", "", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", []any{}},
-		{"alias", fmt.Sprintf(`"parent":%q,`, parents[0]), first["tree"].(string), []any{parents[0]}},
-		{"alias-null", `"parent":null,`, "4b825dc642cb6eb9a060e54bf8d69288fbee4904", []any{}},
 		{"one", fmt.Sprintf(`"parents":[%q],`, parents[0]), first["tree"].(string), []any{parents[0]}},
 		{"explicit-base", fmt.Sprintf(`"parents":[%q,%q],"baseTree":%q,`, parents[0], parents[1], second["tree"]), second["tree"].(string), wantParents},
 		{"null-base", fmt.Sprintf(`"parents":[%q,%q],"baseTree":null,`, parents[0], parents[1]), "4b825dc642cb6eb9a060e54bf8d69288fbee4904", wantParents},
@@ -71,10 +67,17 @@ func TestCommitParentsRoundTrip(t *testing.T) {
 		{fmt.Sprintf(`"parents":[%q,%q]`, parents[0], other), "unknown_commit"},
 		{`"parents":["bad"]`, "unknown_commit"},
 		{`"parents":"bad"`, "invalid_request"},
+		{`"message":"absent"`, "invalid_request"},
+		{`"parents":null`, "invalid_request"},
+		{`"parent":null`, "invalid_request"},
 		{`"parent":null,"unexpected":true`, "invalid_request"},
 	} {
 		v := response(t, callStorage(t, s, "l", "POST", "commits", []byte(`{`+tc.fields+`,"author":"a"}`), "", 400))
-		if v["error"].(map[string]any)["code"] != tc.code {
+		err := v["error"].(map[string]any)
+		if tc.code == "invalid_request" && !strings.Contains(err["message"].(string), "parent") {
+			t.Fatal(tc.fields, v)
+		}
+		if err["code"] != tc.code {
 			t.Fatal(tc.fields, v)
 		}
 	}
