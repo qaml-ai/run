@@ -13,11 +13,14 @@ import test from "node:test";
 import { startFixture } from "./fixture.ts";
 
 const CEILINGS = {
-  // Measured 110 in every run.
-  simple: 110,
-  // Measured 169 in four runs; 176 once (tick timing).
+  // Every turn includes per-second limit ticks (tenants, agents, agentSpend, computer deadline) while the model call
+  // is in flight, so even the simple turn is tick-timed: measured 110 and 121 on unchanged 741c6a60. The slack below
+  // exists only until fix 1 (limits read once at admission) removes those tick statements; then tighten to the
+  // measured counts.
+  simple: 124,
+  // Measured 169 (four runs) and 176 once before 741c6a60; 158 and 158 on it.
   tool: 176,
-  // A 3 s model call; measured 142 / 150 / 152 / 152.
+  // A 3 s model call; measured 142 / 150 / 152 / 152, then 143 / 142 on 741c6a60.
   slow: 156,
 } as const;
 
