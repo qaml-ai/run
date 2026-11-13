@@ -1,3 +1,4 @@
+import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,7 +75,8 @@ export async function startFixture(
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
     entrypoint?: string;
-    /** Bind camelFS to the test-only CamelfsStub named entrypoint. */
+    /** Bind camelFS to the test-only CamelfsStub named entrypoint (default: on, served by an in-process fake
+     * camelfsd unless `vars.TEST_CAMELFS_URL` names one). Every agent's workspace is a repo, so agents need it. */
     camelfsStub?: boolean;
     scheduled?: boolean;
     signal?: AbortSignal;
@@ -178,7 +180,7 @@ export async function startFixture(
   const config = JSON.parse(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
-  config.main = options.entrypoint ?? join(root, "src/index.ts");
+  config.main = options.entrypoint ?? join(root, "test/worker-entry.ts");
   if (config.assets?.directory) config.assets.directory = join(root, config.assets.directory);
   if (options.vars?.AGENT_CONSOLE_DIR) config.assets = { directory: options.vars.AGENT_CONSOLE_DIR, binding: "ASSETS", run_worker_first: true, not_found_handling: "single-page-application" };
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
@@ -187,7 +189,14 @@ export async function startFixture(
       dockerfile?: string;
     }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
-  if (options.camelfsStub) config.services = [
+  const camelfs = options.camelfsStub ?? true;
+  let camelfsVars: Record<string, string> = {};
+  if (camelfs && !options.vars?.TEST_CAMELFS_URL) {
+    const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken);
+    cleanups.push(() => daemon.close());
+    camelfsVars = { TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: camelfsToken };
+  }
+  if (camelfs) config.services = [
     ...(config.services ?? []),
     { binding: "CAMELFS", service: config.name, entrypoint: "CamelfsStub" },
   ];
@@ -200,6 +209,7 @@ export async function startFixture(
     AGENT_SECRETS_KEY: "0".repeat(64),
     AGENT_OUTBOUND_ALLOW_HTTP: "true",
     AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8,::1/128",
+    ...camelfsVars,
     ...(options.vars?.AGENT_ACCOUNT_EMAIL_FROM ? { SCHEDULE_EMAIL_FROM: options.vars.AGENT_ACCOUNT_EMAIL_FROM } : {}),
     ...options.vars,
     ...(options.vars?.AGENT_PUBLIC_URL === "" ? { AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`, PUBLIC_URL: `http://127.0.0.1:${port}` } : {}),

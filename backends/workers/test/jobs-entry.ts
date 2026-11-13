@@ -32,3 +32,4 @@ export default {
     return (worker as unknown as { fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> }).fetch(request, env, ctx);
   },
 };
+export { CamelfsStub } from "./camelfs-stub.ts";
