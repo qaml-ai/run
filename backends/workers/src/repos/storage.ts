@@ -27,7 +27,6 @@ export interface StoragePlane {
   merge(lineage: string, input: { base: string; ours: string; theirs: string; mode: "merge" | "squash" }): Promise<MergeResult>;
   grep(lineage: string, input: GrepInput): Promise<GrepResult>;
 }
-const check = (ok: boolean, message: string) => { if (!ok) throw new StorageError(400, "invalid_request", message); };
 export class StorageError extends Error {
   readonly status: number;
   readonly code: string;
@@ -157,16 +156,7 @@ export function camelfsStorage(env: CamelfsEnv): StoragePlane {
       if (entries.length !== paths.length || entries.some((e, i) => e.path !== paths[i])) throw new StorageError(r.status, "invalid_response");
       return entries;
     },
-    async commit(l, input, key) {
-      const time = input.time ?? Math.floor(Date.now() / 1000), { parents, ...rest } = input;
-      check(parents.length <= 2, "a commit has at most two parents");
-      // TEMPORARY(daemon-parents): the deployed camelfsd (#932) still takes §9.3's original single `parent` and
-      // refuses unknown fields, and answers without parents/time. Send `parent` for 0–1 parents (only a merge
-      // sends `parents`), and fill parents/time from the request. Remove once the daemon speaks #924.
-      const body = parents.length === 2 ? { ...rest, parents, time } : { ...rest, parent: parents[0] ?? null, time };
-      const v = await json(`${root(l)}/commits`, post(body, key));
-      return { ...v, parents: Array.isArray(v.parents) ? v.parents : parents, time: Number.isSafeInteger(v.time) ? v.time : time };
-    },
+    commit: (l, input, key) => json(`${root(l)}/commits`, post({ ...input, time: input.time ?? Math.floor(Date.now() / 1000) }, key)),
     listTree: (l, tree, opts = {}) => json(`${root(l)}/trees/${encodeURIComponent(tree)}?${query(opts)}`, undefined, 64 * 1024 * 1024),
     async listAll(l, tree, path) {
       const entries: TreeEntry[] = []; let after: string | undefined;

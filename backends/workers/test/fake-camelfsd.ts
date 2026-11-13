@@ -9,9 +9,9 @@ class Fault extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: unknown;
-  constructor(status: number, code: string, details?: unknown) { super(code); this.status = status; this.code = code; this.details = details; }
+  constructor(status: number, code: string, details?: unknown, message = code) { super(message); this.status = status; this.code = code; this.details = details; }
 }
-const bad = (code = "invalid_request", status = 400, details?: unknown): never => { throw new Fault(status, code, details); };
+const bad = (code = "invalid_request", status = 400, details?: unknown, message?: string): never => { throw new Fault(status, code, details, message); };
 const validPath = (p: unknown): p is string => typeof p === "string" && !!p && !/[\0\r\n]/.test(p) && !p.split("/").some(s => !s || s === "." || s === ".." || s === ".git");
 const hash = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{40}$/.test(v);
 const compare = (a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b));
@@ -98,7 +98,15 @@ export function fakeCamelfsd(token: string) {
     const match = /^\/v1\/lineages\/([^/]+)\/(.+)$/.exec(url.pathname);
     if (!match) bad("not_in_tree", 404);
     const l = decodeURIComponent(match![1]), route = match![2], own = scope(l);
-    const q = async (): Promise<any> => { try { const v = await request.json(); if (!v || typeof v !== "object" || Array.isArray(v)) bad(); return v; } catch { return bad(); } };
+    // Strict like the daemon's decoder (DisallowUnknownFields): an unknown or missing required field is a 400 naming it.
+    const q = async (allowed: string[], required: string[] = []): Promise<any> => {
+      let v: any;
+      try { v = await request.json(); } catch { return bad(); }
+      if (!v || typeof v !== "object" || Array.isArray(v)) bad();
+      for (const k of Object.keys(v)) if (!allowed.includes(k)) bad("invalid_request", 400, { field: k }, `unknown field ${k}`);
+      for (const k of required) if (!(k in v)) bad("invalid_request", 400, { field: k }, `missing field ${k}`);
+      return v;
+    };
     if (request.method === "PUT" && route === "blobs") {
       const length = request.headers.get("content-length");
       if (length && Number(length) > 5 * 1024 ** 3) bad("too_large", 413);
@@ -126,7 +134,7 @@ export function fakeCamelfsd(token: string) {
       return new Response(data, { status, headers });
     }
     if (request.method === "POST" && route === "read") {
-      const input = await q();
+      const input = await q(["tree", "paths", "maxBytes"], ["tree", "paths"]);
       if (!Array.isArray(input.paths) || input.paths.some((p: unknown) => !validPath(p)) || (input.maxBytes !== undefined && (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0))) bad();
       if (input.paths.length > 256) bad("too_large", 413, { path: input.paths[256] });
       // Unknown trees produce the same per-path misses as inaccessible paths.
@@ -147,7 +155,8 @@ export function fakeCamelfsd(token: string) {
       return new Response(Buffer.concat(parts), { headers: { "content-type": `multipart/mixed; boundary="${boundary}"` } });
     }
     if (request.method === "POST" && route === "commits") {
-      const input = await q(); const parents = input.parents ?? (input.parent ? [input.parent] : []);
+      const input = await q(["parents", "baseTree", "changes", "author", "message", "trailers", "time"], ["parents", "changes", "author", "message", "trailers", "time"]);
+      const parents: string[] = input.parents;
       if (!Number.isSafeInteger(input.time) || !Array.isArray(parents) || parents.length > 2 || parents.some(p => !hash(p)) || !Array.isArray(input.changes) ||
         typeof input.author !== "string" || !input.author || /[\r\n\0<>]/.test(input.author) || typeof input.message !== "string" ||
         !input.trailers || typeof input.trailers !== "object" || Array.isArray(input.trailers) || Object.entries(input.trailers).some(([k, v]) => !k || /[\r\n:]/.test(k) || typeof v !== "string" || /[\r\n]/.test(v))) bad();
@@ -193,7 +202,7 @@ export function fakeCamelfsd(token: string) {
     }
     if (request.method === "GET" && route === "diff") return json({ changes: changes(tree(l, s.get("from") ?? ""), tree(l, s.get("to") ?? ""), s.get("path") ?? "") });
     if (request.method === "POST" && route === "merge") {
-      const input = await q(); if (!["merge", "squash"].includes(input.mode)) bad();
+      const input = await q(["base", "ours", "theirs", "mode"], ["base", "ours", "theirs", "mode"]); if (!["merge", "squash"].includes(input.mode)) bad();
       const base = tree(l, input.base, true), ours = tree(l, input.ours, true), theirs = tree(l, input.theirs, true);
       const files = new Map<string, FileEntry>(), conflicts: Conflict[] = [], merged: string[] = [], took = { ours: 0, theirs: 0 };
       for (const path of [...new Set([...base.files.keys(), ...ours.files.keys(), ...theirs.files.keys()])].sort(compare)) {
