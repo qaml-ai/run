@@ -16,6 +16,7 @@ export type BatchEntry = (FileEntry & { bytes: Uint8Array }) | { path: string; e
 export type ListOptions = { path?: string; recursive?: boolean; after?: string; limit?: number };
 export interface StoragePlane {
   putBlob(lineage: string, bytes: Uint8Array): Promise<{ blob: string; sha256: string; size: number }>;
+  openBlob(lineage: string, blob: string, tree: string, path: string, range?: string): Promise<Response>;
   readBlob(lineage: string, blob: string, tree: string, path: string, range?: string): Promise<Uint8Array>;
   readBatch(lineage: string, tree: string, paths: string[], maxBytes?: number): Promise<BatchEntry[]>;
   commit(lineage: string, input: CommitInput, idempotencyKey?: string): Promise<CommitResult>;
@@ -136,9 +137,13 @@ export function camelfsStorage(env: CamelfsEnv): StoragePlane {
       if (v.sha256 !== sha256 || v.blob !== blob || v.size !== bytes.length) throw new StorageError(201, "blob_mismatch");
       return { blob, sha256, size: bytes.length };
     },
-    async readBlob(lineage, blob, tree, path, range) {
+    async openBlob(lineage, blob, tree, path, range) {
       const r = await request(`${root(lineage)}/blobs/${encodeURIComponent(blob)}?${query({ tree, path })}`, { headers: range ? { Range: range } : {} });
       if (!r.ok) return failure(r);
+      return r;
+    },
+    async readBlob(lineage, blob, tree, path, range) {
+      const r = await plane.openBlob(lineage, blob, tree, path, range);
       try { return new Uint8Array(await r.arrayBuffer()); } catch { throw new StorageError(r.status, "read_failed"); }
     },
     async readBatch(lineage, tree, paths, maxBytes) {

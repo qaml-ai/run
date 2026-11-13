@@ -48,7 +48,7 @@ export function version(row: Version) {
   for (const [key, value] of Object.entries(row.trailers)) check(/^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(key) && typeof value === "string" && value.length <= 256 && !/[\r\n]/.test(value), "bad-trailers");
 }
 export function ownership(owner?: string | null, expiresAt?: number | null) {
-  check(owner == null || (typeof owner === "string" && /^(agent|workflow|job|user|api):[A-Za-z0-9._:-]{1,200}$/.test(owner)), "bad-owner");
+  check(owner == null || (typeof owner === "string" && /^(agent|workflow|job|user|api|cache):[A-Za-z0-9._:-]{1,200}$/.test(owner)), "bad-owner");
   check(expiresAt == null || Number.isSafeInteger(expiresAt), "bad-expiry");
 }
 export function page(limit: number | undefined, fallback: number, max: number) {
