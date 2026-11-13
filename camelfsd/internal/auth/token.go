@@ -51,89 +51,107 @@ type Fence struct {
 
 var refGlob = regexp.MustCompile(`^[A-Za-z0-9._/*-]+$`)
 
-func (k *Keys) Verify(token string, now time.Time) (Claims, error) {
+type envelope struct {
+	Subject, KeyID      string
+	IssuedAt, ExpiresAt int64
+	payload             map[string]json.RawMessage
+}
+
+func (k *Keys) verifyEnvelope(token string, now time.Time) (envelope, error) {
 	if len(token) > 8<<10 {
-		return Claims{}, TokenTooLarge
+		return envelope{}, TokenTooLarge
 	}
 	h, rest, ok := strings.Cut(token, ".")
 	p, s, separated := strings.Cut(rest, ".")
 	if !ok || !separated {
-		return Claims{}, Malformed
+		return envelope{}, Malformed
 	}
 	header, err := decodeSegment(h)
 	if err != nil {
-		return Claims{}, Malformed
+		return envelope{}, Malformed
 	}
 	fields, err := jsonObject(header)
 	if err != nil {
-		return Claims{}, Reason("invalid JWT header: " + err.Error())
+		return envelope{}, Reason("invalid JWT header: " + err.Error())
 	}
 	if stringField(fields, "alg") != "EdDSA" {
-		return Claims{}, BadAlgorithm
+		return envelope{}, BadAlgorithm
 	}
-	if stringField(fields, "typ") != "camelfs+jwt" {
-		return Claims{}, BadType
+	if stringField(fields, "typ") != k.options.Typ {
+		return envelope{}, Reason("typ must be " + k.options.Typ)
 	}
 	for _, name := range []string{"jwk", "jku", "x5u", "crit"} {
 		if _, ok := fields[name]; ok {
-			return Claims{}, BadHeader
+			return envelope{}, BadHeader
 		}
 	}
 	kid := stringField(fields, "kid")
 	if kid == "" {
-		return Claims{}, MissingKey
+		return envelope{}, MissingKey
 	}
 	pub := (*k.active.Load())[kid]
 	if pub == nil {
-		return Claims{}, UnknownKey
+		return envelope{}, UnknownKey
 	}
 	payload, err := decodeSegment(p)
 	if err != nil {
-		return Claims{}, Malformed
+		return envelope{}, Malformed
 	}
 	sig, err := decodeSegment(s)
 	if err != nil {
-		return Claims{}, Malformed
+		return envelope{}, Malformed
 	}
 	if !ed25519.Verify(pub, []byte(token[:len(h)+1+len(p)]), sig) {
-		return Claims{}, BadSignature
+		return envelope{}, BadSignature
 	}
-	return k.claims(payload, kid, now)
+	return k.envelopeClaims(payload, kid, now)
 }
 
-func (k *Keys) claims(raw []byte, kid string, now time.Time) (Claims, error) {
+func (k *Keys) envelopeClaims(raw []byte, kid string, now time.Time) (envelope, error) {
 	obj, err := jsonObject(raw)
 	if err != nil {
-		return Claims{}, Reason("invalid JWT payload: " + err.Error())
+		return envelope{}, Reason("invalid JWT payload: " + err.Error())
 	}
-	if stringField(obj, "iss") != k.issuer {
-		return Claims{}, BadIssuer
+	if stringField(obj, "iss") != k.options.Issuer {
+		return envelope{}, BadIssuer
 	}
-	if stringField(obj, "aud") != "camelrun:camelfs" {
-		return Claims{}, BadAudience
+	if stringField(obj, "aud") != k.options.Audience {
+		return envelope{}, BadAudience
 	}
 	sub := stringField(obj, "sub")
 	if sub == "" {
-		return Claims{}, BadSubject
+		return envelope{}, BadSubject
 	}
 	iat, ok := integerField(obj, "iat")
 	if !ok {
-		return Claims{}, BadIssuedAt
+		return envelope{}, BadIssuedAt
 	}
 	exp, ok := integerField(obj, "exp")
 	if !ok || exp <= iat {
-		return Claims{}, BadExpiration
+		return envelope{}, BadExpiration
 	}
 	if exp <= now.Unix() {
-		return Claims{}, Expired
+		return envelope{}, Expired
 	}
 	if iat > now.Add(5*time.Second).Unix() {
-		return Claims{}, Future
+		return envelope{}, Future
 	}
 	// Subtract as unsigned after checking the order, avoiding int64 overflow.
-	if uint64(exp)-uint64(iat) > uint64(k.maxTTL/time.Second) {
-		return Claims{}, TooLong
+	if uint64(exp)-uint64(iat) > uint64(k.options.MaxTTL/time.Second) {
+		return envelope{}, TooLong
 	}
+	return envelope{Subject: sub, KeyID: kid, IssuedAt: iat, ExpiresAt: exp, payload: obj}, nil
+}
+
+func (k *Keys) Verify(token string, now time.Time) (Claims, error) {
+	if k.options.Typ != RuntimeType {
+		return Claims{}, BadType
+	}
+	env, err := k.verifyEnvelope(token, now)
+	if err != nil {
+		return Claims{}, err
+	}
+	obj := env.payload
 	lin, acc := stringField(obj, "lin"), stringField(obj, "acc")
 	if !store.Lineage(lin) {
 		return Claims{}, BadLineage
@@ -160,5 +178,5 @@ func (k *Keys) claims(raw []byte, kid string, now time.Time) (Claims, error) {
 		}
 		fence = &Fence{Holder: *holder, Epoch: epoch}
 	}
-	return Claims{Subject: sub, Lineage: lin, Access: acc, KeyID: kid, IssuedAt: iat, ExpiresAt: exp, Refs: refs, Fence: fence}, nil
+	return Claims{Subject: env.Subject, Lineage: lin, Access: acc, KeyID: env.KeyID, IssuedAt: env.IssuedAt, ExpiresAt: env.ExpiresAt, Refs: refs, Fence: fence}, nil
 }

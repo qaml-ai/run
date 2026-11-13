@@ -27,7 +27,7 @@ func TestAPIRole(t *testing.T) {
 		{"kty": "OKP", "crv": "Ed25519", "kid": "test", "alg": "EdDSA", "use": "sig", "x": encode(pub)},
 	}})
 	inline := string(raw)
-	keys, err := auth.Load("", &inline, "runtime", auth.DefaultMaxTTL)
+	keys, err := auth.Load("", &inline, auth.Options{Typ: auth.RuntimeType, Audience: auth.RuntimeAudience, Issuer: "runtime", MaxTTL: auth.DefaultMaxTTL})
 	if err != nil {
 		t.Fatal(err)
 	}

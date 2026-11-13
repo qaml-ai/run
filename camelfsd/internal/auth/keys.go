@@ -1,4 +1,4 @@
-// Package auth verifies camelFS grants signed by the runtime.
+// Package auth verifies camelFS runtime and host grants.
 package auth
 
 import (
@@ -13,25 +13,38 @@ import (
 	"time"
 )
 
-const DefaultMaxTTL = 15 * time.Minute
+const (
+	DefaultMaxTTL   = 15 * time.Minute
+	RuntimeType     = "camelfs+jwt"
+	RuntimeAudience = "camelrun:camelfs"
+	HostType        = "camelfs-host+jwt"
+	HostMaxTTL      = 60 * time.Second
+)
+
+type Options struct {
+	Typ, Audience, Issuer string
+	MaxTTL                time.Duration
+}
 
 type keySet map[string]ed25519.PublicKey
 
 type Keys struct {
-	path   string
-	issuer string
-	maxTTL time.Duration
-	active atomic.Pointer[keySet]
+	path    string
+	options Options
+	active  atomic.Pointer[keySet]
 }
 
-func Load(path string, inline *string, issuer string, maxTTL time.Duration) (*Keys, error) {
+func Load(path string, inline *string, options Options) (*Keys, error) {
 	if (path != "") == (inline != nil) {
 		return nil, errors.New("set exactly one of --jwks-file or CAMELFS_JWKS")
 	}
-	if issuer == "" || maxTTL <= 0 {
+	if options.Issuer == "" || options.MaxTTL <= 0 {
 		return nil, errors.New("token-issuer and a positive token-max-ttl are required")
 	}
-	k := &Keys{path: path, issuer: issuer, maxTTL: maxTTL}
+	if options.Typ == "" || options.Audience == "" {
+		return nil, errors.New("token type and audience are required")
+	}
+	k := &Keys{path: path, options: options}
 	var err error
 	if inline != nil {
 		err = k.load([]byte(*inline))
