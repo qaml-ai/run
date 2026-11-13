@@ -63,7 +63,15 @@ func apiRole(args []string) error {
 		return err
 	}
 	defer db.Close()
-	repo := &objects.Repository{DB: db, Store: st}
+	// The task's root filesystem is read-only: every temporary file lives under --data.
+	tmp := filepath.Join(*data, "tmp")
+	if err := os.RemoveAll(tmp); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(tmp, 0700); err != nil {
+		return err
+	}
+	repo := &objects.Repository{DB: db, Store: st, TempDir: tmp}
 	server := &http.Server{Handler: api.NewStorageServer(repo, version, keys), ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
