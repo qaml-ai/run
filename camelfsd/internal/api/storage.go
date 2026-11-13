@@ -16,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"time"
 
@@ -113,13 +114,13 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 	// retryable; only successful results enter the 24-hour response cache.
 	write := r.Method == "PUT" || r.Method == "POST" && route != "read"
 	if write && r.Header.Get("Idempotency-Key") != "" {
-		s.idemMu.Lock()
-		defer s.idemMu.Unlock()
 		key := r.Header.Get("Idempotency-Key")
 		if len(key) > 256 {
 			storageFail(w, bad("invalid_request"))
 			return
 		}
+		unlock := s.lockIdempotency(l, key)
+		defer unlock()
 		var status int
 		var body []byte
 		e := repo.DB.DB.QueryRowContext(r.Context(), "SELECT status,body FROM idempotency WHERE key=? AND lineage=? AND route=? AND created_at>?", key, l, route, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&status, &body)
@@ -382,4 +383,37 @@ func blobBytes(ctx context.Context, r *objects.Repository, l, id string) ([]byte
 		_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO objects VALUES(?,'blob',?,?,?)", id, b, len(b), time.Now().UnixMilli())
 	}
 	return b, e
+}
+
+type idempotencyKey struct{ lineage, key string }
+type idempotencyLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// The map mutex protects bookkeeping only, never request bodies or store I/O.
+// References include waiters so a lock cannot be replaced while still in use.
+func (s *Server) lockIdempotency(lineage, key string) func() {
+	k := idempotencyKey{lineage, key}
+	s.idemLocksMu.Lock()
+	if s.idemLocks == nil {
+		s.idemLocks = map[idempotencyKey]*idempotencyLock{}
+	}
+	lock := s.idemLocks[k]
+	if lock == nil {
+		lock = &idempotencyLock{}
+		s.idemLocks[k] = lock
+	}
+	lock.users++
+	s.idemLocksMu.Unlock()
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.idemLocksMu.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(s.idemLocks, k)
+		}
+		s.idemLocksMu.Unlock()
+	}
 }

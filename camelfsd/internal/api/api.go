@@ -20,7 +20,8 @@ import (
 
 type Server struct {
 	APIToken       string
-	idemMu         sync.Mutex
+	idemLocksMu    sync.Mutex
+	idemLocks      map[idempotencyKey]*idempotencyLock
 	Manager        *image.Manager
 	Version, Store string
 }
