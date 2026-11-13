@@ -97,10 +97,12 @@ export async function copyAgentWorkspace(env: FileBindings, tenant: string, sour
   // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
   if('legacyVolume'in seed) {
     const made=await agentRepo(env as RepoEnv,tenant,targetId),ctx=await repoContext(env as RepoEnv,tenant,made.info.id);
-    if(await ctx.stub.ref('main'))return;
+    // Every repo is born with an empty main; a main that already holds files means this import already ran.
+    const main=await ctx.stub.ref('main');
+    if(main&&main.tree!=='4b825dc642cb6eb9a060e54bf8d69288fbee4904')return;
     const changes:import('./repos/write.ts').WriteInput['changes']={};
     for(const file of seed.files){const object=await env.BUCKET.get(file.key);if(!object)throw new ApiError(503,'Legacy fork file missing');changes[file.path.replace(/^\/+/,'')]={bytes:new Uint8Array(await object.arrayBuffer())};}
-    if(Object.keys(changes).length)await commitChanges(ctx,{ref:'main',expect:null,changes,message:`fork ${sourceId}`,author:`agent:${targetId}`,who:`agent:${targetId}`,why:'fork',trailers:{'Camel-Agent':targetId,'Camel-Checkpoint':'automatic'}});
+    if(Object.keys(changes).length)await commitChanges(ctx,{ref:'main',expect:main?.version??null,changes,message:`fork ${sourceId}`,author:`agent:${targetId}`,who:`agent:${targetId}`,why:'fork',trailers:{'Camel-Agent':targetId,'Camel-Checkpoint':'automatic'}});
     return;
   }
   if (!seed.version) { await agentRepo(env as RepoEnv,tenant,targetId); return; }
