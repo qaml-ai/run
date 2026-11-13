@@ -1,3 +1,4 @@
+import { diverge } from './repo-divergence.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 const source = new URL('../../../src/', import.meta.url);
 const output = new URL('../src/', import.meta.url);
@@ -58,6 +59,6 @@ type Mount = { volumeId: string; path: string; mode: 'ro' | 'rw'; subpath?: stri
   children.slice(children.indexOf('/**\n * What a child of the model\'s own'), children.indexOf('/** A child\'s prompt:'));
 const childPath = new URL('delegation-policy.ts', output);
 if (process.argv.includes('--check')) {
-  if (await readFile(childPath, 'utf8') !== childPolicy) throw new Error('child policy drifted');
-} else await writeFile(childPath, childPolicy);
+  if (await readFile(childPath, 'utf8') !== diverge('delegation-policy.ts', childPolicy)) throw new Error('child policy drifted');
+} else await writeFile(childPath, diverge('delegation-policy.ts', childPolicy));
 console.log('Decision and multi-agent policy matches src/');
