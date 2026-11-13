@@ -114,13 +114,13 @@ init` makes a small offline CA (RSA 4096, 10 years; key in `camelfs/prod/aop-ca`
 uploads its public PEM to the trust bucket; `apply.sh aop_ca_version=<VersionId>` creates the trust store and
 puts the public listener in **verify** mode (the handshake fails before any HTTP without a leaf from that CA);
 `aop.sh issue` signs the yearly leaf and uploads it to Cloudflare. The Cloudflare-ranges security group stays as
-the second lock. **Per-hostname or zone-level:** the lead asked for zone-level. `aop.sh issue` defaults to
-**per-hostname** on `fs.camelai.dev` and takes `--zone` for zone-level, because a zone-level certificate is what
-Cloudflare presents to *every* proxied origin in `camelai.dev` (`agents.camelai.dev`, `run-pilot`, …): if the
-runtime's ALB enforces its own AOP CA (`infra/terraform/origin-mtls.tf`, `origin_mtls_enforced`), a new zone
-certificate from a CA it does not trust breaks it. The script refuses `--zone` while the zone already holds a
-custom certificate unless `--replace` is given, and `status` shows what is live. Pick per-hostname unless the
-zone has no other verifying origin; either way the ALB side is identical.
+the second lock. **Per-hostname, not zone-level** (Miguel and the lead, 11-13): `aop.sh issue` uploads the leaf with
+`origin_tls_client_auth/hostnames/certificates` and enables it with `origin_tls_client_auth/hostnames` for
+`fs.camelai.dev` alone, so the other hostnames in `camelai.dev` (`agents.camelai.dev`, `run-pilot`, …) keep
+whatever Cloudflare presents to them today. `--zone` remains as a guarded exception (refused while the zone
+already holds a custom certificate unless `--replace` is given), and `status` shows what is live. `aop.sh test`
+proves enforcement: the listener's mode read back from AWS, a 200 through Cloudflare, and a refusal straight at
+the ALB without the certificate.
 
 **Tier ↔ host: AWS Private CA in short-lived mode, the tier as registration authority.** The CA key lives in
 AWS's HSM; a compromised tier can issue only while compromised and loses that when its role is cut, where a
@@ -131,7 +131,10 @@ the api role may `IssueCertificate`, and only with the `EndEntityCertificate/V1`
 certificate carries (`spiffe://camelfs/host/<id>`, URI SAN) is the tier's enrollment check. The internal 443
 listener verifies against the CA and forwards the verified leaf in `X-Amzn-Mtls-Clientcert-*` (stripping any
 client-supplied copy); the tier reads the host id from it. Hosts verify the tier's `spiffe://camelfs/tier` client
-certificate on `--listen-compute` against `hosts-ca.pem` from the trust bucket (K2, proto-block).
+certificate on `--listen-compute` against the CA certificate the enroll/renew reply carries
+(`{certificatePem, chainPem, caPem, notAfter}`; proto-block: over server-authenticated TLS, no extra IAM, and a
+CA rotation reaches every host with its next renewal). `hosts-ca.pem` in the trust bucket is the listener's
+trust store's copy, and the tier's.
 
 **Enrollment on its own port.** A new host has no certificate, so it presents its STS attestation once on the
 internal balancer's **8443** listener (plain TLS, no client certificate), whose only rule forwards
@@ -282,7 +285,7 @@ to expect by name.
 
    The proto host (`i-06fa9b78a2a9d188b`) can be let in the same way for the first end-to-end run: its security
    group in `host_security_group_ids`, the host policy attached to its `camel-fs-proto` role by hand. Hosts also
-   need egress to 8443 (enrollment) and the hosts' CA PEM (`output hosts_ca_certificate_s3`) to verify the tier.
+   need egress to 8443 (enrollment); the CA certificate to verify the tier comes in the enroll reply.
 
 7. **Runtime config** (Cloudflare; this module does not touch it): the public URL. The runtime signs with the
    keys it already has; nothing to copy back.
@@ -336,10 +339,7 @@ the AOP CA pinned (trust store, public verify, the ranges group still there).
    subnets with the pools for the in-VPC path; not worth it until the fleet has one.
 3. **Tier size.** 1 vCPU / 2 GiB × 2–8 tasks. The LRU of trees and small blobs is what memory buys; 2 vCPU / 4 GiB
    doubles the Fargate line to ~$116/month. Nothing measured yet decides this.
-4. **Zone-level or per-hostname AOP** (see "Cloudflare → public ALB"): zone-level changes what Cloudflare presents
-   to every proxied origin in camelai.dev; the runtime's ALB must trust this CA first if it enforces its own.
-   `aop.sh issue` defaults to per-hostname.
-5. **The DynamoDB price** in force for this account (list, or the November 2024 halving): it moves the baseline
+4. **The DynamoDB price** in force for this account (list, or the November 2024 halving): it moves the baseline
    bill by a third.
 
 ## Unverified (needs real AWS, or proto-block's api role)
@@ -350,8 +350,8 @@ the AOP CA pinned (trust store, public verify, the ranges group still there).
   `--jwks-file` is absent.
 - That a Private CA in short-lived mode accepts the `EndEntityCertificate/V1` template with a URI SAN from the CSR
   (AWS documents SAN passthrough for the end-entity templates), and the per-certificate price (~$0.058).
-- That per-hostname Authenticated Origin Pulls is available on the camelai.dev plan (zone-level is; the script
-  reports the API's answer).
+- That per-hostname Authenticated Origin Pulls is available on the camelai.dev plan (the script reports the
+  API's answer; `--zone` is the guarded fallback).
 - That the ALB accepts an RSA-4096 AOP CA and a 10-year root in a trust store (the runtime's doc chose RSA 4096
   for that reason).
 - That the repository's OIDC subject (`github_subjects`) still matches: `gh api repos/qaml-ai/run/actions/oidc/customization/sub`.
@@ -371,10 +371,11 @@ the AOP CA pinned (trust store, public verify, the ranges group still there).
   daemon's EMF metrics (§1.12).
 - The guest-image CI job itself (K1, proto-block) and its `publish-guest-image.sh`; only the role it assumes is here.
 - The hosts' side of mTLS (K2): enrollment at boot with the STS attestation on 8443, the certificate on
-  `--listen-compute 0.0.0.0:8792`, renewal every 8 h, `hosts-ca.pem` from the trust bucket to verify the tier; the
+  `--listen-compute 0.0.0.0:8792`, renewal every 8 h, the CA from the enroll reply to verify the tier; the
   job-hosts egress rule for 8443. VM results are written by the tier, never by a host.
-- The tier's side (K4c, wf-durable): enrollment's pool check, `IssueCertificate` with the host's URI SAN, reading
-  `X-Amzn-Mtls-Clientcert-*`, its own client certificate.
+- The tier's side (K4c, wf-durable): enrollment's pool check, `IssueCertificate` with the host's URI SAN, the
+  reply `{certificatePem, chainPem, caPem, notAfter}`, reading `X-Amzn-Mtls-Clientcert-*`, its own client
+  certificate.
 - Access logs for the balancers (`alb_access_logs_bucket` takes an existing bucket; none is created).
 - Gateway endpoints for S3 and DynamoDB on the default route table (free; the tasks go through the internet gateway
   as the runtime's do). Worth adding with a route table of this module's own if the tasks ever leave the default

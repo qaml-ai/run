@@ -12,7 +12,8 @@
 #      templates. The internal ALB's 443 listener verifies host certificates against that CA; the host id is the
 #      certificate's URI SAN (spiffe://camelfs/host/<id>), which the ALB forwards in X-Amzn-Mtls-Clientcert-*
 #      after stripping any client-supplied copy. The tier's own client certificate (spiffe://camelfs/tier) comes
-#      from the same CA; hosts verify it on --listen-compute (the host side is K2, not here).
+#      from the same CA; hosts verify it on --listen-compute against the CA certificate their enroll reply carries
+#      (the host side is K2, not here; no host reads the trust bucket).
 #   3. Enrollment: a new host has no certificate yet, so it presents its STS attestation once on a SEPARATE
 #      internal listener without client certificates (enroll_listener_port), which forwards only
 #      POST /v1/hosts/enroll, to a SEPARATE container port (enroll_port) where the tier serves only that route and

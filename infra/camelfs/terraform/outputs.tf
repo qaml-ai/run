@@ -98,12 +98,12 @@ output "token_verify_keys_secret_arn" {
 }
 
 output "hosts_ca_arn" {
-  description = "The hosts' Private CA (short-lived mode): camelfsd api --hosts-ca; hosts trust its certificate (hosts_ca_certificate_s3) on --listen-compute."
+  description = "The hosts' Private CA (short-lived mode): camelfsd api --hosts-ca. Hosts trust its certificate, delivered in their enroll reply, on --listen-compute."
   value       = aws_acmpca_certificate_authority.hosts.arn
 }
 
 output "hosts_ca_certificate_s3" {
-  description = "The hosts' CA certificate (PEM) in the trust bucket, the object the internal listener's trust store pins; hosts fetch it to verify the tier's client certificate."
+  description = "The hosts' CA certificate (PEM) in the trust bucket, the object the internal listener's trust store pins. Hosts get the CA in their enroll reply, not from here."
   value       = "s3://${aws_s3_bucket.trust.bucket}/${aws_s3_object.hosts_ca.key}"
 }
 
