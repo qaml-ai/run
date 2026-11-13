@@ -88,7 +88,13 @@ func decodeStorage(r *http.Request, v any) error {
 	d := json.NewDecoder(io.LimitReader(r.Body, 64<<20))
 	d.DisallowUnknownFields()
 	if e := d.Decode(v); e != nil {
-		return invalid("JSON body: %s", strings.TrimPrefix(e.Error(), "json: "))
+		message := strings.TrimPrefix(e.Error(), "json: ")
+		if field, ok := strings.CutPrefix(message, "unknown field "); ok {
+			if name, err := strconv.Unquote(field); err == nil {
+				return invalid("unknown field %s", name)
+			}
+		}
+		return invalid("JSON body: %s", message)
 	}
 	var extra any
 	if d.Decode(&extra) != io.EOF {
@@ -331,7 +337,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 		var size int64
 		for i, p := range v.Paths {
 			if objects.Path(p) != nil || !safeLine(p) {
-				fail(invalid("bad path %q", p))
+				fail(invalid("invalid path %s", p))
 				return
 			}
 			f, e := repo.File(ctx, v.Tree, p)

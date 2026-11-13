@@ -44,7 +44,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		return nil, invalid("message: NUL is forbidden")
 	}
 	if q.Parents == nil {
-		return nil, invalid("parents: required array of commit ids")
+		return nil, invalid("missing field parents")
 	}
 	parents := append([]string{}, q.Parents...)
 	if len(parents) > 2 {
@@ -99,10 +99,10 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	var bytes int64
 	for _, c := range q.Changes {
 		if objects.Path(c.Path) != nil {
-			return nil, invalid("bad path %q", c.Path)
+			return nil, invalid("invalid path %s", c.Path)
 		}
 		if c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
-			return nil, invalid("bad mode %q", c.Mode)
+			return nil, invalid("invalid mode %s", c.Mode)
 		}
 		prev, exists := files[c.Path]
 		if c.Delete {
@@ -142,10 +142,10 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	}
 	for k, v := range q.Trailers {
 		if k == "" || !safeLine(k) || strings.Contains(k, ":") {
-			return nil, invalid("bad trailer key")
+			return nil, invalid("invalid trailer key %s", k)
 		}
 		if !safeLine(v) {
-			return nil, invalid("bad trailer value for %q", k)
+			return nil, invalid("invalid trailer value %s", k)
 		}
 	}
 	r = r.BeginPublication()
@@ -255,7 +255,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 	}
 	if dir != "" {
 		if objects.Path(dir) != nil {
-			return nil, invalid("bad path %q", dir)
+			return nil, invalid("invalid path %s", dir)
 		}
 		for _, p := range strings.Split(dir, "/") {
 			es, e := r.ReadTree(ctx, id)
@@ -415,7 +415,7 @@ type diffChange struct {
 
 func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) ([]diffChange, error) {
 	if prefix != "" && objects.Path(prefix) != nil {
-		return nil, invalid("bad path %q", prefix)
+		return nil, invalid("invalid path %s", prefix)
 	}
 	out := []diffChange{}
 	var walk func(string, string, string) error
