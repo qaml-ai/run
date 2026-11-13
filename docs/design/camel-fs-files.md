@@ -834,6 +834,20 @@ namespace (`runtime:*`), a rule the refs PR (C2) enforces.
 are only the ALB's health check. The host role keeps its shared bearer on its socket and 8790 listener until L30
 closes.
 
+**The tier → host family** (approved by the lead, 2026-11-13, for compute: camel-fs-compute.md §3). When the tier
+calls a host (dispatch, stop, exec), it presents a second, narrow token that **it** mints:
+- **Header and audience:** `typ: camelfs-host+jwt`, `aud: camelfs:host:<hostId>`.
+- **Key:** the camel-fs service's own Ed25519 key, never the runtime's. It is a secret of the api role (fs-infra
+  provisions it), and hosts verify against its public JWKS by the same static-file rules as above.
+- **Lifetime:** at most 60 s.
+- **Claims:** scoped to `{ host, vm }`.
+- **Where it is accepted:** a host accepts **only** this audience, and only for its own host id, on its
+  `--listen-compute` listener. The tier never accepts this family on its client API.
+
+So "the tier only verifies" stays true for every client token: the runtime's tokens are minted by the runtime, and
+the tier mints only tokens addressed to its own hosts. The other direction, host → tier, uses the host's attested
+identity (K2 ports `shared/job-host-attest.ts`), not a token of either family.
+
 ### 9.11 Notify webhook
 
 When a watched ref moves, the tier writes a `deliveries` item (`{ id, lineage, ref, from, to, tree, by, at,
