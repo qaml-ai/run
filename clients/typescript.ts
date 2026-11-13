@@ -758,14 +758,19 @@ export type WebhookEvent = { id: string; created: number } & (
       provider: string; model: string; kind: "response" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
       audioSeconds?: number; images?: number; decisions?: number; seconds?: number; cost: { usd: number; source: "provider" | "catalog" }; at: number; superseded?: "content_filter" | "unavailable";
     } }
-  | { type: "voice.session.started"; data: VoiceFacts }
+  | { type: "voice.session.started"; data: VoiceFacts | VoiceCallFacts }
   | { type: "voice.session.ended"; data: VoiceFacts & {
       reason: VoiceEndReason; limit?: "tenant" | "end_user"; endUserReason?: string;
       startedAt: number | null; endedAt: number; utterances: number; speechSeconds: number; costUsd: number;
+    } | VoiceCallFacts & {
+      reason: string; detail?: string; limit?: "end_user"; endUserReason?: string; bucket?: string;
+      startedAt: number | null; endedAt: number; turns: number; asks: number; audioSeconds: number; costUsd: number;
     } }
+  | { type: "voice.agent.asked"; data: VoiceCallFacts & { request: string; from?: { id: string; name?: string } } }
+  | { type: "voice.agent.replied"; data: VoiceCallFacts & { outcome: "ok" | "empty" | "error" | "timeout"; ms: number; late: boolean; replyChars: number } }
   /** The session's audio failed: it reconnects (`restarting`), or, failing 3 times in 5 minutes, ends (voice.session.ended follows). */
   | { type: "voice.session.error"; data: VoiceFacts & { code: "media_crashed"; detail: string; restarting: boolean; attempt: number } }
-  | { type: "voice.utterance"; data: VoiceUtterance }
+  | { type: "voice.utterance"; data: VoiceUtterance | VoiceCallFacts & { reported: "sideband"; speakerId?: string; text: string; seconds: number; seq: number } }
   | { type: "voice.speech.started"; data: VoiceFacts & {
       speechId: string; latencyMs: number;
       /** When its first audio went out (ms). */
@@ -795,6 +800,7 @@ export type WebhookEvent = { id: string; created: number } & (
       reason: "done" | "skipped" | "stopped" | "error"; seconds: number; error?: string;
     } });
 /** What every voice.* event says of its session. */
+type VoiceCallFacts = { session: string; provider: "openai"; agent: string; subject: string; metadata: Record<string, unknown> };
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
  * Why a voice session ended: `requested` (you ended it), `empty` (no one else in the call for `emptySeconds`), `idle` (no
@@ -804,6 +810,7 @@ type VoiceFacts = { session: string; provider: "discord"; guildId: string; chann
 export type VoiceEndReason = "requested" | "empty" | "idle" | "max_duration" | "budget" | "kicked" | "credentials" | "error";
 /** One person's utterance in a voice session, transcribed (`voice.utterance`). */
 export type VoiceUtterance = VoiceFacts & {
+  reported?: "sideband";
   speakerId: string;
   /** Its number in the session, from 1, in the order transcripts were made. */
   seq: number;

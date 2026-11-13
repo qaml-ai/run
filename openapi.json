@@ -737,49 +737,84 @@
             "description": "When it happened, in Unix seconds"
           },
           "data": {
-            "type": "object",
-            "properties": {
-              "session": {
-                "type": "string",
-                "description": "The voice session (vs_…)"
-              },
-              "provider": {
-                "type": "string",
-                "enum": [
-                  "discord",
-                  "browser"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "session": {
+                    "type": "string",
+                    "description": "The voice session (vs_…)"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "discord",
+                      "browser"
+                    ]
+                  },
+                  "guildId": {
+                    "type": "string"
+                  },
+                  "channelId": {
+                    "type": "string"
+                  },
+                  "botUserId": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "The session's end user"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {},
+                    "description": "The session's metadata, as set"
+                  }
+                },
+                "required": [
+                  "session",
+                  "provider",
+                  "guildId",
+                  "channelId",
+                  "botUserId",
+                  "subject",
+                  "metadata"
                 ]
               },
-              "guildId": {
-                "type": "string"
-              },
-              "channelId": {
-                "type": "string"
-              },
-              "botUserId": {
-                "type": "string"
-              },
-              "subject": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "The session's end user"
-              },
-              "metadata": {
+              {
                 "type": "object",
-                "additionalProperties": {},
-                "description": "The session's metadata, as set"
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "openai"
+                    ]
+                  },
+                  "session": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "provider",
+                  "session",
+                  "agent",
+                  "subject",
+                  "metadata"
+                ]
               }
-            },
-            "required": [
-              "session",
-              "provider",
-              "guildId",
-              "channelId",
-              "botUserId",
-              "subject",
-              "metadata"
             ]
           }
         },
@@ -810,117 +845,205 @@
             "description": "When it happened, in Unix seconds"
           },
           "data": {
-            "type": "object",
-            "properties": {
-              "session": {
-                "type": "string",
-                "description": "The voice session (vs_…)"
-              },
-              "provider": {
-                "type": "string",
-                "enum": [
-                  "discord",
-                  "browser"
-                ]
-              },
-              "guildId": {
-                "type": "string"
-              },
-              "channelId": {
-                "type": "string"
-              },
-              "botUserId": {
-                "type": "string"
-              },
-              "subject": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "The session's end user"
-              },
-              "metadata": {
+            "anyOf": [
+              {
                 "type": "object",
-                "additionalProperties": {},
-                "description": "The session's metadata, as set"
-              },
-              "reason": {
-                "type": "string",
-                "enum": [
-                  "requested",
-                  "empty",
-                  "idle",
-                  "max_duration",
-                  "budget",
-                  "kicked",
-                  "credentials",
-                  "error"
-                ],
-                "description": "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed"
-              },
-              "detail": {
-                "type": "string",
-                "description": "Failure classification, for example realtime_failed, realtime_credit_failed, media_crashed or realtime_unavailable. Omitted on normal endings"
-              },
-              "error": {
-                "type": "string",
-                "maxLength": 300,
-                "description": "Privacy-safe provider error summary: classification and message length only, never raw provider text, credentials or user content"
-              },
-              "limit": {
-                "type": "string",
-                "enum": [
-                  "tenant",
-                  "end_user"
-                ],
-                "description": "With reason budget: whose credit ran out"
-              },
-              "endUserReason": {
-                "type": "string",
-                "enum": [
-                  "balance",
-                  "daily_limit",
-                  "bucket_limit"
-                ],
-                "description": "With limit end_user: why, one of the credit reasons a run's end_user_credit has (balance, daily_limit, bucket_limit)"
-              },
-              "bucket": {
-                "type": "string",
-                "description": "With limit end_user: the bucket refused"
-              },
-              "startedAt": {
-                "type": [
-                  "number",
-                  "null"
+                "properties": {
+                  "session": {
+                    "type": "string",
+                    "description": "The voice session (vs_…)"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "discord",
+                      "browser"
+                    ]
+                  },
+                  "guildId": {
+                    "type": "string"
+                  },
+                  "channelId": {
+                    "type": "string"
+                  },
+                  "botUserId": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "The session's end user"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {},
+                    "description": "The session's metadata, as set"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "requested",
+                      "empty",
+                      "idle",
+                      "max_duration",
+                      "budget",
+                      "kicked",
+                      "credentials",
+                      "error"
+                    ],
+                    "description": "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed"
+                  },
+                  "detail": {
+                    "type": "string",
+                    "description": "Failure classification, for example realtime_failed, realtime_credit_failed, media_crashed or realtime_unavailable. Omitted on normal endings"
+                  },
+                  "error": {
+                    "type": "string",
+                    "maxLength": 300,
+                    "description": "Privacy-safe provider error summary: classification and message length only, never raw provider text, credentials or user content"
+                  },
+                  "limit": {
+                    "type": "string",
+                    "enum": [
+                      "tenant",
+                      "end_user"
+                    ],
+                    "description": "With reason budget: whose credit ran out"
+                  },
+                  "endUserReason": {
+                    "type": "string",
+                    "enum": [
+                      "balance",
+                      "daily_limit",
+                      "bucket_limit"
+                    ],
+                    "description": "With limit end_user: why, one of the credit reasons a run's end_user_credit has (balance, daily_limit, bucket_limit)"
+                  },
+                  "bucket": {
+                    "type": "string",
+                    "description": "With limit end_user: the bucket refused"
+                  },
+                  "startedAt": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "endedAt": {
+                    "type": "number"
+                  },
+                  "utterances": {
+                    "type": "number"
+                  },
+                  "speechSeconds": {
+                    "type": "number"
+                  },
+                  "costUsd": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "session",
+                  "provider",
+                  "guildId",
+                  "channelId",
+                  "botUserId",
+                  "subject",
+                  "metadata",
+                  "reason",
+                  "startedAt",
+                  "endedAt",
+                  "utterances",
+                  "speechSeconds",
+                  "costUsd"
                 ]
               },
-              "endedAt": {
-                "type": "number"
-              },
-              "utterances": {
-                "type": "number"
-              },
-              "speechSeconds": {
-                "type": "number"
-              },
-              "costUsd": {
-                "type": "number"
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "openai"
+                    ]
+                  },
+                  "session": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "string",
+                    "enum": [
+                      "end_user"
+                    ]
+                  },
+                  "endUserReason": {
+                    "type": "string",
+                    "enum": [
+                      "balance",
+                      "daily_limit",
+                      "bucket_limit"
+                    ],
+                    "description": "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind"
+                  },
+                  "bucket": {
+                    "type": "string",
+                    "description": "With an end user's credit refusal: the bucket refused (builder, bot:42, default)"
+                  },
+                  "startedAt": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "endedAt": {
+                    "type": "number"
+                  },
+                  "turns": {
+                    "type": "number"
+                  },
+                  "asks": {
+                    "type": "number"
+                  },
+                  "audioSeconds": {
+                    "type": "number"
+                  },
+                  "costUsd": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "session",
+                  "agent",
+                  "subject",
+                  "metadata",
+                  "reason",
+                  "startedAt",
+                  "endedAt",
+                  "turns",
+                  "asks",
+                  "audioSeconds",
+                  "costUsd"
+                ]
               }
-            },
-            "required": [
-              "session",
-              "provider",
-              "guildId",
-              "channelId",
-              "botUserId",
-              "subject",
-              "metadata",
-              "reason",
-              "startedAt",
-              "endedAt",
-              "utterances",
-              "speechSeconds",
-              "costUsd"
             ]
           }
         },
@@ -930,7 +1053,163 @@
           "created",
           "data"
         ],
-        "description": "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"
+        "description": "A voice session or call ended"
+      },
+      "Event_voice_agent.asked": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.agent.asked"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "openai"
+                ]
+              },
+              "session": {
+                "type": "string"
+              },
+              "agent": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "request": {
+                "type": "string"
+              },
+              "from": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            },
+            "required": [
+              "provider",
+              "session",
+              "agent",
+              "subject",
+              "metadata",
+              "request"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "The call asked its agent to do something"
+      },
+      "Event_voice_agent.replied": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.agent.replied"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "openai"
+                ]
+              },
+              "session": {
+                "type": "string"
+              },
+              "agent": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "empty",
+                  "error",
+                  "timeout"
+                ]
+              },
+              "ms": {
+                "type": "number"
+              },
+              "late": {
+                "type": "boolean"
+              },
+              "replyChars": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "provider",
+              "session",
+              "agent",
+              "subject",
+              "metadata",
+              "outcome",
+              "ms",
+              "late",
+              "replyChars"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "The call's agent finished its request"
       },
       "Event_voice_session.error": {
         "type": "object",
@@ -1051,131 +1330,185 @@
             "description": "When it happened, in Unix seconds"
           },
           "data": {
-            "type": "object",
-            "properties": {
-              "session": {
-                "type": "string",
-                "description": "The voice session (vs_…)"
-              },
-              "provider": {
-                "type": "string",
-                "enum": [
-                  "discord",
-                  "browser"
-                ]
-              },
-              "guildId": {
-                "type": "string"
-              },
-              "channelId": {
-                "type": "string"
-              },
-              "botUserId": {
-                "type": "string"
-              },
-              "subject": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "The session's end user"
-              },
-              "metadata": {
+            "anyOf": [
+              {
                 "type": "object",
-                "additionalProperties": {},
-                "description": "The session's metadata, as set"
-              },
-              "speakerId": {
-                "type": "string",
-                "description": "The Discord user who spoke"
-              },
-              "seq": {
-                "type": "number",
-                "description": "The utterance's number in the session, from 1, in the order transcripts were made"
-              },
-              "text": {
-                "type": "string"
-              },
-              "language": {
-                "type": [
-                  "string",
-                  "null"
+                "properties": {
+                  "session": {
+                    "type": "string",
+                    "description": "The voice session (vs_…)"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "discord",
+                      "browser"
+                    ]
+                  },
+                  "guildId": {
+                    "type": "string"
+                  },
+                  "channelId": {
+                    "type": "string"
+                  },
+                  "botUserId": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "The session's end user"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {},
+                    "description": "The session's metadata, as set"
+                  },
+                  "speakerId": {
+                    "type": "string",
+                    "description": "The Discord user who spoke"
+                  },
+                  "seq": {
+                    "type": "number",
+                    "description": "The utterance's number in the session, from 1, in the order transcripts were made"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "language": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "description": "Seconds of speech in it (pauses shorter than silenceMs included)"
+                  },
+                  "startedAt": {
+                    "type": "number"
+                  },
+                  "endedAt": {
+                    "type": "number"
+                  },
+                  "ended": {
+                    "type": "string",
+                    "enum": [
+                      "silence",
+                      "max",
+                      "error",
+                      "handoff",
+                      "end"
+                    ],
+                    "description": "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended"
+                  },
+                  "costUsd": {
+                    "type": "number"
+                  },
+                  "addressed": {
+                    "type": "boolean",
+                    "description": "Whether the turn was the bot's (addressing); true with addressing mode always. None for a listening session"
+                  },
+                  "addressedBy": {
+                    "type": "string",
+                    "enum": [
+                      "always",
+                      "alone",
+                      "named",
+                      "conversation",
+                      "not_addressed"
+                    ],
+                    "description": "Why: always (mode); alone (no one else in the call); named (it said one of names); conversation (the bot was talking with its speaker); not_addressed"
+                  },
+                  "brain": {
+                    "type": "string",
+                    "enum": [
+                      "realtime",
+                      "listen"
+                    ],
+                    "description": "realtime: the session's realtime brain heard (and answered) this itself, your app need not; listen: a listening session transcribed it, and nothing answered"
+                  },
+                  "speakers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "When people spoke at once: everyone whose audio is in it (speakerId is the first)"
+                  }
+                },
+                "required": [
+                  "session",
+                  "provider",
+                  "guildId",
+                  "channelId",
+                  "botUserId",
+                  "subject",
+                  "metadata",
+                  "speakerId",
+                  "seq",
+                  "text",
+                  "language",
+                  "seconds",
+                  "startedAt",
+                  "endedAt",
+                  "ended",
+                  "costUsd",
+                  "addressedBy",
+                  "brain"
                 ]
               },
-              "seconds": {
-                "type": "number",
-                "description": "Seconds of speech in it (pauses shorter than silenceMs included)"
-              },
-              "startedAt": {
-                "type": "number"
-              },
-              "endedAt": {
-                "type": "number"
-              },
-              "ended": {
-                "type": "string",
-                "enum": [
-                  "silence",
-                  "max",
-                  "error",
-                  "handoff",
-                  "end"
-                ],
-                "description": "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended"
-              },
-              "costUsd": {
-                "type": "number"
-              },
-              "addressed": {
-                "type": "boolean",
-                "description": "Whether the turn was the bot's (addressing); true with addressing mode always. None for a listening session"
-              },
-              "addressedBy": {
-                "type": "string",
-                "enum": [
-                  "always",
-                  "alone",
-                  "named",
-                  "conversation",
-                  "not_addressed"
-                ],
-                "description": "Why: always (mode); alone (no one else in the call); named (it said one of names); conversation (the bot was talking with its speaker); not_addressed"
-              },
-              "brain": {
-                "type": "string",
-                "enum": [
-                  "realtime",
-                  "listen"
-                ],
-                "description": "realtime: the session's realtime brain heard (and answered) this itself, your app need not; listen: a listening session transcribed it, and nothing answered"
-              },
-              "speakers": {
-                "type": "array",
-                "items": {
-                  "type": "string"
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "openai"
+                    ]
+                  },
+                  "session": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "reported": {
+                    "type": "string",
+                    "enum": [
+                      "sideband"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "seconds": {
+                    "type": "number"
+                  },
+                  "seq": {
+                    "type": "number"
+                  }
                 },
-                "description": "When people spoke at once: everyone whose audio is in it (speakerId is the first)"
+                "required": [
+                  "provider",
+                  "session",
+                  "agent",
+                  "subject",
+                  "metadata",
+                  "reported",
+                  "text",
+                  "seconds",
+                  "seq"
+                ]
               }
-            },
-            "required": [
-              "session",
-              "provider",
-              "guildId",
-              "channelId",
-              "botUserId",
-              "subject",
-              "metadata",
-              "speakerId",
-              "seq",
-              "text",
-              "language",
-              "seconds",
-              "startedAt",
-              "endedAt",
-              "ended",
-              "costUsd",
-              "addressedBy",
-              "brain"
             ]
           }
         },
@@ -1185,7 +1518,7 @@
           "created",
           "data"
         ],
-        "description": "A person's utterance in a voice session, transcribed"
+        "description": "A person's utterance in a voice session or call, transcribed"
       },
       "Event_voice_speech.started": {
         "type": "object",
@@ -3275,6 +3608,8 @@
                 "end_user.credit.spent",
                 "end_user.credit.expired",
                 "end_user.allowance.low",
+                "voice.agent.asked",
+                "voice.agent.replied",
                 "voice.session.started",
                 "voice.session.ended",
                 "voice.session.error",
@@ -3346,6 +3681,8 @@
                 "end_user.credit.spent",
                 "end_user.credit.expired",
                 "end_user.allowance.low",
+                "voice.agent.asked",
+                "voice.agent.replied",
                 "voice.session.started",
                 "voice.session.ended",
                 "voice.session.error",
@@ -3406,6 +3743,8 @@
                 "end_user.credit.spent",
                 "end_user.credit.expired",
                 "end_user.allowance.low",
+                "voice.agent.asked",
+                "voice.agent.replied",
                 "voice.session.started",
                 "voice.session.ended",
                 "voice.session.error",
@@ -14619,6 +14958,149 @@
           "endedAt"
         ]
       },
+      "VoiceCallCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VoiceCall"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "connect": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "sdpAnswer": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sdpAnswer"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "signedUrl": {
+                        "type": "string"
+                      },
+                      "conversationId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "signedUrl",
+                      "conversationId"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "connect"
+            ]
+          }
+        ]
+      },
+      "VoiceCall": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "connecting",
+              "live",
+              "ending",
+              "ended"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "elevenlabs"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "endedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": "number"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turns": {
+            "type": "number"
+          },
+          "asks": {
+            "type": "number"
+          },
+          "audioSeconds": {
+            "type": "number"
+          },
+          "costUsd": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "speakers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "provider",
+          "model",
+          "voice",
+          "agent",
+          "subject",
+          "startedAt",
+          "endedAt",
+          "expiresAt",
+          "reason",
+          "turns",
+          "asks",
+          "audioSeconds",
+          "costUsd",
+          "metadata",
+          "speakers"
+        ]
+      },
       "VoiceSessionInput": {
         "type": "object",
         "properties": {
@@ -14945,6 +15427,83 @@
         "additionalProperties": false,
         "description": "The speech-to-speech model that hears the call and answers aloud, asking deliver.agent (ask_agent) for facts, actions and anything beyond talk: its provider, model, voice, persona, and how it listens. Needs a key for the provider (else the platform's)"
       },
+      "VoiceCallInput": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "pattern": "^client_[a-f0-9]{40}$"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "elevenlabs"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "language": {
+            "type": "string",
+            "pattern": "^[a-z]{2,3}(-[a-z0-9]{2,8})?$/i"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "keyScope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "maxMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 720,
+            "default": 240
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "speakers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            }
+          },
+          "sdp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "The client's WebRTC offer. Required for OpenAI."
+          }
+        },
+        "required": [
+          "agent",
+          "provider",
+          "subject"
+        ],
+        "additionalProperties": false
+      },
       "VoiceSessionList": {
         "type": "object",
         "properties": {
@@ -14960,6 +15519,12 @@
               "null"
             ],
             "description": "Pass as after for the next page; null at the end"
+          },
+          "calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VoiceCall"
+            }
           }
         },
         "required": [
@@ -15011,6 +15576,24 @@
               "maxLength": 40
             },
             "description": "Speakers' names by Discord user id (replaces the session's), for the model's note of who speaks"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VoiceCallUpdate": {
+        "type": "object",
+        "properties": {
+          "speakers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
           }
         },
         "additionalProperties": false
@@ -15427,6 +16010,16 @@
             ]
           }
         ]
+      },
+      "VoiceCallEndInput": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 100
+          }
+        },
+        "additionalProperties": false
       },
       "MountsInput": {
         "type": "object",
@@ -30011,7 +30604,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VoiceSessionInput"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VoiceSessionInput"
+                  },
+                  {
+                    "$ref": "#/components/schemas/VoiceCallInput"
+                  }
+                ]
               }
             }
           }
@@ -30022,7 +30622,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VoiceSessionCreated"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/VoiceSessionCreated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/VoiceCallCreated"
+                    }
+                  ]
                 }
               }
             }
@@ -30114,11 +30721,18 @@
         ],
         "responses": {
           "200": {
-            "description": "The session",
+            "description": "The session or call",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VoiceSession"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/VoiceSession"
+                    },
+                    {
+                      "$ref": "#/components/schemas/VoiceCall"
+                    }
+                  ]
                 }
               }
             }
@@ -30150,18 +30764,32 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VoiceSessionUpdate"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VoiceSessionUpdate"
+                  },
+                  {
+                    "$ref": "#/components/schemas/VoiceCallUpdate"
+                  }
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "The session; it reconnects with new credentials",
+            "description": "The updated session or call",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VoiceSession"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/VoiceSession"
+                    },
+                    {
+                      "$ref": "#/components/schemas/VoiceCall"
+                    }
+                  ]
                 }
               }
             }
@@ -30195,7 +30823,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VoiceSessionEnded"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/VoiceSessionEnded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/VoiceCall"
+                    }
+                  ]
                 }
               }
             }
@@ -30770,6 +31405,62 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VoiceAudioState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/sessions/{id}/end": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceCallEndInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The ended call",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceCall"
                 }
               }
             }
@@ -32180,6 +32871,44 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_voice_session.ended"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.agent.asked": {
+      "post": {
+        "summary": "voice.agent.asked",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_agent.asked"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.agent.replied": {
+      "post": {
+        "summary": "voice.agent.replied",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_agent.replied"
               }
             }
           }
