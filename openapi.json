@@ -29564,6 +29564,109 @@
         }
       }
     },
+    "/v1/end-users/{id}/transfers": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "to": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "amount": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "to",
+                  "amount",
+                  "key"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Both ledger sides, committed atomically with lot expiry preserved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "debit": {
+                      "$ref": "#/components/schemas/EndUserLedgerEntry"
+                    },
+                    "credits": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/EndUserLedgerEntry"
+                      }
+                    },
+                    "replayed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "debit",
+                    "credits",
+                    "replayed"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/end-users/{id}/lots": {
       "post": {
         "parameters": [

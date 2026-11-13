@@ -663,6 +663,71 @@ export class EndUserCredits {
     });
   }
 
+  /** Move unheld credit between two subjects atomically, preserving each lot's expiry. */
+  async transfer(tenant: string, from: string, input: Record<string, unknown>): Promise<{ debit: LedgerEntry; credits: LedgerEntry[]; replayed: boolean }> {
+    endUserInput(from);
+    endUserInput(input.to);
+    const to = input.to as string;
+    if (from === to) throw new HttpError(400, "Choose a different destination");
+    if (Object.keys(input).some(key => !["to", "amount", "key", "description"].includes(key))) throw new HttpError(400, "A transfer takes to, amount, key and description");
+    const amount = amountInput(input.amount, "amount", { min: 1 })!;
+    if (typeof input.key !== "string" || !input.key.trim() || input.key.length > 180) throw new HttpError(400, "A transfer needs an idempotency key of 1–180 characters");
+    if (input.description !== undefined && (typeof input.description !== "string" || !input.description.trim() || input.description.length > 200)) throw new HttpError(400, "description must be 1–200 characters");
+    const key = `entry:transfer:${input.key}`;
+    return transaction(this.db, async sql => {
+      const now = Date.now();
+      await sql.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${key}`]);
+      // The same order for both directions, including creation, prevents a transfer deadlock.
+      const users = new Map<string, any>();
+      for (const id of [from, to].sort()) users.set(id, await lockEndUser(sql, tenant, id, now));
+      const prior = (await sql.query("select * from end_user_ledger where tenant=$1 and idempotency_key=$2", [tenant, `${key}:out`])).rows[0];
+      if (prior) {
+        if (prior.end_user !== from || Number(prior.amount) !== -amount || prior.metadata?.transferTo !== to) throw new HttpError(409, "This key was used for another transfer", "IDEMPOTENCY_CONFLICT");
+        const incoming = await sql.query("select * from end_user_ledger where tenant=$1 and end_user=$2 and reference=$3 and kind='grant' order by id", [tenant, to, key]);
+        return { debit: entryView(prior), credits: incoming.rows.map(entryView), replayed: true };
+      }
+      const source = users.get(from), target = users.get(to);
+      const held = Number((await sql.query("select coalesce(sum(paid),0)::bigint as paid from end_user_holds where tenant=$1 and end_user=$2 and expires_at>$3", [tenant, from, now])).rows[0].paid);
+      const available = Math.max(0, Number(source.balance) - held);
+      if (amount > available) throw new HttpError(409, "Only credit not held by calls in flight can be transferred", "INSUFFICIENT_BALANCE", { available });
+      const { rows: lots } = await sql.query("select * from end_user_lots where tenant=$1 and end_user=$2 and remaining>0 order by expires_at,id", [tenant, from]);
+      let reserved = held, needed = amount;
+      const parts: Array<{ amount: number; expiresAt?: number }> = [];
+      for (const lot of lots) {
+        const remaining = Number(lot.remaining);
+        const keep = Math.min(reserved, remaining);
+        reserved -= keep;
+        // Expired credit reserved by an old call must stay with that call.
+        const take = Number(lot.expires_at) > now ? Math.min(needed, remaining - keep) : 0;
+        if (take > 0) {
+          await sql.query("update end_user_lots set remaining=remaining-$2 where id=$1", [lot.id, take]);
+          parts.push({ amount: take, expiresAt: Number(lot.expires_at) });
+          needed -= take;
+        }
+      }
+      if (needed > 0) parts.push({ amount: needed });
+      const description = input.description as string | undefined;
+      const debit = await appendEntry(sql, { tenant, endUser: from, kind: "spend", amount: -amount, key: `${key}:out`, reference: key, description,
+        metadata: { transferFrom: from, transferTo: to }, lots: "none" }, Number(source.balance), now);
+      let balance = Number(target.balance);
+      const credits: LedgerEntry[] = [];
+      for (const [i, part] of parts.entries()) {
+        const entry = await appendEntry(sql, { tenant, endUser: to, kind: "grant", amount: part.amount, key: `${key}:in:${i}`, reference: key, description,
+          metadata: { transferFrom: from, transferTo: to }, ...(part.expiresAt === undefined ? {} : { lots: { expiresAt: part.expiresAt } }) }, balance, now);
+        balance = entry.balanceAfter;
+        credits.push(entry);
+      }
+      for (const entry of [debit, ...credits]) {
+        await enqueueEvents(sql, [webhookEvent(ENTRY_EVENTS[entry.kind as "spend" | "grant"], tenant, {
+          endUser: entry === debit ? from : to, entryId: entry.id, kind: entry.kind, amount: entry.amount, key: entry.key,
+          reference: entry.reference, description: entry.description, metadata: entry.metadata, balance: entry.balanceAfter,
+          previousBalance: entry.balanceAfter - entry.amount,
+        }, `end_user_entry:${tenant}:${entry.id}`)]);
+      }
+      return { debit, credits, replayed: false };
+    });
+  }
+
   /**
    * Mark part of what a user has that never expires as a lot that does (`expiresAt`): credit granted before lots, such as
    * a subscription's month posted as a plain grant. The balance doesn't move and nothing is posted; once per `key` (the
