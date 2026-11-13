@@ -46,7 +46,7 @@ func Run(args []string, out io.Writer) error {
 	switch cmd {
 	case "mount":
 		route = "/v0/mounts"
-		body = map[string]any{"jobId": *job, "lineage": *lineage, "root": *root, "tree": *tree, "hydrate": *hydrate, "vsock": *vsock}
+		body = map[string]any{"jobId": *job, "lineage": *lineage, "root": *root, "tree": *tree, "hydrate": *hydrate, "vsock": *vsock, "fence": nil}
 		if *holder != "" {
 			body.(map[string]any)["fence"] = map[string]any{"holder": *holder, "epoch": *epoch}
 		}

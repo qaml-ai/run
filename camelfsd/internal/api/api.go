@@ -127,6 +127,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			v.CheckpointMs = v.WallMs
 			v.RefreshTimings()
 			reply(200, v)
+		} else if len(parts) == 2 && parts[1] == "heartbeat" && r.Method == "POST" {
+			// Phase-1 compatibility; removed with jobhost phase 2.
+			reply(200, map[string]bool{"ok": true, "deprecated": true})
 		} else if len(parts) == 1 && r.Method == "GET" {
 			v, e := m.Status(r.Context(), id)
 			if e != nil {

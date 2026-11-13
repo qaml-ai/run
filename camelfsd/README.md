@@ -193,10 +193,15 @@ curl --unix-socket "$S" -d "{\"lineage\":\"test\",\"path\":\"/nvme/base.img\",\"
 ```
 
 Mount accepts exactly one of tree or root. fence is stored and echoed in
-status. Null/omitted fence makes the image read-only and checkpoint returns
-409 no_fence. No job ref is created. There is no forks or heartbeat route,
-lease TTL, or renewal goroutine. The development CLI accepts --holder and
---epoch for fenced mounts. Image import returns a root and records tree_roots
+status. Explicit null makes the image read-only and checkpoint returns
+409 no_fence. A missing fence enables phase-1 compatibility, removed with
+jobhost phase 2: the daemon synthesizes {holder: "<hostId>/<jobId>", epoch: 0},
+logs op=mount legacy-fence jobId=..., and permits checkpoints.
+POST /v0/mounts/:id/heartbeat returns 200 {"ok":true,"deprecated":true} as
+a no-op for one release: phase-1 compatibility, removed with jobhost phase 2.
+No job ref is created. There is no forks route, lease TTL, or renewal goroutine.
+The development CLI accepts --holder and --epoch for fenced mounts; an empty
+holder sends explicit null for a read-only mount. Image import returns a root and records tree_roots
 without creating a ref. Import paths must resolve under --data, /nvme, or
 a repeatable --import-allow directory.
 

@@ -94,7 +94,7 @@ func TestLifecycleAndTree(t *testing.T) {
 	}
 	call("POST", "/v0/mounts", map[string]any{"jobId": "bad", "lineage": "l", "root": got, "tree": tree}, 400)
 	call("POST", "/v0/mounts", map[string]any{"jobId": "..", "lineage": "l", "root": got}, 400)
-	call("POST", "/v0/mounts", map[string]any{"jobId": "r", "lineage": "l", "root": got}, 200)
+	call("POST", "/v0/mounts", map[string]any{"jobId": "r", "lineage": "l", "root": got, "fence": nil}, 200)
 	call("POST", "/v0/mounts/r/checkpoint", map[string]any{}, 409)
 	call("GET", "/v0/mounts/treejob", nil, 200)
 	call("POST", "/v0/trees", map[string]any{}, 400)
@@ -190,7 +190,7 @@ func TestFenceOwnership(t *testing.T) {
 	if e = db.DB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='refs'").Scan(&n); e != nil || n != 0 {
 		t.Fatal(n, e)
 	}
-	for _, route := range []string{"/v0/forks", "/v0/mounts/write/heartbeat"} {
+	for _, route := range []string{"/v0/forks"} {
 		w := httptest.NewRecorder()
 		s.ServeHTTP(w, httptest.NewRequest("POST", route, strings.NewReader("{}")))
 		if w.Code != 404 {

@@ -53,13 +53,14 @@ type Manager struct {
 	sweepMu  sync.Mutex
 }
 type Request struct {
-	JobID   string      `json:"jobId"`
-	Lineage string      `json:"lineage"`
-	Fence   *refs.Fence `json:"fence"`
-	Root    string      `json:"root"`
-	Tree    string      `json:"tree"`
-	Hydrate bool        `json:"hydrate"`
-	Vsock   string      `json:"vsock"`
+	legacyFence bool
+	JobID       string      `json:"jobId"`
+	Lineage     string      `json:"lineage"`
+	Fence       *refs.Fence `json:"fence"`
+	Root        string      `json:"root"`
+	Tree        string      `json:"tree"`
+	Hydrate     bool        `json:"hydrate"`
+	Vsock       string      `json:"vsock"`
 }
 type Mount struct {
 	NBDListen string `json:"nbdListen"`
@@ -91,7 +92,8 @@ type Mount struct {
 	pendingRanges                     []chunk.Range
 }
 
-// Hydration defaults on for JSON callers while retaining the Go bool API.
+// Hydration defaults on for JSON callers. Only an absent JSON fence enables
+// phase-1 compatibility; explicit null (and a nil Go fence) remain read-only.
 func (q *Request) UnmarshalJSON(b []byte) error {
 	type plain Request
 	v := plain{Hydrate: true}
@@ -100,6 +102,11 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	if e := decoder.Decode(&v); e != nil {
 		return e
 	}
+	var fields struct{ Fence json.RawMessage }
+	if e := json.Unmarshal(b, &fields); e != nil {
+		return e
+	}
+	v.legacyFence = fields.Fence == nil
 	*q = Request(v)
 	return nil
 }
@@ -218,6 +225,10 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			m.mu.Unlock()
 		}
 	}()
+	if q.legacyFence {
+		q.Fence = &refs.Fence{Holder: m.HostID + "/" + q.JobID, Epoch: 0}
+		log.Printf("op=mount legacy-fence jobId=%s", q.JobID)
+	}
 	if q.Fence != nil && (q.Fence.Holder == "" || q.Fence.Epoch < 0) {
 		return nil, apierr.Invalid("invalid fence")
 	}
