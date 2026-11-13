@@ -307,9 +307,10 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 			return out, e
 		}
 		if o.End {
-			// The production guests count raw put payloads in the trailer.
-			// The receiver still charges link targets against quota and byte caps.
-			if o.Error != "" || o.Files != out.count || (o.Bytes != out.bytes && o.Bytes != out.bytes-linkBytes) {
+			// One convention: the trailer counts the raw payload bytes streamed after
+			// put ops. A link op's target travels in its JSON, so it is not in the
+			// trailer, while the receiver still charges it against quota and byte caps.
+			if o.Error != "" || o.Files != out.count || o.Bytes != out.bytes-linkBytes {
 				return out, fmt.Errorf("trailer mismatch")
 			}
 			out.freeze = o.FreezeMs
