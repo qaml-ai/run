@@ -169,8 +169,8 @@ DynamoDB partition key of its refs and its objects' metadata, and the unit of ch
 branch is bounded by its one writer; a swarm's thousand forks of one lineage are a thousand items under one
 partition key, which DynamoDB's adaptive capacity spreads; one hot ref is the bound. A **ref** is a name → commit inside a lineage.
 
-**Every ref update is one fenced CAS**, one conditional write on the ref item (quota's bookkeeping is held for Miguel,
-camel-fs-files.md §6). The tier first checks the ref-move rules (camel-fs-files.md §6: a new commit's
+**Every ref update is one fenced CAS**, one conditional write on the ref item (quota is the mark count plus bytes written since,
+camel-fs-files.md §6, outside this write). The tier first checks the ref-move rules (camel-fs-files.md §6: a new commit's
 `parents[0]` is current; a move to a recorded commit is a fast-forward); the condition is `version = :expect`
 **and** the lease state the writer believes in: an API writer requires `holder` absent; a host
 requires `holder = me` and `leaseEpoch = the epoch it took`. A merge that moves one ref and deletes another is one

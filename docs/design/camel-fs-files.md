@@ -282,26 +282,36 @@ contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` wi
   repos.
 - The tier refuses `507 storage_limit` with `{ limit }`, with **no** ref change, when
   `otherBytes + repoBytesAfter > limitBytes`.
-- `repoBytes` is the sum of the largest size per distinct blob across **all** refs' heads, and `files` is the
-  entry count of `main`. Both come back in the write's result.
-- No upper-bound shortcut is allowed, since a false refusal is a bug.
-- Deleting files must free quota, so "distinct bytes ever written, never shrinking" is ruled out.
+- `files` is the entry count of `main`. `bytes` and `files` come back in every write's result.
 
-**How `repoBytesAfter` is kept: pending Miguel's decision (2026-11-13).** The contract above stands either way:
-the `quota` request, `507 storage_limit` with no ref change, and `bytes` and `files` in every write's result. An
-exact deduplicated count across all heads cannot be recomputed per write at 50k files × N refs. The options:
+**How repo bytes are kept: decided (Miguel, 2026-11-13 ~17:40), the mark count plus bytes written since.**
+`repoBytes` is the exact distinct-blob bytes reachable from all of the repo's heads, as measured by the last GC mark
+pass (camel-fs.md §1.9), plus the bytes written since that pass. It lives on the `lineages` item as
+`markedBytes`, `markedAt` and `writtenSince`.
 
-1. **Exact, maintained refcounts.** A per-lineage refcount (blob → number of ref heads holding it) is updated by
-   the tree diff on every move. In DynamoDB that is a transaction across the ref and its counters (or a race), on
-   every write.
-2. **Exact recomputed by the GC mark pass, plus bytes written since** (the lead's recommendation). The mark
-   (camel-fs.md §1.9) already walks every head, so it records the exact deduplicated bytes per lineage. Each write
-   adds the new blobs' bytes since that mark. The count is exact at each mark and never under-counts between marks.
-   Deletes free quota at the next mark. Between marks the count can only over-count, so a write can be refused that
-   an exact count would admit. That is the price against the "no false refusals" requirement above, and Miguel's
-   call.
+- **The mark pass** runs hourly. It also runs on demand when a write is refused, or when a repo crosses ~90 % of
+  its limit. It walks every head and writes the exact deduplicated base.
+  - The reset does not lose a concurrent write: the pass snapshots `S = writtenSince` when it starts, then commits
+    `SET markedBytes = :m, markedAt = :now, writtenSince = writtenSince - :S` conditioned on
+    `markedAt = :prev`.
+- **`writtenSince` increments at blob upload** (`PUT …/blobs`, 9.1), and only when that upload created
+  `<lineage>/o/<sha1>`.
+  - It is not part of the ref-move transaction, so a write stays one conditional write on the ref.
+  - A blob uploaded but never committed counts until the next mark, a conservative over-count.
+- **Between passes the count reads high, not low.** Deletes and moves away from a blob free quota only at the
+  next pass, so a repo near its limit may briefly be refused, and the next pass (or the on-demand recount the
+  refusal triggers) corrects it.
+- **The one bounded under-count:** a blob that was unreachable at the last mark but not yet swept, and is then
+  referenced again, is not new: its upload creates nothing, so it adds nothing until the next mark. The error is
+  bounded by one mark interval (hourly, or sooner through the 90 % or refusal recount).
+- **Quota is therefore a soft limit.** Storage billing does not use it: it uses the exact mark (`usage.storage`,
+  camel-fs-compute.md §4).
+- **Owner:** proto-block, in C3. The `writtenSince` counter is on the `lineages` item, and the mark pass writes the
+  base.
 
-"Distinct bytes ever written, never shrinking" is ruled out: deleting files must free quota.
+The alternative, an exact per-blob refcount maintained by every ref move, was rejected: it is a transaction across
+the ref and its counters on every write. So was "distinct bytes ever written, never shrinking", because deleting
+files must free quota.
 
 **Notify** is a signed webhook from the tier to the runtime (§9.11), at least once, landing as an outbox row in the
 receiving object, which the receiver's alarm then drains, as wf-durable's design already does for host results. A
@@ -432,10 +442,10 @@ such above: the state split (§6, option C) and dropping projects and `publishTo
    agent's own mount. Override cost: a rename.
 2. **Every API write is a commit** (default). Per write, under the decided split: one blob PUT to S3 ($5 per
    million, $0.000005), about four tree writes and one commit write to DynamoDB (1–3 KB each, so ≈ 10 write units at
-   $1.25 per million, $0.0000125), one conditional write on the ref item (one write unit, $0.00000125; up to four units,
-   $0.000005, if the quota bookkeeping Miguel chooses needs a transaction), and the tier (≈ $0.000001 per write): **≈ $0.0000198–0.0000235
+   $1.25 per million, $0.0000125), one conditional write on the ref item (one write unit, $0.00000125), one `writtenSince`
+   increment per new blob for quota (one more unit, $0.00000125), and the tier (≈ $0.000001 per write): **≈ $0.000021
    per write** under option C (§6), so the 144 M writes and 14.6 M checkpoints a month of camel-fs.md's 1,000-agent
-   baseline cost **≈ $3,100–3,700/month**, less with tree segments (one item per write's trees); AWS's late-2024
+   baseline cost **≈ $3,300/month**, less with tree segments (one item per write's trees); AWS's late-2024
    on-demand price cut may halve the DynamoDB lines. Tonight's
    S3-only variant is ≈ $0.000033 per write (six PUTs plus the CAS), ≈ $4,800/month. The alternative, coalescing a
    VM-less agent's writes within a turn into one commit at turn end, would cut the write line ~5× (to the ~20
