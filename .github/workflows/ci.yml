@@ -360,6 +360,12 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...
+      - run: go build -o "$RUNNER_TEMP/camelfsd" ./cmd/camelfsd
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Real camelfsd contract
+        working-directory: .
+        run: CAMELFSD_BIN="$RUNNER_TEMP/camelfsd" CAMELFS_CONTRACT_REQUIRED=1 node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/camelfs-contract.test.ts
   ci:
     name: CI success
     timeout-minutes: 5
