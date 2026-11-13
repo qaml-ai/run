@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
@@ -21,7 +22,9 @@ type change struct {
 	Delete bool   `json:"delete,omitempty"`
 }
 type commitRequest struct {
-	Parent   *string           `json:"parent"`
+	Parents []string `json:"parents,omitempty"`
+	// TEMPORARY: parent is an alias for one release; remove next release.
+	Parent   *string           `json:"parent,omitempty"`
 	BaseTree *string           `json:"baseTree,omitempty"`
 	Changes  []change          `json:"changes"`
 	Author   string            `json:"author"`
@@ -39,16 +42,31 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if q.Author == "" || !safeLine(q.Author) || strings.ContainsRune(q.Message, 0) {
 		return nil, bad("invalid_request")
 	}
-	base := ""
+	parents := append([]string{}, q.Parents...)
 	if q.Parent != nil {
-		if e := require(ctx, r, l, *q.Parent, "commit", true); e != nil {
+		if q.Parents != nil {
+			return nil, bad("invalid_request")
+		}
+		parents = append(parents, *q.Parent)
+	}
+	if len(parents) > 2 {
+		return nil, bad("invalid_request")
+	}
+	base := ""
+	for i, parent := range parents {
+		if !root.Hex(parent, 40) {
+			return nil, bad("unknown_commit")
+		}
+		if e := require(ctx, r, l, parent, "commit", true); e != nil {
 			return nil, e
 		}
-		c, e := readCommit(ctx, r, *q.Parent)
-		if e != nil {
-			return nil, e
+		if i == 0 {
+			c, e := readCommit(ctx, r, parent)
+			if e != nil {
+				return nil, e
+			}
+			base = c["tree"].(string)
 		}
-		base = c["tree"].(string)
 	}
 	if q.BaseTree != nil {
 		base = *q.BaseTree
@@ -136,8 +154,8 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		now = *q.Time
 	}
 	body := "tree " + tr.Tree + "\n"
-	if q.Parent != nil {
-		body += "parent " + *q.Parent + "\n"
+	for _, parent := range parents {
+		body += "parent " + parent + "\n"
 	}
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n", q.Author, q.Author, now, now, q.Message)
 	keys := []string{}
@@ -155,7 +173,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if e = r.Flush(ctx); e != nil {
 		return nil, e
 	}
-	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes}, nil
+	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
 }
 func readCommit(ctx context.Context, r *objects.Repository, id string) (map[string]any, error) {
 	b, e := r.Object(ctx, id, "commit")
@@ -488,9 +506,20 @@ func (q *commitRequest) UnmarshalJSON(raw []byte) error {
 	if e := json.Unmarshal(raw, &fields); e != nil {
 		return e
 	}
-	if b, ok := fields["baseTree"]; ok && string(b) == "null" {
-		empty := ""
-		v.BaseTree = &empty
+	hasParent, hasParents := false, false
+	for name, b := range fields {
+		switch {
+		case strings.EqualFold(name, "parent"):
+			hasParent = true
+		case strings.EqualFold(name, "parents"):
+			hasParents = true
+		case strings.EqualFold(name, "baseTree") && string(b) == "null":
+			empty := ""
+			v.BaseTree = &empty
+		}
+	}
+	if hasParent && hasParents {
+		return bad("invalid_request")
 	}
 	*q = commitRequest(v)
 	return nil
