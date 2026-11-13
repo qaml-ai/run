@@ -392,3 +392,43 @@ runs the root tests and harness. The demand samples include NBD misses and
 cache hits; they are not an isolated cache-hit microbenchmark.
 Host /v0 tree, blob and commit GETs now require ?lineage=NAME. The development
 CLI tree and cat commands take --lineage NAME before the tree id.
+
+## Host and API roles
+
+`camelfsd host` runs the block layer, cache, NBD and mounts. It serves
+the Unix socket and can expose the runtime and import routes over TCP with
+the existing shared bearer.
+
+`camelfsd api` serves `/v1/lineages/{lineage}/*` over TCP for the ALB.
+`GET /v0/health` needs no credentials and returns a JSON object containing
+only `version`. `GET /v0/stats` reports local SQLite connection counts and
+accepts a valid read or write token for any lineage.
+
+```sh
+camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfsd \
+  --store s3://bucket/prefix --region us-west-2 \
+  --jwks-file /etc/camelfsd/jwks.json --token-issuer https://runtime.example
+```
+
+Each API node keeps its own SQLite caches, including its idempotency response
+cache. Nodes can share the same object store, which is the durable source of
+storage objects. `--fetch-depth` bounds concurrent store operations.
+
+Send `Authorization: Bearer <jwt>` for storage requests. The runtime signs
+the JWT using Ed25519 with `alg: "EdDSA"`, `typ: "camelfs+jwt"` and a `kid`
+from its published JWKS. Claims include the configured `iss`,
+`aud: "camelrun:camelfs"`, the actor `sub`, integer Unix seconds `iat` and
+`exp`, the exact path lineage `lin`, and `acc` of `r` (read) or `w`
+(read and write). Tokens may live up to `--token-max-ttl` (15 minutes by
+default), with up to five seconds of future clock skew on `iat`. Include
+`refs` as an array of up to 64 ref globs, which may be empty. The optional
+`fence` contains a string `holder` and integer `epoch`. This release
+validates the shape of `refs` and `fence`.
+
+Provide exactly one JWKS source. Use `--jwks-file` for a local file or
+`CAMELFS_JWKS` for the JSON itself. Each key specifies `kty: "OKP"`,
+`crv: "Ed25519"`, `alg: "EdDSA"`, `use: "sig"`, `kid` and the base64url
+public key `x`. To rotate file-backed keys, add the new key, send SIGHUP,
+then remove the old key after its tokens expire and send SIGHUP again. A
+failed reload keeps the previous keys. Restart env-backed nodes to rotate
+their keys.

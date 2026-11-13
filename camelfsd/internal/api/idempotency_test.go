@@ -69,9 +69,9 @@ func TestIdempotencyLocksOnlyMatchingLineageAndKey(t *testing.T) {
 	if first.Code != 201 || second.Code != 201 || first.Body.String() != second.Body.String() {
 		t.Fatal(first, second)
 	}
-	s.idemLocksMu.Lock()
-	defer s.idemLocksMu.Unlock()
-	if len(s.idemLocks) != 0 {
+	s.storageServer.idemLocksMu.Lock()
+	defer s.storageServer.idemLocksMu.Unlock()
+	if len(s.storageServer.idemLocks) != 0 {
 		t.Fatal("locks retained after requests")
 	}
 }

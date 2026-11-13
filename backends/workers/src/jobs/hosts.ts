@@ -71,6 +71,8 @@ export type JobHostsEnv = KeyEnv & WebhookEnv & Omit<VolumeSyncEnv, "VOLUMES" | 
   JOB_HOST_ROLE_ARNS?: string;
   /** How long a job waits for a host of its pool before it fails start_failed (seconds; HOST_WAIT_MS by default). */
   JOB_HOST_WAIT_SECONDS?: string;
+  /** How long a silent host keeps its jobs open (seconds; 5 minutes by default). */
+  JOB_HOST_LOST_SECONDS?: string;
   /** The scaler's credential (infra/job-hosts/scaler): it reads demand and drains hosts, nothing else. */
   JOB_HOST_SCALER_TOKEN?: string;
   /** Host-side sync fetches per client address (a Cloudflare rate limiting binding; generous). Unset, not limited. */
@@ -450,15 +452,17 @@ export class JobHost extends DurableObject<JobHostsEnv> {
   private features: string[] = [];
   /** The pool its credential says (the attested role's). */
   private pool?: HostPool;
-  /** When the host last said anything: the end of its charge if it goes away. */
-  private lastSeen = 0;
   constructor(ctx: DurableObjectState, env: JobHostsEnv) {
     super(ctx, env);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS host_dispatches (id TEXT PRIMARY KEY, sent_at INTEGER, deadline_at INTEGER, started_at INTEGER, result TEXT, answered_at INTEGER)");
+    guardAlarms(this, ctx, "JobHost", { test: env.TEST_MODE === "1" });
+    const columns = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(host_dispatches)").toArray().map(column => column.name);
+    for (const column of ["seen_at", "cancelled_at"]) if (!columns.includes(column)) ctx.storage.sql.exec(`ALTER TABLE host_dispatches ADD COLUMN ${column} INTEGER`);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS host_seen (k INTEGER PRIMARY KEY CHECK (k = 0), last_seen_at INTEGER NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS host_dispatch_parts (id TEXT, n INTEGER, data TEXT, PRIMARY KEY(id, n))");
   }
   private row(id: string) {
-    return this.ctx.storage.sql.exec<{ id: string; sent_at: number; deadline_at: number; started_at: number | null; result: string | null; answered_at: number | null }>("SELECT * FROM host_dispatches WHERE id = ?", id).toArray()[0];
+    return this.ctx.storage.sql.exec<{ id: string; sent_at: number; deadline_at: number; started_at: number | null; seen_at: number | null; cancelled_at: number | null; result: string | null; answered_at: number | null }>("SELECT * FROM host_dispatches WHERE id = ?", id).toArray()[0];
   }
   private answer(id: string, result: WireResult, until = Date.now()) {
     const stored = this.ctx.storage.transactionSync(() => {
@@ -486,7 +490,6 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     if (parts.length !== count || parts.some((part, n) => part.n !== n)) throw new Error("Incomplete job host result");
     return JSON.parse(parts.map(part => part.data).join("")) as WireResult;
   }
-  private gone?: ReturnType<typeof setTimeout>;
   private readonly pending = new Map<string, (result: WireResult) => void>();
   async fetch(request: Request) {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("Expected a WebSocket", { status: 426 });
@@ -536,8 +539,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
             this.socket = socket;
             this.features = [];
             this.pool = checked.pool;
-            this.lastSeen = Date.now();
-            if (this.gone) { clearTimeout(this.gone); this.gone = undefined; }
+            this.seen(Date.now());
             // The credential's end is the socket's: the host enrolls again and reconnects before then.
             const expiry = setTimeout(() => close(1008, "Credential expired"), Math.max(0, checked.expiresAt - Date.now()));
             socket.addEventListener("close", () => clearTimeout(expiry));
@@ -554,13 +556,6 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
       this.socket = undefined;
-      // A host that does not come back within HOST_STALE_MS has gone: its jobs end now, charged until it was last heard
-      // from, rather than at their deadline.
-      this.gone ??= setTimeout(() => {
-        this.gone = undefined;
-        if (this.socket) return;
-        for (const id of this.pending.keys()) { this.answer(id, { ok: false, code: "container_failed", message: "The job host went away" }, this.lastSeen); }
-      }, HOST_STALE_MS);
     });
   }
   /** Revoked: the socket closes, and jobs waiting on this host end failed rather than at their deadline. */
@@ -570,21 +565,69 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     this.socket = undefined;
     for (const { id } of this.ctx.storage.sql.exec<{ id: string }>("SELECT id FROM host_dispatches WHERE result IS NULL").toArray()) this.answer(id, { ok: false, code: "container_failed", message: "The job host was revoked" });
   }
+  private seen(now: number) {
+    this.ctx.storage.sql.exec("INSERT INTO host_seen (k, last_seen_at) VALUES (0, ?) ON CONFLICT(k) DO UPDATE SET last_seen_at = excluded.last_seen_at", now);
+  }
+  private lostMs() {
+    const seconds = Number(this.env.JOB_HOST_LOST_SECONDS);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 5 * 60_000;
+  }
+  private async armAlarm() {
+    const current = await this.ctx.storage.getAlarm();
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec<{ deadline: number | null; sent: number | null }>("SELECT MIN(deadline_at) AS deadline, MIN(sent_at) AS sent FROM host_dispatches WHERE result IS NULL").toArray()[0]!;
+    if (row.deadline === null) { await this.ctx.storage.deleteAlarm(); return; }
+    const seen = sql.exec<{ last_seen_at: number }>("SELECT last_seen_at FROM host_seen WHERE k = 0").toArray()[0]?.last_seen_at ?? row.sent!;
+    const next = Math.max(Date.now() + 1, Math.min(row.deadline, seen + this.lostMs()));
+    if (current !== next) await this.ctx.storage.setAlarm(next);
+  }
+  async alarm() {
+    const now = Date.now(), sql = this.ctx.storage.sql;
+    const seen = sql.exec<{ last_seen_at: number }>("SELECT last_seen_at FROM host_seen WHERE k = 0").toArray()[0]?.last_seen_at;
+    for (const { id } of sql.exec<{ id: string }>("SELECT id FROM host_dispatches WHERE result IS NULL").toArray()) {
+      const row = this.row(id)!;
+      if (row.deadline_at <= now) {
+        this.answer(id, { ok: false, code: "container_failed", message: "The job host did not answer in time" }, row.deadline_at);
+        this.send({ type: "cancel", id });
+      } else if ((seen ?? row.sent_at) + this.lostMs() <= now) {
+        this.answer(id, { ok: false, code: "container_failed", message: "The job host was lost" }, row.seen_at ?? row.started_at ?? row.sent_at);
+      }
+    }
+    await this.armAlarm();
+  }
   private async receive(name: string, message: HostMessage) {
-    this.lastSeen = Date.now();
+    const now = Date.now(), sql = this.ctx.storage.sql;
+    this.seen(now);
+    // Store socket messages before yielding: a result before a heartbeat must win reconciliation.
+    if (message.type === "heartbeat") {
+      const running = new Set(message.running);
+      for (const { id } of sql.exec<{ id: string }>("SELECT id FROM host_dispatches WHERE result IS NULL").toArray()) {
+        const row = this.row(id)!;
+        if (running.has(id)) sql.exec("UPDATE host_dispatches SET seen_at = ? WHERE id = ? AND result IS NULL", now, id);
+        else if (row.sent_at < now - PLACEMENT_GRACE_MS) this.answer(id, { ok: false, code: "container_failed", message: "The job host no longer runs it" }, row.seen_at ?? row.started_at ?? row.sent_at);
+      }
+    } else if (message.type === "started") {
+      const row = this.row(message.id);
+      if (row) sql.exec("UPDATE host_dispatches SET started_at = COALESCE(started_at, ?) WHERE id = ? AND result IS NULL", Math.min(now, Math.max(row.sent_at, Number.isFinite(message.at) ? message.at : now)), message.id);
+    } else if (message.type === "result") {
+      if (this.answer(message.id, message.result) === "duplicate") console.warn(JSON.stringify({ type: "jobhost_late_result_dropped", id: message.id }));
+      // SQLite's output gate commits the write before the acknowledgement leaves the object.
+      this.send({ type: "ack", id: message.id });
+    }
+    if ((message.type === "hello" || message.type === "heartbeat") && message.running) {
+      for (const id of message.running) {
+        const row = this.row(id);
+        // A job we stopped charging for must never keep running.
+        if (!row || row.result !== null || row.cancelled_at !== null) this.send({ type: "cancel", id });
+      }
+    }
     if (message.type === "hello") {
       this.features = message.features ?? [];
       // Its free slots as it reports them: a reconnecting host's jobs in flight keep theirs. Its pool is its credential's.
       await registry(this.env).seen(name, message.slots, message.free, this.pool ?? "test", { vcpus: message.vcpus, memoryMiB: message.memoryMiB });
       this.send({ type: "registered", host: name });
     } else if (message.type === "heartbeat") await registry(this.env).seen(name, undefined, message.free, this.pool ?? "test", undefined, message.running);
-    else if (message.type === "started") {
-      this.ctx.storage.sql.exec("UPDATE host_dispatches SET started_at = COALESCE(started_at, ?) WHERE id = ? AND result IS NULL", Date.now(), message.id);
-    } else if (message.type === "result") {
-      if (this.answer(message.id, message.result) === "duplicate") console.warn(JSON.stringify({ type: "jobhost_late_result_dropped", id: message.id }));
-      // SQLite's output gate commits the write before the acknowledgement leaves the object.
-      this.send({ type: "ack", id: message.id });
-    }
+    await this.armAlarm();
   }
   private send(message: unknown) {
     if (!this.socket) return false;
@@ -594,7 +637,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
   /**
    * Run one job on this host and answer its result, with the span its VM ran (`ranFrom` the host's `started`, `ranUntil`
    * its result, or when the host was last heard from if it went away): what the job is charged. No `ranFrom`: its VM
-   * never started, and nothing is charged. The socket gone, or the deadline passed, answers a failure.
+   * never started, and nothing is charged. Host loss or a passed deadline answers a failure.
    */
   async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult & { ranFrom?: number; ranUntil?: number }> {
     const sql = this.ctx.storage.sql;
@@ -607,25 +650,32 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     if (!row) {
       if (spec.camelfs && !this.features.includes("camelfs")) return { ok: false, code: "start_failed", message: "This job host cannot mount camelFS trees" };
       sql.exec("INSERT INTO host_dispatches (id, sent_at, deadline_at) VALUES (?, ?, ?)", id, Date.now(), Date.now() + deadlineMs);
+      await this.armAlarm();
       row = this.row(id)!;
-      if (this.cancelled.delete(id)) this.answer(id, { ok: false, code: "stopped", message: "The job was stopped" });
-      else {
-        try {
-          if (!this.send({ type: "job", id, spec })) this.answer(id, { ok: false, code: "start_failed", message: "The job host is not connected" });
-        } catch {
-          // Delivery is uncertain: never send the same id a second time. Its original deadline still applies.
+      // A result or cancel can arrive while the alarm is committed.
+      if (row.result === null) {
+        if (this.cancelled.delete(id) || row.cancelled_at !== null) this.answer(id, { ok: false, code: "stopped", message: "The job was stopped" });
+        else {
+          try {
+            if (!this.send({ type: "job", id, spec })) this.answer(id, { ok: false, code: "start_failed", message: "The job host is not connected" });
+          } catch {
+            // Delivery is uncertain: never send the same id a second time. Its original deadline still applies.
+          }
         }
       }
     }
-    if (!this.row(id)!.result) await new Promise<WireResult>(resolve => {
-      const timer = setTimeout(() => {
-        this.answer(id, { ok: false, code: "container_failed", message: "The job host did not answer in time" });
-        this.send({ type: "cancel", id });
-      }, Math.max(0, row!.deadline_at - Date.now()));
-      // Multiple callers join the same dispatch, each with its own promise.
+    row = this.row(id)!;
+    if (row.result === null && row.deadline_at <= Date.now()) {
+      this.answer(id, { ok: false, code: "container_failed", message: "The job host did not answer in time" }, row.deadline_at);
+      this.send({ type: "cancel", id });
+    }
+    await this.armAlarm();
+    if (this.row(id)!.result === null) await new Promise<WireResult>(resolve => {
+      // Multiple callers join the same dispatch; waiters only wake up after a row has ended.
       const previous = this.pending.get(id);
-      this.pending.set(id, result => { clearTimeout(timer); previous?.(result); resolve(result); });
+      this.pending.set(id, result => { previous?.(result); resolve(result); });
     });
+    await this.armAlarm();
     row = this.row(id)!;
     const result = this.result(id, row.result!);
     return { ...result, ...(row.started_at !== null ? { ranFrom: row.started_at, ranUntil: Math.max(row.started_at, row.answered_at!) } : {}) };
@@ -637,7 +687,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
   cancel(id: string, inFlight = false) {
     const row = this.row(id);
     if (row?.result) return false;
-    if (!this.pending.has(id) && !row) {
+    if (!row) {
       // Remembered only for a job whose dispatch is on its way (its HostJob says so): never for one already answered,
       // whose id a later run may use again.
       if (!inFlight) return false;
@@ -645,7 +695,10 @@ export class JobHost extends DurableObject<JobHostsEnv> {
       for (const [old, at] of this.cancelled) if (Date.now() - at > 2 * 60_000) this.cancelled.delete(old);
       return true;
     }
-    return this.send({ type: "cancel", id });
+    this.ctx.storage.sql.exec("UPDATE host_dispatches SET cancelled_at = COALESCE(cancelled_at, ?) WHERE id = ? AND result IS NULL", Date.now(), id);
+    if (!this.send({ type: "cancel", id })) this.answer(id, { ok: false, code: "stopped", message: "The job was stopped" });
+    this.ctx.waitUntil(this.armAlarm());
+    return true;
   }
   private readonly cancelled = new Map<string, number>();
 }

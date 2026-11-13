@@ -45,7 +45,7 @@ func main() {
 }
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: camelfsd host|client|version")
+		return fmt.Errorf("usage: camelfsd host|api|client|version")
 	}
 	switch args[0] {
 	case "testguest":
@@ -65,6 +65,8 @@ func run(args []string) error {
 			return fmt.Errorf("data required")
 		}
 		return image.Cleanup(context.Background(), *data, nil)
+	case "api":
+		return apiRole(args[1:])
 	case "host":
 		return host(args[1:])
 	default:
