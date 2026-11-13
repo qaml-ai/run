@@ -16,7 +16,8 @@ export type WireFile = { path: string; data: string };
 export type RuntimeMessage =
   | { type: "registered"; host: string }
   | { type: "job"; id: string; spec: WireJob }
-  | { type: "cancel"; id: string };
+  | { type: "cancel"; id: string }
+  | { type: "ack"; id: string };
 /** Host → runtime. */
 export type HostMessage =
   | { type: "hello"; host: string; slots: number; free: number; vcpus: number; memoryMiB: number; version: string; features?: string[]; pool?: "build" | "test" }
