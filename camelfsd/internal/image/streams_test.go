@@ -171,6 +171,7 @@ func TestArmingAndMountIsolation(t *testing.T) {
 }
 func TestApplyCheckpointCommit(t *testing.T) {
 	m, tree := unit3(t)
+	m.Store = testutil.TrackTreePuts(t, m.Store)
 	v := mount3(t, m, tree, "j")
 	dir := t.TempDir()
 	index := filepath.Join(t.TempDir(), "idx.json")

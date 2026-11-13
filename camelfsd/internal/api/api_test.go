@@ -12,6 +12,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ import (
 func TestLifecycleAndTree(t *testing.T) {
 	t.Setenv("CAMELFSD_TEST_NO_REFLINK", "1")
 	data := t.TempDir()
-	s := store.Local{Dir: t.TempDir()}
+	s := testutil.TrackTreePuts(t, store.Local{Dir: t.TempDir()})
 	db, e := refs.Open(filepath.Join(data, "refs.db"))
 	if e != nil {
 		t.Fatal(e)

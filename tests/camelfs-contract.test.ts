@@ -154,7 +154,7 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
     const ours = await storage.commit(lineage, input([first.commit], [{ path: "shared.txt", blob: oursBlob.blob }]));
     const theirs = await storage.commit(lineage, input([first.commit], [{ path: "shared.txt", blob: theirsBlob.blob }]));
     assert.deepEqual(await storage.diff(lineage, first.tree, ours.tree), { changes: [
-      { path: "shared.txt", status: "modified", oldBlob: blob.blob, newBlob: oursBlob.blob, oldMode: "100644", newMode: "100644" },
+      { path: "shared.txt", status: "modified", oldBlob: blob.blob, newBlob: oursBlob.blob, oldMode: "100644", newMode: "100644", oldSize: blob.size, newSize: oursBlob.size },
     ] });
     assert.deepEqual(await storage.diff(lineage, first.tree, ours.tree, "dir"), { changes: [] });
     const merged = await storage.merge(lineage, { base: first.tree, ours: ours.tree, theirs: theirs.tree, mode: "merge" });
@@ -168,6 +168,66 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
       author: "agent:contract", message: "merge", trailers: { "Camel-Test": "storage" }, time: 123 });
     assert.deepEqual((await storage.getCommit(lineage, empty.commit)).parents, []);
     assert.deepEqual((await storage.getCommit(lineage, first.commit)).parents, [empty.commit]);
+    assert.equal(await storage.isAncestor(lineage, first.commit, mergeCommit.commit), true);
+    assert.equal(await storage.isAncestor(lineage, theirs.commit, mergeCommit.commit), true);
+    assert.equal(await storage.isAncestor(lineage, ours.commit, theirs.commit), false);
+    assert.equal(await storage.isAncestor(lineage, first.commit, first.commit), true);
+    assert.deepEqual(await storage.mergeBase(lineage, ours.commit, theirs.commit), { base: first.commit, tree: first.tree });
+    assert.deepEqual(await storage.mergeBase(lineage, theirs.commit, mergeCommit.commit), { base: theirs.commit, tree: theirs.tree });
+    const disjoint = await storage.commit(lineage, input([], [], { message: "disjoint" }));
+    assert.equal(await storage.mergeBase(lineage, first.commit, disjoint.commit), null);
+    assert.equal(await storage.isAncestor(lineage, first.commit, disjoint.commit), false);
+    assert.deepEqual(await storage.entry(lineage, first.tree, "dir/binary"),
+      { path: "dir/binary", mode: "100644", blob: binary.blob, size: binary.size });
+    assert.deepEqual(await storage.entry(lineage, first.tree, "dir"), page.entries[0]);
+    assert.equal(await storage.entry(lineage, first.tree, "absent"), null);
+    const sizeChanges = await storage.commit(lineage, input([first.commit], [
+      { path: "shared.txt", mode: "100755" }, { path: "dir/binary", delete: true },
+      { path: "symlink", blob: blob.blob, mode: "120000" },
+    ]));
+    assert.deepEqual(await storage.entry(lineage, sizeChanges.tree, "symlink"),
+      { path: "symlink", mode: "120000", blob: blob.blob, size: blob.size });
+    assert.deepEqual(await storage.diff(lineage, first.tree, sizeChanges.tree), { changes: [
+      { path: "dir/binary", status: "deleted", oldBlob: binary.blob, oldMode: "100644", oldSize: binary.size },
+      { path: "shared.txt", status: "mode", oldBlob: blob.blob, newBlob: blob.blob, oldMode: "100644", newMode: "100755", oldSize: blob.size, newSize: blob.size },
+      { path: "symlink", status: "added", newBlob: blob.blob, newMode: "120000", newSize: blob.size },
+    ] });
+    for (const [op, run] of [
+      ["entry", () => storage.entry("other", first.tree, "dir")],
+      ["isAncestor", () => storage.isAncestor(lineage, "f".repeat(40), first.commit)],
+      ["mergeBase", () => storage.mergeBase(lineage, first.commit, "f".repeat(40))],
+    ] as const) await assert.rejects(run(), (e: unknown) => e instanceof StorageError &&
+      e.status === 404 && e.code === "not_found" && e.op === op && e.reason.length > 0);
+    for (const [path, message] of [
+      [`commits/${first.commit}/is-ancestor`, "missing field of"],
+      ["merge-base", "missing field a"],
+      [`merge-base?a=${first.commit}`, "missing field b"],
+      [`merge-base?a=x&b=${first.commit}`, "invalid commit x"],
+      [`trees/${first.tree}/entry?path=`, "missing field path"],
+      [`trees/${first.tree}/entry?path=../x`, "invalid path ../x"],
+    ]) {
+      const r = await fetch(`${origin}/v1/lineages/${lineage}/${path}`, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(r.status, 400);
+      const v = await r.json() as { error: { code: string; message: string } };
+      assert.equal(v.error.code, "invalid_request"); assert(v.error.message.includes(message), JSON.stringify(v));
+    }
+    // Node's HTTP client sends real chunked framing, with no Content-Length.
+    const chunked = Buffer.from("chunked contract blob\n");
+    await new Promise<void>((resolve, reject) => {
+      const req = request(`${origin}/v1/lineages/${lineage}/blobs`, { method: "PUT",
+        headers: { authorization: `Bearer ${token}`, "Transfer-Encoding": "chunked" } }, res => {
+        const chunks: Buffer[] = []; res.on("data", c => chunks.push(c)); res.on("error", reject);
+        res.on("end", () => { try {
+          assert.equal(res.statusCode, 201);
+          assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), {
+            blob: createHash("sha1").update(`blob ${chunked.length}\0`).update(chunked).digest("hex"),
+            sha256: createHash("sha256").update(chunked).digest("hex"), size: chunked.length,
+          }); resolve();
+        } catch (e) { reject(e); } });
+      });
+      req.on("error", reject); req.write(chunked.subarray(0, 3)); req.end(chunked.subarray(3));
+    });
+
     const entries = await storage.listAll(lineage, merged.tree);
     const shared = entries.find(e => e.path === "shared.txt"); assert(shared && "blob" in shared);
     assert.equal(text(await storage.readBlob(lineage, shared.blob, merged.tree, shared.path)), "ONE\ntwo\nthree\nfour\nFIVE\n");
@@ -286,4 +346,19 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
   });
   await timed("release", () => client.release("contract-1"));
   completed = true;
+});
+
+// Error transport is independent of daemon setup. In particular the
+// authorization check must never turn an incomplete walk into false/null.
+test("camelFS storage client preserves too_deep and operation context", async () => {
+  const storage = camelfsStorage({ CAMELFS_API_TOKEN: "contract-error-token", CAMELFS: {
+    async fetch() { return new Response(JSON.stringify({ error: { code: "too_deep", message: "too_deep" } }), { status: 413 }); },
+  } });
+  for (const [op, run] of [
+    ["isAncestor", () => storage.isAncestor("l", "a", "b")],
+    ["mergeBase", () => storage.mergeBase("l", "a", "b")],
+    ["entry", () => storage.entry("l", "t", "p")],
+    ["diff", () => storage.diff("l", "a", "b")],
+  ] as const) await assert.rejects(run(), (e: unknown) => e instanceof StorageError &&
+    e.status === 413 && e.code === "too_deep" && e.reason === "too_deep" && e.op === op);
 });
