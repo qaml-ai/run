@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"strings"
 	"time"
 )
 
@@ -119,4 +120,70 @@ func (r *Repository) BlobInfo(ctx context.Context, l, id string) (Blob, error) {
 	var b Blob
 	e = r.DB.DB.QueryRowContext(ctx, "SELECT sha256,sha1,size FROM lineage_blobs WHERE lineage=? AND sha1=?", l, id).Scan(&b.SHA256, &b.SHA1, &b.Size)
 	return b, e
+}
+
+// BlobInfos reads lineage metadata in bounded batches rather than per file.
+// Missing rows are recovered from durable membership before a single re-query.
+func (r *Repository) BlobInfos(ctx context.Context, l string, ids []string) (map[string]Blob, error) {
+	unique := []string{}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if !seen[id] {
+			unique = append(unique, id)
+			seen[id] = true
+		}
+	}
+	out := map[string]Blob{}
+	query := func(batch []string) error {
+		args := []any{l}
+		marks := make([]string, len(batch))
+		for i, id := range batch {
+			args = append(args, id)
+			marks[i] = "?"
+		}
+		r.observe("lineage-blobs")
+		rows, e := r.DB.DB.QueryContext(ctx, "SELECT sha256,sha1,size FROM lineage_blobs WHERE lineage=? AND sha1 IN ("+strings.Join(marks, ",")+")", args...)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var b Blob
+			if e = rows.Scan(&b.SHA256, &b.SHA1, &b.Size); e != nil {
+				return e
+			}
+			out[b.SHA1] = b
+		}
+		return rows.Err()
+	}
+	for start := 0; start < len(unique); start += 500 {
+		batch := unique[start:min(start+500, len(unique))]
+		if e := query(batch); e != nil {
+			return nil, e
+		}
+		missing := []string{}
+		for _, id := range batch {
+			if _, ok := out[id]; !ok {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			if e := store.Parallel(ctx, 64, missing, func(id string) error {
+				ok, e := r.Reachable(ctx, l, id, "blob")
+				if e != nil {
+					return e
+				}
+				if !ok {
+					return sql.ErrNoRows
+				}
+				return nil
+			}); e != nil {
+				return nil, e
+			}
+			if e := query(missing); e != nil {
+				return nil, e
+			}
+		}
+	}
+	return out, nil
 }

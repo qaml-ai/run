@@ -409,7 +409,7 @@ func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
 	return entries, nil
 }
 
-func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
+func (r *Repository) TreeEntries(ctx context.Context, id string) ([]Entry, error) {
 	out := []Entry{}
 	var walk func(string, string) error
 	walk = func(tree, prefix string) error {
@@ -431,6 +431,14 @@ func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
 		return nil
 	}
 	e := walk(id, "")
+	if e != nil {
+		return nil, e
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
+	out, e := r.TreeEntries(ctx, id)
 	if e != nil {
 		return nil, e
 	}
