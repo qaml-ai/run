@@ -67,6 +67,10 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const done = await until(async () => { const value = await call(`/v1/workflows/${started.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the workflow");
   assert.equal(done.status, "completed", JSON.stringify(done));
   assert.equal(done.result.exitCode, 0, JSON.stringify(done.result));
+  for (const name of ["admitMs", "filesMs", "waitMs", "reserveMs", "dispatchMs", "hostMs", "meterMs"]) {
+    assert.equal(typeof done.result.timings.steps[name], "number", name);
+    assert.ok(Number.isInteger(done.result.timings.steps[name]) && done.result.timings.steps[name] >= 0, name);
+  }
   assert.equal(done.result.stdout.tail, "hello from the host");
   assert.equal(done.result.stderr.tail, "warn\n");
   assert.equal(done.result.outputs["r.txt"].bytes, 6);
@@ -301,6 +305,9 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
     const result = await run(id);
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.camelfs, { tree, warm: true, mountMs: 2, applyMs: 3 });
+    for (const name of ["admitMs", "filesMs", "hostMs", "importMs"]) assert.equal(typeof result.timings.steps[name], "number", name);
+    assert.equal(result.timings.steps.importMs, result.timings.steps.filesMs);
+    assert.equal(result.timings.steps.dispatchMs, undefined, "this fake host sends no started report");
     assert.equal(calls, 3);
   }
   assert.equal(received.length, 2);
@@ -317,5 +324,7 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
   const refused = await run("camelfs-unsupported");
   assert.equal(refused.ok, false); assert.equal(refused.code, "start_failed");
   assert.equal(refused.message, "This job host cannot mount camelFS trees");
+  for (const name of ["admitMs", "filesMs", "hostMs", "meterMs"]) assert.equal(typeof refused.timings.steps[name], "number", name);
+  assert.equal(refused.timings.steps.importMs, refused.timings.steps.filesMs);
   assert.equal(received.length, 3); assert.equal(calls, 3);
 });
