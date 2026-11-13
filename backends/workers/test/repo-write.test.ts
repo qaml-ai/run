@@ -102,7 +102,7 @@ test('restore creates a commit; branch fallback loads old trees; advanceRef uses
   const commit = await ctx.storage.commit(ctx.lineage, { parents: [r.version], changes: [{ path: 'cp', blob: blob.blob, mode: '100644' }], author: 'api:t', message: 'checkpoint', trailers: {} });
   for (const parents of [[], [a.version!]]) {
     const invalid = await ctx.storage.commit(ctx.lineage, { parents, baseTree: commit.tree, changes: [], author: 'api:t', message: 'invalid checkpoint', trailers: {} });
-    await assert.rejects(advanceRef(ctx, { ref: 'main', expect: r.version, commit: invalid.commit, who: 'api:t', why: 'checkpoint' }), err('bad-parent'));
+    await assert.rejects(advanceRef(ctx, { ref: 'main', expect: r.version, commit: invalid.commit, who: 'api:t', why: 'checkpoint' }), err('bad_parent'));
     assert.equal((await ctx.stub.ref('main'))?.version, r.version);
   }
   const advanced = await advanceRef(ctx, { ref: 'main', expect: r.version, commit: commit.commit, who: 'api:t', why: 'checkpoint' });

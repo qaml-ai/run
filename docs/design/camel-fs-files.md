@@ -47,7 +47,7 @@ term. A repo need not contain code: a shared docs folder is a repo with one bran
 | files (§3) | `GET/PUT/DELETE …/files/:path`, `GET …/files`, `POST …/files:batch`, `POST …/commit`, `GET …/grep`, `GET …/blobs/:sha`, `POST …/links` |
 | `GET /v1/repos/:id/export?version=`, `GET /v1/repos/:id.git/…` | a tar of a version; stock-git clone and fetch of the repo |
 
-Ref updates return HTTP 409 `bad-parent` when a new commit on an existing ref does not have the current
+Ref updates return HTTP 409 `bad_parent` when a new commit on an existing ref does not have the current
 version as its first parent or has more than two parents. Moving an existing ref to a stored version
 returns HTTP 409 `not-fast-forward` if that version does not descend from the current version or the
 ancestry check exceeds 50,000 versions. Setting a ref to its current version succeeds without a change.

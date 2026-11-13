@@ -40,6 +40,6 @@ paths:
           description: >-
             not-fast-forward if the target does not descend from the current version or the
             ancestry check exceeds 50,000 versions. Ref-moving writes that publish a new
-            commit return bad-parent if it has an invalid first parent or parent count.
+            commit return bad_parent if it has an invalid first parent or parent count.
         "412":
           description: stale if the ref does not match the supplied expect value.

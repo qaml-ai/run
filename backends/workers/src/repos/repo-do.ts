@@ -130,7 +130,7 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
     if (r && !existing) {
       const { parents } = input.commit, current = r.version;
       if (parents[0] !== current || parents.length > 2)
-        throw new RepoError("bad-parent", 409, "bad-parent", { parents, current });
+        throw new RepoError("bad_parent", 409, "bad_parent", { parents, current });
       if (parents[1] && !this.rows("SELECT version FROM commits WHERE version=?", parents[1]).length)
         throw new RepoError("unknown-parent", 400, "unknown-parent");
     }

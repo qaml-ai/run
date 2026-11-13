@@ -187,7 +187,7 @@ test("new commits on an existing ref must start with the current version", async
   const before = state();
   for (const parents of [[], [2], [2, 1], [1, 2, 2]]) {
     await assert.rejects(cas(3, parents, [e("b")]), err => {
-      error("bad-parent", 409)(err);
+      error("bad_parent", 409)(err);
       assert.deepEqual((err as InstanceType<typeof RepoError>).detail, { parents: parents.map(id), current: id(1) });
       return true;
     });
