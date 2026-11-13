@@ -147,6 +147,13 @@ func Apply(vsock, job, mount, index string) (err error) {
 				defer unix.Close(f)
 				return unix.Fchmod(f, mode(o.Mode))
 			}
+			if o.Op == "link" {
+				received += int64(len(o.Target))
+				if e := unix.Unlinkat(fd, name, 0); e != nil && e != unix.ENOENT {
+					return e
+				}
+				return unix.Symlinkat(o.Target, fd, name)
+			}
 			if o.Op != "put" {
 				return fmt.Errorf("bad apply op")
 			}
