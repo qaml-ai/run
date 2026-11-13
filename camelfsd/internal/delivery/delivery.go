@@ -49,7 +49,8 @@ func Stage(table string, d Delivery, now time.Time) (types.TransactWriteItem, er
 	item["claimer"] = str("")
 	item["lastError"] = str("")
 	return types.TransactWriteItem{Put: &types.Put{
-		TableName: aws.String(table), Item: item, ConditionExpression: aws.String("attribute_not_exists(id)"),
+		TableName: aws.String(table), Item: item, ConditionExpression: aws.String("attribute_not_exists(#id)"),
+		ExpressionAttributeNames: map[string]string{"#id": "id"},
 	}}, nil
 }
 
