@@ -43,7 +43,7 @@ term. A repo need not contain code: a shared docs folder is a repo with one bran
 |---|---|
 | `POST /v1/repos { name?, key?, from?: { repo, ref? \| version? }, template? }` | creates a repo (idempotent by `key` or `Idempotency-Key`); `from` makes it a fork of another repo's version (O(1): the new repo's `main` points at that tree, nothing is copied); `template` seeds a first commit |
 | `GET /v1/repos`, `GET /v1/repos/:id`, `DELETE /v1/repos/:id` | list, inspect (`{ id, name, key, refs, bytes, files, createdAt }`), delete (every ref goes; objects follow by reachability) |
-| `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` (§9.9's `cas`) under the parent rule (§6): the new version's first parent must be the ref's current version, so every move is a fast-forward and a rewind is a `restore`, a new commit |
+| `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` (§9.9's `cas`) under the ref-move rules (§6): a new commit's first parent is the current version, a move to a recorded commit is a fast-forward, and a rewind is a `restore`, a new commit |
 | `POST /v1/repos/:id/branches { name, from?: ref \| version, owner?, ttl? }` | an O(1) branch inside the repo (shares chunks on hosts); `owner` ties its life to a workflow, job or agent |
 | `GET /v1/repos/:id/history?ref=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts |
 | `GET /v1/repos/:id/diff?from=&to=&path=` | changed paths between any two versions, O(changed) |
@@ -133,8 +133,7 @@ commit), and the branch `job/<id>` then points at the result. The workflow decid
 - `merge(into: "main", from: job.branch)`: the three-way merge; clean → one commit on `main` with two parents (the
   attempt's history stays reachable and attributable), conflicts → `{ conflicts }` for a fix stage, which edits the
   same branch and merges again;
-- `fast-forward` when `main` has not moved: the ref moves, zero bytes (one step under the parent rule, §6: when the
-  branch made several checkpoints, `main` gets a two-parent commit whose tree is the branch's, still zero bytes; §9.9);
+- `fast-forward` when `main` has not moved: the ref moves, zero bytes (ref-move rule 2, §6);
 - or nothing: the branch is owned by the workflow and dies with it.
 
 The host's result (`WireResult.camelfs`: `tree`, `root`, `commit`, `checkpointError`, the timings) stays as the
@@ -201,7 +200,7 @@ regional storage tier). The state is now:
 | what | where | key |
 |---|---|---|
 | refs, leases, fences, watchers | DynamoDB `refs`, one item per ref | partition `lineage`, sort `name` |
-| lineages: tenant, kind, quota and its counter, default branch | DynamoDB `lineages` | `lineage` |
+| lineages: tenant, kind, default branch | DynamoDB `lineages` | `lineage` |
 | trees and commits (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to S3 `g/`) | DynamoDB `objects` (S3 `t/`, `k/` until the table exists, ledger L74) | `lineage`, `id` |
 | pending `notify` deliveries | DynamoDB `deliveries` | `lineage`, `id` |
 | blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
@@ -214,9 +213,10 @@ plane plus a `refs` package, any node serving any request. Hosts run `camelfsd -
 cache, no refs) and reach the tier in-VPC. The `CAMELFS` tunnel, the shared bearer (ledger L30) and `RepoDO` are
 deleted. The reasons, from the study:
 
-- **The parent rule is a storage condition.** A ref move is one conditional `UpdateItem` whose condition is the
-  approved rule: `version = :parent0`, where `parent0` is `parents[0]` of the content-addressed commit being
-  installed. Nothing the tier's code does can move a ref to a commit whose first parent is not the current head.
+- **The ref-move rules are a storage condition.** Every move is one conditional `UpdateItem` on
+  `version = :expect`, after the tier has checked the approved rules below against immutable commits: a new commit's
+  `parents[0]` is the current version, and a move to a recorded commit is a fast-forward. A move can only land on
+  the version it was checked against.
 - **The dominant writer is a VM.** Per-turn checkpoints of `bash` VMs, computers and jobs are the writes that grow.
   Under C the host's CAS is in-region (checkpoint ≈ 170 ms + ≈ 7 ms to the tier and DynamoDB). Under D it would
   have travelled host → Worker → `RepoDO` → host (≈ 80–165 ms more on the per-turn path).
@@ -236,14 +236,35 @@ and `RepoDO`'s internals freeze on day one.
 `updatedAt`, the lease (`holder`: host id, host boot epoch, mount id; `leaseEpoch`; `leaseDeadline`) and
 `watchers` (a set of watcher ids).
 
-**The ref log is the first-parent chain.** The parent rule makes every move a fast-forward: a write, a checkpoint,
-a merge (`parents: [head, theirs]`) and a restore (a new commit whose tree is the old version's and whose parent
-is the head) all extend the chain. `history` walks first parents, and who and why travel in each commit's author
-and trailers. There is no log item and no transaction for it. Only a ref's create and delete are not in the chain:
-`createdAt` and `createdBy` sit on the item, and a delete is final.
+**The ref-move rules** (wf-delegation's, lead-approved; the same as `RepoDO`'s CAS, and the tier's tests port its
+tests):
+
+1. **A new commit on an existing ref**: `parents[0]` is the current version, and `parents` has length 1, or 2 for a
+   merge `[current, other]`. Otherwise `409 bad_parent` with `{ parents, current }`, and nothing changes.
+2. **A move of an existing ref to an already-recorded commit** is fast-forward only. The tier walks breadth-first
+   over all parents from the target, and at each visited version compares with the current version *first*, before
+   requiring a commit record (so a fork whose base is a pre-fork version still fast-forwards). An unrecorded version
+   that is not current is a dead end. If current is never reached, the answer is `409 not_fast_forward` with
+   `{ current }`; past 50,000 visited it is `409 not_fast_forward` with `{ current, reason: "too_deep" }`, failing
+   closed.
+3. **The same version as current** is a no-op, and allowed.
+4. **A ref that does not exist** (branch, create, seed) may be created at any commit.
+
+Going back is never a move: `restore` is a new commit whose tree is the old version's and whose parent is current.
+A stale `expect` is `412 stale` with `{ current }`, and a held ref without the matching fence is `409 fenced`. In
+DynamoDB, rule 1 is the `parents[0]` check before the write, and rule 2 is the `is-ancestor` walk (§9.4) before
+the write. Both then write under the condition `version = :expect`, so a concurrent move between check and write
+fails the condition instead of landing.
+
+**There is no ref-log item.** Every move extends the history reachable from the ref, and `history` walks first
+parents from the head (with `merges: true` to descend). Who and why travel in each commit's author and trailers. A
+multi-step fast-forward (rule 2) adds the target's whole ancestry to the walk, as git's does. Only a ref's create
+and delete are outside history: `createdAt` and `createdBy` sit on the item, and a delete is final.
 
 **Leases and fences** sit on the ref item. A host's CAS is conditioned on
-`version = :parent0 AND holder = :me AND leaseEpoch = :epoch`, and an API writer's on `attribute_not_exists(holder)`.
+`version = :expect AND holder = :holder AND leaseEpoch = :epoch`, where holder and epoch come **only from the
+verified token's `fence` claim**, never from a request body (§9.10). An API writer's CAS is conditioned on
+`attribute_not_exists(holder)`.
 A lease is taken with `attribute_not_exists(holder) OR leaseDeadline < :now`, and the new epoch is the old one + 1.
 `:now` is the tier node's clock (AWS Time Sync, sub-millisecond skew between nodes) against a 10-minute lease
 renewed every TTL/3, so skew is noise. A node whose clock disagrees with DynamoDB's own write time by more than a
@@ -254,14 +275,23 @@ fenced; a held branch refuses API writes and merges into it; a reboot changes th
 Trees are immutable and addressed by id, and the conditional write pins that head, so the check holds. Two tier
 nodes racing on one ref are serialized by the condition. The loser re-reads the head and, when every per-path
 expect still holds on the new head, rebuilds its commit on it and tries once more (one extra round trip under
-contention). A whole-ref `expect` that lost, or a second loss, is `409 stale` with the current version.
+contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` with the current version.
 
-**Quota.** A lineage's stored bytes are the sum of its prefixed objects (§9), counted on the `lineages` item: a
-write that adds new objects moves the ref and adds to the counter in one two-item `TransactWriteItems`, with the
-quota as a condition on the counter. A write that adds no new bytes (a restore, a merge that takes whole subtrees)
-is the single conditional write. GC decrements the counter. Whether the counter can live on the ref item instead
-(one write unit, not four) is decided by the DynamoDB measurement (test 2 of the study); the contract of §9 does not
-change either way.
+**Quota** is checked inside the tier's write and is money-adjacent (the lead reviews it line by line).
+- The request carries `quota: { limitBytes, otherBytes }`, which the runtime computes from the tenant's other
+  repos.
+- The tier refuses `507 storage_limit` with `{ limit }`, with **no** ref change, when
+  `otherBytes + repoBytesAfter > limitBytes`.
+- `repoBytes` is the sum of the largest size per distinct blob across **all** refs' heads, and `files` is the
+  entry count of `main`. Both come back in the write's result.
+- No upper-bound shortcut is allowed, since a false refusal is a bug.
+- Deleting files must free quota, so "distinct bytes ever written, never shrinking" is ruled out.
+
+**Open, held for Miguel (2026-11-13, a product decision; not designed here).** An exact deduplicated count across
+all heads cannot be recomputed per write at 50k files × N refs. It needs a maintained per-lineage blob refcount
+(blob → number of ref heads holding it), updated by the tree diff on every move. In DynamoDB that is either a
+transaction across the ref and its counters, or a race. Until Miguel decides, the routes below carry the request
+and the refusal, and say nothing about how `repoBytesAfter` is kept.
 
 **Notify** is a signed webhook from the tier to the runtime (§9.11), at least once, landing as an outbox row in the
 receiving object, which the receiver's alarm then drains, as wf-durable's design already does for host results. A
@@ -280,8 +310,8 @@ O(changed).
 
 1. write the new objects (blobs to S3; trees and the commit to DynamoDB, S3 until L74 lands), in one parallel
    wave: they are content-addressed and computable before any write, so nothing orders them but the CAS;
-2. one conditional write on the ref item (a two-item transaction when the quota counter moves), whose condition is
-   the parent rule plus the lease state the writer holds.
+2. one conditional write on the ref item, `version = :expect` plus the lease state the writer holds, after the
+   ref-move rules have been checked.
 
 An API write does both in one call to the tier (§9.9's `write`). A host does step 1 in its checkpoint and step 2
 with a `cas` to the tier over the VPC, using the fence-scoped token the runtime minted at dispatch (§9.7, §9.10),
@@ -311,7 +341,8 @@ the model requires two refs to move together.
    switched to HTTPS, the tunnel and the shared bearer deleted (L30).
 2. Miguel creates the DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`; on demand, PITR), the IAM roles
    (api, host) and the token key.
-3. The Go `refs` package with the parent rule as the condition, leases, fences, watchers and quota. Its contract
+3. The Go `refs` package with the ref-move rules checked before a `version = :expect` condition, leases, fences, watchers and
+   the quota check (its bookkeeping waits on Miguel). Its contract
    tests are ported from `RepoDO`'s tests and the strict fake.
 4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted; `HostJob`'s lease and renew over
    HTTPS; the agent-side tree cache.
@@ -391,8 +422,8 @@ such above: the state split (§6, option C) and dropping projects and `publishTo
    agent's own mount. Override cost: a rename.
 2. **Every API write is a commit** (default). Per write, under the decided split: one blob PUT to S3 ($5 per
    million, $0.000005), about four tree writes and one commit write to DynamoDB (1–3 KB each, so ≈ 10 write units at
-   $1.25 per million, $0.0000125), one conditional write on the ref item (one write unit, $0.00000125; a two-item transaction
-   with the quota counter, four units, $0.000005), and the tier (≈ $0.000001 per write): **≈ $0.0000198–0.0000235
+   $1.25 per million, $0.0000125), one conditional write on the ref item (one write unit, $0.00000125; up to four units,
+   $0.000005, if the quota bookkeeping Miguel chooses needs a transaction), and the tier (≈ $0.000001 per write): **≈ $0.0000198–0.0000235
    per write** under option C (§6), so the 144 M writes and 14.6 M checkpoints a month of camel-fs.md's 1,000-agent
    baseline cost **≈ $3,100–3,700/month**, less with tree segments (one item per write's trees); AWS's late-2024
    on-demand price cut may halve the DynamoDB lines. Tonight's
@@ -421,7 +452,7 @@ from build step 5, customers on the public `/v1/repos`. Until step 1 lands, the 
 daemon behind the `CAMELFS` tunnel with the shared bearer (L30). Everything else about a host's daemon (mount, fork,
 release, the cache, the lazy origin, hydration) is unchanged and stays on the host's Unix socket.
 
-**Division of ownership.** The tier owns refs, leases, fences, watchers and quota counters, and performs every CAS
+**Division of ownership.** The tier owns refs, leases, fences and watchers, checks quota, and performs every CAS
 (§9.9). It holds no state of its own: refs are DynamoDB items, objects are DynamoDB items and S3 objects, and any
 node answers any request. It also stores and serves the immutable, content-addressed objects (blobs, trees,
 commits, chunks, roots, shards) and computes over them (commit, diff, merge, grep, read). Hosts hold no refs: a host
@@ -560,10 +591,11 @@ no listing.
 `a` is reachable from `b` through parents; both must be commits of the lineage, else `404 not_found` naming which.
 
 `GET /v1/lineages/{lineage}/merge-base?a=<commit>&b=<commit>` → `{ "base": "<commit>" | null, "tree": "<tree>" |
-null }`: git's best common ancestor; several candidates → the latest `time`, then id; `null` when the histories are
+null }`: git's best common ancestor; several candidates → the latest `time`, then the greatest id; `null` when the histories are
 disjoint.
 
-Both walks are bounded at 50,000 commits visited and answer `413 too_deep` past that, so a pathological history
+Both walks are bounded at 50,000 distinct commits visited (for `merge-base`, counted across both sides together) and
+answer `413 too_deep` past that, so a pathological history
 cannot hold a request open; the caller treats `too_deep` as "not provable", never as "not an ancestor".
 
 ### 9.5 Merge
@@ -592,10 +624,11 @@ in, the same call answers from them with `"indexed": "shards"`. A match cap of 2
 
 Over the host's Unix socket (unchanged transport):
 
-- `mount { jobId, lineage, tree, fence: { holder, epoch } | null, token?, ... }` → `{ image, warm, mountMs }`. The
+- `mount { jobId, lineage, tree, parent, fence: { holder, epoch } | null, token?, ... }` → `{ image, warm, mountMs }`. The
   fence and its token are what the runtime handed the host at dispatch; the daemon stores them and does not check
   them, because the tier's CAS does. `null` means a read-only `root`-form mount, which refuses checkpoints with
-  `no_fence`. The mount creates no ref and takes no lease. What stays: the tree → root lookup (`tree_roots`), the
+  `no_fence`. A fenced mount must carry `parent`, the version it mounts, which becomes the checkpoint commit's
+  `parents[0]` (`400 invalid_request "missing field parent"` otherwise). The mount creates no ref and takes no lease. What stays: the tree → root lookup (`tree_roots`), the
   nearest-ancestor base, the blank image and the guest apply.
 - `checkpoint { mount, message, trailers, time }` → `{ tree, root, commit, timings: { walkMs, streamMs, freezeMs,
   reflinkMs, fiemapMs, hashMs, uploadMs, imageMs, wallMs } }`. The daemon runs the §1.3 contract of camel-fs.md,
@@ -633,11 +666,12 @@ the image; the ref item carries `root?` (§6).
 | `not_found` | 404 | a commit named in a history question (`is-ancestor`, `merge-base`) that this lineage does not have; the body names which |
 | `ref_not_found` | 404 | a ref route naming a ref the lineage does not have |
 | `ref_exists` | 409 | `POST refs` on a name that exists |
-| `stale` | 409 | the ref is not at `expect`, or a per-path `expectBlob` no longer holds; the body carries the current `version` (and `blob` for a path) |
-| `not_fast_forward` | 409 | a `cas` whose commit's `parents[0]` is not `expect`, or a root commit (no parents) on an existing ref |
+| `stale` | 412 | the ref is not at `expect`, or a per-path `expectBlob` no longer holds; the body carries `current` (and `blob` for a path) |
+| `bad_parent` | 409 | a new commit on an existing ref whose `parents[0]` is not current, or whose `parents` is not 1 (2 for a merge) long; the body carries `{ parents, current }` |
+| `not_fast_forward` | 409 | a move to a recorded commit that does not reach current (ref-move rule 2), or `{ reason: "too_deep" }` past 50,000 visited (fails closed) |
 | `held` | 409 | an API write, merge, restore or delete on a ref a VM holds, or a lease on a held ref whose deadline has not passed |
-| `fence_lost` | 409 | a host `cas`, renew or release whose `holder` or `epoch` is not the ref's current lease |
-| `quota_exceeded` | 409 | a write whose new bytes would take the lineage past its quota; nothing is moved |
+| `fenced` | 409 | a write to a held ref without a token whose `fence` claim matches the lease, or a `cas`, renew or release whose claimed holder or epoch is not the current lease |
+| `storage_limit` | 507 | `otherBytes + repoBytesAfter > limitBytes`; the body carries `{ limit }`, and nothing is moved |
 | `blob_mismatch` | 400 | `X-Camel-Sha256` did not match the bytes received |
 | `too_large` | 413 | a blob over the single-PUT cap, a batch over 256 paths or 64 MiB, a commit over 10,000 changes, a `write` body over 8 MiB |
 | `too_deep` | 413 | a history walk (`is-ancestor`, `merge-base`) past 50,000 commits visited; not provable, not a negative answer |
@@ -652,12 +686,12 @@ token `sub`/`jti`, never file contents or tokens.
 
 Every route below is one or two DynamoDB operations on the lineage's partition. Reads of a ref are strongly
 consistent. Each mutating route takes `Idempotency-Key`; a replayed key returns the first answer, and an
-unremembered retry of a move that already happened fails its condition and answers `stale`, with the current
-version equal to the retry's commit, which the caller reads as success.
+unremembered retry of a move that already happened lands on ref-move rule 3 (same version, a no-op) when it names
+the moved-to commit, or answers `412 stale` with `current` equal to the retry's commit, which the caller reads as
+success.
 
-**Lineages.** `PUT /v1/lineages/{lineage}` `{ "tenant", "kind": "workspace" | "image", "quotaBytes",
-"defaultBranch": "main" }` → `201`, or `200` when it already exists with the same tenant (anything else `409`).
-The runtime calls it at repo creation, before the first commit. `GET` returns the item with its byte counter.
+**Lineages.** `PUT /v1/lineages/{lineage}` `{ "tenant", "kind": "workspace" | "image", "defaultBranch": "main" }` → `201`, or `200` when it already exists with the same tenant (anything else `409`).
+The runtime calls it at repo creation, before the first commit. `GET` returns the item.
 
 **Read and list.** `GET /v1/lineages/{lineage}/refs/{name}` → `{ "name", "version", "tree", "root"?, "owner",
 "expiresAt"?, "holder"?, "leaseEpoch"?, "leaseDeadline"?, "createdAt", "createdBy", "updatedAt" }`.
@@ -666,34 +700,40 @@ the partition (`refs?prefix=published/` lists a repo's publishes).
 
 **Create.** `POST /v1/lineages/{lineage}/refs` `{ "name", "version", "owner", "expiresAt"? }` → `201` with the
 item. Condition: `attribute_not_exists(name)`, else `409 ref_exists`. `version` must be a commit of the lineage
-(`400 unknown_commit`). A branch copies nothing, whatever the tree's size. The owner prefix set and the name
+(`400 unknown_commit`). A branch copies nothing, whatever the tree's size, and may be created at any commit (rule 4). The owner prefix set and the name
 alphabet of §1 are enforced here.
 
 **Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. Condition: `version = :expect`
 and no live lease (`held` otherwise). Final: the ref's history stays reachable only from other refs.
 
-**CAS (hosts, and any caller that wrote its own commit).** `POST /v1/lineages/{lineage}/refs/{name}/cas`
-`{ "commit", "expect", "root"? }` → `200 { "version", "tree", "parents", "diff": [ …9.4's change shape… ] }`. The
-tier reads the commit (it must be the lineage's, else `400 unknown_commit`) and requires `parents[0] == expect`
-(`409 not_fast_forward`). It then writes the ref with the condition `version = :expect`, plus, for a fenced token,
-`holder = :holder AND leaseEpoch = :epoch` (`409 fence_lost`), and otherwise `attribute_not_exists(holder)`
-(`409 held`). A miss on `version` is `409 stale` with the current version. The reply's `diff` (from `expect`'s tree
-to the commit's) is what the host puts in its result and the agent folds into its tree cache.
+**CAS (hosts, and any caller that wrote its own commit or moves to a recorded one).**
+`POST /v1/lineages/{lineage}/refs/{name}/cas` `{ "commit", "expect", "root"?, "quota"? }` →
+`200 { "version", "tree", "parents", "diff": [ …9.4's change shape… ], "bytes", "files" }`.
+- The commit must be the lineage's (`400 unknown_commit`).
+- `expect` must be current (`412 stale`). `commit == expect` is a no-op (rule 3).
+- A commit made for this move must pass rule 1 (`409 bad_parent`); any other recorded commit must pass rule 2
+  (`409 not_fast_forward`).
+- The ref is then written under `version = :expect`, plus `holder` and `leaseEpoch` equal to the token's `fence`
+  claim for a fenced token, else `attribute_not_exists(holder)` (`409 fenced` either way).
+- The reply's `diff` (from `expect`'s tree to the commit's) is what the host puts in its result and what the agent
+  folds into its tree cache.
+
+The refs `PUT` of §1 is this route.
 
 **Write (the API's one-call write).** `POST /v1/lineages/{lineage}/refs/{name}/write`
 ```json
-{ "expect"?: "<version>",
+{ "expect"?: "<version>", "quota"?: { "limitBytes", "otherBytes" },
   "changes": [ { "path": "src/a.ts", "text"?: "…", "base64"?: "…", "blob"?: "<sha1>", "mode"?: "100644",
                  "expectBlob"?: "<sha1>" | "none" },
                { "path": "old.txt", "delete": true, "expectBlob"?: "<sha1>" } ],
   "author": "agent:ag_123", "message": "edit src/a.ts", "time": 1763046000, "trailers": { … } }
 ```
 → `201 { "version", "tree", "parents", "time", "changed": [ { "path", "status", "oldBlob"?, "newBlob"?, "oldSize"?,
-"newSize"?, "mode" } ], "bytes" }`. In one call the tier reads the head; checks `expect` (whole ref) and every
-`expectBlob` (per path, `none` = must not exist) against the head's tree (`409 stale`); writes inline bytes as blobs
+"newSize"?, "mode" } ], "bytes", "files" }`. In one call the tier reads the head; checks `expect` (whole ref) and every
+`expectBlob` (per path, `none` = must not exist) against the head's tree (`412 stale`); writes inline bytes as blobs
 (9.1), the changed trees and the commit (`parents: [head]`) in one wave; and moves the ref with the condition
-`version = :head AND attribute_not_exists(holder)`, adding to the quota counter in the same transaction when there
-are new bytes. A lost condition retries once on the new head when no whole-ref `expect` was given and every
+`version = :head AND attribute_not_exists(holder)`, and refusing `507 storage_limit`
+first when `quota` is given and the write would exceed it. A lost condition retries once on the new head when no whole-ref `expect` was given and every
 `expectBlob` still holds (§6). Inline bytes are capped at 8 MiB per call; a larger file goes through 9.1 first and
 is named by `blob`. `changes` may be empty (a `checkpoint(message)` on an unheld ref). This is the route the files
 API's `PUT`/`DELETE …/files/:path` and `POST …/commit` map onto, and the agents' `write`/`edit` tools call it once
@@ -701,13 +741,10 @@ per tool call.
 
 **Merge.** `POST /v1/lineages/{lineage}/refs/{name}/merge` `{ "theirs": "<version>", "mode": "merge" | "squash" |
 "ff-only", "author", "message", "time", "trailers"? }` → `201 { "version", "tree", "ff": true | false, "merged",
-"took" }` or `409 conflict` (9.5's body; nothing moved). When `theirs`'s first parent is the head (the common case of a job's one
-checkpoint on top of the version it mounted), `merge` and `ff-only` move the ref to `theirs`, a fast-forward the
-parent rule allows. A `theirs` further ahead (several checkpoints) is not one step: the parent rule admits only a
-commit whose first parent is the head, so `ff-only` is `409 not_fast_forward` and `merge` records it with a merge
-commit `parents: [head, theirs]` whose tree is `theirs`'s, with no tree merge needed. Otherwise `ff-only` is
+"took" }` or `409 conflict` (9.5's body; nothing moved). When the head is an ancestor of `theirs` (rule 2's walk), `merge`
+and `ff-only` move the ref to `theirs`, a fast-forward with zero new bytes. Otherwise `ff-only` is
 `409 not_fast_forward`, and `merge` computes the merge base (9.4), merges the trees (9.5) and commits
-`parents: [head, theirs]` (`squash`: `[head]`). This keeps every ref's log exactly its first-parent chain. Either way the
+`parents: [head, theirs]` (`squash`: `[head]`) under rule 1. Either way the
 ref moves under the same condition as `write`.
 
 **Restore.** `POST /v1/lineages/{lineage}/refs/{name}/restore` `{ "version", "author", "message", "time" }` →
@@ -717,9 +754,10 @@ never rewritten.
 **Leases.** `POST /v1/lineages/{lineage}/refs/{name}/lease` `{ "holder": { "host", "boot", "mount" }, "ttlMs" }`
 (`ttlMs` ≤ 600,000) → `200 { "epoch", "deadline", "version", "tree" }`. Condition:
 `attribute_not_exists(holder) OR leaseDeadline < :now`, else `409 held`; the epoch is the previous epoch + 1.
-`POST …/lease/renew` `{ "holder", "epoch", "ttlMs" }` → `200 { "deadline" }`, with the condition `holder = :holder
-AND leaseEpoch = :epoch AND leaseDeadline >= :now` (`409 fence_lost`). `DELETE …/lease` `{ "holder", "epoch" }` →
-`204`, under the same condition. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
+`POST …/lease/renew` `{ "ttlMs" }` → `200 { "deadline" }`, with the condition `holder = :holder
+AND leaseEpoch = :epoch AND leaseDeadline >= :now`, where holder and epoch come from the token's `fence` claim
+(`409 fenced`). `DELETE …/lease` → `204`, under the same condition. The lease's `POST` needs a runtime token with
+`ops: ["lease"]`; the runtime then mints the fence-scoped token from its answer. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
 `leaseEpoch`.
 
 **Watchers.** `PUT /v1/lineages/{lineage}/refs/{name}/watchers/{watcher}` → `204`, and
@@ -744,8 +782,8 @@ never mint. Claims:
   - Object routes (9.1–9.6) need any `read` glob for reads and any `write` glob for writes, then the (tree, path)
     rule.
   - `ops` narrows further: `lease` and `watch` must be listed to call those routes.
-- **Fence-scoped tokens** carry `fence`: their `cas`, renew and release are conditioned on exactly that holder and
-  epoch, and they write only the one ref named in `write`. `HostJob` mints one per dispatch with `exp` = the job's
+- **Fence-scoped tokens** carry `fence`, and the fence is read **only** from this signed claim, never from a request
+  body: their `cas`, renew and release are conditioned on exactly that holder and epoch, and they write only the one ref named in `write`. `HostJob` mints one per dispatch with `exp` = the job's
   deadline + 10 minutes. The fence, not `exp`, is the guard against a late host.
 - **Who gets which token:**
   - An agent's token covers its mounts.

@@ -149,28 +149,30 @@ touch (§1.9).
 camelFS is one AWS service. Refs, leases, fences and watchers are **DynamoDB items written with conditional
 writes** by the stateless `camelfsd --role api` tier; trees and commits live in DynamoDB, with cold generations
 packed to S3; blobs and chunks live in S3. Earlier the same day the refs had moved into a per-lineage Durable Object
-(`RepoDO`); option C moves them back, because the condition expression can *be* the parent rule
-(`version = :parent0`), because the growing writer is a VM whose CAS is then in-region instead of host → Worker →
+(`RepoDO`); option C moves them back, because each move is one conditional write on
+`version = :expect` after the approved ref-move rules are checked against immutable commits, because the growing writer is a VM whose CAS is then in-region instead of host → Worker →
 host, and because the service then stands alone (one binary, a bucket, a table) for Node, Workers, hosts and
 customers alike. The runtime holds no ref; it signs tokens and caches trees by id per agent.
 
 | where | key | holds |
 |---|---|---|
 | DynamoDB `refs` | `lineage`, `name` | `version` (the commit), `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`; the lease when a VM holds the branch: `holder` (host id, host boot epoch, mount id), `leaseEpoch`, `leaseDeadline`; `watchers`; `createdAt`, `createdBy`, `updatedAt` |
-| (no log table) | | the ref log is the first-parent chain: the parent rule makes every move a fast-forward, a restore is a new commit, and who and why travel in each commit's author and trailers |
+| (no log table) | | every move extends the ref's history (a new commit on current, or a fast-forward; a restore is a new commit), `history` walks first parents, and who and why travel in each commit's author and trailers |
 | DynamoDB `deliveries` | `lineage`, `id` | a pending `notify` webhook, written in the same transaction as the move of a watched ref (camel-fs-files.md §9.11) |
 | DynamoDB `objects` | `id` | trees and commits (content-addressed; a put is unconditional and idempotent), `generation` |
 | DynamoDB `touch` | `id` | an object named by id without bytes since the last mark began (§1.9); TTL = 2 × grace |
 | DynamoDB `warm` | `lineage`, `host` | the image files this host holds, with the host's boot epoch, for placement |
-| DynamoDB `lineages` | `lineage` | tenant, kind (`workspace` / `image`), quota, default branch, ignore list, last mark; the stored-bytes counter (quota) |
+| DynamoDB `lineages` | `lineage` | tenant, kind (`workspace` / `image`), default branch, ignore list, last mark |
 
 A **lineage** is a volume plus everything made from it (forks, job views, cache entries, mirrors); it is the
 DynamoDB partition key of its refs and its objects' metadata, and the unit of chunk sharing. A single
 branch is bounded by its one writer; a swarm's thousand forks of one lineage are a thousand items under one
 partition key, which DynamoDB's adaptive capacity spreads; one hot ref is the bound. A **ref** is a name → commit inside a lineage.
 
-**Every ref update is one fenced CAS**, one conditional write on the ref item (a two-item `TransactWriteItems` when
-the quota counter moves). The condition is the parent rule, `version = :parent0`, **and** the lease state the writer believes in: an API writer requires `holder` absent; a host
+**Every ref update is one fenced CAS**, one conditional write on the ref item (quota's bookkeeping is held for Miguel,
+camel-fs-files.md §6). The tier first checks the ref-move rules (camel-fs-files.md §6: a new commit's
+`parents[0]` is current; a move to a recorded commit is a fast-forward); the condition is `version = :expect`
+**and** the lease state the writer believes in: an API writer requires `holder` absent; a host
 requires `holder = me` and `leaseEpoch = the epoch it took`. A merge that moves one ref and deletes another is one
 `TransactWriteItems`. A host that was partitioned from the runtime, lost its lease and comes back late fails its CAS on the
 epoch; it cannot land a version on a branch another mount has since taken (which gets a new epoch), and it cannot
@@ -208,7 +210,7 @@ difference between a 5 s and a 65 ms one-file commit on a large tree (its v1 kep
 its v2 moved trees and commits into SQLite). WCU is per KB, so a top-level tree of 2–3 KB is 2–3 WCU; the cost
 section counts it. The one thing DynamoDB makes harder, enumerating objects for GC, is done from S3 Inventory
 (§1.9). The refs live here too (option C): a ref is one small item whose every move is a conditional write, the condition
-is the parent rule and the fence, and no serial owner is needed; the earlier per-lineage Durable Object is deleted.
+is the expected version and the fence (taken only from the signed token), and no serial owner is needed; the earlier per-lineage Durable Object is deleted.
 
 ### 1.3 Hosts: image files, the lazy origin, the checkpoint contract
 
