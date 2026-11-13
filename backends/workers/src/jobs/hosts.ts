@@ -773,7 +773,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         } else if (!completed && !dispatch.repo.finished) {
           await measure("leaseMs", () => renewJobRepo(this.env, spec.id, dispatch.repo!));
         }
-        camelfs = { lineage: dispatch.repo.lineage, tree: dispatch.repo.tree, fence: dispatch.repo.fence, ...(spec.commit ? { commit: true } : {}) };
+        camelfs = { lineage: dispatch.repo.lineage, tree: dispatch.repo.tree, parent: dispatch.repo.expect, fence: dispatch.repo.fence, ...(spec.commit ? { commit: true } : {}) };
       } catch (error) {
         await meter.startedAt(Date.now()).then(() => meter.stopped()).catch(() => {});
         await release().catch(() => {});

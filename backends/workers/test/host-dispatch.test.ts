@@ -299,7 +299,7 @@ test("repo dispatch recovery reuses the mounted tree and fence without resolving
     TENANTS: { getByName: () => ({ repoRow: async () => ({ deletedAt: null, lineage: "test:repo_one" }) }) }, REPOS: { getByName: () => stub },
     JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {} }) },
     JOB_HOSTS: { getByName: () => ({ dispatch: async (_: string, wire: WireJob) => {
-      dispatches++; assert.deepEqual(wire.camelfs, { lineage: "test:repo_one", tree: "b".repeat(40), fence }); assert.deepEqual(wire.files, []); assert.equal(wire.sync, undefined); return result;
+      dispatches++; assert.deepEqual(wire.camelfs, { lineage: "test:repo_one", tree: saved.repo.tree, parent: saved.repo.expect, fence }); assert.deepEqual(wire.files, []); assert.equal(wire.sync, undefined); return result;
     } }) } };
   const background: Promise<unknown>[] = [], ctx = { storage: store, waitUntil: (p: Promise<unknown>) => background.push(p) };
   t.after(() => Promise.all(background));

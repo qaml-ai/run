@@ -340,7 +340,8 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
     assert.deepEqual(listing.entries.map(entry => entry.path).sort(), ["README.md", "src/a.txt", "src/new/c.txt"]);
     assert.equal(listing.entries.find(entry => entry.path === "src/a.txt")?.mode, "100755");
     assert.match(checkpoint.commit, /^[a-f0-9]{40}$/, "the daemon answers the commit it wrote");
-    const commit = await get<{ trailers: Record<string, string> }>(`/v0/commits/${checkpoint.commit}?lineage=${encodeURIComponent(lineage)}`);
+    const commit = await get<{ parents: string[]; trailers: Record<string, string> }>(`/v0/commits/${checkpoint.commit}?lineage=${encodeURIComponent(lineage)}`);
+    assert.deepEqual(commit.parents, []);
     assert.equal(commit.trailers["Camel-Job"], "contract-1");
     assert.equal(commit.trailers["Camel-Exit"], "0");
   });

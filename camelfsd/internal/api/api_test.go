@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -65,10 +66,41 @@ func TestLifecycleAndTree(t *testing.T) {
 	if imp["tree"] != tree {
 		t.Fatal(imp)
 	}
-	mount := call("POST", "/v0/mounts", map[string]any{"jobId": "j1", "lineage": "l", "root": imp["root"], "fence": map[string]any{"holder": "runtime", "epoch": 1}}, 200)
+	parent := strings.Repeat("a", 40)
+	mountRequest := map[string]any{"jobId": "j1", "lineage": "l", "root": imp["root"], "fence": map[string]any{"holder": "runtime", "epoch": 1}}
+	if out := call("POST", "/v0/mounts", mountRequest, 400); out["error"] != "invalid_request" || out["detail"] != "missing field parent" {
+		t.Fatal(out)
+	}
+	for _, invalid := range []any{"", "not-a-sha", strings.Repeat("z", 40), nil, 123} {
+		mountRequest["parent"] = invalid
+		if out := call("POST", "/v0/mounts", mountRequest, 400); out["error"] != "invalid_request" {
+			t.Fatal(out)
+		}
+	}
+	mountRequest["parent"] = parent
+	mount := call("POST", "/v0/mounts", mountRequest, 200)
 	if mount["warm"] != true {
 		t.Fatal(mount)
 	}
+	checkSavedParent := func(want string) {
+		t.Helper()
+		raw, e := os.ReadFile(filepath.Join(data, "mounts", "j1", "state.json"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		var state struct{ Parent refs.Value }
+		if e := json.Unmarshal(raw, &state); e != nil || state.Parent.Commit != want {
+			t.Fatal(state, e)
+		}
+	}
+	checkParents := func(id, want string) {
+		t.Helper()
+		commit, e := m.Commit(context.Background(), id, "l")
+		if e != nil || !slices.Equal(commit["parents"].([]string), []string{want}) {
+			t.Fatal(commit, e)
+		}
+	}
+	checkSavedParent(parent)
 	f, e := os.OpenFile(mount["image"].(string), os.O_RDWR, 0)
 	if e != nil {
 		t.Fatal(e)
@@ -89,6 +121,14 @@ func TestLifecycleAndTree(t *testing.T) {
 	if e != nil || got != cp["root"] {
 		t.Fatal(got, e)
 	}
+	checkParents(cpResult.Commit, parent)
+	checkSavedParent(cpResult.Commit)
+	second, e := m.Checkpoint(context.Background(), "j1")
+	if e != nil {
+		t.Fatal(e)
+	}
+	checkParents(second.Commit, cpResult.Commit)
+	checkSavedParent(second.Commit)
 	tm := call("POST", "/v0/mounts", map[string]any{"jobId": "treejob", "lineage": "l", "tree": tree}, 200)
 	if tm["root"] != cp["root"] {
 		t.Fatal(tm)
@@ -154,11 +194,13 @@ func TestFenceOwnership(t *testing.T) {
 	for _, fenced := range []bool{false, true} {
 		job := "read"
 		var fence *refs.Fence
+		var parent string
 		if fenced {
 			job = "write"
 			fence = &refs.Fence{Holder: "runtime", Epoch: 7}
+			parent = strings.Repeat("a", 40)
 		}
-		_, e := m.Mount(context.Background(), image.Request{JobID: job, Lineage: "l", Tree: tr.Tree, Fence: fence})
+		_, e := m.Mount(context.Background(), image.Request{JobID: job, Lineage: "l", Tree: tr.Tree, Parent: parent, Fence: fence})
 		if e != nil {
 			t.Fatal(e)
 		}

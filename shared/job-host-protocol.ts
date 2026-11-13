@@ -31,7 +31,7 @@ export type WireJob = {
   limits: { cpus?: number; memoryMiB?: number; diskMiB?: number; pids?: number };
   internet: boolean; files: WireFile[]; secretEnv?: Record<string, string>;
   /** The job's /repo as a camelFS tree: the host mounts a fork of it (no `files`, no `sync`). */
-  camelfs?: { lineage: string; tree: string; fence?: { holder: string; epoch: number }; commit?: boolean };
+  camelfs?: { lineage: string; tree: string; parent?: string; fence?: { holder: string; epoch: number }; commit?: boolean };
   /**
    * A tree too large to send inline: the host fetches each file from the runtime itself (GET `url`/<index>, with
    * `token` as a bearer, one job's only), checks its size and sha256, and writes it into the VM in pieces.
