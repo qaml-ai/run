@@ -98,3 +98,17 @@ func TestSharedFetchBudget(t *testing.T) {
 		t.Fatal("exceeded shared budget")
 	}
 }
+
+func TestUploadInventoryScope(t *testing.T) {
+	a := &Uploaded{Store: WithDepth(&S3{Bucket: "bucket", Prefix: "before"}, 64)}
+	same := &Uploaded{Store: &S3{Bucket: "bucket", Prefix: "before"}}
+	other := &Uploaded{Store: &S3{Bucket: "bucket", Prefix: "after"}}
+	bucket := &Uploaded{Store: &S3{Bucket: "other", Prefix: "before"}}
+	key := "c/" + root.Hash([]byte("chunk"))
+	if a.inventoryKey(key) != same.inventoryKey(key) {
+		t.Fatal("same store lost stable scope")
+	}
+	if a.inventoryKey(key) == other.inventoryKey(key) || a.inventoryKey(key) == bucket.inventoryKey(key) || a.inventoryKey(key) == key {
+		t.Fatal("upload inventory crosses namespaces")
+	}
+}

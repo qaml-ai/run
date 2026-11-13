@@ -32,7 +32,7 @@ field() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])'
 client() { "$BIN" client --socket "$SOCK" "$@"; }
 start_daemon() {
  local store=$1;shift
- "$BIN" host --data "$D/data" --socket "$SOCK" --nbd-listen 127.0.0.1:10811 --store "$store" --fetch-depth 64 "$@" > "$W/daemon-$LABEL.log" 2>&1 &
+ "$BIN" host --data "$D/data-$LABEL" --socket "$SOCK" --nbd-listen 127.0.0.1:10811 --store "$store" --fetch-depth 64 "$@" > "$W/daemon-$LABEL.log" 2>&1 &
  PID=$!
  for ((i=0;i<200;i++)); do curl -fsS --unix-socket "$SOCK" http://localhost/v0/health >/dev/null 2>&1 && return; kill -0 "$PID"; sleep .1; done
  return 1
@@ -79,7 +79,7 @@ for LABEL in before after; do
  stop_daemon
  # A new process is essential: never delete trusted cache files under a daemon.
  for hydrate in false true; do
-  rm -rf "$D/data/cache" "$D/data/images/$ROOT.img"
+  rm -rf "$D/data-$LABEL/cache" "$D/data-$LABEL/images/$ROOT.img"
   start_daemon "s3://$BUCKET/$PREFIX/$LABEL"
   start=$(now)
   mounted=$(client mount --job u7 --lineage large --root "$ROOT" --hydrate="$hydrate")
@@ -101,7 +101,7 @@ for LABEL in before after; do
   mount -o ro,noload "$dev" "$W/mnt"
   cat "$W/mnt/src/m0/d0/f0.ts" >/dev/null
   echo "$LABEL hydrate=$hydrate first_file_cold_ms=$(elapsed "$first")"
-  first=$(now);tar cf - -C "$W/mnt" . >/dev/null
+  first=$(now);tar cf - -C "$W/mnt" . | cat >/dev/null
   echo "$LABEL hydrate=$hydrate full_read_ms=$(elapsed "$first")"
   umount "$W/mnt"
   if [[ $hydrate == true ]]; then
@@ -131,7 +131,7 @@ start_daemon "$D/local-store" --packs=false
 imported=$(client import-image --lineage local --name main --path "$W/large.img")
 ROOT=$(field root <<< "$imported")
 stop_daemon
-rm -f "$D/data/images/$ROOT.img"
+rm -f "$D/data-$LABEL/images/$ROOT.img"
 start_daemon "$D/local-store" --packs=false
 mounted=$(client mount --job fio --lineage local --root "$ROOT" --hydrate=true)
 dev=$(field image <<< "$mounted")
