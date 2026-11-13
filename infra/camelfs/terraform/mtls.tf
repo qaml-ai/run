@@ -251,6 +251,32 @@ resource "aws_lb_listener_rule" "enroll" {
   }
 }
 
+# Host routes are reachable only through the internal balancer (wf-durable, 2026-11-13: two locks, not one). The
+# public listener runs verify mode too, against the AOP CA, and sets the same X-Amzn-Mtls-Clientcert-* headers from
+# Cloudflare's leaf; the tier refuses any /v1/hosts/* whose leaf does not chain to the private CA with a host SAN,
+# and this rule makes the public path a 404 before the tier ever sees it.
+resource "aws_lb_listener_rule" "public_no_host_routes" {
+  count = var.certificate_issued ? 1 : 0
+
+  listener_arn = aws_lb_listener.api_https["public"].arn
+  priority     = 10
+
+  action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "not found"
+      status_code  = "404"
+    }
+  }
+
+  condition {
+    path_pattern {
+      values = ["/v1/hosts/*"]
+    }
+  }
+}
+
 resource "aws_vpc_security_group_ingress_rule" "alb_internal_hosts_enroll" {
   for_each                     = toset(var.host_security_group_ids)
   security_group_id            = aws_security_group.alb_internal.id

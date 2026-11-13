@@ -303,6 +303,14 @@ run "second_apply_with_the_certificate" {
     error_message = "The enrollment listener (8443, no client certificate) forwards only POST /v1/hosts/enroll to the enrollment port (8793); everything else is 404."
   }
   assert {
+    condition = (
+      length(aws_lb_listener_rule.public_no_host_routes) == 1
+      && aws_lb_listener_rule.public_no_host_routes[0].action[0].type == "fixed-response"
+      && anytrue([for condition in aws_lb_listener_rule.public_no_host_routes[0].condition : try(tolist(condition.path_pattern)[0].values, toset([])) == toset(["/v1/hosts/*"])])
+    )
+    error_message = "The public listener answers 404 to every /v1/hosts/* path: host routes exist only behind the internal balancer."
+  }
+  assert {
     condition     = length(aws_ecs_service.api) == 1 && aws_ecs_service.api[0].desired_count == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
     error_message = "The service exists with no task and no autoscaling until api_min_count is raised."
   }
