@@ -224,7 +224,7 @@ export class WorkflowJobs implements EffectExecutor {
       }
     } else if (args.files && this.env.CAMELFS) {
       const env = this.env as RepoEnv, owner = `workflow:${this.host.workflow.id}`;
-      const { info } = await createRepo(env, tenant, { key: owner });
+      const { info } = await createRepo(env, tenant, { key: owner, author: owner });
       const ctx = await repoContext(env, tenant, info.id), ref = `job/${id}`;
       const prepared = `workflow-job-files:${id}`;
       if (!await this.host.storage.get(prepared)) {

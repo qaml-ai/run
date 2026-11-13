@@ -47,21 +47,7 @@ function fixture(t: any) {
   const tenant = { registerRepo: (r: any) => index.register(r), repoRow: (id: string) => index.row(id), listRepos: (i: any) => index.list(i), markRepoDeleted: (id: string) => index.deleted(id), repoUsage: (id: string, b: number, f: number) => index.usage(id, b, f), reposUsed: () => index.used() };
   const fake = fakeCamelfsd('test-token');
   const env: any = { CAMELFS: { fetch: (input: any, init: any) => fake.fetch(input instanceof Request ? input : new Request(input, init)) }, CAMELFS_API_TOKEN: 'test-token', TENANTS: { getByName: () => tenant }, REPOS: { getByName: (id: string) => {
-        if (!repos.has(id)) {
-          const stub = new RepoDO(state() as never, {}), init = stub.init.bind(stub);
-          let initialized = false;
-          // Match createRepo's contract: a new repo starts at an initial main commit.
-          stub.init = async input => {
-            await init(input);
-            if (!initialized) {
-              initialized = true;
-              const ctx = await repoContext(env, input.tenant, input.id);
-              await commitChanges(ctx, { ref: 'main', expect: null, changes: {}, allowEmpty: true, message: 'init', author: 'api:t', who: 'api:t', why: 'init' });
-            }
-            return stub.info();
-          };
-          repos.set(id, stub);
-        }
+        if (!repos.has(id)) repos.set(id, new RepoDO(state() as never, {}));
         return repos.get(id);
       } } };
   const create = async (input = {}) => { const { info } = await createRepo(env, 't', input); return repoContext(env, 't', info.id); };
