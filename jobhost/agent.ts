@@ -17,7 +17,7 @@ import { camelfsdClient, serveImportProxy, type Camelfsd, type CamelfsMount } fr
 
 export const CAMELFS_HEARTBEAT_MS = 30_000;
 
-export const AGENT_VERSION = "0.2.0";
+export const AGENT_VERSION = "0.3.0";
 /** Less free disk than this before the command fails the job `disk_low`, as a container job does. */
 const DISK_LOW_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -34,7 +34,7 @@ export type AgentOptions = {
 export class HostAgent {
   private socket?: WebSocket;
   private frames = new Frames();
-  private readonly running = new Map<string, { vm?: Vm; cancelled: boolean }>();
+  private readonly running = new Map<string, { vm?: Vm; cancelled: boolean; startedAt?: number }>();
   private readonly outbox: HostMessage[] = [];
   private readonly results = new Map<string, { message: Extract<HostMessage, { type: "result" }>; at: number }>();
   private pruneResults() {
@@ -91,7 +91,7 @@ export class HostAgent {
         // The credential is the first message, not part of the URL: a URL lands in access logs.
         socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
         // Its free slots as they are: jobs in flight across a reconnect still hold theirs.
-        this.send({ type: "hello", host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.camelfsd && this.options.launcher.mountsRepo ? { features: ["camelfs"] } : {}), ...(this.options.pool ? { pool: this.options.pool } : {}) });
+        this.send({ type: "hello", running: [...this.running.keys()], host: enrolled.host, slots: this.options.slots, free: this.options.slots - this.running.size, vcpus: this.options.vcpus, memoryMiB: this.options.memoryMiB, version: AGENT_VERSION, ...(this.options.camelfsd && this.options.launcher.mountsRepo ? { features: ["camelfs"] } : {}), ...(this.options.pool ? { pool: this.options.pool } : {}) });
         heartbeat = setInterval(() => this.send({ type: "heartbeat", running: [...this.running.keys()], free: this.options.slots - this.running.size }), this.options.heartbeatMs ?? 10_000);
       });
       socket.addEventListener("message", event => {
@@ -129,6 +129,7 @@ export class HostAgent {
       this.pruneResults();
       for (const pending of this.outbox.splice(0)) this.send(pending);
       for (const entry of this.results.values()) this.send(entry.message);
+      for (const [id, job] of this.running) if (job.startedAt !== undefined) this.send({ type: "started", id, at: job.startedAt });
       this.registered.resolve();
     } else if (message.type === "ack") this.results.delete(message.id);
     else if (message.type === "job") void this.run(message.id, message.spec);
@@ -149,7 +150,7 @@ export class HostAgent {
     if (finished) { this.send(finished.message); return; }
     if (this.running.has(id)) return;
     if (this.running.size >= this.options.slots) { this.send({ type: "result", id, result: { ok: false, code: "start_failed", message: "This host has no free slot" } }); return; }
-    const job: { vm?: Vm; cancelled: boolean } = { cancelled: false };
+    const job: { vm?: Vm; cancelled: boolean; startedAt?: number } = { cancelled: false };
     this.running.set(id, job);
     const began = Date.now();
     let result: WireResult;
@@ -177,7 +178,8 @@ export class HostAgent {
       const shape = { vcpus: Math.max(1, Math.ceil(spec.limits.cpus ?? 1)), memoryMiB: spec.limits.memoryMiB ?? 2048, diskMiB: spec.limits.diskMiB ?? 8192 };
       const vm = job.vm = await this.options.launcher.boot(id, shape, { internet: spec.internet, ...(mounted ? { repo: mounted.image } : {}) });
       if (job.cancelled) throw new Stopped();
-      this.send({ type: "started", id, at: Date.now() });
+      job.startedAt = Date.now();
+      this.send({ type: "started", id, at: job.startedAt });
       startMs = Date.now() - began;
       let applyMs = 0;
       if (mounted) {
