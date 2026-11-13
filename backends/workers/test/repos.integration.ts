@@ -84,7 +84,7 @@ test('repo API routes over the real Worker and fake §9 daemon', { timeout: 1800
   await call('/v1/repos', 'POST', { key: 'integration' }, 409);
 });
 test('unconfigured repo storage returns 503', { timeout: 120000 }, async (t) => {
-  const f = await startFixture();
+  const f = await startFixture({ camelfsStub: false });
   t.after(() => f.stop());
   for (const method of ['GET', 'POST']) {
     const r = await fetch(f.url + '/v1/repos', { method, headers: { authorization: `Bearer ${f.token}` } });
