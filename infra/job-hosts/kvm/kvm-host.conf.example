@@ -19,6 +19,9 @@ JOB_MEMORY_MIB=2048
 CAMELFS_API_PORT=8790
 # Daemon object store URL (required; replace both placeholders).
 CAMELFSD_STORE='s3://<bucket>/camelfsd/<prefix>'
+# A new lineage's blank image size in bytes (sparse; a job's /repo can hold this much). 16 GiB by default: the
+# daemon's own 1 GiB default left a job under the 2 GiB free a job needs before its command (disk_low).
+CAMELFSD_VIRTUAL_SIZE=17179869184
 # Region of the daemon store and AWS environment.
 AWS_REGION=us-west-2
 # Empty discovers instance store by model; an override still requires safety checks.

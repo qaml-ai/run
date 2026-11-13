@@ -125,3 +125,10 @@ test("Volume paths are sent relative, and a refusal carries the daemon's error a
   await assert.rejects(importTree(env, { lineage, files: [f], read: async () => ({ body: Buffer.from("a"), size: 1 }) }, async () => json(400, { error: "invalid-request", detail: "invalid path" })),
     /camelFS status 400: invalid-request: invalid path/);
 });
+
+test("a refused blob upload carries the daemon's reason", async () => {
+  const f = { ...file("a.txt", "a"), key: "k" };
+  await assert.rejects(importTree(env, { lineage, files: [f], read: async () => ({ body: Buffer.from("a"), size: 1 }) }, async (_url, init) =>
+    init?.method === "POST" ? json(409, { missing: [f.sha256] }) : json(400, { error: "invalid-request", detail: "invalid missing content length" })),
+    /camelFS status 400: blob upload failed: invalid-request: invalid missing content length/);
+});
