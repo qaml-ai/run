@@ -52,7 +52,7 @@ history has the cutover runbook.
   or replacement unless named in `ALLOW_DESTROY`, applied only after you type `apply` (`PLAN_ONLY=1` stops at the plan).
 - `infra/job-hosts/apply.sh`: the same guarded apply for the job-host pools' own root module and state
   (`infra/job-hosts/README.md`).
-- `infra/camelfs/apply.sh`, `deploy.sh`, `jwks.sh`, `service-key.sh`: the camelFS service (`camelfsd api` on
+- `infra/camelfs/apply.sh`, `deploy.sh`, `jwks.sh`, `aop.sh`: the camelFS service (`camelfsd api` on
   Fargate, the DynamoDB tables, the objects bucket, the token keys), its own root module and state
   (`infra/camelfs/README.md`).
 - `infra/tenant.sh`: tenants, operator tokens and provider keys in Secrets Manager.

@@ -21,12 +21,13 @@ outputs.
 | File | Resources |
 |---|---|
 | `bucket.tf` | S3 bucket **`camelfs-prod-904534089871`**: SSE-KMS with its own key (rotation on, S3 bucket keys), public access blocked, owner-enforced, versioned with 35-day noncurrent expiry, incomplete uploads aborted after 2 days, TLS-only, **daily Inventory** (Parquet) into `inventory/` kept 30 days. No expiry of live objects: deletion is the collector's. Keys exactly as `camelfsd` writes them today, `<lineage>/{o,t,k,r,c,ts}/<hash>`, plus `guest/<sha256>…` (the guest image, K1, put by CI) and `<lineage>/results/<vm>` (VM results past 400 KB, K4, tagged `kind=result`, expired after 7 days) |
-| `dynamodb.tf` | Six on-demand tables with PITR and deletion protection: **`camelfs-prod-objects`** (`lineage` + `id`), **`camelfs-prod-refs`** (`lineage` + `name`), **`camelfs-prod-lineages`** (`lineage`), **`camelfs-prod-deliveries`** (`shard` + `id`), **`camelfs-prod-hosts`** (`pool` + `host`), **`camelfs-prod-vms`** (`id`). No GSI/LSI, no TTL (see "Key schemas") |
-| `alb.tf` | One ACM certificate for `fs.camelai.dev` + `fs-internal.camelai.dev` (DNS-validated; the records are output for Cloudflare). Two application load balancers, both **HTTP/2 off**, HTTPS only (TLS 1.3/1.2 policy), deletion protection: **public** (Cloudflare's IPv4 ranges only; `fs.camelai.dev` proxied) and **internal** (the hosts' security groups only; `fs-internal.camelai.dev` DNS-only to its private addresses). A target group each (`/v0/health`, 5 s interval, 2 up / 3 down). The listeners exist once `certificate_issued` is set. Per host security group: 443 to the internal balancer, and the api tasks → `host_compute_port` (8792, `--listen-compute`) |
+| `dynamodb.tf` | Seven on-demand tables with PITR and deletion protection: **`camelfs-prod-objects`** (`lineage` + `id`), **`camelfs-prod-refs`** (`lineage` + `name`), **`camelfs-prod-lineages`** (`lineage`), **`camelfs-prod-deliveries`** (`shard` + `id`), **`camelfs-prod-hosts`** (`pool` + `host`), **`camelfs-prod-vms`** (`id`), **`camelfs-prod-usage`** (`shard` + `ulid`; the one table with a TTL, `expiresAt`). No GSI/LSI (see "Key schemas") |
+| `alb.tf` | One ACM certificate for `fs.camelai.dev` + `fs-internal.camelai.dev` (DNS-validated; the records are output for Cloudflare). Two application load balancers, both **HTTP/2 off**, HTTPS only (TLS 1.3/1.2 policy), deletion protection: **public** (Cloudflare's IPv4 ranges only; `fs.camelai.dev` proxied; mTLS **verify** against the AOP CA once `aop_ca_version` is set) and **internal** (the hosts' security groups only; `fs-internal.camelai.dev` DNS-only to its private addresses; mTLS **verify** against the hosts' Private CA from the first listener on). A target group each (`/v0/health`, 5 s interval, 2 up / 3 down). The listeners exist once `certificate_issued` is set. Per host security group: 443 and `enroll_listener_port` (8443) to the internal balancer, and the api tasks → `host_compute_port` (8792, `--listen-compute`) |
+| `mtls.tf` | §9.12. The trust bucket `camelfs-prod-trust-<account>` (public CA PEMs, versioned). The offline **AOP CA**'s secret `camelfs/prod/aop-ca` (filled by `aop.sh init`) and, once `aop_ca_version` pins its PEM, the public listener's trust store. The **hosts' CA**: AWS Private CA, root, EC P-256, **short-lived mode** (leaves ≤ 7 days, no CRL/OCSP), self-signed for 10 years and activated by Terraform; its PEM written to the trust bucket and pinned by the internal listener's trust store. The **enrollment** path: a plain-TLS listener on the internal balancer (8443) whose only rule forwards `POST /v1/hosts/enroll` to a separate target group on container port 8793 (everything else 404), with the security-group rules both sides. A rule on the public listener: `/v1/hosts/*` → 404 |
 | `ecs.tf` | ECR repository `camelfs-prod` (immutable tags, newest 20 kept), cluster `camelfs-prod` (Container Insights), the api tasks' security group, the Fargate task definition (ARM64, 1 vCPU / 2 GiB, read-only root, an ephemeral `/var/lib/camelfs` for the SQLite caches and temp files, `CAMELFS_JWKS` and `CAMELFS_SERVICE_SIGNING_KEY` injected from Secrets Manager), and, with `certificate_issued`, the service `camelfs-prod-api` on both target groups (circuit breaker + alarm rollback) at **`api_min_count` tasks, 0 by default**; CPU target-tracking autoscaling (`api_min_count`–8) once the minimum is above 0 |
-| `iam.tf` | **api** task role (every table; the bucket read/write + tagging, never delete; ECS Exec; no secret) and execution role (image, logs, the two secrets it injects). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only, the service's public JWKS; explicit deny on the five other tables, on `*/results/*` writes and on `sts:AssumeRole*`), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles). **publisher** role `camelfs-prod-guest-image-publisher` for GitHub Actions (OIDC, the repository's `production` environment): `s3:PutObject` under `guest/` and nothing else |
-| `secrets.tf` | Secrets Manager containers: `camelfs/prod/token-verify-keys` (the runtime's public JWKS, Ed25519: what the tier verifies runtime tokens with; `jwks.sh`), `camelfs/prod/service-signing-key` (the service's own Ed25519 private key: what the tier signs boot/stop tokens to hosts with; `service-key.sh`), `camelfs/prod/service-verify-keys` (its public JWKS, read by hosts). Values never by Terraform |
-| `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists). 27 alarms |
+| `iam.tf` | **api** task role (every table; the bucket read/write + tagging, never delete; the hosts' CA as registration authority: `IssueCertificate` restricted to the two end-entity templates, `GetCertificate`; ECS Exec; no secret) and execution role (image, logs, the one JWKS secret it injects). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on the six other tables, on `*/results/*` writes and on `sts:AssumeRole*`; no secret, no CA), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles). **publisher** role `camelfs-prod-guest-image-publisher` for GitHub Actions (OIDC, the repository's `production` environment): `s3:PutObject` under `guest/` and nothing else |
+| `secrets.tf` | Secrets Manager container `camelfs/prod/token-verify-keys` (the runtime's public JWKS, Ed25519: what the tier verifies runtime tokens with; `jwks.sh`). The `service-signing-key` / `service-verify-keys` pair of the retired `camelfs-host+jwt` family is deleted (§9.12). Values never by Terraform |
+| `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists). 30 alarms |
 | `outputs.tf` | URLs, bucket, key, tables, role and policy ARNs, repository, the secret, the guest-image location, and the api command |
 
 ### Key schemas (the whole contract this module imposes on the daemon)
@@ -39,22 +40,24 @@ outputs.
 | `deliveries` | `shard` (S) = `"0"`..`"15"` | `id` (S) | the outbox: a watched ref's move, `vm.*` and `usage.*` events, written in the same `TransactWriteItems` as the state change (camel-fs-files.md §6, §9.11; camel-fs-compute.md); claimers `Query` each shard and claim with a conditional `claimedUntil`. A lineage key would leave pending work unfindable without an index; the shard can still be derived from the lineage |
 | `hosts` | `pool` (S) | `host` (S) | `bootEpoch`, `shape`, `slots`, `free`, `vms`, `features`, `lastSeenAt`, `draining` (K4; heartbeats are `UpdateItem`s, placement a `TransactWrite` with the `vms` item) |
 | `vms` | `id` (S) | — | the phase row: `phase`, `host`, `lineage`, `ref`, `leaseEpoch`, timestamps, result fields, `payer` (K4; results past 400 KB go to S3 `<lineage>/results/<vm>`) |
+| `usage` | `shard` (S) = `"0"`..`"15"` | `ulid` (S) | usage events the runtime **pulls** (Miguel, 11-13 ~18:50; not webhooked): `eventId`, `vm`, `seq`, `body`, `expiresAt` (N, unix seconds); written in the same `TransactWriteItems` as `vms`. The one table with a DynamoDB TTL (`expiresAt`, 35 days): rows are copies the runtime has already pulled into Postgres, not authority |
 
 The lineage is the partition key of every fs table (tenancy in the data, §1.10; adaptive capacity splits a hot
 lineage's item collection because there is no LSI). No DynamoDB TTL: a ref's `expiresAt` and a delivery's claim
 are the service's to act on; a TTL delete would move a ref without a CAS and without a log. Agreed with
 proto-block (objects, refs, lineages), fs-architect and wf-durable (deliveries, hosts, vms) on 2026-11-13; the
-attribute names are the only thing to keep in step with `camelfsd`. The `hosts`/`vms` tables of K4 are created
-now so the tier's role covers them; nothing writes them until K4 lands.
+attribute names are the only thing to keep in step with `camelfsd`. The `hosts`/`vms`/`usage` tables of K4 are
+created now so the tier's role covers them; nothing writes them until K4 lands.
 
 ### The api task's command
 
 The daemon's CLI (proto-block, 2026-11-13), composed by `ecs.tf`:
-`camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer> --refs-table camelfs-prod-refs`,
+`camelfsd api --listen 0.0.0.0:8790 --listen-enroll 0.0.0.0:8793 --hosts-ca <Private CA ARN> --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer> --refs-table camelfs-prod-refs`,
 plus `api_extra_args` (`--objects-table` / `--lineages-table` once L74 lands, the K4 table flags; the tables
-exist already). Keys are not flags: ECS injects `token-verify-keys` as `CAMELFS_JWKS` (the daemon also takes
-`--jwks-file`; exactly one of the two) and `service-signing-key` as `CAMELFS_SERVICE_SIGNING_KEY` at task start,
-so no key material is in the task definition and the task role reads no secret. `token_issuer` is the runtime's
+exist already). `--listen-enroll` is the enrollment-only port behind the plain-TLS listener; `--hosts-ca` the
+Private CA the tier issues host certificates (and its own client certificate) from. Keys are not flags: ECS
+injects `token-verify-keys` as `CAMELFS_JWKS` (the daemon also takes `--jwks-file`; exactly one of the two) at
+task start, so no key material is in the task definition and the task role reads no secret. `token_issuer` is the runtime's
 `AGENT_PUBLIC_URL` (the JWT `iss` the tier checks); it must equal `infra/job-hosts`' `runtime_public_url`. The
 daemon writes only under `--data` (`storage.db`, `tmp/`); the image carries `git` for `git merge-file`.
 
@@ -96,19 +99,54 @@ bucket (no delete) and the `objects` table, and explicitly denies `refs` and `li
 ref except through the tier's fence check. If proto-block routes trees and commits through the tier instead, the
 `ObjectsTable` statement goes and the host policy is S3 only.
 
-**Two token families, two keys.** Runtime → tier tokens are EdDSA/Ed25519 JWTs (`typ` `camelfs+jwt`, `aud`
-`camelrun:camelfs`) signed by the runtime's `RuntimeSigner` (`backends/workers/src/runtime-identity.ts`): the
-private keys stay sealed in the runtime's Postgres `signing_keys` and the public JWKS is published at
-`<runtime>/.well-known/jwks.json`. The tier verifies against a copy of that JWKS (`jwks.sh set` stores it in
-`token-verify-keys`; ECS injects it as `CAMELFS_JWKS`) and never calls the network for keys; a rotation is the
-runtime's (publish the new key beside the old) followed by `jwks.sh set`, which rolls the service. Tier → host
-tokens (`camelfs-host+jwt`, the boot/stop pushes of K4) are signed by the **service's own** Ed25519 key
-(`service-key.sh new` generates it into `service-signing-key`, injected as `CAMELFS_SERVICE_SIGNING_KEY`, and its
-public JWKS into `service-verify-keys`, which the host policy may read and the host boot unit writes to
-`/etc/camel/camelfs-service-jwks.json` for `camelfsd host --service-jwks-file`; two keys during a rollover). The two are
-separate on purpose: a host that could read the runtime's keys could not mint runtime tokens either way, and the
-tier signs nothing the runtime accepts. An earlier draft generated an ES256 pair for the runtime; the lead
-approved reusing the runtime's signer instead.
+**Runtime → tier: tokens; everything machine-to-machine: mutual TLS (§9.12).** Runtime → tier tokens are
+EdDSA/Ed25519 JWTs (`typ` `camelfs+jwt`, `aud` `camelrun:camelfs`) signed by the runtime's `RuntimeSigner`
+(`backends/workers/src/runtime-identity.ts`): the private keys stay sealed in the runtime's Postgres
+`signing_keys` and the public JWKS is published at `<runtime>/.well-known/jwks.json`. The tier verifies against a
+copy of that JWKS (`jwks.sh set` stores it in `token-verify-keys`; ECS injects it as `CAMELFS_JWKS`) and never
+calls the network for keys; a rotation is the runtime's (publish the new key beside the old) followed by
+`jwks.sh set`, which rolls the service. Tier ↔ host calls carry no token: the connection's certificate is the
+machine's identity (Miguel, 11-13: "probably safer and simpler"), which retired the `camelfs-host+jwt` family and
+its two secrets.
+
+**Cloudflare → public ALB: Authenticated Origin Pulls from our own CA.** Cloudflare's default origin-pull
+certificate is shared by every customer, so an ALB trusting it proves only "came through Cloudflare". `aop.sh
+init` makes a small offline CA (RSA 4096, 10 years; key in `camelfs/prod/aop-ca`, nothing in AWS reads it) and
+uploads its public PEM to the trust bucket; `apply.sh aop_ca_version=<VersionId>` creates the trust store and
+puts the public listener in **verify** mode (the handshake fails before any HTTP without a leaf from that CA);
+`aop.sh issue` signs the yearly leaf and uploads it to Cloudflare. The Cloudflare-ranges security group stays as
+the second lock. **Per-hostname, not zone-level** (Miguel and the lead, 11-13): `aop.sh issue` uploads the leaf with
+`origin_tls_client_auth/hostnames/certificates` and enables it with `origin_tls_client_auth/hostnames` for
+`fs.camelai.dev` alone, so the other hostnames in `camelai.dev` (`agents.camelai.dev`, `run-pilot`, …) keep
+whatever Cloudflare presents to them today. `--zone` remains as a guarded exception (refused while the zone
+already holds a custom certificate unless `--replace` is given), and `status` shows what is live. `aop.sh test`
+proves enforcement: the listener's mode read back from AWS, a 200 through Cloudflare, and a refusal straight at
+the ALB without the certificate.
+
+**Tier ↔ host: AWS Private CA in short-lived mode, the tier as registration authority.** The CA key lives in
+AWS's HSM; a compromised tier can issue only while compromised and loses that when its role is cut, where a
+self-run CA's key could be copied (§9.12's table). Short-lived mode caps leaves at 7 days (the tier asks for 24 h
+and renews every 8 h), issues no CRL and no OCSP: revocation is expiry plus removing the host from `hosts`. Only
+the api role may `IssueCertificate`, and only with the `EndEntityCertificate/V1` (hosts: client + server auth) and
+`EndEntityClientAuthCertificate/V1` (the tier's own) templates; IAM cannot constrain a subject, so *which* host id a
+certificate carries (`spiffe://camelfs/host/<id>`, URI SAN) is the tier's enrollment check. The internal 443
+listener verifies against the CA and forwards the verified leaf in `X-Amzn-Mtls-Clientcert-*` (stripping any
+client-supplied copy); the tier reads the host id from it. Hosts verify the tier's `spiffe://camelfs/tier` client
+certificate on `--listen-compute` against the CA certificate the enroll/renew reply carries
+(`{certificatePem, chainPem, caPem, notAfter}`; proto-block: over server-authenticated TLS, no extra IAM, and a
+CA rotation reaches every host with its next renewal). `hosts-ca.pem` in the trust bucket is the listener's
+trust store's copy, and the tier's.
+
+**Enrollment on its own port.** A new host has no certificate, so it presents its STS attestation once on the
+internal balancer's **8443** listener (plain TLS, no client certificate), whose only rule forwards
+`POST /v1/hosts/enroll` to container port **8793** (`--listen-enroll`); any other path is a 404 at the balancer.
+Two container ports, not one, so a request can never reach the mTLS-trusting port 8790 without having passed the
+verify-mode listener, and the tier trusts no `X-Amzn-Mtls-*` header on 8793. The public listener also runs verify
+mode (against the AOP CA) and sets the same `X-Amzn-Mtls-Clientcert-*` headers from Cloudflare's leaf, so the
+tier must check that a `/v1/hosts/*` caller's leaf chains to the private CA with a host SAN; and a rule on the
+public listener answers 404 to every `/v1/hosts/*` before the tier sees it, so host routes exist only behind the
+internal balancer (two locks, wf-durable). Renewal is the same call over the
+host's current certificate on 443.
 
 ## Network and security
 
@@ -132,6 +170,9 @@ approved reusing the runtime's signer instead.
   a `check` against the live role on every plan, and `tests/`): nobody is ever given `sts:AssumeRole` on it, and
   `iam:PassRole` on it is as good as enrolling a host.
 - The api task role reads no secret: the execution role reads the one JWKS secret at task start and injects it.
+  Nothing in AWS reads the AOP CA secret; only `aop.sh`, run by an operator.
+- Hosts' egress: the job-hosts group allows 443 out only; enrollment on 8443 needs one egress rule there (a
+  job-hosts change), or `enroll_listener_port=443` cannot be used because 443 is the mTLS listener.
 - Telemetry carries lineage ids, counts, statuses and durations; the daemon's access lines omit paths, ids and
   bodies (`camelfsd/README.md`).
 
@@ -149,8 +190,10 @@ on-demand prices in November 2024 ($0.625/M and $0.125/M), which the second colu
 | public balancer's IPv4 addresses (one per default subnet, $0.005/h) | ~$15 | ~$15 |
 | Fargate ARM, 2 × (1 vCPU / 2 GiB) at $0.0395/h | $0 | ~$58 |
 | the tasks' public IPv4 ($0.005/h each) | $0 | ~$7 |
-| KMS key, 3 secrets, 27 alarms, Container Insights, logs, ECR | ~$7 | ~$10 |
-| **total** | **~$55** | **~$123** |
+| KMS key, 2 secrets, 30 alarms, Container Insights, logs, ECR, trust bucket | ~$7 | ~$10 |
+| **AWS Private CA, short-lived mode** (the hosts' CA) | ~$50 | ~$50 |
+| **host and tier certificates** (~$0.058 each in short-lived mode; 24 h validity renewed every 8 h = 3 a day per host) | ~$0 (no hosts) | 10 hosts ≈ 900/month ≈ ~$52; 50 hosts ≈ ~$260 |
+| **total** | **~$105** | **~$225 (10 hosts) – ~$435 (50 hosts)** |
 
 **Variable, by scale** (the design's baseline is 1,000 concurrent agents: 144 M API writes + 14.6 M checkpoints a
 month, 0.5 TB live; the pilot today is a few agents, so the fixed line is the bill):
@@ -204,12 +247,25 @@ to expect by name.
    infra/camelfs/apply.sh certificate_issued=true
    ```
 
-4. **Keys.** The runtime's public JWKS into the tier's secret, and the service's own key pair:
+4. **Keys and origin pulls.** The runtime's public JWKS into the tier's secret; then the AOP CA, its trust store,
+   and the certificate Cloudflare presents (needs `CLOUDFLARE_API_TOKEN` with Zone › SSL and Certificates › Edit
+   on camelai.dev — DNS Edit alone is not enough; the script checks and names the missing permission):
 
    ```bash
-   infra/camelfs/jwks.sh set          # <token_issuer>/.well-known/jwks.json → token-verify-keys
-   infra/camelfs/service-key.sh new   # Ed25519 pair → service-signing-key + service-verify-keys
+   infra/camelfs/jwks.sh set                                 # <token_issuer>/.well-known/jwks.json → token-verify-keys
+   infra/camelfs/aop.sh init                                 # the AOP CA → camelfs/prod/aop-ca; prints the PEM's VersionId
+   infra/camelfs/aop.sh issue                                # the leaf, uploaded and enabled per-hostname on fs.camelai.dev
+   infra/camelfs/aop.sh status                               # Cloudflare reports it enabled
+   PLAN_ONLY=1 infra/camelfs/apply.sh aop_ca_version=<VersionId>   # the AOP trust store; public listener off → verify
+   ALLOW_UPDATE='aws_lb_listener.api_https["public"]' infra/camelfs/apply.sh aop_ca_version=<VersionId>
+   infra/camelfs/aop.sh test                                 # verify mode + 200 through Cloudflare + refused without the cert
    ```
+
+   **Order:** `init`, then `issue` (Cloudflare now presents the leaf; the listener still ignores it), then
+   `apply aop_ca_version=…` (the listener starts requiring it), then `test`. The other way round leaves a window
+   in which the listener requires a certificate Cloudflare does not yet present, and `fs.camelai.dev` answers
+   nothing. The apply is one in-place update of the public listener (`off` → `verify`):
+   `ALLOW_UPDATE='aws_lb_listener.api_https["public"]'`.
 
 5. **The image, once C1 is merged.** Build and push (needs `git` in the image: the Dockerfile has it), register
    it on the service (a deployment at 0 tasks completes at once), then start the tasks:
@@ -220,7 +276,10 @@ to expect by name.
    infra/camelfs/apply.sh api_min_count=2
    ```
 
-   Every later release is `infra/camelfs/deploy.sh` alone (build, push, register, roll, wait for COMPLETED).
+   Every later release is `infra/camelfs/deploy.sh` alone (build, push, register, roll, wait for COMPLETED, then
+   save the revision as `service_task_definition_arn` in `prod.tfvars`). Until that first deploy the service runs
+   Terraform's own revision, so a port or setting Terraform adds reaches it on apply; afterwards Terraform's
+   revision changes ship with the next deploy, which copies the family's latest revision.
 
 6. **Hosts.** Once `infra/job-hosts` is applied, let its pool roles and security group in:
 
@@ -233,7 +292,8 @@ to expect by name.
    ```
 
    The proto host (`i-06fa9b78a2a9d188b`) can be let in the same way for the first end-to-end run: its security
-   group in `host_security_group_ids`, the host policy attached to its `camel-fs-proto` role by hand.
+   group in `host_security_group_ids`, the host policy attached to its `camel-fs-proto` role by hand. Hosts also
+   need egress to 8443 (enrollment); the CA certificate to verify the tier comes in the enroll reply.
 
 7. **Runtime config** (Cloudflare; this module does not touch it): the public URL. The runtime signs with the
    keys it already has; nothing to copy back.
@@ -254,7 +314,7 @@ Later changes go the same way (`PLAN_ONLY=1` first). Arguments are saved to `cam
 bucket only after an apply, so repeat the ones already set (`certificate_issued=true` stays saved from step 3).
 A plan that deletes or replaces anything is refused unless `ALLOW_DESTROY` names each address, and one that
 updates a resource in place unless `ALLOW_UPDATE` names it; the Terraform-registered task definition revision is
-the one exception (the service runs `deploy.sh`'s revision). The bucket, the tables and the secrets carry
+the one exception (the service runs `deploy.sh`'s revision once one exists, `service_task_definition_arn`). The bucket, the tables and the secrets carry
 `prevent_destroy`.
 
 ## Tests (no AWS, no Cloudflare)
@@ -268,11 +328,13 @@ tofu init -backend=false && tofu validate && tofu fmt -check -recursive && tofu 
 ```
 
 Without `tofu` installed: `docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/work" -w /work ghcr.io/opentofu/opentofu:1.10 <command>`.
-Seven runs: the first apply (no listener, no service, no compute rules); the tables' keys and protection; the
-balancers (h2 off, sources, DNS modes, health route); the host groups (443 to the internal balancer, the compute
-port both ways); the roles (trust invariant, no delete, no sts, hosts denied the control tables, no secret on the
-task role, the publisher's one prefix); the second apply (validation wait, listeners, the service at 0); the
-service running (Fargate ARM, the command, the two injected secrets, autoscaling).
+Eight runs: the first apply (no listener, no service, no compute rules; the short-lived CA and its trust store);
+the tables' keys and protection; the balancers (h2 off, sources, DNS modes, health route); the host groups (443 to
+the internal balancer, the compute port both ways); the roles (trust invariant, no delete, no sts, hosts denied the
+control tables, no secret anywhere but the execution role, only the api role issues end-entity certificates, the
+publisher's one prefix); the second apply (validation wait, listeners, internal verify, the enrollment listener and
+its one rule, the service at 0); the service running (Fargate ARM, the command, the injected JWKS, autoscaling);
+the AOP CA pinned (trust store, public verify, the ranges group still there).
 
 ## Questions for Miguel
 
@@ -291,8 +353,15 @@ service running (Fargate ARM, the command, the two injected secrets, autoscaling
 ## Unverified (needs real AWS, or proto-block's api role)
 
 - The daemon's api-role flags beyond those proto-block confirmed on 2026-11-13 (`--objects-table`,
-  `--lineages-table` with L74, the deliveries/hosts/vms flags with K4: `api_extra_args`), and that `CAMELFS_JWKS`
-  is read when `--jwks-file` is absent.
+  `--lineages-table` with L74, the deliveries/hosts/vms flags with K4: `api_extra_args`), the names
+  `--listen-enroll` / `--hosts-ca` (proposed here for K4c, wf-durable), and that `CAMELFS_JWKS` is read when
+  `--jwks-file` is absent.
+- That a Private CA in short-lived mode accepts the `EndEntityCertificate/V1` template with a URI SAN from the CSR
+  (AWS documents SAN passthrough for the end-entity templates), and the per-certificate price (~$0.058).
+- That per-hostname Authenticated Origin Pulls is available on the camelai.dev plan (the script reports the
+  API's answer; `--zone` is the guarded fallback).
+- That the ALB accepts an RSA-4096 AOP CA and a 10-year root in a trust store (the runtime's doc chose RSA 4096
+  for that reason).
 - That the repository's OIDC subject (`github_subjects`) still matches: `gh api repos/qaml-ai/run/actions/oidc/customization/sub`.
 - That the default VPC has default-for-AZ subnets in every AZ the balancers want, and that no name here collides.
 - That `https://www.cloudflare.com/ips-v4` keeps its one-range-per-line shape (a postcondition checks for at
@@ -309,10 +378,12 @@ service running (Fargate ARM, the command, the two injected secrets, autoscaling
 - The collector (S3 Batch Operations role, `touch` and `warm` tables; camel-fs.md §1.9), dashboards, and the
   daemon's EMF metrics (§1.12).
 - The guest-image CI job itself (K1, proto-block) and its `publish-guest-image.sh`; only the role it assumes is here.
-- The hosts' side of the compute listener (`--listen-compute 0.0.0.0:8792`, the egress rule on the job-hosts
-  group) and the host boot unit that fetches `service_verify_keys_secret_arn` to
-  `/etc/camel/camelfs-service-jwks.json` (root, 0600; `camelfsd host --service-jwks-file`) and SIGHUPs the daemon
-  on a refresh: K4's and the job-hosts module's. VM results are written by the tier, never by a host.
+- The hosts' side of mTLS (K2): enrollment at boot with the STS attestation on 8443, the certificate on
+  `--listen-compute 0.0.0.0:8792`, renewal every 8 h, the CA from the enroll reply to verify the tier; the
+  job-hosts egress rule for 8443. VM results are written by the tier, never by a host.
+- The tier's side (K4c, wf-durable): enrollment's pool check, `IssueCertificate` with the host's URI SAN, the
+  reply `{certificatePem, chainPem, caPem, notAfter}`, reading `X-Amzn-Mtls-Clientcert-*`, its own client
+  certificate.
 - Access logs for the balancers (`alb_access_logs_bucket` takes an existing bucket; none is created).
 - Gateway endpoints for S3 and DynamoDB on the default route table (free; the tasks go through the internet gateway
   as the runtime's do). Worth adding with a route table of this module's own if the tasks ever leave the default
