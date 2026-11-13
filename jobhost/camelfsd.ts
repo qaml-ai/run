@@ -77,7 +77,12 @@ export async function serveImportProxy(options: { socketPath: string; token: str
     if (!(req.method === "POST" && path === "/v0/trees") &&
         !(req.method === "PUT" && /^\/v0\/blobs\/[a-fA-F0-9]{64}$/.test(path.split("?")[0]!) && url.searchParams.has("lineage"))) { refuse(404); return; }
     if (Number(req.headers["content-length"] ?? 0) > max) { refuse(413); return; }
-    const upstream = request({ socketPath: options.socketPath, method: req.method, path, headers: req.headers["content-type"] ? { "content-type": req.headers["content-type"] } : {} });
+    // The daemon needs a blob's length up front (it refuses a chunked body): pass content-length on, and content-type.
+    const length = req.headers["content-length"];
+    const upstream = request({ socketPath: options.socketPath, method: req.method, path, headers: {
+      ...(req.headers["content-type"] ? { "content-type": req.headers["content-type"] } : {}),
+      ...(length !== undefined && /^\d{1,15}$/.test(length) ? { "content-length": length } : {}),
+    } });
     let size = 0, tooLarge = false;
     const limit = new Transform({ transform(chunk: Buffer, _encoding, done) {
       size += chunk.length;
