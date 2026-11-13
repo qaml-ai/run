@@ -443,9 +443,9 @@ such above: the state split (§6, option C) and dropping projects and `publishTo
 2. **Every API write is a commit** (default). Per write, under the decided split: one blob PUT to S3 ($5 per
    million, $0.000005), about four tree writes and one commit write to DynamoDB (1–3 KB each, so ≈ 10 write units at
    $1.25 per million, $0.0000125), one conditional write on the ref item (one write unit, $0.00000125), one `writtenSince`
-   increment per new blob for quota (one more unit, $0.00000125), and the tier (≈ $0.000001 per write): **≈ $0.0000198–0.0000235
+   increment per new blob for quota (one more unit, $0.00000125), and the tier (≈ $0.000001 per write): **≈ $0.000021
    per write** under option C (§6), so the 144 M writes and 14.6 M checkpoints a month of camel-fs.md's 1,000-agent
-   baseline cost **≈ $3,100–3,700/month**, less with tree segments (one item per write's trees); AWS's late-2024
+   baseline cost **≈ $3,300/month**, less with tree segments (one item per write's trees); AWS's late-2024
    on-demand price cut may halve the DynamoDB lines. Tonight's
    S3-only variant is ≈ $0.000033 per write (six PUTs plus the CAS), ≈ $4,800/month. The alternative, coalescing a
    VM-less agent's writes within a turn into one commit at turn end, would cut the write line ~5× (to the ~20
