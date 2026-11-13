@@ -76,8 +76,9 @@ while :; do
 done
 
 # Every running task runs exactly this image.
-running=$(aws ecs list-tasks --cluster "$cluster" --service-name "$service" --desired-status RUNNING --query 'taskArns' --output json)
-mismatched=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$(jq -r 'join(" ")' <<<"$running")" --output json \
+mapfile -t running < <(aws ecs list-tasks --cluster "$cluster" --service-name "$service" --desired-status RUNNING --query 'taskArns[]' --output text | tr '\t' '\n')
+[[ ${#running[@]} -gt 0 ]] || die "No running task after the deployment completed."
+mismatched=$(aws ecs describe-tasks --cluster "$cluster" --tasks "${running[@]}" --output json \
   | jq -r --arg image "$image" --arg c "$container" '[.tasks[] | select(any(.containers[]; .name == $c and .image != $image))] | length')
 [[ "$mismatched" == 0 ]] || die "$mismatched running task(s) run another image."
 log "Deployed $image to $service"
