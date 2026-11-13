@@ -26,32 +26,32 @@ locals {
     objects = {
       hash_key  = "lineage"
       range_key = "id"
-      purpose   = "trees and commits (git bytes, by lineage and id)"
+      purpose   = "trees and commits - git bytes by lineage and id"
     }
     refs = {
       hash_key  = "lineage"
       range_key = "name"
-      purpose   = "refs, leases and fences (one conditional write per move)"
+      purpose   = "refs leases and fences - one conditional write per move"
     }
     lineages = {
       hash_key  = "lineage"
       range_key = null
-      purpose   = "lineage registry (tenant, kind, quota, default branch, last mark)"
+      purpose   = "lineage registry - tenant kind quota default branch last mark"
     }
     deliveries = {
       hash_key  = "shard"
       range_key = "id"
-      purpose   = "notify and vm/usage event outbox, written with the state change it reports"
+      purpose   = "notify and vm/usage event outbox - written with the state change"
     }
     hosts = {
       hash_key  = "pool"
       range_key = "host"
-      purpose   = "VM hosts: capacity, heartbeats, draining (compute control, K4)"
+      purpose   = "VM hosts - capacity heartbeats draining - compute control K4"
     }
     vms = {
       hash_key  = "id"
       range_key = null
-      purpose   = "VM phase rows (compute control, K4)"
+      purpose   = "VM phase rows - compute control K4"
     }
   }
   table_names = { for table in keys(local.tables) : table => "${var.name}-${var.env}-${table}" }
@@ -90,5 +90,11 @@ resource "aws_dynamodb_table" "camelfs" {
   lifecycle {
     # Every ref, every tree, every VM's phase. Nothing here is reproducible.
     prevent_destroy = true
+    # DynamoDB refused the first apply's tag values (2026-11-13): commas, parentheses and colons are out. Letters,
+    # digits, spaces, dashes and slashes only.
+    precondition {
+      condition     = can(regex("^[A-Za-z0-9 /-]+$", each.value.purpose))
+      error_message = "A table's Purpose tag may contain only letters, digits, spaces, dashes and slashes (DynamoDB tag values)."
+    }
   }
 }
