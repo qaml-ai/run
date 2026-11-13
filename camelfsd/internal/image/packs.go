@@ -17,24 +17,33 @@ func (m *Manager) buildPacks(ctx context.Context, r root.Root, f *os.File) (root
 		if len(window) < 2 {
 			continue
 		}
-		var b []byte
 		var hashes []string
 		for _, key := range window {
-			off, _ := strconv.ParseInt(key, 10, 64)
-			chunk := make([]byte, root.ChunkSize)
-			n, e := f.ReadAt(chunk, off)
-			if e != nil && off+int64(n) != r.VirtualSize {
-				return r, e
-			}
-			if root.Hash(chunk) != r.Chunks[key] {
-				return r, fmt.Errorf("image changed during pack build")
-			}
-			b = append(b, chunk...)
 			hashes = append(hashes, r.Chunks[key])
 		}
 		id := root.PackID(hashes)
-		if e := m.Store.Put(ctx, "p/"+id, b); e != nil {
+		exists, e := m.Store.Has(ctx, "p/"+id)
+		if e != nil {
 			return r, e
+		}
+		if !exists {
+			var b []byte
+			for _, key := range window {
+				off, _ := strconv.ParseInt(key, 10, 64)
+				chunk := make([]byte, root.ChunkSize)
+				n, e := f.ReadAt(chunk, off)
+				if e != nil && off+int64(n) != r.VirtualSize {
+					return r, e
+				}
+				if root.Hash(chunk) != r.Chunks[key] {
+					return r, fmt.Errorf("image changed during pack build")
+				}
+				b = append(b, chunk...)
+			}
+			if e = m.Store.Put(ctx, "p/"+id, b); e != nil {
+				return r, e
+			}
+			m.PackBytes.Add(int64(len(b)))
 		}
 		off, _ := strconv.ParseInt(window[0], 10, 64)
 		r.Packs[strconv.FormatInt(off/r.Window()*r.Window(), 10)] = id
@@ -42,6 +51,7 @@ func (m *Manager) buildPacks(ctx context.Context, r root.Root, f *os.File) (root
 	return r, nil
 }
 
+// v0-limitation: L-packs-tier
 // Promotions coalesce by root. A single worker builds packs after foreground work.
 func (m *Manager) queuePack(id string) {
 	if !m.Packs {
@@ -93,7 +103,20 @@ func (m *Manager) packRoot(id string) error {
 		return e
 	}
 	if len(r.Packs) > 0 {
-		return nil
+		complete := true
+		for _, pack := range r.Packs {
+			exists, e := m.Store.Has(ctx, "p/"+pack)
+			if e != nil {
+				return e
+			}
+			if !exists {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			return nil
+		}
 	}
 	f, e := os.Open(m.image(id))
 	if e != nil {

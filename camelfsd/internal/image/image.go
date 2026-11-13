@@ -44,6 +44,7 @@ type Config struct {
 	MaxBytes, MaxPathsBytes       int64
 }
 type Manager struct {
+	PackBytes          atomic.Int64
 	packMu, packSerial sync.Mutex
 	packWG             sync.WaitGroup
 	packClosed         bool

@@ -19,6 +19,7 @@ type flight struct {
 	err     error
 	cancel  context.CancelFunc
 	started bool
+	pack    bool
 }
 type Cache struct {
 	verified                    map[string]time.Time
@@ -72,6 +73,9 @@ func (c *Cache) ensure(ctx context.Context, h string) (string, error) {
 		c.mu.Unlock()
 		select {
 		case <-f.done:
+			if f.pack && f.err != nil {
+				return c.ensure(ctx, h)
+			}
 			return f.path, f.err
 		case <-ctx.Done():
 			return "", ctx.Err()

@@ -244,7 +244,7 @@ borrowed background GETs are cancellable when demand arrives. Queued chunk
 fetches can be displaced by demand. `GET /v0/stats` reports fetches, payload bytes,
 packs used and trusted cache hits (process totals; take deltas between runs).
 Packs add up to another full copy of non-hole chunk bytes for packed roots;
-GC v1 must trace and collect `p/` objects alongside `c/` objects.
+GC v1 may collect `p/` independently; only `c/` is durable chunk storage.
 
 The reviewer runs `sudo scripts/ec2-unit7.sh` in a separately granted host slot.
 It uses only `/nvme/camelfs-u7`, port 10811 and its own device prefix. Unit 1–5
@@ -263,3 +263,18 @@ The packer publishes idle refs with a fenced CAS. Held refs keep their current
 root so an accelerator rewrite cannot fence an active checkpoint. Packed roots
 are recorded for tree resolution, and release retries publication after dropping
 the lease. Pack import responses include `packMs` and `packBytes`.
+
+## Packs are a rebuildable tier
+
+Chunks at `c/<sha256>` remain the storage and dedupe unit. Packs at `p/<packId>`
+are a rebuildable read tier: they can be deleted at any time without data loss.
+A missing pack falls back to chunk reads. Packed roots cost about 1x the root's
+non-hole bytes extra, in addition to their chunks. Use `--packs=false` to disable
+pack creation and reads. The background packer rebuilds missing packs on promotion
+and skips roots whose named packs already exist. `GET /v0/stats` reports
+`packBytes` written by this process; rebuilding a deleted pack counts again.
+
+Unit 8 will consider storing chunks inside packs with a per-hash `(pack, offset,
+length)` index, range GETs for demand, whole-pack hydration GETs, and checkpoints
+batched into new small packs. That single-format storage change is not part of
+this unit; roots remain complete using their chunk objects alone.

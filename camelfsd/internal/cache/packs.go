@@ -31,7 +31,7 @@ func (c *Cache) Pack(ctx context.Context, id string, hashes []string) (err error
 	c.mu.Lock()
 	for _, h := range hashes {
 		if _, ok := c.verified[h]; !ok && c.flights[h] == nil {
-			f := &flight{done: make(chan struct{}), cancel: cancel}
+			f := &flight{done: make(chan struct{}), cancel: cancel, pack: true}
 			c.flights[h] = f
 			owned[h] = f
 		}
