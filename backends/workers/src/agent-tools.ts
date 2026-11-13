@@ -20,7 +20,7 @@ import { SessionCodemodeSandbox } from "../codemode/sandbox.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
-import { startStuck } from "./agent-lifecycle.ts";
+import { COMPUTER_ATTACHED, startStuck } from "./agent-lifecycle.ts";
 import { computerOwner, computerDisabled, hasComputer } from "../../../src/core/computer-share.ts";
 import { withSql as shareSql } from "./postgres.ts";
 import { computerTool } from "./computers/tool.ts";
@@ -207,8 +207,10 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
 export async function computerNamesImpl(this: AgentRuntime) {
     if (!this.env.HYPERDRIVE) return new Set<string>();
     const conf = await this.config();
+    const tools = await new ComputerService(this.env, conf.tenantId).tools(conf.id);
+    await this.ctx.storage.put(COMPUTER_ATTACHED, tools.length > 0);
     return new Set(
-      (await new ComputerService(this.env, conf.tenantId).tools(conf.id)).map(
+      tools.map(
         (tool) => tool.name,
       ),
     );

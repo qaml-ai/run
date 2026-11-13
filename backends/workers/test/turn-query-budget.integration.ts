@@ -75,6 +75,8 @@ test("a turn's Postgres statements stay under the budget", { timeout: 180_000 },
   const breakdowns: Record<string, Record<string, number>> = {};
   for (const [name, text] of [["simple", "hello"], ["tool", "tool:write:alpha"], ["slow", "slow:3000:hello slowly"]] as const) {
     const { count, statements } = await turn(name, text);
+    if (name !== "simple")
+      assert.equal(Object.entries(statements).filter(([key]) => key.endsWith(" select:computer_connections+computer_leases")).reduce((sum, [, count]) => sum + count, 0), 0, "later turns without a computer must skip lease deadlines");
     counts[name] = count;
     breakdowns[name] = statements;
   }

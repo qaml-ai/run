@@ -22,6 +22,8 @@ import { Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 import { purgeStart } from "./account-purge.ts";
 
+export const COMPUTER_ATTACHED = "computer-attached";
+
 /** Erase a revoked account's journal only after the normal shutdown completed. */
 export async function purgeAccountDataImpl(this: AgentRuntime,
   tenant: string,
@@ -133,7 +135,7 @@ export async function armImpl(this: AgentRuntime,
         (child.background && child.status !== "running" && child.accepted && !child.notified && child.landedBy !== "wait"));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
-      config
+      await this.ctx.storage.get(COMPUTER_ATTACHED) !== false
         ? ((await new ComputerService(this.env, config.tenantId).nextDeadline(
             config.id,
           )) ?? Infinity)
