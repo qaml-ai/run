@@ -51,14 +51,15 @@ func TestCommitPublishesTreesAndCommitTogether(t *testing.T) {
 	unblock := func() { once.Do(func() { close(st.release) }) }
 	defer unblock()
 	seen := map[string]bool{}
-	// Five trees and one commit must all start before any PUT completes.
+	// Five trees, their size sidecars and one commit must all start before
+	// any PUT completes.
 	// Authorization cache rows are filled after this durable wave.
-	for len(seen) < 6 {
+	for len(seen) < 11 {
 		select {
 		case key := <-st.started:
 			seen[key] = true
 		case <-time.After(3 * time.Second):
-			t.Fatalf("only %d of 6 PUTs started", len(seen))
+			t.Fatalf("only %d of 11 PUTs started", len(seen))
 		}
 	}
 	hasCommit := false

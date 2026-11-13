@@ -166,6 +166,31 @@ Size lookups are lineage-scoped and batched.
 curl -H "Authorization: Bearer $TOKEN" "$A/trees/$T?path=src&recursive=1&limit=10000"
 ```
 
+Single-entry stat descends one subtree per path component, without listing.
+The tree must belong to the lineage (`404 not_found` otherwise); a missing path
+returns `404 not_in_tree`. `path` is required: absent or empty is
+`400 invalid_request` with `missing field path`. Absolute paths, empty or dot
+components and trailing slashes return `400 invalid_request` with `invalid path …`.
+
+| GET route (under `/v1/lineages/{lineage}`) | 200 response |
+|---|---|
+| `/trees/{tree}/entry?path=<path>` | `{ "path": "a/b", "mode": "100644" \| "100755" \| "120000", "blob": "<sha1>", "size": 1234 }` or `{ "path": "a", "mode": "040000", "tree": "<sha1>" }` |
+| `/commits/{a}/is-ancestor?of=<b>` | `{ "ancestor": true \| false }` |
+| `/merge-base?a=<commit>&b=<commit>` | `{ "base": "<commit>", "tree": "<tree>" }` or `{ "base": null, "tree": null }` |
+
+Ancestry includes equality and follows every parent. Both commits must belong
+to the lineage; `404 not_found` names the missing commit. Missing `of`, `a` or
+`b` returns `400 invalid_request` with `missing field <field>`; malformed ids
+return `400 invalid_request` with `invalid commit <id>`.
+Both routes use one bidirectional breadth-first walk, marking generations
+and loading each distinct commit once through the lineage-scoped local index.
+At most 50,000 distinct commits are visited across both sides. Attempting to
+visit another returns `413 too_deep`, never false or a null base.
+Merge-base excludes common ancestors reachable from another common ancestor
+(Git's best-common-ancestor rule). Multiple best candidates are resolved by
+latest commit time, then lexicographically greatest commit id. Commit time
+never lets a dominated ancestor win. Disjoint histories return a null base.
+
 Read parsed commit metadata: tree, parents, author, message, trailers and time.
 
 ```sh
@@ -174,6 +199,15 @@ curl -H "Authorization: Bearer $TOKEN" "$A/commits/$K"
 
 Diff returns added, modified, deleted and mode changes. Equal subtree ids
 are pruned without reading their descendants; path filters to a prefix.
+The response is `{ "changes": [ { "path": "a", "status": "added" | "modified" |
+"deleted" | "mode", "oldBlob"?: "<sha1>", "newBlob"?: "<sha1>", "oldMode"?:
+"<mode>", "newMode"?: "<mode>", "oldSize"?: 1234, "newSize"?: 5678 } ] }`.
+Sizes come from loaded tree entries. Every side with a blob has a size,
+including zero: added omits oldSize, deleted omits newSize, and mode has both.
+Newly imported trees publish lineage-scoped `ts/<tree>` size sidecars alongside
+Git `t/<tree>` bytes. A fresh daemon reads these without blob HEADs. Older
+trees without sidecars use cached blob sizes, or verified blob GETs on a cold
+cache; diff never issues blob HEADs to learn sizes.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" "$A/diff?from=$BASE&to=$T&path=src"

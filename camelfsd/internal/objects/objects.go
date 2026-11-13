@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
@@ -164,8 +165,9 @@ type node struct {
 func newNode() *node { return &node{map[string]*node{}, map[string]Entry{}} }
 
 type treeObject struct {
-	id    string
-	bytes []byte
+	id      string
+	bytes   []byte
+	entries []Entry
 }
 
 func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
@@ -337,7 +339,7 @@ func (r *Repository) importTrees(ctx context.Context, q Request) (Result, error)
 			b = []byte{}
 		}
 		id := store.GitHash("tree", b)
-		pending = append(pending, treeObject{id, b})
+		pending = append(pending, treeObject{id, b, entries})
 		return id, nil
 	}
 	out.Tree, e = build(top, q.ParentTree)
@@ -346,6 +348,11 @@ func (r *Repository) importTrees(ctx context.Context, q Request) (Result, error)
 	}
 	for _, obj := range pending {
 		r.publication.puts["t/"+obj.id] = obj.bytes
+		sizes, err := json.Marshal(obj.entries)
+		if err != nil {
+			return out, err
+		}
+		r.publication.puts["ts/"+obj.id] = sizes
 		if e = r.Record(ctx, q.Lineage, obj.id, "tree", nil); e != nil {
 			return out, e
 		}
@@ -394,6 +401,10 @@ func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
 	if e != nil {
 		return nil, e
 	}
+	return decodeTree(b)
+}
+
+func decodeTree(b []byte) ([]Entry, error) {
 	entries := []Entry{}
 	for len(b) > 0 {
 		end := bytes.IndexByte(b, 0)

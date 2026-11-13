@@ -60,6 +60,11 @@ func storageFail(w http.ResponseWriter, e error) {
 		status, code, message = 400, "invalid_request", validation.Error()
 	} else if errors.As(e, &se) {
 		status, code, details = se.status, se.code, se.details
+		if se.code == "not_found" {
+			if d, ok := se.details.(map[string]string); ok && d["commit"] != "" {
+				message = "commit " + d["commit"] + " not found"
+			}
+		}
 	} else if errors.As(e, &ae) {
 		status, code, message = ae.Status, "invalid_request", ae.Error()
 		if status == 413 {
@@ -268,6 +273,45 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 			return
 		}
 		jsonReply(w, 201, out)
+	case r.Method == "GET" && (route == "merge-base" || strings.HasPrefix(route, "commits/") && strings.HasSuffix(route, "/is-ancestor")):
+		a, b := q.Get("a"), q.Get("b")
+		fields := []string{"a", "b"}
+		if route != "merge-base" {
+			a = strings.TrimSuffix(strings.TrimPrefix(route, "commits/"), "/is-ancestor")
+			b = q.Get("of")
+			fields = []string{"commit", "of"}
+		}
+		for i, id := range []string{a, b} {
+			if id == "" {
+				fail(invalid("missing field %s", fields[i]))
+				return
+			}
+		}
+		serveAncestry(w, r, repo, a, b)
+	case r.Method == "GET" && strings.HasPrefix(route, "trees/") && strings.HasSuffix(route, "/entry"):
+		id := strings.TrimSuffix(strings.TrimPrefix(route, "trees/"), "/entry")
+		path := q.Get("path")
+		if path == "" {
+			fail(invalid("missing field path"))
+			return
+		}
+		if objects.Path(path) != nil {
+			fail(invalid("invalid path %s", path))
+			return
+		}
+		if e := require(ctx, repo, l, id, "tree", false); e != nil {
+			if se, ok := e.(*storageError); ok && se.status == 404 {
+				e = &storageError{404, "not_found", nil}
+			}
+			fail(e)
+			return
+		}
+		v, e := treeEntry(ctx, repo, l, id, path)
+		if e != nil {
+			fail(e)
+			return
+		}
+		jsonReply(w, 200, v)
 	case strings.HasPrefix(route, "commits/") && r.Method == "GET":
 		id := strings.TrimPrefix(route, "commits/")
 		if e := require(ctx, repo, l, id, "commit", false); e != nil {

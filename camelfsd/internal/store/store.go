@@ -30,13 +30,16 @@ type Local struct{ Dir string }
 
 func valid(k string) bool {
 	_, p, h, ok := splitKey(k)
-	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k") && root.Hex(h, 40))
+	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts") && root.Hex(h, 40))
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
 		return fmt.Errorf("invalid key")
 	}
 	_, p, h, _ := splitKey(k)
+	if p == "ts" {
+		return verifyTreeSizes(h, b)
+	}
 	actual := root.Hash(b)
 	if p == "o" || p == "t" || p == "k" {
 		kind := "blob"

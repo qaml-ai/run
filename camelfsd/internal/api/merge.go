@@ -185,21 +185,27 @@ func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeReq
 		return nil, &storageError{409, "conflict", map[string]any{"conflicts": conflicts}}
 	}
 	// No durable writes occur until all files are known to merge cleanly.
-	keys := []string{}
-	for k := range pending {
-		keys = append(keys, k)
-	}
-	e = store.Parallel(ctx, 16, keys, func(k string) error {
-		raw := pending[k]
-		if strings.HasPrefix(k, "t/") {
-			_, e := r.PutObject(ctx, l, "tree", raw)
-			return e
+	// Blob sizes must be in the local index before encoding tree sidecars.
+	// Both waves remain after the conflict check, so conflicts publish nothing.
+	for _, trees := range []bool{false, true} {
+		keys := []string{}
+		for k := range pending {
+			if strings.HasPrefix(k, "t/") == trees {
+				keys = append(keys, k)
+			}
 		}
-		_, e := r.Upload(ctx, l, "", int64(len(raw)), bytes.NewReader(raw))
-		return e
-	})
-	if e != nil {
-		return nil, e
+		e = store.Parallel(ctx, 16, keys, func(k string) error {
+			raw := pending[k]
+			if trees {
+				_, e := r.PutObject(ctx, l, "tree", raw)
+				return e
+			}
+			_, e := r.Upload(ctx, l, "", int64(len(raw)), bytes.NewReader(raw))
+			return e
+		})
+		if e != nil {
+			return nil, e
+		}
 	}
 	sort.Strings(merged)
 	return map[string]any{"tree": tree, "merged": merged, "took": map[string]int{"ours": ours, "theirs": theirs}}, nil

@@ -411,6 +411,8 @@ type diffChange struct {
 	NewBlob string `json:"newBlob,omitempty"`
 	OldMode string `json:"oldMode,omitempty"`
 	NewMode string `json:"newMode,omitempty"`
+	OldSize *int64 `json:"oldSize,omitempty"`
+	NewSize *int64 `json:"newSize,omitempty"`
 }
 
 func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) ([]diffChange, error) {
@@ -428,7 +430,7 @@ func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) (
 			if id == "" {
 				continue
 			}
-			es, e := r.ReadTree(ctx, id)
+			es, e := r.SizedTree(ctx, id)
 			if e != nil {
 				return e
 			}
@@ -490,7 +492,16 @@ func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) (
 			} else if x.SHA1 == y.SHA1 {
 				status = "mode"
 			}
-			out = append(out, diffChange{p, status, x.SHA1, y.SHA1, x.Mode, y.Mode})
+			c := diffChange{Path: p, Status: status, OldBlob: x.SHA1, NewBlob: y.SHA1, OldMode: x.Mode, NewMode: y.Mode}
+			if x.SHA1 != "" {
+				size := x.Size
+				c.OldSize = &size
+			}
+			if y.SHA1 != "" {
+				size := y.Size
+				c.NewSize = &size
+			}
+			out = append(out, c)
 		}
 		return nil
 	}
@@ -518,4 +529,46 @@ func (q *commitRequest) UnmarshalJSON(raw []byte) error {
 	}
 	*q = commitRequest(v)
 	return nil
+}
+
+// treeEntry descends exactly one tree per path component, without listing.
+func treeEntry(ctx context.Context, r *objects.Repository, l, id, path string) (listingEntry, error) {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		es, e := r.ReadTree(ctx, id)
+		if e != nil {
+			return listingEntry{}, e
+		}
+		found := false
+		for _, f := range es {
+			if f.Path != p {
+				continue
+			}
+			found = true
+			if i == len(parts)-1 {
+				v := listingEntry{Path: path, Mode: f.Mode}
+				if f.Mode == "40000" {
+					v.Mode = "040000"
+					v.Tree = f.SHA1
+				} else {
+					b, e := r.BlobInfo(ctx, l, f.SHA1)
+					if e != nil {
+						return v, e
+					}
+					v.Blob = f.SHA1
+					v.Size = &b.Size
+				}
+				return v, nil
+			}
+			if f.Mode != "40000" {
+				return listingEntry{}, missing()
+			}
+			id = f.SHA1
+			break
+		}
+		if !found {
+			return listingEntry{}, missing()
+		}
+	}
+	return listingEntry{}, missing()
 }
