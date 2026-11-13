@@ -162,7 +162,7 @@ put "$here/files/camel-kvm-prep" /usr/local/sbin/camel-kvm-prep 0755
 put "$here/systemd/camel-kvm-prep.service" /etc/systemd/system/camel-kvm-prep.service
 restart[camel-kvm-prep]=$changed
 changed=0
-put "$here/files/camelfsd-cleanup" /usr/local/sbin/camelfsd-cleanup 0755
+if [[ -e /usr/local/sbin/camelfsd-cleanup ]]; then rm -f /usr/local/sbin/camelfsd-cleanup; changed=1; fi
 put "$here/systemd/camelfsd.service" /etc/systemd/system/camelfsd.service
 restart[camelfsd]=$((changed | daemon_changed))
 changed=0

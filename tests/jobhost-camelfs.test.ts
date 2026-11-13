@@ -11,7 +11,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
-import { HostAgent } from "../jobhost/agent.ts";
+import { CAMELFS_HEARTBEAT_MS, HostAgent } from "../jobhost/agent.ts";
 import { camelfsdClient, serveImportProxy, type Camelfsd } from "../jobhost/camelfsd.ts";
 import { firecrackerLauncher } from "../jobhost/firecracker.ts";
 import { fakeLauncher, firecrackerConfig, type VmLauncher } from "../jobhost/vm.ts";
@@ -45,6 +45,9 @@ async function daemon(t: TestContext, mode = "ok") {
         t.after(() => new Promise<void>(resolve => apply.close(() => resolve())));
       }
       res.end(JSON.stringify({ image, warm: true, root: "root-1", tree: "tree-1", mountMs: 12, hydrating: false }));
+    } else if (req.url?.endsWith("/heartbeat")) {
+      if (mode === "heartbeat-fail") { res.writeHead(500); res.end(JSON.stringify({ error: "e".repeat(300) })); }
+      else res.end("{}");
     } else if (req.method === "DELETE") res.end(JSON.stringify({ released: true, promoted: false }));
     else if (req.url === "/v0/health") {
       if (mode === "health-fail") { res.writeHead(503); res.end(JSON.stringify({ error: "unavailable", detail: "store offline" })); }
@@ -57,7 +60,7 @@ async function daemon(t: TestContext, mode = "ok") {
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dir, { recursive: true, force: true }); });
   return { dir, socketPath, calls, client: camelfsdClient(socketPath) };
 }
-async function host(t: TestContext, camelfsd?: Camelfsd, launcher = fakeLauncher()): Promise<{ agent: HostAgent; hello: Extract<HostMessage, { type: "hello" }>; result: Promise<WireResult>; logs: Record<string, unknown>[] }> {
+async function host(t: TestContext, camelfsd?: Camelfsd, launcher = fakeLauncher(), camelfsHeartbeatMs?: number): Promise<{ agent: HostAgent; hello: Extract<HostMessage, { type: "hello" }>; result: Promise<WireResult>; logs: Record<string, unknown>[] }> {
   const server = createServer((_req, res) => res.end(JSON.stringify({ host: "test-host", credential: "test-only", expiresAt: Date.now() + 3600_000 })));
   const sockets = new WebSocketServer({ server });
   const hello = Promise.withResolvers<Extract<HostMessage, { type: "hello" }>>(), result = Promise.withResolvers<WireResult>();
@@ -71,7 +74,7 @@ async function host(t: TestContext, camelfsd?: Camelfsd, launcher = fakeLauncher
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const logs: Record<string, unknown>[] = [];
-  const agent = new HostAgent({ runtime: `http://127.0.0.1:${(server.address() as { port: number }).port}`, attest: async () => ({ kind: "test", host: "test-host", secret: "test-only" }), slots: 1, vcpus: 1, memoryMiB: 512, diskLowBytes: 0, camelfsd, launcher, log: line => logs.push(line) });
+  const agent = new HostAgent({ runtime: `http://127.0.0.1:${(server.address() as { port: number }).port}`, attest: async () => ({ kind: "test", host: "test-host", secret: "test-only" }), slots: 1, vcpus: 1, memoryMiB: 512, diskLowBytes: 0, camelfsd, camelfsHeartbeatMs, launcher, log: line => logs.push(line) });
   t.after(async () => { await agent.close(); for (const socket of sockets.clients) socket.terminate(); await new Promise<void>(resolve => sockets.close(() => resolve())); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
   await agent.start();
   return { agent, hello: await hello.promise, result: result.promise, logs };
@@ -209,6 +212,7 @@ test("daemon health and invalid job ids", async t => {
   for (const id of ["", "a/b", "x".repeat(65), "job?x", "job x"]) {
     await assert.rejects(d.client.mount({ jobId: id, lineage: "a:b", tree: "tree", vsock: "" }), /Invalid camelFS job id/);
     await assert.rejects(d.client.release(id), /Invalid camelFS job id/);
+    await assert.rejects(d.client.heartbeat(id), /Invalid camelFS job id/);
     await assert.rejects(d.client.status(id), /Invalid camelFS job id/);
   }
   assert.equal(d.calls.length, before);
@@ -244,4 +248,52 @@ test("a mount that acquired a lease but failed to return is released", async t =
   await h.agent.run("job-1", spec);
   assert.deepEqual(await h.result, { ok: false, code: "start_failed", message: "mount timed out" });
   assert.deepEqual(d.calls.map(call => [call.method, call.path]), [["POST", "/v0/mounts"], ["DELETE", "/v0/mounts/job-1"]]);
+});
+
+
+test("daemon heartbeat posts an empty JSON body and encodes the job id", async t => {
+  const d = await daemon(t);
+  await d.client.heartbeat("a:b");
+  assert.deepEqual(d.calls, [{ method: "POST", path: "/v0/mounts/a%3Ab/heartbeat", body: "{}", authorization: undefined, contentType: "application/json", contentLength: "2", chunked: false }]);
+});
+
+for (const mode of ["ok", "heartbeat-fail"]) test(`mount heartbeats continue during a command (${mode}) and stop before release`, async t => {
+  assert.equal(CAMELFS_HEARTBEAT_MS, 30_000);
+  const interval = 40, d = await daemon(t, mode);
+  const h = await host(t, d.client, fakeLauncher({ work: d.dir }), interval);
+  await h.agent.run("job-1", { ...spec, command: "sleep 0.14" });
+  const result = await h.result;
+  assert.equal(result.ok, true); if (!result.ok) return;
+  assert.equal(result.exitCode, 0);
+  const beats = d.calls.filter(call => call.path?.endsWith("/heartbeat"));
+  assert.ok(beats.length >= 2, `received ${beats.length} heartbeats`);
+  assert.equal(d.calls.at(-1)?.method, "DELETE");
+  const count = d.calls.length;
+  await new Promise(resolve => setTimeout(resolve, interval * 3));
+  assert.equal(d.calls.length, count);
+  const failures = h.logs.filter(line => line.type === "jobhost_camelfs_heartbeat_failed");
+  if (mode === "heartbeat-fail") {
+    assert.equal(failures.length, beats.length);
+    for (const line of failures) assert.deepEqual(line, { type: "jobhost_camelfs_heartbeat_failed", id: "job-1", error: (`camelfsd 500: ${"e".repeat(300)}`).slice(0, 200) });
+  } else assert.deepEqual(failures, []);
+});
+
+test("mount heartbeats never overlap and release waits for an in-flight heartbeat", async t => {
+  const d = await daemon(t);
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  let calls = 0, released = false;
+  const h = await host(t, { ...d.client,
+    heartbeat: async () => { calls++; entered.resolve(); await finish.promise; assert.equal(released, false); },
+    release: async id => { released = true; await d.client.release(id); },
+  }, fakeLauncher({ work: d.dir }), 10);
+  const running = h.agent.run("job-1", { ...spec, command: "sleep 0.08" });
+  await entered.promise;
+  try {
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(calls, 1);
+    assert.equal(released, false);
+  } finally { finish.resolve(); }
+  await running;
+  assert.equal((await h.result).ok, true);
+  assert.equal(released, true);
 });
