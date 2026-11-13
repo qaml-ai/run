@@ -63,7 +63,7 @@ export interface AgentConfiguration {
   workspaceId?: string | null;
   humanInput?: HumanInputSettings;
   subagents?: Record<string, unknown>;
-  mounts?: { volumeId?: string; repo?: string; ref?: string; instructions?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
+  mounts?: { repo?: string; ref?: string; instructions?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
 }
 export class ApiError extends Error {
   readonly status: number;
@@ -210,7 +210,6 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (fields.mounts !== undefined) {
     if (!Array.isArray(fields.mounts) || fields.mounts.length > VOLUME_LIMITS.mounts) throw new BadRequest(`At most ${VOLUME_LIMITS.mounts} mounts`);
     config.mounts = fields.mounts.map(raw => {
-      if (raw && typeof raw === "object" && "volumeId" in raw) throw new BadRequest("Volumes are replaced by repos: mount { repo }");
       const mount = object(raw, ["repo", "ref", "path", "mode", "subpath", "workspace", "notify", "instructions"]);
       if ("workspace" in mount) {
         if (typeof mount.workspace !== "boolean" || Object.keys(mount).some(key => key !== "workspace" && (mount.workspace !== true || !["path", "instructions"].includes(key)))) throw new BadRequest("Invalid workspace mount");
@@ -231,11 +230,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   return { config, ttlSeconds: (ttlSeconds ?? idleTtlSeconds ?? ttlSeconds) as number | null | undefined };
 }
 
-/** Validate the other fields of a config loaded by the runtime, retaining its legacy mounts. */
-// TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
+/** Stored configs use the same validation as new ones. */
 export function storedConfiguration(input: AgentConfiguration, model: string, mode: "create" | "patch" = "create") {
-  if(!input.mounts?.some(m=>m.volumeId))return configuration(input,model,mode);
-  const checked=configuration({...input,mounts:undefined},model,mode);
-  checked.config.mounts=input.mounts;
-  return checked;
+  return configuration(input, model, mode);
 }

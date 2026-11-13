@@ -78,7 +78,7 @@ export interface EffectExecutor {
 
 export type EffectOutcome =
   | { ok: true; value: unknown }
-  /** A result body kept elsewhere (the workflow's volume); the guest gets `{ $handle: ref, bytes, sha256 }`. */
+  /** A result body kept elsewhere; the guest gets `{ $handle: ref, bytes, sha256 }`. */
   | { ok: true; handle: { ref: string; bytes: number; sha256: string } }
   /** Failed: the script gets `null`, and the item records why. */
   | { ok: false; error: string }
@@ -221,7 +221,7 @@ export interface CapacitySeam {
 /**
  * The owner's result cache (workflow-results.ts, docs/design/workflow-simplification.md "Cut 1"): a finished agent() or
  * job() result keyed by its kind and arguments, reused by a later workflow of the same owner instead of running again.
- * An optimization only: a lookup that throws is a miss, and the journal (never the cache) is the truth once landed.
+ * Storage failures throw so an unlanded effect can retry.
  */
 export interface ResultCache {
   /**
@@ -231,8 +231,8 @@ export interface ResultCache {
    * on the version it could have read (a volume's version only grows: a key made before a change is never made again).
    */
   lookup(kind: string, args: string, effect: { key: string; attempt: number }): Promise<{ key: string; hit?: { value: unknown; source: string } }>;
-  /** A cacheable effect landed `ok` with `value`: offered to the cache under `cacheKey` (best effort, in the background). */
-  landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown; cacheKey: string }): void;
+  /** Retain a cacheable result before journaling its landing and cleaning up its source branch. */
+  landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown; cacheKey: string }): void | Promise<void>;
 }
 /** Kinds whose `ok` results are reused (`commit`, `push` change a volume or a branch: effects, not results). */
 const CACHEABLE = new Set(["agent", "job"]);
@@ -467,6 +467,7 @@ export class WorkflowRunner {
   /** Effect `key:attempt` ended. A second landing, or one for a superseded attempt, is ignored. */
   land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage): Promise<void> {
     return this.serial(async () => {
+      await this.cacheLanding(key, attempt, outcome);
       this.record(key, attempt, outcome, usage);
       await this.advance();
     });
@@ -529,10 +530,12 @@ export class WorkflowRunner {
       }
       return true;
     });
-    // A run's ok result (not one the cache gave) is offered to the owner's cache under the key it was looked up with,
-    // after its landing committed. No key (its lookup failed, or it started before the cache): not offered.
-    if (delivered && "ok" in outcome && outcome.ok && "value" in outcome && row.cached_from === null && typeof row.cache_key === "string" && cacheable(row.kind as string, row.args as string))
-      this.options.results?.landed({ key, attempt, kind: row.kind as string, args: row.args as string, value: outcome.value, cacheKey: row.cache_key });
+  }
+
+  private async cacheLanding(key: string, attempt: number, outcome: EffectOutcome) {
+    const row = this.sql.exec("SELECT status, current, kind, args, cached_from, cache_key FROM workflow_effects WHERE key = ? AND attempt = ?", key, attempt).toArray()[0];
+    if (row?.status === 'pending' && row.current === 1 && "ok" in outcome && outcome.ok && "value" in outcome && row.cached_from === null && typeof row.cache_key === "string" && cacheable(row.kind as string, row.args as string))
+      await this.options.results?.landed({ key, attempt, kind: row.kind as string, args: row.args as string, value: outcome.value, cacheKey: row.cache_key });
   }
 
   /**
@@ -674,14 +677,7 @@ export class WorkflowRunner {
    * transaction, charged nothing. A lookup that fails is a miss (logged): the effect runs.
    */
   private async fromCache(effect: Row): Promise<boolean> {
-    let found: Awaited<ReturnType<ResultCache["lookup"]>>;
-    try { found = await this.options.results!.lookup(effect.kind as string, effect.args as string, { key: effect.key as string, attempt: Number(effect.attempt) }); }
-    catch (error) {
-      // A miss, never a fault; with no key its result is not offered either.
-      this.sql.exec("UPDATE workflow_effects SET cache_key = NULL WHERE key = ? AND attempt = ? AND status = 'pending'", effect.key, effect.attempt);
-      console.error(JSON.stringify({ type: "workflow_cache_failed", key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
-      return false;
-    }
+    const found = await this.options.results!.lookup(effect.kind as string, effect.args as string, { key: effect.key as string, attempt: Number(effect.attempt) });
     const hit = found.hit;
     // One transaction: marked from the cache, and landed. A crash leaves it unstarted (looked up again) or landed.
     return this.storage.transactionSync(() => {
@@ -1072,7 +1068,7 @@ export class WorkflowRunner {
             for (const row of stale) {
               await isolated(`poll ${row.key}`, async () => {
                 const ended = await this.executor.poll!(this.started(row));
-                if (ended) this.record(row.key as string, Number(row.attempt), ended.outcome, ended.usage);
+                if (ended) { await this.cacheLanding(row.key as string, Number(row.attempt), ended.outcome); this.record(row.key as string, Number(row.attempt), ended.outcome, ended.usage); }
               });
             }
           }

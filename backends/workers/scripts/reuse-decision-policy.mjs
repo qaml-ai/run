@@ -53,9 +53,9 @@ const childPolicy = header + `export type DelegateResponse = { run: string; mess
 export type Session = { childHeld?: Map<string, { usd: number; holders: number }>; delegateResponse?: DelegateResponse; delegating?: { active: number } };
 type SpendContext = { left?: number };
 const budgetLeft = async (ctx: SpendContext, _session: Session, _run: string) => ctx.left;
-type Mount = { volumeId: string; path: string; mode: 'ro' | 'rw'; subpath?: string; notify?: boolean; instructions?: string };
+type Mount = import('./repos/mounts.ts').Mount;
 ` + spend.slice(spend.indexOf('/**\n * The spend limit a delegate'), spend.indexOf('/**\n * A background child\'s spend')) +
-  children.slice(children.indexOf('/**\n * What a child of the model\'s own'), children.indexOf('/** A child\'s prompt:'));
+  children.slice(children.indexOf('/**\n * What a child of the model\'s own'), children.indexOf('/** A child\'s prompt:')).replaceAll('volumeId', 'repo').replace('({ repo, path, mode, subpath, instructions })', '({ repo, ref, path, mode, subpath, instructions })').replace('=> ({ repo, path, mode,', '=> ({ repo, ...(ref ? {ref} : {}), path, mode,');
 const childPath = new URL('delegation-policy.ts', output);
 if (process.argv.includes('--check')) {
   if (await readFile(childPath, 'utf8') !== childPolicy) throw new Error('child policy drifted');

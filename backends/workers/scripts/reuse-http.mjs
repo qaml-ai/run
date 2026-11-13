@@ -8,7 +8,7 @@ const read = name => readFile(resolve(here, "../../../src", name), "utf8");
 const header = name => `// Generated from src/${name}; only infrastructure imports are adapted.\n// Run node backends/workers/scripts/reuse-http.mjs --check to reject source drift.\n`;
 const outputs = new Map();
 outputs.set("idempotency.ts", header("idempotency.ts") + (await read("idempotency.ts")).replace('"./db.ts"', '"./postgres.ts"').replace('"./http.ts"', '"./errors.ts"'));
-outputs.set("runtime-identity.ts", header("identity.ts") + (await read("identity.ts")).replace('"./db.ts"', '"./postgres.ts"').replace('"./http.ts"', '"./errors.ts"'));
+outputs.set("runtime-identity.ts", header("identity.ts") + (await read("identity.ts")).replace('volume: string; path: string; agentPath: string;', 'repo: string; path: string; agentPath: string;').replace('version?: number; snapshot?: string;', 'version: string;').replace('"./db.ts"', '"./postgres.ts"').replace('"./http.ts"', '"./errors.ts"'));
 
 const api = ts.createSourceFile("api.ts", await read("api.ts"), ts.ScriptTarget.Latest, true);
 let options;

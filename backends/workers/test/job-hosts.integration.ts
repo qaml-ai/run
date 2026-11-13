@@ -1,3 +1,4 @@
+import { serveFakeCamelfsd } from './fake-camelfsd.ts';
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -28,7 +29,10 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   });
   sts.listen(0, "127.0.0.1"); await once(sts, "listening");
   t.after(() => new Promise<void>(resolve => sts.close(() => resolve())));
-  const fixture = await startFixture({ vars: {
+  const camelfs = await serveFakeCamelfsd('job-output-test-token');
+  t.after(() => camelfs.close());
+  const fixture = await startFixture({ camelfsStub:true,entrypoint:fileURLToPath(new URL('./job-sync-worker.ts',import.meta.url)),vars: {
+    TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:'job-output-test-token',
     AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "45",
     JOB_HOST_WAIT_SECONDS: "8", JOB_HOST_SCALER_TOKEN: "scaler-token-for-the-fixture-at-least-32-characters",
     JOB_HOST_ROLE_ARNS: "test=arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,
@@ -74,8 +78,8 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   assert.equal(done.result.stdout.tail, "hello from the host");
   assert.equal(done.result.stderr.tail, "warn\n");
   assert.equal(done.result.outputs["r.txt"].bytes, 6);
-  // The output is a file in the workflow's volume.
-  const output = await fetch(`${fixture.url}/v1/volumes/${done.result.volume}/files${done.result.outputs["r.txt"].path}`, { headers: { authorization: `Bearer ${fixture.token}` } });
+  // The output is a file in the workflow's repo.
+  const output = await fetch(`${fixture.url}/v1/repos/${done.result.repo}/files${done.result.outputs["r.txt"].path}?version=${done.result.version}`, { headers: { authorization: `Bearer ${fixture.token}` } });
   assert.equal(await output.text(), "built\n");
 
   // One charge, under the hosts' provider, for the workflow's tenant.

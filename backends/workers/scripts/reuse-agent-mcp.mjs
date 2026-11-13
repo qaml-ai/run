@@ -44,7 +44,7 @@ await generated('hosted-mcp-ops.ts', header + ops.replaceAll('"./api.ts"', '"./a
   .replaceAll('created.reconfigured ?', 'created.reconfigured || created.existingAgent ?'));
 await generated('hosted-mcp-manifest.ts', header + await readFile(new URL('../../../packages/cli/src/manifest.ts', import.meta.url), 'utf8'));
 const cliTools = await readFile(new URL('../../../packages/cli/src/tools.ts', import.meta.url), 'utf8');
-await generated('hosted-mcp-tools.ts', header + cliTools.replaceAll('"./api.ts"', '"./agent-mcp-api.ts"').replaceAll('"./manifest.ts"', '"./hosted-mcp-manifest.ts"').replaceAll('"./ops.ts"', '"./hosted-mcp-ops.ts"'));
+await generated('hosted-mcp-tools.ts', header + cliTools.replaceAll('"./api.ts"', '"./agent-mcp-api.ts"').replaceAll('"./manifest.ts"', '"./hosted-mcp-manifest.ts"').replaceAll('"./ops.ts"', '"./hosted-mcp-ops.ts"').replace("    mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),","    mounts: z.array(z.union([z.object({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).optional(),"));
 const cliServer = await readFile(new URL('../../../packages/cli/src/mcp.ts', import.meta.url), 'utf8');
 const capStart = cliServer.indexOf('/** A result\'s most'), capEnd = cliServer.indexOf('/** Serve the CLI');
 const serverStart = cliServer.indexOf('export function createServer(');

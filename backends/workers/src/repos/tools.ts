@@ -1,5 +1,4 @@
 import { RE2JS } from "re2js";
-import { volumeTools } from "../files.ts";
 import { Buffer } from "node:buffer";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str, arr, bool, int } from "@earendil-works/pi-schema";
@@ -8,7 +7,7 @@ import { declaredType, sniffContentType } from "../file-policy.ts";
 import { editArguments } from "../edit-arguments.ts";
 import type { FileVersions } from "../file-versions.ts";
 import type { RepoEnv } from "./registry.ts";
-import { agentRepoId, type Mount, type AgentMount } from "./mounts.ts";
+import { agentRepoId, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
 import { commitChanges, setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
@@ -405,19 +404,4 @@ function versionTools(
   ];
 }
 
-export function repoTools(env: RepoEnv,tenant: string,agent: string,getMounts:()=>Promise<AgentMount[]> = async()=>[{repo:agentRepoId(tenant,agent),path:'/workspace',mode:'rw'}],onPresent?:Parameters<typeof actualRepoTools>[4],onWrite?:Parameters<typeof actualRepoTools>[5],seen?:FileVersions,identity:Record<string,string> = {}) {
-  const repos=()=>getMounts().then(ms=>ms.filter((m):m is Mount=>'repo'in m));
-  const tools=actualRepoTools(env,tenant,agent,repos,onPresent,onWrite,seen,identity);
-  return tools.map(tool=>({...tool,async execute(args:any,api:any,context:any) {
-    const mounts=await getMounts(), raw=args.path??args.from, path=raw===undefined?undefined:normalizePath(raw.startsWith('/')?raw:`${mounts[0]?.path}/${raw}`);
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    const legacy=mounts.filter((m):m is import('../files.ts').LegacyVolumeMount=>'volumeId'in m);
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    if(legacy.length && (path ? legacy.some(m=>path===m.path||path.startsWith(m.path+'/')) : !mounts.some(m=>'repo'in m))) {
-      const old=volumeTools(env,tenant,agent,async()=>legacy,onPresent as never,onWrite,seen ? {get:k=>{const v=seen.get(`legacy:${k}`);return v===undefined?undefined:Number(v);},remember:(k,v)=>seen.remember(`legacy:${k}`,String(v))}:undefined).find(t=>t.name===tool.name);
-      if(!old)throw new FileError('Version tools are unavailable on workflow volume mounts');
-      return old.execute(args as never,api,context);
-    }
-    return tool.execute(args as never,api,context);
-  }}));
-}
+export const repoTools = actualRepoTools;

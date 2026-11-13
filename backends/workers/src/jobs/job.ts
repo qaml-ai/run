@@ -1,3 +1,4 @@
+import { repoAt } from '../repos/target.ts';
 import { INSTANCE_TYPES, SNAPSHOT_NAME, snapshotHandle, type ComputerSnapshot, type InstanceType } from "../computers/provider.ts";
 import { INSTANCE_RESOURCES, type ComputerPayer } from "../computers/meter.ts";
 
@@ -53,7 +54,8 @@ export type JobSpec = {
   snapshot?: ComputerSnapshot;
   files?: JobFiles;
   volume?: JobVolumeSource;
-  /** Checkpoint /repo when the command ends (camelFS hosts only); needs `volume`. */
+  repo?: { tenant: string; repo: string; ref?: string; version?: string; owner: string };
+  /** Checkpoint /repo when the command ends (camelFS hosts only); needs `volume` or `repo`. */
   commit?: boolean;
   /** A shell command (`bash -lc`), run in /repo. */
   command: string;
@@ -102,7 +104,7 @@ export type JobResult =
       /** Whether `limits.pids` was applied through the container's cgroup (pids.max). */
       /** How `limits.pids` was applied: the container's cgroup (pids.max), the job VM guest's ulimit, or not at all. */
       pids?: "cgroup" | "ulimit" | "unenforced";
-      camelfs?: { commit?: string; tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
+      camelfs?: { ref?: string; version?: string; commit?: string; tree?: string; root?: string; warm: boolean; mountMs: number; applyMs: number; checkpointMs?: number; checkpointError?: string;
         checkpoint?: { walkMs: number; streamMs: number; freezeMs: number; files: number; bytes: number; skipped: number;
           changedChunks: number; uploadedChunks: number; changedBytes: number; reflinkMs: number; fiemapMs: number; hashMs: number; uploadMs: number; imageMs?: number } };
       snapshot?: ComputerSnapshot;
@@ -119,14 +121,13 @@ export class JobSpecError extends Error {
 }
 
 /**
- * The volume a job starts from (`at`), or a JobSpecError that says why there is none: a workflow's forks are deleted
- * when the workflow ends, which an agent reading a finished workflow's result may not know.
+ * The volume a job starts from (`at`), or a JobSpecError when it is gone.
  */
 export async function jobVolume<T>(open: () => Promise<T>, id: string): Promise<T> {
   try { return await open(); }
   catch (error) {
     if ((error as { status?: number }).status !== 404) throw error;
-    throw new JobSpecError(`No volume ${id}: it does not exist or was deleted (a workflow's forks are deleted when the workflow ends; start from the volume they were committed to)`);
+    throw new JobSpecError(`No volume ${id}: it does not exist or was deleted`);
   }
 }
 const bad = (message: string) => new JobSpecError(message);
@@ -188,7 +189,7 @@ const positive = (value: unknown, name: string, max: number, integer = false) =>
 export function jobSpec(value: unknown, options: { beyondContainers?: boolean } = {}): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
   const v = value as Partial<JobSpec> | null;
   if (!v || typeof v !== "object") throw bad("A job is an object");
-  const known = ["id", "image", "snapshot", "files", "volume", "commit", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
+  const known = ["id", "image", "snapshot", "files", "volume", "repo", "commit", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
   const extra = Object.keys(v).find(key => !known.includes(key));
   if (extra) throw bad(`Unknown job field: ${extra}`);
   if (typeof v.id !== "string" || !JOB_ID.test(v.id)) throw bad("A job id is 1-100 letters, digits, _ or -");
@@ -226,8 +227,19 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
       throw bad("A job volume source names a tenant, a volume and a snapshot");
     volume = { tenant: s.tenant, volume: s.volume, snapshot: s.snapshot };
   }
+  let repo: JobSpec["repo"];
+  if (v.repo !== undefined) {
+    const r = v.repo;
+    if (!r || typeof r !== "object" || typeof r.tenant !== "string" || !r.tenant || typeof r.repo !== "string" || !r.repo.trim()) throw bad("repo needs tenant and a non-empty repo");
+    if (v.volume !== undefined || v.files !== undefined) throw bad("repo excludes volume and files");
+    let target;
+    try { target = repoAt({ repo: r.repo, ...(r.ref !== undefined ? { ref: r.ref } : {}), ...(r.version !== undefined ? { version: r.version } : {}) }); }
+    catch (error) { throw bad((error as Error).message); }
+    if (typeof r.owner !== "string" || !/^(agent|workflow|job|user|api|cache):[A-Za-z0-9._:-]{1,200}$/.test(r.owner)) throw bad("Invalid repo owner");
+    repo = { ...target, tenant: r.tenant, owner: r.owner };
+  }
   if (v.commit !== undefined && typeof v.commit !== "boolean") throw bad("commit is true or false");
-  if (v.commit && !volume) throw bad("A job commits only a volume's tree: commit needs volume");
+  if (v.commit && !volume && !repo) throw bad("A job commits only a volume's tree: commit needs volume");
   if (v.outputs !== undefined && (!Array.isArray(v.outputs) || v.outputs.length > JOB_LIMITS.outputs)) throw bad(`outputs is a list of at most ${JOB_LIMITS.outputs} paths under /out`);
   const outputs = [...new Set((v.outputs ?? []).map(path => jobPath(path, "output path")))];
   const l = v.limits as JobLimits | undefined;
@@ -251,6 +263,7 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
   if (v.payer.kind !== undefined && (v.payer.kind !== "workflow" || !/^wf_[A-Za-z0-9_-]{1,80}$/.test(v.payer.agent))) throw bad('A job\'s payer kind is "workflow", with the workflow\'s id as its agent');
   const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent, ...(v.payer.kind ? { kind: v.payer.kind } : {}) };
   if (volume && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
+  if (repo && repo.tenant !== payer.tenant) throw bad("A job reads repos of its payer's tenant only");
   let secretEnv: Record<string, string> | undefined;
   if (v.secretEnv !== undefined) {
     const entries = v.secretEnv && typeof v.secretEnv === "object" && !Array.isArray(v.secretEnv) ? Object.entries(v.secretEnv) : undefined;
@@ -264,7 +277,7 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
   if (given !== undefined && given !== instance) throw bad(`instance is derived from limits (${instance}), not set`);
   return {
     id: v.id, image: v.image ?? "workspace", command: v.command, timeoutSeconds: v.timeoutSeconds!, outputs,
-    ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {},
+    ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {}, ...repo ? { repo } : {},
     ...Object.keys(limits).length ? { limits } : {}, ...v.internet ? { internet: true } : {},
     ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer, ...secretEnv ? { secretEnv } : {},
     ...(v.commit ? { commit: true } : {}), instance,

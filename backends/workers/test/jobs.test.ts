@@ -376,7 +376,7 @@ test("JOB_PROVIDER: containers, hosts or auto, each only where configured; auto 
 
 test("a job at a volume that is gone says so, naming the volume and why a workflow's fork would be", async () => {
   const gone = jobVolume(async () => { throw Object.assign(new Error("FILE_404:Unknown volume"), { status: 404 }); }, "vol_fork");
-  await assert.rejects(gone, (error: unknown) => error instanceof JobSpecError && /No volume vol_fork: .*forks are deleted when the workflow ends/.test((error as Error).message));
+  await assert.rejects(gone, (error: unknown) => error instanceof JobSpecError && /No volume vol_fork: it does not exist or was deleted/.test((error as Error).message));
   await assert.rejects(jobVolume(async () => { throw Object.assign(new Error("down"), { status: 503 }); }, "vol_x"), /down/, "anything else is not a missing volume");
   assert.equal(await jobVolume(async () => "the volume", "vol_ok"), "the volume");
 });

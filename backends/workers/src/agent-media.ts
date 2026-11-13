@@ -10,7 +10,7 @@ import { database, transaction } from "./postgres.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
 import { publishPending } from "./webhooks.ts";
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from "./auxiliary-usage.ts";
-import type { FileBindings, AgentMount as Mount, WrittenRepoFile } from "./files.ts";
+import type { FileBindings, Mount, WrittenRepoFile } from "./files.ts";
 import { HttpError } from "./errors.ts";
 import { TOOL_FILE_LIMITS } from "../../../src/limits.ts";
 import { scratchMount } from "./media/files-policy.ts";
@@ -39,7 +39,7 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Prom
   const { handleAgentFileRequest } = await import("./files.ts");
   const { boundedBytes } = await import("./images.ts");
   const own = agentRepoId(scope.tenant, scope.agent);
-  const workspace = scratchMount(scope.mounts.map(mount => ({ ...mount, workspace: 'repo'in mount ? mount.repo === own : mount.volumeId===`agent:${scope.agent}` })));
+  const workspace = scratchMount(scope.mounts.map(mount => ({ ...mount, workspace: mount.repo === own })));
   if (!workspace) throw new Error("generate_image needs a workspace to save the image in, and this agent has none");
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(scope.callId)));
   const directory = `${workspace.path}/tool-outputs/generate_image/${Array.from(hash.subarray(0, 12), byte => byte.toString(16).padStart(2, "0")).join("")}`;

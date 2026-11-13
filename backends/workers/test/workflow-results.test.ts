@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { fixture } from "./workflow-repo-fixture.ts";
 import { registerHooks } from "node:module";
 
 // The object's module extends DurableObject: a stand-in that keeps ctx and env, as the runtime's does.
@@ -11,7 +12,7 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
 const { WorkflowResults, cacheKey, RESULT_CACHE_LIMITS } = await import("../src/workflow-results.ts");
 hooks.deregister();
 
-function cache(t: { after(fn: () => void): void }, deleted: (tenant: string, fork: string) => void = () => {}) {
+function cache(t: { after(fn: () => void): void }, env = {} as any) {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
   const sql = { exec(query: string, ...args: any[]) {
@@ -22,8 +23,8 @@ function cache(t: { after(fn: () => void): void }, deleted: (tenant: string, for
   } } as unknown as SqlStorage;
   const state = { alarm: null as number | null, clock: 1_000_000 };
   const ctx = { storage: { sql, setAlarm: async (at: number) => { state.alarm = at; }, deleteAlarm: async () => { state.alarm = null; } } };
-  const object = new WorkflowResults(ctx as never, {} as never);
-  Object.assign(object, { now: () => state.clock, deleteFork: async (tenant: string, fork: string) => deleted(tenant, fork) });
+  const object = new WorkflowResults(ctx as never, env);
+  Object.assign(object, { now: () => state.clock });
   return { object, state, db };
 }
 
@@ -35,7 +36,7 @@ test("a result is kept once per kind and key: the first stays, a hit answers it 
   assert.deepEqual(await object.put({ kind: "agent", key, source: "wf2:review:a:1", workflow: "wf2", value: { text: "second" } }), { stored: false });
   assert.deepEqual(await object.lookup("agent", key), { value: { text: "first" }, source: "wf1:review:a:1" });
   assert.equal(await object.lookup("job", key), undefined, "the kind is part of the key");
-  // The repo's version is part of an agent's key on a fork: another version is another key.
+  // Different base trees have different keys.
   assert.notEqual(cacheKey('{"prompt":"x","repo":"vol_1"}', 5), cacheKey('{"prompt":"x","repo":"vol_1"}', 6));
   assert.equal(await object.lookup("agent", cacheKey('{"prompt":"review a"}', 5)), undefined);
   const big = "x".repeat(RESULT_CACHE_LIMITS.entryBytes);
@@ -59,49 +60,6 @@ test("an entry lives 7 days from its last hit", async t => {
   assert.equal(state.alarm, null, "nothing left");
 });
 
-test("a fork has one owner: its workflow until it ends, then the cache if an entry names it, which deletes it when the entry goes", async t => {
-  const deleted: string[] = [];
-  let failing = 1;
-  const { object, state } = cache(t, (tenant, fork) => { if (failing-- > 0) throw new Error("storage down"); deleted.push(`${tenant}/${fork}`); });
-  const fork = { tenant: "acme", volume: "vol_f" };
-  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: { fork: { volume: "vol_f" } }, fork });
-  assert.equal(await object.adopt("vol_f", "acme"), true, "an entry names it: the cache owns it now");
-  // The entry is evicted (expired): the fork is deleted, again after a failure.
-  state.clock += RESULT_CACHE_LIMITS.ttlMs;
-  await object.alarm();
-  assert.deepEqual(deleted, []);
-  assert.equal(state.alarm, state.clock + RESULT_CACHE_LIMITS.retryMs);
-  state.clock = state.alarm!;
-  await object.alarm();
-  assert.deepEqual(deleted, ["acme/vol_f"]);
-
-  // No entry names it: the workflow keeps (deletes) it, and a put naming it after that is refused.
-  assert.equal(await object.adopt("vol_g", "acme"), false);
-  assert.deepEqual(await object.put({ kind: "agent", key: "late", source: "wf2:late:1", workflow: "wf2", value: 1, fork: { tenant: "acme", volume: "vol_g" } }), { stored: false });
-  assert.equal(await object.lookup("agent", "late"), undefined);
-
-  // Its base moved on (a commit landed): the entries go, and the workflow deletes the fork.
-  await object.put({ kind: "agent", key: "m", source: "wf3:m:1", workflow: "wf3", value: 1, fork: { tenant: "acme", volume: "vol_m" } });
-  assert.equal(await object.adopt("vol_m", "acme", true), false);
-  assert.equal(await object.lookup("agent", "m"), undefined);
-
-  // A fork no workflow handed over (an entry naming any volume, the owner's repo say) is never deleted here.
-  await object.put({ kind: "agent", key: "forged", source: "wf5:x:1", workflow: "wf5", value: 1, fork: { tenant: "acme", volume: "vol_owners_repo" } });
-  state.clock += RESULT_CACHE_LIMITS.ttlMs;
-  await object.alarm();
-  assert.equal(await object.lookup("agent", "forged"), undefined);
-  assert.ok(!deleted.includes("acme/vol_owners_repo"), "only a fork its workflow handed over is the cache's to delete");
-
-  // An entry naming a fork lives at most forkEntryMs, hits or not (its base snapshot's life).
-  await object.put({ kind: "agent", key: "n", source: "wf4:n:1", workflow: "wf4", value: 1, fork: { tenant: "acme", volume: "vol_n" } });
-  assert.equal(await object.adopt("vol_n", "acme"), true);
-  for (let hit = 1; hit < 3; hit++) { state.clock += RESULT_CACHE_LIMITS.forkEntryMs / 3; assert.ok(await object.lookup("agent", "n")); }
-  state.clock += RESULT_CACHE_LIMITS.forkEntryMs / 3;
-  await object.alarm();
-  assert.equal(await object.lookup("agent", "n"), undefined);
-  assert.ok(deleted.includes("acme/vol_n"));
-});
-
 test("past its caps a scope drops the least recently hit first", async t => {
   const { object, state } = cache(t);
   await object.put({ kind: "agent", key: "old", source: "wf1:old:1", workflow: "wf1", value: 1 });
@@ -112,11 +70,33 @@ test("past its caps a scope drops the least recently hit first", async t => {
   assert.equal(await object.lookup("agent", "old"), undefined, "the least recently hit went");
 });
 
-test("an entry that goes before its fork was handed over leaves nothing behind: the workflow still owns the fork", async t => {
-  const { object, state, db } = cache(t);
-  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: 1, fork: { tenant: "acme", volume: "vol_f" } });
+
+test("cached forks are immutable versions retained by a three-day cache ref", async t => {
+  const f = fixture(t), repo = await f.create(), head = await repo.stub.resolve('main');
+  const { object, state, db } = cache(t, f.env);
+  const fork = { tenant: 't', owner: 'api', repo: repo.repoId, version: head.version };
+  await object.put({ kind: 'agent', key: 'tree-key', source: 'wf:k:1', workflow: 'wf', value: { text: 'ok' }, fork });
+  const hit = await object.lookup('agent', 'tree-key');
+  assert.deepEqual(hit?.fork, { repo: repo.repoId, version: head.version });
+  const refs = await repo.stub.refs();
+  const kept = refs.find(r => r.name.startsWith('cache/'))!;
+  assert.match(kept.name, /^cache\/[0-9a-f]{16}$/);
+  assert.equal(kept.owner, 'cache:t:api');
+  assert.ok(kept.expiresAt! > Date.now() + RESULT_CACHE_LIMITS.forkEntryMs - 1000);
   state.clock += RESULT_CACHE_LIMITS.forkEntryMs;
-  await object.alarm();
-  assert.deepEqual(db.prepare("SELECT fork FROM forks").all(), []);
-  assert.equal(await object.adopt("vol_f", "acme"), false, "its workflow deletes it");
+  assert.equal(await object.lookup('agent', 'tree-key'), undefined);
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='forks'").all().length, 0);
+});
+
+test('a ref left by eviction is replaced before caching a new fork version', async t => {
+  const f = fixture(t), repo = await f.create(), head = await repo.stub.resolve('main');
+  const {object,db} = cache(t,f.env);
+  const entry = {kind:'agent',key:'same-key',source:'old:k:1',workflow:'old',value:{text:'old'},fork:{tenant:'t',owner:'api',repo:repo.repoId,version:head.version}};
+  await object.put(entry);
+  db.exec('DELETE FROM results');
+  const edited = await f.write(repo,{'a':{bytes:new TextEncoder().encode('new')}});
+  await object.put({...entry,source:'new:k:1',workflow:'new',value:{text:'new'},fork:{...entry.fork,version:edited.version}});
+  const retained = (await repo.stub.refs()).find(r=>r.name.startsWith('cache/'))!;
+  assert.equal(retained.version,edited.version);
+  assert.equal((await object.lookup('agent','same-key'))!.fork!.version,edited.version);
 });

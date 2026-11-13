@@ -8,7 +8,7 @@ export type CamelfsCommit = { message?: string; trailers?: { agent?: string; run
 export interface Camelfsd {
   // Older daemon adapters can mount and apply without supporting checkpoints.
   checkpoint?(jobId: string, timeoutMs: number, commit?: CamelfsCommit): Promise<CamelfsCheckpoint>;
-  mount(input: { jobId: string; lineage: string; tree: string; vsock: string }): Promise<CamelfsMount>;
+  mount(input: { jobId: string; lineage: string; tree: string; fence?: { holder: string; epoch: number }; vsock: string }): Promise<CamelfsMount>;
   heartbeat?(jobId: string): Promise<void>;
   release(jobId: string): Promise<void>;
   health(): Promise<{ ok: boolean; version: string; data: string; store: string; hostId: string }>;

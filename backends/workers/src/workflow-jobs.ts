@@ -1,20 +1,24 @@
+import { StorageError } from "./repos/storage.ts";
 // The workflow's `job()`, `commit()` and `push()` effects (docs/design/swarm-workflows.md, "Jobs: the ephemeral compute
 // boundary"). A job runs through the JobDriver (jobs/driver.ts) on its own container, paid by the agent that owns the
 // workflow (its metering, receipts and spend limits), or, for a workflow an API key started, by its tenant under the
 // workflow's id (computers/meter-billing.ts); the cost also lands in the workflow's ledger. It runs in a job slot of the
 // capacity limiter the runner holds for it; its named outputs and its
-// output streams are kept in the workflow's volume, and the script gets a small result that names them. A commit lands
-// a child's fork on its base (workflow-volumes.ts). A push is a job that writes a volume to a GitHub branch with the
+// output streams are kept in the workflow's repo, and the script gets a small result that names them. A commit lands
+// a child's fork on its base (workflow-branches.ts). A push is a job that writes a volume to a GitHub branch with the
 // GitHub App's installation token, which only the job's process sees.
-import { createVolume } from "./file-mounts.ts";
+import { createRepo, repoContext, type RepoEnv } from "./repos/registry.ts";
+import { commitChanges, type WriteInput } from "./repos/write.ts";
+import { mergeRefs } from "./repos/merge.ts";
+import { repoErrorFrom } from "./repos/repo-policy.ts";
+import { repoAt, type RepoAt } from "./repos/target.ts";
+import type { WorkflowFork } from "./workflow-branches.ts";
 import { volume, type FileBindings } from "./files.ts";
 import { workerGitHubApps, type GitHubAppsEnv } from "./github-apps.ts";
 import { camelfsConfigured, type CamelfsEnv } from "./jobs/camelfs.ts";
 import { jobDriver, type JobDriver, type JobDriverEnv } from "./jobs/driver.ts";
 import { JOB_LIMITS, JobSpecError, jobVolume, type JobResult, type JobSpec, type JobStream } from "./jobs/job.ts";
-import { assertStorageWrite } from "./storage-quota.ts";
 import { digest } from "./volume.ts";
-import { commitFork } from "./workflow-volumes.ts";
 import { WORKFLOW_LIMITS, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect } from "./workflow-runner.ts";
 
 export type WorkflowJobsEnv = FileBindings & JobDriverEnv & GitHubAppsEnv & CamelfsEnv;
@@ -36,19 +40,13 @@ export interface WorkflowJobsHost {
 
 /** How long the snapshot a job syncs from (its `at` volume) is kept: the job's whole life, with room. */
 const SYNC_SNAPSHOT_TTL_MS = 86_400_000;
-/** Of each stream, what the script sees inline (its end): the whole stream is in the workflow's volume. */
+/** Of each stream, what the script sees inline (its end): the whole stream is in the workflow's repo. */
 const TAIL_CHARS = 1_500;
 const ROW = "workflow-job:";
 
 /** The job's id: one per effect `key:attempt`, so a run made again is the same job (its container object, its slot). */
 export async function jobId(workflow: string, key: string, attempt: number) {
   return `wf-${(await digest(new TextEncoder().encode(`${workflow}\n${key}\n${attempt}`))).slice(0, 40)}`;
-}
-
-/** The workflow's own volume: job outputs and streams, under /jobs/<job id>/. Made once, by key. */
-export async function workflowVolume(env: FileBindings, tenant: string, workflow: string) {
-  const made = await createVolume(env, tenant, { name: `workflow ${workflow}`.slice(0, 120), key: `workflow:${workflow}:files` });
-  return made.id;
 }
 
 /** Replace every secret in `text` (a token a command printed), so no result or log carries it. */
@@ -60,7 +58,7 @@ const decoder = new TextDecoder();
 type JobArgs = {
   command: string; timeoutSeconds: number; outputs?: string[]; limits?: JobSpec["limits"]; internet?: boolean;
   /** A volume of the tenant's whose files the job starts with, in /repo (synced from a snapshot taken now). */
-  at?: string;
+  at?: string | RepoAt;
   /** Checkpoint /repo when the command ends; needs `at` and camelFS job hosts. */
   commit?: boolean;
   /** Small files given inline, path to text. */
@@ -109,7 +107,7 @@ export class WorkflowJobs implements EffectExecutor {
     const id = await jobId(this.host.workflow.id, effect.key, effect.attempt);
     // Its row first: a restart before it lands runs it again (`recover`). A job is run again, not resumed: what a job
     // does must be safe to do twice (a build, a test, a push of the same tree, which pushes nothing new); a commit made
-    // again finds its files already landed (commitFork).
+    // again finds its files already landed (mergeRefs).
     await this.host.storage.put(ROW + id, { key: effect.key, attempt: effect.attempt, kind: effect.kind, args: effect.args });
     this.launch(id, effect);
   }
@@ -164,6 +162,7 @@ export class WorkflowJobs implements EffectExecutor {
       if (effect.kind === "push") ({ spec, snapshotMs, secrets, parse } = await this.pushSpec(id, effect.args as PushArgs));
       else ({ spec, snapshotMs } = await this.jobSpec(id, effect.args as JobArgs));
     } catch (error) {
+      if (error instanceof StorageError) throw error;
       // A bad argument, an unknown volume, a GitHub App that will not give a token: the script gets null and the item says why.
       if (error instanceof JobSpecError || (error as { status?: number }).status !== undefined && (error as { status: number }).status < 500)
         return done({ ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -205,16 +204,21 @@ export class WorkflowJobs implements EffectExecutor {
     if (args.files !== undefined && (!args.files || typeof args.files !== "object" || Object.values(args.files).some(text => typeof text !== "string")))
       throw new JobSpecError("job() files maps paths to text");
     const tenant = this.host.workflow.tenant;
-    let source: Pick<JobSpec, "volume" | "files"> = {};
+    let source: Pick<JobSpec, "volume" | "files" | "repo"> = {};
     let snapshotMs: number | undefined;
     if (args.at !== undefined) {
-      if (typeof args.at !== "string") throw new JobSpecError("job() at is a volume id");
-      const at = args.at;
-      const base = await jobVolume(() => volume(this.env, tenant, at), at);
-      const snapshotFrom = Date.now();
-      const snapshot = await base.snapshot(`job ${id}`, { pinned: true, labels: { workflow: this.host.workflow.id }, expiresAt: Date.now() + SYNC_SNAPSHOT_TTL_MS });
-      snapshotMs = Date.now() - snapshotFrom;
-      source = { volume: { tenant, volume: args.at, snapshot: snapshot.id } };
+      if (typeof args.at !== "string") {
+        const target = repoAt(args.at);
+        await this.host.storage.put(`workflow-repo:${target.repo}`, true);
+        source = { repo: { ...target, tenant, owner: `workflow:${this.host.workflow.id}` } };
+      } else {
+        const at = args.at;
+        const base = await jobVolume(() => volume(this.env, tenant, at), at);
+        const snapshotFrom = Date.now();
+        const snapshot = await base.snapshot(`job ${id}`, { pinned: true, labels: { workflow: this.host.workflow.id }, expiresAt: Date.now() + SYNC_SNAPSHOT_TTL_MS });
+        snapshotMs = Date.now() - snapshotFrom;
+        source = { volume: { tenant, volume: args.at, snapshot: snapshot.id } };
+      }
     } else if (args.files) source = { files: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, new TextEncoder().encode(text)])) };
     return { snapshotMs, spec: {
       id, command: args.command, timeoutSeconds: Math.ceil(args.timeoutSeconds), ...(args.outputs ? { outputs: args.outputs } : {}),
@@ -241,23 +245,23 @@ export class WorkflowJobs implements EffectExecutor {
       spec, snapshotMs, secrets: [minted.token],
       parse: (result: Extract<JobResult, { ok: true }>, value: Record<string, unknown>) => {
         const line = /PUSH_RESULT (pushed|unchanged) ([0-9a-f]{40})/.exec(decoder.decode(result.stdout.bytes));
-        return { ...value, pushed: result.exitCode === 0 && line?.[1] === "pushed", ...(line ? { commit: line[2] } : {}), repo: args.repo, branch: args.branch };
+        return { ...value, pushed: result.exitCode === 0 && line?.[1] === "pushed", ...(line ? { commit: line[2] } : {}), branch: args.branch };
       },
     };
   }
 
   /**
-   * The job's outputs and streams, kept in the workflow's volume under /jobs/<id>/; the script gets their paths and
+   * The job's outputs and streams, kept in the workflow's repo under /jobs/<id>/; the script gets their paths and
    * sizes, and each stream's end, within the inline result's size.
    */
   private async keep(id: string, result: Extract<JobResult, { ok: true }>, secrets: string[], steps: Record<string, number>, keepFrom: number) {
     const tenant = this.host.workflow.tenant;
-    const volumeId = await workflowVolume(this.env, tenant, this.host.workflow.id);
-    const files = await volume(this.env, tenant, volumeId);
+    const made = await createRepo(this.env as RepoEnv, tenant, { key: `workflow:${this.host.workflow.id}`, author: `workflow:${this.host.workflow.id}` });
+    const ctx = await repoContext(this.env as RepoEnv, tenant, made.info.id), changes: WriteInput['changes'] = {};
     const write = async (name: string, bytes: Uint8Array) => {
-      await assertStorageWrite(this.env, tenant, bytes.byteLength);
-      const file = await files.write(`/jobs/${id}/${name}`, bytes);
-      return file.path;
+      const path = `jobs/${id}/${name}`;
+      changes[path] = { bytes };
+      return '/' + path;
     };
     const stream = async (name: string, value: JobStream) => {
       const text = redact(decoder.decode(value.bytes), secrets);
@@ -268,10 +272,12 @@ export class WorkflowJobs implements EffectExecutor {
     for (const [name, output] of Object.entries(result.outputs)) outputs[name] = { path: await write(`out/${name}`, output.bytes), bytes: output.size, truncated: output.truncated };
     const keptSteps = { ...result.timings.steps, ...steps, keepMs: 0 };
     const value: Record<string, unknown> = {
-      exitCode: result.exitCode, timedOut: result.timedOut, volume: volumeId,
+      exitCode: result.exitCode, timedOut: result.timedOut, repo: made.info.id,
       stdout: await stream("stdout.txt", result.stdout), stderr: await stream("stderr.txt", result.stderr), outputs, missing: result.missing,
       timings: { totalMs: result.timings.totalMs, commandMs: result.timings.commandMs, steps: keptSteps },
     };
+    const kept = await commitChanges(ctx, { ref: 'main', changes, message: `job ${id}`, author: `workflow:${this.host.workflow.id}`, who: `workflow:${this.host.workflow.id}`, why: 'keep', idempotencyKey: `keep:${id}` });
+    value.version = kept.version;
     if (result.camelfs) {
       const { tree, root, commit, checkpointError, warm, mountMs, applyMs, checkpointMs, checkpoint } = result.camelfs;
       for (const [key, field] of Object.entries({ tree, root, commit, checkpointError })) if (field !== undefined) value[key] = field;
@@ -279,7 +285,7 @@ export class WorkflowJobs implements EffectExecutor {
         warm, mountMs, applyMs, ...(checkpointMs ? { checkpointMs } : {}), ...(checkpoint ? { checkpoint } : {}),
       };
     }
-    // The inline result stays under the runner's cap: the tails shrink first (the streams are whole in the volume).
+    // The inline result stays under the runner's cap: the tails shrink first (the streams are whole in the repo).
     for (let tail = TAIL_CHARS; new TextEncoder().encode(JSON.stringify(value)).byteLength > WORKFLOW_LIMITS.inlineResultBytes - 512 && tail > 0; tail = Math.floor(tail / 2)) {
       for (const name of ["stdout", "stderr"] as const) (value[name] as { tail: string }).tail = (value[name] as { tail: string }).tail.slice(-tail);
     }
@@ -291,10 +297,22 @@ export class WorkflowJobs implements EffectExecutor {
   /** commit(fork): the fork's edits onto its base, or the conflicts. Storage down throws: its row stays, a restart tries again. */
   private async commit(args: { fork?: unknown; snapshot?: unknown }): Promise<EffectOutcome> {
     try {
-      if (typeof args.fork !== "string") throw Object.assign(new Error("commit() needs a fork's volume id"), { status: 400 });
-      if (args.snapshot !== undefined && typeof args.snapshot !== "string") throw Object.assign(new Error("commit() snapshot is a name"), { status: 400 });
-      return { ok: true, value: await commitFork(this.env, this.host.workflow.tenant, args.fork, args.snapshot ? { snapshot: args.snapshot } : {}) };
+      if ('snapshot' in args) throw Object.assign(new Error('commit() has no snapshot option'), { status: 400 });
+      const fork = args.fork as WorkflowFork;
+      if (!fork || typeof fork !== 'object' || typeof fork.repo !== 'string' || typeof fork.ref !== 'string' || !fork.base)
+        throw Object.assign(new Error('commit() needs { fork: { repo, ref, base } }'), { status: 400 });
+      if (!fork.base.ref) return { ok: false, error: 'A fork of a version has no base ref to merge into' };
+      const ctx = await repoContext(this.env as RepoEnv, this.host.workflow.tenant, fork.repo);
+      try {
+        const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref });
+        return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed, ...('files' in merged ? { files: Object.keys(merged.files) } : {}) } };
+      } catch (error) {
+        const found = repoErrorFrom(error);
+        if (found?.code === 'conflicts') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };
+        throw error;
+      }
     } catch (error) {
+      if (error instanceof StorageError) throw error;
       const status = (error as { status?: number }).status;
       if (status === undefined || status >= 500) throw error;
       return { ok: false, error: error instanceof Error ? error.message : String(error) };

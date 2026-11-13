@@ -24,37 +24,20 @@ test(
         signal: AbortSignal.timeout(20000),
       });
     try {
-      await t.test('stored legacy mounts keep tools, uploads and attachments on Volumes',async()=>{
+      await t.test('stored legacy mounts refuse use and remain replaceable',async()=>{
         const make=async(path:string,value:unknown)=>{const r=await call(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(value)});assert.ok(r.ok,await r.clone().text());return await r.json() as any;};
         const agent=await make('/v1/agents',{});
-        await make('/__test/stored-legacy-mount',{agent:agent.id});
-        const storedMounts=await (await call(`/v1/agents/${agent.id}/mounts`)).json() as any[];
-        const legacy={id:storedMounts[0].volumeId};
-        const renamed=await call(`/v1/agents/${agent.id}/metadata`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'stored pilot'})});
-        assert.equal(renamed.status,200,await renamed.clone().text());
-        assert.deepEqual(await (await call(`/v1/agents/${agent.id}/mounts`)).json(),storedMounts);
-        const run=async(id:string,method:string,params:unknown)=>{
-          await make(`/v1/agents/${agent.id}/requests`,{id,method,params});
-          const r=await call(`/v1/agents/${agent.id}/requests/${id}?wait=20`),value=await r.json() as any;
-          assert.equal(value.state,'completed',JSON.stringify(value));assert.equal(value.outcome?.error,undefined,JSON.stringify(value));return value;
-        };
-        const result=await run('legacy-tools','execute',{code:'await tools.write({path:"/workspace/old.txt",content:"still works"}); return await tools.read({path:"/workspace/old.txt"});'});
-        assert.ok(JSON.stringify(result.outcome).includes('still works'));
-        const uploaded=await call(`/v1/agents/${agent.id}/uploads/legacy-upload/note.txt`,{method:'PUT',body:'legacy upload'});
-        assert.equal(uploaded.status,201,await uploaded.clone().text());
-        const ref=await uploaded.json() as any;assert.equal(typeof ref.version,'number');
-        const old=await call(`/v1/volumes/${legacy.id}/files/uploads/legacy-upload/note.txt`);assert.equal(await old.text(),'legacy upload');
-        await run('legacy-attach','prompt',{text:'Read the attachment',files:[{path:ref.path}]});
-        const history=await (await call(`/v1/agents/${agent.id}/history`)).json() as any;
-        const refs=history.messages.flatMap((m:any)=>m.content??[]).filter((p:any)=>p.type==='file');
-        assert.ok(refs.some((f:any)=>f.volume===legacy.id&&typeof f.version==='number'&&!f.repo));
-        const child=await make(`/v1/agents/${agent.id}/fork`,{key:'stored-legacy-fork'});
-        const childMounts=await (await call(`/v1/agents/${child.id}/mounts`)).json() as any[];
-        assert.ok(childMounts[0].repo);assert.equal(childMounts[0].volumeId,undefined);
-        const childFile=`/v1/agents/${child.id}/files/workspace/old.txt`;
-        assert.equal(await (await call(childFile)).text(),'still works');
-        assert.equal((await call(childFile,{method:'PUT',body:'child repo write'})).status,201);
-        assert.equal(await (await call(`/v1/agents/${agent.id}/files/workspace/old.txt`)).text(),'still works');
+        const injected=await call('/__test/stored-legacy-mount',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agent:agent.id})});
+        assert.ok([200,409].includes(injected.status),await injected.clone().text());
+        const mounts=await (await call(`/v1/agents/${agent.id}/mounts`)).json() as any[];
+        const refused=await call(`/v1/agents/${agent.id}/files/workspace/old.txt`);
+        assert.equal(refused.status,409,await refused.clone().text());
+        assert.match(await refused.text(),new RegExp(`Mount of volume ${mounts[0].volumeId} at /workspace is retired`));
+        assert.ok(worker.logs().includes('legacy_volume_mount_refused'));
+        assert.deepEqual(await (await call(`/v1/agents/${agent.id}/mounts`)).json(),mounts);
+        const repo=await make('/v1/repos',{name:'replacement'});
+        const replaced=await call(`/v1/agents/${agent.id}/mounts`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({mounts:[{repo:repo.id,path:'/workspace',mode:'rw'}],remount:true})});
+        assert.equal(replaced.status,200,await replaced.clone().text());
       });
       await t.test('repo tool-file URLs retain immutable files and directory archives',async()=>{
         const created=await call('/v1/agents',{method:'POST',headers:{'content-type':'application/json','idempotency-key':'repo-tool-links'},body:JSON.stringify({})});

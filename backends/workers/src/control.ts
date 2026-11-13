@@ -126,7 +126,7 @@ export async function authenticate(
 }
 
 const mountIdentity = (mounts: AgentConfiguration['mounts']) => JSON.stringify((mounts ?? []).map(mount =>
-  [mount.repo ?? mount.volumeId, mount.ref ?? "main", mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
+  [mount.repo, mount.ref ?? "main", mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
 
 export class Directory {
   private env: ControlEnv;
@@ -174,13 +174,12 @@ export class Directory {
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
     queueConfiguration = false,
-    internalMounts?: AgentConfiguration["mounts"],
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
       ? await prepareApply(`default-model:${JSON.stringify([this.tenantId, fields.keyScope])}`, () => defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined))
       : this.env.MODEL;
-    const { config, ttlSeconds } = configuration(internalMounts ? {...fields,mounts:undefined} : input, defaultModel);
+    const { config, ttlSeconds } = configuration(input, defaultModel);
     const workspaces = new Workspaces(database(this.env));
     if (config.workspaceId !== undefined) await workspaces.validate(this.tenantId, config.workspaceId);
     const key =
@@ -238,12 +237,11 @@ export class Directory {
       : async () => {};
     let rate: RateLimitState | undefined;
     try {
-    const requested=internalMounts ? undefined : (input as {mounts?:unknown;remount?:boolean}).mounts;
+    const requested= (input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
     // Repo preparation uses SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    config.mounts=internalMounts ?? (requested===undefined && before?.config.mounts ? before.config.mounts : await (await import('./repos/mounts.ts')).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv,this.tenantId,id,requested));
+    config.mounts=(requested===undefined && before?.config.mounts ? before.config.mounts : await (await import('./repos/mounts.ts')).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv,this.tenantId,id,requested));
     const admitCreate = config.type !== "run" ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
     let createdHere = false;
     let priorMounts:AgentConfiguration["mounts"];

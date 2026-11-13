@@ -28,7 +28,7 @@ test("mount preparation follows owner checks and an upsert preserves mounts read
   };
   const rejected=await call('/v1/agents',{body:{mounts:[{volumeId:'vol_'+ 'a'.repeat(24),path:'/workspace',mode:'rw'}]}});
   assert.equal(rejected.status,400);
-  assert.equal(rejected.body.error,'Volumes are replaced by repos: mount { repo }');
+  assert.equal(rejected.body.error,'Unsupported field: volumeId');
   const created = await call("/v1/agents", { key: "owned", body: { mounts: [{ workspace: false }] } });
   assert.equal(created.status, 201, JSON.stringify(created));
   const unknown = { repo: `repo_${"f".repeat(24)}`, path: "/foreign", mode: "rw" };

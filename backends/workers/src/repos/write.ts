@@ -196,12 +196,13 @@ export async function branch(ctx: RepoContext, input: {
   };
   owner?: string;
   ttlSeconds?: number;
+  why?: string;
   who: string;
 }) {
   check(input.ttlSeconds === undefined || (Number.isSafeInteger(input.ttlSeconds) && input.ttlSeconds > 0), 'bad-ttl');
   const expiresAt = input.ttlSeconds === undefined ? undefined : Date.now() + input.ttlSeconds * 1000;
   try {
-    const r = await ctx.stub.createRef({ ...input, expiresAt, why: 'branch' });
+    const r = await ctx.stub.createRef({ ...input, expiresAt, why: input.why ?? 'branch' });
     await reportUsage(ctx);
     return r;
   }
@@ -212,7 +213,7 @@ export async function branch(ctx: RepoContext, input: {
   const target = await ctx.stub.resolve(typeof input.from === 'string' ? input.from : input.from.version), commit = await ctx.stub.commit(target.version);
   check(commit);
   // createRef saw the destination absent; never overwrite a concurrently created ref.
-  await ctx.stub.cas({ ref: input.name, expect: null, commit, entries: await versionEntries(ctx, target.version, target.tree), owner: input.owner, expiresAt, who: input.who, why: 'branch' });
+  await ctx.stub.cas({ ref: input.name, expect: null, commit, entries: await versionEntries(ctx, target.version, target.tree), owner: input.owner, expiresAt, who: input.who, why: input.why ?? 'branch' });
   await reportUsage(ctx);
   return await ctx.stub.ref(input.name);
 }

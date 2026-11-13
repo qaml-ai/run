@@ -1,22 +1,14 @@
-### Workflows: job(), forked children, commit() and push()
+### Workflow branches and job outputs
 
-On the Workers backend (pilot), a workflow script can now:
+On Workers, `agent(prompt, { repo })` gives each child a branch at `/repo`.
+`repo` is a repo id or `{ repo, ref? | version? }`. The answer includes
+`fork: { repo, ref, base: { ref?, version } }`.
 
-- give a child its own copy of a volume to edit: `agent(prompt, { repo: volumeId })` mounts a metadata-only fork of the
-  volume at `/repo` (no bytes copied) and answers `{ text, fork }`;
-- land a child's edits on the volume with `commit(result.fork)`: every changed or removed file in one atomic commit,
-  checked against the version the fork started from, or `{ committed: false, conflicts: [{ path, headVersion }] }` with
-  nothing written when the volume changed under any of them;
-- run a command in a container of its own with `job({ command, timeoutSeconds, at: volumeId, files?, outputs?, limits? })`,
-  under the workflow's `jobConcurrency` (default 8) and the account's job cap. Its outputs and full stdout/stderr are kept
-  in the workflow's volume under `/jobs/<id>/`; the script gets the exit code, each stream's end and the files' paths;
-- push a volume to a GitHub branch with `push({ volume, repo, branch, app })`, a job that uses the GitHub App's
-  installation token without the script or any model seeing it.
+`commit(result.fork)` merges onto the base ref. It answers
+`{ committed: true, version, changed, files? }` or `{ committed: false, conflicts }`.
+A fork of a bare version cannot merge back. `snapshot` is no longer accepted.
+Workflow refs are removed at the end; cached results retain separate refs for 3 days.
 
-A job is paid by the agent that owns the workflow (the one that started it with the workflows builtin), with its
-metering and spend limits, once per job however often it is run again; its cost also counts against the workflow's
-budget. A workflow started with an API key has no owner agent: its jobs are paid by its account, admitted by the
-account's monthly spend limit and prepaid credit (its balance, as a fresh run checks it: credit holds are not subtracted), and recorded under the workflow's id (`usage` rows,
-usage details with the workflow as agent and root, one receipt per job run, however often it is run again). A job
-they refuse pauses the workflow with `payer_exhausted`.
-Jobs need Cloudflare Containers, on the pilot only for now: elsewhere `job()` fails with `JOBS_UNAVAILABLE`.
+A job's streams and outputs are kept in one commit under `jobs/<id>/` in the
+workflow's repo. Its result names `repo` and `version`.
+String `job({ at })` and `push({ volume, repo, branch, app })` still accept volumes.
