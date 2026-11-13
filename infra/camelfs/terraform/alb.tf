@@ -210,6 +210,16 @@ resource "aws_lb_listener" "api_https" {
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = aws_acm_certificate_validation.api[0].certificate_arn
 
+  # §9.12 (mtls.tf). Public: Cloudflare's zone certificate from our AOP CA, once aop_ca_version pins it; off before
+  # (the Cloudflare-ranges group alone, as the runtime's ALB ran until its own AOP). Internal: every host presents a
+  # certificate from the hosts' Private CA, from the first listener on. Verify, never passthrough: the ALB checks the
+  # chain and the expiry itself and strips client-supplied X-Amzn-Mtls-Clientcert-* headers.
+  mutual_authentication {
+    mode                             = each.key == "internal" ? "verify" : (var.aop_ca_version == null ? "off" : "verify")
+    trust_store_arn                  = each.key == "internal" ? aws_lb_trust_store.hosts.arn : one(aws_lb_trust_store.aop[*].arn)
+    ignore_client_certificate_expiry = each.key == "internal" || var.aop_ca_version != null ? false : null
+  }
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api[each.key].arn

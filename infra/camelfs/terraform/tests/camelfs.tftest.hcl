@@ -11,6 +11,9 @@ mock_provider "aws" {
   mock_data "aws_iam_openid_connect_provider" {
     defaults = { arn = "arn:aws:iam::904534089871:oidc-provider/token.actions.githubusercontent.com" }
   }
+  mock_data "aws_partition" {
+    defaults = { partition = "aws" }
+  }
   mock_data "aws_sns_topic" {
     defaults = { arn = "arn:aws:sns:us-west-2:904534089871:camelai-agent-runtime-alerts" }
   }
@@ -53,6 +56,21 @@ mock_provider "aws" {
   mock_resource "aws_ecr_repository" {
     defaults = { repository_url = "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod", arn = "arn:aws:ecr:us-west-2:904534089871:repository/camelfs-prod" }
   }
+  mock_resource "aws_acmpca_certificate_authority" {
+    defaults = { arn = "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", certificate_signing_request = "-----BEGIN CERTIFICATE REQUEST-----\nmock\n-----END CERTIFICATE REQUEST-----\n" }
+  }
+  mock_resource "aws_acmpca_certificate" {
+    defaults = { certificate = "-----BEGIN CERTIFICATE-----\nmock\n-----END CERTIFICATE-----\n", certificate_chain = "" }
+  }
+  mock_resource "aws_s3_object" {
+    defaults = { version_id = "mockversion1" }
+  }
+  mock_resource "aws_lb_listener" {
+    defaults = { arn = "arn:aws:elasticloadbalancing:us-west-2:904534089871:listener/app/mocked/0123456789abcdef/0123456789abcdef" }
+  }
+  mock_resource "aws_lb_trust_store" {
+    defaults = { arn = "arn:aws:elasticloadbalancing:us-west-2:904534089871:truststore/mocked/0123456789abcdef" }
+  }
   mock_resource "aws_secretsmanager_secret" {
     defaults = { arn = "arn:aws:secretsmanager:us-west-2:904534089871:secret:camelfs/prod/mocked-AbCdEf" }
   }
@@ -82,8 +100,12 @@ run "first_apply_before_the_certificate" {
   command = plan
 
   assert {
-    condition     = length(aws_acm_certificate_validation.api) == 0 && length(aws_lb_listener.api_https) == 0 && length(aws_ecs_service.api) == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
-    error_message = "Before certificate_issued there is no validation wait, no HTTPS listener, no service, no autoscaling and no service alarm: the first apply never hangs on DNS."
+    condition     = length(aws_acm_certificate_validation.api) == 0 && length(aws_lb_listener.api_https) == 0 && length(aws_lb_listener.enroll) == 0 && length(aws_ecs_service.api) == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
+    error_message = "Before certificate_issued there is no validation wait, no HTTPS or enrollment listener, no service, no autoscaling and no service alarm: the first apply never hangs on DNS."
+  }
+  assert {
+    condition     = length(aws_lb_trust_store.aop) == 0 && aws_acmpca_certificate_authority.hosts.usage_mode == "SHORT_LIVED_CERTIFICATE" && aws_acmpca_certificate_authority.hosts.type == "ROOT" && aws_lb_trust_store.hosts.ca_certificates_bundle_s3_key == "hosts-ca.pem"
+    error_message = "The hosts' CA is a short-lived-mode root with its certificate pinned in the hosts trust store; no AOP trust store until aop_ca_version is set."
   }
   assert {
     condition     = output.service_name == "" && aws_acm_certificate.api.validation_method == "DNS" && aws_acm_certificate.api.domain_name == "fs.camelai.dev" && aws_acm_certificate.api.subject_alternative_names == toset(["fs-internal.camelai.dev"])
@@ -236,12 +258,18 @@ run "roles_and_policies" {
   }
   assert {
     condition = (
-      !anytrue([for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
-      && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Sid if anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])] == ["ServiceVerifyKeys"]
+      !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
       && [for statement in jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement : statement.Action] == [["secretsmanager:GetSecretValue"]]
-      && length(jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement[0].Resource) == 2
+      && length(jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement[0].Resource) == 1
     )
-    error_message = "The api task role reads no secret; the host policy reads only the service's public JWKS; the execution role reads the two secrets it injects."
+    error_message = "Neither the api task role nor the host policy reads a secret; the execution role reads the one JWKS secret it injects."
+  }
+  assert {
+    condition = (
+      [for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Condition.StringEquals["acm-pca:TemplateArn"] if statement.Sid == "IssueHostCertificates"] == [["arn:aws:acm-pca:::template/EndEntityCertificate/V1", "arn:aws:acm-pca:::template/EndEntityClientAuthCertificate/V1"]]
+      && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : anytrue([for action in flatten([statement.Action]) : startswith(action, "acm-pca:")])])
+    )
+    error_message = "Only the api role issues certificates, and only end-entity ones; hosts touch the CA not at all."
   }
 }
 
@@ -256,6 +284,23 @@ run "second_apply_with_the_certificate" {
   assert {
     condition     = length(aws_acm_certificate_validation.api) == 1 && length(aws_lb_listener.api_https) == 2 && alltrue([for listener in aws_lb_listener.api_https : listener.protocol == "HTTPS" && listener.port == 443])
     error_message = "With the certificate issued: the validation wait and two HTTPS listeners on 443."
+  }
+  assert {
+    condition = (
+      aws_lb_listener.api_https["internal"].mutual_authentication[0].mode == "verify"
+      && aws_lb_listener.api_https["internal"].mutual_authentication[0].ignore_client_certificate_expiry == false
+      && aws_lb_listener.api_https["public"].mutual_authentication[0].mode == "off"
+    )
+    error_message = "The internal listener verifies host certificates from the first listener on; the public one runs off until the AOP CA is pinned."
+  }
+  assert {
+    condition = (
+      length(aws_lb_listener.enroll) == 1 && aws_lb_listener.enroll[0].port == 8443 && aws_lb_listener.enroll[0].mutual_authentication[0].mode == "off"
+      && aws_lb_listener.enroll[0].default_action[0].type == "fixed-response"
+      && anytrue([for condition in aws_lb_listener_rule.enroll[0].condition : try(tolist(condition.path_pattern)[0].values, toset([])) == toset(["/v1/hosts/enroll"])])
+      && aws_lb_target_group.enroll.port == 8793
+    )
+    error_message = "The enrollment listener (8443, no client certificate) forwards only POST /v1/hosts/enroll to the enrollment port (8793); everything else is 404."
   }
   assert {
     condition     = length(aws_ecs_service.api) == 1 && aws_ecs_service.api[0].desired_count == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
@@ -282,11 +327,12 @@ run "service_with_an_image" {
     condition     = length(aws_ecs_service.api) == 1 && aws_ecs_service.api[0].desired_count == 2 && length(aws_appautoscaling_target.api) == 1 && length(aws_cloudwatch_metric_alarm.running_tasks) == 1
     error_message = "A minimum above 0 runs tasks, scales them and alarms on fewer than the minimum."
   }
-  # The mock gives both target groups one ARN, so the service's load_balancer set collapses to one element here;
-  # the dynamic block iterates every group (alb.tf has two), and each registration names the api container.
+  # The mock gives every target group one ARN, so the service's load_balancer set collapses here; the dynamic
+  # block iterates every api group (alb.tf has two) plus the enrollment group, and each registration names the
+  # api container on its port.
   assert {
-    condition     = length(aws_lb_target_group.api) == 2 && alltrue([for registration in aws_ecs_service.api[0].load_balancer : registration.container_name == "camelfsd" && registration.container_port == 8790])
-    error_message = "The service registers the api container with the target groups."
+    condition     = length(aws_lb_target_group.api) == 2 && alltrue([for registration in aws_ecs_service.api[0].load_balancer : registration.container_name == "camelfsd" && contains([8790, 8793], registration.container_port)])
+    error_message = "The service registers the api container with the api target groups and the enrollment group."
   }
   assert {
     condition     = aws_ecs_task_definition.api.runtime_platform[0].cpu_architecture == "ARM64" && contains(aws_ecs_task_definition.api.requires_compatibilities, "FARGATE")
@@ -295,19 +341,43 @@ run "service_with_an_image" {
   assert {
     condition = (
       jsondecode(aws_ecs_task_definition.api.container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:0123456789ab"
-      && jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
+      && jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--listen-enroll", "0.0.0.0:8793", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
     )
     error_message = "The task runs the named image as `camelfsd api` with the daemon's flags (proto-block, 2026-11-13)."
   }
   assert {
     condition = (
-      [for secret in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets : secret.name] == ["CAMELFS_JWKS", "CAMELFS_SERVICE_SIGNING_KEY"]
+      [for secret in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets : secret.name] == ["CAMELFS_JWKS"]
       && !anytrue([for pair in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : startswith(pair.name, "CAMELFS_")])
     )
-    error_message = "The runtime's JWKS and the service's signing key are injected from Secrets Manager; no key material is in the environment."
+    error_message = "The runtime's JWKS is injected from Secrets Manager; no key material is in the environment, and no service signing key exists."
   }
   assert {
     condition     = aws_appautoscaling_target.api[0].min_capacity == 2 && aws_appautoscaling_target.api[0].max_capacity == 8
     error_message = "Autoscaling between api_min_count and api_max_count."
+  }
+}
+
+# --- Authenticated Origin Pulls, once the AOP CA is pinned ---
+
+run "public_listener_verifies_once_the_aop_ca_is_pinned" {
+  command = plan
+  variables {
+    certificate_issued = true
+    aop_ca_version     = "AbCdEf0123456789"
+  }
+
+  assert {
+    condition = (
+      length(aws_lb_trust_store.aop) == 1 && aws_lb_trust_store.aop[0].ca_certificates_bundle_s3_key == "aop-ca.pem" && aws_lb_trust_store.aop[0].ca_certificates_bundle_s3_object_version == "AbCdEf0123456789"
+      && aws_lb_listener.api_https["public"].mutual_authentication[0].mode == "verify"
+      && aws_lb_listener.api_https["public"].mutual_authentication[0].ignore_client_certificate_expiry == false
+      && output.mtls.public_mode == "verify"
+    )
+    error_message = "With aop_ca_version set, the public listener requires Cloudflare's certificate from the pinned AOP CA."
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.alb_public_cloudflare) == 13
+    error_message = "The Cloudflare-ranges group stays as the second lock."
   }
 }
