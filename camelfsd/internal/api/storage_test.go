@@ -107,17 +107,17 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 	if again["commit"] != id {
 		t.Fatal("non deterministic commit")
 	}
-	for _, key := range []string{"t/" + tree, "k/" + id} {
+	for _, key := range []string{"a/t/" + tree, "a/k/" + id} {
 		ok, e := st.Has(context.Background(), key)
 		if e != nil || !ok {
 			t.Fatal(key, e)
 		}
 	}
-	es, e := s.repository().ReadTree(context.Background(), tree)
+	es, e := s.repository().ForLineage("a").ReadTree(context.Background(), tree)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if ok, _ := st.Has(context.Background(), "t/"+es[0].SHA1); !ok {
+	if ok, _ := st.Has(context.Background(), "a/t/"+es[0].SHA1); !ok {
 		t.Fatal("subtree not durable")
 	}
 	get := "blobs/" + blob + "?tree=" + tree + "&path=src/a.txt"
@@ -175,12 +175,12 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 		t.Fatal("blob replay wrote")
 	}
 	// Cache misses verify the content id even for an opaque store implementation.
-	_, e = fresh.repository().DB.DB.Exec("DELETE FROM objects")
+	_, e = fresh.repository().ForLineage("a").DB.DB.Exec("DELETE FROM objects")
 	if e != nil {
 		t.Fatal(e)
 	}
 	local := st.Store.(store.Local)
-	_ = store.Atomic(filepath.Join(local.Dir, "t", tree), []byte("corrupt"))
+	_ = store.Atomic(filepath.Join(local.Dir, "a", "t", tree), []byte("corrupt"))
 	callStorage(t, fresh, "a", "GET", "trees/"+tree, nil, "", 500)
 }
 func TestStorageBatchGrepAndDiff(t *testing.T) {
@@ -218,8 +218,8 @@ func TestStorageBatchGrepAndDiff(t *testing.T) {
 	}
 	next := commit(t, s, "l", tree, []change{{Path: "src/a", Mode: "100755"}})["tree"].(string)
 	reads := 0
-	s.repository() // Observe only tree reads, with unchanged subtrees pruned.
-	repo := s.repository()
+	s.repository().ForLineage("a") // Observe only tree reads, with unchanged subtrees pruned.
+	repo := s.repository().ForLineage("l")
 	repo.Query = func(k string) {
 		if k == "tree" {
 			reads++
@@ -271,11 +271,11 @@ func TestStorageMerge(t *testing.T) {
 				}
 			} else {
 				v := response(t, w)
-				f, e := s.repository().File(context.Background(), v["tree"].(string), "x")
+				f, e := s.repository().ForLineage("l").File(context.Background(), v["tree"].(string), "x")
 				if e != nil {
 					t.Fatal(e)
 				}
-				raw, e := blobBytes(context.Background(), s.repository(), "l", f.SHA1)
+				raw, e := blobBytes(context.Background(), s.repository().ForLineage("l"), "l", f.SHA1)
 				if e != nil || string(raw) != "A\nb\nC\n" {
 					t.Fatal(string(raw), e)
 				}

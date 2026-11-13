@@ -32,6 +32,7 @@ type commitRequest struct {
 
 func safeLine(s string) bool { return !strings.ContainsAny(s, "\r\n\x00") }
 func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRequest) (any, error) {
+	r = r.ForLineage(l)
 	if len(q.Changes) > 10000 {
 		return nil, large("")
 	}

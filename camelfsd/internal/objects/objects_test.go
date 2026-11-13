@@ -24,7 +24,7 @@ func repository(t *testing.T) *Repository {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	return &Repository{DB: db, Store: store.Local{Dir: t.TempDir()}, TempDir: t.TempDir()}
+	return (&Repository{DB: db, Store: store.Local{Dir: t.TempDir()}, TempDir: t.TempDir()}).ForLineage("l")
 }
 func TestGitTrees(t *testing.T) {
 	r := repository(t)
@@ -274,7 +274,7 @@ func TestUploadedPersists(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	if spy.puts != 2 || spy.heads != 2 {
+	if spy.puts != 1 || spy.heads != 2 {
 		t.Fatalf("puts=%d heads=%d", spy.puts, spy.heads)
 	}
 }

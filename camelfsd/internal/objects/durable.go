@@ -3,39 +3,43 @@ package objects
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"os"
 	"strings"
 	"time"
 )
 
-// Membership records make the lineage cache recoverable without granting
-// access based only on the existence of a global content hash.
+// Lineage rows cache successful writes or HEADs under the lineage prefix.
+// Store existence is authoritative; SQLite is never a second durable catalog.
 type membership struct {
-	Lineage string
-	ID      string
-	Kind    string
-	Blob    *Blob
+	Lineage, ID, Kind string
+	Blob              *Blob
 }
 
-func membershipKey(l, id, kind string) string {
-	return "l/" + root.Hash([]byte(l+"\x00"+kind+"\x00"+id))
+func kindKey(kind, id string) string {
+	prefix := map[string]string{"blob": "o", "tree": "t", "commit": "k", "root": "r", "chunk": "c"}[kind]
+	return prefix + "/" + id
+}
+func (r *Repository) ForLineage(l string) *Repository {
+	scoped := *r
+	scoped.lineage = l
+	scoped.Store = store.ForLineage(r.Store, l)
+	return &scoped
 }
 func (r *Repository) Record(ctx context.Context, l, id, kind string, b *Blob) error {
-	batch := r.BeginPublication()
-	v := membership{l, id, kind, b}
-	raw, e := json.Marshal(v)
-	if e != nil {
-		return e
+	r = r.ForLineage(l)
+	if r.publication != nil {
+		r.publication.memberships = append(r.publication.memberships, membership{l, id, kind, b})
+		return nil
 	}
-	batch.publication.puts[membershipKey(l, id, kind)] = raw
-	batch.publication.memberships = append(batch.publication.memberships, v)
-	if r.publication == nil {
-		return batch.Flush(ctx)
+	ok, e := r.Reachable(ctx, l, id, kind)
+	if e == nil && !ok {
+		return os.ErrNotExist
 	}
-	return nil
+	return e
 }
 func (r *Repository) cacheMembership(ctx context.Context, v membership) error {
 	if v.Blob != nil {
@@ -49,31 +53,36 @@ func (r *Repository) cacheMembership(ctx context.Context, v membership) error {
 }
 func (r *Repository) Reachable(ctx context.Context, l, id, kind string) (bool, error) {
 	var n int
-	e := r.DB.DB.QueryRowContext(ctx, "SELECT 1 FROM lineage_objects WHERE lineage=? AND id=? AND kind=?", l, id, kind).Scan(&n)
+	query := "SELECT 1 FROM lineage_objects WHERE lineage=? AND id=? AND kind=?"
+	if kind == "blob" {
+		query += " AND EXISTS (SELECT 1 FROM lineage_blobs WHERE lineage=lineage_objects.lineage AND sha1=lineage_objects.id)"
+	}
+	e := r.DB.DB.QueryRowContext(ctx, query, l, id, kind).Scan(&n)
 	if e == nil {
 		return true, nil
 	}
 	if e != sql.ErrNoRows {
 		return false, e
 	}
-	ok, e := r.Store.Has(ctx, membershipKey(l, id, kind))
-	if e != nil || !ok {
-		return false, e
+	r = r.ForLineage(l)
+	info, e := r.Store.Head(ctx, kindKey(kind, id))
+	if errors.Is(e, os.ErrNotExist) {
+		return false, nil
 	}
-	raw, e := r.Store.Get(ctx, membershipKey(l, id, kind))
 	if e != nil {
 		return false, e
 	}
-	var v membership
-	if e = json.Unmarshal(raw, &v); e != nil {
-		return false, e
-	}
-	if v.Lineage != l || v.ID != id || v.Kind != kind {
-		return false, fmt.Errorf("corrupt membership")
+	v := membership{Lineage: l, ID: id, Kind: kind}
+	if kind == "blob" {
+		if !root.Hex(info.SHA256, 64) {
+			return false, fmt.Errorf("invalid blob metadata")
+		}
+		v.Blob = &Blob{SHA1: id, SHA256: info.SHA256, Size: info.Size}
 	}
 	return true, r.cacheMembership(ctx, v)
 }
 func (r *Repository) PutObject(ctx context.Context, l, kind string, b []byte) (string, error) {
+	r = r.ForLineage(l)
 	batch := r.BeginPublication()
 	id := store.GitHash(kind, b)
 	key := "t/"
@@ -93,6 +102,15 @@ func (r *Repository) PutObject(ctx context.Context, l, kind string, b []byte) (s
 	return id, nil
 }
 func (r *Repository) Object(ctx context.Context, id, kind string) ([]byte, error) {
+	if r.lineage != "" {
+		ok, e := r.Reachable(ctx, r.lineage, id, kind)
+		if e != nil {
+			return nil, e
+		}
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+	}
 	var b []byte
 	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind=?", id, kind).Scan(&b)
 	if e != nil && e != sql.ErrNoRows {

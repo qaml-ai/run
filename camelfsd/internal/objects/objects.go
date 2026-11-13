@@ -29,6 +29,7 @@ var ErrIgnored = errors.New("ignored-path")
 var ErrHash = errors.New("hash-mismatch")
 
 type Repository struct {
+	lineage     string
 	publication *publication
 	DB          *refs.DB
 	Store       store.Store
@@ -83,8 +84,9 @@ func Path(p string) error {
 }
 
 func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int64, body io.Reader) (Blob, error) {
+	r = r.ForLineage(lineage)
 	b := Blob{SHA256: hash, Size: size}
-	if lineage == "" || hash != "" && !root.Hex(hash, 64) || size < -1 {
+	if !store.Lineage(lineage) || hash != "" && !root.Hex(hash, 64) || size < -1 {
 		return b, apierr.Invalid("invalid blob request")
 	}
 	if size > MaxBlob {
@@ -146,14 +148,11 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 	}
 	key := "o/" + b.SHA1
 
-	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f); e != nil {
+	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f, b.SHA256); e != nil {
 		return b, e
 	}
 
-	_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", lineage, b.SHA256, b.SHA1, size, time.Now().UnixMilli())
-	if e == nil {
-		e = r.Record(ctx, lineage, b.SHA1, "blob", &b)
-	}
+	e = r.Record(ctx, lineage, b.SHA1, "blob", &b)
 	return b, e
 }
 
@@ -170,6 +169,7 @@ type treeObject struct {
 }
 
 func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
+	r = r.ForLineage(q.Lineage)
 	batch := r.BeginPublication()
 	out, e := batch.importTrees(ctx, q)
 	if e == nil && r.publication == nil {
@@ -180,7 +180,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 func (r *Repository) importTrees(ctx context.Context, q Request) (Result, error) {
 	start := time.Now()
 	out := Result{}
-	if q.Lineage == "" || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
+	if !store.Lineage(q.Lineage) || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
 		return out, apierr.Invalid("invalid tree request")
 	}
 	// Validate the complete listing before consulting blob availability.

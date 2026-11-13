@@ -100,13 +100,13 @@ func TestHydratedPartnerEarlyAndLaterWrites(t *testing.T) {
 	if e = clone(p, partner); e != nil {
 		t.Fatal(e)
 	}
-	early, e := m.earlyWrites(context.Background(), partner, imp.Root, private)
+	early, e := m.earlyWrites(context.Background(), "l", partner, imp.Root, private)
 	if e != nil || len(early) != 1 || early[0].Offset != chunk.Size {
 		t.Fatal(early, e)
 	}
 	f.WriteAt([]byte{3}, 3*chunk.Size)
 	f.Sync()
-	r, _ := m.load(context.Background(), imp.Root)
+	r, _ := m.load(context.Background(), "l", imp.Root)
 	ranges, e := changedRanges(f, int64(len(b)), r.Chunks)
 	if e != nil {
 		t.Fatal(e)

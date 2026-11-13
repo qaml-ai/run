@@ -36,7 +36,7 @@ func (s *gatedPublicationStore) Put(ctx context.Context, key string, b []byte) e
 	}
 	return s.Store.Put(ctx, key, b)
 }
-func TestCommitPublishesTreesCommitAndMembershipsTogether(t *testing.T) {
+func TestCommitPublishesTreesAndCommitTogether(t *testing.T) {
 	st := &gatedPublicationStore{Store: store.Local{Dir: t.TempDir()}, started: make(chan string, 32), release: make(chan struct{})}
 	s := storageServer(t, st)
 	blob := put(t, s, "l", "data")
@@ -51,19 +51,19 @@ func TestCommitPublishesTreesCommitAndMembershipsTogether(t *testing.T) {
 	unblock := func() { once.Do(func() { close(st.release) }) }
 	defer unblock()
 	seen := map[string]bool{}
-	// Five trees, one commit and each membership must all start before any PUT
-	// is allowed to complete. This fails for sequential object/marker phases.
-	for len(seen) < 12 {
+	// Five trees and one commit must all start before any PUT completes.
+	// Authorization cache rows are filled after this durable wave.
+	for len(seen) < 6 {
 		select {
 		case key := <-st.started:
 			seen[key] = true
 		case <-time.After(3 * time.Second):
-			t.Fatalf("only %d of 12 PUTs started", len(seen))
+			t.Fatalf("only %d of 6 PUTs started", len(seen))
 		}
 	}
 	hasCommit := false
 	for key := range seen {
-		if strings.HasPrefix(key, "k/") {
+		if strings.HasPrefix(key, "l/k/") {
 			hasCommit = true
 		}
 	}

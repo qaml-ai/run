@@ -110,13 +110,13 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/lineages/"), "/")
-	if len(parts) < 2 || parts[0] == "" {
+	if len(parts) < 2 || !store.Lineage(parts[0]) {
 		storageFail(w, bad("invalid_request"))
 		return
 	}
 	l := parts[0]
 	route := strings.Join(parts[1:], "/")
-	repo := s.repository()
+	repo := s.repository().ForLineage(l)
 	// Serialize keyed mutations through response publication. A failed request is
 	// retryable; only successful results enter the 24-hour response cache.
 	write := r.Method == "PUT" || r.Method == "POST" && route != "read"

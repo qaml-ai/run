@@ -14,9 +14,6 @@ type opener interface {
 
 // OpenReader streams a store object without materializing its bytes in memory.
 func OpenReader(ctx context.Context, s Store, key string) (io.ReadCloser, error) {
-	if !valid(key) {
-		return nil, fmt.Errorf("invalid key")
-	}
 	if v, ok := s.(opener); ok {
 		return v.Open(ctx, key)
 	}

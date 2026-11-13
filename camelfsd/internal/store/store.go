@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -20,6 +21,7 @@ import (
 )
 
 type Store interface {
+	Head(context.Context, string) (Info, error)
 	Get(context.Context, string) ([]byte, error)
 	Put(context.Context, string, []byte) error
 	Has(context.Context, string) (bool, error)
@@ -27,17 +29,14 @@ type Store interface {
 type Local struct{ Dir string }
 
 func valid(k string) bool {
-	p, h, ok := strings.Cut(k, "/")
-	return ok && (p == "c" || p == "r" || p == "l") && root.Hex(h, 64) || ok && (p == "o" || p == "t" || p == "k") && root.Hex(h, 40)
+	_, p, h, ok := splitKey(k)
+	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k") && root.Hex(h, 40))
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
 		return fmt.Errorf("invalid key")
 	}
-	p, h, _ := strings.Cut(k, "/")
-	if p == "l" {
-		return nil
-	}
+	_, p, h, _ := splitKey(k)
 	actual := root.Hash(b)
 	if p == "o" || p == "t" || p == "k" {
 		kind := "blob"
@@ -78,23 +77,53 @@ func GitHash(kind string, b []byte) string {
 func BlobKey(b []byte) string { return "o/" + GitHash("blob", b) }
 
 // PutBlobFile publishes an already verified blob without buffering it in memory.
-func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
-	if !valid(key) || !strings.HasPrefix(key, "o/") {
-		return fmt.Errorf("invalid blob key")
-	}
-	if _, e := f.Seek(0, 0); e != nil {
-		return e
-	}
+func PutBlobFile(ctx context.Context, s Store, key string, f *os.File, metadata ...string) error {
 	switch v := s.(type) {
+	case *scoped:
+		k, e := v.key(key)
+		if e != nil {
+			return e
+		}
+		return PutBlobFile(ctx, v.Store, k, f, metadata...)
 	case *Uploaded:
-		return v.putFile(ctx, key, f)
+		return v.putFile(ctx, key, f, metadata...)
 	case *limited:
 		if e := v.acquire(ctx); e != nil {
 			return e
 		}
 		defer v.release()
-		return PutBlobFile(ctx, v.Store, key, f)
+		return PutBlobFile(ctx, v.Store, key, f, metadata...)
+	}
+	_, kind, _, _ := splitKey(key)
+	if !valid(key) || kind != "o" {
+		return fmt.Errorf("invalid blob key")
+	}
+	if _, e := f.Seek(0, 0); e != nil {
+		return e
+	}
+	sha := ""
+	if len(metadata) > 0 {
+		sha = metadata[0]
+	}
+	if sha == "" {
+		h := sha256.New()
+		if _, e := io.Copy(h, f); e != nil {
+			return e
+		}
+		sha = fmt.Sprintf("%x", h.Sum(nil))
+		if _, e := f.Seek(0, 0); e != nil {
+			return e
+		}
+	}
+	st, e := f.Stat()
+	if e != nil {
+		return e
+	}
+	switch v := s.(type) {
 	case Local:
+		if e := writeMetadata(filepath.Join(v.Dir, key), Info{Size: st.Size(), SHA256: sha}); e != nil {
+			return ioFailure(e)
+		}
 		dst := filepath.Join(v.Dir, key)
 		if e := os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
 			return ioFailure(e)
@@ -118,7 +147,7 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
 		return ioFailure(os.Rename(tmp.Name(), dst))
 	case *S3:
 		k := v.key(key)
-		_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f})
+		_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f, Metadata: map[string]string{"x-camel-sha256": sha}})
 		return ioFailure(e)
 	default:
 		b, e := io.ReadAll(f)
@@ -148,6 +177,12 @@ func (l Local) Has(c context.Context, k string) (bool, error) {
 func (l Local) Put(c context.Context, k string, b []byte) error {
 	if e := verify(k, b); e != nil {
 		return e
+	}
+	_, kind, _, _ := splitKey(k)
+	if kind == "o" {
+		if e := writeMetadata(filepath.Join(l.Dir, k), Info{Size: int64(len(b)), SHA256: root.Hash(b)}); e != nil {
+			return ioFailure(e)
+		}
 	}
 	return ioFailure(Atomic(filepath.Join(l.Dir, k), b))
 }
@@ -248,7 +283,12 @@ func (s *S3) Put(c context.Context, k string, b []byte) error {
 		return e
 	}
 	key := s.key(k)
-	_, e := s.Client.PutObject(c, &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)})
+	input := &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)}
+	_, kind, _, _ := splitKey(k)
+	if kind == "o" {
+		input.Metadata = map[string]string{"x-camel-sha256": root.Hash(b)}
+	}
+	_, e := s.Client.PutObject(c, input)
 	return ioFailure(e)
 }
 func Parallel(ctx context.Context, n int, items []string, fn func(string) error) error {
@@ -293,8 +333,12 @@ func PutChunks(ctx context.Context, s Store, b map[string][]byte) (int, error) {
 	var mu sync.Mutex
 	n := 0
 	e := Parallel(ctx, Depth(s), keys, func(h string) error {
-		if uploaded, ok := s.(*Uploaded); ok {
-			known, e := uploaded.known(ctx, "c/"+h)
+		inventory, key := s, "c/"+h
+		if scoped, ok := s.(*scoped); ok {
+			inventory, key = scoped.Store, fullKey(s, key)
+		}
+		if uploaded, ok := inventory.(*Uploaded); ok {
+			known, e := uploaded.known(ctx, key)
 			if e != nil || known {
 				return e
 			}
@@ -325,6 +369,9 @@ func WithDepth(s Store, n int) Store {
 	return &limited{s, make(chan struct{}, n)}
 }
 func Depth(s Store) int {
+	if v, ok := s.(*scoped); ok {
+		return Depth(v.Store)
+	}
 	if v, ok := s.(*Uploaded); ok {
 		return Depth(v.Store)
 	}

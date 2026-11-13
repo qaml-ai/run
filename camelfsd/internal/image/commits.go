@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 
 	"regexp"
 	"strings"
@@ -75,10 +76,13 @@ func (m *Manager) writeCommit(ctx context.Context, v *Mount, tree string, q Chec
 	}
 	now := time.Now().Unix()
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n%s", who, who, now, now, msg, trailers.String())
-	return m.objects().PutObject(ctx, v.Lineage, "commit", []byte(body))
+	return m.objects(v.Lineage).PutObject(ctx, v.Lineage, "commit", []byte(body))
 }
-func (m *Manager) Commit(ctx context.Context, id string) (map[string]any, error) {
-	b, e := m.objects().Object(ctx, id, "commit")
+func (m *Manager) Commit(ctx context.Context, id string, lineages ...string) (map[string]any, error) {
+	if len(lineages) != 1 || !store.Lineage(lineages[0]) {
+		return nil, apierr.Invalid("lineage required")
+	}
+	b, e := m.objects(lineages...).Object(ctx, id, "commit")
 	if e != nil {
 		return nil, e
 	}

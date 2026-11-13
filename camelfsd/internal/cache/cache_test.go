@@ -24,7 +24,7 @@ func (c *counted) Has(context.Context, string) (bool, error)   { return false, n
 func TestSingleFlight(t *testing.T) {
 	s := &counted{b: make([]byte, root.ChunkSize), gate: make(chan struct{})}
 	s.b[0] = 1
-	c := New(t.TempDir(), s, 4)
+	c := New(t.TempDir(), store.ForLineage(s, "l"), 4)
 	h := root.Hash(s.b)
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
@@ -45,7 +45,7 @@ func TestSingleFlight(t *testing.T) {
 func TestCorruption(t *testing.T) {
 	s := &counted{b: make([]byte, root.ChunkSize), gate: make(chan struct{})}
 	close(s.gate)
-	c := New(t.TempDir(), s, 4)
+	c := New(t.TempDir(), store.ForLineage(s, "l"), 4)
 	if _, e := c.Ensure(root.Hash([]byte("wrong"))); e == nil {
 		t.Fatal("accepted corrupt chunk")
 	}
@@ -55,7 +55,7 @@ func TestDiskCorruptionAndTrustedHits(t *testing.T) {
 	s := &counted{b: make([]byte, root.ChunkSize), gate: make(chan struct{})}
 	s.b[0] = 1
 	close(s.gate)
-	c := New(t.TempDir(), s, 4)
+	c := New(t.TempDir(), store.ForLineage(s, "l"), 4)
 	defer c.Close()
 	h := root.Hash(s.b)
 	p := filepath.Join(c.Dir, h[:2], h)
@@ -87,13 +87,13 @@ func TestDiskCorruptionAndTrustedHits(t *testing.T) {
 }
 func TestDescriptorLRUBounded(t *testing.T) {
 	s := store.Local{Dir: t.TempDir()}
-	c := New(t.TempDir(), s, 4)
+	c := New(t.TempDir(), store.ForLineage(s, "l"), 4)
 	defer c.Close()
 	for i := 0; i < openLimit+5; i++ {
 		b := make([]byte, root.ChunkSize)
 		binary.BigEndian.PutUint64(b, uint64(i+1))
 		h := root.Hash(b)
-		if e := s.Put(context.Background(), "c/"+h, b); e != nil {
+		if e := s.Put(context.Background(), "l/c/"+h, b); e != nil {
 			t.Fatal(e)
 		}
 		if e := c.ReadAt(h, make([]byte, 4096), 0); e != nil {
@@ -110,7 +110,7 @@ func TestReadAtRefetchesMissingVerifiedFile(t *testing.T) {
 	s := &counted{b: make([]byte, root.ChunkSize), gate: make(chan struct{})}
 	s.b[0] = 39
 	close(s.gate)
-	c := New(t.TempDir(), s, 4)
+	c := New(t.TempDir(), store.ForLineage(s, "l"), 4)
 	defer c.Close()
 	h := root.Hash(s.b)
 	p, e := c.Ensure(h)
@@ -132,3 +132,5 @@ func TestReadAtRefetchesMissingVerifiedFile(t *testing.T) {
 		t.Fatal("recovered hit fetched again", e, s.n.Load())
 	}
 }
+
+func (c *counted) Head(context.Context, string) (store.Info, error) { return store.Info{}, nil }

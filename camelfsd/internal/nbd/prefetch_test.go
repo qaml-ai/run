@@ -50,7 +50,7 @@ func TestBoundedPoolAndPatternReplay(t *testing.T) {
 		b := make([]byte, root.ChunkSize)
 		copy(b, fmt.Sprint(i))
 		h := root.Hash(b)
-		if e := local.Put(context.Background(), "c/"+h, b); e != nil {
+		if e := local.Put(context.Background(), "lineage/c/"+h, b); e != nil {
 			t.Fatal(e)
 		}
 		r.Chunks[strconv.FormatInt(int64(i)*root.ChunkSize, 10)] = h
@@ -58,7 +58,7 @@ func TestBoundedPoolAndPatternReplay(t *testing.T) {
 	s := &measuredStore{Store: local, started: make(chan string, 256), gate: make(chan struct{})}
 	server := &Server{Store: s, Cache: cache.New(t.TempDir(), s, 64), Prefetch: 3, Patterns: t.TempDir()}
 	release := server.Register("r", "lineage", r)
-	p := server.origins["r"]
+	p := server.origins["lineage/r"]
 	p.touch(9 * root.ChunkSize)
 	p.touch(2 * root.ChunkSize)
 	p.touch(9 * root.ChunkSize)
@@ -103,7 +103,7 @@ func TestBoundedPoolAndPatternReplay(t *testing.T) {
 		}
 	}
 	for _, o := range pattern {
-		if !seen["c/"+r.Chunks[strconv.FormatInt(o, 10)]] {
+		if !seen["lineage/c/"+r.Chunks[strconv.FormatInt(o, 10)]] {
 			t.Fatal(seen)
 		}
 	}

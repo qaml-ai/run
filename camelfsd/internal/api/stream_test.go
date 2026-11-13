@@ -21,7 +21,7 @@ type streamingStore struct {
 }
 
 func (s *streamingStore) Get(ctx context.Context, key string) ([]byte, error) {
-	if strings.HasPrefix(key, "o/") {
+	if strings.HasPrefix(key, "l/o/") {
 		return nil, fmt.Errorf("large blob used buffered Get")
 	}
 	return s.Store.Get(ctx, key)
@@ -47,7 +47,7 @@ func TestLargeBlobStreamsToFileWithRangeAndCleanup(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String(), st.opens)
 	}
 	var count int
-	s.repository().DB.DB.QueryRow("SELECT count(*) FROM objects WHERE id=? AND kind='blob'", blob).Scan(&count)
+	s.repository().ForLineage("l").DB.DB.QueryRow("SELECT count(*) FROM objects WHERE id=? AND kind='blob'", blob).Scan(&count)
 	if count != 0 {
 		t.Fatal("large blob cached inline")
 	}
@@ -56,7 +56,7 @@ func TestLargeBlobStreamsToFileWithRangeAndCleanup(t *testing.T) {
 		t.Fatal(files)
 	}
 	// A failed verification must also remove the temporary download.
-	if e := os.WriteFile(filepath.Join(local.Dir, "o", blob), []byte("broken"), 0600); e != nil {
+	if e := os.WriteFile(filepath.Join(local.Dir, "l", "o", blob), []byte("broken"), 0600); e != nil {
 		t.Fatal(e)
 	}
 	w = httptest.NewRecorder()

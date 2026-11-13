@@ -90,7 +90,7 @@ func TestZeroWrittenCheckpointRecordsHoleWithoutUpload(t *testing.T) {
 	if cp.ParentRoot != imp.Root || cp.ChangedChunks != 1 || cp.UploadedChunks != 0 {
 		t.Fatal("zero write uploaded a chunk", cp)
 	}
-	r, e := m.load(ctx, cp.Root)
+	r, e := m.load(ctx, "zeros", cp.Root)
 	if e != nil {
 		t.Fatal(e)
 	}

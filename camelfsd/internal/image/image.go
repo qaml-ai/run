@@ -169,8 +169,8 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	return m, nil
 }
 func ms(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }
-func (m *Manager) load(ctx context.Context, id string) (root.Root, error) {
-	b, e := m.Store.Get(ctx, "r/"+id)
+func (m *Manager) load(ctx context.Context, lineage, id string) (root.Root, error) {
+	b, e := store.ForLineage(m.Store, lineage).Get(ctx, "r/"+id)
 	if e != nil {
 		return root.Root{}, e
 	}
@@ -198,7 +198,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			forms++
 		}
 	}
-	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || q.Lineage == "" || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
+	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || !store.Lineage(q.Lineage) || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
 		return nil, apierr.Invalid("invalid mount request")
 	}
 	m.mu.Lock()
@@ -221,9 +221,18 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if q.Fence != nil && (q.Fence.Holder == "" || q.Fence.Epoch < 0) {
 		return nil, apierr.Invalid("invalid fence")
 	}
+	if q.Root != "" {
+		ok, e := m.objects(q.Lineage).Reachable(ctx, q.Lineage, q.Root, "root")
+		if e != nil {
+			return nil, e
+		}
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+	}
 	var treeRoot string
 	if q.Tree != "" {
-		ok, e := m.objects().Reachable(ctx, q.Lineage, q.Tree, "tree")
+		ok, e := m.objects(q.Lineage).Reachable(ctx, q.Lineage, q.Tree, "tree")
 		if e != nil {
 			return nil, e
 		}
@@ -243,7 +252,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		v.Root = treeRoot
 	}
 	v.Parent = refs.Value{Tree: q.Tree, Root: v.Root}
-	r, e := m.mountRoot(ctx, v.Root)
+	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
 	if e != nil {
 		return nil, e
 	}
@@ -291,7 +300,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		if e = m.sweep(r.VirtualSize); e != nil {
 			return nil, e
 		}
-		e = m.materialize(ctx, r, v.Dest)
+		e = m.materialize(ctx, q.Lineage, r, v.Dest)
 		v.Warm = true
 		v.State = "warm"
 		if e == nil {
@@ -336,7 +345,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	copy := *v
 	return &copy, nil
 }
-func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error {
+func (m *Manager) materialize(ctx context.Context, lineage string, r root.Root, p string) error {
 	f, e := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if e != nil {
 		return e
@@ -353,7 +362,7 @@ func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error 
 	e = store.Parallel(ctx, 32, keys, func(key string) error {
 		i, _ := strconv.Atoi(key)
 		for _, o := range windows[i] {
-			p, e := m.Cache.EnsureContext(ctx, r.Chunks[o])
+			p, e := m.Cache.EnsureLineage(ctx, lineage, r.Chunks[o])
 			if e != nil {
 				return e
 			}
@@ -426,7 +435,7 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 	if e != nil {
 		return e
 	}
-	if _, e = run(ctx, "nbd-client", "-N", v.Root, host, port, v.NBD, "-C", "4"); e != nil {
+	if _, e = run(ctx, "nbd-client", "-N", v.Lineage+"/"+v.Root, host, port, v.NBD, "-C", "4"); e != nil {
 		v.NBD = ""
 		return e
 	}

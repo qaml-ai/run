@@ -18,7 +18,7 @@ func TestStorageErrorsDistinguishIOFromInternal(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(old)
 	local := store.Local{Dir: t.TempDir()}
-	_, missingIO := local.Get(context.Background(), "t/"+strings.Repeat("a", 40))
+	_, missingIO := local.Get(context.Background(), "l/t/"+strings.Repeat("a", 40))
 	if !errors.Is(missingIO, store.ErrUnavailable) {
 		t.Fatal(missingIO)
 	}

@@ -36,6 +36,17 @@ func Open(path string) (*DB, error) {
  CREATE TABLE IF NOT EXISTS lineage_objects(lineage TEXT,id TEXT,kind TEXT,created_at INTEGER,PRIMARY KEY(lineage,id,kind));
  CREATE TABLE IF NOT EXISTS idempotency(key TEXT,lineage TEXT,route TEXT,status INT,body BLOB,created_at INTEGER,PRIMARY KEY(key,lineage,route));
  DROP TABLE IF EXISTS refs; CREATE TABLE IF NOT EXISTS mounts(job_id TEXT PRIMARY KEY,lineage TEXT,name TEXT,root TEXT,tree TEXT,image TEXT,warm INTEGER,state TEXT,lease_epoch INTEGER,created_at INTEGER); CREATE TABLE IF NOT EXISTS tree_roots(lineage TEXT,tree TEXT,root TEXT,created_at INTEGER); CREATE INDEX IF NOT EXISTS tree_lookup ON tree_roots(lineage,tree,created_at);`)
+	if e == nil {
+		// Legacy cache rows describe global keys and cannot authorize prefixed
+		// objects. Retain content caches, but reset namespace-dependent rows once.
+		_, e = d.Exec(`BEGIN;
+ CREATE TABLE IF NOT EXISTS cache_formats(name TEXT PRIMARY KEY);
+ DELETE FROM lineage_objects WHERE NOT EXISTS (SELECT 1 FROM cache_formats WHERE name='lineage-prefix');
+ DELETE FROM lineage_blobs WHERE NOT EXISTS (SELECT 1 FROM cache_formats WHERE name='lineage-prefix');
+ DELETE FROM idempotency WHERE NOT EXISTS (SELECT 1 FROM cache_formats WHERE name='lineage-prefix');
+ INSERT OR IGNORE INTO cache_formats VALUES('lineage-prefix');
+ COMMIT;`)
+	}
 	if e != nil {
 		d.Close()
 		return nil, e

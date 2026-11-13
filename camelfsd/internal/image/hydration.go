@@ -56,13 +56,13 @@ func (m *Manager) hydratedSnapshot(ctx context.Context, v *Mount) error {
 	id := v.Root
 	go func() {
 		defer close(result.done)
-		result.ranges, result.err = m.earlyWrites(bg, p, id, private)
+		result.ranges, result.err = m.earlyWrites(bg, v.Lineage, p, id, private)
 		result.clean = result.err == nil && len(result.ranges) == 0
 	}()
 	return nil
 }
-func (m *Manager) earlyWrites(ctx context.Context, p, id string, before ...[]extent) ([]chunk.Range, error) {
-	r, e := m.load(ctx, id)
+func (m *Manager) earlyWrites(ctx context.Context, lineage, p, id string, before ...[]extent) ([]chunk.Range, error) {
+	r, e := m.load(ctx, lineage, id)
 	if e != nil {
 		return nil, e
 	}

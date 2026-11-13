@@ -45,7 +45,16 @@ func (r *Repository) Flush(ctx context.Context) error {
 		}
 	}
 	for _, v := range p.memberships {
-		if e := r.cacheMembership(ctx, v); e != nil {
+		key := kindKey(v.Kind, v.ID)
+		var e error
+		if _, written := p.puts[key]; written {
+			e = r.cacheMembership(ctx, v)
+		} else {
+			plain := *r
+			plain.publication = nil
+			e = plain.Record(ctx, v.Lineage, v.ID, v.Kind, v.Blob)
+		}
+		if e != nil {
 			return e
 		}
 	}

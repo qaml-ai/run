@@ -57,13 +57,13 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		return out, &apierr.Error{Status: 409, Code: "no_fence", Cause: fmt.Errorf("mount has no fence")}
 	}
 	if tree == "" {
-		tr, e := m.objects().Import(ctx, objects.Request{Lineage: v.Lineage, Files: map[string]objects.File{}})
+		tr, e := m.objects(v.Lineage).Import(ctx, objects.Request{Lineage: v.Lineage, Files: map[string]objects.File{}})
 		if e != nil {
 			return out, e
 		}
 		tree = tr.Tree
 	}
-	r, e := m.mountRoot(ctx, v.Root)
+	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
 	if e != nil {
 		return out, e
 	}
@@ -184,7 +184,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		return out, e
 	}
 	ut := time.Now()
-	out.UploadedChunks, e = store.PutChunks(ctx, m.Store, pending)
+	out.UploadedChunks, e = store.PutChunks(ctx, store.ForLineage(m.Store, v.Lineage), pending)
 	if e != nil {
 		return out, e
 	}
@@ -196,7 +196,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 			return out, e
 		}
 		out.Root = root.Hash(b)
-		if e = m.Store.Put(ctx, "r/"+out.Root, b); e != nil {
+		if e = store.ForLineage(m.Store, v.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
 			return out, e
 		}
 	}
@@ -222,7 +222,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e = ctx.Err(); e != nil {
 		return out, e
 	}
-	e = m.objects().Record(ctx, v.Lineage, out.Root, "root", nil)
+	e = m.objects(v.Lineage).Record(ctx, v.Lineage, out.Root, "root", nil)
 	if e == nil {
 		e = m.Refs.RecordTree(v.Lineage, tree, out.Root)
 	}
@@ -264,7 +264,7 @@ type ImportResult struct {
 
 func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult, err error) {
 	t := time.Now()
-	if q.Lineage == "" || q.Tree != "" && !root.Hex(q.Tree, 40) || !filepath.IsAbs(q.Path) {
+	if !store.Lineage(q.Lineage) || q.Tree != "" && !root.Hex(q.Tree, 40) || !filepath.IsAbs(q.Path) {
 		return out, apierr.Invalid("invalid import request")
 	}
 	p, e := filepath.EvalSymlinks(q.Path)
@@ -302,7 +302,7 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	r := root.Root{V: 1, Tree: q.Tree, FSType: "ext4", VirtualSize: st.Size(), Chunks: map[string]string{}}
 	pending := map[string][]byte{}
 	flush := func() error {
-		n, e := store.PutChunks(ctx, m.Store, pending)
+		n, e := store.PutChunks(ctx, store.ForLineage(m.Store, q.Lineage), pending)
 		out.UploadedChunks += n
 		pending = map[string][]byte{}
 		return e
@@ -330,13 +330,13 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	out.Root = root.Hash(b)
 	out.Tree = q.Tree
 	out.Chunks = len(r.Chunks)
-	if e = m.Store.Put(ctx, "r/"+out.Root, b); e != nil {
+	if e = store.ForLineage(m.Store, q.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
 		return out, e
 	}
 	if e = m.promote(p, out.Root); e != nil {
 		return out, e
 	}
-	if e = m.objects().Record(ctx, q.Lineage, out.Root, "root", nil); e != nil {
+	if e = m.objects(q.Lineage).Record(ctx, q.Lineage, out.Root, "root", nil); e != nil {
 		return out, e
 	}
 	if e = m.Refs.RecordTree(q.Lineage, q.Tree, out.Root); e != nil {

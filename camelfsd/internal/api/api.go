@@ -68,7 +68,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m := s.Manager
 	switch {
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v0/commits/"):
-		v, e := m.Commit(r.Context(), strings.TrimPrefix(r.URL.Path, "/v0/commits/"))
+		v, e := m.Commit(r.Context(), strings.TrimPrefix(r.URL.Path, "/v0/commits/"), r.URL.Query().Get("lineage"))
 		if e != nil {
 			fail(e)
 			return

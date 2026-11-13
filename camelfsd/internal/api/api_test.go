@@ -173,7 +173,7 @@ func TestFenceOwnership(t *testing.T) {
 			if e != nil || cp.Tree == "" || cp.Commit == "" || cp.Root == "" || cp.Timings == nil {
 				t.Fatal(cp, e)
 			}
-			for _, key := range []string{"t/" + cp.Tree, "k/" + cp.Commit, "r/" + cp.Root} {
+			for _, key := range []string{"l/t/" + cp.Tree, "l/k/" + cp.Commit, "l/r/" + cp.Root} {
 				ok, e := st.Has(context.Background(), key)
 				if e != nil || !ok {
 					t.Fatal(key, e)

@@ -11,7 +11,7 @@ import (
 
 func TestCommitBatchesBaseBlobMetadata(t *testing.T) {
 	s := storageServer(t, store.Local{Dir: t.TempDir()})
-	repo := s.repository()
+	repo := s.repository().ForLineage("l")
 	ctx := context.Background()
 	files := map[string]objects.File{}
 	for i := 0; i < 1001; i++ {
