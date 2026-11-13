@@ -381,7 +381,8 @@ function versionTools(
   return [
     defineTool({ name: 'checkpoint', description: 'Save a named version of your files now, such as "tests pass, before refactor". Your work is already saved automatically as you go; name a version when you may want to return to it with restore. Returns the version id. Costs nothing if nothing changed. path picks the mount (default: your workspace).', replay: 'unsafe', parameters: obj({message: str(), path: opt(str())}), async execute({message,path}) {
       const t = await target(path ?? await workspace(), true), head = await t.v.ctx.stub.ref(t.v.ref), previous = head && await t.v.ctx.stub.commit(head.version);
-      if (previous?.trailers['Camel-Checkpoint'] === 'manual') return output(previous.version);
+      // Naming the same point twice is free; a new name for it is a new (empty) commit, never a dropped message.
+      if (previous?.trailers['Camel-Checkpoint'] === 'manual' && previous.message === message) return output(previous.version);
       return output((await commitChanges(t.v.ctx, {ref:t.v.ref, changes:{}, message, allowEmpty:true, author:`agent:${agent}`,who:`agent:${agent}`,why:'checkpoint',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'manual'}})).version);
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {

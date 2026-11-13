@@ -74,7 +74,10 @@ test('agent writes commit once with trailers; stale reads, checkpoints and resto
   }
   await run('write',{path:'/workspace/b.txt',content:'recreated after move'});
   const checkpoint=await run('checkpoint',{message:'tests pass'}),before=count();
-  assert.equal(await run('checkpoint',{message:'again'}),checkpoint);assert.equal(count(),before);
+  assert.equal(await run('checkpoint',{message:'tests pass'}),checkpoint,'the same name for the same point is free');assert.equal(count(),before);
+  const renamed=await run('checkpoint',{message:'again'});
+  assert.notEqual(renamed,checkpoint,'a new name is a new empty commit, not dropped');assert.equal(count(),before+1);
+  assert.equal((await ctx.stub.commit(renamed))!.message,'again');
   await run('write',{path:'/workspace/a.txt',content:'later'});
   assert.match(await run('diff',{}),/modified a.txt/);
   await run('restore',{version:checkpoint.slice(0,7)});
