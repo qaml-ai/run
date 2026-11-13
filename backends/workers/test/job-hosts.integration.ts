@@ -406,8 +406,8 @@ test("repo job mounts its version without import and advances its own ref", { ti
   assert.ok(repoId, JSON.stringify(repo));
   await call(`/v1/repos/${repoId}/commit`, { files: { "seed.txt": { text: "seed" } }, message: "init" });
   const head = (await call(`/v1/repos/${repoId}/refs`)).find((r: any) => r.name === "main");
-  const checkpoint = await fetch(`${api.url}/v1/lineages/${encodeURIComponent(`camelrun-proto-local:${repoId}`)}/commits`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ parents: [head.version], changes: [], message: "job checkpoint", author: "job:repo-integration", trailers: {} }) });
-  assert.ok(checkpoint.ok); const c = await checkpoint.json() as any;
+  const checkpoint = await fetch(`${api.url}/v1/lineages/${encodeURIComponent(repo.lineage ?? `camelrun-proto-local:${repoId}`)}/commits`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ parents: [head.version], changes: [], message: "job checkpoint", author: "job:repo-integration", trailers: {}, time: Math.floor(Date.now() / 1000) }) });
+  assert.ok(checkpoint.ok, `${checkpoint.status} ${await checkpoint.clone().text()}`); const c = await checkpoint.json() as any;
   const enrolled = await call("/v1/internal/job-hosts/enroll", { attestation: { kind: "test", host: "repo-host", secret } });
   const socket = new WebSocket(`${fixture.url.replace(/^http/, "ws")}/v1/internal/job-hosts/connect?host=repo-host`);
   t.after(() => socket.close());
