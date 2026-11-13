@@ -203,7 +203,7 @@ regional storage tier). The state is now:
 | lineages: tenant, kind, default branch | DynamoDB `lineages` | `lineage` |
 | trees and commits (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to S3 `g/`) | DynamoDB `objects` (S3 `t/`, `k/` until the table exists, ledger L74) | `lineage`, `id` |
 | pending deliveries (`notify`; compute's `vm.*` hints) | DynamoDB `deliveries` | `shard`, `id` |
-| usage events (`usage.vm`, `usage.storage`), pulled by the runtime (§9.13) | DynamoDB `usage`, TTL 35 days | `shard`, `id` (ULID) |
+| usage events (`usage.vm`, `usage.storage`), pulled by the runtime (§9.13) | DynamoDB `usage`, TTL 35 days | `shard`, `ulid` |
 | blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
 | the NVMe cache of chunks, images, trees and shards | each host's `camelfsd --role host` | content hash |
 | each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
@@ -225,8 +225,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - `camelfs-prod-deliveries` (`shard` + `id`);
   - `camelfs-prod-hosts` (`pool` + `host`);
   - `camelfs-prod-vms` (`id`).
-  - Still to create (fs-infra): `camelfs-prod-usage` (`shard` + `id`), the one table with DynamoDB TTL (35 days),
-    for §9.13.
+  - `camelfs-prod-usage` (`shard` + `ulid`), the one table with DynamoDB TTL (on `expiresAt`, 35 days), for §9.13:
+    in fs-infra's #985.
 - **Tier:** ECS Fargate (Graviton) service `camelfs-prod-api` behind two ALBs, both with HTTP/2 off: public
   `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts'
   security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
@@ -980,14 +980,19 @@ state that produced it, and the runtime pulls it. Owners:
 - **wf-durable** (K4d): this route.
 - **wf-durable** (K5): the runtime's poller.
 
-**The table.** `usage`, key `shard` (S, `"0"`..`"15"`, `hash(id) mod 16`, as for `deliveries`) + `id` (S, a ULID),
-DynamoDB TTL 35 days.
+**The table.** `usage`, key `shard` (S, `"0"`..`"15"`, a hash mod 16, as for `deliveries`) + `ulid` (S), DynamoDB TTL
+on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable for 35–37 days.
+- **Two ids per event.** The `ulid` is the read-ordering key. Each event also carries a deterministic `eventId`
+  (`<vm>:<seq>` for a VM, `<lineage>:<markedAt>` for storage), which the runtime dedupes on. Gaps in a VM's `seq`
+  are visible to the runtime and to tests.
 - Each event is written in the **same** `TransactWriteItems` as the state change it accounts for. For a VM that
-  is the `vms` row's `billedTo` advancing under the condition `billedTo = :prev`, so an interval can be neither
-  lost nor written twice.
+  is the `vms` row's `billedTo` and `usageSeq` advancing under the condition `billedTo = :prev AND usageSeq = :n`,
+  so an interval can be neither lost nor written twice.
 - There is no `deliveries` item for usage.
-- **The ULID's time is the write's time.** A tier write that would commit later than its ULID's time plus one
-  heartbeat is aborted and retried with a fresh ULID. That is what lets the watermark below be safe.
+- **The ULID's time is the write's time.** The tier mints the ULID immediately before the `TransactWriteItems`,
+  runs that write under a 5 s deadline (SDK retries included), and re-mints on any retry. A DynamoDB transaction
+  commits within its request, so a ULID's time is within ≈ 5 s of its commit, against a watermark 2 heartbeats
+  (≈ 20 s) back; tier clock skew is milliseconds. That is what lets the watermark below be safe.
 
 **The route.** `GET /v1/usage?after=<cursor>&limit=1000` →
 `{ "events": [ … ], "cursor": "<opaque>", "watermark": "<ulid-time>" }`.
@@ -998,8 +1003,8 @@ DynamoDB TTL 35 days.
   through the runtime's API, filtered to their payer.
 
 **The poller.** The runtime runs one leased poller per camel-fs deployment, every ≈ 20 s.
-- One Postgres transaction per page: `INSERT … ON CONFLICT (id) DO NOTHING` for every event, plus the cursor
-  advance. A crash replays the page, and the insert absorbs the replay.
+- One Postgres transaction per page: `INSERT … ON CONFLICT (id) DO NOTHING` for every event (on `eventId`), plus the
+  cursor advance. A crash replays the page, and the insert absorbs the replay.
 - Pricing and charging then run from those rows exactly as the meter does today.
 - The inbound usage webhook is deleted. A poller that falls behind by more than the 35-day TTL loses events, so its
   lag is an alarm (`usage_poll_lag`) long before that.

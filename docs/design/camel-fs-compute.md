@@ -109,7 +109,7 @@ semantics. `HostJob` becomes a thin client of the compute API.
   `lastSeenAt`, features. Heartbeats write it in-VPC, and every placement and every end update `free` and `vms`
   in the same transaction as the VM's row. A reconcile is then one strongly consistent `GetItem`, with no index.
 - `vms` (key `id`): the §2 phase row, host, lease epoch, `stopRequested`, `resultRef`, `payer`, `deadline`,
-  `billedTo`.
+  `billedTo`, `usageSeq`.
 - `deliveries` (key `shard` + `id`, camel-fs-files.md §9.11) already exists for notify, and carries the `vm.*`
   hints.
 - `usage` (key `shard` + ULID, camel-fs-files.md §9.13) holds the usage events, which the runtime pulls.
@@ -169,10 +169,10 @@ balance, a price or a credit. **Decided (Miguel, 2026-11-13 ~18:50): pull, not p
 Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the poller).
 
 - **`usage.vm`** is written for each VM per 60 s of host-reported run time, closed on the heartbeat that crosses
-  the boundary, plus a final event at `ended`: `{ id: <ULID>, vm, payer, pool, shape: { vcpus, memoryMiB }, host,
-  from, to, seconds, final }`.
-  - Each is written into the `usage` table in the same `TransactWriteItems` that advances the `vms` row's
-    `billedTo` under the condition `billedTo = :prev`. So an interval is neither lost nor doubled by a crash or a
+  the boundary, plus a final event at `ended`: `{ ulid, eventId, vm, payer, pool, shape: { vcpus, memoryMiB }, host,
+  from, to, seconds, final }`, with `eventId = <vm>:<seq>`.
+  - Each is written into the `usage` table (key `shard` + `ulid`) in the same `TransactWriteItems` that advances
+    the `vms` row's `billedTo` and `usageSeq` under the condition `billedTo = :prev AND usageSeq = :n`. So an interval is neither lost nor doubled by a crash or a
     racing tier node.
   - On host loss, the final event's `to` is the last heartbeat that listed the VM (#968's rule).
   - `payer` is the opaque string the runtime passed in `POST /v1/vms`.
