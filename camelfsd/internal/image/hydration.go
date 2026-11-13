@@ -38,16 +38,8 @@ func (m *Manager) startHydration(v *Mount, r root.Root) {
 		}
 		ctx = store.Background(ctx)
 		h.err = store.Parallel(ctx, 64, keys, func(key string) error {
-			p, e := m.Cache.EnsureLineage(ctx, v.Lineage, r.Chunks[key])
-			if e != nil {
-				return e
-			}
-			b, e := os.ReadFile(p)
-			if e != nil {
-				return e
-			}
 			off, _ := strconv.ParseInt(key, 10, 64)
-			n, e := f.WriteAt(b[:min(int64(len(b)), r.VirtualSize-off)], off)
+			n, e := m.Cache.Hydrate(ctx, v.Lineage, r.Chunks[key], f, off, min(root.ChunkSize, r.VirtualSize-off))
 			if e == nil {
 				h.bytes.Add(int64(n))
 			}
