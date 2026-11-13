@@ -15,7 +15,7 @@ const { RepoDO } = await import('../src/repos/repo-do.ts');
 const { TenantRepos } = await import('../src/repos/tenant-repos.ts');
 const { commitChanges, setRefToVersion, branch, advanceRef } = await import('../src/repos/write.ts');
 const { mergeRefs } = await import('../src/repos/merge.ts');
-const { createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
+const { agentRepo, createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
 hooks.deregister();
 const bytes = (s: string) => new TextEncoder().encode(s);
 const err = (code: string) => (e: any) => { assert.equal(e.code, code); return true; };
@@ -219,4 +219,22 @@ test('quota does not charge mode changes or blobs already owned by another head 
   const merged = await mergeRefs(ctx, { into: 'main', from: 'topic' });
   assert.equal(merged.changed, true);
   assert.equal((await ctx.stub.stat('main', ['b'])).entries.b!.blob, topic.files.b!.blob);
+});
+test('every repo is born with main: an empty first commit by its creator; a second create makes no commit', async (t) => {
+  const { env, fake } = fixture(t);
+  const { info } = await agentRepo(env, 't', 'ag1');
+  const main = info.refs.find((r: { name: string }) => r.name === 'main')!;
+  assert.equal(main.tree, '4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+  const first = await env.REPOS.getByName(`t:${info.id}`).commit(main.version);
+  assert.deepEqual([first.author, first.parents, first.message], ['agent:ag1', [], 'create']);
+  assert.ok(fake.commits.has(main.version), 'the first commit is in the storage plane before main points at it');
+  const commits = fake.commits.size;
+  const again = await agentRepo(env, 't', 'ag1');
+  assert.equal(again.existing, true);
+  assert.equal(again.info.refs.find((r: { name: string }) => r.name === 'main')!.version, main.version);
+  assert.equal(fake.commits.size, commits);
+  // The first write needs no special case: it CASes against main's version like every other.
+  const ctx = await repoContext(env, 't', info.id);
+  const w = await commitChanges(ctx, { ref: 'main', changes: { a: { bytes: new TextEncoder().encode('x') } }, message: 'w', author: 'agent:ag1', who: 'agent:ag1', why: 'test' });
+  assert.equal(w.previous, main.version);
 });
