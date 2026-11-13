@@ -27,8 +27,8 @@ export type TokenClaims = { tenant: string; agent: string; definition?: string; 
  * directory in a snapshot made for the call. `path` is in the volume; `agentPath` is the path as the agent names it.
  */
 export type FileGrant = {
-  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;
-  kind: "file" | "manifest" | "archive"; version?: number; snapshot?: string;
+  tenant: string; agent: string; call: string; tool: string; repo: string; path: string; agentPath: string;
+  kind: "file" | "manifest" | "archive"; version: string;
 };
 /** The `aud` of file URL tokens, which no tool source can have (theirs are URLs on their own origin). */
 export const FILE_AUDIENCE = "camelrun:file";

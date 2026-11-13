@@ -47,13 +47,12 @@ test("attachment input policy reuses source limits and filename rules", () => {
 test("attachment markers round trip immutable references without binary data", () => {
   const ref: AttachedFile = {
     type: "file",
-    volume: "vol_" + "a".repeat(24),
+    repo: "repo_" + "a".repeat(24),
     path: "/workspace/report.txt",
-    version: 3,
+    version: "a".repeat(40),
     size: 3,
     contentType: "text/plain",
-    chunks: ["b".repeat(64)],
-    key: "files/alice/volume/random/body",
+    blob: "b".repeat(40),
     head: "a,b",
   };
   const internal = { role: "user", content: attachmentInput("Look", [ref]) };

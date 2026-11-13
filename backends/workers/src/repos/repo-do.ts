@@ -269,7 +269,7 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
   async release(fence: Fence & {ref: string}) {
     this.ctx.storage.transactionSync(() => { this.alive(); const r = this.fenced(fence); this.sql.exec("UPDATE refs SET holder=NULL,leaseDeadline=NULL WHERE name=?", r.name); }); await this.arm();
   }
-  watch(ref: string, agent: string) { this.ctx.storage.transactionSync(() => { this.alive(); this.needRef(ref); check(typeof agent === "string" && agent.length > 0); this.sql.exec("INSERT OR IGNORE INTO watchers VALUES(?,?)", ref, agent); }); }
+  watch(ref: string, agent: string) { this.ctx.storage.transactionSync(() => { this.alive(); refName(ref); check(typeof agent === "string" && agent.length > 0); this.sql.exec("INSERT OR IGNORE INTO watchers VALUES(?,?)", ref, agent); }); }
   unwatch(ref: string, agent: string) { this.ctx.storage.transactionSync(() => { this.alive(); refName(ref); check(typeof agent === "string"); this.sql.exec("DELETE FROM watchers WHERE ref=? AND agent=?", ref, agent); }); }
   events(input: {after?: number; limit?: number} = {}) {
     check(input.after === undefined || (Number.isSafeInteger(input.after) && input.after >= 0));

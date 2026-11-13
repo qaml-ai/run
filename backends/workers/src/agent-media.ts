@@ -1,3 +1,4 @@
+import { agentRepoId } from "./repos/identity.ts";
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { compile } from "@earendil-works/pi-schema";
 import { GENERATE_IMAGE, generateImage, Imager, openaiImages, type Hold } from "./media/images.ts";
@@ -9,7 +10,7 @@ import { database, transaction } from "./postgres.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
 import { publishPending } from "./webhooks.ts";
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from "./auxiliary-usage.ts";
-import type { FileBindings, Mount, WrittenVolumeFile } from "./files.ts";
+import type { FileBindings, AgentMount as Mount, WrittenRepoFile } from "./files.ts";
 import { HttpError } from "./errors.ts";
 import { TOOL_FILE_LIMITS } from "../../../src/limits.ts";
 import { scratchMount } from "./media/files-policy.ts";
@@ -23,7 +24,7 @@ type UsageScope = Pick<CallScope, "tenant" | "agent" | "requestId" | "callId" | 
 type MediaReceipt = { scope: UsageScope; usage: UsageRecord };
 type Host = {
   storage?: DurableObjectStorage;
-  onWrite?: (file: WrittenVolumeFile, scope: CallScope) => Promise<void>;
+  onWrite?: (file: WrittenRepoFile, scope: CallScope) => Promise<void>;
   /** Host seams keep policy testable without a provider, database or R2. */
   files?: (scope: CallScope) => Promise<ToolFiles>;
   imager?: (scope: CallScope) => Promise<Imager>;
@@ -37,15 +38,14 @@ type Env = FileBindings & MediaBindings & KeyEnv;
 async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Promise<ToolFiles> {
   const { handleAgentFileRequest } = await import("./files.ts");
   const { boundedBytes } = await import("./images.ts");
-  const { workspaceId } = await import("./file-mounts.ts");
-  const own = await workspaceId(scope.agent);
-  const workspace = scratchMount(scope.mounts.map(mount => ({ ...mount, workspace: mount.volumeId === own || mount.volumeId === `agent:${scope.agent}` })));
+  const own = agentRepoId(scope.tenant, scope.agent);
+  const workspace = scratchMount(scope.mounts.map(mount => ({ ...mount, workspace: 'repo'in mount ? mount.repo === own : mount.volumeId===`agent:${scope.agent}` })));
   if (!workspace) throw new Error("generate_image needs a workspace to save the image in, and this agent has none");
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(scope.callId)));
   const directory = `${workspace.path}/tool-outputs/generate_image/${Array.from(hash.subarray(0, 12), byte => byte.toString(16).padStart(2, "0")).join("")}`;
   const request = async (path: string, init?: RequestInit) => {
     if (!path.startsWith("/")) path = `${scope.mounts[0].path}/${path}`;
-    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", init), env, scope.tenant, scope.agent, path, scope.mounts);
+    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", {...init,headers:{...Object.fromEntries(new Headers(init?.headers)),"x-camel-call":scope.callId,...(scope.requestId?{"x-camel-run":scope.requestId}:{})}}), env, scope.tenant, scope.agent, path, scope.mounts);
     if (!response.ok) {
       const error = await response.json() as { error?: string };
       throw new HttpError(response.status, error.error ?? "File operation failed");
@@ -70,7 +70,7 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Prom
       });
       const path = `${directory}/${name}`;
       const response = await request(path, { method: "PUT", body: bytes as Uint8Array<ArrayBuffer>, headers: { "content-type": contentType } });
-      const saved = await response.json() as { size: number; version: number; contentType?: string };
+      const saved = await response.json() as { size: number; version: string; contentType?: string };
       const file = { path, version: saved.version, size: saved.size, contentType: saved.contentType ?? contentType };
       await host.onWrite?.(file, scope);
       return { type: "file", ...file };
