@@ -205,8 +205,11 @@ run "roles_and_policies" {
     error_message = "The host policy writes the objects table only and explicitly denies refs and lineages."
   }
   assert {
-    condition     = length([for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement if statement.Sid == "TokenVerifyKeys"]) == 1 && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : contains(flatten([statement.Action]), "secretsmanager:GetSecretValue")])
-    error_message = "The api role reads the verify keys; the host policy reads no secret."
+    condition = (
+      !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
+      && [for statement in jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement : statement.Action] == [["secretsmanager:GetSecretValue"]]
+    )
+    error_message = "Neither the api task role nor the host policy reads a secret; the execution role reads the one JWKS secret for the injection."
   }
 }
 
@@ -236,17 +239,16 @@ run "service_with_an_image" {
   assert {
     condition = (
       jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:0123456789ab"
-      && jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].command == ["--role", "api"]
+      && jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
     )
-    error_message = "The task runs the named image with the api role."
+    error_message = "The task runs the named image as `camelfsd api` with the daemon's flags (proto-block, 2026-11-13)."
   }
   assert {
     condition = (
-      { for pair in jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].environment : pair.name => pair.value }["CAMELFS_STORE"] == "s3://camelfs-prod-904534089871"
-      && { for pair in jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].environment : pair.name => pair.value }["CAMELFS_REFS_TABLE"] == "camelfs-prod-refs"
-      && !contains(keys({ for pair in jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].environment : pair.name => pair.value }), "CAMELFS_API_TOKEN")
+      [for secret in jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].secrets : secret.name] == ["CAMELFS_JWKS"]
+      && !anytrue([for pair in jsondecode(aws_ecs_task_definition.api[0].container_definitions)[0].environment : startswith(pair.name, "CAMELFS_")])
     )
-    error_message = "The environment names the store and tables, and carries no secret value."
+    error_message = "The JWKS is injected from Secrets Manager as CAMELFS_JWKS; no key material is in the environment."
   }
   assert {
     condition     = aws_appautoscaling_target.api[0].min_capacity == 2 && aws_appautoscaling_target.api[0].max_capacity == 8

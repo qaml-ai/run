@@ -1,7 +1,7 @@
 # camelFS service: AWS infrastructure
 
 Option C of the camelFS design (Miguel, 2026-11-13; `docs/design/camel-fs.md` §1.6, §1.10, §1.13, §5 phase 1):
-camelFS as **one AWS service in `us-west-2`**. A stateless Go tier, `camelfsd --role api` (the §9 storage plane plus a
+camelFS as **one AWS service in `us-west-2`**. A stateless Go tier, `camelfsd api` (the §9 storage plane plus a
 refs package), behind a load balancer; **refs, leases and fences as DynamoDB conditional writes**; **trees and
 commits in DynamoDB** (L74); **blobs and chunks in S3**; the VM hosts run `camelfsd --role host` and reach the tier
 in-VPC. This directory is that service as OpenTofu in `terraform/`, applied only through the guarded `apply.sh`.
@@ -16,20 +16,20 @@ of theirs.
 
 | File | Resources |
 |---|---|
-| `bucket.tf` | S3 bucket **`camelfs-prod-904534089871`**: SSE-KMS with its own key (rotation on, S3 bucket keys), public access blocked, owner-enforced, versioned with 35-day noncurrent expiry, incomplete uploads aborted after 2 days, TLS-only, **daily Inventory** (Parquet) into `inventory/` kept 30 days. No expiry of live objects: deletion is the collector's. Keys exactly as `camelfsd` writes them today: `<lineage>/{o,t,k,r,c}/<hash>` |
+| `bucket.tf` | S3 bucket **`camelfs-prod-904534089871`**: SSE-KMS with its own key (rotation on, S3 bucket keys), public access blocked, owner-enforced, versioned with 35-day noncurrent expiry, incomplete uploads aborted after 2 days, TLS-only, **daily Inventory** (Parquet) into `inventory/` kept 30 days. No expiry of live objects: deletion is the collector's. Keys exactly as `camelfsd` writes them today: `<lineage>/{o,t,k,r,c,ts}/<hash>` |
 | `dynamodb.tf` | Three on-demand tables with PITR and deletion protection: **`camelfs-prod-objects`** (`lineage` + `id`), **`camelfs-prod-refs`** (`lineage` + `name`), **`camelfs-prod-lineages`** (`lineage`). No GSI/LSI, no TTL (see "Key schemas") |
 | `alb.tf` | One ACM certificate for `fs.camelai.dev` + `fs-internal.camelai.dev` (validated through Cloudflare). Two application load balancers, both **HTTP/2 off**, HTTPS only (TLS 1.3/1.2 policy), deletion protection: **public** (Cloudflare's IPv4 ranges only; `fs.camelai.dev` proxied) and **internal** (the hosts' security groups only; `fs-internal.camelai.dev` DNS-only to its private addresses). A target group each (`/v0/health`, 5 s interval, 2 up / 3 down) |
-| `ecs.tf` | ECR repository `camelfs-prod` (immutable tags, newest 20 kept), cluster `camelfs-prod` (Container Insights), the api tasks' security group, and, **once `api_image_tag` is set**, the Fargate task definition (ARM64, 1 vCPU / 2 GiB, read-only root, an ephemeral `/var/lib/camelfs`), the service `camelfs-prod-api` on both target groups (circuit breaker + alarm rollback), and CPU target-tracking autoscaling (2–8 tasks) |
-| `iam.tf` | **api** task role (the three tables; the bucket read/write, never delete; the verify-keys secret; ECS Exec) and execution role. **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on `refs`/`lineages` and on `sts:AssumeRole*`), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles) |
-| `secrets.tf` | Secrets Manager containers `camelfs/prod/token-signing-key` (ES256 private key; the runtime's) and `camelfs/prod/token-verify-keys` (JWK set; the api tier's). Values by `token-key.sh`, never Terraform |
+| `ecs.tf` | ECR repository `camelfs-prod` (immutable tags, newest 20 kept), cluster `camelfs-prod` (Container Insights), the api tasks' security group, and, **once `api_image_tag` is set**, the Fargate task definition (ARM64, 1 vCPU / 2 GiB, read-only root, an ephemeral `/var/lib/camelfs` for the SQLite caches, the JWKS injected as `CAMELFS_JWKS`), the service `camelfs-prod-api` on both target groups (circuit breaker + alarm rollback), and CPU target-tracking autoscaling (2–8 tasks) |
+| `iam.tf` | **api** task role (the three tables; the bucket read/write, never delete; ECS Exec; no secret) and execution role (image, logs, the one JWKS secret for the injection). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on `refs`/`lineages` and on `sts:AssumeRole*`), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles) |
+| `secrets.tf` | Secrets Manager container `camelfs/prod/token-verify-keys`: the runtime's public JWKS (Ed25519), the api tier's verification keys. Value by `jwks.sh`, never Terraform |
 | `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists). 18 alarms |
-| `outputs.tf` | URLs, bucket, key, tables, role and policy ARNs, repository, secrets, and the api environment |
+| `outputs.tf` | URLs, bucket, key, tables, role and policy ARNs, repository, the secret, and the api command |
 
 ### Key schemas (the whole contract this module imposes on the daemon)
 
 | table | partition key | sort key | the item (the daemon's; listed for orientation) |
 |---|---|---|---|
-| `objects` | `lineage` (S) | `id` (S) = `t/<sha1>` or `k/<sha1>` | git bytes, `generation`, `createdAt` |
+| `objects` | `lineage` (S) | `id` (S) = `t/<sha1>` or `k/<sha1>` | `b` (git bytes), `generation`, `createdAt`. Not wired yet: trees and commits are in S3 until L74 |
 | `refs` | `lineage` (S) | `name` (S) | `version`, `tree`, `root?`, `owner`, `expiresAt?`, `holder`, `leaseEpoch`, `leaseDeadline`, `updatedAt`. A move is one conditional `UpdateItem` whose condition is the parent rule (`version = parents[0]`) and the lease state the writer believes in |
 | `lineages` | `lineage` (S) | — | tenant, kind, quota, default branch, ignore list, last mark |
 
@@ -38,15 +38,15 @@ item collection because there is no LSI). No DynamoDB TTL: a ref's `expiresAt` i
 delete would move a ref without a CAS and without a log. Proposed to proto-block on 2026-11-13; the attribute names
 are the only thing to keep in step with `camelfsd`'s refs package.
 
-### The api task's environment
+### The api task's command
 
-Names, ARNs and a listen address; no secret value (the task reads the verify keys itself, by ARN, with its role):
-`CAMELFS_ROLE=api`, `CAMELFS_LISTEN=0.0.0.0:8790`, `CAMELFS_DATA=/var/lib/camelfs`,
-`CAMELFS_STORE=s3://camelfs-prod-904534089871`, `CAMELFS_OBJECTS_TABLE`, `CAMELFS_REFS_TABLE`,
-`CAMELFS_LINEAGES_TABLE`, `CAMELFS_TOKEN_KEYS_SECRET_ARN`, `CAMELFS_PUBLIC_URL`, `CAMELFS_INTERNAL_URL`,
-`AWS_REGION`. The container command is `api_command` (default `--role api`). If the daemon settles on flags
-instead, `api_command` carries them (`apply.sh api_command='["--role","api","--listen","0.0.0.0:8790"]'`) and the
-environment stays as documentation; nothing else moves.
+The daemon's CLI (proto-block, 2026-11-13), composed by `ecs.tf`:
+`camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer> --refs-table camelfs-prod-refs`,
+plus `api_extra_args` (`--objects-table` / `--lineages-table` once L74 lands; the tables exist already). The
+verification keys are not a flag: ECS injects the `token-verify-keys` secret as the environment variable
+`CAMELFS_JWKS` at task start (the daemon also takes `--jwks-file`), so no key material is in the task definition
+and the task role reads no secret. `token_issuer` is the runtime's `AGENT_PUBLIC_URL` (the JWT `iss` the tier
+checks); it must equal `infra/job-hosts`' `runtime_public_url`.
 
 ## Decisions, with reasons
 
@@ -86,10 +86,14 @@ bucket (no delete) and the `objects` table, and explicitly denies `refs` and `li
 ref except through the tier's fence check. If proto-block routes trees and commits through the tier instead, the
 `ObjectsTable` statement goes and the host policy is S3 only.
 
-**Tokens: ES256, two secrets.** The runtime signs (`token-signing-key`, which nothing in AWS reads); the tier
-verifies (`token-verify-keys`, a JWK set, newest first, two keys during a rollover). The tier can therefore never
-mint a token, and rotation is `token-key.sh new` (the previous key stays valid until its tokens expire) then
-`prune`. HMAC would be one secret shared by both, and a tier compromise would mint tokens for every lineage.
+**Tokens: the runtime's existing signer, public keys only in AWS.** Tokens are EdDSA/Ed25519 JWTs (`typ`
+`camelfs+jwt`, `aud` `camelrun:camelfs`) signed by the runtime's `RuntimeSigner`
+(`backends/workers/src/runtime-identity.ts`): the private keys stay sealed in the runtime's Postgres `signing_keys`
+and the public JWKS is published at `<runtime>/.well-known/jwks.json`. The tier verifies against a copy of that
+JWKS (`jwks.sh set` stores it in `token-verify-keys`; ECS injects it as `CAMELFS_JWKS`) and never calls the
+network for keys. So nothing in AWS can mint a token, there is no key to generate here, and a rotation is the
+runtime's (publish the new key beside the old) followed by `jwks.sh set`, which rolls the service. An earlier
+draft of this module generated an ES256 pair of its own; the lead approved reusing the runtime's signer instead.
 
 ## Network and security
 
@@ -105,6 +109,7 @@ mint a token, and rotation is `token-key.sh new` (the previous key stays valid u
 - The host role trusts `ec2.amazonaws.com` only, with the job-hosts invariant's guards (precondition, postcondition,
   a `check` against the live role on every plan, and `tests/`): nobody is ever given `sts:AssumeRole` on it, and
   `iam:PassRole` on it is as good as enrolling a host.
+- The api task role reads no secret: the execution role reads the one JWKS secret at task start and injects it.
 - Telemetry carries lineage ids, counts, statuses and durations; the daemon's access lines omit paths, ids and
   bodies (`camelfsd/README.md`).
 
@@ -122,7 +127,7 @@ on-demand prices in November 2024 ($0.625/M and $0.125/M), which the second colu
 | public balancer's IPv4 addresses (one per default subnet, $0.005/h) | ~$15 | ~$15 |
 | Fargate ARM, 2 × (1 vCPU / 2 GiB) at $0.0395/h | $0 | ~$58 |
 | the tasks' public IPv4 ($0.005/h each) | $0 | ~$7 |
-| KMS key, 2 secrets, 18 alarms, Container Insights, logs, ECR | ~$5 | ~$8 |
+| KMS key, 1 secret, 18 alarms, Container Insights, logs, ECR | ~$5 | ~$8 |
 | **total** | **~$53** | **~$121** |
 
 **Variable, by scale** (the design's baseline is 1,000 concurrent agents: 144 M API writes + 14.6 M checkpoints a
@@ -145,7 +150,7 @@ segments cut them ~3× at 100×). Per API write: ≈ 19.75 µ$ (objects 17.5 + r
 ## Commands (Miguel, in order)
 
 Needs AWS credentials for `904534089871`, `CLOUDFLARE_API_TOKEN` (DNS edit on camelai.dev: the certificate's
-validation records and the two hostnames), `tofu` (>= 1.10), `jq`, `openssl`, and Docker with buildx for the image.
+validation records and the two hostnames), `tofu` (>= 1.10), `jq`, `curl`, and Docker with buildx for the image.
 
 1. **Foundation** (bucket, tables, roles, secrets, balancers, registry, alarms; no service). Nothing else must
    exist first. The live-role check warns once (the role is not there yet).
@@ -158,10 +163,11 @@ validation records and the two hostnames), `tofu` (>= 1.10), `jq`, `openssl`, an
    Both balancers answer 503 until a service registers. Cloudflare's address ranges and the certificate validation
    wait on DNS propagation; the apply holds until ACM issues the certificate (minutes).
 
-2. **Token keys.** Generates the first ES256 key pair, stores both halves, prints the Workers command:
+2. **Verification keys.** Copies the runtime's public JWKS (`<token_issuer>/.well-known/jwks.json`) into the
+   secret the api tasks read:
 
    ```bash
-   infra/camelfs/token-key.sh new
+   infra/camelfs/jwks.sh set
    ```
 
 3. **The first image.** Build and push from a checkout whose `camelfsd/` has the api role, then create the
@@ -188,17 +194,16 @@ validation records and the two hostnames), `tofu` (>= 1.10), `jq`, `openssl`, an
    The proto host (`i-06fa9b78a2a9d188b`) can be let in the same way for the first end-to-end run: its security
    group in `host_security_group_ids`, the host policy attached to its `camel-fs-proto` role by hand.
 
-5. **Runtime config** (Cloudflare; this module does not touch it): the public URL and the signing key.
+5. **Runtime config** (Cloudflare; this module does not touch it): the public URL. The runtime signs with the
+   keys it already has; nothing to copy back.
 
    ```bash
    tofu -chdir=infra/camelfs/terraform output -raw public_url        # CAMELFS_URL for the Workers runtime
-   aws secretsmanager get-secret-value --secret-id camelfs/prod/token-signing-key --query SecretString --output text \
-     | wrangler secret put CAMELFS_TOKEN_SIGNING_KEY                 # in backends/workers
    ```
 
 Later changes go the same way (`PLAN_ONLY=1` first). A plan that deletes or replaces anything is refused unless
 `ALLOW_DESTROY` names each address; the Terraform-registered task definition revision is the one exception (the
-service runs `deploy.sh`'s revision). The bucket, the tables and the two secrets carry `prevent_destroy`.
+service runs `deploy.sh`'s revision). The bucket, the tables and the secret carry `prevent_destroy`.
 
 ## Tests (no AWS, no Cloudflare)
 
@@ -213,7 +218,8 @@ tofu init -backend=false && tofu validate && tofu fmt -check -recursive && tofu 
 Without `tofu` installed: `docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/work" -w /work ghcr.io/opentofu/opentofu:1.10 <command>`.
 Six runs: the foundation without an image; the tables' keys and protection; the balancers (h2 off, TLS, sources,
 DNS modes, health route); the internal balancer admitting named host groups; the roles (trust invariant, no delete,
-no sts, hosts denied refs); the service once an image is named (Fargate ARM, both groups, the environment).
+no sts, hosts denied refs, no secret on the task role); the service once an image is named (Fargate ARM, both
+groups, the command, the JWKS injection).
 
 ## Questions for Miguel
 
@@ -229,8 +235,8 @@ no sts, hosts denied refs); the service once an image is named (Fargate ARM, bot
 
 ## Unverified (needs real AWS, or proto-block's api role)
 
-- The daemon's api-role CLI and environment names (`api_command`, `CAMELFS_*`), the health route (`/v0/health`
-  today; `api_health_path` otherwise), and whether hosts write `objects` directly (host policy) or via the tier.
+- The daemon's api-role flags beyond those proto-block confirmed on 2026-11-13 (`--objects-table`,
+  `--lineages-table` with L74: `api_extra_args`), and that `CAMELFS_JWKS` is read when `--jwks-file` is absent.
 - That the default VPC has default-for-AZ subnets in every AZ the balancers want, and that no name here collides.
 - That `cloudflare_ip_ranges` under provider 5.x exposes `ipv4_cidrs` (it did under 4.x and 5.x at writing).
 - `TargetResponseTime` p99 as an alarm statistic (`extended_statistic`), and Container Insights' `RunningTaskCount`.

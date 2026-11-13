@@ -1,8 +1,9 @@
 # Two principals, least privilege (camel-fs.md §1.10: "hosts hold an instance role scoped to the bucket prefixes
 # and tables, as the job-hosts plan's role is scoped"; the api tier is the authorization boundary):
 #
-#   api   the Fargate task role of camelfsd --role api: the three tables, the bucket (no delete), the token
-#         verification keys. The only principal that touches refs and lineages.
+#   api   the Fargate task role of camelfsd api: the three tables and the bucket (no delete). The only principal
+#         that touches refs and lineages. The token verification keys reach the task as an injected environment
+#         variable, so the task role reads no secret; the execution role reads that one secret for the injection.
 #   host  camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and commits a
 #         checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks its fence) and
 #         reads no lineage registry. Delivered as a customer-managed policy (host_policy_arn), attachable to the
@@ -36,16 +37,30 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-# Used by ECS itself: pull the image and write logs. No secrets: the task reads its own (task role) at boot.
+# Used by ECS itself: pull the image, write logs, and read the one secret it injects as CAMELFS_JWKS.
 resource "aws_iam_role" "api_execution" {
   name               = "${var.name}-${var.env}-api-execution"
-  description        = "camelFS api ECS task execution (image pull, logs)"
+  description        = "camelFS api ECS task execution (image pull, logs, the JWKS injection)"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
 resource "aws_iam_role_policy_attachment" "api_execution" {
   role       = aws_iam_role.api_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "api_execution_jwks" {
+  name = "camelfs-jwks-injection"
+  role = aws_iam_role.api_execution.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InjectTokenVerifyKeys"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
+    }]
+  })
 }
 
 locals {
@@ -93,12 +108,6 @@ locals {
         Resource = values(local.table_arns)
       },
       {
-        Sid      = "TokenVerifyKeys"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
-      },
-      {
         Sid    = "EcsExec"
         Effect = "Allow"
         Action = [
@@ -115,7 +124,7 @@ locals {
 
 resource "aws_iam_role" "api" {
   name               = "${var.name}-${var.env}-api"
-  description        = "camelFS api tier (camelfsd --role api): the tables, the bucket, the token verification keys"
+  description        = "camelFS api tier (camelfsd api): the tables and the bucket; no secret"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
@@ -126,8 +135,8 @@ resource "aws_iam_role_policy" "api" {
 
   lifecycle {
     precondition {
-      condition     = !anytrue([for statement in local.api_policy.Statement : contains(flatten([statement.Action]), "s3:DeleteObject") || contains(flatten([statement.Action]), "s3:*")])
-      error_message = "The api role must not delete objects: deletion is the collector's, under its own role."
+      condition     = !anytrue([for statement in local.api_policy.Statement : contains(flatten([statement.Action]), "s3:DeleteObject") || contains(flatten([statement.Action]), "s3:*") || anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
+      error_message = "The api role must not delete objects (deletion is the collector's, under its own role) and reads no secret (the JWKS is injected by the execution role)."
     }
   }
 }

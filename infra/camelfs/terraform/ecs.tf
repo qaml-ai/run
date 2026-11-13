@@ -1,4 +1,4 @@
-# The api tier: camelfsd --role api as an autoscaled Fargate service (Graviton) behind both load balancers (alb.tf).
+# The api tier: camelfsd api as an autoscaled Fargate service (Graviton) behind both load balancers (alb.tf).
 #
 # Fargate over an ASG (the README weighs it): the tier is a stateless Go process that needs no NVMe, no KVM and no
 # host-level anything, so the only things an ASG would add are an AMI to bake, a host to patch and an agent to
@@ -21,20 +21,22 @@ locals {
   api_image      = "${aws_ecr_repository.camelfsd.repository_url}:${var.api_image_tag}"
   api_data_dir   = "/var/lib/camelfs"
 
-  # What the daemon needs to find its stores and keys. Names, ARNs and a listen address: no secret value is in the
-  # environment (the task reads the verify keys itself, by ARN, with its task role).
+  # The daemon's CLI (proto-block, 2026-11-13): `camelfsd api --listen --data --store --region --token-issuer
+  # --refs-table`; --objects-table and --lineages-table come with L74 (api_extra_args until then, or here once the
+  # flags exist). The JWKS is not a flag: ECS injects the verify-keys secret as CAMELFS_JWKS (the daemon also takes
+  # --jwks-file), so no key material is in the task definition and the task role reads no secret.
+  api_command = concat([
+    "api",
+    "--listen", "0.0.0.0:${var.api_port}",
+    "--data", local.api_data_dir,
+    "--store", "s3://${aws_s3_bucket.objects.bucket}",
+    "--region", var.region,
+    "--token-issuer", var.token_issuer,
+    "--refs-table", local.table_names["refs"],
+  ], var.api_extra_args)
+
   api_environment = {
-    CAMELFS_ROLE                  = "api"
-    CAMELFS_LISTEN                = "0.0.0.0:${var.api_port}"
-    CAMELFS_DATA                  = local.api_data_dir
-    CAMELFS_STORE                 = "s3://${aws_s3_bucket.objects.bucket}"
-    CAMELFS_OBJECTS_TABLE         = local.table_names["objects"]
-    CAMELFS_REFS_TABLE            = local.table_names["refs"]
-    CAMELFS_LINEAGES_TABLE        = local.table_names["lineages"]
-    CAMELFS_TOKEN_KEYS_SECRET_ARN = aws_secretsmanager_secret.token_verify_keys.arn
-    CAMELFS_PUBLIC_URL            = "https://${var.hostname}"
-    CAMELFS_INTERNAL_URL          = "https://${var.internal_hostname}"
-    AWS_REGION                    = var.region
+    AWS_REGION = var.region
   }
 }
 
@@ -144,11 +146,13 @@ resource "aws_ecs_task_definition" "api" {
   container_definitions = jsonencode([{
     name         = local.container_name
     image        = local.api_image
-    command      = var.api_command
+    command      = local.api_command
     essential    = true
     portMappings = [{ containerPort = var.api_port, protocol = "tcp" }]
     environment  = [for name in sort(keys(local.api_environment)) : { name = name, value = local.api_environment[name] }]
-    mountPoints  = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
+    # The runtime's public JWKS, read by the execution role at task start; a rotation is jwks.sh set + a roll.
+    secrets     = [{ name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn }]
+    mountPoints = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
     # The image runs as a non-root user; everything but the data volume is read-only.
     readonlyRootFilesystem = true
     # SIGTERM: finish in-flight requests (seconds); SIGKILL after this.

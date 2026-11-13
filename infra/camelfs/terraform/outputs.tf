@@ -68,17 +68,12 @@ output "service_name" {
   value       = try(aws_ecs_service.api[0].name, "")
 }
 
-output "token_signing_key_secret_arn" {
-  description = "Secrets Manager: the ES256 private key the runtime signs tokens with (nothing in AWS reads it)."
-  value       = aws_secretsmanager_secret.token_signing_key.arn
-}
-
 output "token_verify_keys_secret_arn" {
-  description = "Secrets Manager: the JWK set the api tier verifies tokens with (CAMELFS_TOKEN_KEYS_SECRET_ARN)."
+  description = "Secrets Manager: the runtime's public JWKS the api tier verifies tokens with (injected as CAMELFS_JWKS; set with jwks.sh)."
   value       = aws_secretsmanager_secret.token_verify_keys.arn
 }
 
-output "api_environment" {
-  description = "The api task's environment as registered (names and ARNs, no secret values), for a host or a local run to mirror."
-  value       = local.api_environment
+output "api_command" {
+  description = "The api task's command as registered (subcommand and flags; no secret), for a host or a local run to mirror."
+  value       = local.api_command
 }

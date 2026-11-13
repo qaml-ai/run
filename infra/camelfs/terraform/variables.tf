@@ -54,7 +54,7 @@ variable "cloudflare_zone_id" {
   default     = "3180d911f20372a279a4ea408aebc765"
 }
 
-# --- API tier (camelfsd --role api on ECS Fargate, Graviton) ---
+# --- API tier (camelfsd api on ECS Fargate, Graviton) ---
 
 variable "api_image_tag" {
   description = "The camelfsd image tag in this module's ECR repository (infra/camelfs/deploy.sh pushes one). Empty: no task definition, service, autoscaling or service alarms are created; the load balancers answer 503 until a service registers."
@@ -66,14 +66,24 @@ variable "api_image_tag" {
   }
 }
 
-variable "api_command" {
-  description = "The container command: the api role's subcommand and flags. Listen address, store, tables and the token secret come from the environment (ecs.tf); this is the part the daemon's CLI shape decides."
+variable "api_extra_args" {
+  description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)
-  default     = ["--role", "api"]
+  default     = []
+}
+
+variable "token_issuer" {
+  description = "The runtime that signs camelFS tokens (its AGENT_PUBLIC_URL; the JWT issuer the tier checks, and where jwks.sh fetches /.well-known/jwks.json). Must equal infra/job-hosts' runtime_public_url."
+  type        = string
+  default     = "https://run-pilot.camelai.dev"
+  validation {
+    condition     = can(regex("^https://[a-z0-9.-]+$", var.token_issuer))
+    error_message = "token_issuer is an https origin with no path or trailing slash, exactly as AGENT_PUBLIC_URL."
+  }
 }
 
 variable "api_port" {
-  description = "The port camelfsd --role api listens on (the same the host role's --listen-api uses today)."
+  description = "The port camelfsd api listens on (the same the host role's --listen-api uses today)."
   type        = number
   default     = 8790
 }
