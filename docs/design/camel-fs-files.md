@@ -350,16 +350,28 @@ target (§6) and starts when Miguel creates the table; it is a storage-layer swa
 contract (ledger L74). The daemon's own SQLite ref store (`internal/refs`, the `refs` table, `POST /v0/forks`) goes;
 its host-local tables (`mounts`, `tree_roots`, `lineage_blobs`, `uploaded`, `chunk_locations`) stay as cache.
 
-**Conventions.** JSON over HTTPS; ids are hex (`blob`, `tree`, `commit`: git SHA-1; `root`, chunk: sha256); every
-route is scoped by `lineage` in the path (`<tenant>:<repo id>`), and the daemon refuses any object reference the
-lineage cannot reach; `Authorization: Bearer <token>` (one shared bearer tonight; runtime-signed scoped tokens
-later); `Idempotency-Key` honoured on every write; errors are `{ "error": { "code", "message", "details"? } }` with
-the codes in the table at the end. Sizes in bytes. Paths are lineage-relative, normalized, no leading slash.
+**Conventions.** JSON over HTTPS; ids are hex (`blob`, `tree`, `commit`: git SHA-1; `root`, chunk: sha256).
+`Authorization: Bearer <token>` (one shared bearer tonight, the daemon listening on `127.0.0.1:8790` behind the
+`CAMELFS` tunnel with `--listen-api`; runtime-signed scoped tokens later). `Idempotency-Key` on every write: the
+daemon stores `key → response` and replays it, so a retry returns the first answer. Errors on these `/v1` routes are
+`{ "error": { "code", "message", "details"? } }` with the codes in 9.8; the host socket's `/v0` routes keep their
+current `{ error, detail }` shape tonight because `jobhost` parses it. Sizes in bytes. Paths are lineage-relative,
+normalized, no leading slash.
+
+**Lineage and reachability.** Every route is scoped by `lineage` in the path. A lineage is a string `RepoDO` assigns
+at repo creation, `<tenant>:<root repo id>`, and **a fork into a new repo inherits its source's lineage** (wf-repos),
+so forks share one object set and a fork is O(1) in objects as well as in refs; a repo made from scratch starts a new
+lineage. The daemon records every object it writes for a lineage, trees **including subtrees** (listings hand out
+subtree ids) and blobs alike, in `lineage_objects`, and refuses any reference the lineage has not written or
+imported, with `404`/`400`, never "exists but not yours". A cross-lineage reference (`commit … from: { repo,
+version, path }` across tenants' repos, or any other) is, tonight, a read followed by a `PUT` of the bytes into the
+target lineage; an `adopt` call that grants reach without copying is a later, low-priority addition.
 
 ### 9.1 Blobs
 
 `PUT /v1/lineages/{lineage}/blobs` with the raw bytes as the body (`Content-Length` or chunked, up to the single-PUT
-cap of 5 GiB; multipart later), optional `X-Camel-Sha256` to let the daemon refuse early on a mismatch.
+cap of 5 GiB; the daemon streams to a temp file and does one S3 PUT, so the old 256 MiB cap goes; multipart later),
+optional `X-Camel-Sha256` to let the daemon refuse early on a mismatch.
 → `201 { "blob": "<sha1>", "sha256": "<hex>", "size": 1234 }`. The daemon hashes what it receives (both ids),
 writes `o/<sha1>` if absent, records the blob in the lineage's set, and answers; a repeat PUT of the same bytes is a
 no-op `200` with the same body. The caller never supplies the blob id.
@@ -383,21 +395,26 @@ not_in_tree` and no body. Limits: 256 paths, 64 MiB total (`413 too_large` with 
 
 `POST /v1/lineages/{lineage}/commits`
 ```json
-{ "parent": "<commit>" | null, "baseTree": "<tree>" | null,
+{ "parents": ["<commit>", "<commit>"?], "baseTree": "<tree>" | null,
   "changes": [ { "path": "src/a.ts", "blob": "<sha1>", "mode": "100644" },
                { "path": "bin/run", "mode": "100755" },
                { "path": "old.txt", "delete": true } ],
-  "author": "agent:ag_123", "message": "turn 14",
+  "author": "agent:ag_123", "message": "turn 14", "time": 1763046000,
   "trailers": { "Camel-Agent": "ag_123", "Camel-Run": "run_9", "Camel-Turn": "14", "Camel-Call": "call_7",
                 "Camel-Checkpoint": "api" } }
 ```
-→ `201 { "tree": "<tree>", "commit": "<commit>", "changed": 3, "bytes": 4096 }`. Rules: `baseTree` defaults to
-`parent`'s tree (`null` for a first commit means the empty tree); every `blob` named must already be in the lineage
-(from 9.1 or an earlier tree of this lineage), else `400 unknown_blob`; a `mode`-only change keeps the blob; a
-`delete` of a missing path is a no-op; the new trees (only those on changed paths), the commit (git's bytes,
-`committer camelfs`, the trailers in the message) are written to S3 **before** the response; the same inputs
-produce the same ids, so a retry is idempotent. Caps: 10,000 changes per call (`413`). The daemon does not move any
-ref; the caller performs `RepoDO.cas(ref, expect, commit, fence)` next.
+→ `201 { "tree": "<tree>", "commit": "<commit>", "parents": [...], "time": 1763046000, "changed": 3, "bytes": 4096 }`
+(so the repo object's commit index needs no follow-up `GET`). Rules: `parents` is a list (`[]` for a first commit;
+two for a merge); `baseTree` defaults to `parents[0]`'s tree (the empty tree when there are none), and a **merge
+commit** is `parents: [ours, theirs]`, `baseTree` = 9.5's merged tree, `changes: []`; **`changes: []` is allowed**
+(a `checkpoint(message)` on an unheld ref, or a `restore`, whose `baseTree` is the old version's tree); every `blob`
+named must already be in the lineage (from 9.1 or an earlier tree of this lineage), else `400 unknown_blob`; a
+`mode`-only change keeps the blob; a `delete` of a missing path is a no-op; the new trees (only those on changed
+paths), the commit (git's bytes, `committer camelfs`, the trailers in the message) are written to S3 **before** the
+response. `time` (unix seconds) is chosen by the runtime and is part of the commit, so the commit id is a pure
+function of the request and a retry with the same body reproduces it; a retry with the same `Idempotency-Key` is
+replayed regardless. The tree id is deterministic either way. Caps: 10,000 changes per call (`413`). The daemon does
+not move any ref; the caller performs `RepoDO.cas(ref, expect, commit, fence, root?)` next.
 
 ### 9.4 Trees, commits, diff
 
@@ -418,29 +435,53 @@ ref; the caller performs `RepoDO.cas(ref, expect, commit, fence)` next.
 "squash" }` → `200 { "tree": "<tree>", "merged": ["a.ts"], "took": { "ours": 3, "theirs": 5 } }` when clean (the
 daemon writes the merged trees and any diff3-merged blobs to S3; the caller makes the commit with 9.3 and the CAS),
 or `409 conflict` with `{ "conflicts": [ { "path", "base"?, "ours"?, "theirs"?, "reason": "both_modified" |
-"delete_modify" | "binary" | "mode" } ] }` and nothing written. Whole subtrees are taken by id where only one side
-changed; co-edited text files go through diff3 on lines; renames are not detected (the git edge's `merge-tree` is
-the later option).
+"delete_modify" | "binary" | "mode" } ] }` and nothing written (merged blobs go to a temp directory first). Whole
+subtrees are taken by id where only one side changed; co-edited text files go through diff3 on lines (the daemon
+shells out to `git merge-file -p`, git being on the host); a file with a NUL in its first 8 KiB is binary and a
+`binary` conflict when both sides changed it; renames are not detected (the git edge's `merge-tree` is the later
+option).
 
 ### 9.6 Grep
 
 `GET /v1/lineages/{lineage}/grep?tree=<tree>&q=<text>&regex=0|1&ignoreCase=0|1&path=<glob>&limit=2000&context=0`
 → `{ "matches": [ { "path", "line": 42, "text": "…", "before"?: [...], "after"?: [...] } ], "files": 17,
-"truncated": false }`, over the tree's trigram shards (camel-fs.md §1.7); a tree with no shards yet is indexed on
-first query and the response says `"indexed": "now"`. A match cap of 2,000 is the only limit.
+"truncated": false, "indexed": "scan" | "shards" }`. **Tonight it is a scan**: the daemon has no shard indexer
+(that is `proto/search`'s `camelsearch`, not yet integrated; ledger L77), so it runs the pattern over the tree's blobs
+in parallel, cache first and S3 at 64 in flight, with this exact response shape and `"indexed": "scan"`: sub-second
+warm on the medium tree, about the NIC time cold on 500 MB. When the trigram shards of camel-fs.md §1.7 are wired
+in, the same call answers from them with `"indexed": "shards"`. A match cap of 2,000 is the only limit.
 
 ### 9.7 Host-side calls that change
 
 Over the host's Unix socket (unchanged transport), two calls change shape because the daemon no longer owns refs:
 
 - `mount { jobId, lineage, tree, fence: { holder, epoch } | null, ... }` → `{ image, warm, mountMs }`: the fence is
-  what the runtime's lease handed the host; `null` means a read-only `root`-form mount that refuses checkpoints.
-- `checkpoint { mount, message, trailers }` → `{ tree, root, commit, timings: { walkMs, streamMs, freezeMs,
+  what the runtime's lease handed the host; the daemon **stores and echoes it and does not check it** (the runtime's
+  CAS does); `null` means a read-only `root`-form mount that refuses checkpoints with `no_fence`. The mount no longer
+  creates a `job/<id>` ref or takes a lease; the daemon's `heartbeat` route and renewal goroutine go (the runtime
+  owns renewal, heartbeat and takeover; the 30 s heartbeat from #914 stays on the jobhost → runtime path). What
+  stays: the tree → root lookup (`tree_roots`), the nearest-ancestor base, the blank image and the guest apply.
+- `checkpoint { mount, message, trailers, time }` → `{ tree, root, commit, timings: { walkMs, streamMs, freezeMs,
   reflinkMs, fiemapMs, hashMs, uploadMs, imageMs, wallMs } }`: the daemon runs the §1.3 contract of camel-fs.md,
-  writes blobs, trees, the commit and the root to S3, and returns; **it performs no CAS**. `jobhost` then calls the
-  runtime (`RepoDO.cas(ref, expect, commit, fence)` through `HostJob`); a CAS that fails returns to the guest as
-  `checkpointed{error}` so the guest's index is not committed. Lease renewal, heartbeat and takeover are the
-  runtime's (the 30 s heartbeat from #914 stays; the daemon's own renewal goroutine goes).
+  writes blobs, trees, the commit and the root to S3, and returns; **it performs no CAS**.
+
+**Who performs the CAS, and when** (wf-delegation): the lease and the fence are the runtime's from the start.
+Before dispatch, `HostJob` creates the branch `job:<id>` at the version the job mounts (`branch(job:<id>, from:
+version, owner: job)`; for inline `files` that version is the scratch commit of §4), takes the lease on it from
+`RepoDO`, and puts `fence { holder, epoch }` into `WireJob.camelfs`; `jobhost` passes the fence to `mount`. Then:
+
+- **Jobs** checkpoint once, at the end, and the VM is destroyed right after, so there is no later reader of the
+  guest's index: `jobhost` sends `checkpointed { tree }` to the guest as soon as the daemon answers, and **`HostJob`
+  performs `RepoDO.cas("job:<id>", expect = the mounted version, commit, fence, root)` when the result arrives**, with
+  no synchronous round trip inside the checkpoint. A failed CAS becomes the job's `checkpointError`
+  (`"cas: <reason>"`) and the rest of the job's output stands. `HostJob` is already the durable owner of the
+  dispatch (ledger L72).
+- **Computers** (per-turn checkpoints in a long-lived VM) need the synchronous form: `jobhost` → runtime
+  (`RepoDO.cas`) → `jobhost` → `checkpointed { tree }` or `checkpointed { error }`, a WebSocket request with an id and
+  a reply, so the guest's index commits only after the ref moved. That is phase 2's computer mount, not tonight.
+
+`RepoDO.cas` accepts the checkpoint's `root` so a later job at that version mounts warm without the daemon rebuilding
+the image; the ref record carries `root?` (§6).
 
 ### 9.8 Errors
 
