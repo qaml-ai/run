@@ -655,7 +655,7 @@ const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data),
 
 /** One job on a host: admission, a slot, placement, the meter, the result. */
 export class HostJob extends DurableObject<JobHostsEnv> {
-  private active?: { host: string; id: string; stopped: boolean; sent?: boolean; answered?: boolean };
+  private active?: { host: string; id: string; stopped: boolean; stoppedAt?: number; sent?: boolean; answered?: boolean };
   constructor(ctx: DurableObjectState, env: JobHostsEnv) {
     super(ctx, env);
     guardAlarms(this, ctx, "HostJob", { test: env.TEST_MODE === "1" });
@@ -679,7 +679,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     if (this.active || this.waiting) return fail("job_running", `Job ${spec.id} is running`);
     // Stoppable from here until it is dispatched (this.waiting, kept until this.active is set): it ends `stopped`, its
     // host's slot and its computer slot given back, nothing charged.
-    const waiting = this.waiting = { job: spec.id, stopped: false };
+    const waiting: { job: string; stopped: boolean; stoppedAt?: number } = this.waiting = { job: spec.id, stopped: false };
     try {
     // Snapshots and other images are Cloudflare containers' alone so far (driver.ts needsContainer): refused, never
     // run without them.
@@ -687,16 +687,19 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const previous = await this.ctx.storage.get<{ at: number; dispatch: HostDispatch; costUsd: number }>(`result:${spec.id}`);
     const completed = previous && previous.at > Date.now() - 24 * 3600_000 ? previous : undefined;
     const saved = await this.ctx.storage.get<HostDispatch>(`dispatch:${spec.id}`) ?? completed?.dispatch;
-    const lifetimeMs = saved?.lifetimeMs ?? jobLifetimeMs(spec.timeoutSeconds), meter = this.meter(lifetimeMs), machine = `job:${spec.id}`;
+    const machine = `job:${spec.id}`, meter = this.meter(saved?.lifetimeMs ?? jobLifetimeMs(spec.timeoutSeconds));
+    const open = await meter.openSession();
+    const session = open?.id === machine || open?.named === machine ? open : undefined;
+    const lifetimeMs = saved?.lifetimeMs ?? session?.idleMs ?? jobLifetimeMs(spec.timeoutSeconds);
     // The VM the host boots is the one priced: its shape (the job's limits, else its instance type's), and the pool that
     // shape goes to. A pricing setting that does not parse refuses the job before anything starts.
     // Its rate is fixed here, once: a setting changed (or broken) while it runs cannot change or strand its charge.
     const shape = saved?.shape ?? hostShape(spec), pool = saved?.pool ?? hostPool(shape);
-    let rate = saved?.rate ?? 0;
+    let rate = saved?.rate ?? session?.rate ?? 0;
     let host = saved?.host;
     let files: WireFile[] = [], sync: WireJob["sync"], camelfs: WireJob["camelfs"];
     if (!saved) {
-      try { rate = hostSecondRate(pool, shape, this.env); }
+      try { rate = session?.rate ?? hostSecondRate(pool, shape, this.env); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Pricing is misconfigured"); }
       try { await measure("admitMs", () => meter.admit(spec.payer)); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
@@ -733,13 +736,16 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     }
     const placedHost = host!;
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
-    const active: { host: string; id: string; stopped: boolean; sent?: boolean; answered?: boolean } = this.active = { host: placedHost, id: spec.id, stopped: waiting.stopped };
+    const active: NonNullable<HostJob["active"]> = this.active = { host: placedHost, id: spec.id, stopped: waiting.stopped, stoppedAt: waiting.stoppedAt };
     this.waiting = undefined;
     let wire: WireResult & { ranFrom?: number; ranUntil?: number } = { ok: false, code: "container_failed", message: "No result" }, costUsd = completed?.costUsd ?? 0;
     // A session is open from dispatch, at the rate fixed at admission, under the job's own name (a run made again is the
     // same charge). Recovery reuses this persisted session. Once the result is
     // in, the session is trimmed to the span its VM ran.
-    try { if (!saved) await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, `job:${spec.id}`, { rate }); }
+    // The meter write can survive a crash before dispatch:<id> exists. Its session, rather than that dispatch
+    // record, tells us whether started() already ran. An expired dispatch never opens a replacement charge.
+    const dispatchedAt = saved?.dispatchedAt ?? session?.startedAt ?? Date.now();
+    try { if (!completed && !session && Date.now() < dispatchedAt + lifetimeMs) await meter.started(spec.payer, hostInstance(pool, shape), lifetimeMs, 0, machine, { at: dispatchedAt, rate }); }
     catch (error) {
       await release().catch(() => {});
       await registry(this.env).release(placedHost, shape.memoryMiB, spec.id).catch(() => {});
@@ -755,16 +761,16 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       return fail("stopped", "The job was stopped");
     }
     await registry(this.env).touch(spec.id).catch(() => {});
-    const dispatchedAt = saved?.dispatchedAt ?? Date.now();
     const dispatch: HostDispatch = { phase: "dispatched", host: placedHost, dispatchedAt, rate, pool, shape, lifetimeMs };
     if (!completed) await this.ctx.storage.put(`dispatch:${spec.id}`, dispatch);
     active.sent = true;
-    if (saved && active.stopped) await this.env.JOB_HOSTS!.getByName(placedHost).cancel(spec.id, true);
     try {
       // A dispatch that throws (the host object unreachable, the RPC refused) is the job's result, never a throw out of
       // run(): a throw would leave the workflow's row to be run again, and fail again, on every restart.
       for (;;) {
         try {
+          // A stop during recovery still joins the result and ends its existing session in the same finally below.
+          if (active.stopped) await this.env.JOB_HOSTS!.getByName(placedHost).cancel(spec.id, true);
           wire = await this.env.JOB_HOSTS!.getByName(placedHost).dispatch(spec.id, {
             command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files, ...(sync ? { sync } : {}), ...(camelfs ? { camelfs } : {}),
             limits: { cpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskMiB: shape.diskMiB, ...(spec.limits?.pids ? { pids: spec.limits.pids } : {}) },
@@ -789,7 +795,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       // timings say: a `started` lost on a reconnect never makes a job that ran free), to its result, or until its host
       // was last heard from if it went away. A VM that never started (no report, no result that ran) is not charged.
       const span = chargedSpan(wire, dispatchedAt, Date.now());
-      if (!completed) await meter.startedAt(span.from).then(() => meter.stopped(undefined, span.until))
+      const until = Math.min(span.until, dispatchedAt + lifetimeMs, active.stoppedAt ?? Infinity);
+      if (!completed) await meter.startedAt(Math.min(span.from, until)).then(() => meter.stopped(undefined, until))
         .catch(error => console.error(JSON.stringify({ type: "host_job_charge_failed", job: spec.id, error: error instanceof Error ? error.name : "unknown" })));
       if (!completed) costUsd = meter.spentUsd();
       steps.meterMs = Date.now() - returnedAt;
@@ -888,7 +895,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
   }
 
 
-  private waiting?: { job: string; stopped: boolean };
+  private waiting?: { job: string; stopped: boolean; stoppedAt?: number };
   private waitMs() {
     const seconds = Number(this.env.JOB_HOST_WAIT_SECONDS ?? NaN);
     return Number.isFinite(seconds) && seconds >= 0 && seconds <= 3600 ? seconds * 1000 : HOST_WAIT_MS;
@@ -911,11 +918,12 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     }
   }
   async stop(): Promise<{ stopped: boolean }> {
-    if (this.waiting) { this.waiting.stopped = true; return { stopped: true }; }
+    if (this.waiting) { this.waiting.stopped = true; this.waiting.stoppedAt ??= Date.now(); return { stopped: true }; }
     if (!this.active) return { stopped: false };
     // Not sent yet: run() sees this before it dispatches. Sent: its host stops it (JobHost.cancel, which also holds a
     // cancel that overtakes the job itself).
     this.active.stopped = true;
+    this.active.stoppedAt ??= Date.now();
     if (!this.active.sent) return { stopped: true };
     if (this.active.answered) return { stopped: false };
     return { stopped: await this.env.JOB_HOSTS!.getByName(this.active.host).cancel(this.active.id, true) };
@@ -925,6 +933,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const dispatched = await this.ctx.storage.list<{ dispatchedAt: number; lifetimeMs: number }>({ prefix: "dispatch:", limit: 1 });
     const job = dispatched.values().next().value;
     if (job && Date.now() < job.dispatchedAt + job.lifetimeMs + 5_000) {
+      // settle() only retries finished charges; it never opens, checkpoints or extends the open session. Its
+      // original idle bound remains at most dispatchedAt + lifetimeMs. After the margin, alarm(false) closes it.
       await this.ctx.storage.setAlarm(job.dispatchedAt + job.lifetimeMs + 5_000);
       await this.meter(60_000).settle();
       return;

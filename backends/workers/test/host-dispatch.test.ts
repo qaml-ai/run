@@ -3,6 +3,7 @@ import test from "node:test";
 import { registerHooks } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { ComputerMeter } from "../src/computers/meter.ts";
+import { applyScope } from "../../../shared/apply-scope.ts";
 import type { WireJob, WireResult } from "../../../shared/job-host-protocol.ts";
 const hooks = registerHooks({ resolve(specifier, context, next) {
   if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}", shortCircuit: true };
@@ -175,4 +176,108 @@ test("a late host result is logged and acknowledged while the first failure is r
   assert.deepEqual(logs.map(line => JSON.parse(line)), [{ type: "jobhost_late_result_dropped", id: "late" }]);
   assert.deepEqual(await h.instance.dispatch("late", spec, 1000), failure);
   assert.equal(h.sent.filter(message => message.type === "ack").length, 1);
+});
+
+test("a crash after meter.started but before dispatch persistence reuses one session and charges only the VM span", async t => {
+  let now = 10_000, starts = 0, failPut = true;
+  t.mock.method(Date, "now", () => now);
+  const store = storage(t), charges: any[] = [];
+  const meter = () => {
+    const value = new ComputerMeter({ store, billing: { admit: async () => {}, charge: async charge => { charges.push(charge); } }, idleMs: 60_000, schedule: async () => {}, now: () => now });
+    const started = value.started.bind(value);
+    value.started = async (...args) => { starts++; await started(...args); };
+    return value;
+  };
+  const put = store.put;
+  store.put = async (key, value) => {
+    if (key === "dispatch:crash" && failPut) { failPut = false; throw new Error("crashed before dispatch put"); }
+    await put(key, value);
+  };
+  const env = {
+    JOB_HOST_REGISTRY: { getByName: () => ({ want: async () => "host", unwant: async () => {}, touch: async () => {}, release: async () => {} }) },
+    JOB_HOSTS: { getByName: () => ({ dispatch: async () => { now = 25_000; return { ...result, ranFrom: 21_000, ranUntil: now }; } }) },
+  };
+  const input = { id: "crash", command: "true", timeoutSeconds: 30, outputs: [], payer: { tenant: "test", agent: "wf_test", kind: "workflow" } };
+  // Exercise admission and reserveComputer without opening a Postgres connection.
+  const sql = { async query() { return { rows: [{ n: 0 }], rowCount: 0 }; } };
+  const first = new HostJob({ storage: store } as never, env as never); (first as any).meter = meter;
+  await applyScope.run({ sql: sql as never }, () => assert.rejects(first.run(input), /crashed before dispatch put/));
+  assert.equal(await store.get("dispatch:crash"), undefined);
+  const original = await meter().openSession();
+  assert.equal(original?.id, "job:crash");
+  assert.equal(charges.length, 0);
+  now = 20_000;
+  const recovered = new HostJob({ storage: store } as never, env as never); (recovered as any).meter = meter;
+  assert.equal((await applyScope.run({ sql: sql as never }, () => recovered.run(input))).ok, true);
+  assert.equal(starts, 1, "recovery never closes and reopens the named session");
+  assert.equal(charges.length, 1);
+  assert.equal(charges[0].id, "job:crash");
+  assert.equal(charges[0].startedAt, 21_000);
+  assert.equal(charges[0].endedAt, 25_000);
+  assert.equal(charges[0].seconds, 4);
+  assert.equal(await meter().openSession(), undefined);
+});
+
+test("host alarms only settle within the grace window and close once at the original lifetime bound", async t => {
+  let now = 10_000;
+  t.mock.method(Date, "now", () => now);
+  const store = storage(t), charges: any[] = [], scheduled: number[] = [];
+  const meter = () => new ComputerMeter({ store, billing: { admit: async () => {}, charge: async charge => { charges.push(charge); } }, idleMs: 60_000, schedule: async at => { scheduled.push(at); }, now: () => now });
+  await meter().started({ tenant: "test", agent: "wf_test", kind: "workflow" }, "test", 400_000, 0, "job:alarm", { rate: 0.001 });
+  const original = await meter().openSession();
+  await store.put("dispatch:alarm", { dispatchedAt: 10_000, lifetimeMs: 400_000 });
+  const job = new HostJob({ storage: { ...store, setAlarm: async (at: number) => { scheduled.push(at); } } } as never, {} as never);
+  (job as any).meter = meter;
+  now = 410_001; // Past the lifetime, still inside its five-second grace window.
+  await job.alarm();
+  assert.deepEqual(await meter().openSession(), original, "settle neither checkpoints nor extends the session");
+  assert.equal(charges.length, 0);
+  assert.equal(scheduled.at(-1), 415_000);
+  now = 415_001;
+  await job.alarm();
+  assert.equal(charges.length, 1);
+  assert.equal(charges[0].id, "job:alarm");
+  assert.equal(charges[0].endedAt, 410_000);
+  assert.equal(charges[0].seconds, 400);
+  assert.equal(await meter().openSession(), undefined);
+  now = 500_000;
+  await job.alarm();
+  assert.equal(charges.length, 1, "later alarms never open a second charge");
+});
+
+test("a stop during recovery cancels the host and ends the one open charge at the stop", async t => {
+  let now = 10_000, cancelled = 0;
+  t.mock.method(Date, "now", () => now);
+  const store = storage(t), charges: any[] = [];
+  const meter = () => new ComputerMeter({ store, billing: { admit: async () => { throw new Error("admitted twice"); }, charge: async charge => { charges.push(charge); } }, idleMs: 60_000, schedule: async () => {}, now: () => now });
+  const payer = { tenant: "test", agent: "wf_test", kind: "workflow" as const };
+  await meter().started(payer, "test", 60_000, 0, "job:stop", { rate: 0.001 });
+  await store.put("dispatch:stop", { phase: "dispatched", host: "host", dispatchedAt: now, rate: 0.001, pool: "test", shape: { vcpus: 1, memoryMiB: 4096, diskMiB: 8192 }, lifetimeMs: 60_000 });
+  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  const env = {
+    JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {} }) },
+    JOB_HOSTS: { getByName: () => ({
+      cancel: async (id: string) => { assert.equal(id, "stop"); cancelled++; return true; },
+      dispatch: async () => { now = 25_000; return { ok: false, code: "stopped", message: "The job was stopped", ranFrom: 11_000, ranUntil: now }; },
+    }) },
+  };
+  const job = new HostJob({ storage: store } as never, env as never); (job as any).meter = meter;
+  (job as any).files = async () => { entered.resolve(); await resume.promise; return { files: [] }; };
+  now = 20_000;
+  const running = job.run({ id: "stop", command: "true", timeoutSeconds: 30, outputs: [], payer });
+  await entered.promise;
+  const stoppedAt = now;
+  assert.deepEqual(await job.stop(), { stopped: true });
+  resume.resolve();
+  const answer = await running;
+  assert.equal(answer.ok, false);
+  if (!answer.ok) assert.equal(answer.code, "stopped");
+  assert.equal(cancelled, 1);
+  assert.equal(charges.length, 1);
+  assert.equal(charges[0].id, "job:stop");
+  assert.equal(charges[0].startedAt, 11_000);
+  assert.equal(charges[0].endedAt, stoppedAt);
+  assert.equal(charges[0].seconds, 9);
+  assert.equal(await meter().openSession(), undefined);
+  assert.equal(await store.get("dispatch:stop"), undefined);
 });
