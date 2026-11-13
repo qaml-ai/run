@@ -27,8 +27,8 @@ type Server struct {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/v1/") {
-		s.storage(w, r)
+	if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
+		s.loggedStorage(w, r)
 		return
 	}
 	t := time.Now()
