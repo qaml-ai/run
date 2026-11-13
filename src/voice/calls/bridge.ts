@@ -15,7 +15,7 @@ export async function askAgent(deps: {
   const started = deps.now();
   const ms = () => Math.round(deps.now() - started);
   if (!request.trim()) return { outcome: "empty", reply: "", ms: ms() };
-  const prefix = deps.transcript?.length ? `[Said in the call since your last reply]\n${deps.transcript.join("\n")}\n\n` : "";
+  const prefix = deps.transcript?.length ? `[What was said in the call since your last request (speakers not labeled)]\n${deps.transcript.join("\n")}\n\n` : "";
   const body = {
     id: `voice_${deps.call.slice(3)}_ask_${started.toString(36)}${deps.n}`, method: "prompt",
     params: {

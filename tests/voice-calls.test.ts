@@ -170,7 +170,7 @@ test("ask_agent includes only new transcripts and omits the payer without credit
   const request = submit.requests[0];
   assert.match(request.id, /^voice_[a-f0-9]{24}_ask_[a-z0-9]+1$/);
   assert.deepEqual(request.params, {
-    text: `[Said in the call since your last reply]\nFirst line.\nSecond line.\n\n${framing}\nwhat time is it`,
+    text: `[What was said in the call since your last request (speakers not labeled)]\nFirst line.\nSecond line.\n\n${framing}\nwhat time is it`,
     metadata: { voiceCall: call.id, via: "voice" }, allowDisconnected: true,
   });
   const messages = () => f.openai.events("call_1");
@@ -189,7 +189,7 @@ test("ask_agent includes only new transcripts and omits the payer without credit
   assert.equal(submit.requests[1].params.text, `${framing}\nwhat time is it`);
   push(...Array.from({ length: 25 }, (_, n) => talk(`line_${n}`, `line ${n}`, 0)), tool("a3"));
   await until(() => submit.requests.length === 3, "third prompt");
-  assert.equal(submit.requests[2].params.text, `[Said in the call since your last reply]\n${Array.from({ length: 20 }, (_, n) => `line ${n + 5}`).join("\n")}\n\n${framing}\nwhat time is it`);
+  assert.equal(submit.requests[2].params.text, `[What was said in the call since your last request (speakers not labeled)]\n${Array.from({ length: 20 }, (_, n) => `line ${n + 5}`).join("\n")}\n\n${framing}\nwhat time is it`);
   await until(() => messages().length === 6, "three replies");
   push(tool("silent", "stay_silent"));
   await until(() => messages().length >= 7, "silent output");
