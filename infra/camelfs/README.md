@@ -34,8 +34,8 @@ outputs.
 | table | partition key | sort key | the item (the daemon's; listed for orientation) |
 |---|---|---|---|
 | `objects` | `lineage` (S) | `id` (S) = `t/<sha1>` or `k/<sha1>` | `b` (git bytes), `generation`, `createdAt`. Not wired yet: trees and commits are in S3 until L74 |
-| `refs` | `lineage` (S) | `name` (S) | `version`, `tree`, `root?`, `owner`, `expiresAt?`, `holder`, `leaseEpoch`, `leaseDeadline`, `updatedAt`. A move is one conditional `UpdateItem` whose condition is the parent rule (`version = parents[0]`) and the lease state the writer believes in |
-| `lineages` | `lineage` (S) | — | tenant, kind, quota, default branch, ignore list, last mark |
+| `refs` | `lineage` (S) | `name` (S) | `version`, `tree`, `root?`, `owner`, `expiresAt?`, `holder`, `leaseEpoch`, `leaseDeadline`, `updatedAt`. The tier checks the move rules first (camel-fs-files.md §6: a new commit's `parents[0]` is the current version; a move to a recorded commit is a fast-forward, `is-ancestor` at any depth), then the write is one conditional `UpdateItem` on `version = :expect` plus the lease state the writer believes in |
+| `lineages` | `lineage` (S) | — | tenant, kind, default branch, ignore list; the mark (option B, #973): `markedBytes`, `markedAt`, `writtenSince` |
 | `deliveries` | `shard` (S) = `"0"`..`"15"` | `id` (S) | the outbox: a watched ref's move, `vm.*` and `usage.*` events, written in the same `TransactWriteItems` as the state change (camel-fs-files.md §6, §9.11; camel-fs-compute.md); claimers `Query` each shard and claim with a conditional `claimedUntil`. A lineage key would leave pending work unfindable without an index; the shard can still be derived from the lineage |
 | `hosts` | `pool` (S) | `host` (S) | `bootEpoch`, `shape`, `slots`, `free`, `vms`, `features`, `lastSeenAt`, `draining` (K4; heartbeats are `UpdateItem`s, placement a `TransactWrite` with the `vms` item) |
 | `vms` | `id` (S) | — | the phase row: `phase`, `host`, `lineage`, `ref`, `leaseEpoch`, timestamps, result fields, `payer` (K4; results past 400 KB go to S3 `<lineage>/results/<vm>`) |
