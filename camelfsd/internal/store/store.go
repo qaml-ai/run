@@ -361,3 +361,19 @@ func (s *limited) Has(ctx context.Context, k string) (bool, error) {
 	defer s.release()
 	return s.Store.Has(ctx, k)
 }
+
+func (s *S3) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	if !valid(key) {
+		return nil, fmt.Errorf("invalid key")
+	}
+	k := s.key(key)
+	out, e := s.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &k})
+	var missing *types.NoSuchKey
+	if errors.As(e, &missing) {
+		return nil, os.ErrNotExist
+	}
+	if e != nil {
+		return nil, e
+	}
+	return out.Body, nil
+}
