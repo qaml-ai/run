@@ -74,7 +74,7 @@ func run(args []string) error {
 func host(args []string) error {
 	f := flag.NewFlagSet("host", flag.ContinueOnError)
 	apiListen := f.String("listen-api", "127.0.0.1:8790", "runtime API address (requires api-token-file)")
-	apiTokenFile := f.String("api-token-file", "", "shared bearer file; enables runtime API")
+	apiTokenFile := f.String("api-token-file", "", "raw bearer or CAMELFS_API_TOKEN env file; enables runtime API")
 	socket := f.String("socket", "/run/camelfsd/api.sock", "Unix socket")
 	data := f.String("data", "/nvme/camelfs", "data directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
@@ -166,13 +166,9 @@ func host(args []string) error {
 	}
 	token := ""
 	if *apiTokenFile != "" {
-		raw, err := os.ReadFile(*apiTokenFile)
-		if err != nil {
-			return err
-		}
-		token = strings.TrimSpace(string(raw))
-		if token == "" {
-			return fmt.Errorf("empty api token")
+		token, e = readAPIToken(*apiTokenFile)
+		if e != nil {
+			return e
 		}
 	}
 	handler := &api.Server{Manager: m, Version: version, Store: *url, APIToken: token}

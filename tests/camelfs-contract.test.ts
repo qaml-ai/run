@@ -32,16 +32,21 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
     for (const close of cleanup.reverse()) await close();
   });
   const socketPath = join(dir, "api.sock"), vsock = join(dir, "job.vsock");
-  // Reserve an ephemeral loopback port; NBD is unused by this tree/stream test.
-  const portServer = createServer();
-  await new Promise<void>((resolve, reject) => {
-    portServer.once("error", reject);
-    portServer.listen(0, "127.0.0.1", resolve);
-  });
-  const port = (portServer.address() as { port: number }).port;
-  await new Promise<void>((resolve, reject) => portServer.close(error => error ? reject(error) : resolve()));
+  // Reserve separate loopback ports for NBD and the daemon's runtime listener.
+  const portServers = [createServer(), createServer()];
+  await Promise.all(portServers.map(server => new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  })));
+  const [port, apiPort] = portServers.map(server => (server.address() as { port: number }).port);
+  await Promise.all(portServers.map(server => new Promise<void>((resolve, reject) =>
+    server.close(error => error ? reject(error) : resolve()))));
+  const token = createHash("sha256").update(randomUUID()).digest("hex");
+  const tokenFile = join(dir, "camelfs-api.env");
+  await writeFile(tokenFile, `# jobhost env format\nCAMELFS_API_TOKEN=${token}\n`, { mode: 0o600 });
   const daemon = spawn(binary, ["host", "--socket", socketPath, "--data", join(dir, "data"),
     "--store", join(dir, "store"), "--nbd-listen", `127.0.0.1:${port}`,
+    "--listen-api", `127.0.0.1:${apiPort}`, "--api-token-file", tokenFile,
     "--cold", "prehydrate", "--virtual-size", String(16 * 1024 * 1024)], {
     env: { ...process.env, CAMELFSD_TEST_NO_REFLINK: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
@@ -67,6 +72,23 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
     }
   });
 
+  await timed("daemon TCP import bridge and auth", async () => {
+    const origin = `http://127.0.0.1:${apiPort}`;
+    const blob = "tcp import\n", sha256 = createHash("sha256").update(blob).digest("hex");
+    const blobPath = `/v0/blobs/${sha256}?lineage=contract:tcp`;
+    const treeBody = JSON.stringify({ lineage: "contract:tcp", files: { "tcp.txt": { sha256 } } });
+    for (const [method, path, body] of [["PUT", blobPath, blob], ["POST", "/v0/trees", treeBody]]) {
+      const denied = await fetch(origin + path, { method, body });
+      assert.equal(denied.status, 401);
+      await denied.arrayBuffer();
+      const allowed = await fetch(origin + path, { method, body, headers: { authorization: `Bearer ${token}` } });
+      assert.equal(allowed.status, method === "PUT" ? 201 : 200, await allowed.text());
+    }
+    const deniedHost = await fetch(origin + "/v0/health", { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(deniedHost.status, 404);
+    await deniedHost.arrayBuffer();
+  });
+
   // Read-only routes are deliberately absent from the import proxy.
   const get = <T>(path: string): Promise<T> => new Promise((resolve, reject) => {
     const req = request({ socketPath, path }, res => {
@@ -83,7 +105,7 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
     req.setTimeout(5000, () => req.destroy(new Error(`GET ${path} timed out`)));
     req.on("error", reject); req.end();
   });
-  const token = randomUUID(), lineage = "contract:first-mount";
+  const lineage = "contract:first-mount";
   const proxy = await serveImportProxy({ socketPath, token, host: "127.0.0.1", port: 0 });
   cleanup.push(() => proxy.close());
   const proxyOrigin = `http://127.0.0.1:${proxy.port}`;
@@ -115,7 +137,12 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
   const second = await timed("re-import unchanged files", () => importTree(env, input));
   assert.deepEqual(second, { tree: first.tree, uploaded: 0 });
 
-  await timed("mount from empty parent", () => client.mount({ jobId: "contract-1", lineage, tree: first.tree, vsock, ...{ fence: { holder: "contract-runtime", epoch: 1 } } }));
+  // TEMPORARY: removed with jobhost phase 2
+  await timed("phase-1 mount and heartbeat", async () => {
+    await client.mount({ jobId: "contract-1", lineage, tree: first.tree, vsock });
+    await client.heartbeat("contract-1");
+    assert.equal((await get<{ legacyMounts: number }>("/v0/health")).legacyMounts, 1);
+  });
   const guestroot = join(dir, "guestroot"), repo = join(guestroot, "repo");
   await mkdir(repo, { recursive: true });
   const oldUDS = process.env.CAMEL_VSOCK_UDS, oldConnect = process.env.CAMEL_VSOCK_CONNECT;
