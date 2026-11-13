@@ -99,6 +99,7 @@ import { openaiTranscription, Transcriber } from "./transcription.ts";
 import { Decider, decideInput } from "./decisions.ts";
 import { openrouterDecisions } from "./decision-providers.ts";
 import { openaiSpeech, Synthesizer } from "./speech.ts";
+import { imageModeration } from "./image-moderation.ts";
 import { Imager, openaiImages } from "./images.ts";
 import { azureChatCredentials, azureCredentials, azureRealtimeCredentials, azureRealtimeDeployment } from "./azure-openai.ts";
 import { meter, resolveKey } from "./capabilities/router.ts";
@@ -1370,6 +1371,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   };
   app.route("/", api({ dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
+    imageModeration: imageModeration({ outbound, key: () => tenants.platformKey("openai"),
+      admit: tenant => rateLimits.imageModeration(tenant),
+      ...(env.AGENT_MODERATION_URL ? { endpoint: env.AGENT_MODERATION_URL } : {}),
+    }),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
       admit: admitAlone,

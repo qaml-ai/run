@@ -4405,6 +4405,37 @@ without `volumeId` keeps nothing; with one, the images are kept in your volume u
 the prompt and images under its API data policy (not used for training). See
 [Account data](https://run.camelai.com/docs/operations/privacy.md#images).
 
+## Checking an uploaded image
+
+`POST /v1/moderations/images` checks one JPEG or PNG using the platform's OpenAI
+`omni-moderation-latest` model. Send the raw bytes, at most 2 MiB, with an API token:
+
+```bash
+curl "$RUNTIME/v1/moderations/images" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: image/png" \
+  --data-binary @picture.png
+```
+
+The response contains `id`, `model`, `flagged`, `categories`, `category_scores`, and
+`category_applied_input_types`. The application decides which categories to refuse.
+There is no model-run charge or credit requirement. Checks are limited to 120 per
+minute per tenant across all nodes, with `X-RateLimit-Limit`, `X-RateLimit-Remaining`
+and `X-RateLimit-Reset` (seconds) headers. A 429 also has `Retry-After` in seconds.
+The provider deadline is four seconds; callers should allow five seconds for a request.
+The runtime does not store the image or cache its moderation result.
+
+A 413 means the image exceeds 2 MiB; a 415 means it is not a complete JPEG/PNG matching
+its Content-Type. Provider failures or malformed results return 502 `MODERATION_FAILED`,
+a deadline returns 504 `MODERATION_TIMEOUT`, and a missing platform OpenAI key returns
+503 `MODERATION_UNAVAILABLE`. Errors never return a clean classification. Keep uploads
+disabled or refuse the upload when a check cannot finish.
+
+Use `category_applied_input_types` when interpreting a score: an empty list means that
+category did not classify this input. In particular, `sexual/minors` does not classify
+image-only input. A zero score for it does not establish that an image is safe. This is
+not a CSAM detector; do not send known or suspected CSAM to this API. See
+[OpenAI's moderation guidance](https://developers.openai.com/api/docs/guides/moderation).
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/decisions.md -->

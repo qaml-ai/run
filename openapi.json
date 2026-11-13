@@ -7828,6 +7828,342 @@
           "days"
         ]
       },
+      "ImageModerationResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "flagged": {
+            "type": "boolean"
+          },
+          "categories": {
+            "type": "object",
+            "properties": {
+              "sexual": {
+                "type": "boolean"
+              },
+              "sexual/minors": {
+                "type": "boolean"
+              },
+              "harassment": {
+                "type": "boolean"
+              },
+              "harassment/threatening": {
+                "type": "boolean"
+              },
+              "hate": {
+                "type": "boolean"
+              },
+              "hate/threatening": {
+                "type": "boolean"
+              },
+              "illicit": {
+                "type": "boolean"
+              },
+              "illicit/violent": {
+                "type": "boolean"
+              },
+              "self-harm": {
+                "type": "boolean"
+              },
+              "self-harm/intent": {
+                "type": "boolean"
+              },
+              "self-harm/instructions": {
+                "type": "boolean"
+              },
+              "violence": {
+                "type": "boolean"
+              },
+              "violence/graphic": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "sexual",
+              "sexual/minors",
+              "harassment",
+              "harassment/threatening",
+              "hate",
+              "hate/threatening",
+              "illicit",
+              "illicit/violent",
+              "self-harm",
+              "self-harm/intent",
+              "self-harm/instructions",
+              "violence",
+              "violence/graphic"
+            ],
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "category_scores": {
+            "type": "object",
+            "properties": {
+              "sexual": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "sexual/minors": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "harassment": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "harassment/threatening": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "hate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "hate/threatening": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "illicit": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "illicit/violent": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "self-harm": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "self-harm/intent": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "self-harm/instructions": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "violence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "violence/graphic": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": [
+              "sexual",
+              "sexual/minors",
+              "harassment",
+              "harassment/threatening",
+              "hate",
+              "hate/threatening",
+              "illicit",
+              "illicit/violent",
+              "self-harm",
+              "self-harm/intent",
+              "self-harm/instructions",
+              "violence",
+              "violence/graphic"
+            ],
+            "additionalProperties": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "category_applied_input_types": {
+            "type": "object",
+            "properties": {
+              "sexual": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "sexual/minors": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "harassment": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "harassment/threatening": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "hate": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "hate/threatening": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "illicit": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "illicit/violent": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "self-harm": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "self-harm/intent": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "self-harm/instructions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "violence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              },
+              "violence/graphic": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "text"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "sexual",
+              "sexual/minors",
+              "harassment",
+              "harassment/threatening",
+              "hate",
+              "hate/threatening",
+              "illicit",
+              "illicit/violent",
+              "self-harm",
+              "self-harm/intent",
+              "self-harm/instructions",
+              "violence",
+              "violence/graphic"
+            ],
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "image",
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "flagged",
+          "categories",
+          "category_scores",
+          "category_applied_input_types"
+        ]
+      },
       "Transcription": {
         "type": "object",
         "properties": {
@@ -21567,6 +21903,62 @@
                       "$ref": "#/components/schemas/GroupedUsage"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/moderations/images": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One image's moderation signals; applied input types distinguish unsupported categories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageModerationResult"
                 }
               }
             }

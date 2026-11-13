@@ -63,6 +63,7 @@ import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { speechChoiceInput, speechInput, speechRequest, type SpeechService } from "./speech-api.ts";
 import { DEFAULT_VOICE } from "./speech.ts";
+import { ImageModerationResult, MODERATION_IMAGE_BYTES, type ImageModerationService } from "./image-moderation.ts";
 import { imageOptions, imageRequest, type Hold, type ImageService, type ImageSource } from "./images.ts";
 import { decisionRequest, decisionsRequest, type DecisionService } from "./decisions.ts";
 import { AUDIO_LIMITS, DECISION_LIMITS, IMAGE_LIMITS } from "./limits.ts";
@@ -151,6 +152,7 @@ export interface ApiContext {
   voiceLibraryKey?: (tenant: string) => Promise<string | undefined>;
   /** `POST /v1/images`; without it, image generation is not enabled. */
   images?: ImageService;
+  imageModeration?: ImageModerationService;
   /** `POST /v1/decisions`; without it, decisions are not enabled. */
   decisions?: DecisionService;
   /** The tenant's own users' credit (`/v1/end-users`, end-user-credits.ts); without it, end users are not metered. */
@@ -380,7 +382,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/moderations/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:triggers|triggers\/[^/]+\/rotate|browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -1042,6 +1044,24 @@ export function api(context: ApiContext) {
       return json(c, 200, await groupedUsage(accounts.db, c.var.principal.tenant, Date.now() - days * 86_400_000, options, undefined, workspace));
     }
     return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000, workspace));
+  });
+
+  route(createRoute({
+    method: "post", path: "/v1/moderations/images",
+    request: { body: { required: true, content: {
+      "image/jpeg": { schema: z.string().openapi({ format: "binary" }) },
+      "image/png": { schema: z.string().openapi({ format: "binary" }) },
+    } } },
+    responses: { 200: reply("One image's moderation signals; applied input types distinguish unsupported categories", ImageModerationResult) },
+  }), async c => {
+    c.header("Cache-Control", "no-store");
+    const service = context.imageModeration;
+    if (!service) throw new HttpError(503, "Image moderation is not configured", "MODERATION_UNAVAILABLE");
+    const type = (c.req.header("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (type !== "image/jpeg" && type !== "image/png") throw new HttpError(415, "Send image/jpeg or image/png bytes");
+    for (const [name, value] of Object.entries(rateLimitHeaders(await service.admit(c.var.principal.tenant)))) c.header(name, value);
+    const bytes = await readBytes(c.req.raw.body, MODERATION_IMAGE_BYTES);
+    return json(c, 200, await service.check(bytes, type, c.req.raw.signal));
   });
 
   route(createRoute({

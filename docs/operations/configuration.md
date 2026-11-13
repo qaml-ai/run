@@ -188,3 +188,5 @@ ElevenLabs owns VAD, turn detection and interruptions; local speculative commits
 is resampled to PCM 16 kHz, with PCM 24 kHz output. Speaker labels are contextual updates, not reliable diarization of
 overlapping speech. Client tools run camelRun's agent; late replies start a new spoken turn. WebSocket events do not
 include token usage, so realtime usage/cost records are unknown (zero), while the delegated agent is metered normally.
+
+`AGENT_MODERATION_URL` overrides the complete OpenAI moderation endpoint URL for testing or an operator-controlled gateway. Image moderation uses `platformKeys.openai` from the tenants configuration, never a caller-supplied provider key. With no platform OpenAI key it returns 503.
