@@ -246,15 +246,18 @@ to expect by name.
    ```bash
    infra/camelfs/jwks.sh set                                 # <token_issuer>/.well-known/jwks.json → token-verify-keys
    infra/camelfs/aop.sh init                                 # the AOP CA → camelfs/prod/aop-ca; prints the PEM's VersionId
-   PLAN_ONLY=1 infra/camelfs/apply.sh aop_ca_version=<VersionId>   # creates the AOP trust store; public listener → verify
-   infra/camelfs/apply.sh aop_ca_version=<VersionId>
-   infra/camelfs/aop.sh issue                                # per-hostname AOP on fs.camelai.dev (or --zone: see above)
-   infra/camelfs/aop.sh status
+   infra/camelfs/aop.sh issue                                # the leaf, uploaded and enabled per-hostname on fs.camelai.dev
+   infra/camelfs/aop.sh status                               # Cloudflare reports it enabled
+   PLAN_ONLY=1 infra/camelfs/apply.sh aop_ca_version=<VersionId>   # the AOP trust store; public listener off → verify
+   ALLOW_UPDATE='aws_lb_listener.api_https["public"]' infra/camelfs/apply.sh aop_ca_version=<VersionId>
+   infra/camelfs/aop.sh test                                 # verify mode + 200 through Cloudflare + refused without the cert
    ```
 
-   Order matters only in that `issue` after `apply` leaves no window where the listener verifies and Cloudflare
-   has nothing to present; do `apply` and `issue` together. (If step 3 ran before this PR, the listener update
-   from `off` to `verify` is the one expected in-place change: `ALLOW_UPDATE='aws_lb_listener.api_https["public"]'`.)
+   **Order:** `init`, then `issue` (Cloudflare now presents the leaf; the listener still ignores it), then
+   `apply aop_ca_version=…` (the listener starts requiring it), then `test`. The other way round leaves a window
+   in which the listener requires a certificate Cloudflare does not yet present, and `fs.camelai.dev` answers
+   nothing. The apply is one in-place update of the public listener (`off` → `verify`):
+   `ALLOW_UPDATE='aws_lb_listener.api_https["public"]'`.
 
 5. **The image, once C1 is merged.** Build and push (needs `git` in the image: the Dockerfile has it), register
    it on the service (a deployment at 0 tasks completes at once), then start the tasks:

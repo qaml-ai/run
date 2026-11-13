@@ -13,6 +13,10 @@
 #                                          custom certificate unless --replace is also given, and then every other
 #                                          origin that verifies client certificates must trust this CA first.
 #   infra/camelfs/aop.sh status            what Cloudflare reports for the zone and the hostname
+#   infra/camelfs/aop.sh test              prove enforcement: the public listener is in verify mode with the AOP
+#                                          trust store; a request through Cloudflare answers 200; a request straight
+#                                          to the ALB without the certificate is refused (a TLS alert from an allowed
+#                                          address, a timeout from anywhere else: the ranges group)
 # Needs AWS credentials for the runtime's account, openssl, jq, curl, and CLOUDFLARE_API_TOKEN with
 # Zone › SSL and Certificates › Edit on camelai.dev (DNS Edit alone is NOT enough: the origin_tls_client_auth
 # endpoints are under SSL and Certificates). The token is checked first and the missing permission named.
@@ -82,6 +86,27 @@ case "${1:-}" in
       echo "Zone-level AOP enabled on $zone_name with certificate $cert_id (expires in 365 days: diary it)."
     fi
     echo "Verify from an allowed path: curl --connect-to $hostname:443:<public ALB dns>:443 https://$hostname/v0/health must fail without the certificate and succeed through Cloudflare."
+    ;;
+  test)
+    alb=$(aws elbv2 describe-load-balancers --names camelfs-prod-public --query 'LoadBalancers[0].[LoadBalancerArn,DNSName]' --output text)
+    alb_arn=${alb%%	*}; alb_dns=${alb##*	}
+    listener=$(aws elbv2 describe-listeners --load-balancer-arn "$alb_arn" --query 'Listeners[?Port==`443`].MutualAuthentication | [0]' --output json)
+    mode=$(jq -r '.Mode // "off"' <<<"$listener"); store=$(jq -r '.TrustStoreArn // ""' <<<"$listener"); ignore=$(jq -r '.IgnoreClientCertificateExpiry // false' <<<"$listener")
+    echo "listener 443: mode=$mode trust_store=${store##*/} ignore_expiry=$ignore"
+    [[ $mode == verify && $store == *":truststore/camelfs-prod-aop/"* && $ignore == false ]] || { echo "FAIL: the public listener is not verifying against the AOP trust store (apply aop_ca_version first)." >&2; exit 1; }
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://$hostname/v0/health" || true)
+    echo "through Cloudflare: HTTP $code"
+    [[ $code == 200 ]] || { echo "FAIL: https://$hostname/v0/health did not answer 200 through Cloudflare (is the leaf uploaded and enabled? aop.sh status)." >&2; exit 1; }
+    # Straight at the ALB with the hostname as SNI and no client certificate. From an address the ranges group
+    # admits this ends in a TLS alert (curl 35/56): the handshake itself is refused. From anywhere else the
+    # connection times out (curl 28): that proves the security group, not mTLS; say which.
+    set +e; curl -sS -o /dev/null --max-time 10 --connect-to "$hostname:443:$alb_dns:443" "https://$hostname/v0/health" 2>"$work/direct.err"; rc=$?; set -e
+    case $rc in
+      0) echo "FAIL: the ALB answered a request without a client certificate." >&2; exit 1 ;;
+      35|56) echo "direct to the ALB without the certificate: refused at the TLS handshake (curl $rc). PASS." ;;
+      28|7) echo "direct to the ALB: no connection from here (curl $rc), which is the Cloudflare-ranges group, not mTLS. Re-run from an address the group admits to see the handshake refused." ;;
+      *) echo "direct to the ALB: curl exit $rc: $(cat "$work/direct.err")" ;;
+    esac
     ;;
   status)
     cf_check
