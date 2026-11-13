@@ -276,7 +276,10 @@ to expect by name.
    infra/camelfs/apply.sh api_min_count=2
    ```
 
-   Every later release is `infra/camelfs/deploy.sh` alone (build, push, register, roll, wait for COMPLETED).
+   Every later release is `infra/camelfs/deploy.sh` alone (build, push, register, roll, wait for COMPLETED, then
+   save the revision as `service_task_definition_arn` in `prod.tfvars`). Until that first deploy the service runs
+   Terraform's own revision, so a port or setting Terraform adds reaches it on apply; afterwards Terraform's
+   revision changes ship with the next deploy, which copies the family's latest revision.
 
 6. **Hosts.** Once `infra/job-hosts` is applied, let its pool roles and security group in:
 
@@ -311,7 +314,7 @@ Later changes go the same way (`PLAN_ONLY=1` first). Arguments are saved to `cam
 bucket only after an apply, so repeat the ones already set (`certificate_issued=true` stays saved from step 3).
 A plan that deletes or replaces anything is refused unless `ALLOW_DESTROY` names each address, and one that
 updates a resource in place unless `ALLOW_UPDATE` names it; the Terraform-registered task definition revision is
-the one exception (the service runs `deploy.sh`'s revision). The bucket, the tables and the secrets carry
+the one exception (the service runs `deploy.sh`'s revision once one exists, `service_task_definition_arn`). The bucket, the tables and the secrets carry
 `prevent_destroy`.
 
 ## Tests (no AWS, no Cloudflare)

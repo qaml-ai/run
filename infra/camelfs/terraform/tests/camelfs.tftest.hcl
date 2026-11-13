@@ -322,6 +322,23 @@ run "second_apply_with_the_certificate" {
     condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:none"
     error_message = "The placeholder image tag; nothing pulls it at 0 tasks."
   }
+  assert {
+    condition     = aws_ecs_service.api[0].task_definition == aws_ecs_task_definition.api.arn
+    error_message = "Before the first deploy the service runs Terraform's own revision, so Terraform's port mappings reach it."
+  }
+}
+
+run "service_pinned_to_the_deployed_revision" {
+  command = plan
+  variables {
+    certificate_issued          = true
+    service_task_definition_arn = "arn:aws:ecs:us-west-2:904534089871:task-definition/camelfs-prod-api:7"
+  }
+
+  assert {
+    condition     = aws_ecs_service.api[0].task_definition == "arn:aws:ecs:us-west-2:904534089871:task-definition/camelfs-prod-api:7"
+    error_message = "After a deploy the service runs the revision deploy.sh saved, whatever Terraform's own revision is."
+  }
 }
 
 # --- The service running, once an image is deployed and a minimum set ---

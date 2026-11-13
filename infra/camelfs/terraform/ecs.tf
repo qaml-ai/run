@@ -10,8 +10,12 @@
 # The service is created with the listeners (certificate_issued: a target group must belong to a balancer with a
 # listener before a service can register with it) and runs api_min_count tasks: 0 by default, so it exists before
 # any image does and nothing pulls the placeholder tag; autoscaling exists only with a minimum above 0. Terraform
-# registers the first task definition revision; deploy.sh registers every later one and rolls the service, so the
-# service ignores task_definition.
+# registers its own task definition revision, and the service RUNS it until the first deploy.sh
+# (service_task_definition_arn empty): port mappings and settings Terraform adds reach the service without a deploy
+# (2026-11-13: the enrollment port 8793 did not, when the service ignored task_definition and still ran an older
+# revision). deploy.sh registers every later revision, rolls the service, and after a COMPLETED deployment saves
+# its ARN as service_task_definition_arn in prod.tfvars, so a plan pins the revision deploy.sh chose and
+# Terraform's later revision changes ship with the next deploy (which copies the family's latest revision).
 
 locals {
   service_enabled = var.certificate_issued
@@ -190,7 +194,7 @@ resource "aws_ecs_service" "api" {
 
   name                   = local.service_name
   cluster                = aws_ecs_cluster.camelfs.id
-  task_definition        = aws_ecs_task_definition.api.arn
+  task_definition        = var.service_task_definition_arn != "" ? var.service_task_definition_arn : aws_ecs_task_definition.api.arn
   desired_count          = var.api_min_count
   launch_type            = "FARGATE"
   platform_version       = "LATEST"
@@ -242,8 +246,9 @@ resource "aws_ecs_service" "api" {
   depends_on = [aws_lb_listener.api_https, aws_lb_listener.enroll]
 
   lifecycle {
-    # deploy.sh rolls new task definition revisions; autoscaling owns the count.
-    ignore_changes = [task_definition, desired_count]
+    # Autoscaling owns the count. task_definition is NOT ignored: before the first deploy it is Terraform's
+    # revision, after it the one deploy.sh saved (service_task_definition_arn).
+    ignore_changes = [desired_count]
   }
 }
 

@@ -66,6 +66,16 @@ variable "api_image_tag" {
   }
 }
 
+variable "service_task_definition_arn" {
+  description = "The task definition revision the service runs, as deploy.sh registered it (full ARN with revision; deploy.sh saves it to prod.tfvars after a COMPLETED deployment). Empty, before the first deploy: the service runs Terraform's own revision, so Terraform's port mappings and settings reach it without a deploy. Once set, Terraform's revision changes ship with the next deploy.sh, which copies the family's latest revision."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.service_task_definition_arn == "" || can(regex("^arn:aws:ecs:[a-z0-9-]+:[0-9]{12}:task-definition/camelfs-[a-z0-9-]+-api:[0-9]+$", var.service_task_definition_arn))
+    error_message = "service_task_definition_arn is a full camelfs api task definition ARN with its revision, or empty."
+  }
+}
+
 variable "api_extra_args" {
   description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)
