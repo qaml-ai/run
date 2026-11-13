@@ -52,21 +52,25 @@ func blank(c Config) error {
 	e = os.Rename(tmp, p)
 	return e
 }
-func (m *Manager) objects() *objects.Repository {
+func (m *Manager) objects(lineages ...string) *objects.Repository {
 	db, ok := m.Refs.(*refs.DB)
 	if !ok {
 		return nil
 	}
-	return &objects.Repository{DB: db, Store: m.Store, TempDir: m.Data}
+	repo := &objects.Repository{DB: db, Store: m.Store, TempDir: m.Data}
+	if len(lineages) > 0 {
+		return repo.ForLineage(lineages[0])
+	}
+	return repo
 }
-func (m *Manager) mountRoot(ctx context.Context, id string) (root.Root, error) {
+func (m *Manager) mountRoot(ctx context.Context, lineage, id string) (root.Root, error) {
 	if id != "" {
-		return m.load(ctx, id)
+		return m.load(ctx, lineage, id)
 	}
 	return root.Root{V: 1, FSType: "ext4", VirtualSize: m.VirtualSize, Chunks: map[string]string{}}, nil
 }
 func (m *Manager) baseRoot(ctx context.Context, l, t string) (string, error) {
-	repo := m.objects()
+	repo := m.objects(l)
 	if repo == nil {
 		return "", fmt.Errorf("trees require SQLite")
 	}

@@ -3,12 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
+	"crypto/sha1"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"time"
 
@@ -44,7 +46,7 @@ func jsonReply(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func storageFail(w http.ResponseWriter, e error) {
-	status, code, details := 503, "unavailable", any(nil)
+	status, code, details := 500, "internal", any(nil)
 	var se *storageError
 	var ae *apierr.Error
 	if errors.As(e, &se) {
@@ -56,8 +58,13 @@ func storageFail(w http.ResponseWriter, e error) {
 		}
 	} else if errors.Is(e, objects.ErrHash) {
 		status, code = 400, "blob_mismatch"
+	} else if errors.Is(e, store.ErrUnavailable) {
+		status, code = 503, "unavailable"
 	} else if errors.Is(e, objects.ErrIgnored) {
 		status, code = 400, "invalid_request"
+	}
+	if status == 500 {
+		log.Printf("op=storage error=%v", e)
 	}
 	v := map[string]any{"code": code, "message": code}
 	if details != nil {
@@ -97,29 +104,28 @@ func require(ctx context.Context, repo *objects.Repository, l, id, kind string, 
 	return nil
 }
 func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
-	if s.APIToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+s.APIToken)) != 1 {
-		jsonReply(w, 401, map[string]any{"error": map[string]string{"code": "unauthorized", "message": "bearer required"}})
+	if !s.authorize(w, r) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/lineages/"), "/")
-	if len(parts) < 2 || parts[0] == "" {
+	if len(parts) < 2 || !store.Lineage(parts[0]) {
 		storageFail(w, bad("invalid_request"))
 		return
 	}
 	l := parts[0]
 	route := strings.Join(parts[1:], "/")
-	repo := s.repository()
+	repo := s.repository().ForLineage(l)
 	// Serialize keyed mutations through response publication. A failed request is
 	// retryable; only successful results enter the 24-hour response cache.
 	write := r.Method == "PUT" || r.Method == "POST" && route != "read"
 	if write && r.Header.Get("Idempotency-Key") != "" {
-		s.idemMu.Lock()
-		defer s.idemMu.Unlock()
 		key := r.Header.Get("Idempotency-Key")
 		if len(key) > 256 {
 			storageFail(w, bad("invalid_request"))
 			return
 		}
+		unlock := s.lockIdempotency(l, key)
+		defer unlock()
 		var status int
 		var body []byte
 		e := repo.DB.DB.QueryRowContext(r.Context(), "SELECT status,body FROM idempotency WHERE key=? AND lineage=? AND route=? AND created_at>?", key, l, route, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&status, &body)
@@ -188,6 +194,35 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 		}
 		if e != nil || f.SHA1 != strings.TrimPrefix(route, "blobs/") {
 			fail(missing())
+			return
+		}
+		info, e := repo.BlobInfo(ctx, l, f.SHA1)
+		if e != nil {
+			fail(e)
+			return
+		}
+		if info.Size > 8<<20 {
+			file, e := blobFile(ctx, repo, info)
+			if e != nil {
+				fail(e)
+				return
+			}
+			defer os.Remove(file.Name())
+			defer file.Close()
+			head := make([]byte, 512)
+			n, e := file.Read(head)
+			if e != nil && e != io.EOF {
+				fail(e)
+				return
+			}
+			if _, e = file.Seek(0, io.SeekStart); e != nil {
+				fail(e)
+				return
+			}
+			w.Header().Set("X-Camel-Blob", f.SHA1)
+			w.Header().Set("X-Camel-Size", strconv.FormatInt(info.Size, 10))
+			w.Header().Set("Content-Type", http.DetectContentType(head[:n]))
+			http.ServeContent(w, r, "", time.Time{}, file)
 			return
 		}
 		b, e := blobBytes(ctx, repo, l, f.SHA1)
@@ -382,4 +417,70 @@ func blobBytes(ctx context.Context, r *objects.Repository, l, id string) ([]byte
 		_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO objects VALUES(?,'blob',?,?,?)", id, b, len(b), time.Now().UnixMilli())
 	}
 	return b, e
+}
+
+type idempotencyKey struct{ lineage, key string }
+type idempotencyLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// The map mutex protects bookkeeping only, never request bodies or store I/O.
+// References include waiters so a lock cannot be replaced while still in use.
+func (s *Server) lockIdempotency(lineage, key string) func() {
+	k := idempotencyKey{lineage, key}
+	s.idemLocksMu.Lock()
+	if s.idemLocks == nil {
+		s.idemLocks = map[idempotencyKey]*idempotencyLock{}
+	}
+	lock := s.idemLocks[k]
+	if lock == nil {
+		lock = &idempotencyLock{}
+		s.idemLocks[k] = lock
+	}
+	lock.users++
+	s.idemLocksMu.Unlock()
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.idemLocksMu.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(s.idemLocks, k)
+		}
+		s.idemLocksMu.Unlock()
+	}
+}
+
+// Verify the complete download before emitting headers, so store failures or
+// corruption cannot turn into a successful partial response.
+func blobFile(ctx context.Context, r *objects.Repository, b objects.Blob) (out *os.File, err error) {
+	src, e := store.OpenReader(ctx, r.Store, "o/"+b.SHA1)
+	if e != nil {
+		return nil, e
+	}
+	defer src.Close()
+	file, e := os.CreateTemp(r.TempDir, "camelfsd-read-")
+	if e != nil {
+		return nil, e
+	}
+	defer func() {
+		if err != nil {
+			file.Close()
+			os.Remove(file.Name())
+		}
+	}()
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", b.Size)
+	n, e := io.Copy(io.MultiWriter(file, h), io.LimitReader(src, b.Size+1))
+	if e != nil {
+		return nil, e
+	}
+	if n != b.Size || fmt.Sprintf("%x", h.Sum(nil)) != b.SHA1 {
+		return nil, fmt.Errorf("corrupt blob")
+	}
+	if _, e = file.Seek(0, io.SeekStart); e != nil {
+		return nil, e
+	}
+	return file, nil
 }

@@ -38,7 +38,7 @@ func (m *Manager) startHydration(v *Mount, r root.Root) {
 		}
 		ctx = store.Background(ctx)
 		h.err = store.Parallel(ctx, 64, keys, func(key string) error {
-			p, e := m.Cache.EnsureContext(ctx, r.Chunks[key])
+			p, e := m.Cache.EnsureLineage(ctx, v.Lineage, r.Chunks[key])
 			if e != nil {
 				return e
 			}

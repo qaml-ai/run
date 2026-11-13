@@ -74,7 +74,7 @@ func run(args []string) error {
 func host(args []string) error {
 	f := flag.NewFlagSet("host", flag.ContinueOnError)
 	apiListen := f.String("listen-api", "127.0.0.1:8790", "runtime API address (requires api-token-file)")
-	apiTokenFile := f.String("api-token-file", "", "shared bearer file; enables runtime API")
+	apiTokenFile := f.String("api-token-file", "", "raw bearer or CAMELFS_API_TOKEN env file; enables runtime API")
 	socket := f.String("socket", "/run/camelfsd/api.sock", "Unix socket")
 	data := f.String("data", "/nvme/camelfs", "data directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
@@ -165,13 +165,9 @@ func host(args []string) error {
 	}
 	token := ""
 	if *apiTokenFile != "" {
-		raw, err := os.ReadFile(*apiTokenFile)
-		if err != nil {
-			return err
-		}
-		token = strings.TrimSpace(string(raw))
-		if token == "" {
-			return fmt.Errorf("empty api token")
+		token, e = readAPIToken(*apiTokenFile)
+		if e != nil {
+			return e
 		}
 	}
 	handler := &api.Server{Manager: m, Version: version, Store: *url, APIToken: token}
@@ -181,13 +177,7 @@ func host(args []string) error {
 			return err
 		}
 		defer al.Close()
-		runtimeAPI := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/v1/") {
-				http.NotFound(w, r)
-				return
-			}
-			handler.ServeHTTP(w, r)
-		}), ReadHeaderTimeout: 5 * time.Second}
+		runtimeAPI := &http.Server{Handler: handler.RuntimeHandler(), ReadHeaderTimeout: 5 * time.Second}
 		defer runtimeAPI.Close()
 		go func() {
 			if err := runtimeAPI.Serve(al); err != nil && err != http.ErrServerClosed {

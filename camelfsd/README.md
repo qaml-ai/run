@@ -32,17 +32,27 @@ whole images. Privileged loop/reflink tests skip when unsupported.
 
 An absolute directory in --store substitutes the local store. S3 uses the SDK
 credential chain. No runtime TCP listener starts without --api-token-file.
-The runtime listener serves only /v1; host operations stay on the mode-0600
-Unix socket. Protect the loopback listener behind the runtime's private tunnel.
+--api-token-file accepts either a raw token (outer whitespace trimmed) or an
+env-format file containing CAMELFS_API_TOKEN=<hex>, such as jobhost's
+/etc/camel/camelfs-api.env (root-owned, mode 0600). Blank tokens are refused;
+env values must be hex. Other env lines and comments are ignored when that key
+is present.
+The runtime listener serves /v1 plus exactly POST /v0/trees and
+PUT /v0/blobs/:sha256?lineage=... using the Unix socket handlers. Both import
+routes require the same bearer as /v1. Other /v0 paths return 404 on TCP;
+host operations stay on the mode-0600 Unix socket. This replaces jobhost's
+phase-1 import proxy on 127.0.0.1:8790: stop the proxy before enabling the
+daemon listener, leaving the pilot VPC service address unchanged. Protect the loopback listener behind the runtime's private tunnel.
 Never log the bearer. Health reports api: "127.0.0.1:8790".
 
 ## Durability and lineage scope
 
-Objects are o/<git-sha1> (raw blob bytes), t/<git-sha1> (Git tree bytes),
-k/<git-sha1> (Git commit bytes), r/<sha256> (canonical root JSON) and
-c/<sha256> (chunks). Git hashes include the object header; stored tree and
-commit payloads use Git's exact encoding. All created trees and commits reach
-the store before a successful response. Object uploads use 16 workers.
+Objects are <lineage>/o/<git-sha1> (raw blobs), <lineage>/t/<git-sha1>
+(Git trees), <lineage>/k/<git-sha1> (Git commits), <lineage>/r/<sha256>
+(canonical roots) and <lineage>/c/<sha256> (chunks). Git hashes include the
+object header; stored tree and commit payloads use Git's exact encoding. All
+created trees and commits reach the store before a successful response. Trees
+and commits are gathered into one publication with up to 64 uploads.
 Blobs stream through a temporary file, hashing SHA-256 and Git SHA-1, and use
 one file-backed PUT. Unknown-length requests replay the file to compute the
 Git header after measuring its length. X-Camel-Sha256 mismatch is rejected
@@ -53,22 +63,36 @@ lineage_blobs, lineage_objects, uploaded, objects, and idempotency. There is
 no refs table. Trees and commits are cached on write and on a cache miss;
 reads verify their ids before caching. Small blob reads are also cached.
 
-Additional l/<sha256(lineage NUL kind NUL id)> membership records preserve
-lineage authorization and blob size/SHA-256 metadata after a cache wipe.
-The payload repeats the identity and is checked on recovery. This extra
-namespace closes a gap in §9: durable bytes alone cannot restore the
-lineage's reachability set. Existing data written before unit 9 must be
-re-imported to establish membership.
+## Reachability
 
-Every runtime route checks lineage membership. A blob GET also requires a
-tree and path resolving to that exact blob. A known hash alone grants no
-read access. Trees, including subtrees, commits, blobs and roots written for
-a lineage are recorded. Forks share a lineage.
+Existence under the lineage prefix is membership. The store is the source of
+truth; lineage_objects and lineage_blobs are derived SQLite caches. Successful
+writes fill them only after durable publication. A cache miss does one HEAD on
+the lineage-prefixed object and refills the rows. Blobs carry x-camel-sha256
+S3 metadata; HEAD also supplies size. The Local store keeps the same metadata
+in a .meta sidecar beside each blob. There are no l/ membership markers.
+
+Lineages are printable path segments of at most 128 bytes, without slash,
+backslash or dot segments; colons are allowed. Cross-lineage store deduplication
+is intentionally gone. Identical bytes are published separately in each lineage.
+The host chunk cache remains keyed by verified content hash for local reuse.
+NBD export names are <lineage>/<root>, so origin fetches use the correct prefix.
+Old global objects require re-import; this change does not fall back to the
+global namespace. On first startup with this layout, legacy lineage cache rows
+and idempotency responses are cleared; subsequent restarts preserve them.
+
+Every runtime route checks lineage membership. A blob GET additionally requires
+a tree and path resolving to exactly that blob. A known hash alone grants no
+read access. Large GETs above 8 MiB download through a bounded buffer into a
+verified temporary file and use file-backed range serving; temporary files are
+removed on success or failure. Only blobs at most InlineTree are cached inline.
+Forks share a lineage.
 
 Idempotency-Key caches successful mutation responses for 24 hours, scoped
 by lineage and route. Replays return the original status and exact body
-without recomputing or uploading. Keyed mutations serialize through response
-publication. Errors are retryable and are not cached. Response replay is
+without recomputing or uploading. Only mutations with the same lineage and
+idempotency key serialize through response publication; unrelated uploads
+proceed independently. Errors are retryable and are not cached. Response replay is
 host-local; wiping refs.db also wipes replay history. Deterministic commit
 ids require an explicit time in Unix seconds. Otherwise Idempotency-Key
 is the retry mechanism; the caller must preserve this cache across retries.
@@ -178,10 +202,18 @@ curl --unix-socket "$S" -d "{\"lineage\":\"test\",\"path\":\"/nvme/base.img\",\"
 ```
 
 Mount accepts exactly one of tree or root. fence is stored and echoed in
-status. Null/omitted fence makes the image read-only and checkpoint returns
-409 no_fence. No job ref is created. There is no forks or heartbeat route,
-lease TTL, or renewal goroutine. The development CLI accepts --holder and
---epoch for fenced mounts. Image import returns a root and records tree_roots
+status. Explicit null makes the image read-only and checkpoint returns
+409 no_fence. A missing fence enables phase-1 compatibility, removed with
+jobhost phase 2: the daemon synthesizes {holder: "<hostId>/<jobId>", epoch: 0},
+logs op=mount legacy-fence jobId=... count=N, and permits checkpoints. The
+process counter counts successful legacy mounts and is exposed as legacyMounts
+in /v0/health; it resets when the daemon restarts. Every shim site is tagged
+// TEMPORARY: removed with jobhost phase 2.
+POST /v0/mounts/:id/heartbeat returns 200 {"ok":true,"deprecated":true} as
+a no-op for one release: phase-1 compatibility, removed with jobhost phase 2.
+No job ref is created. There is no forks route, lease TTL, or renewal goroutine.
+The development CLI accepts --holder and --epoch for fenced mounts; an empty
+holder sends explicit null for a read-only mount. Image import returns a root and records tree_roots
 without creating a ref. Import paths must resolve under --data, /nvme, or
 a repeatable --import-allow directory.
 
@@ -286,3 +318,5 @@ checkpoint. Use the loop guest-cycle tests for guest protocol coverage.
 No real-host performance or COW integrity result is claimed until a reviewer
 runs the root tests and harness. The demand samples include NBD misses and
 cache hits; they are not an isolated cache-hit microbenchmark.
+Host /v0 tree, blob and commit GETs now require ?lineage=NAME. The development
+CLI tree and cat commands take --lineage NAME before the tree id.

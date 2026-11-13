@@ -46,7 +46,7 @@ func TestColdSwapCheckpointRelease(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	r, e := m.load(context.Background(), imp.Root)
+	r, e := m.load(context.Background(), "l", imp.Root)
 	if e != nil {
 		t.Fatal(e)
 	}

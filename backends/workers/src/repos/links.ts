@@ -1,0 +1,74 @@
+import { FileLinks, declaredType } from '../file-policy.ts';
+import { RepoError, check, normalizeRepoPath, type Mode } from './repo-policy.ts';
+import { repoContext, type RepoContext, type RepoEnv } from './registry.ts';
+import { camelfsConfigured } from './storage.ts';
+import { commitChanges } from './write.ts';
+import { json, repoFailure, boundedBody, streamFile, fileEntry } from './routes.ts';
+type Grant = {
+  kind: 'repo';
+  tenant: string;
+  repo: string;
+  ref: string;
+  version?: string;
+  path: string;
+  method: 'GET' | 'PUT';
+  expiresAt: number;
+  maxBytes?: number;
+  contentType?: string;
+};
+function signer(env: RepoEnv, base: string) {
+  if (!env.FILE_SIGNING_SECRET || env.FILE_SIGNING_SECRET.length < 32)
+    throw new RepoError('signing-unavailable', 503, 'signing-unavailable');
+  return new FileLinks(env.FILE_SIGNING_SECRET + ':repo', env.AGENT_PUBLIC_URL || env.PUBLIC_BASE_URL || base);
+}
+export async function signRepoLink(ctx: RepoContext, base: string, input: {
+  path: string;
+  method?: 'GET' | 'PUT';
+  ref?: string;
+  version?: string;
+  expiresIn?: number;
+  maxBytes?: number;
+  contentType?: string;
+}) {
+  const method = input.method ?? 'GET', seconds = input.expiresIn ?? 900;
+  check(method === 'GET' || method === 'PUT');
+  check(Number.isInteger(seconds) && seconds >= 1 && seconds <= 3600, 'bad-expiry');
+  check(input.maxBytes === undefined || (Number.isSafeInteger(input.maxBytes) && input.maxBytes >= 0 && input.maxBytes <= 256 * 2 ** 20), 'bad-size');
+  check(input.contentType === undefined || declaredType(input.contentType), 'bad-content-type');
+  check(method !== 'PUT' || input.version === undefined, 'bad-version');
+  const path = normalizeRepoPath(input.path), ref = input.ref ?? 'main';
+  if (method === 'GET') {
+    const v = await ctx.stub.resolve(input.version ?? ref);
+    await fileEntry(ctx, v, path);
+  }
+  const grant = { kind: 'repo' as const, tenant: ctx.tenant, repo: ctx.repoId, ref, version: input.version, path, method, maxBytes: input.maxBytes, contentType: input.contentType };
+  // A separate HMAC domain prevents either link family accepting the other's token.
+  const signed = signer(ctx.env, base).sign({ ...grant, expiresIn: seconds } as unknown as Parameters<FileLinks['sign']>[0]);
+  return { url: signed.url.replace('/v1/links/', '/v1/repo-links/'), expiresAt: signed.expiresAt };
+}
+export async function handleSignedRepoRequest(request: Request, env: RepoEnv): Promise<Response | null> {
+  const url = new URL(request.url), m = /^\/v1\/repo-links\/([^/]+)\/[^/]+$/.exec(url.pathname);
+  if (!m)
+    return null;
+  if (!camelfsConfigured(env))
+    return json({ code: 'storage-unavailable' }, 503);
+  try {
+    const grant = signer(env, url.origin).verify(m[1]) as unknown as Grant;
+    if (grant.kind !== 'repo' || !grant.tenant || !/^repo_[a-f0-9]{24}$/.test(grant.repo) || normalizeRepoPath(grant.path) !== grant.path)
+      throw new RepoError('invalid-link', 403, 'invalid-link');
+    if (request.method !== grant.method)
+      throw new RepoError('method-not-allowed', 405, 'method-not-allowed');
+    const ctx = await repoContext(env, grant.tenant, grant.repo);
+    if (grant.method === 'GET') {
+      const v = await ctx.stub.resolve(grant.version ?? grant.ref);
+      return await streamFile(request, ctx, v, await fileEntry(ctx, v, grant.path));
+    }
+    if (grant.contentType && declaredType(request.headers.get('content-type')) !== grant.contentType)
+      throw new RepoError('content-type', 415, 'content-type');
+    const result = await commitChanges(ctx, { ref: grant.ref, changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: `link:${grant.repo}`, who: `link:${grant.repo}`, why: 'link', trailers: { 'Camel-Checkpoint': 'api' } });
+    return json({ version: result.version, path: grant.path, ...result.files[grant.path] }, 201);
+  }
+  catch (e) {
+    return repoFailure(e);
+  }
+}

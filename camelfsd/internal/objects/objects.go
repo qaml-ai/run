@@ -29,9 +29,11 @@ var ErrIgnored = errors.New("ignored-path")
 var ErrHash = errors.New("hash-mismatch")
 
 type Repository struct {
-	DB      *refs.DB
-	Store   store.Store
-	TempDir string
+	lineage     string
+	publication *publication
+	DB          *refs.DB
+	Store       store.Store
+	TempDir     string
 	// Query observes repository reads for diagnostics and query-budget tests.
 	Query func(string)
 }
@@ -82,8 +84,9 @@ func Path(p string) error {
 }
 
 func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int64, body io.Reader) (Blob, error) {
+	r = r.ForLineage(lineage)
 	b := Blob{SHA256: hash, Size: size}
-	if lineage == "" || hash != "" && !root.Hex(hash, 64) || size < -1 {
+	if !store.Lineage(lineage) || hash != "" && !root.Hex(hash, 64) || size < -1 {
 		return b, apierr.Invalid("invalid blob request")
 	}
 	if size > MaxBlob {
@@ -145,14 +148,11 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 	}
 	key := "o/" + b.SHA1
 
-	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f); e != nil {
+	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f, b.SHA256); e != nil {
 		return b, e
 	}
 
-	_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", lineage, b.SHA256, b.SHA1, size, time.Now().UnixMilli())
-	if e == nil {
-		e = r.Record(ctx, lineage, b.SHA1, "blob", &b)
-	}
+	e = r.Record(ctx, lineage, b.SHA1, "blob", &b)
 	return b, e
 }
 
@@ -169,9 +169,18 @@ type treeObject struct {
 }
 
 func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
+	r = r.ForLineage(q.Lineage)
+	batch := r.BeginPublication()
+	out, e := batch.importTrees(ctx, q)
+	if e == nil && r.publication == nil {
+		e = batch.Flush(ctx)
+	}
+	return out, e
+}
+func (r *Repository) importTrees(ctx context.Context, q Request) (Result, error) {
 	start := time.Now()
 	out := Result{}
-	if q.Lineage == "" || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
+	if !store.Lineage(q.Lineage) || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
 		return out, apierr.Invalid("invalid tree request")
 	}
 	// Validate the complete listing before consulting blob availability.
@@ -335,19 +344,11 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	if e != nil {
 		return out, e
 	}
-	keys := make([]string, len(pending))
-	all := map[string][]byte{}
-	for i, obj := range pending {
-		keys[i] = obj.id
-		all[obj.id] = obj.bytes
-	}
-	if e = store.Parallel(ctx, 16, keys, func(id string) error {
-		if err := (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, "t/"+id, all[id]); err != nil {
-			return err
+	for _, obj := range pending {
+		r.publication.puts["t/"+obj.id] = obj.bytes
+		if e = r.Record(ctx, q.Lineage, obj.id, "tree", nil); e != nil {
+			return out, e
 		}
-		return r.Record(ctx, q.Lineage, id, "tree", nil)
-	}); e != nil {
-		return out, e
 	}
 	tx, e := r.DB.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -409,7 +410,7 @@ func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
 	return entries, nil
 }
 
-func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
+func (r *Repository) TreeEntries(ctx context.Context, id string) ([]Entry, error) {
 	out := []Entry{}
 	var walk func(string, string) error
 	walk = func(tree, prefix string) error {
@@ -431,6 +432,14 @@ func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
 		return nil
 	}
 	e := walk(id, "")
+	if e != nil {
+		return nil, e
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
+	out, e := r.TreeEntries(ctx, id)
 	if e != nil {
 		return nil, e
 	}

@@ -25,6 +25,7 @@ type mergeConflict struct {
 }
 
 func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeRequest) (any, error) {
+	r = r.ForLineage(l)
 	if q.Mode != "merge" && q.Mode != "squash" {
 		return nil, bad("invalid_request")
 	}

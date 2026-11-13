@@ -22,7 +22,7 @@ func (s *storeSpy) Has(c context.Context, k string) (bool, error) {
 	return s.Store.Has(c, k)
 }
 func (s *storeSpy) Put(c context.Context, k string, b []byte) error {
-	if !strings.HasPrefix(k, "k/") && !strings.HasPrefix(k, "l/") {
+	if !strings.HasPrefix(k, "l/k/") {
 		s.calls++
 	}
 	return s.Store.Put(c, k, b)

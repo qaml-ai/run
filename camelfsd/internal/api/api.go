@@ -20,7 +20,8 @@ import (
 
 type Server struct {
 	APIToken       string
-	idemMu         sync.Mutex
+	idemLocksMu    sync.Mutex
+	idemLocks      map[idempotencyKey]*idempotencyLock
 	Manager        *image.Manager
 	Version, Store string
 }
@@ -67,14 +68,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m := s.Manager
 	switch {
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v0/commits/"):
-		v, e := m.Commit(r.Context(), strings.TrimPrefix(r.URL.Path, "/v0/commits/"))
+		v, e := m.Commit(r.Context(), strings.TrimPrefix(r.URL.Path, "/v0/commits/"), r.URL.Query().Get("lineage"))
 		if e != nil {
 			fail(e)
 			return
 		}
 		reply(200, v)
 	case r.Method == "GET" && r.URL.Path == "/v0/health":
-		reply(200, map[string]any{"api": "127.0.0.1:8790", "dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID})
+		// TEMPORARY: removed with jobhost phase 2
+		reply(200, map[string]any{"api": "127.0.0.1:8790", "dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID, "legacyMounts": image.LegacyMounts()})
 	case r.Method == "POST" && r.URL.Path == "/v0/mounts":
 		var q image.Request
 		if e := decode(&q); e != nil {
@@ -126,6 +128,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			v.CheckpointMs = v.WallMs
 			v.RefreshTimings()
 			reply(200, v)
+		} else if len(parts) == 2 && parts[1] == "heartbeat" && r.Method == "POST" {
+			// TEMPORARY: removed with jobhost phase 2
+			reply(200, map[string]bool{"ok": true, "deprecated": true})
 		} else if len(parts) == 1 && r.Method == "GET" {
 			v, e := m.Status(r.Context(), id)
 			if e != nil {

@@ -112,7 +112,10 @@ so (`landed: "forwarded"`).
 
 ## 4. Jobs and workflows
 
-`job({ at: ref | version, commit?: true | { onto: ref } })`. The host mounts the version's tree as the job's `/repo`
+`job({ at: { repo, ref?, version? }, commit?: true | { onto: ref } })`. `at` is a place in a repo, the same shape as
+`POST /v1/repos`' `from` (§1): `repo` is the repo id, and at most one of `ref` (a name, default `main`) or `version`
+(40 hex) picks the version; a bare ref or version means nothing without its repo, so neither is accepted alone
+(wf-delegation, 2026-11-13). The host mounts the version's tree as the job's `/repo`
 (a reflink of the image when warm, the lazy origin when cold; camel-fs.md §1.3) on a `job/<id>` branch of the
 repo. Nothing is imported, synced or snapshotted: there is no per-job import (`/v0/trees`, `/v0/blobs`, the
 `camelfs_trees` cache, the pinned volume snapshot) and no snapshot cache, because the tree the job wants is already
@@ -133,13 +136,15 @@ not a public shape.
 
 **Inline files.** `job({ files })` and the agent's `job_run({ files })` (a job with a few inline files and no repo)
 become **one path**: the runtime commits the inline files onto a scratch `job/<id>` branch of the caller's repo (the
-workflow's repo, or the agent's workspace) and the job mounts it like any other; the guest `files` op and
-`WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override.
+workflow's repo, keyed `workflow:<id>`, or the agent's workspace) and the job runs at that ref like any other; the
+guest `files` op and `WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override. During the
+cut-over a plain string `at` still means a volume id, until the deletion phase removes volumes.
 
-**The agent's `job_run` tool** gains the same `at: ref | version` and `commit` as `job()`, and its model-facing text
-changes from "`at` (a volume id) starts it with that volume's files … (changes are not saved back)" to "`at` names a
-repo ref or version to start from; with `commit: true` the job's `/repo` is saved as a version you can `restore` or
-merge". That text is model-facing and is reviewed line by line, like `checkpoint`'s.
+**The agent's `job_run` tool** gains the same `at: { repo?, ref?, version? }` and `commit` as `job()`, with `repo`
+defaulting to the agent's own workspace, and its model-facing text changes from "`at` (a volume id) starts it with
+that volume's files … (changes are not saved back)" to "`at` picks the version to start from: `ref` (a branch name,
+default `main`) or `version`, in your workspace unless `repo` names another; with `commit: true` the job's `/repo` is
+saved as a version you can `restore` or merge". That text is model-facing and is reviewed line by line, like `checkpoint`'s.
 
 **`push()`** keeps its script API (`push({ ref, to })`) and runs on the git edge's mirror (camel-fs.md §1.8) from the
 ref, with the App token the runtime mints; it is no longer a job running `PUSH_SCRIPT` with the token in a process.
@@ -281,7 +286,7 @@ throughout):
    Bar: a Worker file write ≤ 80 ms p50; `files:batch` of 20 files ≤ 150 ms; fork ≤ 50 ms; merge of 3 disjoint
    edits ≤ 200 ms; `history`/`diff` ≤ 100 ms at 50k files.
 2. **Hosts, jobs and workflows on refs**: `camelfsd` takes its CAS from the runtime and drops its ref
-   store; `job({ at: ref | version, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
+   store; `job({ at: { repo, ref? | version? }, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
    fast-forward effects; result cache on the tree; `keep()` as one commit; computers mount the agent's ref with the
    lease (per camel-fs.md phase 2). The import bridge and `camel-sync` are deleted.
    Bar: job placement → first command ≤ 300 ms warm with no import leg (ledger L25, L43, L68 close); result leg
@@ -353,7 +358,8 @@ its host-local tables (`mounts`, `tree_roots`, `lineage_blobs`, `uploaded`, `chu
 **Conventions.** JSON over HTTPS; ids are hex (`blob`, `tree`, `commit`: git SHA-1; `root`, chunk: sha256).
 `Authorization: Bearer <token>` (one shared bearer tonight, the daemon listening on `127.0.0.1:8790` behind the
 `CAMELFS` tunnel with `--listen-api`; runtime-signed scoped tokens later). `Idempotency-Key` on every write: the
-daemon stores `key → response` and replays it, so a retry returns the first answer. Errors on these `/v1` routes are
+daemon stores `key → response` and replays it, so a retry returns the first answer (and, with `time` always given, a
+retry the daemon has forgotten re-executes to the same ids; see **Idempotency** below). Errors on these `/v1` routes are
 `{ "error": { "code", "message", "details"? } }` with the codes in 9.8; the host socket's `/v0` routes keep their
 current `{ error, detail }` shape tonight because `jobhost` parses it. Sizes in bytes. Paths are lineage-relative,
 normalized, no leading slash.
@@ -362,10 +368,33 @@ normalized, no leading slash.
 at repo creation, `<tenant>:<root repo id>`, and **a fork into a new repo inherits its source's lineage** (wf-repos),
 so forks share one object set and a fork is O(1) in objects as well as in refs; a repo made from scratch starts a new
 lineage. The daemon records every object it writes for a lineage, trees **including subtrees** (listings hand out
-subtree ids) and blobs alike, in `lineage_objects`, and refuses any reference the lineage has not written or
-imported, with `404`/`400`, never "exists but not yours". A cross-lineage reference (`commit … from: { repo,
-version, path }` across tenants' repos, or any other) is, tonight, a read followed by a `PUT` of the bytes into the
-target lineage; an `adopt` call that grants reach without copying is a later, low-priority addition.
+subtree ids) and blobs alike, and refuses any reference the lineage has not written or imported, with
+`404`/`400`, never "exists but not yours". **Membership must survive a wiped data directory** (a fresh host must be
+able to answer "is this id reachable from this lineage" without the previous host's SQLite), so it lives in the
+object store, and it lives there as the key: **object keys carry the lineage**, `<lineage>/t/<sha1>`,
+`<lineage>/k/<sha1>`, `<lineage>/b/<sha1>`, chunks likewise, and in DynamoDB the lineage is part of the partition
+key. Existence of the key is the membership; there is no marker object and no second write, so a commit stays one
+`PUT` per new object and the §8 price stays at ≈ $0.0000207 per write. `lineage_objects` and `lineage_blobs` in
+SQLite are a derived cache, refilled by a `HEAD` of the key on a miss; a blob's size and sha256 travel as S3 object
+metadata so that `HEAD` is enough; chunks and roots are prefixed the same way, and the NBD export name becomes
+`<lineage>/<root>`. Objects are lineage-scoped already (a fork into a new repo inherits
+the lineage; a cross-lineage reference copies), so prefixing loses nothing within a lineage, makes quota a prefix sum,
+and turns the cross-lineage copy into a server-side `CopyObject`. The trade-off, recorded in camel-fs.md §1.1: blobs
+no longer dedupe across lineages, a file common to unrelated repos is stored once per lineage, at storage price; the
+host cache stays keyed by content hash, so a host serving two lineages holds a shared blob once. Two details for the
+daemon: the per-host `uploaded` inventory keys by the full prefixed key (it stores full keys already), and a
+`CopyObject` fork into a new lineage takes the source's object list from its trees. A cross-lineage reference
+(`commit … from: { repo, version, path }` across tenants' repos, or any other) is, tonight, a read followed by a
+`PUT` of the bytes into the target lineage; an `adopt` call that grants reach without copying is a later,
+low-priority addition.
+
+**Idempotency is a property of the request, not of the replay table.** Every write in this contract is
+content-addressed and deterministic given its body: a blob `PUT` yields the hash of its bytes, and a commit's ids are
+a pure function of `parents`, `baseTree`, `changes`, `author`, `message`, trailers and `time`. **The runtime always
+passes `time`** (it never lets the daemon pick a clock), so a retried write that the daemon has no memory of
+re-executes to the identical ids and is harmless. The `Idempotency-Key → response` table is a host-local SQLite
+optimization that saves the re-execution and is lost with the data directory; its loss changes latency, never
+outcome (L80).
 
 ### 9.1 Blobs
 

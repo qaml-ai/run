@@ -35,7 +35,7 @@ func unit3(t *testing.T) (*Manager, string) {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { m.Close(); db.Close() })
-	r, e := m.objects().Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
+	r, e := m.objects("l").Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -222,12 +222,12 @@ func TestApplyCheckpointCommit(t *testing.T) {
 	if out.Tree == tree || out.Commit == "" || out.FilesChanged != 1 || out.BytesReceived != 5 {
 		t.Fatal(out)
 	}
-	commit, e := m.Commit(context.Background(), out.Commit)
+	commit, e := m.Commit(context.Background(), out.Commit, "l")
 	if e != nil || commit["tree"] != out.Tree {
 		t.Fatal(commit, e)
 	}
 	var raw []byte
-	m.objects().DB.DB.QueryRow("SELECT bytes FROM objects WHERE id=?", out.Commit).Scan(&raw)
+	m.objects("l").DB.DB.QueryRow("SELECT bytes FROM objects WHERE id=?", out.Commit).Scan(&raw)
 	git := t.TempDir()
 	if b, e := exec.Command("git", "init", "--bare", git).CombinedOutput(); e != nil {
 		t.Fatalf("%s %v", b, e)
@@ -255,7 +255,7 @@ func TestNearestAncestor(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	repo := m.objects()
+	repo := m.objects("l")
 	b := []byte("x")
 	sha := fmtHash(b)
 	if _, e = repo.Upload(context.Background(), "l", sha, 1, bytes.NewReader(b)); e != nil {
@@ -306,7 +306,7 @@ func TestAckThenPublishFailure(t *testing.T) {
 		t.Fatal("missing pre-upload ack")
 	}
 	var n int
-	m.objects().DB.DB.QueryRow("SELECT count(*) FROM tree_roots").Scan(&n)
+	m.objects("l").DB.DB.QueryRow("SELECT count(*) FROM tree_roots").Scan(&n)
 	if n != 0 {
 		t.Fatal("partial mapping")
 	}
@@ -369,7 +369,7 @@ func TestApplyProgressOutlivesIdleBudget(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		stream := &wire.DeadlineConn{Conn: a, Idle: m.StreamIdle, Overall: time.Now().Add(m.ApplyMax)}
-		if e := m.sendApply(stream, "slow", Apply{}, nil, nil); e != nil {
+		if e := m.sendApply(stream, "l", "slow", Apply{}, nil, nil); e != nil {
 			done <- e
 			return
 		}

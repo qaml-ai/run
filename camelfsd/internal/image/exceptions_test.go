@@ -14,6 +14,7 @@ import (
 
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 func exceptionFixture(es []exception) []byte {
@@ -157,13 +158,13 @@ func TestMaterializeSparseVirtualSize(t *testing.T) {
 	m, _ := unit3(t)
 	b := bytes.Repeat([]byte{3}, int(chunk.Size))
 	h := root.Hash(b)
-	if e := m.Store.Put(context.Background(), "c/"+h, b); e != nil {
+	if e := store.ForLineage(m.Store, "l").Put(context.Background(), "c/"+h, b); e != nil {
 		t.Fatal(e)
 	}
 	for _, size := range []int64{1 << 30, 16 << 30} {
 		p := filepath.Join(t.TempDir(), "image")
 		r := root.Root{VirtualSize: size, Chunks: map[string]string{"0": h, fmt.Sprint(size - chunk.Size): h}}
-		if e := m.materialize(context.Background(), r, p); e != nil {
+		if e := m.materialize(context.Background(), "l", r, p); e != nil {
 			t.Fatal(e)
 		}
 		f, e := os.Open(p)

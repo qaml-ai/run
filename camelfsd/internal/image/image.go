@@ -22,12 +22,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"time"
 )
 
 var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
+
+// TEMPORARY: removed with jobhost phase 2
+var legacyMounts atomic.Uint64
+
+// TEMPORARY: removed with jobhost phase 2
+func LegacyMounts() uint64 { return legacyMounts.Load() }
 
 type Config struct {
 	StreamIdle, ApplyMax    time.Duration
@@ -53,13 +60,15 @@ type Manager struct {
 	sweepMu  sync.Mutex
 }
 type Request struct {
-	JobID   string      `json:"jobId"`
-	Lineage string      `json:"lineage"`
-	Fence   *refs.Fence `json:"fence"`
-	Root    string      `json:"root"`
-	Tree    string      `json:"tree"`
-	Hydrate bool        `json:"hydrate"`
-	Vsock   string      `json:"vsock"`
+	// TEMPORARY: removed with jobhost phase 2
+	legacyFence bool
+	JobID       string      `json:"jobId"`
+	Lineage     string      `json:"lineage"`
+	Fence       *refs.Fence `json:"fence"`
+	Root        string      `json:"root"`
+	Tree        string      `json:"tree"`
+	Hydrate     bool        `json:"hydrate"`
+	Vsock       string      `json:"vsock"`
 }
 type Mount struct {
 	NBDListen string `json:"nbdListen"`
@@ -91,7 +100,8 @@ type Mount struct {
 	pendingRanges                              []chunk.Range
 }
 
-// Hydration defaults on for JSON callers while retaining the Go bool API.
+// Hydration defaults on for JSON callers. Only an absent JSON fence enables
+// phase-1 compatibility; explicit null (and a nil Go fence) remain read-only.
 func (q *Request) UnmarshalJSON(b []byte) error {
 	type plain Request
 	v := plain{Hydrate: true}
@@ -100,6 +110,12 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	if e := decoder.Decode(&v); e != nil {
 		return e
 	}
+	// TEMPORARY: removed with jobhost phase 2
+	var fields struct{ Fence json.RawMessage }
+	if e := json.Unmarshal(b, &fields); e != nil {
+		return e
+	}
+	v.legacyFence = fields.Fence == nil
 	*q = Request(v)
 	return nil
 }
@@ -163,8 +179,8 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	return m, nil
 }
 func ms(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }
-func (m *Manager) load(ctx context.Context, id string) (root.Root, error) {
-	b, e := m.Store.Get(ctx, "r/"+id)
+func (m *Manager) load(ctx context.Context, lineage, id string) (root.Root, error) {
+	b, e := store.ForLineage(m.Store, lineage).Get(ctx, "r/"+id)
 	if e != nil {
 		return root.Root{}, e
 	}
@@ -192,7 +208,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			forms++
 		}
 	}
-	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || q.Lineage == "" || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
+	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || !store.Lineage(q.Lineage) || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
 		return nil, apierr.Invalid("invalid mount request")
 	}
 	m.mu.Lock()
@@ -212,12 +228,25 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			m.mu.Unlock()
 		}
 	}()
+	// TEMPORARY: removed with jobhost phase 2
+	if q.legacyFence {
+		q.Fence = &refs.Fence{Holder: m.HostID + "/" + q.JobID, Epoch: 0}
+	}
 	if q.Fence != nil && (q.Fence.Holder == "" || q.Fence.Epoch < 0) {
 		return nil, apierr.Invalid("invalid fence")
 	}
+	if q.Root != "" {
+		ok, e := m.objects(q.Lineage).Reachable(ctx, q.Lineage, q.Root, "root")
+		if e != nil {
+			return nil, e
+		}
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+	}
 	var treeRoot string
 	if q.Tree != "" {
-		ok, e := m.objects().Reachable(ctx, q.Lineage, q.Tree, "tree")
+		ok, e := m.objects(q.Lineage).Reachable(ctx, q.Lineage, q.Tree, "tree")
 		if e != nil {
 			return nil, e
 		}
@@ -237,7 +266,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		v.Root = treeRoot
 	}
 	v.Parent = refs.Value{Tree: q.Tree, Root: v.Root}
-	r, e := m.mountRoot(ctx, v.Root)
+	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
 	if e != nil {
 		return nil, e
 	}
@@ -316,10 +345,14 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if v.DM != "" {
 		m.startHydration(v, r)
 	}
+	// TEMPORARY: removed with jobhost phase 2
+	if q.legacyFence {
+		log.Printf("op=mount legacy-fence jobId=%s count=%d", q.JobID, legacyMounts.Add(1))
+	}
 	copy := *v
 	return &copy, nil
 }
-func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error {
+func (m *Manager) materialize(ctx context.Context, lineage string, r root.Root, p string) error {
 	f, e := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if e != nil {
 		return e
@@ -333,7 +366,7 @@ func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error 
 		keys = append(keys, key)
 	}
 	e = store.Parallel(store.Background(ctx), 64, keys, func(key string) error {
-		p, e := m.Cache.EnsureContext(store.Background(ctx), r.Chunks[key])
+		p, e := m.Cache.EnsureLineage(store.Background(ctx), lineage, r.Chunks[key])
 		if e != nil {
 			return e
 		}
@@ -403,7 +436,7 @@ func (m *Manager) cold(ctx context.Context, v *Mount, r root.Root) error {
 	if e != nil {
 		return e
 	}
-	if _, e = run(ctx, "nbd-client", "-N", v.Root, host, port, v.NBD, "-C", "4"); e != nil {
+	if _, e = run(ctx, "nbd-client", "-N", v.Lineage+"/"+v.Root, host, port, v.NBD, "-C", "4"); e != nil {
 		v.NBD = ""
 		return e
 	}

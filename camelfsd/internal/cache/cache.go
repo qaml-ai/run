@@ -40,6 +40,12 @@ func New(dir string, s store.Store, n int) *Cache {
 }
 func (c *Cache) Ensure(h string) (string, error) { return c.EnsureContext(context.Background(), h) }
 func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
+	return c.ensure(ctx, h, c.Store)
+}
+func (c *Cache) EnsureLineage(ctx context.Context, lineage, h string) (string, error) {
+	return c.ensure(ctx, h, store.ForLineage(c.Store, lineage))
+}
+func (c *Cache) ensure(ctx context.Context, h string, source store.Store) (string, error) {
 	if !root.Hex(h, 64) {
 		return "", fmt.Errorf("invalid hash")
 	}
@@ -94,7 +100,7 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 		return "", f.err
 	}
 	defer func() { <-c.slots }()
-	b, e := c.Store.Get(ctx, "c/"+h)
+	b, e := source.Get(ctx, "c/"+h)
 	if e == nil && (c.hash(b) != h || len(b) != int(root.ChunkSize)) {
 		e = fmt.Errorf("chunk hash mismatch")
 	}

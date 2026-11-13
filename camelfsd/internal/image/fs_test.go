@@ -67,7 +67,7 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 	if e != nil || cp2.ChangedChunks != 1 || cp2.ParentRoot != cp.Root {
 		t.Fatal(cp2, e)
 	}
-	r, e := m.load(ctx, cp2.Root)
+	r, e := m.load(ctx, "test", cp2.Root)
 	if e != nil || r.Chunks["524288"] != "" {
 		t.Fatal(r, e)
 	}

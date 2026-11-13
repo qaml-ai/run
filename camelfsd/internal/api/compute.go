@@ -21,7 +21,6 @@ type change struct {
 	Delete bool   `json:"delete,omitempty"`
 }
 type commitRequest struct {
-	baseSet  bool
 	Parent   *string           `json:"parent"`
 	BaseTree *string           `json:"baseTree,omitempty"`
 	Changes  []change          `json:"changes"`
@@ -33,6 +32,7 @@ type commitRequest struct {
 
 func safeLine(s string) bool { return !strings.ContainsAny(s, "\r\n\x00") }
 func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRequest) (any, error) {
+	r = r.ForLineage(l)
 	if len(q.Changes) > 10000 {
 		return nil, large("")
 	}
@@ -50,9 +50,6 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		}
 		base = c["tree"].(string)
 	}
-	if q.baseSet {
-		base = ""
-	}
 	if q.BaseTree != nil {
 		base = *q.BaseTree
 	}
@@ -64,15 +61,20 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	files := map[string]objects.File{}
 
 	if base != "" {
-		es, e := r.Entries(ctx, base)
+		es, e := r.TreeEntries(ctx, base)
+		if e != nil {
+			return nil, e
+		}
+		ids := make([]string, len(es))
+		for i, f := range es {
+			ids[i] = f.SHA1
+		}
+		blobs, e := r.BlobInfos(ctx, l, ids)
 		if e != nil {
 			return nil, e
 		}
 		for _, f := range es {
-			b, e := r.BlobInfo(ctx, l, f.SHA1)
-			if e != nil {
-				return nil, e
-			}
+			b := blobs[f.SHA1]
 			files[f.Path] = objects.File{SHA256: b.SHA256, Mode: f.Mode}
 
 		}
@@ -124,6 +126,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 			return nil, bad("invalid_request")
 		}
 	}
+	r = r.BeginPublication()
 	tr, e := r.Import(ctx, objects.Request{Lineage: l, ParentTree: base, Files: files})
 	if e != nil {
 		return nil, e
@@ -138,10 +141,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	}
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n", q.Author, q.Author, now, now, q.Message)
 	keys := []string{}
-	for k, v := range q.Trailers {
-		if k == "" || !safeLine(k) || strings.Contains(k, ":") || !safeLine(v) {
-			return nil, bad("invalid_request")
-		}
+	for k := range q.Trailers {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -150,6 +150,9 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	}
 	id, e := r.PutObject(ctx, l, "commit", []byte(body))
 	if e != nil {
+		return nil, e
+	}
+	if e = r.Flush(ctx); e != nil {
 		return nil, e
 	}
 	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes}, nil
@@ -485,7 +488,10 @@ func (q *commitRequest) UnmarshalJSON(raw []byte) error {
 	if e := json.Unmarshal(raw, &fields); e != nil {
 		return e
 	}
-	_, v.baseSet = fields["baseTree"]
+	if b, ok := fields["baseTree"]; ok && string(b) == "null" {
+		empty := ""
+		v.BaseTree = &empty
+	}
 	*q = commitRequest(v)
 	return nil
 }

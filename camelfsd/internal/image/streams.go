@@ -54,20 +54,20 @@ func (s *streams) close() {
 		c.Close()
 	}
 }
-func (m *Manager) entries(ctx context.Context, t string) ([]objects.Entry, error) {
+func (m *Manager) entries(ctx context.Context, lineage, t string) ([]objects.Entry, error) {
 	if t == "" {
 		return []objects.Entry{}, nil
 	}
-	return m.objects().Entries(ctx, t)
+	return m.objects(lineage).Entries(ctx, t)
 }
 
 // v0-limitation: L53
 func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error {
-	old, e := m.entries(ctx, from)
+	old, e := m.entries(ctx, v.Lineage, from)
 	if e != nil {
 		return e
 	}
-	next, e := m.entries(ctx, v.Tree)
+	next, e := m.entries(ctx, v.Lineage, v.Tree)
 	if e != nil {
 		return e
 	}
@@ -158,7 +158,7 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 					defer raw.Close()
 					defer func() { s.mu.Lock(); delete(s.conns, raw); s.mu.Unlock() }()
 					c = &wire.DeadlineConn{Conn: c, Idle: m.StreamIdle, Overall: time.Now().Add(m.ApplyMax)}
-					if e := m.sendApply(c, v.JobID, a, next, ops); e != nil {
+					if e := m.sendApply(c, v.Lineage, v.JobID, a, next, ops); e != nil {
 						c.(*wire.DeadlineConn).Final()
 						if ne, ok := e.(net.Error); ok && ne.Timeout() {
 							e = ErrStreamTimeout
@@ -190,7 +190,7 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 	}
 	return nil
 }
-func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.Entry, ops []wire.Op) error {
+func (m *Manager) sendApply(c net.Conn, lineage, job string, a Apply, entries []objects.Entry, ops []wire.Op) error {
 	ctx, cancel := context.WithTimeout(context.Background(), m.ApplyMax)
 	defer cancel()
 	if e := wire.Send(c, wire.Header{V: 1, Kind: "apply", JobID: job, FromTree: a.FromTree, ToTree: a.ToTree}); e != nil {
@@ -227,7 +227,7 @@ func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.E
 					return fmt.Errorf("apply blob exceeds byte limit")
 				}
 				var e error
-				b, e = m.Store.Get(ctx, "o/"+f.SHA1)
+				b, e = store.ForLineage(m.Store, lineage).Get(ctx, "o/"+f.SHA1)
 				if e != nil {
 					return e
 				}
@@ -514,7 +514,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	}
 	defer os.RemoveAll(r.dir)
 	if v.DM != "" {
-		root, e := m.mountRoot(ctx, v.Root)
+		root, e := m.mountRoot(ctx, v.Lineage, v.Root)
 		if e != nil {
 			return out, e
 		}
@@ -548,7 +548,7 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	}
 	c.Close()
 	publish := time.Now()
-	repo := m.objects()
+	repo := m.objects(v.Lineage)
 	keys := make([]string, len(r.blobs))
 	blobs := map[string]staged{}
 	for i, b := range r.blobs {
@@ -562,13 +562,10 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 			return e
 		}
 		defer f.Close()
-		if e = store.PutBlobFile(ctx, m.Store, "o/"+b.sha1, f); e != nil {
+		if e = store.PutBlobFile(ctx, store.ForLineage(m.Store, v.Lineage), "o/"+b.sha1, f, b.sha256); e != nil {
 			return e
 		}
-		_, e = repo.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", v.Lineage, b.sha256, b.sha1, b.size, time.Now().UnixMilli())
-		if e == nil {
-			e = repo.Record(ctx, v.Lineage, b.sha1, "blob", &objects.Blob{SHA1: b.sha1, SHA256: b.sha256, Size: b.size})
-		}
+		e = repo.Record(ctx, v.Lineage, b.sha1, "blob", &objects.Blob{SHA1: b.sha1, SHA256: b.sha256, Size: b.size})
 		return e
 	})
 	if e != nil {
@@ -646,13 +643,13 @@ type receiveBase struct {
 }
 
 func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase, err error) {
-	r, err := m.mountRoot(ctx, v.Root)
+	r, err := m.mountRoot(ctx, v.Lineage, v.Root)
 	if err != nil {
 		return out, err
 	}
 	out.quota = r.VirtualSize
 	// v0-limitation: L53
-	entries, err := m.entries(ctx, v.Tree)
+	entries, err := m.entries(ctx, v.Lineage, v.Tree)
 	if err != nil {
 		return out, err
 	}
