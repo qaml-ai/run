@@ -171,3 +171,9 @@ test("a fork's seed may name parents this repo never saw; history stops there", 
   assert.deepEqual(object.history().versions.map(x => x.version), [id(7)]);
   assert.equal(object.history().next, null);
 });
+
+test('all supported owner kinds including cache are accepted',async t=>{
+  const {object,cas}=fixture(t);await object.init(init);await cas(1,[],[]);
+  for(const kind of ['agent','workflow','job','user','api','cache'])await object.createRef({name:kind,from:'main',owner:`${kind}:x`,who:'api:test',why:'test'});
+  await assert.rejects(object.createRef({name:'bad',from:'main',owner:'volume:x',who:'api:test',why:'test'}),error('bad-owner'));
+});

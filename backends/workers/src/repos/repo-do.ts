@@ -98,7 +98,7 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
     check(Array.isArray(paths) && paths.length <= 1000); const r = this.needRef(ref);
     const entries: Record<string, Entry | null> = Object.create(null);
     for (const input of paths) { const path = normalizeRepoPath(input); entries[path] = this.rows<Entry>("SELECT path,blob,mode,size FROM head WHERE ref=? AND path=?", ref, path)[0] ?? null; }
-    return {version: r.version, tree: r.tree, entries};
+    return {version: r.version, tree: r.tree, entries: {...entries}};
   }
   async cas(input: Cas) { const result = this.ctx.storage.transactionSync(() => this.apply(input)); await this.arm(); return result; }
   private apply(input: Cas) {

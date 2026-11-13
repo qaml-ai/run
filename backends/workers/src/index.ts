@@ -57,6 +57,9 @@ import {
   resumeWebhookDeliveries,
   type DeliveryMessage,
 } from "./webhooks.ts";
+import { handleRepoRequest } from "./repos/routes.ts";
+import { handleSignedRepoRequest } from "./repos/links.ts";
+import type { RepoEnv } from "./repos/registry.ts";
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
 import { channelRoutes, channelWebhook } from "./channel-routes.ts";
 import { githubAppRoutes } from "./github-app-routes.ts";
@@ -270,6 +273,8 @@ const worker = {
       if (callFile) return callFile;
       const signed = await handleSignedFileRequest(request, env);
       if (signed) return signed;
+      const signedRepo = await handleSignedRepoRequest(request, env as RepoEnv);
+      if (signedRepo) return signedRepo;
       const url = new URL(request.url),
         path = url.pathname;
       const adminSite = await publicAdminSite(request, env);
@@ -449,6 +454,8 @@ const worker = {
         if (media) return media;
         const files = await handleFileRequest(request, env, auth);
         if (files) return files;
+        const repos = await handleRepoRequest(request, env as RepoEnv, auth);
+        if (repos) return repos;
         const definition = await definitionRoutes(request, env, auth);
         if (definition) return definition;
         const channel = await channelRoutes(request, env, auth.tenantId, ctx);
