@@ -7,8 +7,9 @@
 #              task role reads no secret; the execution role reads that one secret for the injection.
 #   host       camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and
 #              commits a checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks
-#              its fence), reads no lineage registry and touches no control table; plus the service's public JWKS,
-#              to verify the tier's boot/stop tokens. Delivered as a customer-managed
+#              its fence), reads no lineage registry, touches no control table and writes no VM result (the tier
+#              does, from the host's "ended" call); plus the service's public JWKS, to verify the tier's boot/stop
+#              tokens. Delivered as a customer-managed
 #              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
 #              host_managed_policies) and to the proto host's role, and as a role + instance profile of its own
 #              for hosts outside those pools. The role trusts ec2.amazonaws.com only, with the job-hosts
@@ -184,12 +185,21 @@ locals {
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
       },
-      # The service's public JWKS, to verify the tier's boot/stop tokens on the compute listener (K4).
+      # The service's public JWKS, to verify the tier's boot/stop tokens on the compute listener (K4). The host's
+      # boot unit fetches it to /etc/camel/camelfs-service-jwks.json (camelfsd host --service-jwks-file).
       {
         Sid      = "ServiceVerifyKeys"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = [aws_secretsmanager_secret.service_verify_keys.arn]
+      },
+      # VM results are the tier's to write (the host hands the body to the tier in its "ended" call, K4): a host
+      # never puts under <lineage>/results/, whatever the shared bucket statement allows.
+      {
+        Sid      = "NoResults"
+        Effect   = "Deny"
+        Action   = ["s3:PutObject", "s3:PutObjectTagging"]
+        Resource = ["${aws_s3_bucket.objects.arn}/*/results/*"]
       },
       # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref, a lineage or a
       # control table directly (it asks the tier, which checks the fence), and never assumes another role.

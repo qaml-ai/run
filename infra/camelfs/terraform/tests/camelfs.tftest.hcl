@@ -177,7 +177,7 @@ run "internal_balancer_admits_the_hosts" {
   assert {
     condition = (
       toset([for rule in aws_vpc_security_group_ingress_rule.hosts_compute_from_api : rule.security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
-      && alltrue([for rule in aws_vpc_security_group_ingress_rule.hosts_compute_from_api : rule.from_port == 8791 && rule.to_port == 8791])
+      && alltrue([for rule in aws_vpc_security_group_ingress_rule.hosts_compute_from_api : rule.from_port == 8792 && rule.to_port == 8792])
       && toset([for rule in aws_vpc_security_group_egress_rule.api_to_hosts_compute : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
     )
     error_message = "Each host security group admits the api tasks on the compute port, and the api group may reach it."
@@ -221,6 +221,10 @@ run "roles_and_policies" {
       && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 5]) == 1
     )
     error_message = "The host policy writes the objects table only and explicitly denies the five other tables."
+  }
+  assert {
+    condition     = [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "NoResults" && statement.Effect == "Deny"] == [["arn:aws:s3:::camelfs-prod-904534089871/*/results/*"]]
+    error_message = "A host never writes a VM result: the tier does."
   }
   assert {
     condition = (

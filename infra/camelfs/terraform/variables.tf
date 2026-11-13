@@ -147,9 +147,9 @@ variable "host_security_group_ids" {
 }
 
 variable "host_compute_port" {
-  description = "The hosts' compute listener (camelfsd --role host --listen-compute): the tier pushes boot/stop there, in-VPC, with tokens it signs (K4). The rule is added to each host security group; the hosts' own egress rules are theirs."
+  description = "The hosts' compute listener (camelfsd host --listen-compute 0.0.0.0:8792; proto-block, 2026-11-13): the tier pushes boot/stop there, in-VPC, with tokens it signs (K4). The rule is added to each host security group; the hosts' own egress rules are theirs."
   type        = number
-  default     = 8791
+  default     = 8792
 }
 
 # --- Bucket ---
