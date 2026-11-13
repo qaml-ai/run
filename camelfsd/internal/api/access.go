@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -66,12 +68,23 @@ func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	route, lineage := storageLogRoute(r.URL.Path)
 	rw := &statusWriter{ResponseWriter: w}
+	var timing *commitTiming
+	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/commits" {
+		timing = &commitTiming{}
+		r = r.WithContext(context.WithValue(r.Context(), commitTimingKey{}, timing))
+	}
 	defer func() {
 		status := rw.status
 		if status == 0 {
 			status = http.StatusOK
 		}
-		log.Printf("op=%s:%s lineage=%s status=%d ms=%.3f", r.Method, route, lineage, status, float64(time.Since(start).Microseconds())/1000)
+		phases := ""
+		ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+		if timing != nil {
+			phases = fmt.Sprintf(" prechecksMs=%.3f readMs=%.3f readWaves=%d buildMs=%.3f putMs=%.3f putKeys=%d cacheMs=%.3f",
+				ms(timing.prechecks), ms(timing.read), timing.readWaves, ms(timing.build), ms(timing.Put), timing.PutKeys, ms(timing.Cache))
+		}
+		log.Printf("op=%s:%s lineage=%s status=%d ms=%.3f%s", r.Method, route, lineage, status, ms(time.Since(start)), phases)
 	}()
 	s.storage(rw, r)
 }
