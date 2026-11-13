@@ -73,10 +73,12 @@ export class PromptAttachments {
     string,
     { fingerprint: string; files: Promise<AttachedFile[]> }
   >();
-  constructor(
-    private storage: DurableObjectStorage,
-    private env: AttachmentEnv,
-  ) {}
+  private storage: DurableObjectStorage;
+  private env: AttachmentEnv;
+  constructor(storage: DurableObjectStorage, env: AttachmentEnv) {
+    this.storage = storage;
+    this.env = env;
+  }
   async reference(identity: Identity, path: string): Promise<AttachedFile> {
     return (await this.stage(identity, [{ path }]))[0];
   }

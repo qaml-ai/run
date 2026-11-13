@@ -21,9 +21,13 @@ export async function authorizedAttachment(env:RepoEnv,tenant:string,mounts:impo
     if(!('repo'in mount))continue;
     const row=await index.repoRow(mount.repo),base=(mount.subpath??'/').replace(/^\/+/,'');
     if(!row||row.deletedAt!==null||row.lineage!==source.lineage||(base&&path!==base&&!path.startsWith(base+'/')))continue;
-    const head=await env.REPOS.getByName(`${tenant}:${mount.repo}`).ref(mount.ref??'main');
-    const queue=head?[head.version]:[],seen=new Set<string>();
-    for(let i=0;i<queue.length;i++) {
+    const stub=env.REPOS.getByName(`${tenant}:${mount.repo}`),head=await stub.ref(mount.ref??'main');
+    if(!head)continue;
+    // The repo's own commit index answers ancestry in-process; only a version it never indexed (made in the repo
+    // it was forked from) walks the storage plane's parents, bounded.
+    if(await stub.commit(file.version)) { if(await stub.mergeBase(head.version,file.version)===file.version)return true; continue; }
+    const queue=[head.version],seen=new Set<string>();
+    for(let i=0;i<queue.length&&seen.size<1000;i++) {
       const version=queue[i];if(seen.has(version))continue;seen.add(version);
       if(version===file.version)return true;
       const commit=await storage.getCommit(row.lineage,version);queue.push(...commit.parents);

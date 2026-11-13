@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { registerHooks, stripTypeScriptTypes } from 'node:module';
+import { registerHooks } from 'node:module';
 import { fakeCamelfsd } from './fake-camelfsd.ts';
 import { camelfsStorage, StorageError } from '../src/repos/storage.ts';
-const hooks = registerHooks({ load(url,context,next) { const result=next(url,context); if((url.endsWith('/prompt-attachments.ts') || url.endsWith('/legacy-prompt-attachments.ts')) && result.source) return {...result,format:'module',source:stripTypeScriptTypes(Buffer.from(result.source).toString(),{mode:'transform'})};return result; }, resolve(specifier, context, next) {
+const hooks = registerHooks({ resolve(specifier, context, next) {
     if (specifier === 'cloudflare:workers')
       return { url: 'data:text/javascript,export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env;} } export const waitUntil=p=>p;', shortCircuit: true };
     if (specifier.endsWith('/security-services.ts'))
@@ -89,9 +89,10 @@ test('attachments of a message are one commit; fork and deletion preserve the pa
   const {env,create,fake}=fixture(t),ctx=await create({key:'agent:a'} as any);
   const data=new Map();const storage={get:async(k:string)=>data.get(k),put:async(k:string,v:any)=>{data.set(k,v);}};
   const attachments=new PromptAttachments(storage as never,env);
+  const commitsBefore=fake.calls.filter(c=>c.startsWith('POST ')&&c.includes('/commits')).length;
   const files=await attachments.attach({tenant:'t',agent:'a',requestId:'message',mounts:[{repo:ctx.repoId,path:'/workspace',mode:'rw'}]},[{name:'one.txt',data:Buffer.from('one').toString('base64')},{name:'two.txt',data:Buffer.from('two').toString('base64')}]);
   assert.equal(files.length,2);assert.equal(files[0].version,files[1].version);
-  assert.equal(fake.calls.filter(c=>c.startsWith('POST ')&&c.includes('/commits')).length,1);
+  assert.equal(fake.calls.filter(c=>c.startsWith('POST ')&&c.includes('/commits')).length-commitsBefore,1);
   const fork=await createRepo(env,'t',{key:'agent:b',from:{repo:ctx.repoId,version:files[0].version}});
   const child=await repoContext(env,'t',fork.info.id);
   await commitChanges(child,{ref:'main',changes:{'uploads/message/one.txt':{bytes:bytes('child')}},message:'child',author:'agent:b',who:'agent:b',why:'test'});

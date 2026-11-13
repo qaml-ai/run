@@ -38,7 +38,7 @@ export async function handleAgentFileRequest(request: Request, env: FileBindings
       if(old && old.version!==header) throw new FileError('File changed since the version given',412);
       const expected=request.headers.get('if-none-match')==='*' ? 'none' : old?.blob;
       const result=await store.commit({[p]: request.method==='DELETE'?null:{bytes:await boundedBytes(request.body,256*2**20)}},expected?{[p]:expected}:{},`${request.method.toLowerCase()} ${p}`);
-      return Response.json(request.method==='DELETE'?{deleted:true,version:result.version}:{...await store.stat(t.inside,result.version!),path:t.path,version:result.version,by:agent},{status:request.method==='PUT'?201:200});
+      return Response.json(request.method==='DELETE'?{deleted:true,version:result.version}:{...await store.stat(t.inside),path:t.path,version:result.version,by:agent},{status:request.method==='PUT'?201:200});
     }
     throw new FileError('Method not allowed',405);
   } catch(e) {return failure(e);}

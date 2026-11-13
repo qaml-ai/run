@@ -81,10 +81,7 @@ function actualRepoTools(
         length: opt(int()),
       }),
       async execute({ path, offset, limit, encoding, length }) {
-        const t = await target(path),
-          entry = await t.v.stat(t.path);
-        if (entry.size > 1024 * 1024)
-          throw new FileError("Tool file exceeds 1 MiB", 413);
+        const t = await target(path);
         const { file, bytes } = await t.v.read(t.path, undefined, 1024 * 1024);
         seen?.remember(seenKey(t), file.blob);
         if (encoding === "base64") {
