@@ -47,11 +47,24 @@ function fixture(t: any) {
   const tenant = { registerRepo: (r: any) => index.register(r), repoRow: (id: string) => index.row(id), listRepos: (i: any) => index.list(i), markRepoDeleted: (id: string) => index.deleted(id), repoUsage: (id: string, b: number, f: number) => index.usage(id, b, f), reposUsed: () => index.used() };
   const fake = fakeCamelfsd('test-token');
   const env: any = { CAMELFS: { fetch: (input: any, init: any) => fake.fetch(input instanceof Request ? input : new Request(input, init)) }, CAMELFS_API_TOKEN: 'test-token', TENANTS: { getByName: () => tenant }, REPOS: { getByName: (id: string) => {
-        if (!repos.has(id))
-          repos.set(id, new RepoDO(state() as never, {}));
+        if (!repos.has(id)) {
+          const stub = new RepoDO(state() as never, {}), init = stub.init.bind(stub);
+          let initialized = false;
+          // Match createRepo's contract: a new repo starts at an initial main commit.
+          stub.init = async input => {
+            await init(input);
+            if (!initialized) {
+              initialized = true;
+              const ctx = await repoContext(env, input.tenant, input.id);
+              await commitChanges(ctx, { ref: 'main', expect: null, changes: {}, allowEmpty: true, message: 'init', author: 'api:t', who: 'api:t', why: 'init' });
+            }
+            return stub.info();
+          };
+          repos.set(id, stub);
+        }
         return repos.get(id);
       } } };
-  const create = async (input = {}) => { const { info } = await createRepo(env, 't', input); const ctx = await repoContext(env, 't', info.id); await commitChanges(ctx, { ref: 'main', changes: {}, allowEmpty: true, message: 'init', author: 'api:t', who: 'api:t', why: 'init' }); return ctx; };
+  const create = async (input = {}) => { const { info } = await createRepo(env, 't', input); return repoContext(env, 't', info.id); };
   const write = (ctx: any, changes: any, extra = {}) => commitChanges(ctx, { ref: 'main', changes, message: 'test', author: 'api:t', who: 'api:t', why: 'test', ...extra });
   return { env, fake, create, write, index };
 }
@@ -119,4 +132,15 @@ test('a stale mounted version becomes a bounded checkpoint error', async t => {
   assert.ok(result.camelfs.checkpointError.length <= 300);
   assert.equal(result.camelfs.version, undefined);
   assert.equal((await ctx.stub.ref('job/attempt'))?.version, saved.expect);
+});
+
+test('inline workflow files surface a missing main instead of creating it', async t => {
+  const f = fixture(t), ctx = await f.create({ key: 'workflow:wf_one' });
+  const main = await ctx.stub.ref('main'); assert.ok(main);
+  await ctx.stub.deleteRef('main', main.version);
+  const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async () => undefined, put: async () => assert.fail('failed preparation must not be recorded') } };
+  const jobs: any = new WorkflowJobs(f.env, host);
+  await assert.rejects(jobs.jobSpec('missing-main', { files: { 'hello.txt': 'hello' }, command: 'true', timeoutSeconds: 30 }), err('no-ref'));
+  assert.equal(await ctx.stub.ref('main'), null);
+  assert.equal(await ctx.stub.ref('job/missing-main'), null);
 });

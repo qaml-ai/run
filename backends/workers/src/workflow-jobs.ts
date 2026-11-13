@@ -7,7 +7,6 @@
 // a child's fork on its base (workflow-volumes.ts). A push is a job that writes a volume to a GitHub branch with the
 // GitHub App's installation token, which only the job's process sees.
 import { createRepo, repoContext, type RepoEnv } from "./repos/registry.ts";
-import { repoErrorFrom } from "./repos/repo-policy.ts";
 import { branch, commitChanges } from "./repos/write.ts";
 import { createVolume } from "./file-mounts.ts";
 import { volume, type FileBindings } from "./files.ts";
@@ -227,11 +226,6 @@ export class WorkflowJobs implements EffectExecutor {
       const env = this.env as RepoEnv, owner = `workflow:${this.host.workflow.id}`;
       const { info } = await createRepo(env, tenant, { key: owner });
       const ctx = await repoContext(env, tenant, info.id), ref = `job/${id}`;
-      // createRepo is empty until its first commit; seed main once before branching.
-      if (!await ctx.stub.ref("main")) {
-        try { await commitChanges(ctx, { ref: "main", expect: null, changes: {}, message: "workflow repo", author: owner, who: owner, why: "workflow repo", allowEmpty: true, idempotencyKey: `workflow:${this.host.workflow.id}:init` }); }
-        catch (error) { if (repoErrorFrom(error)?.code !== "stale") throw error; }
-      }
       const prepared = `workflow-job-files:${id}`;
       if (!await this.host.storage.get(prepared)) {
         if (!await ctx.stub.ref(ref)) await branch(ctx, { name: ref, from: "main", owner, who: `job:${id}` });
