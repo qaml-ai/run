@@ -252,7 +252,7 @@ block. Locations come from the superblock, descriptor and inode block mapping;
 the journal superblock is included for the usual internal journal. The
 verified cache serves these reads to NBD and later hydration without another
 fetch. Unsupported layouts such as meta_bg keep lazy reads.
-There is one cold path; `--cold` and `--hydration-pack-size` are removed.
+There is one cold path; `--hydration-pack-size` is removed.
 
 The guest device is a persistent dm-snapshot with 512 KiB chunks. Its COW
 store is a loop over sparse `mounts/<jobId>/cow.img`. `--cow-max` caps the
