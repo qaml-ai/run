@@ -56,6 +56,7 @@ import { bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-cre
 import { getVoice, VoiceLookupInput, VoiceLookupResult, searchVoices, VoiceSearchInput, VoiceSearchResult } from "./voice-library.ts";
 import { voiceRoutes } from "./voice-api.ts";
 import type { VoiceCalls } from "./voice-calls.ts";
+import { ELEVENLABS_INBOUND } from "./voice/calls/elevenlabs.ts";
 import type { VoiceSessions } from "./voice-sessions.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
@@ -164,7 +165,7 @@ export interface ApiContext {
 }
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
-type Env = { Variables: { principal: Caller } };
+type Env = { Variables: { principal: Caller; voiceSignedUrl?: boolean } };
 /**
  * What an OAuth access token (an MCP client the tenant connected, src/oauth.ts) may call: its agents (but not their
  * tokens), definitions, pending inputs, and reads of the account (models, providers, usage, balance). Nothing that makes
@@ -354,6 +355,25 @@ export function api(context: ApiContext) {
       return json(c,result.code,result.body);
     });
   }
+  route(createRoute({
+    method: "post", path: `${ELEVENLABS_INBOUND}/post-call`, security: [],
+    request: { headers: z.object({ "elevenlabs-signature": z.string() }) },
+    responses: { 200: reply("Webhook acknowledged", z.object({})) },
+  }), async c => {
+    if (!context.calls) throw new HttpError(404, "Unknown ElevenLabs agent");
+    await context.calls.elevenLabsPostCall(await readBytes(c.req.raw.body, 1024 * 1024), c.req.header("ElevenLabs-Signature"));
+    return json(c, 200, {});
+  });
+  route(createRoute({
+    method: "post", path: `${ELEVENLABS_INBOUND}/tools/{name}`, security: [],
+    request: { params: z.object({ name: z.string() }), headers: z.object({ "x-voice-tool-secret": z.string() }),
+      body: content(z.object({ conversation_id: z.string(), request: z.string().optional() })) },
+    responses: { 200: reply("Tool result", z.union([z.object({ ok: z.literal(true) }), z.object({ reply: z.string() }), z.object({ error: z.string() })])),
+      404: reply("Unknown tool or call", z.object({})) },
+  }), async c => {
+    const result = await context.calls?.elevenLabsTool(c.req.param("name")!, await readJson(c.req.raw.body, 64 * 1024), c.req.header("X-Voice-Tool-Secret"));
+    return result ? json(c, 200, result) : json(c, 404, {});
+  });
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);
@@ -384,7 +404,7 @@ export function api(context: ApiContext) {
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
-    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:triggers|triggers\/[^/]+\/rotate|browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
+    secret: (path, c) => c.get("voiceSignedUrl") === true || /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:triggers|triggers\/[^/]+\/rotate|browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
   const shared = () => new SharedAgents(clients.db);

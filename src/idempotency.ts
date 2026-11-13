@@ -19,7 +19,7 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
  * `secret` routes answer with a secret shown only once (a token, a signing secret, a signed link): their
  * answer is never kept, and a retry of a key that succeeded is a 409.
  */
-export function idempotency(options: { db: () => Db; tenant: (c: Context) => string; skip: (path: string) => boolean; secret: (path: string) => boolean; lockMs?: number }) {
+export function idempotency(options: { db: () => Db; tenant: (c: Context) => string; skip: (path: string) => boolean; secret: (path: string, c: Context) => boolean; lockMs?: number }) {
   const lockMs = options.lockMs ?? 120_000;
   return async (c: Context, next: Next) => {
     const key = c.req.header("idempotency-key");
@@ -52,7 +52,7 @@ export function idempotency(options: { db: () => Db; tenant: (c: Context) => str
       const response = c.res;
       if (response.ok) {
         // A secret shown once is never stored: the key only records that its request succeeded.
-        const body = options.secret(c.req.path) || !response.body ? null : await response.clone().text();
+        const body = options.secret(c.req.path, c) || !response.body ? null : await response.clone().text();
         await db.query("update idempotency_keys set status = $3, body = $4, content_type = $5 where tenant = $1 and key = $2 and created_at = $6",
           [tenant, key, response.status, body, body === null ? null : response.headers.get("content-type"), now]);
         kept = true;

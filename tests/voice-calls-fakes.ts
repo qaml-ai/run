@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { TestContext } from "node:test";
@@ -97,4 +98,47 @@ export function fakeSubmit(replies: ({ text: string; delay?: number } | "hang" |
     }
   };
   return { requests, submit };
+}
+
+export async function fakeElevenLabs(t: TestContext, onRequest?: (path: string) => void) {
+  const webhooks: any[] = [], tools: any[] = [], agents: any[] = [], signed: URLSearchParams[] = [];
+  const webhookSecret = "fixture-webhook-secret";
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url!, "http://localhost");
+      onRequest?.(url.pathname);
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+      let result;
+      if (req.method === "POST" && url.pathname === "/v1/workspace/webhooks") {
+        webhooks.push(body);
+        result = { webhook_id: "wh_1", webhook_secret: webhookSecret };
+      } else if (req.method === "POST" && url.pathname === "/v1/convai/tools") {
+        tools.push(body.tool_config);
+        result = { id: `tool_${tools.length}` };
+      } else if (req.method === "POST" && url.pathname === "/v1/convai/agents/create") {
+        agents.push(body);
+        result = { agent_id: `agent_${agents.length}` };
+      } else if (req.method === "GET" && url.pathname === "/v1/convai/conversation/get-signed-url") {
+        signed.push(url.searchParams);
+        result = { signed_url: `wss://fake/convai?agent_id=${url.searchParams.get("agent_id")}&conversation_signature=sig&conversation_id=conv_${signed.length}` };
+      } else {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+    } catch {
+      res.writeHead(500).end();
+    }
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, webhooks, tools, agents, signed, webhookSecret };
+}
+
+export function sign(secret: string, body: string, now = Date.now()) {
+  const t = Math.floor(now / 1000);
+  const digest = createHmac("sha256", secret).update(`${t}.${body}`).digest("hex");
+  return `t=${t},v0=${digest}`;
 }

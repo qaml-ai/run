@@ -56,7 +56,9 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
     }
     const tenant = c.var.principal.tenant;
     if (input && typeof input === "object" && "agent" in input && !("discord" in input)) {
-      return json(c, 201, await callService().create(tenant, parseBody(schema.VoiceCallInput, input)));
+      const call = await callService().create(tenant, parseBody(schema.VoiceCallInput, input));
+      if ("signedUrl" in call.connect) c.set("voiceSignedUrl", true);
+      return json(c, 201, call);
     }
     const sessions = service();
     if (raw.byteLength > 64 * 1024) throw new HttpError(413, "Request too large");
@@ -94,6 +96,15 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
     const tenant = c.var.principal.tenant, id = c.req.param("id")!;
     if (isCall(c)) return json(c, 200, await callService().update(tenant, id, parseBody(schema.VoiceCallUpdate, await readJson(c.req.raw.body, 64 * 1024, {}))));
     return json(c, 200, await service().update(tenant, id, await parse(schema.VoiceSessionUpdate, c)));
+  });
+  route(createRoute({
+    method: "post", path: "/v1/voice/sessions/{id}/transcript",
+    request: { params: sessionId, body: body(schema.VoiceTranscriptInput) },
+    responses: { 202: reply("The accepted utterance's sequence number", z.object({ seq: z.number() })) },
+  }), async c => {
+    if (!isCall(c)) throw new HttpError(404, "Voice call not found", "VOICE_CALL_NOT_FOUND");
+    const input = parseBody(schema.VoiceTranscriptInput, await readJson(c.req.raw.body, 64 * 1024));
+    return json(c, 202, await callService().transcript(c.var.principal.tenant, c.req.param("id")!, input));
   });
   route(createRoute({
     method: "post", path: "/v1/voice/sessions/{id}/browser-token", request: { params: sessionId },
