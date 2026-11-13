@@ -246,11 +246,13 @@ bytes, not the virtual size), and when the file is complete it **reloads the lin
 identical bytes, transparent to the snapshot and to the guest. From then on every read is kernel-only from NVMe.
 Demand reads before the swap pay the lazy device's round trip. **Measured** (7b at `8bda793d`, m8id.xlarge, the
 large root of ≈ 660 MB of chunks, real S3): hydration 5.2–5.8 s at 4, 16 and 64 GiB virtual size, **independent of
-the virtual size** (the property dm-clone lacked, L76), which is ≈ 120 MB/s against the 250–275 MB/s NIC because the
-prehydrator writes each chunk twice, cache then image (the next gain, L85); the swap itself 21–29 ms; demand 4 KiB
+the virtual size** (the property dm-clone lacked, L76), which was ≈ 120 MB/s against the 250–275 MB/s NIC because the
+prehydrator wrote each chunk twice, cache then image; unit 10 (#953) writes the image once and reflinks the range
+into the cache, and hydration plus swap is now 3.40–3.66 s at 4, 16 and 64 GiB, 204–237 MB/s, the NIC ceiling (L85); the swap itself 21–29 ms; demand 4 KiB
 reads during hydration 18–19 µs mean and 77–88 µs p99 at ≈ 52k IOPS, so a guest working through the hydration feels
 local NVMe; the first cold file 209–285 ms, above the 100 ms target because the ext4 mount goes through the origin
-with a few serial chunk fetches (fix: prefetch the superblock and group-descriptor chunks at mount, L84); a full read
+with a few serial chunk fetches (the mount-metadata prefetch of #949 brings it to 187–205 ms after #953, still
+above the target, L84); a full read
 after the swap 5.1–6.0 s, this host's local cold read. The base root is promoted as a plain image on release at every
 size. **A cold-started mount stays on dm-snapshot for its whole lifetime**: a live device cannot
 be flipped from the snapshot to a reflink file without the guest seeing a different device, and the swap only changes
