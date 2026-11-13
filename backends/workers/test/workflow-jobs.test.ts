@@ -418,7 +418,7 @@ test('commit merges cleanly, reports conflicts, rejects snapshots and retries st
   assert.match((j.landed[2][2] as any).error,/no snapshot/);
   const bare = {...fork,base:{version:fork.base.version}};
   await j.executor.start(effect('bare',{fork:bare},'commit')); await j.settled();
-  assert.match((j.landed[3][2] as any).error,/no base ref/);
+  assert.match((j.landed[3][2] as any).error,/no branch to merge into; start the agent from a ref/);
   const conflicting = await childBranch(f.env,'t',mem as never,{workflow:'wf_1',key:'conflict',attempt:1},repoAt(ctx.repoId));
   await f.write(ctx,{a:{bytes:new TextEncoder().encode('ours')}});
   await f.write(ctx,{a:{bytes:new TextEncoder().encode('theirs')}},{ref:conflicting.ref});

@@ -314,7 +314,7 @@ export class WorkflowJobs implements EffectExecutor {
       const fork = args.fork as WorkflowFork;
       if (!fork || typeof fork !== 'object' || typeof fork.repo !== 'string' || typeof fork.ref !== 'string' || !fork.base)
         throw Object.assign(new Error('commit() needs { fork: { repo, ref, base } }'), { status: 400 });
-      if (!fork.base.ref) return { ok: false, error: 'A fork of a version has no base ref to merge into' };
+      if (!fork.base.ref) return { ok: false, error: 'A fork of a version has no branch to merge into; start the agent from a ref to commit its changes' };
       const ctx = await repoContext(this.env as RepoEnv, this.host.workflow.tenant, fork.repo);
       try {
         const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref });
