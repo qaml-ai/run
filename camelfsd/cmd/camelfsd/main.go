@@ -73,6 +73,9 @@ func run(args []string) error {
 }
 func host(args []string) error {
 	f := flag.NewFlagSet("host", flag.ContinueOnError)
+	// TEMPORARY: --cold is a no-op since 7b removed dm-clone; accepted for one release so host units and the
+	// contract test keep starting the daemon. Remove with the next host-setup change.
+	cold := f.String("cold", "", "deprecated: ignored (the cold path is prehydrate-and-swap)")
 	apiListen := f.String("listen-api", "127.0.0.1:8790", "runtime API address (requires api-token-file)")
 	apiTokenFile := f.String("api-token-file", "", "raw bearer or CAMELFS_API_TOKEN env file; enables runtime API")
 	socket := f.String("socket", "/run/camelfsd/api.sock", "Unix socket")
@@ -93,6 +96,9 @@ func host(args []string) error {
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
 		return e
+	}
+	if *cold != "" {
+		log.Printf("op=host deprecated-flag=cold value=%s ignored=true", *cold)
 	}
 	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 || *fetchDepth < 1 {
 		return fmt.Errorf("invalid host flags")
