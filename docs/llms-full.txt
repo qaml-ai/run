@@ -7470,8 +7470,8 @@ Its globals:
 | --- | --- |
 | `agent(prompt, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, type?, class?, output?, instructions?, label?, definition?, model? }`. With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted sub-agent returns `null` (the item records why), so `.filter(Boolean)` is the idiom |
 | `parallel(fns)`, `parallel(items, fn)` | Runs the functions (or `fn` over each item) at once, up to the workflow's `concurrency`, and waits for all of them, even after one fails. **Every `agent()` inside it needs an explicit `key`** (the workflow faults with `key_required` otherwise): branches finish in any order, and keys are how results are matched to calls on replay |
-| `agent(prompt, { repo })` | `repo` is a repo id or `{ repo, ref? \| version? }`. The child edits its own branch at `/repo`. Its answer includes `fork: { repo, ref, base: { ref?, version } }`. The default base is `main`; give either `ref` or `version`. |
-| `commit(fork, opts)` | Merges `result.fork` onto its base ref. Answers `{ committed: true, version, changed, files? }` or `{ committed: false, conflicts }`. A fork of a bare version has no ref to merge into. `snapshot` is not accepted. Repeating a landed merge answers `changed: false`. |
+| `agent(prompt, { repo })` | `repo` is a repo id, or `{ repo, ref }` or `{ repo, version }` (default: the `main` branch). The child works on a branch of its own, at `/repo`. Its answer includes `fork: { repo, ref, base }`. |
+| `commit(fork, opts)` | Merges the child's branch (`result.fork`) into the branch it started from. Answers `{ committed: true, version, changed, files? }`, or `{ committed: false, conflicts }` when both sides changed the same files. Committing the same fork again answers `changed: false`. A fork started from a `version` has no branch to merge into: `commit()` answers `null`, and its item records `A fork of a version has no base ref to merge into`. Passing `snapshot` answers `null` the same way (`commit() has no snapshot option`). |
 | `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, commit?, key? }`. `at` accepts `{ repo, ref? \| version? }` (default `main`) or a volume id. It starts the job with that tree in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, repo, version }`: each stream's end inline, and the whole streams and outputs kept in one commit in the workflow's repo. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow; a workflow started with an API key is paid by its account, and its usage shows under the workflow's id. A job the account's credit or monthly spend limit refuses pauses the workflow (`payer_exhausted`) until it is raised. Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere). `commit: true` (camelFS job hosts only) checkpoints `/repo` when the command ends, even if it failed, and answers its `tree`, `root` and `commit`, or `checkpointError`. |
 | `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
 | `log(...parts)` | A line in the workflow's log |
@@ -7479,7 +7479,7 @@ Its globals:
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
 | `toBase64(value)`, `fromBase64(text, opts?)` | Base64 of any text (as UTF-8) or bytes, and back: text, or a `Uint8Array` with `{ as: "bytes" }`. `btoa`/`atob` take Latin-1 only. `TextEncoder` and `TextDecoder` (UTF-8) are there too |
 
-A workflow's branches are deleted when it ends, once its commits have landed. Cached results retain their versions through separate refs for 3 days.
+A workflow's branches are deleted when it ends, after its commits have landed. A cached result keeps its version for 3 days.
 
 A script is compiled before it starts: a syntax error is refused as `script_error`, with
 its line and column, and nothing runs.
@@ -7569,9 +7569,11 @@ summary's `counts.cached` counts them.
 - Only results that finished (`done`) are reused: never a failed, refused or
   aborted one, and never a `commit()` or `push()` (they change a repo or a
   branch).
-- `agent(prompt, { repo })` and repo-backed `job({ at })` key on the base tree.
-  A volume-id `at` still keys on its sequence. A cached agent result gets a
-  new branch from the cached version. A result with a fork is reused for at most 3 days.
+- `agent(prompt, { repo })` and `job({ at: { repo } })` are reused only while
+  the base tree is the same as when the earlier call started. A volume-id `at`
+  is reused only while that volume is unchanged. A reused agent answer gets a
+  fresh branch at the cached version, which `commit()` lands as before. A
+  result with a fork is reused for at most 3 days.
 - An `agent()` is also keyed by the model it resolves to (its `class` or
   `model`, or the workflow's `classes` pin) and by the named `definition`'s
   revision: a restart with a stronger class, or an edited definition, runs
