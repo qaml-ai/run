@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { createServer as createNetServer, type Socket } from "node:net";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, lstat, rm, writeFile } from "node:fs/promises";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
@@ -179,7 +180,13 @@ test("FIFO is counted; git and temporary names are skipped", async t => {
   assert.equal(r.result.ok, true); if (!r.result.ok) return;
   assert.equal(r.result.camelfs!.checkpoint?.skipped, 1); assert.deepEqual(r.streams[0]!.ops, []);
 });
-test("unreadable file fails loudly", { skip: process.getuid?.() === 0 }, async t => {
+// Root, or a process with CAP_DAC_OVERRIDE (sprites run tests that way), reads a mode-000 file: the case cannot happen there.
+const canReadUnreadable = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "cfs-perm-")), file = join(dir, "f");
+  try { writeFileSync(file, "x"); chmodSync(file, 0); readFileSync(file); return true; } catch { return false; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+})();
+test("unreadable file fails loudly", { skip: canReadUnreadable && "this process reads mode-000 files (root or CAP_DAC_OVERRIDE)" }, async t => {
   const r = await setup(t, { command: "echo x > unreadable; chmod 000 unreadable" });
   assert.equal(r.result.ok, true); if (!r.result.ok) return; assert.match(r.result.camelfs!.checkpointError!, /^guest: .*EACCES/);
 });

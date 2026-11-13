@@ -247,7 +247,8 @@ test("camelFS volume jobs send cached trees and refuse a host without mount supp
       stored = true; response.writeHead(201); response.end(); return;
     }
     const input = JSON.parse(Buffer.concat(chunks).toString());
-    assert.deepEqual(input.files, { "/a.txt": { sha256: hash } });
+    // camelFS paths are relative (#904): the Volume's "/a.txt" arrives as "a.txt".
+    assert.deepEqual(input.files, { "a.txt": { sha256: hash } });
     response.writeHead(stored ? 200 : 409, { "content-type": "application/json" });
     response.end(JSON.stringify(stored ? { tree } : { missing: [hash] }));
   });
