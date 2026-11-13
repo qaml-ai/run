@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
+
 	"regexp"
 	"strings"
 	"time"
@@ -75,18 +75,12 @@ func (m *Manager) writeCommit(ctx context.Context, v *Mount, tree string, q Chec
 	}
 	now := time.Now().Unix()
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n%s", who, who, now, now, msg, trailers.String())
-	id := store.GitHash("commit", []byte(body))
-	_, e := m.objects().DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO objects VALUES(?,'commit',?,?,?)", id, []byte(body), len(body), time.Now().UnixMilli())
-	return id, e
+	return m.objects().PutObject(ctx, v.Lineage, "commit", []byte(body))
 }
 func (m *Manager) Commit(ctx context.Context, id string) (map[string]any, error) {
-	var b []byte
-	e := m.objects().DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='commit'", id).Scan(&b)
+	b, e := m.objects().Object(ctx, id, "commit")
 	if e != nil {
 		return nil, e
-	}
-	if store.GitHash("commit", b) != id {
-		return nil, fmt.Errorf("corrupt commit")
 	}
 	headers, body, _ := strings.Cut(string(b), "\n\n")
 	out := map[string]any{"commit": id}

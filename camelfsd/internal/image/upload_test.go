@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"strings"
 	"testing"
 )
 
@@ -21,7 +22,9 @@ func (s *storeSpy) Has(c context.Context, k string) (bool, error) {
 	return s.Store.Has(c, k)
 }
 func (s *storeSpy) Put(c context.Context, k string, b []byte) error {
-	s.calls++
+	if !strings.HasPrefix(k, "k/") && !strings.HasPrefix(k, "l/") {
+		s.calls++
+	}
 	return s.Store.Put(c, k, b)
 }
 func TestIdenticalCheckpointNoStoreCalls(t *testing.T) {

@@ -3,6 +3,7 @@ package image
 import (
 	"context"
 	"encoding/binary"
+	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,7 +70,7 @@ func TestZeroWrittenCheckpointRecordsHoleWithoutUpload(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v, e := m.Mount(ctx, Request{Lineage: "zeros", Ref: "main", JobID: "zero-write"})
+	v, e := m.Mount(ctx, Request{Lineage: "zeros", Root: imp.Root, Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "zero-write"})
 	if e != nil {
 		t.Fatal(e)
 	}

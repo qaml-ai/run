@@ -28,18 +28,24 @@ type Local struct{ Dir string }
 
 func valid(k string) bool {
 	p, h, ok := strings.Cut(k, "/")
-	return ok && (p == "c" || p == "r") && root.Hex(h, 64) || ok && (p == "o" || p == "t") && root.Hex(h, 40)
+	return ok && (p == "c" || p == "r" || p == "l") && root.Hex(h, 64) || ok && (p == "o" || p == "t" || p == "k") && root.Hex(h, 40)
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
 		return fmt.Errorf("invalid key")
 	}
 	p, h, _ := strings.Cut(k, "/")
+	if p == "l" {
+		return nil
+	}
 	actual := root.Hash(b)
-	if p == "o" || p == "t" {
+	if p == "o" || p == "t" || p == "k" {
 		kind := "blob"
 		if p == "t" {
 			kind = "tree"
+		}
+		if p == "k" {
+			kind = "commit"
 		}
 		actual = GitHash(kind, b)
 	}

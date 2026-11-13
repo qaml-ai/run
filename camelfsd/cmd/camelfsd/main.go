@@ -87,7 +87,6 @@ func host(args []string) error {
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
 	streamIdle := f.Duration("stream-idle", 30*time.Second, "guest stream idle timeout")
 	applyMax := f.Duration("apply-max", 30*time.Minute, "apply overall cap")
-	leaseTTL := f.Duration("lease-ttl", 5*time.Minute, "lease lifetime; renewal is ttl/5")
 	packSize := f.Int64("hydration-pack-size", 4<<20, "hydration window size")
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
@@ -127,7 +126,7 @@ func host(args []string) error {
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}

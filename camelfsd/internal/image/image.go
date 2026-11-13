@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
+
 	"time"
 )
 
@@ -31,7 +31,6 @@ var ErrNoRoot = errors.New("no-root-for-tree")
 
 type Config struct {
 	StreamIdle, ApplyMax          time.Duration
-	LeaseTTL                      time.Duration
 	Now                           func() time.Time
 	Origin                        *nbd.Server
 	HydrationPackSize             int64
@@ -54,18 +53,16 @@ type Manager struct {
 	sweepMu  sync.Mutex
 }
 type Request struct {
-	JobID   string `json:"jobId"`
-	Lineage string `json:"lineage"`
-	Ref     string `json:"ref"`
-	Root    string `json:"root"`
-	Tree    string `json:"tree"`
-	Hydrate bool   `json:"hydrate"`
-	Vsock   string `json:"vsock"`
+	JobID   string      `json:"jobId"`
+	Lineage string      `json:"lineage"`
+	Fence   *refs.Fence `json:"fence"`
+	Root    string      `json:"root"`
+	Tree    string      `json:"tree"`
+	Hydrate bool        `json:"hydrate"`
+	Vsock   string      `json:"vsock"`
 }
 type Mount struct {
 	NBDListen string `json:"nbdListen"`
-	activity  *atomic.Int64
-	fenced    *atomic.Bool
 	mu        *sync.Mutex
 	streams   *streams
 	Apply     *Apply  `json:"apply"`
@@ -82,10 +79,8 @@ type Mount struct {
 	Hydrating                         bool    `json:"hydrating"`
 	Dest, MetaLoop, DestLoop, NBD, DM string
 	Parent                            refs.Value
-	Fence                             refs.Fence
 	Snapshot                          int
 	Promoted                          bool
-	stopRenew                         chan struct{}
 	stopPoll                          chan struct{}
 	releaseOrigin                     func()
 	hydrated                          string
@@ -120,15 +115,6 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	}
 	if c.Now == nil {
 		c.Now = time.Now
-	}
-	if c.LeaseTTL == 0 {
-		c.LeaseTTL = 5 * time.Minute
-	}
-	if c.LeaseTTL < 5*time.Millisecond {
-		return nil, apierr.Invalid("invalid lease ttl")
-	}
-	if db, ok := r.(*refs.DB); ok {
-		db.TTL = c.LeaseTTL
 	}
 	if c.Cold != "clone" && c.Cold != "prehydrate" {
 		return nil, apierr.Invalid("invalid cold mode")
@@ -202,12 +188,12 @@ func (m *Manager) save(v *Mount) error {
 	if e = store.Atomic(filepath.Join(filepath.Dir(v.Dest), "state.json"), b); e != nil {
 		return e
 	}
-	return m.Refs.Mount(v.JobID, v.Lineage, v.Ref, v.Root, v.Tree, v.Image, v.State, v.Warm, v.LeaseEpoch)
+	return m.Refs.Mount(v.JobID, v.Lineage, "", v.Root, v.Tree, v.Image, v.State, v.Warm, v.LeaseEpoch)
 }
 func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) {
 	t := time.Now()
 	forms := 0
-	for _, v := range []string{q.Ref, q.Root, q.Tree} {
+	for _, v := range []string{q.Root, q.Tree} {
 		if v != "" {
 			forms++
 		}
@@ -232,74 +218,36 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			m.mu.Unlock()
 		}
 	}()
+	if q.Fence != nil && (q.Fence.Holder == "" || q.Fence.Epoch < 0) {
+		return nil, apierr.Invalid("invalid fence")
+	}
 	var treeRoot string
 	if q.Tree != "" {
+		ok, e := m.objects().Reachable(ctx, q.Lineage, q.Tree, "tree")
+		if e != nil {
+			return nil, e
+		}
+		if !ok {
+			return nil, os.ErrNotExist
+		}
 		id, e := m.baseRoot(ctx, q.Lineage, q.Tree)
 		if e != nil {
 			return nil, e
 		}
-		q.Ref = "job/" + q.JobID
-		if e = m.Refs.Ensure(q.Lineage, q.Ref); e != nil {
-			return nil, e
-		}
 		treeRoot = id
 	}
-	v := &Mount{activity: &atomic.Int64{}, fenced: &atomic.Bool{}, NBDListen: m.NBDListen, Request: q, mu: new(sync.Mutex)}
+	v := &Mount{NBDListen: m.NBDListen, Request: q, mu: new(sync.Mutex)}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if q.Ref != "" {
-		p, e := m.Refs.Get(q.Lineage, q.Ref)
-		if e != nil {
-			return nil, e
-		}
-		epoch, e := m.Refs.Lease(q.Lineage, q.Ref, m.HostID+"/"+q.JobID)
-		if e != nil {
-			return nil, e
-		}
-		p, e = m.Refs.Get(q.Lineage, q.Ref)
-		if e != nil {
-			_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch})
-			return nil, e
-		}
-		if q.Tree != "" {
-			set := refs.Value{Tree: q.Tree, Root: treeRoot, Owner: "job:" + q.JobID}
-			if p.Tree == q.Tree {
-				set.Commit = p.Commit
-			}
-			fence := refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
-			if p.Owner != "" && p.Owner != set.Owner {
-				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, fence)
-				return nil, refs.ErrFenced
-			}
-			if e = m.Refs.CAS(q.Lineage, q.Ref, p.Value, set, fence); e != nil {
-				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, fence)
-				return nil, e
-			}
-			p.Value = set
-		}
-		v.Fence = refs.Fence{Holder: m.HostID + "/" + q.JobID, LeaseEpoch: epoch}
-		v.stopRenew = make(chan struct{})
-		v.activity.Store(m.Now().UnixNano())
-		go m.renewMount(v, v.stopRenew)
-		v.LeaseEpoch = epoch
-		v.Parent = p.Value
-		v.Root = p.Root
-		v.Tree = p.Tree
-		defer func() {
-			if err != nil {
-				close(v.stopRenew)
-				_ = m.Refs.ReleaseLease(q.Lineage, q.Ref, v.Fence)
-			}
-		}()
+	if q.Tree != "" {
+		v.Root = treeRoot
 	}
+	v.Parent = refs.Value{Tree: q.Tree, Root: v.Root}
 	r, e := m.mountRoot(ctx, v.Root)
 	if e != nil {
 		return nil, e
 	}
 	v.Tree = r.Tree
-	if v.Ref != "" {
-		v.Tree = v.Parent.Tree
-	}
 	if q.Tree != "" {
 		v.Tree = q.Tree
 	}
@@ -361,7 +309,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e != nil {
 		return nil, e
 	}
-	if v.Ref == "" {
+	if v.Fence == nil {
 		if v.DM != "" {
 			_, e = run(ctx, "blockdev", "--setro", v.Image)
 		} else {
@@ -566,7 +514,6 @@ func (m *Manager) status(ctx context.Context, v *Mount) error {
 	return nil
 }
 func (m *Manager) Status(ctx context.Context, id string) (*Mount, error) {
-	_ = m.Heartbeat(id)
 	v := m.lookup(id)
 	if v == nil {
 		return nil, os.ErrNotExist
@@ -575,9 +522,6 @@ func (m *Manager) Status(ctx context.Context, id string) (*Mount, error) {
 	defer v.mu.Unlock()
 	if v.State == "released" {
 		return nil, os.ErrNotExist
-	}
-	if v.fenced.Load() {
-		return &Mount{State: "fenced", Image: v.Image, Request: Request{Root: v.Root}, LeaseEpoch: v.LeaseEpoch}, nil
 	}
 	if e := m.status(ctx, v); e != nil {
 		return nil, e
@@ -642,11 +586,6 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	if e := m.cleanup(v); e != nil {
 		return false, e
 	}
-	if v.Ref != "" {
-		if e := m.Refs.ReleaseLease(v.Lineage, v.Ref, v.Fence); e != nil && !errors.Is(e, refs.ErrFenced) {
-			return false, e
-		}
-	}
 	if v.stopPoll != nil {
 		close(v.stopPoll)
 		v.stopPoll = nil
@@ -661,46 +600,12 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	if e := m.Refs.DropMount(id); e != nil {
 		return false, e
 	}
-	if v.stopRenew != nil {
-		close(v.stopRenew)
-	}
 	m.mu.Lock()
 	delete(m.mounts, id)
 	m.mu.Unlock()
 	m.unprotect(v.JobID)
 	v.State = "released"
 	return v.Promoted, nil
-}
-
-// Renewal must not wait on the operation mutex: hashing or hydration can take
-// longer than a lease, including while another mount is being prepared.
-func (m *Manager) renewOnce(v *Mount) {
-	if m.Now().Sub(time.Unix(0, v.activity.Load())) > 2*(m.LeaseTTL/5) {
-		return
-	}
-	if e := m.Refs.Renew(v.Lineage, v.Ref, v.Fence); errors.Is(e, refs.ErrFenced) {
-		v.fenced.Store(true)
-	}
-}
-func (m *Manager) renewMount(v *Mount, stop <-chan struct{}) {
-	t := time.NewTicker(m.LeaseTTL / 5)
-	defer t.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-t.C:
-			m.renewOnce(v)
-		}
-	}
-}
-func (m *Manager) Heartbeat(id string) error {
-	v := m.lookup(id)
-	if v == nil {
-		return os.ErrNotExist
-	}
-	v.activity.Store(m.Now().UnixNano())
-	return nil
 }
 
 func (m *Manager) Close() {

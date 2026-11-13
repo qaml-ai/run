@@ -110,6 +110,13 @@ func (s *Uploaded) putFile(ctx context.Context, k string, f *os.File) error {
 	if e != nil || ok {
 		return e
 	}
+	exists, e := s.Store.Has(ctx, k)
+	if e != nil {
+		return e
+	}
+	if exists {
+		return s.record(ctx, k)
+	}
 	if e = PutBlobFile(ctx, s.Store, k, f); e != nil {
 		return e
 	}

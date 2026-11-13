@@ -115,7 +115,7 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
   const second = await timed("re-import unchanged files", () => importTree(env, input));
   assert.deepEqual(second, { tree: first.tree, uploaded: 0 });
 
-  await timed("mount from empty parent", () => client.mount({ jobId: "contract-1", lineage, tree: first.tree, vsock }));
+  await timed("mount from empty parent", () => client.mount({ jobId: "contract-1", lineage, tree: first.tree, vsock, ...{ fence: { holder: "contract-runtime", epoch: 1 } } }));
   const guestroot = join(dir, "guestroot"), repo = join(guestroot, "repo");
   await mkdir(repo, { recursive: true });
   const oldUDS = process.env.CAMEL_VSOCK_UDS, oldConnect = process.env.CAMEL_VSOCK_CONNECT;

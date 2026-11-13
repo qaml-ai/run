@@ -46,7 +46,7 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v, e := m.Mount(ctx, Request{JobID: "job", Lineage: "test", Ref: "main"})
+	v, e := m.Mount(ctx, Request{JobID: "job", Lineage: "test", Root: imp.Root, Fence: &refs.Fence{Holder: "runtime", Epoch: 1}})
 	if e != nil {
 		t.Fatal(e)
 	}

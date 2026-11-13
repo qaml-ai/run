@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
+
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"io"
@@ -425,6 +425,7 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 	return out, nil
 }
 func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, metadata ...CheckpointRequest) (out Checkpoint, err error) {
+	defer func() { out.RefreshTimings() }()
 	if timeout == 0 {
 		timeout = 120000
 	}
@@ -447,15 +448,11 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	_ = m.Heartbeat(id)
-	if v.fenced.Load() || v.Ref == "" {
-		return out, refs.ErrFenced
+	if v.Fence == nil {
+		return out, &apierr.Error{Status: 409, Code: "no_fence", Cause: fmt.Errorf("mount has no fence")}
 	}
 	if v.streams == nil {
 		return out, apierr.Invalid("invalid missing vsock")
-	}
-	if err = m.Refs.Check(v.Lineage, v.Ref, v.Fence); err != nil {
-		return
 	}
 	s := v.streams
 	a := &arm{ctx: ctx, conn: make(chan net.Conn)}
@@ -536,6 +533,9 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 			return e
 		}
 		_, e = repo.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", v.Lineage, b.sha256, b.sha1, b.size, time.Now().UnixMilli())
+		if e == nil {
+			e = repo.Record(ctx, v.Lineage, b.sha1, "blob", &objects.Blob{SHA1: b.sha1, SHA256: b.sha256, Size: b.size})
+		}
 		return e
 	})
 	if e != nil {

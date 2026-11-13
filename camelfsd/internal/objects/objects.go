@@ -22,7 +22,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
-const MaxBlob = 256 << 20
+const MaxBlob = 5 << 30
 const InlineTree = 400 << 10
 
 var ErrIgnored = errors.New("ignored-path")
@@ -51,9 +51,10 @@ type Result struct {
 	ImportMs float64 `json:"importMs"`
 }
 type Blob struct {
-	SHA256 string `json:"sha256"`
-	SHA1   string `json:"sha1"`
-	Size   int64  `json:"size"`
+	Existing bool   `json:"-"`
+	SHA256   string `json:"sha256"`
+	SHA1     string `json:"sha1"`
+	Size     int64  `json:"size"`
 }
 type Entry struct {
 	Path string `json:"path"`
@@ -82,7 +83,7 @@ func Path(p string) error {
 
 func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int64, body io.Reader) (Blob, error) {
 	b := Blob{SHA256: hash, Size: size}
-	if lineage == "" || !root.Hex(hash, 64) || size < -1 {
+	if lineage == "" || hash != "" && !root.Hex(hash, 64) || size < -1 {
 		return b, apierr.Invalid("invalid blob request")
 	}
 	if size > MaxBlob {
@@ -128,17 +129,30 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 			return b, e
 		}
 	}
-	if fmt.Sprintf("%x", h256.Sum(nil)) != hash {
+	if hash != "" && fmt.Sprintf("%x", h256.Sum(nil)) != hash {
 		return b, ErrHash
 	}
+	b.SHA256 = fmt.Sprintf("%x", h256.Sum(nil))
 	b.SHA1 = fmt.Sprintf("%x", h1.Sum(nil))
+	var exists int
+	e = r.DB.DB.QueryRowContext(ctx, "SELECT count(*) FROM lineage_blobs WHERE lineage=? AND sha1=?", lineage, b.SHA1).Scan(&exists)
+	b.Existing = exists > 0
+	if e == nil && !b.Existing {
+		b.Existing, e = r.Reachable(ctx, lineage, b.SHA1, "blob")
+	}
+	if e != nil {
+		return b, e
+	}
 	key := "o/" + b.SHA1
 
 	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f); e != nil {
 		return b, e
 	}
 
-	_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", lineage, hash, b.SHA1, size, time.Now().UnixMilli())
+	_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", lineage, b.SHA256, b.SHA1, size, time.Now().UnixMilli())
+	if e == nil {
+		e = r.Record(ctx, lineage, b.SHA1, "blob", &b)
+	}
 	return b, e
 }
 
@@ -253,10 +267,10 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 		old := map[string]Entry{}
 		if parent != "" {
 			entries, err := r.read(ctx, parent)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			if err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, os.ErrNotExist) {
 				return "", err
 			}
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) {
 				parent = ""
 			}
 			for _, entry := range entries {
@@ -298,6 +312,9 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 			}
 		}
 		if same {
+			if err := r.Record(ctx, q.Lineage, parent, "tree", nil); err != nil {
+				return "", err
+			}
 			return parent, nil
 		}
 		var buf bytes.Buffer
@@ -318,16 +335,19 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	if e != nil {
 		return out, e
 	}
-	// Store large trees before the transaction. Failed transactions can leave only
-	// harmless content-addressed objects, never a row referring to absent bytes.
-	for _, obj := range pending {
-		if len(obj.bytes) > InlineTree {
-
-			if err := (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, "t/"+obj.id, obj.bytes); err != nil {
-				return out, err
-			}
-
+	keys := make([]string, len(pending))
+	all := map[string][]byte{}
+	for i, obj := range pending {
+		keys[i] = obj.id
+		all[obj.id] = obj.bytes
+	}
+	if e = store.Parallel(ctx, 16, keys, func(id string) error {
+		if err := (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, "t/"+id, all[id]); err != nil {
+			return err
 		}
+		return r.Record(ctx, q.Lineage, id, "tree", nil)
+	}); e != nil {
+		return out, e
 	}
 	tx, e := r.DB.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -336,9 +356,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	defer tx.Rollback()
 	for _, obj := range pending {
 		var b any = obj.bytes
-		if len(obj.bytes) > InlineTree {
-			b = nil
-		}
+
 		res, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO objects VALUES(?,'tree',?,?,?)", obj.id, b, len(obj.bytes), time.Now().UnixMilli())
 		if err != nil {
 			return out, err
@@ -367,23 +385,13 @@ func (r *Repository) observe(query string) {
 }
 
 func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
-	var b []byte
 	if !root.Hex(id, 40) {
 		return nil, apierr.Invalid("invalid tree id")
 	}
 	r.observe("tree")
-	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='tree'", id).Scan(&b)
+	b, e := r.Object(ctx, id, "tree")
 	if e != nil {
 		return nil, e
-	}
-	if b == nil {
-		b, e = r.Store.Get(ctx, "t/"+id)
-		if e != nil {
-			return nil, e
-		}
-	}
-	if store.GitHash("tree", b) != id {
-		return nil, fmt.Errorf("corrupt tree")
 	}
 	entries := []Entry{}
 	for len(b) > 0 {
