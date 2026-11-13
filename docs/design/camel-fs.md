@@ -136,37 +136,49 @@ object by id without bytes only when that object is reachable from the caller's 
 "does anyone have this file". No code path anywhere checks existence and then skips a write without recording a
 touch (§1.9).
 
-### 1.2 Refs, leases and the working layer (DynamoDB)
+### 1.2 Refs, leases and fences (the lineage object); trees and commits (DynamoDB)
 
-| table | key | holds |
+**Decided (Miguel, 2026-11-13; detailed in [camel-fs-files.md](camel-fs-files.md) §6):** refs, their history, leases
+and fencing epochs live in the **per-lineage Durable Object's SQLite** (a `refs`/`ref_log` table pair with row locks
+per lineage on the Node backend); **trees and commits** live in DynamoDB, with cold generations packed to S3; blobs
+and chunks live in S3. An earlier revision of this section put the refs in DynamoDB too; the reasons it moved:
+every ref change already passes through a Durable Object (the agent's turn, a `HostJob`'s result, the API's
+request); Workers resolve ref → tree locally on every file-API call, and refs cannot be edge-cached since they are
+mutable, while trees and commits can be, by hash; one serial owner per lineage gives a transactional CAS, the fence
+and SQL history without a cross-store protocol; and the immutable objects stay next to the hosts in stores that
+scale without an owner.
+
+| where | key | holds |
 |---|---|---|
-| `refs` | `lineage`, `name` | `commit`, `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`; the lease when a VM holds the branch: `holder` (host id, host boot epoch, mount id), `leaseEpoch`, `leaseDeadline`; `dirtySeq`; `createdAt`, `updatedAt` |
-| `dirty` | `lineage#name`, `path` | the working layer of an API-held branch: `blob` (inline ≤ 256 KB, else S3), `mode`, `deleted`, `seq`; folded by checkpoint |
-| `objects` | `id` | trees and commits (content-addressed; a put is unconditional and idempotent), `generation` |
-| `touch` | `id` | an object named by id without bytes since the last mark began (§1.9); TTL = 2 × grace |
-| `warm` | `lineage`, `host` | the image files this host holds, with the host's boot epoch, for placement |
-| `lineages` | `lineage` | tenant, kind (`workspace` / `image`), quota, default branch, ignore list, last mark |
+| lineage object: `refs` | `name` | `commit`, `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`; the lease when a VM holds the branch: `holder` (host id, host boot epoch, mount id), `leaseEpoch`, `leaseDeadline`; `createdAt`, `updatedAt` |
+| lineage object: `ref_log` | `name`, `seq` | every move of a ref: from, to, who, when, why (what `history` reads before descending into commits) |
+| lineage object: head-tree cache, quota counters, watchers | | path → blob, mode, size for each ref's current version; bytes and files reachable at the heads; `notify` subscribers |
+| DynamoDB `objects` | `id` | trees and commits (content-addressed; a put is unconditional and idempotent), `generation` |
+| DynamoDB `touch` | `id` | an object named by id without bytes since the last mark began (§1.9); TTL = 2 × grace |
+| DynamoDB `warm` | `lineage`, `host` | the image files this host holds, with the host's boot epoch, for placement |
+| DynamoDB `lineages` | `lineage` | tenant, kind (`workspace` / `image`), quota, default branch, ignore list, last mark; the lineage object's id |
 
-A **lineage** is a volume plus everything made from it (forks, job views, cache entries, mirrors); it is the
-DynamoDB partition key and the unit of chunk sharing. DynamoDB's adaptive capacity splits a hot partition, so a
-swarm's thousand forks of one lineage are a burst it absorbs; a single branch is bounded by its one writer, not by
-the table. A **ref** is a name → commit inside a lineage.
+A **lineage** is a volume plus everything made from it (forks, job views, cache entries, mirrors); it is the object
+that owns its refs, the DynamoDB partition key of its objects' metadata, and the unit of chunk sharing. A single
+branch is bounded by its one writer; a swarm's thousand forks of one lineage are a thousand rows in one object,
+which its SQLite absorbs. A **ref** is a name → commit inside a lineage.
 
-**Every ref update is one fenced conditional write.** The condition names the expected `commit` **and** the lease
-state the writer believes in: an API writer requires `holder` absent; a host requires `holder = me` and
-`leaseEpoch = the epoch it took`. A merge that moves one ref and deletes another is one `TransactWriteItems`. A host
-that was partitioned from DynamoDB, lost its lease and comes back late fails its CAS on the epoch; it cannot land a
-version on a branch another mount has since taken (which gets a new epoch), and it cannot split the branch. A host
-that reboots gets a new boot epoch, and every lease carrying the old one is dead on sight. There are no other locks.
+**Every ref update is one fenced CAS**, one SQLite transaction in the lineage object. The condition names the
+expected `commit` **and** the lease state the writer believes in: an API writer requires `holder` absent; a host
+requires `holder = me` and `leaseEpoch = the epoch it took`. A merge that moves one ref and deletes another is one
+transaction. A host that was partitioned from the runtime, lost its lease and comes back late fails its CAS on the
+epoch; it cannot land a version on a branch another mount has since taken (which gets a new epoch), and it cannot
+split the branch. A host that reboots gets a new boot epoch, and every lease carrying the old one is dead on sight.
+There are no other locks. The working layer for API-held branches (an earlier `dirty` table) is gone: in the file
+model of camel-fs-files.md every API write is itself a commit, so an unheld branch is always durable and a mount
+never has rows to fold.
 
 **One writer per branch, fenced.** A branch is held either by a VM (`holder` names the host and mount; the host is
-the writer) or by nobody (the API is the writer, through `dirty`). The rules, all of them:
+the writer) or by nobody (the API is the writer, one commit per write). The rules, all of them:
 
-- Taking the lease: `holder` absent and `dirtySeq = foldedSeq` (no unfolded working-layer rows); a mount of a branch
-  with dirty rows checkpoints them first through the API, then takes the lease. A write racing the lease put is a
-  transaction `{ ConditionCheck refs.holder absent, Put dirty, Update refs.dirtySeq }`, so it either lands before
-  the lease (and is folded by the pre-mount checkpoint, which the host re-checks with a strongly consistent read
-  after its lease put) or fails.
+- Taking the lease: `holder` absent; the lease put and any API commit on the same branch serialize in the lineage
+  object, so a write racing the lease either lands as a commit before it (and the mount starts from that version) or
+  fails its fence after it.
 - While held, **every operation on the branch is routed to the holder or refused**: reads and writes are forwarded
   to the host and executed in the guest by `camel-guest` (a write's `expectBlob` is checked in the guest against
   the file's current hash, so edit tools keep read-modify-write safety); a merge *into* a held branch is refused with
@@ -180,18 +192,18 @@ the writer) or by nobody (the API is the writer, through `dirty`). The rules, al
 - Prototype v0 (§4) implements the fence and the refusal but **no forwarding**: the API writes only to unheld
   branches, and reads of a held branch answer the last published version, labelled stale.
 
-**Why DynamoDB, not Aurora or a Durable Object.** A DO would put the truth in another cloud from the hosts that need
-it on every checkpoint, and Miguel decided on AWS. Postgres (camelRun's Node backend already has one) would work:
-CAS is `UPDATE … WHERE commit = $old`, transactions are free, GC marks are SQL. It costs an instance to size and
-fail over (the RDS swapping and ~4-minute failover we have lived through), and at 100× it becomes a sharding project.
-DynamoDB gives conditional writes, transactions, single-digit-millisecond reads, point-in-time recovery and on-demand
-scaling with no instance to run; the data is key-value shaped (refs, rows, content-addressed objects), so losing SQL
-costs nothing on the hot path. The one thing it makes harder, enumerating objects for GC, is done from S3 Inventory
-(§1.9). Trees and commits live here rather than in S3 because they are small, hot and latency-bound: the
+**Why DynamoDB for trees and commits, and not Aurora or S3.** Postgres (camelRun's Node backend already has one)
+would work and costs an instance to size and fail over (the RDS swapping and ~4-minute failover we have lived
+through), and at 100× it becomes a sharding project; DynamoDB gives idempotent puts, single-digit-millisecond
+reads, point-in-time recovery and on-demand scaling with no instance to run, and content-addressed objects are
+key-value shaped. Trees and commits live here rather than in S3 because they are small, hot and latency-bound: the
 `artifacts-volumes` prototype measured the split between a database index and object storage for blobs as the
 difference between a 5 s and a 65 ms one-file commit on a large tree (its v1 kept packs and the fetch walk in R2;
 its v2 moved trees and commits into SQLite). WCU is per KB, so a top-level tree of 2–3 KB is 2–3 WCU; the cost
-section counts it.
+section counts it. The one thing DynamoDB makes harder, enumerating objects for GC, is done from S3 Inventory
+(§1.9). The refs did not stay here because a ref is mutable, per-lineage and written from a Durable Object on every
+path, which is exactly what the lineage object's SQLite is for; a camelFS deployed without camelRun would put them
+back in DynamoDB with conditional writes, and nothing else in this document changes.
 
 ### 1.3 Hosts: image files, the lazy origin, the checkpoint contract
 
