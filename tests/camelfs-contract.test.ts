@@ -153,11 +153,10 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
     const listing = await get<{ entries: { path: string; mode: string }[] }>(`/v0/trees/${checkpoint.tree}`);
     assert.deepEqual(listing.entries.map(entry => entry.path).sort(), ["README.md", "src/a.txt", "src/new/c.txt"]);
     assert.equal(listing.entries.find(entry => entry.path === "src/a.txt")?.mode, "100755");
-    if (checkpoint.commit) {
-      const commit = await get<{ trailers: Record<string, string> }>(`/v0/commits/${checkpoint.commit}`);
-      assert.equal(commit.trailers["Camel-Job"], "contract-1");
-      assert.equal(commit.trailers["Camel-Exit"], "0");
-    }
+    assert.match(checkpoint.commit, /^[a-f0-9]{40}$/, "the daemon answers the commit it wrote");
+    const commit = await get<{ trailers: Record<string, string> }>(`/v0/commits/${checkpoint.commit}`);
+    assert.equal(commit.trailers["Camel-Job"], "contract-1");
+    assert.equal(commit.trailers["Camel-Exit"], "0");
   });
   await timed("release", () => client.release("contract-1"));
   completed = true;
