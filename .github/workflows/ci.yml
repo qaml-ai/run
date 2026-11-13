@@ -387,7 +387,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/guest-image"
           docker run --rm --platform linux/amd64 \
             -v "$GITHUB_WORKSPACE:/src:ro" -v "$(go env GOROOT):/opt/go:ro" \
-            -v "$RUNNER_TEMP/guest-image:/out" -w /src amazonlinux:2023 bash -euc '
+            -v "$RUNNER_TEMP/guest-image:/out" -w /src amazonlinux:2023@sha256:3ccfbe800f864982b0a4e124a614b2382518cbd04b3c1cd35202bd46f392675b bash -euc '
               dnf -y -q install git gcc e2fsprogs jq zstd findutils
               git config --global --add safe.directory /src
               export PATH="/opt/go/bin:$PATH"
