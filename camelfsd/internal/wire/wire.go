@@ -63,21 +63,21 @@ type Header struct {
 	V        int     `json:"v"`
 	Kind     string  `json:"kind"`
 	JobID    string  `json:"jobId"`
-	BaseTree string  `json:"baseTree"`
-	FromTree string  `json:"fromTree"`
-	ToTree   string  `json:"toTree"`
-	WalkMs   float64 `json:"walkMs"`
+	BaseTree string  `json:"baseTree,omitempty"`
+	FromTree string  `json:"fromTree,omitempty"`
+	ToTree   string  `json:"toTree,omitempty"`
+	WalkMs   float64 `json:"walkMs,omitempty"`
 }
 type Op struct {
 	Path     string  `json:"path"`
 	Op       string  `json:"op"`
-	Mode     string  `json:"mode"`
-	Size     int64   `json:"size"`
-	Target   string  `json:"target"`
-	End      bool    `json:"end"`
-	Files    int     `json:"files"`
-	Bytes    int64   `json:"bytes"`
-	FreezeMs float64 `json:"freezeMs"`
-	Skipped  int     `json:"skipped"`
-	Error    string  `json:"error"`
+	Mode     string  `json:"mode,omitempty"`
+	Size     int64   `json:"size,omitempty"`
+	Target   string  `json:"target,omitempty"`
+	End      bool    `json:"end,omitempty"`
+	Files    int     `json:"files,omitempty"`
+	Bytes    int64   `json:"bytes,omitempty"`
+	FreezeMs float64 `json:"freezeMs,omitempty"`
+	Skipped  int     `json:"skipped,omitempty"`
+	Error    string  `json:"error,omitempty"`
 }

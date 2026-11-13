@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type counted struct {
@@ -102,5 +103,33 @@ func TestDescriptorLRUBounded(t *testing.T) {
 	}
 	if len(c.fds) != openLimit {
 		t.Fatal(len(c.fds))
+	}
+}
+
+// A background flight waiting for network capacity must not pin a demand read.
+func TestReadAtRefetchesMissingVerifiedFile(t *testing.T) {
+	s := &counted{b: make([]byte, root.ChunkSize), gate: make(chan struct{})}
+	s.b[0] = 39
+	close(s.gate)
+	c := New(t.TempDir(), s, 4)
+	defer c.Close()
+	h := root.Hash(s.b)
+	p, e := c.Ensure(h)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Model deletion outside the coordinated eviction path.
+	if e = os.Remove(p); e != nil {
+		t.Fatal(e)
+	}
+	got := make([]byte, 4096)
+	if e = c.ReadAt(h, got, 0); e != nil {
+		t.Fatal("missing verified path was not refetched", e)
+	}
+	if got[0] != 39 || s.n.Load() != 2 {
+		t.Fatal("wrong data or refetch count", got[0], s.n.Load())
+	}
+	if e = c.ReadAt(h, got, 0); e != nil || s.n.Load() != 2 {
+		t.Fatal("recovered hit fetched again", e, s.n.Load())
 	}
 }
