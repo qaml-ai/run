@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
@@ -21,7 +22,7 @@ type change struct {
 	Delete bool   `json:"delete,omitempty"`
 }
 type commitRequest struct {
-	Parent   *string           `json:"parent"`
+	Parents  []string          `json:"parents"`
 	BaseTree *string           `json:"baseTree,omitempty"`
 	Changes  []change          `json:"changes"`
 	Author   string            `json:"author"`
@@ -33,28 +34,43 @@ type commitRequest struct {
 func safeLine(s string) bool { return !strings.ContainsAny(s, "\r\n\x00") }
 func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRequest) (any, error) {
 	r = r.ForLineage(l)
+	if q.Parents == nil {
+		return nil, invalid("missing field parents")
+	}
+	parents := append([]string{}, q.Parents...)
+	if len(parents) > 2 {
+		return nil, invalid("parents: at most 2")
+	}
 	if len(q.Changes) > 10000 {
 		return nil, large("")
 	}
-	if q.Author == "" || !safeLine(q.Author) || strings.ContainsRune(q.Message, 0) {
-		return nil, bad("invalid_request")
+	if q.Author == "" || !safeLine(q.Author) {
+		return nil, invalid("author: required single line without NUL")
+	}
+	if strings.ContainsRune(q.Message, 0) {
+		return nil, invalid("message: NUL is forbidden")
 	}
 	base := ""
-	if q.Parent != nil {
-		if e := require(ctx, r, l, *q.Parent, "commit", true); e != nil {
+	for i, parent := range parents {
+		if !root.Hex(parent, 40) {
+			return nil, bad("unknown_commit")
+		}
+		if e := require(ctx, r, l, parent, "commit", true); e != nil {
 			return nil, e
 		}
-		c, e := readCommit(ctx, r, *q.Parent)
-		if e != nil {
-			return nil, e
+		if i == 0 {
+			c, e := readCommit(ctx, r, parent)
+			if e != nil {
+				return nil, e
+			}
+			base = c["tree"].(string)
 		}
-		base = c["tree"].(string)
 	}
 	if q.BaseTree != nil {
 		base = *q.BaseTree
 	}
 	if base != "" {
-		if e := require(ctx, r, l, base, "tree", true); e != nil {
+		if e := require(ctx, r, l, base, "tree", true, "baseTree"); e != nil {
 			return nil, e
 		}
 	}
@@ -82,13 +98,16 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	changed := 0
 	var bytes int64
 	for _, c := range q.Changes {
-		if objects.Path(c.Path) != nil || c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
-			return nil, bad("invalid_request")
+		if objects.Path(c.Path) != nil {
+			return nil, invalid("invalid path %s", c.Path)
+		}
+		if c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
+			return nil, invalid("invalid mode %s", c.Mode)
 		}
 		prev, exists := files[c.Path]
 		if c.Delete {
 			if c.Blob != "" || c.Mode != "" {
-				return nil, bad("invalid_request")
+				return nil, invalid("delete: blob and mode must be absent")
 			}
 			if exists {
 				delete(files, c.Path)
@@ -108,7 +127,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 			next.SHA256 = b.SHA256
 			bytes += b.Size
 		} else if !exists {
-			return nil, bad("invalid_request")
+			return nil, invalid("blob: required for new path %q", c.Path)
 		}
 		if c.Mode != "" {
 			next.Mode = c.Mode
@@ -122,8 +141,11 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		files[c.Path] = next
 	}
 	for k, v := range q.Trailers {
-		if k == "" || !safeLine(k) || strings.Contains(k, ":") || !safeLine(v) {
-			return nil, bad("invalid_request")
+		if k == "" || !safeLine(k) || strings.Contains(k, ":") {
+			return nil, invalid("invalid trailer key %s", k)
+		}
+		if !safeLine(v) {
+			return nil, invalid("invalid trailer value %s", k)
 		}
 	}
 	r = r.BeginPublication()
@@ -136,8 +158,8 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		now = *q.Time
 	}
 	body := "tree " + tr.Tree + "\n"
-	if q.Parent != nil {
-		body += "parent " + *q.Parent + "\n"
+	for _, parent := range parents {
+		body += "parent " + parent + "\n"
 	}
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n", q.Author, q.Author, now, now, q.Message)
 	keys := []string{}
@@ -155,7 +177,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if e = r.Flush(ctx); e != nil {
 		return nil, e
 	}
-	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes}, nil
+	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
 }
 func readCommit(ctx context.Context, r *objects.Repository, id string) (map[string]any, error) {
 	b, e := r.Object(ctx, id, "commit")
@@ -227,13 +249,13 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 	if lim != "" {
 		n, e := strconv.Atoi(lim)
 		if e != nil || n < 1 || n > 10000 {
-			return nil, bad("invalid_request")
+			return nil, invalid("limit: must be between 1 and 10000")
 		}
 		limit = n
 	}
 	if dir != "" {
 		if objects.Path(dir) != nil {
-			return nil, bad("invalid_request")
+			return nil, invalid("invalid path %s", dir)
 		}
 		for _, p := range strings.Split(dir, "/") {
 			es, e := r.ReadTree(ctx, id)
@@ -291,7 +313,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			}
 		}
 		if !found {
-			return nil, bad("invalid_request")
+			return nil, invalid("after: must name a path in the tree")
 		}
 	}
 	page := es[start:min(len(es), start+limit)]
@@ -393,7 +415,7 @@ type diffChange struct {
 
 func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) ([]diffChange, error) {
 	if prefix != "" && objects.Path(prefix) != nil {
-		return nil, bad("invalid_request")
+		return nil, invalid("invalid path %s", prefix)
 	}
 	out := []diffChange{}
 	var walk func(string, string, string) error
@@ -488,9 +510,11 @@ func (q *commitRequest) UnmarshalJSON(raw []byte) error {
 	if e := json.Unmarshal(raw, &fields); e != nil {
 		return e
 	}
-	if b, ok := fields["baseTree"]; ok && string(b) == "null" {
-		empty := ""
-		v.BaseTree = &empty
+	for name, b := range fields {
+		if strings.EqualFold(name, "baseTree") && string(b) == "null" {
+			empty := ""
+			v.BaseTree = &empty
+		}
 	}
 	*q = commitRequest(v)
 	return nil

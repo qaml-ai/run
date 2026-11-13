@@ -12,7 +12,7 @@ import (
 // Host lifecycle operations remain available only on the Unix socket.
 func (s *Server) RuntimeHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/") {
+		if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
 			s.ServeHTTP(w, r)
 			return
 		}

@@ -45,7 +45,7 @@ func TestCommitPublishesTreesAndCommitTogether(t *testing.T) {
 	st.mu.Unlock()
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		done <- callStorage(t, s, "l", "POST", "commits", commitRequest{Author: "a", Changes: []change{{Path: "a/b/c/d/file", Blob: blob}}}, "", 201)
+		done <- callStorage(t, s, "l", "POST", "commits", commitRequest{Parents: []string{}, Author: "a", Changes: []change{{Path: "a/b/c/d/file", Blob: blob}}}, "", 201)
 	}()
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(st.release) }) }
