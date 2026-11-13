@@ -2,7 +2,9 @@ package wire
 
 import (
 	"bytes"
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -13,7 +15,7 @@ func TestOptionalFieldsOmitted(t *testing.T) {
 		want  map[string]any
 	}{
 		{"trailer", Op{End: true}, map[string]any{"path": "", "op": "", "end": true}},
-		{"header", Header{V: 1, Kind: "apply", JobID: "first"}, map[string]any{"v": float64(1), "kind": "apply", "jobId": "first"}},
+		{"header", Header{V: 1, Kind: "apply", JobID: "first"}, map[string]any{"v": float64(1), "kind": "apply", "jobId": "first", "baseTree": "", "fromTree": "", "toTree": ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var frame bytes.Buffer
@@ -54,6 +56,18 @@ func TestOptionalFieldsRoundTripAndEmptyStrings(t *testing.T) {
 		}
 		if e := JSON(&frame, v); e != nil {
 			t.Fatal(e)
+		}
+	}
+}
+
+func TestHeaderKeepsEmptyTrees(t *testing.T) {
+	b, err := json.Marshal(Header{V: 1, Kind: "apply", JobID: "j"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"fromTree":""`, `"toTree":""`, `"baseTree":""`} {
+		if !strings.Contains(string(b), k) {
+			t.Fatalf("header must carry %s: %s", k, b)
 		}
 	}
 }

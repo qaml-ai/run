@@ -59,13 +59,15 @@ func Send(w io.Writer, v any) error {
 	return Write(w, b)
 }
 
+// Header fields are always present: the guest requires fromTree/toTree/baseTree even when empty ("" = no tree,
+// a lineage's first mount). Only Op's optional fields use omitempty.
 type Header struct {
 	V        int     `json:"v"`
 	Kind     string  `json:"kind"`
 	JobID    string  `json:"jobId"`
-	BaseTree string  `json:"baseTree,omitempty"`
-	FromTree string  `json:"fromTree,omitempty"`
-	ToTree   string  `json:"toTree,omitempty"`
+	BaseTree string  `json:"baseTree"`
+	FromTree string  `json:"fromTree"`
+	ToTree   string  `json:"toTree"`
 	WalkMs   float64 `json:"walkMs,omitempty"`
 }
 type Op struct {
