@@ -13,16 +13,23 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
 
 type Server struct {
+	APIToken       string
+	idemMu         sync.Mutex
 	Manager        *image.Manager
 	Version, Store string
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		s.storage(w, r)
+		return
+	}
 	t := time.Now()
 	id := ""
 	defer func() {
