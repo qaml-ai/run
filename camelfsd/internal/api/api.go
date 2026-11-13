@@ -137,7 +137,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fail(e)
 				return
 			}
-			reply(200, map[string]any{"applied": v.Applied, "applyMs": v.ApplyMs, "state": v.State, "image": v.Image, "root": v.Root, "hydratedRegions": v.HydratedRegions, "totalRegions": v.TotalRegions, "fence": v.Fence})
+			reply(200, map[string]any{"applied": v.Applied, "applyMs": v.ApplyMs, "state": v.State, "image": v.Image, "root": v.Root, "hydratedBytes": v.HydratedBytes, "totalBytes": v.TotalBytes, "swapMs": v.SwapMs, "hydrating": v.Hydrating, "hydrationError": v.HydrationError, "fence": v.Fence})
 		} else if len(parts) == 1 && r.Method == "DELETE" {
 			p, e := m.Release(r.Context(), id)
 			if e != nil {

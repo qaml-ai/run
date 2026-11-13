@@ -48,8 +48,8 @@ func (s *limited) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	}
 	r, e := OpenReader(ctx, s.Store, key)
 	if e != nil {
-		s.release()
+		s.release(ctx)
 		return nil, e
 	}
-	return &leasedReader{ReadCloser: r, release: s.release}, nil
+	return &leasedReader{ReadCloser: r, release: func() { s.release(ctx) }}, nil
 }

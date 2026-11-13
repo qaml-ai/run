@@ -67,89 +67,65 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e != nil {
 		return out, e
 	}
-	if v.DM != "" {
-		for _, msg := range []string{"hydration_batch_size 64", "hydration_threshold 64", "enable_hydration"} {
-			if _, e = run(ctx, "dmsetup", "message", v.DM, "0", msg); e != nil {
+	if e = m.awaitHydration(ctx, v); e != nil {
+		return out, e
+	}
+	var ranges []chunk.Range
+	snap := v.preparedSnapshot
+	if snap != "" {
+		ranges = v.preparedRanges
+		v.preparedSnapshot = ""
+		v.preparedRanges = nil
+	} else {
+		suspended := false
+		if v.DM != "" {
+			if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
 				return out, e
 			}
+			suspended = true
 		}
-		pollStart := time.Now()
-		deadline := pollStart.Add(5 * time.Minute)
-		for {
-			if e = m.status(ctx, v); e != nil {
-				return out, e
-			}
-			if v.State == "hydrated" {
-				break
-			}
-			if time.Now().After(deadline) {
-				return out, fmt.Errorf("hydration timeout")
-			}
-			select {
-			case <-ctx.Done():
-				return out, ctx.Err()
-			case <-time.After(hydrationInterval(time.Since(pollStart))):
-			}
-		}
-		if v.early != nil && !v.earlyConsumed {
-			select {
-			case <-v.early.done:
-				if v.early.err != nil {
-					return out, v.early.err
+		defer func() {
+			if suspended {
+				_, re := resumeDM(v.DM)
+				if err == nil {
+					err = re
 				}
-			case <-ctx.Done():
-				return out, ctx.Err()
 			}
-		}
-	}
-	suspended := false
-	if v.DM != "" {
-		if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
-			return out, e
-		}
-		suspended = true
-	}
-	defer func() {
-		if suspended {
-			_, re := run(context.Background(), "dmsetup", "resume", v.DM)
-			if err == nil {
-				err = re
-			}
-		}
-	}()
+		}()
 
-	f, e := os.OpenFile(v.Dest, os.O_RDWR, 0)
-	if e != nil {
-		return out, e
-	}
-	defer f.Close()
-	if e = f.Sync(); e != nil {
-		return out, e
-	}
-	ft := time.Now()
-	ranges, e := changedRanges(f, r.VirtualSize, r.Chunks)
-	if e != nil {
-		return out, e
-	}
-	out.FiemapMs = ms(ft)
-	v.pendingRanges = append(v.pendingRanges, ranges...)
-	if v.early != nil && !v.earlyConsumed {
-		v.pendingRanges = append(v.pendingRanges, v.early.ranges...)
-	}
-	ranges = v.pendingRanges
-	rt := time.Now()
-	v.Snapshot++
-	snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
-	if e = clone(v.Dest, snap); e != nil {
-		return out, e
-	}
-	out.ReflinkMs = ms(rt)
-	if suspended {
-		_, e = run(context.Background(), "dmsetup", "resume", v.DM)
+		v.Snapshot++
+		snap = filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
+		rt := time.Now()
+		if v.DM != "" {
+			ranges, e = snapshotCopy(ctx, v.Dest, filepath.Join(filepath.Dir(v.Dest), "cow.img"), snap, r.VirtualSize)
+		} else {
+			f, err := os.OpenFile(v.Dest, os.O_RDWR, 0)
+			if err != nil {
+				return out, err
+			}
+			e = f.Sync()
+			if e == nil {
+				ranges, e = changedRanges(f, r.VirtualSize, r.Chunks)
+			}
+			f.Close()
+			if e == nil {
+				e = clone(v.Dest, snap)
+			}
+		}
 		if e != nil {
+			os.Remove(snap)
 			return out, e
 		}
-		suspended = false
+		v.pendingRanges = append(v.pendingRanges, ranges...)
+		ranges = v.pendingRanges
+		out.ReflinkMs = ms(rt)
+		if suspended {
+			_, e = resumeDM(v.DM)
+			if e != nil {
+				return out, e
+			}
+			suspended = false
+		}
 	}
 	sf, e := os.Open(snap)
 	if e != nil {
@@ -230,10 +206,6 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		return out, e
 	}
 	v.pendingRanges = nil
-	v.earlyConsumed = true
-	if v.early != nil {
-		v.early.ranges = nil
-	}
 	v.Parent = set
 	v.Root = out.Root
 	v.Tree = tree
@@ -307,7 +279,7 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 		pending = map[string][]byte{}
 		return e
 	}
-	e = (chunk.Chunker{}).File(f, st.Size(), func(o int64, h string, b []byte) error {
+	e = (chunk.Chunker{}).Data(f, st.Size(), func(o int64, h string, b []byte) error {
 		if h != "" {
 			r.Chunks[strconv.FormatInt(o, 10)] = h
 			pending[h] = append([]byte(nil), b...)
