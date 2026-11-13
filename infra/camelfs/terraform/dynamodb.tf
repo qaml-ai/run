@@ -9,9 +9,12 @@
 # whole contract this module imposes — everything else about an item is the daemon's):
 #   objects     lineage (S) + id (S)    id = "<kind>/<sha1>" (t/ trees, k/ commits); b (git bytes), generation
 #   refs        lineage (S) + name (S)  version, tree, root?, owner, expiresAt?, holder, leaseEpoch, leaseDeadline,
-#                                        updatedAt; a move is one conditional UpdateItem whose condition is the
-#                                        parent rule (version = parents[0]) and the lease state the writer believes in
-#   lineages    lineage (S)             tenant, kind, quota, default branch, ignore list, last mark
+#                                        updatedAt; the tier checks the move rules first (camel-fs-files.md §6:
+#                                        a new commit's parents[0] is current; a move to a recorded commit is a
+#                                        fast-forward via is-ancestor), then one conditional UpdateItem on
+#                                        version = :expect plus the lease state the writer believes in
+#   lineages    lineage (S)             tenant, kind, default branch, ignore list; the mark: markedBytes,
+#                                        markedAt, writtenSince (option B, #973)
 #   deliveries  shard (S) + id (S)      the outbox: a watched ref's move, vm.* and usage.* events, written in the
 #                                        same TransactWriteItems as the state change; shard = "0".."15" so claimers
 #                                        Query a bounded set of partitions (a lineage key would leave pending work
