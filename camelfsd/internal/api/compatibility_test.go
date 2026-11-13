@@ -28,7 +28,7 @@ func TestPhase1MountFenceCompatibility(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	m, e := image.New(image.Config{Data: data, Cold: "prehydrate", HostID: "phase1-host", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(data, "cache"), st, 4), db)
+	m, e := image.New(image.Config{Data: data, HostID: "phase1-host", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(data, "cache"), st, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}

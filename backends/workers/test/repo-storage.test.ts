@@ -186,25 +186,15 @@ test("redacted structured errors, transport errors, verification and response bo
   await assert.rejects(make(async () => new Response("broken", { headers: { "content-type": "multipart/mixed; boundary=x" } })).readBatch(lineage, EMPTY_TREE, ["a"]), isError(200, "invalid_response"));
 });
 
-test("commit speaks the deployed daemon's single-parent shape and fills parents/time it omits; failures name their call", async () => {
-  const bodies: any[] = [];
-  // The deployed camelfsd (#932): `parent`, unknown fields refused, no parents/time in the 201.
-  const daemon = async (request: Request) => {
-    const body = await request.json() as Record<string, unknown>;
-    bodies.push(body);
-    if ("parents" in body && !Array.isArray(body.parents)) throw new Error("unexpected");
-    if ("parents" in body) return Response.json({ error: { code: "invalid_request", message: "unknown field parents" } }, { status: 400 });
-    return Response.json({ tree: EMPTY_TREE, commit: "c".repeat(40), changed: 0, bytes: 0 }, { status: 201 });
-  };
-  const plane = camelfsStorage({ CAMELFS: { fetch: (input, init) => daemon(new Request(input, init)) }, CAMELFS_API_TOKEN: "t".repeat(32) });
-  const first = await plane.commit("l", { parents: [], changes: [], author: "api:t", message: "create", trailers: {}, time: 1700000000 });
-  assert.deepEqual([first.parents, first.time], [[], 1700000000]);
-  assert.equal(bodies[0].parent, null);
-  assert.ok(!("parents" in bodies[0]));
-  const next = await plane.commit("l", { parents: ["a".repeat(40)], changes: [], author: "api:t", message: "m", trailers: {} });
-  assert.deepEqual(next.parents, ["a".repeat(40)]);
-  assert.equal(bodies[1].parent, "a".repeat(40));
-  assert.ok(Number.isSafeInteger(next.time));
-  await assert.rejects(plane.commit("l", { parents: ["a".repeat(40), "b".repeat(40)], changes: [], author: "api:t", message: "m", trailers: {} }),
-    (e: unknown) => e instanceof StorageError && e.op === "commit" && e.code === "invalid_request" && e.reason === "unknown field parents");
+test("the fake refuses fields the daemon refuses, and a refused call names itself and the daemon's reason", async () => {
+  const fake = fakeCamelfsd("t".repeat(32));
+  const plane = camelfsStorage({ CAMELFS: { fetch: (input, init) => fake.fetch(new Request(input, init)) }, CAMELFS_API_TOKEN: "t".repeat(32) });
+  const root = await plane.commit("l", { parents: [], changes: [], author: "api:t", message: "create", trailers: {}, time: 1700000000 });
+  assert.deepEqual([root.parents, root.time], [[], 1700000000]);
+  await assert.rejects(plane.commit("l", { parents: [root.commit], parent: root.commit, changes: [], author: "api:t", message: "m", trailers: {} } as never),
+    (e: unknown) => e instanceof StorageError && e.op === "commit" && e.code === "invalid_request" && e.reason === "unknown field parent");
+  const raw = await fake.fetch(new Request("http://camelfs/v1/lineages/l/commits", { method: "POST", headers: { authorization: `Bearer ${"t".repeat(32)}` },
+    body: JSON.stringify({ changes: [], author: "a", message: "m", trailers: {}, time: 1 }) }));
+  assert.equal(raw.status, 400);
+  assert.deepEqual(((await raw.json()) as { error: { message: string } }).error.message, "missing field parents");
 });

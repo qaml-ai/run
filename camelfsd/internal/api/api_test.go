@@ -28,7 +28,7 @@ func TestLifecycleAndTree(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	m, e := image.New(image.Config{Data: data, Cold: "prehydrate", HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
+	m, e := image.New(image.Config{Data: data, HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -104,14 +104,7 @@ func TestLifecycleAndTree(t *testing.T) {
 	}
 	call("GET", "/v0/health", nil, 200)
 	call("POST", "/v0/images", map[string]any{"lineage": "l", "name": "x", "path": "/etc/passwd"}, 400)
-	os.Remove(mount["image"].(string))
-	os.Remove(filepath.Join(data, "images", got+".img"))
-	cold := call("POST", "/v0/mounts", map[string]any{"jobId": "cold", "lineage": "l", "root": got}, 200)
-	content, e := os.ReadFile(cold["image"].(string))
-	if e != nil || string(content[root.ChunkSize+7:root.ChunkSize+14]) != "changed" {
-		t.Fatal(e)
-	}
-	call("DELETE", "/v0/mounts/cold", nil, 200)
+
 }
 
 func TestErrorStatusUsesTypes(t *testing.T) {
@@ -140,7 +133,7 @@ func TestFenceOwnership(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	m, e := image.New(image.Config{Data: data, Cold: "prehydrate", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(data, "cache"), st, 4), db)
+	m, e := image.New(image.Config{Data: data, VirtualSize: 16 << 20}, st, cache.New(filepath.Join(data, "cache"), st, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}

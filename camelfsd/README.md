@@ -5,8 +5,8 @@ Git blobs, trees and commits, sparse ext4 roots and 256 KiB chunks. RepoDO owns
 refs, leases, fences and every CAS. The daemon never creates or advances a ref,
 renews a lease, mounts an ext4 filesystem or walks guest files.
 
-This branch contains units 1–6 and the unit 9 storage API. It does not include
-the unit 7/8 cold-path or pack work.
+This branch contains units 1–6, the unit 7b cold path and the unit 9 storage API.
+Packs and ublk remain v1 work (L19). Unit 7b fixes L76 and L2.
 
 Build on Linux with Go 1.24+, a C compiler (SQLite), and Linux headers:
 
@@ -19,14 +19,16 @@ gofmt -l .
 ```
 
 Host image operations require FICLONE under --data (normally XFS with reflink).
-Clone mode also requires NBD/dm-clone modules, nbd-client, losetup, dmsetup and
-root. prehydrate mode materializes the complete image before returning.
+Image import hashes only chunks intersecting SEEK_DATA/SEEK_HOLE extents.
+Unsupported filesystems fall back to scanning the image.
+Cold mounts require NBD and dm-snapshot modules, nbd-client, losetup, dmsetup
+and root. Hydration always runs in the background.
 CAMELFSD_TEST_NO_REFLINK=1 is for unprivileged tests: it uses copies and hashes
 whole images. Privileged loop/reflink tests skip when unsupported.
 
 ```sh
 /tmp/camelfsd host --socket /run/camelfsd/api.sock --data /nvme/camelfs \
-  --store s3://bucket/prefix --region us-west-2 --cold clone \
+  --store s3://bucket/prefix --region us-west-2 \
   --listen-api 127.0.0.1:8790 --api-token-file /run/camelfsd/token
 ```
 
@@ -239,16 +241,66 @@ Bad streams return 422 bad-stream, timeouts 504 stream-timeout. Host errors
 retain {error,detail}. Checkpoint messages/trailers retain their existing
 validation and Camel-* mapping.
 
-Checkpoint syncs the image, collects FIEMAP private extents before reflinking,
-hashes changed ranges from the snapshot, and uploads chunks and roots.
-Cold checkpoint waits for hydration and the early-write comparison.
-dm-clone suspension covers FIEMAP and reflinking, not hashing or upload.
-Release promotes a hydrated snapshot only after a completed clean comparison.
-It never hashes the image. Read-only verification mounts of frozen snapshots
-must use -o loop,ro,noload to avoid journal replay.
+## Cold path
 
-The shared store budget defaults to 64 operations (--fetch-depth); prefetch
-lookahead is separately 64. Prehydrate uses 32 aligned windows, default 4 MiB.
+A warm mount is a writable reflink of `images/<root>.img`. A cold mount returns
+`/dev/mapper/<prefix>-<jobId>` with `warm: false` and
+`hydrating: true`. The accepted `hydrate` request field is ignored.
+Before returning a cold mount, the daemon prefetches ext4 chunk 0, group
+descriptors, group 0's inode table and bitmaps, and the root directory's first
+block. Locations come from the superblock, descriptor and inode block mapping;
+the journal superblock is included for the usual internal journal. The
+verified cache serves these reads to NBD and later hydration without another
+fetch. Unsupported layouts such as meta_bg keep lazy reads.
+There is one cold path; `--cold` and `--hydration-pack-size` are removed.
+
+The guest device is a persistent dm-snapshot with 512 KiB chunks. Its COW
+store is a loop over sparse `mounts/<jobId>/cow.img`. `--cow-max` caps the
+COW file's logical size, defaulting to the root's virtual size. Metadata
+uses some capacity; filling the store invalidates the snapshot. Its origin
+is a separate dm-linear device named `<prefix>-<jobId>-o`, initially over
+the read-only NBD root export.
+
+The daemon writes every non-hole 256 KiB root chunk into sparse `image.img`
+with up to 64 workers. Cached chunks are reused; fetched chunks are hash
+verified. Holes require no reads or writes. After fsync, the daemon suspends
+the linear origin, reloads it over a loop of `image.img`, resumes it, and
+detaches NBD. The snapshot and guest retain the same bytes. Subsequent reads
+use only the kernel, loops and local disk. There is no post-hydration scan.
+Status progresses from `cold` through `hydrating` to `hydrated` after the
+swap, with `hydratedBytes`, `totalBytes`, and `swapMs`. Byte counts describe
+non-hole data, independent of the virtual size. Hydration errors are exposed
+as `hydrationError`; checkpoint fails rather than publishing partial data.
+
+Cold checkpoint waits for hydration (normally seconds). The guest stream
+waits before sending ready. While the guest is frozen, the daemon suspends
+the snapshot and parses the persistent exception store: little-endian v1
+header and old/new chunk pairs in metadata areas. It reflinks `image.img`
+and applies COW exceptions to that copy before resuming and acknowledging
+the guest. Reads submitted to a suspended snapshot queue, so capture reads
+the COW offsets directly; this gives identical bytes without deadlock.
+Hashing the candidate 256 KiB chunks and upload happen after resume. Equal
+hashes are excluded from the delta, including on repeated checkpoints.
+Promotion preserves holes by punching all-zero chunks in the reflink copy.
+The format is documented in Linux `drivers/md/dm-snap-persistent.c`:
+https://github.com/torvalds/linux/blob/master/drivers/md/dm-snap-persistent.c
+
+Release removes the snapshot, then its linear origin, detaches loops and any
+remaining NBD attachment, and deletes the mount directory. Completed hydration
+promotes the immutable base `image.img` under its original root id without
+hashing. Checkpoint images are promoted under their new root ids separately.
+`camelfsd cleanup` removes both devices after a crash; stop guests first.
+
+Discards do not pass from dm-snapshot to its origin. Guest `fstrim` on a
+cold-started mount is a no-op. Space is reclaimed in promoted reflink plus
+delta images, with holes preserved. Warm reflink mounts keep punch-hole
+reclamation.
+
+The shared store budget defaults to 64 operations (`--fetch-depth`). All
+speculative fetches share a smaller budget, reserving eight slots for demand
+at the default depth. The cache also reserves slots. At depth one operations
+serialize. Prefetch lookahead is separately 64. A reserved slot cannot remove
+NIC or disk contention; demand latency targets need measurement on the host.
 A per-root bounded prefetch pool records first-touch patterns at release.
 The cache verifies fetched chunks and keeps a 256-entry open-file LRU.
 Eviction runs every minute and before cold mounts cross 80% disk usage,
@@ -261,5 +313,18 @@ Automatic mount recovery remains a later unit. Privileged smoke scripts
 require the host availability gate and must only be run with human approval.
 The unit-3 smoke uses explicit fences and tree mounts instead of forks.
 
+Reviewer validation: `scripts/ec2-unit7.sh SOCKET DATA SOURCE_IMAGE [FIRST_FILE]`
+runs against a disposable, already running daemon. It removes only imported
+benchmark images to force cold mounts. Use a fresh daemon/data directory for
+cold-cache trials. It reports the same 65 MiB of data at 1 and 16 GiB and the
+large source root at 4, 16 and 64 GiB, swap time, hydration bytes, sampled
+demand latency, and optional first-file time including filesystem mount.
+Whole-device SHA-256 is compared after swap. Three raw chunk edits check the
+checkpoint delta; a second checkpoint checks that unchanged exceptions do
+not upload again. This harness does not measure a three-file guest stream
+checkpoint. Use the loop guest-cycle tests for guest protocol coverage.
+No real-host performance or COW integrity result is claimed until a reviewer
+runs the root tests and harness. The demand samples include NBD misses and
+cache hits; they are not an isolated cache-hit microbenchmark.
 Host /v0 tree, blob and commit GETs now require ?lineage=NAME. The development
 CLI tree and cat commands take --lineage NAME before the tree id.

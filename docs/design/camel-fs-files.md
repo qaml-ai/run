@@ -437,7 +437,14 @@ not_in_tree` and no body. Limits: 256 paths, 64 MiB total (`413 too_large` with 
 two for a merge); `baseTree` defaults to `parents[0]`'s tree (the empty tree when there are none), and a **merge
 commit** is `parents: [ours, theirs]`, `baseTree` = 9.5's merged tree, `changes: []`; **`changes: []` is allowed**
 (a `checkpoint(message)` on an unheld ref, or a `restore`, whose `baseTree` is the old version's tree); every `blob`
-named must already be in the lineage (from 9.1 or an earlier tree of this lineage), else `400 unknown_blob`; a
+named must already be in the lineage (from 9.1 or an earlier tree of this lineage), else `400 unknown_blob`.
+**Validation is strict on both sides of the wire** (L86, after unit 9 shipped `parent` singular against this
+section's `parents[]` and the runtime's lenient fake let every pilot write `400`): `parents` is required, an array,
+empty only for a root commit, and its absence is `400 invalid_request`, never a default; unknown fields in the
+request are rejected with `400 invalid_request` naming the field; the reply always carries `parents` and `time`
+exactly as committed; and the runtime's fake of this contract rejects what the daemon rejects, so a test that
+passes against the fake passes against the daemon. The real-daemon contract test covers every call in this
+section. A
 `mode`-only change keeps the blob; a `delete` of a missing path is a no-op; the new trees (only those on changed
 paths), the commit (git's bytes, `committer camelfs`, the trailers in the message) are written to S3 **before** the
 response. `time` (unix seconds) is chosen by the runtime and is part of the commit, so the commit id is a pure
