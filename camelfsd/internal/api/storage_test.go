@@ -181,7 +181,7 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 	}
 	local := st.Store.(store.Local)
 	_ = store.Atomic(filepath.Join(local.Dir, "t", tree), []byte("corrupt"))
-	callStorage(t, fresh, "a", "GET", "trees/"+tree, nil, "", 503)
+	callStorage(t, fresh, "a", "GET", "trees/"+tree, nil, "", 500)
 }
 func TestStorageBatchGrepAndDiff(t *testing.T) {
 	s := storageServer(t, store.Local{Dir: t.TempDir()})

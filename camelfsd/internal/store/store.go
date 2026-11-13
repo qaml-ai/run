@@ -97,11 +97,11 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
 	case Local:
 		dst := filepath.Join(v.Dir, key)
 		if e := os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
-			return e
+			return ioFailure(e)
 		}
 		tmp, e := os.CreateTemp(filepath.Dir(dst), ".tmp-")
 		if e != nil {
-			return e
+			return ioFailure(e)
 		}
 		defer os.Remove(tmp.Name())
 		_, e = io.Copy(tmp, f)
@@ -113,13 +113,13 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
 			e = ce
 		}
 		if e != nil {
-			return e
+			return ioFailure(e)
 		}
-		return os.Rename(tmp.Name(), dst)
+		return ioFailure(os.Rename(tmp.Name(), dst))
 	case *S3:
 		k := v.key(key)
 		_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f})
-		return e
+		return ioFailure(e)
 	default:
 		b, e := io.ReadAll(f)
 		if e != nil {
@@ -132,7 +132,8 @@ func (l Local) Get(c context.Context, k string) ([]byte, error) {
 	if !valid(k) {
 		return nil, fmt.Errorf("invalid key")
 	}
-	return os.ReadFile(filepath.Join(l.Dir, k))
+	b, e := os.ReadFile(filepath.Join(l.Dir, k))
+	return b, ioFailure(e)
 }
 func (l Local) Has(c context.Context, k string) (bool, error) {
 	if !valid(k) {
@@ -142,13 +143,13 @@ func (l Local) Has(c context.Context, k string) (bool, error) {
 	if os.IsNotExist(e) {
 		return false, nil
 	}
-	return e == nil, e
+	return e == nil, ioFailure(e)
 }
 func (l Local) Put(c context.Context, k string, b []byte) error {
 	if e := verify(k, b); e != nil {
 		return e
 	}
-	return Atomic(filepath.Join(l.Dir, k), b)
+	return ioFailure(Atomic(filepath.Join(l.Dir, k), b))
 }
 func Atomic(p string, b []byte) error {
 	if e := os.MkdirAll(filepath.Dir(p), 0700); e != nil {
@@ -221,13 +222,14 @@ func (s *S3) Get(c context.Context, k string) ([]byte, error) {
 	o, e := s.Client.GetObject(c, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &key})
 	var missing *types.NoSuchKey
 	if errors.As(e, &missing) {
-		return nil, os.ErrNotExist
+		return nil, ioFailure(os.ErrNotExist)
 	}
 	if e != nil {
-		return nil, e
+		return nil, ioFailure(e)
 	}
 	defer o.Body.Close()
-	return io.ReadAll(o.Body)
+	b, e := io.ReadAll(o.Body)
+	return b, ioFailure(e)
 }
 func (s *S3) Has(c context.Context, k string) (bool, error) {
 	if !valid(k) {
@@ -239,7 +241,7 @@ func (s *S3) Has(c context.Context, k string) (bool, error) {
 	if errors.As(e, &nf) {
 		return false, nil
 	}
-	return e == nil, e
+	return e == nil, ioFailure(e)
 }
 func (s *S3) Put(c context.Context, k string, b []byte) error {
 	if e := verify(k, b); e != nil {
@@ -247,7 +249,7 @@ func (s *S3) Put(c context.Context, k string, b []byte) error {
 	}
 	key := s.key(k)
 	_, e := s.Client.PutObject(c, &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)})
-	return e
+	return ioFailure(e)
 }
 func Parallel(ctx context.Context, n int, items []string, fn func(string) error) error {
 	if n < 1 {
@@ -370,10 +372,10 @@ func (s *S3) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	out, e := s.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &k})
 	var missing *types.NoSuchKey
 	if errors.As(e, &missing) {
-		return nil, os.ErrNotExist
+		return nil, ioFailure(os.ErrNotExist)
 	}
 	if e != nil {
-		return nil, e
+		return nil, ioFailure(e)
 	}
-	return out.Body, nil
+	return storeReader{out.Body}, nil
 }

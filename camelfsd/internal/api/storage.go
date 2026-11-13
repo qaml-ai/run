@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +47,7 @@ func jsonReply(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func storageFail(w http.ResponseWriter, e error) {
-	status, code, details := 503, "unavailable", any(nil)
+	status, code, details := 500, "internal", any(nil)
 	var se *storageError
 	var ae *apierr.Error
 	if errors.As(e, &se) {
@@ -58,8 +59,13 @@ func storageFail(w http.ResponseWriter, e error) {
 		}
 	} else if errors.Is(e, objects.ErrHash) {
 		status, code = 400, "blob_mismatch"
+	} else if errors.Is(e, store.ErrUnavailable) {
+		status, code = 503, "unavailable"
 	} else if errors.Is(e, objects.ErrIgnored) {
 		status, code = 400, "invalid_request"
+	}
+	if status == 500 {
+		log.Printf("op=storage error=%v", e)
 	}
 	v := map[string]any{"code": code, "message": code}
 	if details != nil {

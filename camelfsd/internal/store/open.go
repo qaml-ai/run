@@ -29,7 +29,11 @@ func (l Local) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	if e := ctx.Err(); e != nil {
 		return nil, e
 	}
-	return os.Open(filepath.Join(l.Dir, key))
+	f, e := os.Open(filepath.Join(l.Dir, key))
+	if e != nil {
+		return nil, ioFailure(e)
+	}
+	return storeReader{f}, nil
 }
 func (s *Uploaded) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	return OpenReader(ctx, s.Store, key)
