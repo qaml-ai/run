@@ -463,7 +463,27 @@ not move any ref; the caller performs `RepoDO.cas(ref, expect, commit, fence, ro
 
 `GET /v1/lineages/{lineage}/diff?from=<tree>&to=<tree>&path=<prefix>` →
 `{ "changes": [ { "path", "status": "added" | "modified" | "deleted" | "mode", "oldBlob"?, "newBlob"?, "oldMode"?,
-"newMode"? } ] }`, O(changed), descending only into subtrees whose ids differ.
+"newMode"?, "oldSize"?, "newSize"? } ] }`, O(changed), descending only into subtrees whose ids differ; each size is
+absent on the side with no blob and comes from the tree entries the diff already loaded, so the repo object sizes its
+head cache from the diff instead of re-listing every changed directory.
+
+**Single-entry lookup and history questions** (unit 12, from the repo object's ranked needs; before them it stat'ed a
+file at a non-head version by listing its directory recursively and authorized a pre-fork attachment by walking
+commits one at a time):
+
+`GET /v1/lineages/{lineage}/trees/{tree}/entry?path=<path>` → `{ "path", "mode", "blob", "size" }` for a file or
+symlink, `{ "path", "mode": "040000", "tree" }` for a directory, `404 not_in_tree` otherwise; an O(depth) descent,
+no listing.
+
+`GET /v1/lineages/{lineage}/commits/{a}/is-ancestor?of=<b>` → `{ "ancestor": true | false }`: true when `a == b` or
+`a` is reachable from `b` through parents; both must be commits of the lineage, else `404 not_found` naming which.
+
+`GET /v1/lineages/{lineage}/merge-base?a=<commit>&b=<commit>` → `{ "base": "<commit>" | null, "tree": "<tree>" |
+null }`: git's best common ancestor; several candidates → the latest `time`, then id; `null` when the histories are
+disjoint.
+
+Both walks are bounded at 50,000 commits visited and answer `413 too_deep` past that, so a pathological history
+cannot hold a request open; the repo object treats `too_deep` as "not provable", never as "not an ancestor".
 
 ### 9.5 Merge
 
@@ -529,8 +549,10 @@ the image; the ref record carries `root?` (§6).
 | `invalid_request` | 400 | malformed JSON, bad id, unnormalized path, unknown mode |
 | `unknown_blob` / `unknown_tree` / `unknown_commit` | 400 | an id the lineage cannot reach is named in a write |
 | `not_in_tree` | 404 | a read whose (tree, path) does not resolve to the requested blob, or a tree this lineage does not have |
+| `not_found` | 404 | a commit named in a history question (`is-ancestor`, `merge-base`) that this lineage does not have; the body names which |
 | `blob_mismatch` | 400 | `X-Camel-Sha256` did not match the bytes received |
 | `too_large` | 413 | a blob over the single-PUT cap, a batch over 256 paths or 64 MiB, a commit over 10,000 changes |
+| `too_deep` | 413 | a history walk (`is-ancestor`, `merge-base`) past 50,000 commits visited; not provable, not a negative answer |
 | `conflict` | 409 | a merge with conflicts (body lists them) |
 | `no_fence` | 409 | a checkpoint on a mount without a fence |
 | `unavailable` | 503 | S3 or the host's store unreachable; safe to retry with the same `Idempotency-Key` |
