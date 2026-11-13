@@ -47,7 +47,7 @@ test("camelFS contract: runtime import, jobhost proxy and guest against real cam
   const daemon = spawn(binary, ["host", "--socket", socketPath, "--data", join(dir, "data"),
     "--store", join(dir, "store"), "--nbd-listen", `127.0.0.1:${port}`,
     "--listen-api", `127.0.0.1:${apiPort}`, "--api-token-file", tokenFile,
-    "--virtual-size", String(16 * 1024 * 1024)], {
+    "--cold", "prehydrate", "--virtual-size", String(16 * 1024 * 1024)], {
     env: { ...process.env, CAMELFSD_TEST_NO_REFLINK: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let logs = "", spawnError: Error | undefined, completed = false;
