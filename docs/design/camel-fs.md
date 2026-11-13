@@ -229,17 +229,26 @@ and dm-clone both take.
 3. The guest mounts ext4 (`-O ^inline_data`, `data=ordered`, the journal in its own region so it dirties the same few
    chunks every time) and runs.
 
-**Cold host (the image file is absent).** The host creates a sparse destination file of the image's virtual size,
-exposes it as a loop device, and builds `dm-clone(source = lazy origin, destination = loop, region = 256 KiB)`. The
-lazy origin is `camelfsd`'s ublk device for that root (NBD over a Unix socket on kernels without the module; the
-prototype's measured device): a read miss fetches the chunk from the host cache, else from S3 (single-flight per
-chunk, 16 in flight, 4-chunk sequential prefetch, plus the lineage's recorded access pattern from its last cold
-mount, as Lambda does). dm-clone serves hydrated regions in the kernel and hydrates the rest in the background
-(`hydration` off for one-off jobs that should pay only for what they touch; on for computers and hot images); when
-hydration completes the file is a complete image and the next mount is a warm mount of a plain file. The VM attaches
-the dm-clone device for this mount. If dm-clone fails on the real host (it is designed, not yet run; the m8id host's
-kernel 7.0 has it), the fallback is full pre-hydration into the file before boot: a 500 MB image at S3 throughput is
-a few seconds, and only cold hosts pay it.
+**Cold host (the image file is absent): prehydrate and swap, under dm-snapshot** (decided 2026-11-13 as unit 7b,
+replacing dm-clone). The VM's device is a **dm-snapshot** (copy-on-write into a sparse file on the NVMe) over a
+**dm-linear** origin. At mount, the origin maps to `camelfsd`'s **lazy device** for the root (NBD over a Unix
+socket today; ublk later): a read miss fetches the chunk from the host cache, else from S3, so the guest's first
+reads are served at once. Meanwhile the daemon **prehydrates** the root into a sparse local image file at the NIC
+ceiling, 64 chunks in flight, writing only the chunks the root names (holes cost nothing, so the work is the root's
+bytes, not the virtual size), and when the file is complete it **reloads the linear layer onto the local file**:
+identical bytes, transparent to the snapshot and to the guest. From then on every read is kernel-only from NVMe.
+Demand reads before the swap pay the lazy device's round trip; the swap on the large 670 MB root is about the NIC
+time (≈ 3 s at 250 MB/s). A cold checkpoint's delta comes from the snapshot's exception table rather than FIEMAP,
+since the writes live in the COW file; after the swap and the next reflink the warm path's FIEMAP applies as before.
+
+Why not dm-clone, which the earlier revision chose: measured on the v0 host, dm-clone hydrates **every region of the
+virtual size, holes included**, at ~0.8 ms per 256 KiB region even from a warm origin, and writes them all to NVMe:
+hydration = virtual size / 256 KiB × ~1 ms independent of S3 (1 GiB in 3.2 s, 4 GiB in 25 s, a 64 GiB image in
+~4 minutes while allocating 64 GiB of NVMe per cold mount), and a demand read of an unhydrated region paid ~10 ms.
+The NBD origin itself was not the bound (2.2 GB/s sequential, 1.5 GB/s at 256 KiB QD1 warm, 59 µs per 4 KiB hit),
+which is why unit 7's deeper prefetch and packs changed nothing (ledger L2, L76). Sparse images of a large virtual
+size (64 GiB by default, L65) make the per-region cost unacceptable; prehydrating the root's actual chunks does not
+depend on the virtual size at all. Full pre-hydration before boot remains the trivial fallback if the swap misbehaves.
 
 **Measured on `proto/block`, on the v0 host** (`m8id.4xlarge`, real S3 in us-west-2, NVMe chunk cache, NBD lazy
 device → dm-clone → dm-thin external origin → ext4; `prototypes/block/RESULTS.md` at `acc0f73a`):
