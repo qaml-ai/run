@@ -55,8 +55,11 @@ func storageFail(w http.ResponseWriter, e error) {
 	var se *storageError
 	var ae *apierr.Error
 	var validation invalidRequest
+	var missingSizes *objects.MissingTreeSizes
 	message := ""
-	if errors.As(e, &validation) {
+	if errors.As(e, &missingSizes) {
+		message = missingSizes.Error()
+	} else if errors.As(e, &validation) {
 		status, code, message = 400, "invalid_request", validation.Error()
 	} else if errors.As(e, &se) {
 		status, code, details = se.status, se.code, se.details
@@ -287,7 +290,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 				return
 			}
 		}
-		serveAncestry(w, r, repo, a, b)
+		serveAncestry(w, r, repo, l, a, b)
 	case r.Method == "GET" && strings.HasPrefix(route, "trees/") && strings.HasSuffix(route, "/entry"):
 		id := strings.TrimSuffix(strings.TrimPrefix(route, "trees/"), "/entry")
 		path := q.Get("path")

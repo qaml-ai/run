@@ -7,14 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 // SizedTree supplies the same entries as ReadTree, including stored sizes.
-// New trees publish a sidecar in the same upload wave as their Git bytes.
-// Pre-sidecar trees recover sizes from the local blob index, or a verified
-// blob GET on a cold cache. Neither path performs a blob HEAD.
+// Its sidecar is required: reads never recover sizes from blob metadata or data.
 func (r *Repository) SizedTree(ctx context.Context, id string) ([]Entry, error) {
 	es, e := r.ReadTree(ctx, id)
 	if e != nil {
@@ -40,7 +36,7 @@ func (r *Repository) SizedTree(ctx context.Context, id string) ([]Entry, error) 
 	if !errors.Is(e, os.ErrNotExist) {
 		return nil, e
 	}
-	return r.fillSizes(ctx, es)
+	return nil, &MissingTreeSizes{Tree: id}
 }
 
 func (r *Repository) fillSizes(ctx context.Context, es []Entry) ([]Entry, error) {
@@ -55,16 +51,21 @@ func (r *Repository) fillSizes(ctx context.Context, es []Entry) ([]Entry, error)
 			return nil, e
 		}
 		if e == sql.ErrNoRows {
-			b, e := r.Store.Get(ctx, "o/"+es[i].SHA1)
+			info, e := r.Store.Head(ctx, "o/"+es[i].SHA1)
 			if e != nil {
 				return nil, e
 			}
-			if store.GitHash("blob", b) != es[i].SHA1 {
-				return nil, fmt.Errorf("corrupt blob")
+			if info.Size < 0 {
+				return nil, fmt.Errorf("invalid blob size %s", es[i].SHA1)
 			}
-			size = int64(len(b))
+			size = info.Size
 		}
 		es[i].Size = size
 	}
 	return es, nil
 }
+
+// MissingTreeSizes is an invariant failure, not an unavailable object store.
+type MissingTreeSizes struct{ Tree string }
+
+func (e *MissingTreeSizes) Error() string { return "missing tree sizes " + e.Tree }

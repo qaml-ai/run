@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -192,4 +194,115 @@ func (s treeOnlyStore) Get(ctx context.Context, k string) ([]byte, error) {
 		return nil, errors.New("unexpected blob GET")
 	}
 	return s.Store.Get(ctx, k)
+}
+
+func TestIsAncestorLoadsOnlyWalkedSide(t *testing.T) {
+	// a has 100,000 ancestors; b extends a by ten commits. None of a's
+	// history, including a's commit object, may be loaded for this query.
+	commits := map[string]map[string]any{}
+	previous := ""
+	for i := 0; i < 100000; i++ {
+		id := fmt.Sprintf("history-%d", i)
+		parents := []string{}
+		if previous != "" {
+			parents = append(parents, previous)
+		}
+		commits[id] = map[string]any{"parents": parents}
+		previous = id
+	}
+	a := previous
+	for i := 1; i <= 10; i++ {
+		id := fmt.Sprintf("b-%d", i)
+		commits[id] = map[string]any{"parents": []string{previous}}
+		previous = id
+	}
+	for _, tc := range []struct {
+		name, a, b string
+		want       bool
+		loads      int
+	}{
+		{"reached", a, previous, true, 10},
+		{"equal", a, a, true, 0},
+		{"exhausted", a, "disjoint-10", false, 10},
+	} {
+		for i := 1; i <= 10; i++ {
+			parents := []string{}
+			if i > 1 {
+				parents = append(parents, fmt.Sprintf("disjoint-%d", i-1))
+			}
+			commits[fmt.Sprintf("disjoint-%d", i)] = map[string]any{"parents": parents}
+		}
+		loads := 0
+		got, e := walkIsAncestor(context.Background(), tc.a, tc.b, func(ctx context.Context, id string) (map[string]any, error) {
+			loads++
+			if strings.HasPrefix(id, "history-") {
+				t.Fatalf("loaded a's history: %s", id)
+			}
+			return commits[id], nil
+		})
+		if e != nil || got != tc.want || loads != tc.loads {
+			t.Fatalf("%s: ancestor=%v loads=%d error=%v", tc.name, got, loads, e)
+		}
+		t.Logf("%s: %d commit loads per call", tc.name, loads)
+	}
+	// A long walked side must still fail closed, rather than returning false.
+	loads := 0
+	got, e := walkIsAncestor(context.Background(), "unreachable", a, func(ctx context.Context, id string) (map[string]any, error) { loads++; return commits[id], nil })
+	w := httptest.NewRecorder()
+	storageFail(w, e)
+	if got || w.Code != 413 || !strings.Contains(w.Body.String(), "too_deep") || loads != ancestryLimit {
+		t.Fatal(got, w.Code, loads, e)
+	}
+	t.Logf("capped: %d commit loads per call; HTTP %d", loads, w.Code)
+}
+
+func TestReadRoutesUseOnlyTreeSizes(t *testing.T) {
+	st := store.Local{Dir: t.TempDir()}
+	s := storageServer(t, st)
+	blob := put(t, s, "l", "abc")
+	first := commit(t, s, "l", "", []change{{Path: "nested/file", Blob: blob}})["tree"].(string)
+	next := commit(t, s, "l", first, []change{{Path: "nested/file", Mode: "100755"}})["tree"].(string)
+	// Incorrect cached blob metadata must not affect any size-bearing read.
+	if _, e := s.repository().DB.DB.Exec("UPDATE lineage_blobs SET size=999"); e != nil {
+		t.Fatal(e)
+	}
+	s.Manager.Store = treeOnlyStore{st}
+	listing := response(t, callStorage(t, s, "l", "GET", "trees/"+first+"?recursive=1", nil, "", 200))
+	if listing["entries"].([]any)[0].(map[string]any)["size"] != float64(3) {
+		t.Fatal(listing)
+	}
+	entry := response(t, callStorage(t, s, "l", "GET", "trees/"+first+"/entry?path=nested/file", nil, "", 200))
+	if entry["size"] != float64(3) {
+		t.Fatal(entry)
+	}
+	diff := response(t, callStorage(t, s, "l", "GET", "diff?from="+first+"&to="+next, nil, "", 200))
+	if diff["changes"].([]any)[0].(map[string]any)["newSize"] != float64(3) {
+		t.Fatal(diff)
+	}
+	// Losing either the root or a traversed subtree's sidecar is an invariant
+	// failure, even when the blob metadata and bytes remain available.
+	es, e := s.repository().ForLineage("l").ReadTree(context.Background(), first)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, id := range []string{first, es[0].SHA1} {
+		path := filepath.Join(st.Dir, "l", "ts", id)
+		data, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.Remove(path); e != nil {
+			t.Fatal(e)
+		}
+		for _, route := range []string{"trees/" + first + "?recursive=1", "trees/" + first + "/entry?path=nested/file", "diff?from=" + first + "&to=" + next} {
+			v := response(t, callStorage(t, s, "l", "GET", route, nil, "", 500))
+			err := v["error"].(map[string]any)
+			if err["code"] != "internal" || err["message"] != "missing tree sizes "+id {
+				t.Fatal(v)
+			}
+		}
+		if e = os.WriteFile(path, data, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
 }

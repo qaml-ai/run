@@ -62,6 +62,11 @@ func TestCommitPublishesTreesAndCommitTogether(t *testing.T) {
 			t.Fatalf("only %d of 11 PUTs started", len(seen))
 		}
 	}
+	for key := range seen {
+		if strings.HasPrefix(key, "l/t/") && !seen[strings.Replace(key, "l/t/", "l/ts/", 1)] {
+			t.Fatalf("tree and size sidecar did not start in the same wave: %s", key)
+		}
+	}
 	hasCommit := false
 	for key := range seen {
 		if strings.HasPrefix(key, "l/k/") {

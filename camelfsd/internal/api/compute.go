@@ -12,7 +12,6 @@ import (
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 type change struct {
@@ -258,7 +257,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			return nil, invalid("invalid path %s", dir)
 		}
 		for _, p := range strings.Split(dir, "/") {
-			es, e := r.ReadTree(ctx, id)
+			es, e := r.SizedTree(ctx, id)
 			if e != nil {
 				return nil, e
 			}
@@ -278,7 +277,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 	es := []objects.Entry{}
 	var walk func(string, string) error
 	walk = func(id, prefix string) error {
-		entries, e := r.ReadTree(ctx, id)
+		entries, e := r.SizedTree(ctx, id)
 		if e != nil {
 			return e
 		}
@@ -317,66 +316,6 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 		}
 	}
 	page := es[start:min(len(es), start+limit)]
-	sizes := map[string]int64{}
-	// One lineage-scoped size query per page, regardless of its file count.
-	rows, e := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE lineage=?", l)
-	if e != nil {
-		return nil, e
-	}
-	for rows.Next() {
-		var id string
-		var size int64
-		if e = rows.Scan(&id, &size); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		sizes[id] = size
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
-	}
-	missingIDs := []string{}
-	for _, f := range page {
-		if f.Mode != "40000" {
-			if _, ok := sizes[f.SHA1]; !ok {
-				missingIDs = append(missingIDs, f.SHA1)
-			}
-		}
-	}
-	if len(missingIDs) > 0 {
-		if e := store.Parallel(ctx, 64, missingIDs, func(id string) error {
-			ok, e := r.Reachable(ctx, l, id, "blob")
-			if e != nil {
-				return e
-			}
-			if !ok {
-				return fmt.Errorf("missing lineage blob")
-			}
-			return nil
-		}); e != nil {
-			return nil, e
-		}
-		rows, e := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE lineage=?", l)
-		if e != nil {
-			return nil, e
-		}
-		for rows.Next() {
-			var id string
-			var n int64
-			if e = rows.Scan(&id, &n); e != nil {
-				rows.Close()
-				return nil, e
-			}
-			sizes[id] = n
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			return nil, e
-		}
-	}
 	out := []listingEntry{}
 	for _, f := range page {
 		v := listingEntry{Path: f.Path, Mode: f.Mode}
@@ -384,14 +323,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			v.Mode = "040000"
 			v.Tree = f.SHA1
 		} else {
-			size, ok := sizes[f.SHA1]
-			if !ok {
-				b, e := r.BlobInfo(ctx, l, f.SHA1)
-				if e != nil {
-					return nil, e
-				}
-				size = b.Size
-			}
+			size := f.Size
 			v.Blob = f.SHA1
 			v.Size = &size
 		}
@@ -535,7 +467,7 @@ func (q *commitRequest) UnmarshalJSON(raw []byte) error {
 func treeEntry(ctx context.Context, r *objects.Repository, l, id, path string) (listingEntry, error) {
 	parts := strings.Split(path, "/")
 	for i, p := range parts {
-		es, e := r.ReadTree(ctx, id)
+		es, e := r.SizedTree(ctx, id)
 		if e != nil {
 			return listingEntry{}, e
 		}
@@ -551,12 +483,9 @@ func treeEntry(ctx context.Context, r *objects.Repository, l, id, path string) (
 					v.Mode = "040000"
 					v.Tree = f.SHA1
 				} else {
-					b, e := r.BlobInfo(ctx, l, f.SHA1)
-					if e != nil {
-						return v, e
-					}
+
 					v.Blob = f.SHA1
-					v.Size = &b.Size
+					v.Size = &f.Size
 				}
 				return v, nil
 			}

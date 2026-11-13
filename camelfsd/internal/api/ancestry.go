@@ -59,6 +59,36 @@ func walkAncestry(ctx context.Context, a, b string, load func(context.Context, s
 	return nodes, nil
 }
 
+// walkIsAncestor follows only b's parents and stops before loading a or its
+// history. Lineage membership of a is checked by the caller, without loading it.
+func walkIsAncestor(ctx context.Context, a, b string, load func(context.Context, string) (map[string]any, error)) (bool, error) {
+	seen := map[string]bool{}
+	queue := []string{b}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if seen[id] {
+			continue
+		}
+		if e := ctx.Err(); e != nil {
+			return false, e
+		}
+		if len(seen) == ancestryLimit {
+			return false, &storageError{413, "too_deep", nil}
+		}
+		seen[id] = true
+		if id == a {
+			return true, nil
+		}
+		c, e := load(ctx, id)
+		if e != nil {
+			return false, e
+		}
+		queue = append(queue, c["parents"].([]string)...)
+	}
+	return false, nil
+}
+
 func ancestryCommit(ctx context.Context, repo *objects.Repository, id string) (map[string]any, error) {
 	c, e := readCommit(ctx, repo, id)
 	if errors.Is(e, os.ErrNotExist) {
@@ -67,20 +97,35 @@ func ancestryCommit(ctx context.Context, repo *objects.Repository, id string) (m
 	return c, e
 }
 
-func serveAncestry(w http.ResponseWriter, r *http.Request, repo *objects.Repository, a, b string) {
+func serveAncestry(w http.ResponseWriter, r *http.Request, repo *objects.Repository, lineage, a, b string) {
 	for _, id := range []string{a, b} {
 		if !root.Hex(id, 40) {
 			storageFail(w, invalid("invalid commit %s", id))
 			return
 		}
 	}
-	nodes, e := walkAncestry(r.Context(), a, b, func(ctx context.Context, id string) (map[string]any, error) { return ancestryCommit(ctx, repo, id) })
-	if e != nil {
-		storageFail(w, e)
+	load := func(ctx context.Context, id string) (map[string]any, error) { return ancestryCommit(ctx, repo, id) }
+	if strings.HasSuffix(r.URL.Path, "/is-ancestor") {
+		ok, e := repo.Reachable(r.Context(), lineage, a, "commit")
+		if e != nil {
+			storageFail(w, e)
+			return
+		}
+		if !ok {
+			storageFail(w, &storageError{404, "not_found", map[string]string{"commit": a}})
+			return
+		}
+		ancestor, e := walkIsAncestor(r.Context(), a, b, load)
+		if e != nil {
+			storageFail(w, e)
+			return
+		}
+		jsonReply(w, 200, map[string]bool{"ancestor": ancestor})
 		return
 	}
-	if strings.HasSuffix(r.URL.Path, "/is-ancestor") {
-		jsonReply(w, 200, map[string]bool{"ancestor": nodes[a].generations[1] >= 0})
+	nodes, e := walkAncestry(r.Context(), a, b, load)
+	if e != nil {
+		storageFail(w, e)
 		return
 	}
 	// Any parent of a common ancestor is dominated, as are all its ancestors.

@@ -182,10 +182,12 @@ Ancestry includes equality and follows every parent. Both commits must belong
 to the lineage; `404 not_found` names the missing commit. Missing `of`, `a` or
 `b` returns `400 invalid_request` with `missing field <field>`; malformed ids
 return `400 invalid_request` with `invalid commit <id>`.
-Both routes use one bidirectional breadth-first walk, marking generations
-and loading each distinct commit once through the lineage-scoped local index.
-At most 50,000 distinct commits are visited across both sides. Attempting to
-visit another returns `413 too_deep`, never false or a null base.
+Is-ancestor walks only from `of`, stopping immediately when it reaches `a`;
+it never loads `a`'s parent history. Merge-base uses a bidirectional
+breadth-first walk marking generations. Both use the lineage-scoped commit
+loader and visit at most 50,000 distinct commits (across both sides for
+merge-base). Attempting to visit another returns `413 too_deep`, never false
+or a null base.
 Merge-base excludes common ancestors reachable from another common ancestor
 (Git's best-common-ancestor rule). Multiple best candidates are resolved by
 latest commit time, then lexicographically greatest commit id. Commit time
@@ -204,10 +206,16 @@ The response is `{ "changes": [ { "path": "a", "status": "added" | "modified" |
 "<mode>", "newMode"?: "<mode>", "oldSize"?: 1234, "newSize"?: 5678 } ] }`.
 Sizes come from loaded tree entries. Every side with a blob has a size,
 including zero: added omits oldSize, deleted omits newSize, and mode has both.
-Newly imported trees publish lineage-scoped `ts/<tree>` size sidecars alongside
-Git `t/<tree>` bytes. A fresh daemon reads these without blob HEADs. Older
-trees without sidecars use cached blob sizes, or verified blob GETs on a cold
-cache; diff never issues blob HEADs to learn sizes.
+Every tree writer (commits, imports, merges and checkpoints) publishes a
+lineage-scoped `ts/<tree>` JSON sidecar with path, mode, blob/tree id and size
+for each entry, in the same upload wave as `t/<tree>`. Its entries reconstruct
+the Git tree id on write; on read they must match the verified Git tree's
+entries in order, with nonnegative sizes. The daemon derives sizes from its
+blob index or stored blob HEAD metadata when writing, never blob GETs.
+Sidecars are the required size source for listings, entry stat and diff:
+a missing sidecar is `500 internal` with `missing tree sizes <tree>`, with no
+fallback to blob metadata or data.
+
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" "$A/diff?from=$BASE&to=$T&path=src"

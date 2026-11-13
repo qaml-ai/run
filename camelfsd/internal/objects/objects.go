@@ -425,7 +425,7 @@ func (r *Repository) TreeEntries(ctx context.Context, id string) ([]Entry, error
 	out := []Entry{}
 	var walk func(string, string) error
 	walk = func(tree, prefix string) error {
-		entries, e := r.read(ctx, tree)
+		entries, e := r.SizedTree(ctx, tree)
 		if e != nil {
 			return e
 		}
@@ -450,47 +450,7 @@ func (r *Repository) TreeEntries(ctx context.Context, id string) ([]Entry, error
 	return out, nil
 }
 func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
-	out, e := r.TreeEntries(ctx, id)
-	if e != nil {
-		return nil, e
-	}
-	// Bounded IN batches avoid one size query per file without depending on
-	// SQLite's host-parameter limit for large trees.
-	sizes := map[string]int64{}
-	for start := 0; start < len(out); start += 500 {
-		batch := out[start:min(start+500, len(out))]
-		args := make([]any, len(batch))
-		marks := make([]string, len(batch))
-		for i, f := range batch {
-			args[i] = f.SHA1
-			marks[i] = "?"
-		}
-		r.observe("sizes")
-		rows, err := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE sha1 IN ("+strings.Join(marks, ",")+") GROUP BY sha1", args...)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var sha string
-			var size int64
-			if err = rows.Scan(&sha, &size); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			sizes[sha] = size
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-	for i := range out {
-		out[i].Size = sizes[out[i].SHA1]
-	}
-
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, e
+	return r.TreeEntries(ctx, id)
 }
 func (r *Repository) File(ctx context.Context, id, path string) (Entry, error) {
 	if e := Path(path); e != nil {
@@ -498,7 +458,7 @@ func (r *Repository) File(ctx context.Context, id, path string) (Entry, error) {
 	}
 	parts := strings.Split(path, "/")
 	for i, part := range parts {
-		entries, e := r.read(ctx, id)
+		entries, e := r.SizedTree(ctx, id)
 		if e != nil {
 			return Entry{}, e
 		}
