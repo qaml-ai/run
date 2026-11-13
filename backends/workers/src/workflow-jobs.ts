@@ -158,10 +158,11 @@ export class WorkflowJobs implements EffectExecutor {
     if (effect.kind === "commit") return done(await this.commit(effect.args as { fork?: unknown; snapshot?: unknown }));
     const found = this.driver();
     if (!found.ok) return done({ ok: false, error: `${found.code}: ${found.message}` });
+    let snapshotMs: number | undefined;
     let spec: JobSpec, secrets: string[] = [], parse: (result: Extract<JobResult, { ok: true }>, value: Record<string, unknown>) => Record<string, unknown> = (_, value) => value;
     try {
-      if (effect.kind === "push") ({ spec, secrets, parse } = await this.pushSpec(id, effect.args as PushArgs));
-      else spec = await this.jobSpec(id, effect.args as JobArgs);
+      if (effect.kind === "push") ({ spec, snapshotMs, secrets, parse } = await this.pushSpec(id, effect.args as PushArgs));
+      else ({ spec, snapshotMs } = await this.jobSpec(id, effect.args as JobArgs));
     } catch (error) {
       // A bad argument, an unknown volume, a GitHub App that will not give a token: the script gets null and the item says why.
       if (error instanceof JobSpecError || (error as { status?: number }).status !== undefined && (error as { status: number }).status < 500)
@@ -171,14 +172,17 @@ export class WorkflowJobs implements EffectExecutor {
     let result: JobResult;
     // A spec only the driver can judge (commit on a driver without camelFS) is the script's error, landed like any bad
     // argument; left to throw, the row would be run again by every sweep.
+    const driverFrom = Date.now();
     try { result = await found.driver.run(spec); }
     catch (error) { if (error instanceof JobSpecError) return done({ ok: false, error: error.message }); throw error; }
+    const driverMs = Date.now() - driverFrom;
     if (!result.ok) {
       if (result.code === "job_running") return; // an earlier run of this job still holds its container: its landing comes from there
       if (result.code === "admission_refused") return done({ refused: result.message, code: "payer_exhausted" });
       return done({ ok: false, error: `${result.code}: ${redact(result.message, secrets)}` }, { costUsd: result.costUsd ?? 0, durationMs: result.timings.totalMs });
     }
-    const value = parse(result, await this.keep(id, result, secrets));
+    const keepFrom = Date.now();
+    const value = parse(result, await this.keep(id, result, secrets, { ...(snapshotMs !== undefined ? { snapshotMs } : {}), driverMs }, keepFrom));
     // The container time its payer was charged also counts in the workflow's ledger (its budget), once per key:attempt.
     await done({ ok: true, value }, { costUsd: result.costUsd ?? 0, model: `cloudflare/${result.instance}`, durationMs: result.timings.totalMs });
   }
@@ -190,7 +194,7 @@ export class WorkflowJobs implements EffectExecutor {
   }
 
   /** A script's job() as a JobSpec: paid by `payer()`, its container in that payer's computer tree. */
-  private async jobSpec(id: string, args: JobArgs): Promise<JobSpec> {
+  private async jobSpec(id: string, args: JobArgs): Promise<{ spec: JobSpec; snapshotMs?: number }> {
     const known = ["command", "timeoutSeconds", "outputs", "limits", "internet", "at", "files", "nocache", "commit"];
     const extra = Object.keys(args ?? {}).find(name => !known.includes(name));
     if (extra) throw new JobSpecError(`job() has no option ${extra}: it takes ${known.join(", ")}`);
@@ -202,18 +206,21 @@ export class WorkflowJobs implements EffectExecutor {
       throw new JobSpecError("job() files maps paths to text");
     const tenant = this.host.workflow.tenant;
     let source: Pick<JobSpec, "volume" | "files"> = {};
+    let snapshotMs: number | undefined;
     if (args.at !== undefined) {
       if (typeof args.at !== "string") throw new JobSpecError("job() at is a volume id");
       const at = args.at;
       const base = await jobVolume(() => volume(this.env, tenant, at), at);
+      const snapshotFrom = Date.now();
       const snapshot = await base.snapshot(`job ${id}`, { pinned: true, labels: { workflow: this.host.workflow.id }, expiresAt: Date.now() + SYNC_SNAPSHOT_TTL_MS });
+      snapshotMs = Date.now() - snapshotFrom;
       source = { volume: { tenant, volume: args.at, snapshot: snapshot.id } };
     } else if (args.files) source = { files: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, new TextEncoder().encode(text)])) };
-    return {
+    return { snapshotMs, spec: {
       id, command: args.command, timeoutSeconds: Math.ceil(args.timeoutSeconds), ...(args.outputs ? { outputs: args.outputs } : {}),
       ...(args.limits ? { limits: args.limits } : {}), ...(args.internet ? { internet: true } : {}), ...(args.commit ? { commit: true } : {}), ...source,
       payer: this.payer(),
-    };
+    } };
   }
 
   /** A push as a job: the volume's tree in /repo, the token in the command's environment only. */
@@ -222,7 +229,7 @@ export class WorkflowJobs implements EffectExecutor {
     if (!/^(?!\/|.*\/\/|.*\.\.|.*\.lock$|.*\/$)[A-Za-z0-9._\/-]{1,200}$/.test(args.branch ?? "")) throw new JobSpecError("push() branch is a branch name");
     const auth = { type: "github-app" as const, app: args.app, repositories: [args.repo], permissions: { contents: "write" as const }, ...(args.installation ? { installation: args.installation } : {}) };
     const minted = await (await workerGitHubApps(this.env)).token(this.host.workflow.tenant, auth, `https://github.com/${args.repo}.git`);
-    const base = await this.jobSpec(id, { command: PUSH_SCRIPT, timeoutSeconds: args.timeoutSeconds ?? 600, at: args.volume, internet: true });
+    const { spec: base, snapshotMs } = await this.jobSpec(id, { command: PUSH_SCRIPT, timeoutSeconds: args.timeoutSeconds ?? 600, at: args.volume, internet: true });
     const spec: JobSpec = {
       ...base,
       secretEnv: {
@@ -231,7 +238,7 @@ export class WorkflowJobs implements EffectExecutor {
       },
     };
     return {
-      spec, secrets: [minted.token],
+      spec, snapshotMs, secrets: [minted.token],
       parse: (result: Extract<JobResult, { ok: true }>, value: Record<string, unknown>) => {
         const line = /PUSH_RESULT (pushed|unchanged) ([0-9a-f]{40})/.exec(decoder.decode(result.stdout.bytes));
         return { ...value, pushed: result.exitCode === 0 && line?.[1] === "pushed", ...(line ? { commit: line[2] } : {}), repo: args.repo, branch: args.branch };
@@ -243,7 +250,7 @@ export class WorkflowJobs implements EffectExecutor {
    * The job's outputs and streams, kept in the workflow's volume under /jobs/<id>/; the script gets their paths and
    * sizes, and each stream's end, within the inline result's size.
    */
-  private async keep(id: string, result: Extract<JobResult, { ok: true }>, secrets: string[]) {
+  private async keep(id: string, result: Extract<JobResult, { ok: true }>, secrets: string[], steps: Record<string, number>, keepFrom: number) {
     const tenant = this.host.workflow.tenant;
     const volumeId = await workflowVolume(this.env, tenant, this.host.workflow.id);
     const files = await volume(this.env, tenant, volumeId);
@@ -259,10 +266,11 @@ export class WorkflowJobs implements EffectExecutor {
     };
     const outputs: Record<string, { path: string; bytes: number; truncated: boolean }> = {};
     for (const [name, output] of Object.entries(result.outputs)) outputs[name] = { path: await write(`out/${name}`, output.bytes), bytes: output.size, truncated: output.truncated };
+    const keptSteps = { ...result.timings.steps, ...steps, keepMs: 0 };
     const value: Record<string, unknown> = {
       exitCode: result.exitCode, timedOut: result.timedOut, volume: volumeId,
       stdout: await stream("stdout.txt", result.stdout), stderr: await stream("stderr.txt", result.stderr), outputs, missing: result.missing,
-      timings: { totalMs: result.timings.totalMs, commandMs: result.timings.commandMs },
+      timings: { totalMs: result.timings.totalMs, commandMs: result.timings.commandMs, steps: keptSteps },
     };
     if (result.camelfs) {
       const { tree, root, commit, checkpointError, warm, mountMs, applyMs, checkpointMs, checkpoint } = result.camelfs;
@@ -275,6 +283,8 @@ export class WorkflowJobs implements EffectExecutor {
     for (let tail = TAIL_CHARS; new TextEncoder().encode(JSON.stringify(value)).byteLength > WORKFLOW_LIMITS.inlineResultBytes - 512 && tail > 0; tail = Math.floor(tail / 2)) {
       for (const name of ["stdout", "stderr"] as const) (value[name] as { tail: string }).tail = (value[name] as { tail: string }).tail.slice(-tail);
     }
+    // Keep time up to building the value, excluding only this last write.
+    keptSteps.keepMs = Date.now() - keepFrom;
     return value;
   }
 

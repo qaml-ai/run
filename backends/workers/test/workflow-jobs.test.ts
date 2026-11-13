@@ -231,7 +231,7 @@ test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", as
     await applyScope.run({ sql: sql as never }, async () => {
       const j = jobs(spec => ({ ok: true, id: spec.id, instance: "standard-1", exitCode: 1, timedOut: false,
         stdout: { bytes: new Uint8Array(), size: 0, truncated: false }, stderr: { bytes: new Uint8Array(), size: 0, truncated: false },
-        outputs: {}, missing: [], timings, camelfs: { ...step, ...fields },
+        outputs: {}, missing: [], timings: { ...timings, steps: { hostMs: 5 } }, camelfs: { ...step, ...fields },
       }), true, "agent_owner", env);
       await j.executor.start(effect("checkpoint", { command: "false", timeoutSeconds: 5, at: "vol_source", commit: true }));
       await j.settled();
@@ -241,6 +241,11 @@ test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", as
       assert.equal(outcome?.ok, true);
       for (const key of ["commit", "tree", "root", "checkpointError"] as const) assert.equal(outcome.value[key], fields[key as keyof typeof fields]);
       assert.deepEqual(outcome.value.timings.camelfs, step);
+      assert.equal(outcome.value.timings.steps.hostMs, 5);
+      for (const name of ["snapshotMs", "driverMs", "keepMs"]) {
+        assert.equal(typeof outcome.value.timings.steps[name], "number");
+        assert.ok(Number.isInteger(outcome.value.timings.steps[name]) && outcome.value.timings.steps[name] >= 0, name);
+      }
       assert.equal(outcome.value.exitCode, 1);
       assert.equal(written.length, 2);
     });
