@@ -1,0 +1,171 @@
+variable "region" {
+  description = "Region of the camelFS service (the runtime's and the job hosts' region)."
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "account_id" {
+  description = "The only AWS account this configuration may touch (camelRun prod)."
+  type        = string
+  default     = "904534089871"
+}
+
+variable "env" {
+  description = "Environment suffix for names (camelfs-<env>-..., camelfs/<env>/... secrets)."
+  type        = string
+  default     = "prod"
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,15}$", var.env))
+    error_message = "env is a short lowercase name."
+  }
+}
+
+variable "name" {
+  description = "Prefix for every resource name."
+  type        = string
+  default     = "camelfs"
+}
+
+# --- Hostnames (Cloudflare zone camelai.dev) ---
+
+variable "hostname" {
+  description = "The public hostname of the API tier, proxied through Cloudflare: what the runtime (Workers, Node) calls. In the cloudflare_zone_id zone."
+  type        = string
+  default     = "fs.camelai.dev"
+  validation {
+    condition     = can(regex("^[a-z0-9.-]+$", var.hostname))
+    error_message = "hostname is a bare DNS name."
+  }
+}
+
+variable "internal_hostname" {
+  description = "The in-VPC hostname of the API tier (a DNS-only record to the internal load balancer; its name resolves to private addresses): what camelfsd --role host on the job hosts calls. In the cloudflare_zone_id zone."
+  type        = string
+  default     = "fs-internal.camelai.dev"
+  validation {
+    condition     = can(regex("^[a-z0-9.-]+$", var.internal_hostname))
+    error_message = "internal_hostname is a bare DNS name."
+  }
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone id of camelai.dev (the runtime's infra/terraform uses the same)."
+  type        = string
+  default     = "3180d911f20372a279a4ea408aebc765"
+}
+
+# --- API tier (camelfsd --role api on ECS Fargate, Graviton) ---
+
+variable "api_image_tag" {
+  description = "The camelfsd image tag in this module's ECR repository (infra/camelfs/deploy.sh pushes one). Empty: no task definition, service, autoscaling or service alarms are created; the load balancers answer 503 until a service registers."
+  type        = string
+  default     = ""
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]{0,128}$", var.api_image_tag))
+    error_message = "api_image_tag is an image tag or empty."
+  }
+}
+
+variable "api_command" {
+  description = "The container command: the api role's subcommand and flags. Listen address, store, tables and the token secret come from the environment (ecs.tf); this is the part the daemon's CLI shape decides."
+  type        = list(string)
+  default     = ["--role", "api"]
+}
+
+variable "api_port" {
+  description = "The port camelfsd --role api listens on (the same the host role's --listen-api uses today)."
+  type        = number
+  default     = 8790
+}
+
+variable "api_health_path" {
+  description = "The unauthenticated health route both target groups probe; must answer 200 on a ready node."
+  type        = string
+  default     = "/v0/health"
+}
+
+variable "api_cpu" {
+  description = "Fargate CPU units per task (1024 = 1 vCPU). The tier is CPU-light (hashing, tree walks, merges) and memory-light; its in-process LRU of trees and small blobs is what api_memory sizes."
+  type        = number
+  default     = 1024
+}
+
+variable "api_memory" {
+  description = "Fargate memory per task, MiB."
+  type        = number
+  default     = 2048
+}
+
+variable "api_min_count" {
+  description = "Fewest API tasks (autoscaling minimum; the RTO-0 claim needs 2, one per AZ)."
+  type        = number
+  default     = 2
+  validation {
+    condition     = var.api_min_count >= 1
+    error_message = "api_min_count is at least 1."
+  }
+}
+
+variable "api_max_count" {
+  description = "Most API tasks (the spend cap of the tier)."
+  type        = number
+  default     = 8
+  validation {
+    condition     = var.api_max_count >= 1 && var.api_max_count <= 32
+    error_message = "api_max_count is between 1 and 32; raise this bound in the same change that raises it."
+  }
+}
+
+variable "api_cpu_target" {
+  description = "Target-tracking CPU utilisation (percent) for the tier's autoscaling."
+  type        = number
+  default     = 60
+}
+
+variable "api_log_retention_days" {
+  description = "CloudWatch Logs retention of the api tasks' output (access lines carry op, lineage, status, ms; never paths, ids or bodies)."
+  type        = number
+  default     = 30
+}
+
+# --- Hosts ---
+
+variable "host_security_group_ids" {
+  description = "Security groups of the VM hosts that run camelfsd --role host (infra/job-hosts' hosts group once applied, the proto host's group meanwhile). Only these reach the internal load balancer; empty means no host reaches it yet."
+  type        = list(string)
+  default     = []
+}
+
+# --- Bucket ---
+
+variable "noncurrent_expiry_days" {
+  description = "Overwritten and deleted objects stay recoverable this long (camel-fs.md §5 phase 1: 35, the PITR window of the tables)."
+  type        = number
+  default     = 35
+}
+
+variable "inventory_expiry_days" {
+  description = "Daily S3 Inventory reports (inventory/ in the bucket; the GC's input, camel-fs.md §1.9) are deleted after this many days."
+  type        = number
+  default     = 30
+}
+
+variable "alb_access_logs_bucket" {
+  description = "An existing bucket for the load balancers' access logs (the runtime's mTLS-logs bucket showed the 2026-10-24 h2 stall; nothing else did). Null: no access logs."
+  type        = string
+  default     = null
+}
+
+# --- Alarms ---
+
+variable "alerts_topic_name" {
+  description = "The runtime's us-west-2 alerts topic (infra/terraform/alarms.tf, aws_sns_topic.alerts_regional), which emails Miguel. Looked up by name, not managed here."
+  type        = string
+  default     = "camelai-agent-runtime-alerts"
+}
+
+variable "api_latency_p99_ms" {
+  description = "Alarm when the public load balancer's target p99 response time exceeds this for 3 of 5 minutes (camel-fs.md §1.6 budgets 50–200 ms per write or merge from the tier's seat)."
+  type        = number
+  default     = 1000
+}

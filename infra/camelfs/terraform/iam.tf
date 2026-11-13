@@ -1,0 +1,265 @@
+# Two principals, least privilege (camel-fs.md §1.10: "hosts hold an instance role scoped to the bucket prefixes
+# and tables, as the job-hosts plan's role is scoped"; the api tier is the authorization boundary):
+#
+#   api   the Fargate task role of camelfsd --role api: the three tables, the bucket (no delete), the token
+#         verification keys. The only principal that touches refs and lineages.
+#   host  camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and commits a
+#         checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks its fence) and
+#         reads no lineage registry. Delivered as a customer-managed policy (host_policy_arn), attachable to the
+#         job-hosts pool roles (infra/job-hosts/terraform/iam.tf, host_managed_policies) and to the proto host's
+#         role, and as a role + instance profile of its own for hosts outside those pools. The role trusts
+#         ec2.amazonaws.com only, with the job-hosts invariant's guards (its session name is an instance id the
+#         tier may one day attest; nothing else may ever assume it).
+#
+# Neither principal may delete an object: deletion is the collector's (camel-fs.md §1.9), under a role of its own,
+# in a later phase.
+
+# --- api task ---
+
+data "aws_iam_policy_document" "ecs_tasks_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:ecs:${var.region}:${var.account_id}:*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
+}
+
+# Used by ECS itself: pull the image and write logs. No secrets: the task reads its own (task role) at boot.
+resource "aws_iam_role" "api_execution" {
+  name               = "${var.name}-${var.env}-api-execution"
+  description        = "camelFS api ECS task execution (image pull, logs)"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "api_execution" {
+  role       = aws_iam_role.api_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+locals {
+  table_arns = { for table, resource in aws_dynamodb_table.camelfs : table => resource.arn }
+
+  # The bucket, read and write, never delete. CopyObject (a cross-lineage fork, camel-fs-files.md §9) is a GetObject
+  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject.
+  bucket_rw_statements = [
+    {
+      Sid      = "ObjectsReadWrite"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
+      Resource = ["${aws_s3_bucket.objects.arn}/*"]
+    },
+    {
+      Sid      = "ObjectsList"
+      Effect   = "Allow"
+      Action   = ["s3:ListBucket"]
+      Resource = [aws_s3_bucket.objects.arn]
+    },
+    {
+      Sid      = "ObjectsKeyThroughS3"
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+      Resource = [aws_kms_key.objects.arn]
+      Condition = {
+        StringEquals = { "kms:ViaService" = "s3.${var.region}.amazonaws.com" }
+      }
+    },
+  ]
+
+  dynamodb_item_actions = [
+    "dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query",
+    "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem",
+    "dynamodb:ConditionCheckItem", "dynamodb:TransactGetItems", "dynamodb:TransactWriteItems",
+  ]
+
+  api_policy = {
+    Version = "2012-10-17"
+    Statement = concat(local.bucket_rw_statements, [
+      {
+        Sid      = "Tables"
+        Effect   = "Allow"
+        Action   = local.dynamodb_item_actions
+        Resource = values(local.table_arns)
+      },
+      {
+        Sid      = "TokenVerifyKeys"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
+      },
+      {
+        Sid    = "EcsExec"
+        Effect = "Allow"
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel",
+        ]
+        Resource = "*"
+      },
+    ])
+  }
+}
+
+resource "aws_iam_role" "api" {
+  name               = "${var.name}-${var.env}-api"
+  description        = "camelFS api tier (camelfsd --role api): the tables, the bucket, the token verification keys"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+resource "aws_iam_role_policy" "api" {
+  name   = "camelfs-api"
+  role   = aws_iam_role.api.name
+  policy = jsonencode(local.api_policy)
+
+  lifecycle {
+    precondition {
+      condition     = !anytrue([for statement in local.api_policy.Statement : contains(flatten([statement.Action]), "s3:DeleteObject") || contains(flatten([statement.Action]), "s3:*")])
+      error_message = "The api role must not delete objects: deletion is the collector's, under its own role."
+    }
+  }
+}
+
+# --- host ---
+
+locals {
+  host_trust_policy = {
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "EC2Only"
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  }
+
+  # True only for a trust policy whose every statement is an Allow of sts:AssumeRole to ec2.amazonaws.com alone.
+  trusts_only_ec2 = length(local.host_trust_policy.Statement) > 0 && alltrue([for statement in local.host_trust_policy.Statement :
+    statement.Effect == "Allow"
+    && try(statement.Action, null) == "sts:AssumeRole"
+    && try(statement.NotPrincipal, null) == null
+    && try(statement.NotAction, null) == null
+    && keys(statement.Principal) == ["Service"]
+    && try(tolist(statement.Principal.Service), [statement.Principal.Service]) == ["ec2.amazonaws.com"]
+  ])
+
+  host_policy = {
+    Version = "2012-10-17"
+    Statement = concat(local.bucket_rw_statements, [
+      # Trees and commits a checkpoint publishes (L74). Reads of a tree by id on a cache miss.
+      {
+        Sid      = "ObjectsTable"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
+        Resource = [local.table_arns["objects"]]
+      },
+      # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref or a lineage
+      # directly (it asks the tier, which checks the fence), and never assumes another role.
+      {
+        Sid      = "NoRefsOrLineages"
+        Effect   = "Deny"
+        Action   = ["dynamodb:*"]
+        Resource = [local.table_arns["refs"], local.table_arns["lineages"]]
+      },
+      {
+        Sid      = "NoAssumeRole"
+        Effect   = "Deny"
+        Action   = ["sts:AssumeRole", "sts:AssumeRoleWithWebIdentity", "sts:AssumeRoleWithSAML"]
+        Resource = "*"
+      },
+    ])
+  }
+
+  host_policy_sts_allows = [for statement in local.host_policy.Statement : statement.Sid
+  if statement.Effect == "Allow" && anytrue([for action in flatten([statement.Action]) : startswith(lower(action), "sts:")])]
+}
+
+resource "aws_iam_policy" "host" {
+  name        = "${var.name}-${var.env}-host"
+  description = "camelfsd --role host: the camelFS bucket (read, write, no delete) and the objects table. Attach to the job-hosts pool roles."
+  policy      = jsonencode(local.host_policy)
+
+  lifecycle {
+    precondition {
+      condition     = length(local.host_policy_sts_allows) == 0
+      error_message = "The host policy must not allow any sts: action."
+    }
+    precondition {
+      condition     = !anytrue([for statement in local.host_policy.Statement : statement.Effect == "Allow" && (contains(flatten([statement.Action]), "s3:DeleteObject") || contains(flatten([statement.Action]), "s3:*"))])
+      error_message = "The host policy must not delete objects."
+    }
+  }
+}
+
+resource "aws_iam_role" "host" {
+  name                 = "${var.name}-${var.env}-host"
+  description          = "camelFS hosts outside the job-hosts pools (camelfsd --role host). Trusts ec2.amazonaws.com only: see infra/camelfs/README.md."
+  assume_role_policy   = jsonencode(local.host_trust_policy)
+  max_session_duration = 3600
+
+  lifecycle {
+    precondition {
+      condition     = local.trusts_only_ec2
+      error_message = "The camelFS host role must trust only the service principal ec2.amazonaws.com (the job-hosts trust-policy invariant)."
+    }
+    postcondition {
+      condition = alltrue([for statement in jsondecode(self.assume_role_policy).Statement :
+        statement.Effect == "Allow"
+        && try(statement.Action, null) == "sts:AssumeRole"
+        && try(statement.NotPrincipal, null) == null
+        && try(statement.NotAction, null) == null
+        && keys(statement.Principal) == ["Service"]
+        && try(tolist(statement.Principal.Service), [statement.Principal.Service]) == ["ec2.amazonaws.com"]
+      ])
+      error_message = "The camelFS host role's trust policy in AWS trusts something other than ec2.amazonaws.com. Revert it."
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "host" {
+  role       = aws_iam_role.host.name
+  policy_arn = aws_iam_policy.host.arn
+}
+
+resource "aws_iam_role_policy_attachment" "host_ssm" {
+  role       = aws_iam_role.host.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "host" {
+  name = "${var.name}-${var.env}-host"
+  role = aws_iam_role.host.name
+}
+
+# The live role, read on every plan: warn if its trust policy no longer trusts only EC2, even when the change was
+# made outside Terraform and no refresh has run. (On the first plan the role does not exist yet; that warning is
+# expected once.)
+check "host_role_trust" {
+  data "aws_iam_role" "host_live" {
+    name = "${var.name}-${var.env}-host"
+  }
+
+  assert {
+    condition = alltrue([for statement in jsondecode(data.aws_iam_role.host_live.assume_role_policy).Statement :
+      statement.Effect == "Allow"
+      && try(statement.Action, null) == "sts:AssumeRole"
+      && try(statement.NotPrincipal, null) == null
+      && try(statement.NotAction, null) == null
+      && keys(statement.Principal) == ["Service"]
+      && try(tolist(statement.Principal.Service), [statement.Principal.Service]) == ["ec2.amazonaws.com"]
+    ])
+    error_message = "The live camelFS host role trusts something other than ec2.amazonaws.com."
+  }
+}
