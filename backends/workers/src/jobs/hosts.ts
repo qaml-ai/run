@@ -454,15 +454,36 @@ export class JobHost extends DurableObject<JobHostsEnv> {
   constructor(ctx: DurableObjectState, env: JobHostsEnv) {
     super(ctx, env);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS host_dispatches (id TEXT PRIMARY KEY, sent_at INTEGER, deadline_at INTEGER, started_at INTEGER, result TEXT, answered_at INTEGER)");
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS host_dispatch_parts (id TEXT, n INTEGER, data TEXT, PRIMARY KEY(id, n))");
   }
   private row(id: string) {
     return this.ctx.storage.sql.exec<{ id: string; sent_at: number; deadline_at: number; started_at: number | null; result: string | null; answered_at: number | null }>("SELECT * FROM host_dispatches WHERE id = ?", id).toArray()[0];
   }
   private answer(id: string, result: WireResult, until = Date.now()) {
-    this.ctx.storage.sql.exec("UPDATE host_dispatches SET result = ?, answered_at = ? WHERE id = ? AND result IS NULL", JSON.stringify(result), until, id);
+    const stored = this.ctx.storage.transactionSync(() => {
+      const row = this.row(id);
+      if (!row) return "unknown";
+      if (row.result !== null) return "duplicate";
+      // ASCII JSON keeps each part below SQLite's byte limit too, and never splits a Unicode character.
+      const json = JSON.stringify(result).replace(/[^\x00-\x7f]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+      const size = 1024 * 1024, count = Math.ceil(json.length / size), sql = this.ctx.storage.sql;
+      for (let n = 0; n < count; n++) sql.exec("INSERT INTO host_dispatch_parts (id, n, data) VALUES (?, ?, ?)", id, n, json.slice(n * size, (n + 1) * size));
+      sql.exec("UPDATE host_dispatches SET result = ?, answered_at = ? WHERE id = ?", `parts:${count}`, until, id);
+      return "stored";
+    });
+    if (stored !== "stored") return stored;
     const done = this.pending.get(id);
     this.pending.delete(id);
     done?.(result);
+    return stored;
+  }
+  private result(id: string, marker: string): WireResult {
+    // Rows written before chunking kept their JSON inline.
+    if (!marker.startsWith("parts:")) return JSON.parse(marker) as WireResult;
+    const parts = this.ctx.storage.sql.exec<{ n: number; data: string }>("SELECT n, data FROM host_dispatch_parts WHERE id = ? ORDER BY n", id).toArray();
+    const count = Number(marker.slice("parts:".length));
+    if (parts.length !== count || parts.some((part, n) => part.n !== n)) throw new Error("Incomplete job host result");
+    return JSON.parse(parts.map(part => part.data).join("")) as WireResult;
   }
   private gone?: ReturnType<typeof setTimeout>;
   private readonly pending = new Map<string, (result: WireResult) => void>();
@@ -559,7 +580,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
     else if (message.type === "started") {
       this.ctx.storage.sql.exec("UPDATE host_dispatches SET started_at = COALESCE(started_at, ?) WHERE id = ? AND result IS NULL", Date.now(), message.id);
     } else if (message.type === "result") {
-      this.answer(message.id, message.result);
+      if (this.answer(message.id, message.result) === "duplicate") console.warn(JSON.stringify({ type: "jobhost_late_result_dropped", id: message.id }));
       // SQLite's output gate commits the write before the acknowledgement leaves the object.
       this.send({ type: "ack", id: message.id });
     }
@@ -576,7 +597,11 @@ export class JobHost extends DurableObject<JobHostsEnv> {
    */
   async dispatch(id: string, spec: WireJob, deadlineMs: number): Promise<WireResult & { ranFrom?: number; ranUntil?: number }> {
     const sql = this.ctx.storage.sql;
-    sql.exec("DELETE FROM host_dispatches WHERE answered_at < ?", Date.now() - 24 * 3600_000);
+    this.ctx.storage.transactionSync(() => {
+      const before = Date.now() - 24 * 3600_000;
+      sql.exec("DELETE FROM host_dispatch_parts WHERE id IN (SELECT id FROM host_dispatches WHERE answered_at < ?)", before);
+      sql.exec("DELETE FROM host_dispatches WHERE answered_at < ?", before);
+    });
     let row = this.row(id);
     if (!row) {
       if (spec.camelfs && !this.features.includes("camelfs")) return { ok: false, code: "start_failed", message: "This job host cannot mount camelFS trees" };
@@ -601,7 +626,7 @@ export class JobHost extends DurableObject<JobHostsEnv> {
       this.pending.set(id, result => { clearTimeout(timer); previous?.(result); resolve(result); });
     });
     row = this.row(id)!;
-    const result = JSON.parse(row.result!) as WireResult;
+    const result = this.result(id, row.result!);
     return { ...result, ...(row.started_at !== null ? { ranFrom: row.started_at, ranUntil: Math.max(row.started_at, row.answered_at!) } : {}) };
   }
   /**
@@ -694,6 +719,10 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused");
       }
       if (waiting.stopped) return stopped(host, true);
+    } else {
+      // Recovery may precede JobHost's first durable insert. Rebuild the same snapshot's wire spec in that case too.
+      // Admission, placement and the computer reservation are already held.
+      ({ files, sync, camelfs } = await this.files(spec));
     }
     const placedHost = host!;
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
