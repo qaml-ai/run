@@ -119,7 +119,7 @@ func TestRootPrefetchOrderAndPackThreshold(t *testing.T) {
 		t.Run(fmt.Sprint(missing), func(t *testing.T) {
 			ctx := context.Background()
 			local := store.Local{Dir: t.TempDir()}
-			r := root.Root{V: 1, FSType: "ext4", VirtualSize: 16 * root.ChunkSize, Chunks: map[string]string{}, Packs: map[string]string{}}
+			r := root.Root{V: 1, FSType: "ext4", VirtualSize: 16 * root.ChunkSize, Chunks: map[string]string{}, Locations: map[string]root.Location{}}
 			var data []byte
 			for i := 0; i < 16; i++ {
 				b := make([]byte, root.ChunkSize)
@@ -131,9 +131,14 @@ func TestRootPrefetchOrderAndPackThreshold(t *testing.T) {
 					t.Fatal(e)
 				}
 			}
-			hs := r.WindowHashes(0)
+			var hs []string
+			for i := 0; i < 16; i++ {
+				hs = append(hs, r.Chunks[strconv.FormatInt(int64(i)*root.ChunkSize, 10)])
+			}
 			id := root.PackID(hs)
-			r.Packs["0"] = id
+			for i, h := range hs {
+				r.Locations[h] = root.Location{Pack: id, Index: i}
+			}
 			if e := local.Put(ctx, "p/"+id, data); e != nil {
 				t.Fatal(e)
 			}
@@ -148,7 +153,7 @@ func TestRootPrefetchOrderAndPackThreshold(t *testing.T) {
 			for len(measured.started) > 0 {
 				<-measured.started
 			}
-			s := &Server{Store: local, Cache: c, FetchDepth: 1, Packs: true}
+			s := &Server{Store: local, Cache: c, FetchDepth: 1}
 			release := s.Register("root", "", r)
 			defer release()
 			s.PrefetchRoot("root")
@@ -159,7 +164,7 @@ func TestRootPrefetchOrderAndPackThreshold(t *testing.T) {
 			for i := 0; i < want; i++ {
 				select {
 				case k := <-measured.started:
-					expected := "c/" + hs[i]
+					expected := "p/" + id
 					if missing >= 8 {
 						expected = "p/" + id
 					}

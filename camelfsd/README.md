@@ -15,7 +15,7 @@ Build with Go 1.24+, a C compiler (SQLite), and Linux headers: `go build -o came
 ./camelfsd version
 ```
 
-`--store /absolute/directory` substitutes a local store. S3 uses the SDK default credential chain. Objects are `c/<sha256>` (chunks), `r/<sha256>` (canonical roots), `o/<sha1>` (raw blobs), and `t/<sha1>` (trees over 400 KiB). `--cold prehydrate` downloads aligned windows with 32 workers by default and returns a complete warm image. Default clone mode returns `/dev/mapper/camelfs-<dataHash>-<jobId>` immediately; background hydration is on by default (`mount --hydrate=false` or JSON `hydrate:false` opts out). `--nbd-listen` defaults to `127.0.0.1:10809`; `--prefetch-depth` defaults to 64. One listener serves all root exports. Keep this listener private to the host.
+`--store /absolute/directory` substitutes a local store. S3 uses the SDK default credential chain. Objects are `p/<packId>` (chunk bytes), `r/<sha256>` (canonical roots), `o/<sha1>` (raw blobs), and `t/<sha1>` (trees over 400 KiB). `--cold prehydrate` downloads packs or contiguous ranges with 64 workers by default and returns a complete warm image. Default clone mode returns `/dev/mapper/camelfs-<dataHash>-<jobId>` immediately; background hydration is on by default (`mount --hydrate=false` or JSON `hydrate:false` opts out). `--nbd-listen` defaults to `127.0.0.1:10809`; `--prefetch-depth` defaults to 64. One listener serves all root exports. Keep this listener private to the host.
 
 The HTTP/1.1 JSON API is restricted by a mode-0600 Unix socket. Examples use shell variables `S=/run/camelfsd/api.sock`, `R=<64-hex-root>` and `T=<40-hex-tree>`:
 
@@ -56,7 +56,7 @@ Tree import walks directories without following symlinks, skips `.git`, uploads 
 Tree paths are relative and slash-separated, at most 4096 bytes, with no empty, dot, dot-dot, NUL or `.git` segment. Modes are 100644 (default), 100755 and 120000; gitlinks are refused. Listings accept at most 200,000 files and 64 MiB of JSON. Empty directories are dropped. Absent paths are removed; parentTree is only a reuse hint. Imported trees without a tree/root mapping apply from an ancestor or blank image. Trees use Git's header-prefixed SHA-1, exact binary entry encoding and directory sorting rule. SQLite stores small trees inline and large trees as stub rows referencing the store. New tree rows commit together. Set B to a 40-character blob SHA-1 for the raw-blob example above.
 
 
-The s3speed defaults are 64 concurrent blob/chunk fetches and uploads per host (`host --fetch-depth 64`) and 64 blob uploads per import client (`import-tree --fetch-depth 64`). A shared store budget covers foreground reads, prefetch and hydration. S3 keeps connections alive, with MaxIdleConnsPerHost and MaxConnsPerHost set to the host fetch depth (64 by default). Prefetch lookahead remains separate at `--prefetch-depth 64`. Chunk size stays 256 KiB. Clone hydration is driven exclusively by dm-clone, enabled immediately with batch size 256 and threshold 256. Direct writes to an unmarked destination region would race dm-clone and cannot safely update its bitmap. There are no S3 range requests across separate chunk objects. Prehydrate mode groups offsets into aligned `--hydration-pack-size` windows (default 4 MiB), with 32 windows in flight and the shared 64-operation store budget.
+The s3speed defaults are 64 concurrent blob/chunk fetches and uploads per host (`host --fetch-depth 64`) and 64 blob uploads per import client (`import-tree --fetch-depth 64`). A shared store budget covers foreground reads, prefetch and hydration. S3 keeps connections alive, with MaxIdleConnsPerHost and MaxConnsPerHost set to the host fetch depth (64 by default). Prefetch lookahead remains separate at `--prefetch-depth 64`. Chunk size stays 256 KiB. Clone hydration is driven exclusively by dm-clone, enabled immediately with batch size 256 and threshold 256. Direct writes to an unmarked destination region would race dm-clone and cannot safely update its bitmap. Demand uses S3 ranges within packs. Prehydrate fetches packs or contiguous ranges with 64 workers and the shared 64-operation store budget. `--hydration-pack-size` (default 4 MiB) bounds local image write windows.
 
 ## Tree mounts and guest streams (unit 3)
 
@@ -230,21 +230,11 @@ alone writes the destination and owns its hydration bitmap. Its batch size and
 threshold are 256. NBD and the guest mapper device use 4 MiB readahead; logical
 sectors remain 512 bytes, with four connections and 32 MiB maximum requests.
 
-`--packs` defaults on; `--pack-window` defaults to 4 MiB. Imports write packs for
-windows with at least two non-hole chunks. Promotions queue a coalesced serial
-background packer. Chunks remain the storage, dedupe and checkpoint upload unit.
-Roots without packs remain complete. Pack IDs hash the concatenated lowercase
-hex chunk hashes; pack bytes concatenate the corresponding chunks. Each chunk
-is verified before any pack bytes enter the cache. Background reads use a pack
-when at least eight window chunks are missing; demand fetches single chunks.
-Pack reads currently fetch the whole window, including sparse subsets.
-
 `--demand-slots` defaults to 16 of 64. Idle demand capacity can be borrowed;
 borrowed background GETs are cancellable when demand arrives. Queued chunk
-fetches can be displaced by demand. `GET /v0/stats` reports fetches, payload bytes,
-packs used and trusted cache hits (process totals; take deltas between runs).
-Packs add up to another full copy of non-hole chunk bytes for packed roots;
-GC v1 may collect `p/` independently; only `c/` is durable chunk storage.
+fetches can be displaced by demand. `GET /v0/stats` reports process totals:
+`fetches`, payload `bytes`, `packsUsed`, uploaded `packBytes`, `rangeGets`,
+`packGets` and trusted `cacheHits`. Take deltas between runs.
 
 The reviewer runs `sudo scripts/ec2-unit7.sh` in a separately granted host slot.
 It uses only `/nvme/camelfs-u7`, port 10811 and its own device prefix. Unit 1–5
@@ -259,22 +249,72 @@ separate unit. Otherwise record `NBD stays; ublk is v1 (L19)`. L19's decision is
 pending the reviewer table. L2's cold read/hydration numbers are likewise pending;
 L61 was removed by unit 6.
 
-The packer publishes idle refs with a fenced CAS. Held refs keep their current
-root so an accelerator rewrite cannot fence an active checkpoint. Packed roots
-are recorded for tree resolution, and release retries publication after dropping
-the lease. Pack import responses include `packMs` and `packBytes`.
+## One storage format (unit 8)
 
-## Packs are a rebuildable tier
+Chunks remain 256 KiB, identified and deduplicated by SHA-256. Their bytes now
+live only in `p/<packId>` objects. A pack concatenates one or more chunks with
+no header, footer or padding between chunks. `--pack-max` defaults to 16 MiB;
+it must be a chunk multiple between 256 KiB and 16 MiB. The pack ID is the
+SHA-256 of the concatenated lowercase hexadecimal chunk hashes, in member order.
+The final partial image chunk is zero-padded to 256 KiB before hashing.
+Files remain separate Git blobs under `o/<sha1>`.
 
-Chunks at `c/<sha256>` remain the storage and dedupe unit. Packs at `p/<packId>`
-are a rebuildable read tier: they can be deleted at any time without data loss.
-A missing pack falls back to chunk reads. Packed roots cost about 1x the root's
-non-hole bytes extra, in addition to their chunks. Use `--packs=false` to disable
-pack creation and reads. The background packer rebuilds missing packs on promotion
-and skips roots whose named packs already exist. `GET /v0/stats` reports
-`packBytes` written by this process; rebuilding a deleted pack counts again.
+Roots retain `chunks: {"<image offset>": "<chunk sha256>"}` and add
+`locations: {"<chunk sha256>": ["<packId>", <chunk index>]}` for every distinct
+chunk. Roots carry their own lookup information. Different roots may name
+different packs for the same hash. New roots have no `packs` field. No new
+`c/<sha256>` objects are written by import or checkpoint.
 
-Unit 8 will consider storing chunks inside packs with a per-hash `(pack, offset,
-length)` index, range GETs for demand, whole-pack hydration GETs, and checkpoints
-batched into new small packs. That single-format storage change is not part of
-this unit; roots remain complete using their chunk objects alone.
+Import streams non-zero chunks in offset order into bounded packs, with up to
+64 pack PUTs in flight by default. Checkpoint batches just its FIEMAP delta into
+new packs; unchanged chunks retain the parent's locations. Both paths reuse
+locations already in the host's `refs.db` `chunk_locations` table
+(`sha256 PRIMARY KEY, pack, idx, created_at`). Reading roots or whole packs also
+records locations. The host checks the configured store before reusing an index
+entry, so changing store namespaces cannot silently skip a needed upload.
+An edit affecting seven new chunks writes one 1.75 MiB pack at the default limit.
+Reverting to known bytes references their existing pack without an upload.
+
+A demand cache miss makes one range GET for
+`bytes=index*262144-(index+1)*262144-1`, then verifies the chunk's own hash.
+Adjacent missing members within a demand request and the lookahead window
+coalesce into a contiguous range. Hydration and root prefetch use whole packs
+when at least half the pack is needed, otherwise contiguous ranges. If a root
+references only part of a pack, a cached metadata lookup determines the pack
+size for this decision. Whole reads verify every
+member and the pack ID before publishing any cache bytes. Cache files remain
+individual chunks. There is no window packer or background root rewrite.
+
+### Existing roots and repack
+
+Roots without locations still read `c/<sha256>`; unit-7 `packs` fields are ignored.
+Before the review smoke reuses an existing chunk-format root, stop the daemon
+and run this once (the data directory and store must match):
+
+```sh
+./camelfsd repack --data /nvme/camelfs --store s3://bucket/prefix --root OLD_ROOT
+```
+
+The command prints the new root ID. Mount that ID, or explicitly repoint the
+caller's ref through its normal publication flow. Repack leaves refs and old
+objects intact, takes the daemon's data-directory lock, and is idempotent.
+A checkpoint of a legacy root also packs its remaining unchanged legacy chunks.
+
+### GC (v1 design)
+
+A pack is live while any live root references any member. Compaction rewrites
+packs with a low live fraction and publishes roots naming the new locations.
+Nothing is deleted in v0. The dedupe path still needs a reachability touch before
+GC is enabled: `v0-limitation: L-dedupe-touch`. Pack bytes are durable and cannot be deleted
+as a rebuildable tier.
+
+### Host measurements: unit 8
+
+Reviewer only: `sudo scripts/ec2-unit8.sh`. The script skips unless
+`/nvme/host-free` exists. It uses a fresh S3 prefix, isolated data and devices,
+and appends results under unit 8 in `scripts/ec2-smoke-results.txt`. It checks
+import pack bytes against stored non-zero chunk bytes, zero `c/` objects, cold
+first-file ranges, a cold full content read (`tar | cat`), hydration throughput
+against the separately measured NIC ceiling, and a three-file checkpoint's
+pack count and bytes. These measurements have not been run by the coding agent;
+unit 1–7 host results do not validate the new format.

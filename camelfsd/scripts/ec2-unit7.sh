@@ -127,12 +127,12 @@ PY
 done
 # Local-dir warm NBD and hydrated dm-clone over exactly the loop backing file.
 LABEL=local BIN=$W/after.bin
-start_daemon "$D/local-store" --packs=false
+start_daemon "$D/local-store"
 imported=$(client import-image --lineage local --name main --path "$W/large.img")
 ROOT=$(field root <<< "$imported")
 stop_daemon
 rm -f "$D/data-$LABEL/images/$ROOT.img"
-start_daemon "$D/local-store" --packs=false
+start_daemon "$D/local-store"
 mounted=$(client mount --job fio --lineage local --root "$ROOT" --hydrate=true)
 dev=$(field image <<< "$mounted")
 for ((i=0;i<6000;i++)); do

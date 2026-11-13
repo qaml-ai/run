@@ -41,6 +41,15 @@ func (s *coldPackStore) Get(ctx context.Context, k string) ([]byte, error) {
 	}
 	return s.Store.Get(ctx, k)
 }
+func (s *coldPackStore) GetRange(ctx context.Context, k string, o, n int64) ([]byte, error) {
+	s.demandOnce.Do(func() { close(s.demandStarted) })
+	select {
+	case <-s.allowDemand:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return store.Range(ctx, s.Store, k, o, n)
+}
 func waitCold(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
 	select {
@@ -60,7 +69,7 @@ func TestColdDemandRacesRootPackAfterStoreChange(t *testing.T) {
 		t.Fatal(e)
 	}
 	before := &store.Uploaded{Store: store.Local{Dir: filepath.Join(data, "before")}, DB: db.DB}
-	r := root.Root{V: 1, FSType: "ext4", VirtualSize: 16 * root.ChunkSize, Chunks: map[string]string{}, Packs: map[string]string{}}
+	r := root.Root{V: 1, FSType: "ext4", VirtualSize: 16 * root.ChunkSize, Chunks: map[string]string{}, Locations: map[string]root.Location{}}
 	pending := map[string][]byte{}
 	var packed []byte
 	for i := 0; i < 16; i++ {
@@ -88,8 +97,14 @@ func TestColdDemandRacesRootPackAfterStoreChange(t *testing.T) {
 	if _, e = store.PutChunks(ctx, after, pending); e != nil {
 		t.Fatal(e)
 	}
-	id := root.PackID(r.WindowHashes(0))
-	r.Packs["0"] = id
+	var hs []string
+	for i := 0; i < 16; i++ {
+		hs = append(hs, r.Chunks[strconv.FormatInt(int64(i)*root.ChunkSize, 10)])
+	}
+	id := root.PackID(hs)
+	for i, h := range hs {
+		r.Locations[h] = root.Location{Pack: id, Index: i}
+	}
 	if e = after.Put(ctx, "p/"+id, packed); e != nil {
 		t.Fatal(e)
 	}
@@ -104,10 +119,10 @@ func TestColdDemandRacesRootPackAfterStoreChange(t *testing.T) {
 	// A new cache models daemon B. Demand owns one chunk before root prefetch
 	// claims the rest of its window; keep both GETs in flight until they overlap.
 	h := r.Chunks["0"]
-	gated := &coldPackStore{Store: afterLocal, demand: "c/" + h, pack: "p/" + id, demandStarted: make(chan struct{}), packStarted: make(chan struct{}), allowDemand: make(chan struct{}), allowPack: make(chan struct{})}
+	gated := &coldPackStore{Store: afterLocal, demand: "range", pack: "p/" + id, demandStarted: make(chan struct{}), packStarted: make(chan struct{}), allowDemand: make(chan struct{}), allowPack: make(chan struct{})}
 	c := cache.New(filepath.Join(data, "fresh-cache"), gated, 64)
 	defer c.Close()
-	s := &Server{Store: afterLocal, Cache: c, FetchDepth: 64, Packs: true}
+	s := &Server{Store: afterLocal, Cache: c, FetchDepth: 64}
 	d, e := s.load(rootID)
 	if e != nil {
 		t.Fatal(e)
