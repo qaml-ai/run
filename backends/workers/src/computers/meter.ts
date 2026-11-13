@@ -151,6 +151,10 @@ export class ComputerMeter {
   async isOpen() {
     return !!(await this.store.get(OPEN));
   }
+  /** The persisted session, including its stable job name, for recovery before a caller saved its own state. */
+  openSession(): Promise<ComputerSession | undefined> {
+    return this.store.get<ComputerSession>(OPEN);
+  }
   /** Who the open session bills, or undefined: none open. */
   async openPayer(): Promise<ComputerPayer | undefined> {
     const open = await this.store.get<ComputerSession>(OPEN);
