@@ -44,6 +44,13 @@ export function workflowNext(view: { status?: string; fault?: unknown }): string
 }
 /** The description where the agent has no job_run. */
 export const WORKFLOW_START_DESCRIPTION = workflowStartDescription(false);
+/**
+ * The builtin's own system prompt section, for agents that have it. The same "when" as workflow_start's description:
+ * as a tool description alone it moved the choice eval's should-split prompts to 4 of 6; as a system prompt line, 6
+ * of 6 with no false splits (evals/workflows, #847, #855). MODEL-FACING.
+ */
+export const WORKFLOWS_PROMPT_SECTION =
+  "For a task that covers more than about 10 files, tables, documents or sources, or is a port, migration, audit or research sweep, write a workflow: list the units, give each to its own agent(), and keep yourself to planning, checking and reporting.";
 
 export interface WorkflowToolsHost {
   env: WorkflowEnv;
