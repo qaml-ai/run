@@ -2,12 +2,12 @@ package image
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
+	"github.com/qaml-ai/run/camelfsd/internal/objects"
+
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
@@ -18,30 +18,30 @@ import (
 )
 
 type Checkpoint struct {
-	FilesChanged   int     `json:"filesChanged"`
-	BytesReceived  int64   `json:"bytesReceived"`
-	WalkMs         float64 `json:"walkMs"`
-	StreamMs       float64 `json:"streamMs"`
-	FreezeMs       float64 `json:"freezeMs"`
-	PublishMs      float64 `json:"publishMs"`
-	Commit         string  `json:"commit"`
-	Root           string  `json:"root"`
-	Tree           string  `json:"tree"`
-	ParentRoot     string  `json:"parentRoot"`
-	ChangedChunks  int     `json:"changedChunks"`
-	UploadedChunks int     `json:"uploadedChunks"`
-	ChangedBytes   int64   `json:"changedBytes"`
-	ReflinkMs      float64 `json:"reflinkMs"`
-	FiemapMs       float64 `json:"fiemapMs"`
-	HashMs         float64 `json:"hashMs"`
-	UploadMs       float64 `json:"uploadMs"`
-	ImageMs        float64 `json:"imageMs"`
-	WallMs         float64 `json:"wallMs"`
-	CheckpointMs   float64 `json:"checkpointMs"`
+	Timings        map[string]float64 `json:"timings"`
+	FilesChanged   int                `json:"filesChanged"`
+	BytesReceived  int64              `json:"bytesReceived"`
+	WalkMs         float64            `json:"walkMs"`
+	StreamMs       float64            `json:"streamMs"`
+	FreezeMs       float64            `json:"freezeMs"`
+	PublishMs      float64            `json:"publishMs"`
+	Commit         string             `json:"commit"`
+	Root           string             `json:"root"`
+	Tree           string             `json:"tree"`
+	ParentRoot     string             `json:"parentRoot"`
+	ChangedChunks  int                `json:"changedChunks"`
+	UploadedChunks int                `json:"uploadedChunks"`
+	ChangedBytes   int64              `json:"changedBytes"`
+	ReflinkMs      float64            `json:"reflinkMs"`
+	FiemapMs       float64            `json:"fiemapMs"`
+	HashMs         float64            `json:"hashMs"`
+	UploadMs       float64            `json:"uploadMs"`
+	ImageMs        float64            `json:"imageMs"`
+	WallMs         float64            `json:"wallMs"`
+	CheckpointMs   float64            `json:"checkpointMs"`
 }
 
 func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, err error) {
-	_ = m.Heartbeat(id)
 	v := m.lookup(id)
 	if v == nil {
 		return out, os.ErrNotExist
@@ -52,13 +52,18 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, er
 }
 func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadata ...CheckpointRequest) (out Checkpoint, err error) {
 	t := time.Now()
-	if v.fenced.Load() || v.Ref == "" {
-		return out, refs.ErrFenced
+	defer func() { out.Timings = out.timingFields() }()
+	if v.Fence == nil {
+		return out, &apierr.Error{Status: 409, Code: "no_fence", Cause: fmt.Errorf("mount has no fence")}
 	}
-	if e := m.Refs.Check(v.Lineage, v.Ref, v.Fence); e != nil {
-		return out, e
+	if tree == "" {
+		tr, e := m.objects(v.Lineage).Import(ctx, objects.Request{Lineage: v.Lineage, Files: map[string]objects.File{}})
+		if e != nil {
+			return out, e
+		}
+		tree = tr.Tree
 	}
-	r, e := m.mountRoot(ctx, v.Root)
+	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
 	if e != nil {
 		return out, e
 	}
@@ -179,7 +184,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		return out, e
 	}
 	ut := time.Now()
-	out.UploadedChunks, e = store.PutChunks(ctx, m.Store, pending)
+	out.UploadedChunks, e = store.PutChunks(ctx, store.ForLineage(m.Store, v.Lineage), pending)
 	if e != nil {
 		return out, e
 	}
@@ -191,7 +196,7 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 			return out, e
 		}
 		out.Root = root.Hash(b)
-		if e = m.Store.Put(ctx, "r/"+out.Root, b); e != nil {
+		if e = store.ForLineage(m.Store, v.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
 			return out, e
 		}
 	}
@@ -217,10 +222,9 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e = ctx.Err(); e != nil {
 		return out, e
 	}
-	if db, ok := m.Refs.(*refs.DB); ok {
-		e = db.Publish(ctx, v.Lineage, v.Ref, v.Parent, set, v.Fence)
-	} else {
-		e = m.Refs.CAS(v.Lineage, v.Ref, v.Parent, set, v.Fence)
+	e = m.objects(v.Lineage).Record(ctx, v.Lineage, out.Root, "root", nil)
+	if e == nil {
+		e = m.Refs.RecordTree(v.Lineage, tree, out.Root)
 	}
 	if e != nil {
 		return out, e
@@ -260,7 +264,7 @@ type ImportResult struct {
 
 func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult, err error) {
 	t := time.Now()
-	if q.Lineage == "" || q.Name == "" || q.Tree != "" && !root.Hex(q.Tree, 40) || !filepath.IsAbs(q.Path) {
+	if !store.Lineage(q.Lineage) || q.Tree != "" && !root.Hex(q.Tree, 40) || !filepath.IsAbs(q.Path) {
 		return out, apierr.Invalid("invalid import request")
 	}
 	p, e := filepath.EvalSymlinks(q.Path)
@@ -283,15 +287,6 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	if !ok {
 		return out, apierr.Invalid("import path not allowed")
 	}
-	prev, e := m.Refs.Get(q.Lineage, q.Name)
-	if errors.Is(e, sql.ErrNoRows) {
-		prev = refs.Ref{}
-	} else if e != nil {
-		return out, e
-	}
-	if prev.Holder != "" {
-		return out, refs.ErrFenced
-	}
 	f, e := os.Open(p)
 	if e != nil {
 		return out, e
@@ -307,7 +302,7 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	r := root.Root{V: 1, Tree: q.Tree, FSType: "ext4", VirtualSize: st.Size(), Chunks: map[string]string{}}
 	pending := map[string][]byte{}
 	flush := func() error {
-		n, e := store.PutChunks(ctx, m.Store, pending)
+		n, e := store.PutChunks(ctx, store.ForLineage(m.Store, q.Lineage), pending)
 		out.UploadedChunks += n
 		pending = map[string][]byte{}
 		return e
@@ -335,13 +330,13 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	out.Root = root.Hash(b)
 	out.Tree = q.Tree
 	out.Chunks = len(r.Chunks)
-	if e = m.Store.Put(ctx, "r/"+out.Root, b); e != nil {
+	if e = store.ForLineage(m.Store, q.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
 		return out, e
 	}
 	if e = m.promote(p, out.Root); e != nil {
 		return out, e
 	}
-	if e = m.Refs.CAS(q.Lineage, q.Name, prev.Value, refs.Value{Root: out.Root, Tree: q.Tree}, refs.Fence{}); e != nil {
+	if e = m.objects(q.Lineage).Record(ctx, q.Lineage, out.Root, "root", nil); e != nil {
 		return out, e
 	}
 	if e = m.Refs.RecordTree(q.Lineage, q.Tree, out.Root); e != nil {
@@ -350,3 +345,8 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	out.ImportMs = ms(t)
 	return out, nil
 }
+
+func (v Checkpoint) timingFields() map[string]float64 {
+	return map[string]float64{"walkMs": v.WalkMs, "streamMs": v.StreamMs, "freezeMs": v.FreezeMs, "reflinkMs": v.ReflinkMs, "fiemapMs": v.FiemapMs, "hashMs": v.HashMs, "uploadMs": v.UploadMs, "imageMs": v.ImageMs, "wallMs": v.WallMs, "publishMs": v.PublishMs}
+}
+func (v *Checkpoint) RefreshTimings() { v.Timings = v.timingFields() }

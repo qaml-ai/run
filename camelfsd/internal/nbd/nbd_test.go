@@ -23,13 +23,13 @@ func TestHandshakeReadAndReadonly(t *testing.T) {
 			payload := make([]byte, root.ChunkSize)
 			copy(payload, "hello NBD")
 			h := root.Hash(payload)
-			if e := s.Put(ctx, "c/"+h, payload); e != nil {
+			if e := s.Put(ctx, "l/c/"+h, payload); e != nil {
 				t.Fatal(e)
 			}
 			r := root.Root{V: 1, FSType: "ext4", VirtualSize: 2 * root.ChunkSize, Chunks: map[string]string{"0": h}}
 			b, _ := root.Encode(r)
 			id := root.Hash(b)
-			if e := s.Put(ctx, "r/"+id, b); e != nil {
+			if e := s.Put(ctx, "l/r/"+id, b); e != nil {
 				t.Fatal(e)
 			}
 			server, conn := net.Pipe()
@@ -60,11 +60,12 @@ func TestHandshakeReadAndReadonly(t *testing.T) {
 			}
 			write(be.AppendUint32(nil, 3))
 			opt := uint32(optExportName)
-			data := []byte(id)
+			export := "l/" + id
+			data := []byte(export)
 			if goOpt {
 				opt = optGo
-				data = be.AppendUint32(nil, uint32(len(id)))
-				data = append(data, []byte(id)...)
+				data = be.AppendUint32(nil, uint32(len(export)))
+				data = append(data, []byte(export)...)
 				data = be.AppendUint16(data, 0)
 			}
 			b = be.AppendUint64(nil, nbdOptMagic)

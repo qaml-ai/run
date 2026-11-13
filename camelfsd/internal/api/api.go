@@ -7,22 +7,30 @@ import (
 	"errors"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
+
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
 
 type Server struct {
+	APIToken       string
+	idemLocksMu    sync.Mutex
+	idemLocks      map[idempotencyKey]*idempotencyLock
 	Manager        *image.Manager
 	Version, Store string
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		s.storage(w, r)
+		return
+	}
 	t := time.Now()
 	id := ""
 	defer func() {
@@ -60,14 +68,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m := s.Manager
 	switch {
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v0/commits/"):
-		v, e := m.Commit(r.Context(), strings.TrimPrefix(r.URL.Path, "/v0/commits/"))
+		v, e := m.Commit(r.Context(), strings.TrimPrefix(r.URL.Path, "/v0/commits/"), r.URL.Query().Get("lineage"))
 		if e != nil {
 			fail(e)
 			return
 		}
 		reply(200, v)
 	case r.Method == "GET" && r.URL.Path == "/v0/health":
-		reply(200, map[string]any{"dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID})
+		// TEMPORARY: removed with jobhost phase 2
+		reply(200, map[string]any{"api": "127.0.0.1:8790", "dmPrefix": image.DMPrefix(m.Data), "ok": true, "version": s.Version, "data": m.Data, "store": s.Store, "hostId": m.HostID, "legacyMounts": image.LegacyMounts()})
 	case r.Method == "POST" && r.URL.Path == "/v0/mounts":
 		var q image.Request
 		if e := decode(&q); e != nil {
@@ -81,18 +90,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(200, map[string]any{"image": v.Image, "warm": v.Warm, "root": v.Root, "tree": v.Tree, "mountMs": v.MountMs, "hydrating": v.Hydrating, "apply": v.Apply})
-	case r.Method == "POST" && r.URL.Path == "/v0/forks":
-		var q image.ForkRequest
-		if e := decode(&q); e != nil {
-			fail(e)
-			return
-		}
-		v, e := m.Fork(r.Context(), q)
-		if e != nil {
-			fail(e)
-			return
-		}
-		reply(200, v)
 	case r.Method == "POST" && r.URL.Path == "/v0/images":
 		var q image.ImportRequest
 		if e := decode(&q); e != nil {
@@ -129,25 +126,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			v.WallMs = float64(time.Since(t).Microseconds()) / 1000
 			v.CheckpointMs = v.WallMs
+			v.RefreshTimings()
 			reply(200, v)
 		} else if len(parts) == 2 && parts[1] == "heartbeat" && r.Method == "POST" {
-			var q struct{}
-			if e := decode(&q); e != nil {
-				fail(e)
-				return
-			}
-			if e := m.Heartbeat(id); e != nil {
-				fail(e)
-				return
-			}
-			reply(200, map[string]bool{"ok": true})
+			// TEMPORARY: removed with jobhost phase 2
+			reply(200, map[string]bool{"ok": true, "deprecated": true})
 		} else if len(parts) == 1 && r.Method == "GET" {
 			v, e := m.Status(r.Context(), id)
 			if e != nil {
 				fail(e)
 				return
 			}
-			reply(200, map[string]any{"applied": v.Applied, "applyMs": v.ApplyMs, "state": v.State, "image": v.Image, "root": v.Root, "hydratedRegions": v.HydratedRegions, "totalRegions": v.TotalRegions, "leaseEpoch": v.LeaseEpoch})
+			reply(200, map[string]any{"applied": v.Applied, "applyMs": v.ApplyMs, "state": v.State, "image": v.Image, "root": v.Root, "hydratedRegions": v.HydratedRegions, "totalRegions": v.TotalRegions, "fence": v.Fence})
 		} else if len(parts) == 1 && r.Method == "DELETE" {
 			p, e := m.Release(r.Context(), id)
 			if e != nil {
@@ -172,10 +162,7 @@ func errorStatus(e error) (int, string) {
 		code = typed.Code
 	}
 
-	if errors.Is(e, refs.ErrFenced) {
-		status = 409
-		code = "fenced"
-	} else if errors.Is(e, image.ErrNoRoot) {
+	if errors.Is(e, image.ErrNoRoot) {
 		status = 404
 		code = "no-root-for-tree"
 	} else if errors.Is(e, os.ErrNotExist) || errors.Is(e, sql.ErrNoRows) {
@@ -189,10 +176,6 @@ func errorStatus(e error) (int, string) {
 	if errors.Is(e, image.ErrStreamTimeout) {
 		status = 504
 		code = "stream-timeout"
-	}
-	if errors.Is(e, image.ErrHeld) {
-		status = 409
-		code = "held"
 	}
 	return status, code
 }
