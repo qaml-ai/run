@@ -46,7 +46,7 @@ func (s *Server) Register(id, lineage string, r root.Root) func() {
 	}
 	p := s.origins[id]
 	if p == nil {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(store.Background(context.Background()))
 		p = &origin{lineage: lineage, ctx: ctx, cancel: cancel, server: s, root: r, pending: map[int64]bool{}, seen: map[int64]bool{}, lineages: map[string]bool{}}
 		p.cond = sync.NewCond(&p.mu)
 		if s.Patterns != "" && lineage != "" {

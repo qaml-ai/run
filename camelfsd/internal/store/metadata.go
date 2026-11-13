@@ -64,7 +64,7 @@ func (s *limited) Head(ctx context.Context, key string) (Info, error) {
 	if e := s.acquire(ctx); e != nil {
 		return Info{}, e
 	}
-	defer s.release()
+	defer s.release(ctx)
 	return s.Store.Head(ctx, key)
 }
 func writeMetadata(path string, info Info) error {

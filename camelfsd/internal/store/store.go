@@ -91,7 +91,7 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File, metadata 
 		if e := v.acquire(ctx); e != nil {
 			return e
 		}
-		defer v.release()
+		defer v.release(ctx)
 		return PutBlobFile(ctx, v.Store, key, f, metadata...)
 	}
 	_, kind, _, _ := splitKey(key)
@@ -359,14 +359,15 @@ const DefaultDepth = 64
 // One shared budget covers foreground reads, prefetch, hydration and uploads.
 type limited struct {
 	Store
-	slots chan struct{}
+	slots      chan struct{}
+	background chan struct{}
 }
 
 func WithDepth(s Store, n int) Store {
 	if n < 1 {
 		n = DefaultDepth
 	}
-	return &limited{s, make(chan struct{}, n)}
+	return &limited{Store: s, slots: make(chan struct{}, n), background: make(chan struct{}, max(1, n-min(8, max(1, n/4))))}
 }
 func Depth(s Store) int {
 	if v, ok := s.(*scoped); ok {
@@ -380,7 +381,31 @@ func Depth(s Store) int {
 	}
 	return DefaultDepth
 }
+
+type backgroundKey struct{}
+
+func IsBackground(ctx context.Context) bool { return ctx.Value(backgroundKey{}) == true }
+
+// Background shares a bounded speculative budget, leaving slots for demand.
+func Background(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundKey{}, true)
+}
 func (s *limited) acquire(ctx context.Context) error {
+	if ctx.Value(backgroundKey{}) == true {
+		select {
+		case s.background <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		select {
+		case s.slots <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			<-s.background
+			return ctx.Err()
+		}
+	}
+
 	select {
 	case s.slots <- struct{}{}:
 		return nil
@@ -388,26 +413,31 @@ func (s *limited) acquire(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
-func (s *limited) release() { <-s.slots }
+func (s *limited) release(ctx context.Context) {
+	<-s.slots
+	if ctx.Value(backgroundKey{}) == true {
+		<-s.background
+	}
+}
 func (s *limited) Get(ctx context.Context, k string) ([]byte, error) {
 	if e := s.acquire(ctx); e != nil {
 		return nil, e
 	}
-	defer s.release()
+	defer s.release(ctx)
 	return s.Store.Get(ctx, k)
 }
 func (s *limited) Put(ctx context.Context, k string, b []byte) error {
 	if e := s.acquire(ctx); e != nil {
 		return e
 	}
-	defer s.release()
+	defer s.release(ctx)
 	return s.Store.Put(ctx, k, b)
 }
 func (s *limited) Has(ctx context.Context, k string) (bool, error) {
 	if e := s.acquire(ctx); e != nil {
 		return false, e
 	}
-	defer s.release()
+	defer s.release(ctx)
 	return s.Store.Has(ctx, k)
 }
 
