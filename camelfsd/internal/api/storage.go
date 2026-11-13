@@ -378,6 +378,11 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 			}
 			cap = min(cap, *v.MaxBytes)
 		}
+		files, e := repo.Files(ctx, v.Tree, v.Paths)
+		if e != nil {
+			fail(e)
+			return
+		}
 		entries := make([]objects.Entry, len(v.Paths))
 		data := make([][]byte, len(v.Paths))
 		keys := []string{}
@@ -387,7 +392,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 				fail(invalid("invalid path %s", p))
 				return
 			}
-			f, e := repo.File(ctx, v.Tree, p)
+			f, e := files[i].Entry, files[i].Err
 			if errors.Is(e, os.ErrNotExist) {
 				continue
 			}
@@ -408,7 +413,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 			entries[i] = f
 			keys = append(keys, strconv.Itoa(i))
 		}
-		e := store.Parallel(ctx, 64, keys, func(k string) error {
+		e = store.Parallel(ctx, 64, keys, func(k string) error {
 			i, _ := strconv.Atoi(k)
 			b, e := blobBytes(ctx, repo, l, entries[i].SHA1)
 			data[i] = b

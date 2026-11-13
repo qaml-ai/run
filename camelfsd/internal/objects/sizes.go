@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
+
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 // SizedTree supplies the same entries as ReadTree, including stored sizes.
@@ -16,27 +19,39 @@ func (r *Repository) SizedTree(ctx context.Context, id string) ([]Entry, error) 
 	if e != nil {
 		return nil, e
 	}
-	b, e := r.Store.Get(ctx, "ts/"+id)
-	if e == nil {
-		var sizes []Entry
-		if e = json.Unmarshal(b, &sizes); e != nil {
-			return nil, e
+	var b []byte
+	e = r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM tree_sizes WHERE id=?", id).Scan(&b)
+	cold := e == sql.ErrNoRows
+	if cold {
+		b, e = r.Store.Get(ctx, "ts/"+id)
+		if errors.Is(e, os.ErrNotExist) {
+			return nil, &MissingTreeSizes{Tree: id}
 		}
-		if len(es) != len(sizes) {
-			return nil, fmt.Errorf("corrupt tree sizes")
-		}
-		for i := range es {
-			if es[i].Path != sizes[i].Path || es[i].Mode != sizes[i].Mode || es[i].SHA1 != sizes[i].SHA1 || sizes[i].Size < 0 {
-				return nil, fmt.Errorf("corrupt tree sizes")
-			}
-			es[i].Size = sizes[i].Size
-		}
-		return es, nil
 	}
-	if !errors.Is(e, os.ErrNotExist) {
+	if e != nil {
 		return nil, e
 	}
-	return nil, &MissingTreeSizes{Tree: id}
+	var sizes []Entry
+	if store.VerifyTreeSizes(id, b) != nil || json.Unmarshal(b, &sizes) != nil || len(es) != len(sizes) {
+		return nil, fmt.Errorf("corrupt tree sizes")
+	}
+	for i := range es {
+		if es[i].Path != sizes[i].Path || es[i].Mode != sizes[i].Mode || es[i].SHA1 != sizes[i].SHA1 || sizes[i].Size < 0 {
+			return nil, fmt.Errorf("corrupt tree sizes")
+		}
+		es[i].Size = sizes[i].Size
+	}
+	if cold {
+		if e = r.cacheTreeSizes(ctx, id, b); e != nil {
+			return nil, e
+		}
+	}
+	return es, nil
+}
+
+func (r *Repository) cacheTreeSizes(ctx context.Context, id string, b []byte) error {
+	_, e := r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO tree_sizes VALUES(?,?,?)", id, b, time.Now().UnixMilli())
+	return e
 }
 
 func (r *Repository) fillSizes(ctx context.Context, es []Entry) ([]Entry, error) {

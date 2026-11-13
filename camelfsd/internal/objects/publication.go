@@ -53,6 +53,13 @@ func (r *Repository) Flush(ctx context.Context) error {
 			return e
 		}
 	}
+	for key, b := range p.puts {
+		if id, ok := strings.CutPrefix(key, "ts/"); ok {
+			if e := r.cacheTreeSizes(ctx, id, b); e != nil {
+				return e
+			}
+		}
+	}
 	for _, v := range p.memberships {
 		key := kindKey(v.Kind, v.ID)
 		var e error

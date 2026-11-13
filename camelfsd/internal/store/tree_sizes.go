@@ -9,7 +9,7 @@ import (
 
 // Size sidecars retain Git's tree bytes and id. Like blob size metadata, sizes
 // are written by the daemon, never accepted as an API caller's assertion.
-func verifyTreeSizes(id string, b []byte) error {
+func VerifyTreeSizes(id string, b []byte) error {
 	var es []struct {
 		Path, Mode, SHA1 string
 		Size             int64

@@ -421,34 +421,6 @@ func decodeTree(b []byte) ([]Entry, error) {
 	return entries, nil
 }
 
-func (r *Repository) TreeEntries(ctx context.Context, id string) ([]Entry, error) {
-	out := []Entry{}
-	var walk func(string, string) error
-	walk = func(tree, prefix string) error {
-		entries, e := r.SizedTree(ctx, tree)
-		if e != nil {
-			return e
-		}
-		for _, entry := range entries {
-			entry.Path = prefix + entry.Path
-			if entry.Mode == "40000" {
-				if e = walk(entry.SHA1, entry.Path+"/"); e != nil {
-					return e
-				}
-				continue
-			}
-
-			out = append(out, entry)
-		}
-		return nil
-	}
-	e := walk(id, "")
-	if e != nil {
-		return nil, e
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
-}
 func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
 	return r.TreeEntries(ctx, id)
 }

@@ -38,7 +38,7 @@ func verify(k string, b []byte) error {
 	}
 	_, p, h, _ := splitKey(k)
 	if p == "ts" {
-		return verifyTreeSizes(h, b)
+		return VerifyTreeSizes(h, b)
 	}
 	actual := root.Hash(b)
 	if p == "o" || p == "t" || p == "k" {

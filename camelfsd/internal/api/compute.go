@@ -274,32 +274,21 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			}
 		}
 	}
-	es := []objects.Entry{}
-	var walk func(string, string) error
-	walk = func(id, prefix string) error {
-		entries, e := r.SizedTree(ctx, id)
-		if e != nil {
-			return e
-		}
-		sort.Slice(entries, func(i, j int) bool { return gitLess(entries[i], entries[j]) })
-		for _, f := range entries {
-			f.Path = prefix + f.Path
-			if recursive && f.Mode == "40000" {
-				if e = walk(f.SHA1, f.Path+"/"); e != nil {
-					return e
-				}
-			} else {
-				es = append(es, f)
-			}
-		}
-		return nil
+	var es []objects.Entry
+	var e error
+	if recursive {
+		es, e = r.TreeEntries(ctx, id)
+	} else {
+		es, e = r.SizedTree(ctx, id)
+		sort.Slice(es, func(i, j int) bool { return gitLess(es[i], es[j]) })
 	}
-	prefix := ""
-	if dir != "" {
-		prefix = dir + "/"
-	}
-	if e := walk(id, prefix); e != nil {
+	if e != nil {
 		return nil, e
+	}
+	if dir != "" {
+		for i := range es {
+			es[i].Path = dir + "/" + es[i].Path
+		}
 	}
 	start := 0
 	if after != "" {
@@ -352,93 +341,107 @@ func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) (
 		return nil, invalid("invalid path %s", prefix)
 	}
 	out := []diffChange{}
-	var walk func(string, string, string) error
-	walk = func(a, b, dir string) error {
-		if a == b {
-			return nil
+	type pair struct{ a, b, dir string }
+	for level := []pair{{a: a, b: b}}; len(level) > 0; {
+		var ids []string
+		for _, p := range level {
+			if p.a != "" && p.a != p.b {
+				ids = append(ids, p.a)
+			}
+			if p.b != "" && p.a != p.b {
+				ids = append(ids, p.b)
+			}
 		}
-		am, bm := map[string]objects.Entry{}, map[string]objects.Entry{}
-		for i, id := range []string{a, b} {
-			if id == "" {
+		trees, err := r.SizedTrees(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		var next []pair
+		for _, p := range level {
+			if p.a == p.b {
 				continue
 			}
-			es, e := r.SizedTree(ctx, id)
-			if e != nil {
-				return e
+			am, bm := map[string]objects.Entry{}, map[string]objects.Entry{}
+			for _, f := range trees[p.a] {
+				am[f.Path] = f
 			}
-			for _, f := range es {
-				if i == 0 {
-					am[f.Path] = f
-				} else {
-					bm[f.Path] = f
-				}
+			for _, f := range trees[p.b] {
+				bm[f.Path] = f
 			}
-		}
-		names := map[string]bool{}
-		for n := range am {
-			names[n] = true
-		}
-		for n := range bm {
-			names[n] = true
-		}
-		keys := []string{}
-		for n := range names {
-			keys = append(keys, n)
-		}
-		sort.Strings(keys)
-		for _, n := range keys {
-			x, y := am[n], bm[n]
-			p := dir + n
-			if prefix != "" && p != prefix && !strings.HasPrefix(p, prefix+"/") && !strings.HasPrefix(prefix, p+"/") {
-				continue
+			names := map[string]bool{}
+			for n := range am {
+				names[n] = true
 			}
-			if x.SHA1 == y.SHA1 && x.Mode == y.Mode {
-				continue
+			for n := range bm {
+				names[n] = true
 			}
-			if x.Mode == "40000" || y.Mode == "40000" {
-				ax, by := "", ""
-				if x.Mode == "40000" {
-					ax = x.SHA1
-				}
-				if y.Mode == "40000" {
-					by = y.SHA1
-				}
-				if e := walk(ax, by, p+"/"); e != nil {
-					return e
-				}
-				if x.Mode == "40000" {
-					x = objects.Entry{}
-				}
-				if y.Mode == "40000" {
-					y = objects.Entry{}
-				}
-				if x.SHA1 == "" && y.SHA1 == "" {
+			for n := range names {
+				x, y := am[n], bm[n]
+				path := p.dir + n
+				if prefix != "" && path != prefix && !strings.HasPrefix(path, prefix+"/") && !strings.HasPrefix(prefix, path+"/") {
 					continue
 				}
+				if x.SHA1 == y.SHA1 && x.Mode == y.Mode {
+					continue
+				}
+				if x.Mode == "40000" || y.Mode == "40000" {
+					ax, by := "", ""
+					if x.Mode == "40000" {
+						ax = x.SHA1
+					}
+					if y.Mode == "40000" {
+						by = y.SHA1
+					}
+					next = append(next, pair{ax, by, path + "/"})
+					if x.Mode == "40000" {
+						x = objects.Entry{}
+					}
+					if y.Mode == "40000" {
+						y = objects.Entry{}
+					}
+					if x.SHA1 == "" && y.SHA1 == "" {
+						continue
+					}
+				}
+				status := "modified"
+				if x.SHA1 == "" {
+					status = "added"
+				} else if y.SHA1 == "" {
+					status = "deleted"
+				} else if x.SHA1 == y.SHA1 {
+					status = "mode"
+				}
+				c := diffChange{Path: path, Status: status, OldBlob: x.SHA1, NewBlob: y.SHA1, OldMode: x.Mode, NewMode: y.Mode}
+				if x.SHA1 != "" {
+					size := x.Size
+					c.OldSize = &size
+				}
+				if y.SHA1 != "" {
+					size := y.Size
+					c.NewSize = &size
+				}
+				out = append(out, c)
 			}
-			status := "modified"
-			if x.SHA1 == "" {
-				status = "added"
-			} else if y.SHA1 == "" {
-				status = "deleted"
-			} else if x.SHA1 == y.SHA1 {
-				status = "mode"
-			}
-			c := diffChange{Path: p, Status: status, OldBlob: x.SHA1, NewBlob: y.SHA1, OldMode: x.Mode, NewMode: y.Mode}
-			if x.SHA1 != "" {
-				size := x.Size
-				c.OldSize = &size
-			}
-			if y.SHA1 != "" {
-				size := y.Size
-				c.NewSize = &size
-			}
-			out = append(out, c)
 		}
-		return nil
+		level = next
 	}
-	e := walk(a, b, "")
-	return out, e
+	sort.Slice(out, func(i, j int) bool { return diffPathLess(out[i].Path, out[j].Path) })
+	return out, nil
+}
+
+// Diff order compares path components and emits descendants before their parent.
+func diffPathLess(a, b string) bool {
+	for {
+		x, restA, moreA := strings.Cut(a, "/")
+		y, restB, moreB := strings.Cut(b, "/")
+		if x != y {
+			return x < y
+		}
+		if !moreA || !moreB {
+			return moreA
+		}
+		a, b = restA, restB
+	}
 }
 
 func (q *commitRequest) UnmarshalJSON(raw []byte) error {

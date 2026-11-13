@@ -31,6 +31,7 @@ func Open(path string) (*DB, error) {
 	}
 	d.SetMaxOpenConns(1)
 	_, e = d.Exec(`CREATE TABLE IF NOT EXISTS uploaded(key TEXT PRIMARY KEY,at INTEGER); CREATE TABLE IF NOT EXISTS tree_parents(tree TEXT PRIMARY KEY,parent TEXT); CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,kind TEXT,bytes BLOB,size INT,created_at INTEGER);
+ CREATE TABLE IF NOT EXISTS tree_sizes(id TEXT PRIMARY KEY, bytes BLOB, created_at INTEGER);
  CREATE TABLE IF NOT EXISTS lineage_blobs(lineage TEXT,sha256 TEXT,sha1 TEXT,size INT,created_at INTEGER,PRIMARY KEY(lineage,sha256));
  CREATE INDEX IF NOT EXISTS blob_sha1 ON lineage_blobs(sha1);
  CREATE TABLE IF NOT EXISTS lineage_objects(lineage TEXT,id TEXT,kind TEXT,created_at INTEGER,PRIMARY KEY(lineage,id,kind));

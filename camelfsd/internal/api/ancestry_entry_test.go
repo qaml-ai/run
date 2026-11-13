@@ -294,6 +294,9 @@ func TestReadRoutesUseOnlyTreeSizes(t *testing.T) {
 		if e = os.Remove(path); e != nil {
 			t.Fatal(e)
 		}
+		if _, e = s.repository().DB.DB.Exec("DELETE FROM tree_sizes WHERE id=?", id); e != nil {
+			t.Fatal(e)
+		}
 		for _, route := range []string{"trees/" + first + "?recursive=1", "trees/" + first + "/entry?path=nested/file", "diff?from=" + first + "&to=" + next} {
 			v := response(t, callStorage(t, s, "l", "GET", route, nil, "", 500))
 			err := v["error"].(map[string]any)
