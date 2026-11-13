@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,7 @@ func TestDaemonStreams(t *testing.T) {
 	if target, err := os.Readlink(filepath.Join(g.repo, "oldlink")); err != nil || target != "edit" {
 		t.Fatal(target, err)
 	}
+	waitForFilesystemClock(t, g)
 	for _, edit := range []func() error{
 		func() error { return os.Remove(filepath.Join(g.repo, "old")) },
 		func() error { return os.Chmod(filepath.Join(g.repo, "exec"), 0755) },
@@ -115,5 +117,46 @@ func TestDaemonStreams(t *testing.T) {
 	}
 	if g.index.Tree != tree || g.pending != nil {
 		t.Fatal("checkpoint was not recorded")
+	}
+}
+
+// A chmod within the apply tick can leave ctime unchanged. Wait for a newer
+// timestamp on the same filesystem before expecting a mode-only checkpoint.
+func waitForFilesystemClock(t *testing.T, g *guest) {
+	t.Helper()
+	var latest int64
+	for _, entry := range g.index.Entries {
+		ctime, err := strconv.ParseInt(entry.Ctime, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		latest = max(latest, ctime)
+	}
+	probe := filepath.Join(g.repo, ".camelfs-tmp-clock")
+	defer func() {
+		if err := os.Remove(probe); err != nil && !os.IsNotExist(err) {
+			t.Error(err)
+		}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := os.WriteFile(probe, []byte{0}, 0600); err != nil {
+			t.Fatal(err)
+		}
+		entry, _, err := snapshot("clock", probe, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctime, err := strconv.ParseInt(entry.Ctime, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ctime > latest {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("filesystem clock did not advance past applied ctime %d (probe ctime %d)", latest, ctime)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

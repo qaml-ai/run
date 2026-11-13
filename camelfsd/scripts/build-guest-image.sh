@@ -16,13 +16,17 @@ export E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH
   cd "$src/camelfsd"
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags guest -trimpath -ldflags='-s -w' -o "$work/camelfsd" ./cmd/camelfsd
 )
-dnf -y -q --installroot="$root" --releasever=2023 --setopt=install_weak_deps=False install \
+# Use the container's versioned AL2023 repository snapshot and configuration.
+release=$(rpm -q --qf '%{VERSION}' system-release)
+dnf_root=(dnf -y -q --installroot="$root" --releasever="$release"
+  --setopt=reposdir=/etc/yum.repos.d --setopt=varsdir=/etc/dnf/vars)
+"${dnf_root[@]}" --setopt=install_weak_deps=False install \
   bash coreutils findutils grep sed gawk tar gzip xz bzip2 unzip which procps-ng util-linux iproute shadow-utils \
   ca-certificates curl git make gcc gcc-c++ python3 python3-pip e2fsprogs
 install -d -m 0755 "$root/repo" "$root/out"
 install -D -m 0755 "$work/camelfsd" "$root/usr/local/bin/camelfsd"
 install -D -m 0755 "$work/camelfsd" "$root/sbin/camel-init"
-dnf -y -q --installroot="$root" clean all
+"${dnf_root[@]}" clean all
 rpm --root "$root" -qa --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' | LC_ALL=C sort > "$work/packages"
 find "$root" -print0 | LC_ALL=C sort -z | xargs -0 -r touch -h -d "@$SOURCE_DATE_EPOCH"
 truncate -s 6G "$image"
