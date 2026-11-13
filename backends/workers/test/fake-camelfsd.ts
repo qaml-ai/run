@@ -49,7 +49,8 @@ export function fakeCamelfsd(token: string) {
     if (!hash(id)) bad();
     if (!scope(l).commits.has(id)) return bad(write ? "unknown_commit" : "not_in_tree", write ? 400 : 404);
     const parsed = parseCommit(commits.get(id)!);
-    return { tree: parsed.tree, parents: parsed.parents, author: parsed.author, message: parsed.message, trailers: parsed.trailers,
+    // As the daemon: `author` is what the commit was made with, not the git identity line.
+    return { tree: parsed.tree, parents: parsed.parents, author: parsed.author.slice(0, parsed.author.lastIndexOf(" <")), message: parsed.message, trailers: parsed.trailers,
       time: Number(/> (-?\d+) \+0000$/.exec(parsed.author)?.[1]) };
   }
   async function build(l: string, files: Map<string, FileEntry>): Promise<string> {
@@ -171,18 +172,20 @@ export function fakeCamelfsd(token: string) {
       const parentInfo = parents.map(p => info(l, p, true));
       const baseId = input.baseTree ?? parentInfo[0]?.tree ?? EMPTY_TREE;
       const base = tree(l, baseId, true), files = new Map(base.files);
+      let named = 0; // As the daemon: `bytes` counts the blobs this commit names, not the whole tree.
       for (const c of input.changes as Change[]) {
         if (!c || !validPath(c.path) || (c.mode !== undefined && !["100644", "100755", "120000"].includes(c.mode))) bad();
         if (c.delete) { files.delete(c.path); continue; }
         const old = files.get(c.path), blob = c.blob ?? old?.blob;
         if (!blob || !own.blobs.has(blob)) bad("unknown_blob");
+        if (c.blob) named += blobs.get(c.blob)!.length;
         files.set(c.path, { path: c.path, blob, mode: c.mode ?? old?.mode ?? "100644", size: blobs.get(blob)!.length });
       }
       const id = await build(l, files);
       const object = await commitObject({ tree: id, parents, author: input.author, at: input.time * 1000, message: input.message, trailers: input.trailers });
       commits.set(object.id, object.bytes); own.commits.add(object.id);
       const result = { tree: id, commit: object.id, changed: changes(base, trees.get(id)!).length,
-        bytes: [...files.values()].reduce((n, f) => n + f.size, 0), parents, time: input.time };
+        bytes: named, parents, time: input.time };
       if (key) writes.set(cacheKey, { input: fingerprint, result });
       return json(result, 201);
     }
