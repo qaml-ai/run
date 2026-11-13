@@ -29,9 +29,10 @@ var ErrIgnored = errors.New("ignored-path")
 var ErrHash = errors.New("hash-mismatch")
 
 type Repository struct {
-	DB      *refs.DB
-	Store   store.Store
-	TempDir string
+	publication *publication
+	DB          *refs.DB
+	Store       store.Store
+	TempDir     string
 	// Query observes repository reads for diagnostics and query-budget tests.
 	Query func(string)
 }
@@ -169,6 +170,14 @@ type treeObject struct {
 }
 
 func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
+	batch := r.BeginPublication()
+	out, e := batch.importTrees(ctx, q)
+	if e == nil && r.publication == nil {
+		e = batch.Flush(ctx)
+	}
+	return out, e
+}
+func (r *Repository) importTrees(ctx context.Context, q Request) (Result, error) {
 	start := time.Now()
 	out := Result{}
 	if q.Lineage == "" || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
@@ -335,19 +344,11 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	if e != nil {
 		return out, e
 	}
-	keys := make([]string, len(pending))
-	all := map[string][]byte{}
-	for i, obj := range pending {
-		keys[i] = obj.id
-		all[obj.id] = obj.bytes
-	}
-	if e = store.Parallel(ctx, 16, keys, func(id string) error {
-		if err := (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, "t/"+id, all[id]); err != nil {
-			return err
+	for _, obj := range pending {
+		r.publication.puts["t/"+obj.id] = obj.bytes
+		if e = r.Record(ctx, q.Lineage, obj.id, "tree", nil); e != nil {
+			return out, e
 		}
-		return r.Record(ctx, q.Lineage, id, "tree", nil)
-	}); e != nil {
-		return out, e
 	}
 	tx, e := r.DB.DB.BeginTx(ctx, nil)
 	if e != nil {

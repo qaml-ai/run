@@ -24,15 +24,18 @@ func membershipKey(l, id, kind string) string {
 	return "l/" + root.Hash([]byte(l+"\x00"+kind+"\x00"+id))
 }
 func (r *Repository) Record(ctx context.Context, l, id, kind string, b *Blob) error {
+	batch := r.BeginPublication()
 	v := membership{l, id, kind, b}
 	raw, e := json.Marshal(v)
 	if e != nil {
 		return e
 	}
-	if e = (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, membershipKey(l, id, kind), raw); e != nil {
-		return e
+	batch.publication.puts[membershipKey(l, id, kind)] = raw
+	batch.publication.memberships = append(batch.publication.memberships, v)
+	if r.publication == nil {
+		return batch.Flush(ctx)
 	}
-	return r.cacheMembership(ctx, v)
+	return nil
 }
 func (r *Repository) cacheMembership(ctx context.Context, v membership) error {
 	if v.Blob != nil {
@@ -71,18 +74,23 @@ func (r *Repository) Reachable(ctx context.Context, l, id, kind string) (bool, e
 	return true, r.cacheMembership(ctx, v)
 }
 func (r *Repository) PutObject(ctx context.Context, l, kind string, b []byte) (string, error) {
+	batch := r.BeginPublication()
 	id := store.GitHash(kind, b)
 	key := "t/"
 	if kind == "commit" {
 		key = "k/"
 	}
-	if e := (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, key+id, b); e != nil {
+	batch.publication.puts[key+id] = b
+	batch.publication.objects[id] = cachedObject{kind, b}
+	if e := batch.Record(ctx, l, id, kind, nil); e != nil {
 		return "", e
 	}
-	if _, e := r.DB.DB.ExecContext(ctx, "INSERT OR REPLACE INTO objects VALUES(?,?,?,?,?)", id, kind, b, len(b), time.Now().UnixMilli()); e != nil {
-		return "", e
+	if r.publication == nil {
+		if e := batch.Flush(ctx); e != nil {
+			return "", e
+		}
 	}
-	return id, r.Record(ctx, l, id, kind, nil)
+	return id, nil
 }
 func (r *Repository) Object(ctx context.Context, id, kind string) ([]byte, error) {
 	var b []byte

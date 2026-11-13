@@ -125,6 +125,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 			return nil, bad("invalid_request")
 		}
 	}
+	r = r.BeginPublication()
 	tr, e := r.Import(ctx, objects.Request{Lineage: l, ParentTree: base, Files: files})
 	if e != nil {
 		return nil, e
@@ -148,6 +149,9 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	}
 	id, e := r.PutObject(ctx, l, "commit", []byte(body))
 	if e != nil {
+		return nil, e
+	}
+	if e = r.Flush(ctx); e != nil {
 		return nil, e
 	}
 	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes}, nil
