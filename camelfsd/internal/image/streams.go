@@ -235,6 +235,11 @@ func (m *Manager) sendApply(c net.Conn, lineage, job string, a Apply, entries []
 					return fmt.Errorf("corrupt blob")
 				}
 			}
+			// Both production guests use a link operation, with the target in JSON.
+			if op.Op == "put" && op.Mode == "120000" {
+				op.Op, op.Mode, op.Size, op.Target = "link", "", 0, string(b)
+				b = nil
+			}
 			writeMu.Lock()
 			defer writeMu.Unlock()
 			if e := wire.Send(c, op); e != nil {
@@ -295,14 +300,16 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 	}
 	out.walk = h.WalkMs
 	seen := map[string]bool{}
-	var pathsBytes int64
+	var pathsBytes, linkBytes int64
 	for {
 		var o wire.Op
 		if e = wire.JSON(c, &o); e != nil {
 			return out, e
 		}
 		if o.End {
-			if o.Error != "" || o.Files != out.count || o.Bytes != out.bytes {
+			// The production guests count raw put payloads in the trailer.
+			// The receiver still charges link targets against quota and byte caps.
+			if o.Error != "" || o.Files != out.count || (o.Bytes != out.bytes && o.Bytes != out.bytes-linkBytes) {
 				return out, fmt.Errorf("trailer mismatch")
 			}
 			out.freeze = o.FreezeMs
@@ -342,6 +349,7 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 		if o.Op == "link" {
 			o.Size = int64(len(o.Target))
 			o.Mode = "120000"
+			linkBytes += o.Size
 		}
 		if o.Size < 0 || o.Mode == "120000" && o.Size > 4096 || o.Size > m.MaxBytes-out.bytes || o.Size > quota-out.bytes {
 			return out, fmt.Errorf("size cap exceeded")

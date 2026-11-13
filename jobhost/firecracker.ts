@@ -148,7 +148,8 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
         const allow = internet ? [...(options.egress ?? DEFAULT_EGRESS), ...(options.runtimeHost ? [options.runtimeHost] : [])] : [];
         await writePolicy(options.policyDir, address.guestIp, { job: id, allow });
         const base = firecrackerConfig({ id, kernel: options.kernel, initrd: options.initrd, disk, vsockPath: vsock, tap: address.tap, mac: address.mac }, shape, options.build, boot.repo, options.kvm);
-        base["boot-source"].boot_args += ` root=/dev/vda rw init=/sbin/camel-init ${guestNetArgs(address, internet)}`;
+        // RESTART uses the x86 i8042 reset port directly, even with the i8042 driver blacklisted.
+        base["boot-source"].boot_args += ` reboot=k root=/dev/vda rw init=/sbin/camel-init ${guestNetArgs(address, internet)}`;
         if (boot.repo) base["boot-source"].boot_args += " camel.repo=/dev/vdb";
         await writeFile(config, JSON.stringify(base));
         await rm(vsock, { force: true });
