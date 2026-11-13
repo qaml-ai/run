@@ -43,7 +43,7 @@ func TestStreamErrorRoutes(t *testing.T) {
 			}
 			defer db.Close()
 			st := store.Local{Dir: t.TempDir()}
-			m, e := image.New(image.Config{Data: d, Cold: "prehydrate", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 64), db)
+			m, e := image.New(image.Config{Data: d, VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 64), db)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -109,7 +109,7 @@ func TestCheckpointTimingNesting(t *testing.T) {
 	}
 	defer db.Close()
 	st := store.Local{Dir: t.TempDir()}
-	m, e := image.New(image.Config{Data: d, Cold: "prehydrate", VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 4), db)
+	m, e := image.New(image.Config{Data: d, VirtualSize: 16 << 20}, st, cache.New(filepath.Join(d, "cache"), st, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}
