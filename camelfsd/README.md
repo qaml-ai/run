@@ -267,7 +267,7 @@ block. Locations come from the superblock, descriptor and inode block mapping;
 the journal superblock is included for the usual internal journal. The
 verified cache serves these reads to NBD and later hydration without another
 fetch. Unsupported layouts such as meta_bg keep lazy reads.
-There is one cold path; `--cold` and `--hydration-pack-size` are removed.
+There is one cold path; `--hydration-pack-size` is removed.
 
 The guest device is a persistent dm-snapshot with 512 KiB chunks. Its COW
 store is a loop over sparse `mounts/<jobId>/cow.img`. `--cow-max` caps the
@@ -277,13 +277,19 @@ is a separate dm-linear device named `<prefix>-<jobId>-o`, initially over
 the read-only NBD root export.
 
 The daemon writes every non-hole 256 KiB root chunk into sparse `image.img`
-with up to 64 workers. Cached chunks are reused; fetched chunks are hash
-verified. Holes require no reads or writes. After fsync, the daemon suspends
+with up to 64 workers. Fetched chunks are hash verified before one image write.
+FICLONERANGE records the image range in the host cache without copying bytes.
+Unsupported range cloning and partial final chunks use a second cache write.
+Cached chunks are reused. Holes require no reads or writes. After fsync, the daemon suspends
 the linear origin, reloads it over a loop of `image.img`, resumes it, and
 detaches NBD. The snapshot and guest retain the same bytes. Subsequent reads
 use only the kernel, loops and local disk. There is no post-hydration scan.
 Status progresses from `cold` through `hydrating` to `hydrated` after the
-swap, with `hydratedBytes`, `totalBytes`, and `swapMs`. Byte counts describe
+swap, with `hydratedBytes`, `totalBytes`, `hydrationMBps`, and `swapMs`. Throughput is
+non-hole bytes divided by elapsed hydration seconds in decimal MB/s, frozen
+at completion. The caller measures `firstFileMs`. `GET /v0/stats` reports
+process-lifetime `prehydrateBytes` (successful image writes during hydration)
+and `reflinkedChunks` (successful chunk-cache range clones). Byte counts describe
 non-hole data, independent of the virtual size. Hydration errors are exposed
 as `hydrationError`; checkpoint fails rather than publishing partial data.
 
@@ -313,7 +319,8 @@ reclamation.
 
 The shared store budget defaults to 64 operations (`--fetch-depth`). All
 speculative fetches share a smaller budget, reserving eight slots for demand
-at the default depth. The cache also reserves slots. At depth one operations
+at the default depth. The same host pool and demand reserve cover every mount; the cache has no
+separate fetch pool. At depth one operations
 serialize. Prefetch lookahead is separately 64. A reserved slot cannot remove
 NIC or disk contention; demand latency targets need measurement on the host.
 A per-root bounded prefetch pool records first-touch patterns at release.

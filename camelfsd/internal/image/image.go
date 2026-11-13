@@ -48,7 +48,8 @@ type Config struct {
 	MaxBytes, MaxPathsBytes int64
 }
 type Manager struct {
-	pins map[string]map[string]bool
+	pins            map[string]map[string]bool
+	PrehydrateBytes atomic.Int64
 	Config
 	Store    store.Store
 	Cache    *cache.Cache
@@ -91,6 +92,7 @@ type Mount struct {
 	releaseOrigin                              func()
 	hydrationRoot                              string
 	hydration                                  *hydration
+	HydrationMBps                              float64 `json:"hydrationMBps"`
 	HydratedBytes                              int64   `json:"hydratedBytes"`
 	TotalBytes                                 int64   `json:"totalBytes"`
 	SwapMs                                     float64 `json:"swapMs"`
@@ -499,6 +501,7 @@ func (m *Manager) status(ctx context.Context, v *Mount) error {
 		return nil
 	}
 	v.HydratedBytes = v.hydration.bytes.Load()
+	v.HydrationMBps = v.hydration.mbps()
 	select {
 	case <-v.hydration.done:
 		if v.hydration.err != nil {
