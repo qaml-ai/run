@@ -78,10 +78,12 @@ func (s *Sender) pass(ctx context.Context) (sent int, err error) {
 	for shard := 0; shard < Shards; shard++ {
 		now := number(s.Now().UnixMilli())
 		query := &dynamodb.QueryInput{
-			TableName:              aws.String(s.Table),
-			KeyConditionExpression: aws.String("shard = :shard"),
-			FilterExpression:       aws.String("nextAt <= :now AND (claimedUntil = :zero OR claimedUntil < :now)"),
-			ProjectionExpression:   aws.String("shard, id"),
+			TableName: aws.String(s.Table),
+			// shard is a DynamoDB reserved word: every expression names it through #shard.
+			KeyConditionExpression:   aws.String("#shard = :shard"),
+			FilterExpression:         aws.String("nextAt <= :now AND (claimedUntil = :zero OR claimedUntil < :now)"),
+			ProjectionExpression:     aws.String("#shard, #id"),
+			ExpressionAttributeNames: map[string]string{"#shard": "shard", "#id": "id"},
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":shard": str(strconv.Itoa(shard)), ":now": now, ":zero": number(0),
 			},
