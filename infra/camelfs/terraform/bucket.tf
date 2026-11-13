@@ -1,5 +1,8 @@
-# The object store: blobs, chunks, roots, packs and search shards, and (until L74 closes) trees and commits, keyed
-# <lineage>/<kind>/<hash> exactly as camelfsd writes them today (camelfsd/README.md, "Durability and lineage scope").
+# The object store: blobs, chunks, roots, tree-size sidecars, packs and search shards, and (until L74 closes) trees
+# and commits, keyed <lineage>/<kind>/<hash> exactly as camelfsd writes them today (camelfsd/README.md, "Durability
+# and lineage scope"); plus two prefixes outside any lineage: <guest_image_prefix>guest/<sha256>… (the
+# content-addressed guest image, K1, put by CI) and results/ (VM results past DynamoDB's 400 KB item, K4, put by
+# the tier).
 #
 # A NEW bucket, not the prototype's camel-fs-proto-904534089871-usw2. The prototype bucket was made by hand,
 # unencrypted beyond SSE-S3, unversioned, holds measurement runs under arbitrary prefixes, and is written by the

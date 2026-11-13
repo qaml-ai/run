@@ -1,18 +1,25 @@
 # Two principals, least privilege (camel-fs.md §1.10: "hosts hold an instance role scoped to the bucket prefixes
 # and tables, as the job-hosts plan's role is scoped"; the api tier is the authorization boundary):
 #
-#   api   the Fargate task role of camelfsd api: the three tables and the bucket (no delete). The only principal
-#         that touches refs and lineages. The token verification keys reach the task as an injected environment
-#         variable, so the task role reads no secret; the execution role reads that one secret for the injection.
-#   host  camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and commits a
-#         checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks its fence) and
-#         reads no lineage registry. Delivered as a customer-managed policy (host_policy_arn), attachable to the
-#         job-hosts pool roles (infra/job-hosts/terraform/iam.tf, host_managed_policies) and to the proto host's
-#         role, and as a role + instance profile of its own for hosts outside those pools. The role trusts
-#         ec2.amazonaws.com only, with the job-hosts invariant's guards (its session name is an instance id the
-#         tier may one day attest; nothing else may ever assume it).
+#   api        the Fargate task role of camelfsd api: every table and the bucket (no delete; results/ for VM
+#              results that outgrow an item). The only principal that touches refs, lineages, deliveries, hosts
+#              and vms. The token verification keys reach the task as an injected environment variable, so the
+#              task role reads no secret; the execution role reads that one secret for the injection.
+#   host       camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and
+#              commits a checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks
+#              its fence), reads no lineage registry and touches no control table. Delivered as a customer-managed
+#              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
+#              host_managed_policies) and to the proto host's role, and as a role + instance profile of its own
+#              for hosts outside those pools. The role trusts ec2.amazonaws.com only, with the job-hosts
+#              invariant's guards (its session name is an instance id the tier may one day attest; nothing else
+#              may ever assume it).
+#   publisher  GitHub Actions (OIDC, the repository's production environment) publishing the content-addressed
+#              guest image (K1): PutObject under <guest_image_prefix>guest/ and nothing else — no read, no list,
+#              no delete. The key is the image's sha256 and the publisher puts with `If-None-Match: *`, so an
+#              existing object is never overwritten (S3 refuses the put); IAM cannot express that condition, and
+#              the bucket's versioning keeps every prior version in any case.
 #
-# Neither principal may delete an object: deletion is the collector's (camel-fs.md §1.9), under a role of its own,
+# No principal here may delete an object: deletion is the collector's (camel-fs.md §1.9), under a role of its own,
 # in a later phase.
 
 # --- api task ---
@@ -174,13 +181,13 @@ locals {
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
       },
-      # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref or a lineage
-      # directly (it asks the tier, which checks the fence), and never assumes another role.
+      # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref, a lineage or a
+      # control table directly (it asks the tier, which checks the fence), and never assumes another role.
       {
-        Sid      = "NoRefsOrLineages"
+        Sid      = "NoControlTables"
         Effect   = "Deny"
         Action   = ["dynamodb:*"]
-        Resource = [local.table_arns["refs"], local.table_arns["lineages"]]
+        Resource = [for table, arn in local.table_arns : arn if table != "objects"]
       },
       {
         Sid      = "NoAssumeRole"
@@ -270,5 +277,68 @@ check "host_role_trust" {
       && try(tolist(statement.Principal.Service), [statement.Principal.Service]) == ["ec2.amazonaws.com"]
     ])
     error_message = "The live camelFS host role trusts something other than ec2.amazonaws.com."
+  }
+}
+
+# --- guest-image publisher (CI) ---
+
+data "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
+}
+
+locals {
+  guest_image_keys = "${aws_s3_bucket.objects.arn}/${var.guest_image_prefix}guest/*"
+
+  publisher_policy = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "PutGuestImages"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = [local.guest_image_keys]
+      },
+      {
+        Sid      = "EncryptThroughS3"
+        Effect   = "Allow"
+        Action   = ["kms:GenerateDataKey"]
+        Resource = [aws_kms_key.objects.arn]
+        Condition = {
+          StringEquals = { "kms:ViaService" = "s3.${var.region}.amazonaws.com" }
+        }
+      },
+    ]
+  }
+}
+
+resource "aws_iam_role" "guest_image_publisher" {
+  name        = "${var.name}-${var.env}-guest-image-publisher"
+  description = "GitHub Actions (production environment) publishing the content-addressed camelFS guest image: PutObject under ${var.guest_image_prefix}guest/ only."
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub" = [for subject in var.github_subjects : "repo:${subject}:environment:${var.github_environment}"]
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "guest_image_publisher" {
+  name   = "publish-guest-image"
+  role   = aws_iam_role.guest_image_publisher.name
+  policy = jsonencode(local.publisher_policy)
+
+  lifecycle {
+    precondition {
+      condition     = alltrue([for statement in local.publisher_policy.Statement : alltrue([for action in flatten([statement.Action]) : contains(["s3:PutObject", "kms:GenerateDataKey"], action)])])
+      error_message = "The guest-image publisher may only put objects (and obtain a data key for them): no read, list or delete."
+    }
   }
 }

@@ -148,6 +148,28 @@ variable "host_security_group_ids" {
 
 # --- Bucket ---
 
+variable "guest_image_prefix" {
+  description = "Prefix in the bucket for the content-addressed guest image (K1: <prefix>guest/<sha256>.ext4.zst + .json). The CI publisher may put there and nowhere else; hosts read it with the host policy."
+  type        = string
+  default     = "images/"
+  validation {
+    condition     = can(regex("^[a-z0-9-]+/$", var.guest_image_prefix))
+    error_message = "guest_image_prefix is one lowercase path segment with a trailing slash."
+  }
+}
+
+variable "github_subjects" {
+  description = "OIDC subject prefixes of the repository whose GitHub Actions may publish the guest image (the runtime's infra/terraform uses the same immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub)."
+  type        = list(string)
+  default     = ["qaml-ai@151090534/run@1384214784"]
+}
+
+variable "github_environment" {
+  description = "The GitHub Actions environment whose jobs may assume the publisher role (required reviewers on it gate the publish)."
+  type        = string
+  default     = "production"
+}
+
 variable "noncurrent_expiry_days" {
   description = "Overwritten and deleted objects stay recoverable this long (camel-fs.md §5 phase 1: 35, the PITR window of the tables)."
   type        = number

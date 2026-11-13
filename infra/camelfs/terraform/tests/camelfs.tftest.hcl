@@ -8,6 +8,9 @@ mock_provider "aws" {
   mock_data "aws_subnets" {
     defaults = { ids = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1", "subnet-0123456789abcdef2"] }
   }
+  mock_data "aws_iam_openid_connect_provider" {
+    defaults = { arn = "arn:aws:iam::904534089871:oidc-provider/token.actions.githubusercontent.com" }
+  }
   mock_data "aws_sns_topic" {
     defaults = { arn = "arn:aws:sns:us-west-2:904534089871:camelai-agent-runtime-alerts" }
   }
@@ -91,8 +94,8 @@ run "foundation_without_an_image" {
     error_message = "The bucket is camelfs-<env>-<account id>: globally unique, and not the prototype's."
   }
   assert {
-    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages" }
-    error_message = "Three tables: objects, refs, lineages."
+    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages", deliveries = "camelfs-prod-deliveries", hosts = "camelfs-prod-hosts", vms = "camelfs-prod-vms" }
+    error_message = "Six tables: objects, refs, lineages, deliveries, hosts, vms."
   }
 }
 
@@ -106,8 +109,11 @@ run "tables_keys_and_protection" {
       aws_dynamodb_table.camelfs["objects"].hash_key == "lineage" && aws_dynamodb_table.camelfs["objects"].range_key == "id"
       && aws_dynamodb_table.camelfs["refs"].hash_key == "lineage" && aws_dynamodb_table.camelfs["refs"].range_key == "name"
       && aws_dynamodb_table.camelfs["lineages"].hash_key == "lineage" && aws_dynamodb_table.camelfs["lineages"].range_key == null
+      && aws_dynamodb_table.camelfs["deliveries"].hash_key == "shard" && aws_dynamodb_table.camelfs["deliveries"].range_key == "id"
+      && aws_dynamodb_table.camelfs["hosts"].hash_key == "pool" && aws_dynamodb_table.camelfs["hosts"].range_key == "host"
+      && aws_dynamodb_table.camelfs["vms"].hash_key == "id" && aws_dynamodb_table.camelfs["vms"].range_key == null
     )
-    error_message = "Key schemas: objects (lineage, id), refs (lineage, name), lineages (lineage)."
+    error_message = "Key schemas: objects (lineage, id), refs (lineage, name), lineages (lineage), deliveries (shard, id), hosts (pool, host), vms (id)."
   }
   assert {
     condition     = alltrue([for table in aws_dynamodb_table.camelfs : table.billing_mode == "PAY_PER_REQUEST" && table.point_in_time_recovery[0].enabled && table.deletion_protection_enabled])
@@ -200,9 +206,17 @@ run "roles_and_policies" {
   assert {
     condition = (
       length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Effect == "Allow" && contains(flatten([statement.Action]), "dynamodb:PutItem")]) == 1
-      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoRefsOrLineages" && statement.Effect == "Deny"]) == 1
+      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 5]) == 1
     )
-    error_message = "The host policy writes the objects table only and explicitly denies refs and lineages."
+    error_message = "The host policy writes the objects table only and explicitly denies the five other tables."
+  }
+  assert {
+    condition = (
+      [for statement in jsondecode(aws_iam_role_policy.guest_image_publisher.policy).Statement : statement.Resource if statement.Sid == "PutGuestImages"] == [["arn:aws:s3:::camelfs-prod-904534089871/images/guest/*"]]
+      && !anytrue([for statement in jsondecode(aws_iam_role_policy.guest_image_publisher.policy).Statement : anytrue([for action in flatten([statement.Action]) : action != "s3:PutObject" && action != "kms:GenerateDataKey"])])
+      && jsondecode(aws_iam_role.guest_image_publisher.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == ["repo:qaml-ai@151090534/run@1384214784:environment:production"]
+    )
+    error_message = "The guest-image publisher puts under images/guest/ only, from the repository's production environment only."
   }
   assert {
     condition = (

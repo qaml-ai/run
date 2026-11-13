@@ -2,9 +2,9 @@
 
 Option C of the camelFS design (Miguel, 2026-11-13; `docs/design/camel-fs.md` §1.6, §1.10, §1.13, §5 phase 1):
 camelFS as **one AWS service in `us-west-2`**. A stateless Go tier, `camelfsd api` (the §9 storage plane plus a
-refs package), behind a load balancer; **refs, leases and fences as DynamoDB conditional writes**; **trees and
-commits in DynamoDB** (L74); **blobs and chunks in S3**; the VM hosts run `camelfsd --role host` and reach the tier
-in-VPC. This directory is that service as OpenTofu in `terraform/`, applied only through the guarded `apply.sh`.
+refs package, and the compute control plane of `camel-fs-compute.md` §3), behind a load balancer; **refs, leases
+and fences as DynamoDB conditional writes**; **trees and commits in DynamoDB** (L74); **blobs and chunks in S3**;
+the VM hosts run `camelfsd --role host` and reach the tier in-VPC. This directory is that service as OpenTofu in `terraform/`, applied only through the guarded `apply.sh`.
 Account `904534089871`, `us-west-2`. **Nothing here has been applied.**
 
 It is its own root module with its own state (`agent-runtime/camelfs/terraform.tfstate` in the runtime's state
@@ -16,14 +16,14 @@ of theirs.
 
 | File | Resources |
 |---|---|
-| `bucket.tf` | S3 bucket **`camelfs-prod-904534089871`**: SSE-KMS with its own key (rotation on, S3 bucket keys), public access blocked, owner-enforced, versioned with 35-day noncurrent expiry, incomplete uploads aborted after 2 days, TLS-only, **daily Inventory** (Parquet) into `inventory/` kept 30 days. No expiry of live objects: deletion is the collector's. Keys exactly as `camelfsd` writes them today: `<lineage>/{o,t,k,r,c,ts}/<hash>` |
-| `dynamodb.tf` | Three on-demand tables with PITR and deletion protection: **`camelfs-prod-objects`** (`lineage` + `id`), **`camelfs-prod-refs`** (`lineage` + `name`), **`camelfs-prod-lineages`** (`lineage`). No GSI/LSI, no TTL (see "Key schemas") |
+| `bucket.tf` | S3 bucket **`camelfs-prod-904534089871`**: SSE-KMS with its own key (rotation on, S3 bucket keys), public access blocked, owner-enforced, versioned with 35-day noncurrent expiry, incomplete uploads aborted after 2 days, TLS-only, **daily Inventory** (Parquet) into `inventory/` kept 30 days. No expiry of live objects: deletion is the collector's. Keys exactly as `camelfsd` writes them today, `<lineage>/{o,t,k,r,c,ts}/<hash>`, plus `images/guest/<sha256>…` (the guest image, K1) and `results/` (VM results past 400 KB, K4) |
+| `dynamodb.tf` | Six on-demand tables with PITR and deletion protection: **`camelfs-prod-objects`** (`lineage` + `id`), **`camelfs-prod-refs`** (`lineage` + `name`), **`camelfs-prod-lineages`** (`lineage`), **`camelfs-prod-deliveries`** (`shard` + `id`), **`camelfs-prod-hosts`** (`pool` + `host`), **`camelfs-prod-vms`** (`id`). No GSI/LSI, no TTL (see "Key schemas") |
 | `alb.tf` | One ACM certificate for `fs.camelai.dev` + `fs-internal.camelai.dev` (validated through Cloudflare). Two application load balancers, both **HTTP/2 off**, HTTPS only (TLS 1.3/1.2 policy), deletion protection: **public** (Cloudflare's IPv4 ranges only; `fs.camelai.dev` proxied) and **internal** (the hosts' security groups only; `fs-internal.camelai.dev` DNS-only to its private addresses). A target group each (`/v0/health`, 5 s interval, 2 up / 3 down) |
 | `ecs.tf` | ECR repository `camelfs-prod` (immutable tags, newest 20 kept), cluster `camelfs-prod` (Container Insights), the api tasks' security group, and, **once `api_image_tag` is set**, the Fargate task definition (ARM64, 1 vCPU / 2 GiB, read-only root, an ephemeral `/var/lib/camelfs` for the SQLite caches, the JWKS injected as `CAMELFS_JWKS`), the service `camelfs-prod-api` on both target groups (circuit breaker + alarm rollback), and CPU target-tracking autoscaling (2–8 tasks) |
-| `iam.tf` | **api** task role (the three tables; the bucket read/write, never delete; ECS Exec; no secret) and execution role (image, logs, the one JWKS secret for the injection). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on `refs`/`lineages` and on `sts:AssumeRole*`), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles) |
+| `iam.tf` | **api** task role (every table; the bucket read/write, never delete; ECS Exec; no secret) and execution role (image, logs, the one JWKS secret for the injection). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on the five other tables and on `sts:AssumeRole*`), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles). **publisher** role `camelfs-prod-guest-image-publisher` for GitHub Actions (OIDC, the repository's `production` environment): `s3:PutObject` under `images/guest/` and nothing else |
 | `secrets.tf` | Secrets Manager container `camelfs/prod/token-verify-keys`: the runtime's public JWKS (Ed25519), the api tier's verification keys. Value by `jwks.sh`, never Terraform |
-| `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists). 18 alarms |
-| `outputs.tf` | URLs, bucket, key, tables, role and policy ARNs, repository, the secret, and the api command |
+| `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists). 27 alarms |
+| `outputs.tf` | URLs, bucket, key, tables, role and policy ARNs, repository, the secret, the guest-image location, and the api command |
 
 ### Key schemas (the whole contract this module imposes on the daemon)
 
@@ -32,11 +32,16 @@ of theirs.
 | `objects` | `lineage` (S) | `id` (S) = `t/<sha1>` or `k/<sha1>` | `b` (git bytes), `generation`, `createdAt`. Not wired yet: trees and commits are in S3 until L74 |
 | `refs` | `lineage` (S) | `name` (S) | `version`, `tree`, `root?`, `owner`, `expiresAt?`, `holder`, `leaseEpoch`, `leaseDeadline`, `updatedAt`. A move is one conditional `UpdateItem` whose condition is the parent rule (`version = parents[0]`) and the lease state the writer believes in |
 | `lineages` | `lineage` (S) | — | tenant, kind, quota, default branch, ignore list, last mark |
+| `deliveries` | `shard` (S) = `"0"`..`"15"` | `id` (S) | the outbox: a watched ref's move, `vm.*` and `usage.*` events, written in the same `TransactWriteItems` as the state change (camel-fs-files.md §6, §9.11; camel-fs-compute.md); claimers `Query` each shard and claim with a conditional `claimedUntil`. A lineage key would leave pending work unfindable without an index; the shard can still be derived from the lineage |
+| `hosts` | `pool` (S) | `host` (S) | `bootEpoch`, `shape`, `slots`, `free`, `vms`, `features`, `lastSeenAt`, `draining` (K4; heartbeats are `UpdateItem`s, placement a `TransactWrite` with the `vms` item) |
+| `vms` | `id` (S) | — | the phase row: `phase`, `host`, `lineage`, `ref`, `leaseEpoch`, timestamps, result fields, `payer` (K4; results past 400 KB go to S3 `results/`) |
 
-The lineage is the partition key everywhere (tenancy in the data, §1.10; adaptive capacity splits a hot lineage's
-item collection because there is no LSI). No DynamoDB TTL: a ref's `expiresAt` is the service's to act on; a TTL
-delete would move a ref without a CAS and without a log. Proposed to proto-block on 2026-11-13; the attribute names
-are the only thing to keep in step with `camelfsd`'s refs package.
+The lineage is the partition key of every fs table (tenancy in the data, §1.10; adaptive capacity splits a hot
+lineage's item collection because there is no LSI). No DynamoDB TTL: a ref's `expiresAt` and a delivery's claim
+are the service's to act on; a TTL delete would move a ref without a CAS and without a log. Agreed with
+proto-block (objects, refs, lineages), fs-architect and wf-durable (deliveries, hosts, vms) on 2026-11-13; the
+attribute names are the only thing to keep in step with `camelfsd`. The `hosts`/`vms` tables of K4 are created
+now so the tier's role covers them; nothing writes them until K4 lands.
 
 ### The api task's command
 
@@ -106,6 +111,11 @@ draft of this module generated an ES256 pair of its own; the lead approved reusi
 - `fs-internal.camelai.dev` is a DNS-only CNAME to the internal balancer's name, which resolves to private
   addresses: it is reachable from the VPC alone, and the certificate's name matches for hosts.
 - No principal here may delete an object: the collector (camel-fs.md §1.9) gets a role of its own in a later phase.
+- The guest-image publisher (GitHub Actions through the account's existing OIDC provider, the repository's
+  `production` environment, as the runtime's deploy role) may only `PutObject` under `images/guest/`: no read, no
+  list, no delete, no other prefix. The key is the image's sha256 and `publish-guest-image.sh` puts with
+  `If-None-Match: *`, so S3 refuses to overwrite an existing object; IAM cannot express that condition, and the
+  bucket's versioning keeps every prior version in any case.
 - The host role trusts `ec2.amazonaws.com` only, with the job-hosts invariant's guards (precondition, postcondition,
   a `check` against the live role on every plan, and `tests/`): nobody is ever given `sts:AssumeRole` on it, and
   `iam:PassRole` on it is as good as enrolling a host.
@@ -127,8 +137,8 @@ on-demand prices in November 2024 ($0.625/M and $0.125/M), which the second colu
 | public balancer's IPv4 addresses (one per default subnet, $0.005/h) | ~$15 | ~$15 |
 | Fargate ARM, 2 × (1 vCPU / 2 GiB) at $0.0395/h | $0 | ~$58 |
 | the tasks' public IPv4 ($0.005/h each) | $0 | ~$7 |
-| KMS key, 1 secret, 18 alarms, Container Insights, logs, ECR | ~$5 | ~$8 |
-| **total** | **~$53** | **~$121** |
+| KMS key, 1 secret, 27 alarms, Container Insights, logs, ECR | ~$6 | ~$9 |
+| **total** | **~$54** | **~$122** |
 
 **Variable, by scale** (the design's baseline is 1,000 concurrent agents: 144 M API writes + 14.6 M checkpoints a
 month, 0.5 TB live; the pilot today is a few agents, so the fixed line is the bill):
@@ -201,6 +211,14 @@ validation records and the two hostnames), `tofu` (>= 1.10), `jq`, `curl`, and D
    tofu -chdir=infra/camelfs/terraform output -raw public_url        # CAMELFS_URL for the Workers runtime
    ```
 
+6. **Guest-image CI** (K1; this module does not touch the workflow): give `.github/workflows/ci.yml`'s publish
+   step the role and the location, as repository variables of the `production` environment:
+
+   ```bash
+   tofu -chdir=infra/camelfs/terraform output -raw guest_image_publisher_role_arn   # role-to-assume
+   tofu -chdir=infra/camelfs/terraform output -raw guest_image_location             # publish-guest-image.sh's <s3-prefix>
+   ```
+
 Later changes go the same way (`PLAN_ONLY=1` first). A plan that deletes or replaces anything is refused unless
 `ALLOW_DESTROY` names each address; the Terraform-registered task definition revision is the one exception (the
 service runs `deploy.sh`'s revision). The bucket, the tables and the secret carry `prevent_destroy`.
@@ -223,20 +241,23 @@ groups, the command, the JWKS injection).
 
 ## Questions for Miguel
 
+0. **Account.** `904534089871` (camelRun prod, where the pools and the runtime are: the job-hosts decision of
+   11-12). Nothing here assumes another.
 1. **Hostnames.** `fs.camelai.dev` and `fs-internal.camelai.dev` in the camelai.dev zone (the runtime's zone, its
    token already edits it). Any other name is `hostname` / `internal_hostname` in `prod.tfvars`.
 2. **VPC.** The default VPC, like the runtime and the pools. A VPC of camelFS's own would need peering or shared
    subnets with the pools for the in-VPC path; not worth it until the fleet has one.
-3. **Account.** `904534089871`, where the pools and the runtime are (job-hosts decision, 11-12).
-4. **Tier size.** 1 vCPU / 2 GiB × 2–8 tasks. The LRU of trees and small blobs is what memory buys; 2 vCPU / 4 GiB
+3. **Tier size.** 1 vCPU / 2 GiB × 2–8 tasks. The LRU of trees and small blobs is what memory buys; 2 vCPU / 4 GiB
    doubles the Fargate line to ~$116/month. Nothing measured yet decides this.
-5. **The DynamoDB price** in force for this account (list, or the November 2024 halving): it moves the baseline
+4. **The DynamoDB price** in force for this account (list, or the November 2024 halving): it moves the baseline
    bill by a third.
 
 ## Unverified (needs real AWS, or proto-block's api role)
 
 - The daemon's api-role flags beyond those proto-block confirmed on 2026-11-13 (`--objects-table`,
-  `--lineages-table` with L74: `api_extra_args`), and that `CAMELFS_JWKS` is read when `--jwks-file` is absent.
+  `--lineages-table` with L74, the deliveries/hosts/vms flags with K4: `api_extra_args`), and that `CAMELFS_JWKS`
+  is read when `--jwks-file` is absent.
+- That the repository's OIDC subject (`github_subjects`) still matches: `gh api repos/qaml-ai/run/actions/oidc/customization/sub`.
 - That the default VPC has default-for-AZ subnets in every AZ the balancers want, and that no name here collides.
 - That `cloudflare_ip_ranges` under provider 5.x exposes `ipv4_cidrs` (it did under 4.x and 5.x at writing).
 - `TargetResponseTime` p99 as an alarm statistic (`extended_statistic`), and Container Insights' `RunningTaskCount`.
@@ -248,6 +269,7 @@ groups, the command, the JWKS injection).
 
 - The collector (S3 Batch Operations role, `touch` and `warm` tables; camel-fs.md §1.9), dashboards, and the
   daemon's EMF metrics (§1.12).
+- The guest-image CI job itself (K1, proto-block) and its `publish-guest-image.sh`; only the role it assumes is here.
 - Access logs for the balancers (`alb_access_logs_bucket` takes an existing bucket; none is created).
 - Gateway endpoints for S3 and DynamoDB on the default route table (free; the tasks go through the internet gateway
   as the runtime's do). Worth adding with a route table of this module's own if the tasks ever leave the default

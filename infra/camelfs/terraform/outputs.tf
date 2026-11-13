@@ -24,7 +24,7 @@ output "bucket_kms_key_arn" {
 }
 
 output "table_names" {
-  description = "The DynamoDB tables, by role (objects, refs, lineages): the daemon's CAMELFS_*_TABLE."
+  description = "The DynamoDB tables, by role (objects, refs, lineages, deliveries, hosts, vms): the daemon's --*-table flags."
   value       = local.table_names
 }
 
@@ -76,4 +76,14 @@ output "token_verify_keys_secret_arn" {
 output "api_command" {
   description = "The api task's command as registered (subcommand and flags; no secret), for a host or a local run to mirror."
   value       = local.api_command
+}
+
+output "guest_image_publisher_role_arn" {
+  description = "The role GitHub Actions assumes (OIDC, the production environment) to publish the guest image; the only principal that may put under guest_image_location."
+  value       = aws_iam_role.guest_image_publisher.arn
+}
+
+output "guest_image_location" {
+  description = "Where camelfsd/scripts/publish-guest-image.sh puts the image (its <s3-prefix> argument) and where hosts fetch it."
+  value       = "s3://${aws_s3_bucket.objects.bucket}/${var.guest_image_prefix}guest"
 }
