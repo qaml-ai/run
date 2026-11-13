@@ -225,8 +225,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - `camelfs-prod-deliveries` (`shard` + `id`);
   - `camelfs-prod-hosts` (`pool` + `host`);
   - `camelfs-prod-vms` (`id`).
-  - `camelfs-prod-usage` (`shard` + `ulid`), the one table with DynamoDB TTL (on `expiresAt`, 35 days), for §9.13:
-    in fs-infra's #985.
+  - `camelfs-prod-usage` (`shard` + `ulid`), the one table with DynamoDB TTL (on `expiresAt`, 35 days), for §9.13;
+    created and applied (fs-infra, #985).
 - **Tier:** ECS Fargate (Graviton) service `camelfs-prod-api` behind two ALBs, both with HTTP/2 off: public
   `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts'
   security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
