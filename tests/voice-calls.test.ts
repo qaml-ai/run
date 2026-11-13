@@ -153,11 +153,18 @@ test("ask_agent includes only new transcripts and omits the payer without credit
   const f = await fixture(t, { submitStreaming: submit.submit, credit: undefined });
   const call = await f.live();
   const push = f.openai.script("call_1");
-  push(talk("i1", " First line. "), talk("i2", "Second line."), tool("a1"));
+  push(talk("i1", " First line. "), {
+    type: "conversation.item.input_audio_transcription.failed", item_id: "failed",
+  }, talk("i2", "Second line."), tool("a1"));
   const said = await until(() => f.events.find(e => e.type === "voice.utterance" && e.data.session === call.id && e.data.seq === 1)?.data, "first utterance");
   assert.equal(said.text, "First line.");
   assert.equal(said.reported, "sideband");
   assert.equal("speakerId" in said, false);
+  const utterances = () => f.events.filter(e => e.type === "voice.utterance" && e.data.session === call.id);
+  await until(() => utterances().some(e => e.data.text === "Second line."), "second utterance");
+  assert.deepEqual(utterances().map(e => [e.data.seq, e.data.text]).sort(([a], [b]) => Number(a) - Number(b)), [
+    [1, "First line."], [2, "Second line."],
+  ]);
   assert.equal((await f.event("voice.agent.asked", call.id)).request, "what time is it");
   assert.equal((await f.event("voice.agent.replied", call.id)).outcome, "ok");
   const request = submit.requests[0];
@@ -256,8 +263,11 @@ test("end is idempotent, sweep expires, and stopping hangs up live calls", async
   await f.calls.sweep();
   assert.equal((await f.event("voice.session.ended", third.id)).reason, "max_duration");
   const broken = await f.live();
-  f.openai.disconnect("call_4");
-  assert.equal((await f.event("voice.session.ended", broken.id)).reason, "error");
+  f.openai.disconnect("call_4", "test error sk-fixture-secret");
+  const disconnected = await f.event("voice.session.ended", broken.id);
+  assert.equal(disconnected.reason, "error");
+  assert.equal(disconnected.detail, "The realtime connection closed (1011: test error [redacted])");
+  assert.ok(f.openai.hangups.includes("call_4"));
   const last = await f.live();
   retiring = true;
   const refused = await f.create();
@@ -266,7 +276,7 @@ test("end is idempotent, sweep expires, and stopping hangs up live calls", async
   await f.calls.stop();
   assert.equal((await f.event("voice.session.ended", last.id)).reason, "restarted");
   assert.equal(f.calls.size, 0);
-  assert.deepEqual(f.openai.hangups, ["call_1", "call_2", "call_3", "call_5"]);
+  assert.deepEqual(f.openai.hangups, ["call_1", "call_2", "call_3", "call_4", "call_5"]);
   assert.equal((await f.http("POST", `${path}/vs_${"0".repeat(24)}/end`)).status, 404);
 });
 

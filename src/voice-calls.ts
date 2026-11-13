@@ -166,7 +166,7 @@ export class VoiceCalls {
         rateLimits: () => {},
         warning: (code, detail) => console.warn(JSON.stringify({ type: "voice_call_provider_warning", session: id, code, detail })),
         closed: (reason, detail) => afterLive("voice_call_finish_failed", async () => {
-          if (reason !== "requested") await this.finish(id, { reason, detail }, true);
+          if (reason === "error") await this.end(tenant, id, { reason, detail }, true);
         }),
       });
       const { callId, sdpAnswer, sideband } = connected;
@@ -222,26 +222,35 @@ export class VoiceCalls {
     return view(rows[0]);
   }
 
-  async end(tenant: string, id: string, by: Ending): Promise<VoiceCall> {
+  async end(tenant: string, id: string, by: Ending, providerClosed = false): Promise<VoiceCall> {
     const row = await this.row(tenant, id);
-    if (row.state === "ended") return view(row);
+    if (row.state === "ended" && !providerClosed) return view(row);
     const existing = this.ending.get(id);
     if (existing) return existing;
-    const ending = this.hangup(row, by);
+    const ending = this.hangup(row, by, providerClosed);
     this.ending.set(id, ending);
     try { return await ending; } finally { this.ending.delete(id); }
   }
 
-  private async hangup(row: Row, by: Ending): Promise<VoiceCall> {
+  private async hangup(row: Row, by: Ending, providerClosed: boolean): Promise<VoiceCall> {
     const { rows } = await this.options.db.query<Row>(`update voice_calls set state = 'ending', updated_at = $2
-      where id = $1 and state <> 'ended' returning *`, [row.id, new Date(this.now())]);
+      where id = $1 and state <> 'ended' ${providerClosed ? "and state <> 'ending'" : ""} returning *`, [row.id, new Date(this.now())]);
     const current = rows[0];
-    if (!current) return this.get(row.tenant, row.id);
-    if (current.provider_call) {
-      const key = await this.options.key(current.tenant, current.options.keyScope, current.provider);
-      if (!key || !this.options.providers.openai) throw new HttpError(502, "No OpenAI key for hanging up the voice call", "REALTIME_FAILED");
-      try { await this.options.providers.openai.hangup(current.provider_call, key.apiKey); }
-      catch (error) { throw new HttpError(502, detailOf(error, key.apiKey), "REALTIME_FAILED"); }
+    if (!current) {
+      // A peer is ending the call. Clean up this node's sideband without changing the peer's reason.
+      if (providerClosed) await this.finish(row.id, by, true);
+      return this.get(row.tenant, row.id);
+    }
+    try {
+      if (current.provider_call) {
+        const key = await this.options.key(current.tenant, current.options.keyScope, current.provider);
+        if (!key || !this.options.providers.openai) throw new HttpError(502, "No OpenAI key for hanging up the voice call", "REALTIME_FAILED");
+        try { await this.options.providers.openai.hangup(current.provider_call, key.apiKey); }
+        catch (error) { throw new HttpError(502, detailOf(error, key.apiKey), "REALTIME_FAILED"); }
+      }
+    } catch (error) {
+      if (!providerClosed) throw error;
+      console.error(JSON.stringify({ type: "voice_call_hangup_failed", session: current.id, detail: detailOf(error) }));
     }
     await this.finish(current.id, by);
     return this.get(current.tenant, current.id);
@@ -352,6 +361,8 @@ export class VoiceCalls {
   private async heard(id: string, live: Live, item: string, text: string, seconds: number) {
     if (live.heard.has(item)) return;
     live.heard.add(item);
+    if (!text && !seconds) return;
+    const seq = text ? ++live.seq : undefined;
     if (text) {
       for (const line of text.split(/\r?\n/).filter(Boolean).slice(-TRANSCRIPT_LINES)) {
         live.lines.push(line.slice(-TRANSCRIPT_CHARS));
@@ -359,10 +370,9 @@ export class VoiceCalls {
       live.lines = live.lines.slice(-TRANSCRIPT_LINES);
       while (live.lines.length > 1 && live.lines.join("\n").length > TRANSCRIPT_CHARS) live.lines.shift();
     }
-    const seq = ++live.seq;
     const { rows } = await this.options.db.query<Row>(`update voice_calls set audio_seconds = audio_seconds + $2, updated_at = $3
       where id = $1 and state <> 'ended' returning *`, [id, seconds, new Date(this.now())]);
-    if (rows[0]) await this.enqueue(rows[0], "voice.utterance", { text, seconds, reported: "sideband", seq });
+    if (rows[0] && seq !== undefined) await this.enqueue(rows[0], "voice.utterance", { text, seconds, reported: "sideband", seq });
   }
 
   private async tool(id: string, live: Live, call: ToolCall) {

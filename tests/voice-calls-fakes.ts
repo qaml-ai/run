@@ -55,7 +55,7 @@ export async function fakeOpenAICalls(t: TestContext) {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
     answer, offers, hangups, connections,
     events: (id: string) => sent.filter(entry => entry.id === id).map(entry => entry.event),
-    disconnect: (id: string) => peers.get(id)!.close(1011, "test error"),
+    disconnect: (id: string, reason = "test error") => peers.get(id)!.close(1011, reason),
     script: (id: string) => (...events: Record<string, unknown>[]) => {
       for (const event of events) peers.get(id)!.send(JSON.stringify(event));
     },
