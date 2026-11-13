@@ -353,7 +353,8 @@ its host-local tables (`mounts`, `tree_roots`, `lineage_blobs`, `uploaded`, `chu
 **Conventions.** JSON over HTTPS; ids are hex (`blob`, `tree`, `commit`: git SHA-1; `root`, chunk: sha256).
 `Authorization: Bearer <token>` (one shared bearer tonight, the daemon listening on `127.0.0.1:8790` behind the
 `CAMELFS` tunnel with `--listen-api`; runtime-signed scoped tokens later). `Idempotency-Key` on every write: the
-daemon stores `key → response` and replays it, so a retry returns the first answer. Errors on these `/v1` routes are
+daemon stores `key → response` and replays it, so a retry returns the first answer (and, with `time` always given, a
+retry the daemon has forgotten re-executes to the same ids; see **Idempotency** below). Errors on these `/v1` routes are
 `{ "error": { "code", "message", "details"? } }` with the codes in 9.8; the host socket's `/v0` routes keep their
 current `{ error, detail }` shape tonight because `jobhost` parses it. Sizes in bytes. Paths are lineage-relative,
 normalized, no leading slash.
@@ -362,10 +363,30 @@ normalized, no leading slash.
 at repo creation, `<tenant>:<root repo id>`, and **a fork into a new repo inherits its source's lineage** (wf-repos),
 so forks share one object set and a fork is O(1) in objects as well as in refs; a repo made from scratch starts a new
 lineage. The daemon records every object it writes for a lineage, trees **including subtrees** (listings hand out
-subtree ids) and blobs alike, in `lineage_objects`, and refuses any reference the lineage has not written or
-imported, with `404`/`400`, never "exists but not yours". A cross-lineage reference (`commit … from: { repo,
-version, path }` across tenants' repos, or any other) is, tonight, a read followed by a `PUT` of the bytes into the
-target lineage; an `adopt` call that grants reach without copying is a later, low-priority addition.
+subtree ids) and blobs alike, and refuses any reference the lineage has not written or imported, with
+`404`/`400`, never "exists but not yours". **Membership must survive a wiped data directory** (a fresh host must be
+able to answer "is this id reachable from this lineage" without the previous host's SQLite), so it lives with the
+objects, not beside them. Tonight (unit 9, #932) the daemon writes a durable marker per object to S3 under
+`l/<lineage>/<kind>/<id>` (an empty object, written with the object, before the response) and keeps
+`lineage_objects` in SQLite only as the cache; a host that misses in the cache rebuilds from the markers. That is
+one extra `PUT` per object, about five per commit, which roughly doubles the per-write price §8 counts
+(≈ $0.0000207 → ≈ $0.000046; ≈ $3,000 → ≈ $6,600 a month at the 1,000-agent baseline), and it is why the decided
+form is different: **object keys carry the lineage** (`<lineage>/t/<sha1>`, `<lineage>/k/<sha1>`,
+`<lineage>/b/<sha1>`, chunks likewise; in DynamoDB the lineage is part of the partition key), so existence of the key
+is the membership and there is no second write. Objects are lineage-scoped already (forks inherit the lineage, a
+cross-lineage reference copies), so prefixing loses no sharing, makes quota a prefix sum, and turns the cross-lineage
+copy into a server-side `CopyObject`. The migration from markers to prefixed keys is a key rename in the GC's
+generational sweep, not a data move (L79). A cross-lineage reference (`commit … from: { repo, version, path }`
+across tenants' repos, or any other) is, tonight, a read followed by a `PUT` of the bytes into the target lineage;
+an `adopt` call that grants reach without copying is a later, low-priority addition.
+
+**Idempotency is a property of the request, not of the replay table.** Every write in this contract is
+content-addressed and deterministic given its body: a blob `PUT` yields the hash of its bytes, and a commit's ids are
+a pure function of `parents`, `baseTree`, `changes`, `author`, `message`, trailers and `time`. **The runtime always
+passes `time`** (it never lets the daemon pick a clock), so a retried write that the daemon has no memory of
+re-executes to the identical ids and is harmless. The `Idempotency-Key → response` table is a host-local SQLite
+optimization that saves the re-execution and is lost with the data directory; its loss changes latency, never
+outcome (L80).
 
 ### 9.1 Blobs
 
