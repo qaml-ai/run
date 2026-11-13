@@ -9,7 +9,6 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
 	"os"
 	"path/filepath"
@@ -154,7 +153,9 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	for _, rg := range ranges {
 		out.ChangedBytes += rg.Length
 	}
-	pending := map[string][]byte{}
+	legacy := r.Locations == nil
+	writer := m.writer(ctx, &r)
+	defer writer.finish()
 	out.ParentRoot = v.Root
 	out.Tree = tree
 	r.Tree = tree
@@ -163,14 +164,16 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	e = (chunk.Chunker{}).Ranges(sf, r.VirtualSize, ranges, func(o int64, h string, b []byte) error {
 		k := strconv.FormatInt(o, 10)
 		if r.Chunks[k] == h {
-			return nil
+			return writer.add(h, b)
 		}
 		out.ChangedChunks++
 		if h == "" {
 			delete(r.Chunks, k)
 		} else {
 			r.Chunks[k] = h
-			pending[h] = append([]byte(nil), b...)
+			if e := writer.add(h, b); e != nil {
+				return e
+			}
 		}
 		return nil
 	})
@@ -178,13 +181,32 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e != nil {
 		return out, e
 	}
-	r.Packs = nil
+	// Legacy parents may have unchanged chunks outside the FIEMAP delta.
+	if legacy {
+		for _, h := range r.Chunks {
+			if _, ok := r.Locations[h]; !ok && !writer.seen[h] {
+				p, e := m.Cache.EnsureContext(ctx, h)
+				if e != nil {
+					return out, e
+				}
+				b, e := os.ReadFile(p)
+				if e != nil {
+					return out, e
+				}
+				if e = writer.add(h, b); e != nil {
+					return out, e
+				}
+			}
+		}
+	}
 	ut := time.Now()
-	out.UploadedChunks, e = store.PutChunks(ctx, m.Store, pending)
+	e = writer.finish()
+	out.UploadedChunks = writer.uploaded
+	pruneLocations(&r)
 	if e != nil {
 		return out, e
 	}
-	if out.ChangedChunks == 0 && tree == v.Tree && v.Root != "" {
+	if !legacy && out.ChangedChunks == 0 && tree == v.Tree && v.Root != "" {
 		out.Root = v.Root
 	} else {
 		b, e := root.Encode(r)
@@ -226,7 +248,6 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e != nil {
 		return out, e
 	}
-	m.queuePack(out.Root)
 	v.pendingRanges = nil
 	v.earlyConsumed = true
 	if v.early != nil {
@@ -309,41 +330,24 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 		return out, apierr.Invalid("invalid image size or type")
 	}
 	r := root.Root{V: 1, Tree: q.Tree, FSType: "ext4", VirtualSize: st.Size(), Chunks: map[string]string{}}
-	pending := map[string][]byte{}
-	flush := func() error {
-		n, e := store.PutChunks(ctx, m.Store, pending)
-		out.UploadedChunks += n
-		pending = map[string][]byte{}
-		return e
-	}
+	writer := m.writer(ctx, &r)
+	defer writer.finish()
+	pt := time.Now()
 	e = (chunk.Chunker{}).File(f, st.Size(), func(o int64, h string, b []byte) error {
 		if h != "" {
 			r.Chunks[strconv.FormatInt(o, 10)] = h
-			pending[h] = append([]byte(nil), b...)
 		}
-		if len(pending) >= 64 {
-			return flush()
-		}
-		return nil
+		return writer.add(h, b)
 	})
 	if e != nil {
 		return out, e
 	}
-	if e = flush(); e != nil {
+	if e = writer.finish(); e != nil {
 		return out, e
 	}
-	if m.Packs {
-		pt := time.Now()
-		r, e = m.buildPacks(ctx, r, f)
-		if e != nil {
-			return out, e
-		}
-		out.PackMs = ms(pt)
-		for k := range r.Packs {
-			o, _ := strconv.ParseInt(k, 10, 64)
-			out.PackBytes += int64(len(r.WindowHashes(o))) * root.ChunkSize
-		}
-	}
+	out.UploadedChunks = writer.uploaded
+	out.PackMs = ms(pt)
+	out.PackBytes = writer.packBytes
 	b, e := root.Encode(r)
 	if e != nil {
 		return out, e
@@ -365,4 +369,14 @@ func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult
 	}
 	out.ImportMs = ms(t)
 	return out, nil
+}
+
+func pruneLocations(r *root.Root) {
+	ls := map[string]root.Location{}
+	for _, h := range r.Chunks {
+		if l, ok := r.Locations[h]; ok {
+			ls[h] = l
+		}
+	}
+	r.Locations = ls
 }

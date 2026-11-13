@@ -30,8 +30,7 @@ var JobID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var ErrNoRoot = errors.New("no-root-for-tree")
 
 type Config struct {
-	Packs                         bool
-	PackWindow                    int64
+	PackMax                       int64
 	StreamIdle, ApplyMax          time.Duration
 	LeaseTTL                      time.Duration
 	Now                           func() time.Time
@@ -44,12 +43,8 @@ type Config struct {
 	MaxBytes, MaxPathsBytes       int64
 }
 type Manager struct {
-	PackBytes          atomic.Int64
-	packMu, packSerial sync.Mutex
-	packWG             sync.WaitGroup
-	packClosed         bool
-	packPending        map[string]bool
-	pins               map[string]map[string]bool
+	PackBytes atomic.Int64
+	pins      map[string]map[string]bool
 	Config
 	Store    store.Store
 	Cache    *cache.Cache
@@ -116,11 +111,11 @@ func (q *Request) UnmarshalJSON(b []byte) error {
 	return nil
 }
 func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
-	if c.PackWindow == 0 {
-		c.PackWindow = 4 << 20
+	if c.PackMax == 0 {
+		c.PackMax = 16 << 20
 	}
-	if c.PackWindow < root.ChunkSize || c.PackWindow%root.ChunkSize != 0 {
-		return nil, apierr.Invalid("invalid pack window")
+	if c.PackMax < root.ChunkSize || c.PackMax > 16<<20 || c.PackMax%root.ChunkSize != 0 {
+		return nil, apierr.Invalid("invalid pack max")
 	}
 	if c.StreamIdle == 0 {
 		c.StreamIdle = 30 * time.Second
@@ -190,6 +185,10 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	}
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
+		cache.Store = &store.Uploaded{Store: cache.Store, DB: db.DB}
+		if c.Origin != nil {
+			c.Origin.Store = s
+		}
 	}
 	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{})}
 	go m.maintain()
@@ -204,7 +203,11 @@ func (m *Manager) load(ctx context.Context, id string) (root.Root, error) {
 	if root.Hash(b) != id {
 		return root.Root{}, fmt.Errorf("root hash mismatch")
 	}
-	return root.Decode(b)
+	r, e := root.Decode(b)
+	if e == nil {
+		m.Cache.Locations(r.Locations)
+	}
+	return r, e
 }
 func (m *Manager) image(id string) string { return filepath.Join(m.Data, "images", id+".img") }
 func (m *Manager) save(v *Mount) error {
@@ -361,9 +364,6 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		v.State = "warm"
 		if e == nil {
 			e = m.promote(v.Dest, v.Root)
-			if e == nil {
-				m.queuePack(v.Root)
-			}
 		}
 	} else {
 		if e = m.sweep(r.VirtualSize); e != nil {
@@ -416,12 +416,15 @@ func (m *Manager) materialize(ctx context.Context, r root.Root, p string) error 
 	if e = f.Truncate(r.VirtualSize); e != nil {
 		return e
 	}
+	if e = m.Cache.Prefetch(ctx, r); e != nil {
+		return e
+	}
 	windows := packWindows(r, m.HydrationPackSize)
 	keys := make([]string, len(windows))
 	for i := range keys {
 		keys[i] = strconv.Itoa(i)
 	}
-	e = store.Parallel(ctx, 32, keys, func(key string) error {
+	e = store.Parallel(ctx, 64, keys, func(key string) error {
 		i, _ := strconv.Atoi(key)
 		for _, o := range windows[i] {
 			p, e := m.Cache.EnsureContext(ctx, r.Chunks[o])
@@ -695,12 +698,6 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	delete(m.mounts, id)
 	m.mu.Unlock()
 	m.unprotect(v.JobID)
-	if v.Promoted {
-		m.queuePack(v.Root)
-		if v.hydrationRoot != "" {
-			m.queuePack(v.hydrationRoot)
-		}
-	}
 	v.State = "released"
 	return v.Promoted, nil
 }
@@ -739,10 +736,7 @@ func (m *Manager) Heartbeat(id string) error {
 func (m *Manager) Close() {
 	defer m.Cache.Close()
 	close(m.stop)
-	m.packMu.Lock()
-	m.packClosed = true
-	m.packMu.Unlock()
-	m.packWG.Wait()
+
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {

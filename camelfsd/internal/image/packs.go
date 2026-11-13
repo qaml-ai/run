@@ -5,144 +5,152 @@ import (
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
-	"log"
 	"os"
+	"sort"
 	"strconv"
+	"sync"
 )
 
-func (m *Manager) buildPacks(ctx context.Context, r root.Root, f *os.File) (root.Root, error) {
-	r.Packs = map[string]string{}
-	r.PackWindow = m.PackWindow
-	for _, window := range packWindows(r, r.Window()) {
-		if len(window) < 2 {
-			continue
-		}
-		var hashes []string
-		for _, key := range window {
-			hashes = append(hashes, r.Chunks[key])
-		}
-		id := root.PackID(hashes)
-		exists, e := m.Store.Has(ctx, "p/"+id)
-		if e != nil {
-			return r, e
-		}
-		if !exists {
-			var b []byte
-			for _, key := range window {
-				off, _ := strconv.ParseInt(key, 10, 64)
-				chunk := make([]byte, root.ChunkSize)
-				n, e := f.ReadAt(chunk, off)
-				if e != nil && off+int64(n) != r.VirtualSize {
-					return r, e
-				}
-				if root.Hash(chunk) != r.Chunks[key] {
-					return r, fmt.Errorf("image changed during pack build")
-				}
-				b = append(b, chunk...)
-			}
-			if e = m.Store.Put(ctx, "p/"+id, b); e != nil {
-				return r, e
-			}
-			m.PackBytes.Add(int64(len(b)))
-		}
-		off, _ := strconv.ParseInt(window[0], 10, 64)
-		r.Packs[strconv.FormatInt(off/r.Window()*r.Window(), 10)] = id
-	}
-	return r, nil
+// packWriter retains at most one assembling pack plus fetch-depth uploads.
+// The caller adds chunks in image offset order and waits before publishing a root.
+type packWriter struct {
+	m         *Manager
+	ctx       context.Context
+	locations map[string]root.Location
+	seen      map[string]bool
+	hashes    []string
+	bytes     []byte
+	sem       chan struct{}
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	err       error
+	uploaded  int
+	packBytes int64
 }
 
-// v0-limitation: L-packs-tier
-// Promotions coalesce by root. A single worker builds packs after foreground work.
-func (m *Manager) queuePack(id string) {
-	if !m.Packs {
-		return
+func (m *Manager) writer(ctx context.Context, r *root.Root) *packWriter {
+	if r.Locations == nil {
+		r.Locations = map[string]root.Location{}
 	}
-	m.packMu.Lock()
-	defer m.packMu.Unlock()
-	if m.packPending == nil {
-		m.packPending = map[string]bool{}
-	}
-	if m.packClosed || m.packPending[id] {
-		return
-	}
-	m.packPending[id] = true
-	m.packWG.Add(1)
-	go func() {
-		defer m.packWG.Done()
-		m.packSerial.Lock()
-		defer m.packSerial.Unlock()
-		defer func() { m.packMu.Lock(); delete(m.packPending, id); m.packMu.Unlock() }()
-		select {
-		case <-m.stop:
-			return
-		default:
-		}
-		if e := m.packRoot(id); e != nil {
-			log.Printf("op=pack root=%s error=%v", id, e)
-		}
-	}()
+	return &packWriter{m: m, ctx: ctx, locations: r.Locations, seen: map[string]bool{}, sem: make(chan struct{}, store.Depth(m.Store))}
 }
-func (m *Manager) packRoot(id string) error {
-	ctx, cancel := context.WithCancel(store.LowestPriority(context.Background()))
-	defer cancel()
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-m.stop:
-			cancel()
-		case <-done:
-		}
-	}()
-	b, e := m.Store.Get(ctx, "r/"+id)
-	if e != nil {
-		return e
+func (w *packWriter) add(h string, b []byte) error {
+	if h == "" || w.seen[h] {
+		return nil
 	}
-	r, e := root.Decode(b)
-	if e != nil {
-		return e
+	w.seen[h] = true
+	if _, ok := w.locations[h]; ok {
+		return nil
 	}
-	if len(r.Packs) > 0 {
-		complete := true
-		for _, pack := range r.Packs {
-			exists, e := m.Store.Has(ctx, "p/"+pack)
-			if e != nil {
-				return e
-			}
-			if !exists {
-				complete = false
-				break
-			}
+	if s, ok := w.m.Store.(*store.Uploaded); ok {
+		l, found, e := s.Location(w.ctx, h)
+		if e != nil {
+			return e
 		}
-		if complete {
+		if found {
+			w.locations[h] = l
 			return nil
 		}
 	}
-	f, e := os.Open(m.image(id))
-	if e != nil {
-		return e
-	}
-	defer f.Close()
-	packed, e := m.buildPacks(ctx, r, f)
-	if e != nil {
-		return e
-	}
-	b, e = root.Encode(packed)
-	if e != nil {
-		return e
-	}
-	next := root.Hash(b)
-	if next == id {
-		return nil
-	}
-	if e = m.Store.Put(ctx, "r/"+next, b); e != nil {
-		return e
-	}
-	if e = m.promote(m.image(id), next); e != nil {
-		return e
-	}
-	if db, ok := m.Refs.(interface{ Packed(string, string) error }); ok {
-		return db.Packed(id, next)
+	w.hashes = append(w.hashes, h)
+	w.bytes = append(w.bytes, b...)
+	if int64(len(w.bytes)) >= w.m.PackMax {
+		return w.flush()
 	}
 	return nil
+}
+func (w *packWriter) flush() error {
+	if len(w.hashes) == 0 {
+		return nil
+	}
+	select {
+	case w.sem <- struct{}{}:
+	case <-w.ctx.Done():
+		return w.ctx.Err()
+	}
+	id := root.PackID(w.hashes)
+	b := w.bytes
+	for i, h := range w.hashes {
+		w.locations[h] = root.Location{Pack: id, Index: i}
+	}
+	chunks := len(w.hashes)
+	w.hashes = nil
+	w.bytes = nil
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		defer func() { <-w.sem }()
+		sent, e := store.PutPack(w.ctx, w.m.Store, id, b)
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if e != nil {
+			if w.err == nil {
+				w.err = e
+			}
+		} else if sent {
+			w.uploaded += chunks
+			w.packBytes += int64(len(b))
+			w.m.PackBytes.Add(int64(len(b)))
+		}
+	}()
+	return nil
+}
+func (w *packWriter) finish() error {
+	e := w.flush()
+	w.wg.Wait()
+	if e != nil {
+		return e
+	}
+	return w.err
+}
+
+// Repack converts a legacy root without changing refs or deleting old objects.
+func (m *Manager) Repack(ctx context.Context, id string) (string, error) {
+	r, e := m.load(ctx, id)
+	if e != nil {
+		return "", e
+	}
+	w := m.writer(ctx, &r)
+	for _, k := range sortedOffsets(r.Chunks) {
+		h := r.Chunks[k]
+		p, e := m.Cache.EnsureContext(ctx, h)
+		if e != nil {
+			_ = w.finish()
+			return "", e
+		}
+		b, e := os.ReadFile(p)
+		if e != nil {
+			_ = w.finish()
+			return "", e
+		}
+		if e = w.add(h, b); e != nil {
+			_ = w.finish()
+			return "", e
+		}
+	}
+	if e = w.finish(); e != nil {
+		return "", e
+	}
+	b, e := root.Encode(r)
+	if e != nil {
+		return "", e
+	}
+	next := root.Hash(b)
+	if e = m.Store.Put(ctx, "r/"+next, b); e != nil {
+		return "", fmt.Errorf("publish repack: %w", e)
+	}
+	return next, nil
+}
+
+func sortedOffsets(chunks map[string]string) []string {
+	var keys []string
+	for k := range chunks {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := strconv.ParseInt(keys[i], 10, 64)
+		b, _ := strconv.ParseInt(keys[j], 10, 64)
+		return a < b
+	})
+	return keys
 }

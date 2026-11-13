@@ -11,6 +11,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/nbd"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/testguest"
 	"golang.org/x/sys/unix"
@@ -65,6 +66,8 @@ func run(args []string) error {
 			return fmt.Errorf("data required")
 		}
 		return image.Cleanup(context.Background(), *data, nil)
+	case "repack":
+		return repack(args[1:])
 	case "host":
 		return host(args[1:])
 	default:
@@ -81,8 +84,7 @@ func host(args []string) error {
 	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
 	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
 	demandSlots := f.Int("demand-slots", 16, "fetch slots reserved for demand")
-	packs := f.Bool("packs", true, "use and build cold-read packs")
-	packWindow := f.Int64("pack-window", 4<<20, "pack window bytes")
+	packMax := f.Int64("pack-max", 16<<20, "maximum pack bytes")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	virtualSize := f.Int64("virtual-size", 1<<30, "blank image size")
 	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
@@ -131,8 +133,8 @@ func host(args []string) error {
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	store.SetDemandSlots(c.Store, *demandSlots)
-	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, FetchDepth: *fetchDepth, Packs: *packs, Patterns: filepath.Join(*data, "patterns")}
-	m, e := image.New(image.Config{Packs: *packs, PackWindow: *packWindow, StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, FetchDepth: *fetchDepth, Patterns: filepath.Join(*data, "patterns")}
+	m, e := image.New(image.Config{PackMax: *packMax, StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
@@ -182,4 +184,47 @@ func host(args []string) error {
 		return nil
 	}
 	return e
+}
+
+func repack(args []string) error {
+	f := flag.NewFlagSet("repack", flag.ContinueOnError)
+	data := f.String("data", "/nvme/camelfs", "data directory")
+	url := f.String("store", "", "store URL")
+	region := f.String("region", "us-west-2", "AWS region")
+	id := f.String("root", "", "legacy root ID")
+	max := f.Int64("pack-max", 16<<20, "maximum pack bytes")
+	if e := f.Parse(args); e != nil {
+		return e
+	}
+	if !filepath.IsAbs(*data) || *url == "" || !root.Hex(*id, 64) || *max < root.ChunkSize || *max > 16<<20 || *max%root.ChunkSize != 0 {
+		return fmt.Errorf("invalid repack flags")
+	}
+	lock, e := os.OpenFile(filepath.Join(*data, "host.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if e != nil {
+		return e
+	}
+	defer lock.Close()
+	if e = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); e != nil {
+		return fmt.Errorf("stop daemon before repack: %w", e)
+	}
+	ctx := context.Background()
+	s, e := store.Open(ctx, *url, *region)
+	if e != nil {
+		return e
+	}
+	db, e := refs.Open(filepath.Join(*data, "refs.db"))
+	if e != nil {
+		return e
+	}
+	defer db.Close()
+	s = &store.Uploaded{Store: s, DB: db.DB}
+	c := cache.New(filepath.Join(*data, "cache"), s, 64)
+	defer c.Close()
+	m := &image.Manager{Config: image.Config{Data: *data, PackMax: *max}, Store: s, Cache: c, Refs: db}
+	next, e := m.Repack(ctx, *id)
+	if e != nil {
+		return e
+	}
+	fmt.Println(next)
+	return nil
 }
