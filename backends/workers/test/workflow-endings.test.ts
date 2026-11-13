@@ -273,3 +273,16 @@ test('a payer stop retries by itself: the owner hears it once, not at every refu
   const keys = w.storage.sql.exec("SELECT key FROM child_outbox ORDER BY key").toArray().map((row: any) => row.key);
   assert.deepEqual(keys, ['wf_1_a000001:z', 'wf_1_a000002:z', 'wf_1_a000003:z', 'wf_1_a000004:z']);
 });
+
+test('the outbox wakes its alarm no sooner than a second out: a row just staged is its stager\'s to deliver', async () => {
+  const w = workflow(async () => ({ accepted: true }));
+  assert.equal(await w.endings.outbox.wakeAt(), undefined, 'nothing staged: no wake');
+  const before = Date.now();
+  w.endings.statusWritten(summary('completed'));
+  assert.ok((await w.endings.outbox.deadline())! <= Date.now(), 'the row itself is due at once');
+  const wake = (await w.endings.outbox.wakeAt())!;
+  assert.ok(wake >= before + 1000 && wake <= Date.now() + 1000, 'but the alarm is planned a second out, not for now');
+  const due = (await w.endings.outbox.deadline())!;
+  assert.equal(await w.endings.outbox.wakeAt(due + 10), due + 1010, 'the floor is a second from the given now');
+  assert.equal(await w.endings.outbox.wakeAt(due - 5_000), due, 'a row due later than the floor keeps its own time');
+});

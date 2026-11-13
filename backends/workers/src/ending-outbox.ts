@@ -187,6 +187,17 @@ export class ChildOutbox {
     return nextAt;
   }
 
+  /**
+   * When the alarm must come back for the outbox: its next row's time, but never sooner than a second from now. A row
+   * just staged or reported (due now) is being delivered by whoever wrote it (a progress report at once, an ending by
+   * its stager's flush); the alarm is only the backstop for a delivery that fails, whose retry is a second or more away
+   * anyway. Without the floor, an alarm planned while that delivery was in flight was set for now, and fired again at
+   * once with nothing left to do (alarm_rearm_due, on agents and workflow objects alike).
+   */
+  async wakeAt(now = this.now()): Promise<number | undefined> {
+    const next = await this.deadline();
+    return next === undefined ? undefined : Math.max(next, now + OUTBOX_RETRY.firstMs);
+  }
   /** When the next row is due (the alarm's deadline), undefined when the outbox is empty. */
   async deadline(): Promise<number | undefined> {
     const next = this.sql.exec<{ next: number | null }>("SELECT MIN(next_at) AS next FROM child_outbox").one().next;

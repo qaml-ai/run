@@ -230,7 +230,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         // One alarm for the runner, the owner's endings and the forks' cleanup retry, whichever is due first: an ending
         // whose delivery failed, or a fork delete that failed, is retried even once the workflow has ended.
         alarm: { set: async at => {
-          const next = alarmAt(at, await this.endings.outbox.deadline(), await this.forks.retryAt());
+          const next = alarmAt(at, await this.endings.outbox.wakeAt(), await this.forks.retryAt());
           await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
         } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
@@ -378,8 +378,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     if (this.endings.pending()) this.ctx.waitUntil((async () => {
       // The alarm is armed for the first retry before the send: an isolate that dies mid-send leaves the ending due and
       // nothing else that would arm the alarm for it.
-      const due = await this.endings.outbox.deadline();
-      if (due !== undefined) await this.armBy(Math.max(due, Date.now() + 1000));
+      const due = await this.endings.outbox.wakeAt();
+      if (due !== undefined) await this.armBy(due);
       await this.endings.outbox.flush();
     })().catch(error => console.error(JSON.stringify({ type: "workflow_ending_failed", workflow: this.ctx.id.name, error: String(error) }))));
     return value;
@@ -450,7 +450,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         let runner: number | null = null;
         try { runner = this.runner.nextAlarm(); }
         catch (error) { console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern: "runner next", error: String(error) })); }
-        return alarmAt(runner, await this.endings.outbox.deadline(), await this.forks.retryAt());
+        return alarmAt(runner, await this.endings.outbox.wakeAt(), await this.forks.retryAt());
       },
       arm: at => this.armBy(at),
       log: (concern, error) => console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern, error: String(error) })),
