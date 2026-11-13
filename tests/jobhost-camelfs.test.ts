@@ -254,7 +254,7 @@ test("a mount that acquired a lease but failed to return is released", async t =
 test("daemon heartbeat posts an empty JSON body and encodes the job id", async t => {
   const d = await daemon(t);
   await d.client.heartbeat("a:b");
-  assert.deepEqual(d.calls, [{ method: "POST", path: "/v0/mounts/a%3Ab/heartbeat", body: "{}", authorization: undefined, contentType: "application/json" }]);
+  assert.deepEqual(d.calls, [{ method: "POST", path: "/v0/mounts/a%3Ab/heartbeat", body: "{}", authorization: undefined, contentType: "application/json", contentLength: "2", chunked: false }]);
 });
 
 for (const mode of ["ok", "heartbeat-fail"]) test(`mount heartbeats continue during a command (${mode}) and stop before release`, async t => {
