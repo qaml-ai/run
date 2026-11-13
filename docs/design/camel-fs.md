@@ -130,8 +130,15 @@ sha1dc at ingest refuses collision-attack objects, as GitHub does. Gitlink entri
 and never produced; symlinks are stored as git stores them and never followed by any walker. Chunks and roots are
 not git objects and use sha256.
 
-**Dedupe.** Blobs dedupe across the whole fleet by content; chunks dedupe within a lineage (a 3-file change kept
-4,078 of 4,096 chunks) and almost never across lineages. The API never reveals existence: a write may reference an
+**Dedupe.** Blobs and chunks dedupe **within a lineage** by content (a 3-file change kept 4,078 of 4,096 chunks);
+chunks almost never dedupe across lineages anyway, and blobs no longer do by decision: object keys carry the lineage
+(camel-fs-files.md §9, L79), so a file common to many unrelated repos, a vendored dependency or a lockfile, is stored
+once per lineage. Forks share a lineage, so the case that matters, many attempts and branches of one workspace, is
+unaffected; the price is storage at $0.023 per GB-month for the duplicates (a duplicated 100 KiB blob ≈ $0.0000023 a
+month), against the one extra `PUT` per object (≈ $0.000005, every object, shared or not) that fleet-wide keys would
+need to make lineage membership durable. The host cache stays keyed by content hash, so a host serving two lineages
+holds a shared blob once. A shared content tier with explicit copy-in can restore cross-lineage dedupe later if the
+storage bill says so. The API never reveals existence: a write may reference an
 object by id without bytes only when that object is reachable from the caller's own refs, so one tenant cannot ask
 "does anyone have this file". No code path anywhere checks existence and then skips a write without recording a
 touch (§1.9).
@@ -658,7 +665,7 @@ live sets; the sweep is a sorted merge over the inventory (daily, a few cents pe
   rotation (two keys valid during rollover) or a short deny-list of token ids in DynamoDB. A token's shape is checked
   before any storage call; unauthenticated routes bound their body reads.
 - **Tenancy in the data.** Lineages belong to tenants; the API refuses cross-lineage references unless both are the
-  caller's; cross-tenant dedupe is invisible (§1.1). The host cache is shared and unreachable by guests; timing
+  caller's; there is no cross-tenant dedupe in the store (§1.1). The host cache is shared and unreachable by guests; timing
   side-channels on cache hits would reveal co-tenancy of public content only, and a tenant may opt into a private
   cache partition.
 - **Quotas** per lineage (bytes, files, refs, image virtual size) and per tenant; enforced on the host
