@@ -154,7 +154,8 @@ export class Guest {
         await cleanup(this.repo);
         for (;;) {
           const op = jsonFrame(await next());
-          if (op.end === true) { if (op.error !== undefined) throw new Error(String(op.error)); break; }
+          // The daemon's trailer always carries `error`; only a non-empty one is a failure.
+          if (op.end === true) { if (op.error !== undefined && op.error !== "") throw new Error(String(op.error)); break; }
           const path = await target(op.path as string); check();
           if (op.op === "put") {
             if (mode(op.mode) === "120000") throw new Error("mode 120000 is invalid with put");
