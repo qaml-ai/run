@@ -391,3 +391,46 @@ test("a host job survives a Worker restart, re-enters by id and charges once", {
   const charges = (await fixture.db.query("select message from pi_usage_receipts where session_id=$1 and message->'_workersAuxiliary'->>'kind'='computer'", [workflow.id])).rows;
   assert.equal(charges.length, 1, JSON.stringify(charges));
 });
+
+test("repo job mounts its version without import and advances its own ref", { timeout: 300_000 }, async t => {
+  const { serveFakeCamelfsd } = await import("./fake-camelfsd.ts");
+  const token = "repo-job-fixture-token", secret = "repo-job-fixture-secret-at-least-32-characters";
+  const api = await serveFakeCamelfsd(token); t.after(() => api.close());
+  const fixture = await startFixture({ camelfsStub: true, entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
+    JOB_HOST_ATTESTORS: "test", JOB_HOST_TEST_SECRET: secret, JOB_HOST_WAIT_SECONDS: "5", AGENT_WORKFLOW_TENANTS: "*",
+    TEST_CAMELFS_URL: api.url, CAMELFS_API_TOKEN: token,
+  } }); t.after(() => fixture.stop());
+  const call = async (path: string, body?: unknown) => {
+    const response = await fetch(fixture.url + path, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    assert.ok(response.ok, `${path}: ${response.status} ${await response.clone().text()}`); return await response.json() as any;
+  };
+  const workflow = await call("/v1/workflows", { script: "return null;", budget: { usd: 1 } });
+  const repo = await call("/v1/repos", { name: "job source" });
+  const repoId = repo.id ?? repo.repo?.id;
+  assert.ok(repoId, JSON.stringify(repo));
+  await call(`/v1/repos/${repoId}/commit`, { files: { "seed.txt": { text: "seed" } }, message: "init" });
+  const head = (await call(`/v1/repos/${repoId}/refs`)).find((r: any) => r.name === "main");
+  const checkpoint = await fetch(`${api.url}/v1/lineages/${encodeURIComponent(repo.lineage ?? `camelrun-proto-local:${repoId}`)}/commits`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ parents: [head.version], changes: [], message: "job checkpoint", author: "job:repo-integration", trailers: {}, time: Math.floor(Date.now() / 1000) }) });
+  assert.ok(checkpoint.ok, `${checkpoint.status} ${await checkpoint.clone().text()}`); const c = await checkpoint.json() as any;
+  const enrolled = await call("/v1/internal/job-hosts/enroll", { attestation: { kind: "test", host: "repo-host", secret } });
+  const socket = new WebSocket(`${fixture.url.replace(/^http/, "ws")}/v1/internal/job-hosts/connect?host=repo-host`);
+  t.after(() => socket.close());
+  await new Promise((resolve, reject) => { socket.addEventListener("open", resolve); socket.addEventListener("error", reject); });
+  const registered = Promise.withResolvers<void>(); let mounted: any;
+  socket.addEventListener("message", event => {
+    const message = JSON.parse(String(event.data));
+    if (message.type === "registered") registered.resolve();
+    if (message.type !== "job") return;
+    mounted = message.spec;
+    const stream = { data: "", size: 0, truncated: false };
+    socket.send(JSON.stringify({ type: "result", id: message.id, result: { ok: true, exitCode: 7, timedOut: false, stdout: stream, stderr: stream, outputs: {}, missing: [], pids: "enforced", timings: { startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 0 }, camelfs: { commit: c.commit, tree: c.tree, root: "a".repeat(64), warm: true, mountMs: 0, applyMs: 0 } } }));
+  });
+  socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
+  socket.send(JSON.stringify({ type: "hello", host: "repo-host", slots: 1, free: 1, vcpus: 1, memoryMiB: 4096, version: "test", features: ["camelfs"] }));
+  await registered.promise;
+  const result = await call("/__test/camelfs-job", { id: "repo-integration", command: "true", timeoutSeconds: 30, commit: true, repo: { tenant: "camelrun-proto-local", repo: repoId, owner: "job:repo-integration" }, payer: { tenant: "camelrun-proto-local", agent: workflow.id, kind: "workflow" } });
+  assert.equal(result.ok, true); assert.equal(result.exitCode, 7);
+  assert.equal(result.camelfs.ref, "job/repo-integration"); assert.equal(result.camelfs.version, c.commit);
+  assert.equal(mounted.camelfs.tree, head.tree); assert.ok(mounted.camelfs.fence);
+  assert.deepEqual(mounted.files, []); assert.equal(mounted.sync, undefined);
+});

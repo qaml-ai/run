@@ -15,7 +15,7 @@ import { harness, FakeCapacity } from "./workflow-harness.ts";
 
 // The job and volume modules reach Durable Objects; a stand-in base class lets them load in Node.
 const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
-  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}", shortCircuit: true };
+  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {} export const waitUntil = p => p;", shortCircuit: true };
   return nextResolve(specifier, context);
 } });
 const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");
@@ -137,7 +137,8 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   assert.deepEqual(spec.payer, { tenant: "t1", agent: "agent_owner" }, "the agent that owns the workflow pays");
   assert.equal(spec.id, await jobId("wf_1", "c", 1));
   assert.match(spec.id, /^wf-[0-9a-f]{40}$/);
-  assert.deepEqual(Object.keys(spec.files!), ["a.txt"]);
+  // With camelFS configured, inline files are committed on the job's branch of the workflow repo.
+  assert.equal(spec.files, undefined); assert.equal(spec.repo?.ref, `job/${spec.id}`); assert.equal(spec.repo?.owner, "workflow:wf_1");
 
   // A failure lands its code; a run still held by an earlier start lands nothing (that run lands).
   j = jobs(spec => ({ ok: false, id: spec.id, code: "disk_low", message: "under 2 GiB free", timings }));

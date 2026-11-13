@@ -115,3 +115,27 @@ test('a stale mounted version becomes a bounded checkpoint error', async t => {
   assert.equal(result.camelfs.version, undefined);
   assert.equal((await ctx.stub.ref('job/attempt'))?.version, saved.expect);
 });
+test('inline workflow files are committed on the precreated job branch and reused', async t => {
+  const f = fixture(t), values = new Map(), host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async (k: string) => values.get(k), put: async (k: string,v: any) => values.set(k,v) } };
+  const jobs: any = new WorkflowJobs(f.env, host);
+  const args = { files: { 'hello.txt': 'hello' }, command: 'cat hello.txt', timeoutSeconds: 30, commit: true };
+  const { spec } = await jobs.jobSpec('inline', args);
+  assert.equal(spec.files, undefined); assert.equal(spec.repo.ref, 'job/inline');
+  assert.equal(spec.repo.owner, 'workflow:wf_one');
+  const ctx = await repoContext(f.env, 't', spec.repo.repo), head = await ctx.stub.ref('job/inline');
+  assert.ok(head); assert.equal((await ctx.stub.stat('job/inline', ['hello.txt'])).entries['hello.txt']?.size, 5);
+  const saved = await prepareRepo(ctx, spec, 'h', measure);
+  assert.equal(saved.expect, head.version);
+  assert.deepEqual((await jobs.jobSpec('inline', args)).spec.repo, spec.repo);
+});
+
+test('inline workflow files surface a missing main instead of creating it', async t => {
+  const f = fixture(t), ctx = await f.create({ key: 'workflow:wf_one' });
+  const main = await ctx.stub.ref('main'); assert.ok(main);
+  await ctx.stub.deleteRef('main', main.version);
+  const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async () => undefined, put: async (k: string) => { if (!k.startsWith('workflow-repo:')) assert.fail('failed preparation must not be recorded'); } } };
+  const jobs: any = new WorkflowJobs(f.env, host);
+  await assert.rejects(jobs.jobSpec('missing-main', { files: { 'hello.txt': 'hello' }, command: 'true', timeoutSeconds: 30 }), err('no-ref'));
+  assert.equal(await ctx.stub.ref('main'), null);
+  assert.equal(await ctx.stub.ref('job/missing-main'), null);
+});
