@@ -15,6 +15,8 @@ import (
 
 const issuer = "https://runtime.example"
 
+var runtimeOptions = Options{Typ: RuntimeType, Audience: RuntimeAudience, Issuer: issuer, MaxTTL: DefaultMaxTTL}
+
 func testKey(t *testing.T, kid string) (ed25519.PrivateKey, map[string]string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -44,7 +46,7 @@ func claimsAt(now time.Time) map[string]any {
 func TestVerify(t *testing.T) {
 	priv, key := testKey(t, "active")
 	inline := jwks(key)
-	keys, err := Load("", &inline, issuer, DefaultMaxTTL)
+	keys, err := Load("", &inline, runtimeOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,19 +147,19 @@ func TestKeySourcesAndReload(t *testing.T) {
 		file string
 		env  *string
 	}{{"", nil}, {path, &inline}} {
-		if _, err := Load(tc.file, tc.env, issuer, DefaultMaxTTL); err == nil {
+		if _, err := Load(tc.file, tc.env, runtimeOptions); err == nil {
 			t.Fatal("expected exactly one key source to be required")
 		}
 	}
 	empty := ""
-	if _, err := Load("", &empty, issuer, DefaultMaxTTL); err == nil {
+	if _, err := Load("", &empty, runtimeOptions); err == nil {
 		t.Fatal("expected invalid inline JWKS")
 	}
-	keys, err := Load(path, nil, issuer, DefaultMaxTTL)
+	keys, err := Load(path, nil, runtimeOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
-	envKeys, err := Load("", &inline, issuer, DefaultMaxTTL)
+	envKeys, err := Load("", &inline, runtimeOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,4 +199,87 @@ func TestKeySourcesAndReload(t *testing.T) {
 	}
 	check(envKeys, oldToken, nil)
 	check(envKeys, newToken, UnknownKey)
+}
+
+func TestHostVerification(t *testing.T) {
+	priv, key := testKey(t, "active")
+	inline := jwks(key)
+	hostKeys, err := LoadHost("", &inline, issuer, "host-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeKeys, err := Load("", &inline, runtimeOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(1700000000, 0)
+	sign := func(typ string, claims map[string]any) string {
+		t.Helper()
+		raw, err := json.Marshal(claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		header, err := json.Marshal(map[string]string{"alg": "EdDSA", "typ": typ, "kid": "active"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return jwt(priv, header, raw)
+	}
+	runtime := sign(RuntimeType, claimsAt(now))
+	if _, err := hostKeys.Verify(runtime, now); err == nil {
+		t.Fatal("host verifier accepted a runtime token")
+	}
+	hostClaims := func() map[string]any {
+		return map[string]any{
+			"iss": issuer, "aud": "camelfs:host:host-a", "sub": "service",
+			"iat": now.Unix(), "exp": now.Unix() + 60, "host": "host-a",
+		}
+	}
+	host := sign(HostType, hostClaims())
+	if _, err := runtimeKeys.Verify(host, now); !errors.Is(err, BadType) {
+		t.Fatalf("runtime verifier on host token: %v", err)
+	}
+	if got, err := hostKeys.Verify(host, now); err != nil || got.Host != "host-a" || got.VM != nil || got.Subject != "service" {
+		t.Fatalf("host Verify: %+v, %v", got, err)
+	}
+	claims := hostClaims()
+	claims["vm"] = "vm-a"
+	if got, err := hostKeys.Verify(sign(HostType, claims), now); err != nil || got.VM == nil || *got.VM != "vm-a" {
+		t.Fatalf("host Verify with VM: %+v, %v", got, err)
+	}
+	for _, tc := range []struct {
+		name, field string
+		value       any
+		want        Reason
+	}{
+		{"wrong audience", "aud", RuntimeAudience, BadAudience},
+		{"wrong issuer", "iss", "someone-else", BadIssuer},
+		{"wrong host", "host", "host-b", BadHost},
+		{"empty host", "host", "", BadHost},
+		{"missing host", "host", nil, BadHost},
+		{"null VM", "vm", nil, BadVM},
+		{"numeric VM", "vm", 3, BadVM},
+		{"over 60 seconds", "exp", now.Unix() + 61, TooLong},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := hostClaims()
+			if tc.name == "missing host" {
+				delete(claims, "host")
+			} else {
+				claims[tc.field] = tc.value
+			}
+			if _, err := hostKeys.Verify(sign(HostType, claims), now); !errors.Is(err, tc.want) {
+				t.Fatalf("Verify: %v, want %v", err, tc.want)
+			}
+		})
+	}
+	if _, err := hostKeys.Verify(sign(RuntimeType, hostClaims()), now); err != Reason("typ must be "+HostType) {
+		t.Fatalf("host verifier with correct audience and wrong type: %v", err)
+	}
+	runtimeClaims := claimsAt(now)
+	runtimeClaims["aud"] = "camelfs:host:host-a"
+	if _, err := runtimeKeys.Verify(sign(RuntimeType, runtimeClaims), now); !errors.Is(err, BadAudience) {
+		t.Fatalf("runtime verifier with correct type and wrong audience: %v", err)
+	}
 }

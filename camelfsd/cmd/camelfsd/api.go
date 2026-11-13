@@ -41,7 +41,7 @@ func apiRole(args []string) error {
 	if value, ok := os.LookupEnv("CAMELFS_JWKS"); ok {
 		inline = &value
 	}
-	keys, err := auth.Load(*jwksFile, inline, *issuer, *maxTTL)
+	keys, err := auth.Load(*jwksFile, inline, auth.Options{Typ: auth.RuntimeType, Audience: auth.RuntimeAudience, Issuer: *issuer, MaxTTL: *maxTTL})
 	if err != nil {
 		return err
 	}
