@@ -20,11 +20,11 @@ import { Frames, base64Text, type HostMessage, type WireJob, type WireResult } f
 const spec: WireJob = { command: "cat hello.txt", files: [], outputs: [], internet: false, limits: {}, timeoutSeconds: 5, camelfs: { lineage: "a:b", tree: "tree-1" } };
 async function daemon(t: TestContext, mode = "ok") {
   const dir = await mkdtemp(join(tmpdir(), "camelfsd-")), socketPath = join(dir, "api.sock");
-  const calls: { method?: string; path?: string; body: string; authorization?: string; contentType?: string }[] = [];
+  const calls: { method?: string; path?: string; body: string; authorization?: string; contentType?: string; contentLength?: string; chunked?: boolean }[] = [];
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
-    calls.push({ method: req.method, path: req.url, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, contentType: req.headers["content-type"] });
+    calls.push({ method: req.method, path: req.url, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, contentType: req.headers["content-type"], contentLength: req.headers["content-length"], chunked: req.headers["transfer-encoding"] === "chunked" });
     res.setHeader("content-type", "application/json");
     if (req.method === "POST" && req.url === "/v0/mounts") {
       if (mode === "fail") { res.writeHead(500); res.end(JSON.stringify({ error: "mount_failed", detail: "boom" })); return; }
@@ -169,7 +169,8 @@ test("import proxy authenticates, limits routes and streams imports without the 
     const response = await fetch(url + path, { method, headers, body });
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), { received: body });
-    assert.deepEqual(d.calls.at(-1), { method, path, body, authorization: undefined, contentType: "application/octet-stream" });
+    // The daemon refuses a chunked blob: the length reaches it as sent (the m8id's first pilot run failed on this).
+    assert.deepEqual(d.calls.at(-1), { method, path, body, authorization: undefined, contentType: "application/octet-stream", contentLength: String(Buffer.byteLength(body)), chunked: false });
   }
 });
 

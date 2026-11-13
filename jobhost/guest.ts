@@ -136,7 +136,8 @@ export class Guest {
         connectTimer = setTimeout(() => input!.destroy(new Error("apply connect timed out after 10 s")), 10_000);
         const next = async () => { check(); const payload = await reader.next(); if (payload === null) throw new Error("unexpected EOF in apply stream"); check(); return payload; };
         const header = jsonFrame(await next()); clearTimeout(connectTimer);
-        if (header.v !== 1 || header.kind !== "apply" || header.jobId !== jobId || !hex(header.fromTree) || !hex(header.toTree)) throw new Error("invalid apply header or jobId");
+        // fromTree is "" when the image starts empty (a lineage's first mount): every file then comes as a put.
+        if (header.v !== 1 || header.kind !== "apply" || header.jobId !== jobId || (header.fromTree !== "" && !hex(header.fromTree)) || !hex(header.toTree)) throw new Error("invalid apply header or jobId");
         const entries: Record<string, unknown>[] = [];
         for (;;) {
           const frame = jsonFrame(await next());
