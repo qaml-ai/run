@@ -22,9 +22,18 @@ func (c *Cache) retire(f *cachedFile) {
 	}
 }
 func (c *Cache) ReadAt(h string, b []byte, offset int64) error {
+	for attempt := 0; ; attempt++ {
+		retry, e := c.readAt(h, b, offset)
+		if !retry || attempt == 1 {
+			return e
+		}
+		c.Invalidate(h)
+	}
+}
+func (c *Cache) readAt(h string, b []byte, offset int64) (bool, error) {
 	p, e := c.Ensure(h)
 	if e != nil {
-		return e
+		return false, e
 	}
 	c.fdMu.Lock()
 	entry := c.fds[h]
@@ -32,7 +41,7 @@ func (c *Cache) ReadAt(h string, b []byte, offset int64) error {
 		f, e := os.Open(p)
 		if e != nil {
 			c.fdMu.Unlock()
-			return e
+			return os.IsNotExist(e), e
 		}
 		entry = c.lru.PushFront(&cachedFile{hash: h, file: f})
 		c.fds[h] = entry
@@ -56,7 +65,7 @@ func (c *Cache) ReadAt(h string, b []byte, offset int64) error {
 		f.file.Close()
 	}
 	c.fdMu.Unlock()
-	return e
+	return false, e
 }
 
 // Remove invalidates the trusted hit and open descriptor before eviction.
@@ -69,6 +78,23 @@ func (c *Cache) Remove(path string) error {
 		return c.Remove(path)
 	}
 	defer c.mu.Unlock()
+	c.invalidateLocked(h)
+	return os.Remove(path)
+}
+
+// Invalidate retires a trusted path and descriptor without deleting a file.
+func (c *Cache) Invalidate(h string) {
+	c.mu.Lock()
+	if f := c.flights[h]; f != nil {
+		c.mu.Unlock()
+		<-f.done
+		c.Invalidate(h)
+		return
+	}
+	defer c.mu.Unlock()
+	c.invalidateLocked(h)
+}
+func (c *Cache) invalidateLocked(h string) {
 	delete(c.verified, h)
 	c.fdMu.Lock()
 	if entry := c.fds[h]; entry != nil {
@@ -77,7 +103,6 @@ func (c *Cache) Remove(path string) error {
 		c.retire(entry.Value.(*cachedFile))
 	}
 	c.fdMu.Unlock()
-	return os.Remove(path)
 }
 func (c *Cache) Close() {
 	c.fdMu.Lock()

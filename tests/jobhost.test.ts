@@ -102,3 +102,44 @@ test("destroying a VM mid-command ends the command's whole process group: nothin
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(alive(-group), false, "the command's group is gone, its background child included");
 });
+
+test("host results survive repeated reconnects until acknowledged and expire after a day", async t => {
+  const { createServer } = await import("node:http");
+  const { WebSocketServer } = await import("ws");
+  const { HostAgent } = await import("../jobhost/agent.ts");
+  const server = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ host: "test", credential: "fixture-only", expiresAt: Date.now() + 3600_000 })); });
+  const sockets = new WebSocketServer({ server });
+  server.listen(0, "127.0.0.1"); await new Promise<void>(resolve => server.once("listening", resolve));
+  let connection = 0, results = 0, boots = 0;
+  const stream = { data: "", size: 0, truncated: false };
+  const launcher = { kind: "fake" as const, async boot() { boots++; return { id: "replay", async destroy() {}, async request() { return { ok: true, exitCode: 0, timedOut: false, stdout: stream, stderr: stream, freeBytes: 1e12 }; } }; } };
+  let current: import("ws").WebSocket;
+  sockets.on("connection", socket => {
+    current = socket; connection++;
+    socket.on("message", data => {
+      const message = JSON.parse(String(data));
+      if (message.type === "hello") {
+        socket.send(JSON.stringify({ type: "registered", host: "test" }));
+        if (connection === 1) socket.send(JSON.stringify({ type: "job", id: "replay", spec: { command: "true", files: [], outputs: [], timeoutSeconds: 5, limits: {}, internet: false } }));
+      }
+      if (message.type === "result") {
+        results++;
+        if (results < 3) socket.close();
+        else socket.send(JSON.stringify({ type: "ack", id: message.id }));
+      }
+    });
+  });
+  const agent = new HostAgent({ runtime: `http://127.0.0.1:${(server.address() as { port: number }).port}`, attest: async () => ({ kind: "test", host: "test", secret: "fixture-only" }), slots: 1, vcpus: 1, memoryMiB: 512, diskLowBytes: 0, launcher, log: () => {} });
+  t.after(async () => { await agent.close(); for (const socket of sockets.clients) socket.terminate(); await new Promise<void>(resolve => sockets.close(() => server.close(() => resolve()))); });
+  await agent.start();
+  const until = async (check: () => boolean) => { for (let n = 0; n < 400 && !check(); n++) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(check()); };
+  await until(() => results === 3 && (agent as any).results.size === 0);
+  current!.close();
+  await until(() => connection === 4);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(results, 3); assert.equal(boots, 1);
+  (agent as any).results.set("old", { at: Date.now() - 25 * 3600_000, message: { type: "result", id: "old", result: { ok: false, code: "stopped", message: "old" } } });
+  current!.close(); await until(() => connection === 5);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(results, 3); assert.equal((agent as any).results.size, 0);
+});

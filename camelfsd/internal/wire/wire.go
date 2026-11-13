@@ -59,6 +59,8 @@ func Send(w io.Writer, v any) error {
 	return Write(w, b)
 }
 
+// Header fields are always present: the guest requires fromTree/toTree/baseTree even when empty ("" = no tree,
+// a lineage's first mount). Only Op's optional fields use omitempty.
 type Header struct {
 	V        int     `json:"v"`
 	Kind     string  `json:"kind"`
@@ -66,18 +68,18 @@ type Header struct {
 	BaseTree string  `json:"baseTree"`
 	FromTree string  `json:"fromTree"`
 	ToTree   string  `json:"toTree"`
-	WalkMs   float64 `json:"walkMs"`
+	WalkMs   float64 `json:"walkMs,omitempty"`
 }
 type Op struct {
 	Path     string  `json:"path"`
 	Op       string  `json:"op"`
-	Mode     string  `json:"mode"`
-	Size     int64   `json:"size"`
-	Target   string  `json:"target"`
-	End      bool    `json:"end"`
-	Files    int     `json:"files"`
-	Bytes    int64   `json:"bytes"`
-	FreezeMs float64 `json:"freezeMs"`
-	Skipped  int     `json:"skipped"`
-	Error    string  `json:"error"`
+	Mode     string  `json:"mode,omitempty"`
+	Size     int64   `json:"size,omitempty"`
+	Target   string  `json:"target,omitempty"`
+	End      bool    `json:"end,omitempty"`
+	Files    int     `json:"files,omitempty"`
+	Bytes    int64   `json:"bytes,omitempty"`
+	FreezeMs float64 `json:"freezeMs,omitempty"`
+	Skipped  int     `json:"skipped,omitempty"`
+	Error    string  `json:"error,omitempty"`
 }

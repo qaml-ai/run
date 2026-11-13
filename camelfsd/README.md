@@ -30,7 +30,7 @@ The HTTP/1.1 JSON API is restricted by a mode-0600 Unix socket. Examples use she
 | `POST /v0/mounts/:jobId/checkpoint` | Publish a root, fenced CAS, cache complete snapshot and record the tree/root mapping. Returns root, tree, parentRoot, changedChunks, uploadedChunks, changedBytes and step timings. `curl --unix-socket "$S" -d '{}' http://localhost/v0/mounts/j1/checkpoint` |
 | `DELETE /v0/mounts/:jobId` | Detach devices, remove mount files, release lease; returns released/promoted. `curl --unix-socket "$S" -X DELETE http://localhost/v0/mounts/j1` |
 | `POST /v0/trees` | Complete file listing; returns tree, new tree count, blob count and importMs. Missing lineage uploads return 409 with up to 10,000 sorted SHA-256s. `curl --unix-socket "$S" -d '{"lineage":"test","files":{}}' http://localhost/v0/trees` |
-| `PUT /v0/blobs/:sha256?lineage=L` | Stream a blob, Content-Length required, at most 256 MiB; returns sha256, Git sha1 and size. `curl --unix-socket "$S" -X PUT --data-binary @file "http://localhost/v0/blobs/$R?lineage=test"` |
+| `PUT /v0/blobs/:sha256?lineage=L` | Stream a blob, Content-Length optional (chunked uploads accepted), at most 256 MiB; returns sha256, Git sha1 and size. `curl --unix-socket "$S" -X PUT --data-binary @file "http://localhost/v0/blobs/$R?lineage=test"` |
 | `GET /v0/trees/:tree` | Flattened paths, modes, blob SHA-1s and sizes. `curl --unix-socket "$S" "http://localhost/v0/trees/$T"` |
 | `GET /v0/trees/:tree/files/*path` | Raw bytes; symlinks return their target with X-Camelfs-Mode: 120000. `curl --unix-socket "$S" "http://localhost/v0/trees/$T/files/src/main.go"` |
 | `GET /v0/blobs/:sha1` | Raw blob bytes. `curl --unix-socket "$S" "http://localhost/v0/blobs/$B"` |
@@ -79,7 +79,10 @@ forwarding, on guest ports 5201 and 5200 respectively.
 Apply accepts one connection per mount. The host sends
 `{v:1,kind:"apply",jobId,fromTree,toTree}`, index frames
 `{index:[{path,mode,sha1,size}]}`, `{indexEnd:true,count}`, then file operations
-and `{end:true,files,bytes}`. The index describes the complete target tree,
+and `{end:true,files,bytes}`. For a lineage's first mount, `fromTree` and checkpoint `baseTree` are empty strings:
+empty means no tree. Guests must accept this initial state. These optional wire
+fields may also be omitted; an omitted tree ID has the same meaning.
+The index describes the complete target tree,
 including on a warm mount with no operations. Operations are `put` (path, mode,
 size, followed by exactly size bytes of data frames), `del` (path), `link`
 (path, target) and `mode` (path, mode). The guest replies
