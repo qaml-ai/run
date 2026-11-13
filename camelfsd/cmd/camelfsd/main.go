@@ -79,7 +79,7 @@ func host(args []string) error {
 	data := f.String("data", "/nvme/camelfs", "data directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
 	region := f.String("region", "us-west-2", "AWS region")
-	cold := f.String("cold", "clone", "clone or prehydrate")
+	cowMax := f.Int64("cow-max", 0, "sparse COW maximum bytes (default virtual size)")
 	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
 	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
@@ -89,7 +89,6 @@ func host(args []string) error {
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
 	streamIdle := f.Duration("stream-idle", 30*time.Second, "guest stream idle timeout")
 	applyMax := f.Duration("apply-max", 30*time.Minute, "apply overall cap")
-	packSize := f.Int64("hydration-pack-size", 4<<20, "hydration window size")
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
@@ -128,7 +127,7 @@ func host(args []string) error {
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
