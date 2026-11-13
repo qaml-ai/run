@@ -45,7 +45,10 @@ routes require the same bearer as /v1. Other /v0 paths return 404 on TCP;
 host operations stay on the mode-0600 Unix socket. This replaces jobhost's
 phase-1 import proxy on 127.0.0.1:8790: stop the proxy before enabling the
 daemon listener, leaving the pilot VPC service address unchanged. Protect the loopback listener behind the runtime's private tunnel.
-Never log the bearer. Health reports api: "127.0.0.1:8790".
+Never log the bearer. Every /v1 request, including a 401, logs one access line:
+op=<METHOD>:/v1/<route> lineage=<l> status=<code> ms=<n>. Routes are templates;
+object ids, file paths, query values and bodies are omitted. Lineages are
+escaped to keep each request on one line. Health reports api: "127.0.0.1:8790".
 
 ## Durability and lineage scope
 
@@ -131,16 +134,27 @@ The limits are 256 paths and 64 MiB (or a smaller maxBytes). Fetches use
 curl -H "Authorization: Bearer $TOKEN" -d "{\"tree\":\"$T\",\"paths\":[\"src/a\",\"missing\"]}" "$A/read"
 ```
 
-Commit changes without moving a ref. Omitted baseTree uses the parent's tree;
-explicit null starts empty. Omitted/null parent creates a first commit.
+Commit changes without moving a ref. parents is a required ordered array of
+zero, one or two commit ids, each reachable in the lineage. An empty array
+creates a root commit. Missing or null parents returns 400 invalid_request;
+three or more parents returns 400 invalid_request; an unknown parent returns
+400 unknown_commit. The singular parent field is rejected as an unknown field.
+Each parent becomes a Git parent header in the supplied order. Omitted
+baseTree uses the first parent's tree, or the empty tree for a root commit;
+explicit null starts empty. changes may be an empty array to commit the base
+tree without edits.
 A mode-only change preserves the blob; deleting a missing path does nothing.
 At most 10,000 changes are accepted. The author is supplied by the caller,
 the committer is camelfs, and trailers are sorted Key: value lines.
-The response is {tree, commit, changed, bytes}.
+The 201 response is {tree, commit, parents, time, changed, bytes}. parents is
+always an array in the supplied order; time is the Unix seconds used in the
+commit (the supplied time or the daemon's current time). tree and commit are
+the Git object ids; changed counts changed paths and bytes counts supplied
+blob bytes.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Idempotency-Key: commit-1' \
-  -d "{\"parent\":null,\"baseTree\":null,\"changes\":[{\"path\":\"src/a\",\"blob\":\"$B\"}],\"author\":\"agent:a\",\"message\":\"first\",\"trailers\":{},\"time\":123}" "$A/commits"
+  -d "{\"parents\":[],\"baseTree\":null,\"changes\":[{\"path\":\"src/a\",\"blob\":\"$B\"}],\"author\":\"agent:a\",\"message\":\"first\",\"trailers\":{},\"time\":123}" "$A/commits"
 ```
 
 List a tree in Git order. Nonrecursive listings include directories with
@@ -185,7 +199,8 @@ are a later unit.
 curl -H "Authorization: Bearer $TOKEN" "$A/grep?tree=$T&q=hello&regex=0&ignoreCase=1&path=src/*&limit=2000&context=1"
 ```
 
-Errors use {error:{code,message,details?}}. Codes are invalid_request (400),
+Errors use {error:{code,message,details?}}. Every invalid_request message names
+the invalid field or rule, including unknown JSON fields. Codes are invalid_request (400),
 unknown_blob/unknown_tree/unknown_commit (400 on writes), blob_mismatch (400),
 not_in_tree (404 on reads), too_large (413), conflict (409), no_fence (409),
 unavailable (503). Conflict lists are in error.details.conflicts.
