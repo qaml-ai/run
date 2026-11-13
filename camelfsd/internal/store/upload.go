@@ -54,6 +54,10 @@ func (s *Uploaded) inventoryKey(k string) string {
 	return s.scope + "/" + k
 }
 func (s *Uploaded) known(ctx context.Context, k string) (bool, error) {
+	// Packs may disappear independently of the durable chunk inventory.
+	if strings.HasPrefix(k, "p/") {
+		return s.Store.Has(ctx, k)
+	}
 	var n int
 	e := s.DB.QueryRowContext(ctx, "SELECT 1 FROM uploaded WHERE key=?", s.inventoryKey(k)).Scan(&n)
 	if e == sql.ErrNoRows {

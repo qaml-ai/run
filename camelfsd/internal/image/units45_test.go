@@ -298,3 +298,63 @@ func TestPackerPublishesAndRecordsRoot(t *testing.T) {
 		t.Fatal(r, e)
 	}
 }
+
+func TestPacksRebuildAfterDeletionAndSkipExisting(t *testing.T) {
+	m, _ := unit3(t)
+	m.Packs = true
+	b := make([]byte, 2*root.ChunkSize)
+	b[0] = 1
+	b[root.ChunkSize] = 2
+	p := filepath.Join(m.Data, "source.img")
+	if e := os.WriteFile(p, b, 0600); e != nil {
+		t.Fatal(e)
+	}
+	imp, e := m.Import(context.Background(), ImportRequest{Lineage: "l", Name: "main", Path: p})
+	if e != nil {
+		t.Fatal(e)
+	}
+	r, e := m.load(context.Background(), imp.Root)
+	if e != nil || len(r.Packs) != 1 {
+		t.Fatal(r, e)
+	}
+	if m.PackBytes.Load() != int64(len(b)) {
+		t.Fatal("wrong initial pack bytes", m.PackBytes.Load())
+	}
+	// Existing packs need no image reads, hashing, or uploads.
+	image := m.image(imp.Root)
+	if e = os.Rename(image, image+".hidden"); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.packRoot(imp.Root); e != nil {
+		t.Fatal("existing pack was rebuilt", e)
+	}
+	if m.PackBytes.Load() != int64(len(b)) {
+		t.Fatal("existing pack counted again")
+	}
+	if e = os.Rename(image+".hidden", image); e != nil {
+		t.Fatal(e)
+	}
+	local := m.Store.(*store.Uploaded).Store.(store.Local)
+	for _, id := range r.Packs {
+		if e = os.Remove(filepath.Join(local.Dir, "p", id)); e != nil {
+			t.Fatal(e)
+		}
+	}
+	// Durable chunks remain readable with every pack deleted.
+	for _, h := range r.Chunks {
+		if _, e = m.Cache.Ensure(h); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e = m.packRoot(imp.Root); e != nil {
+		t.Fatal("deleted pack was not rebuilt", e)
+	}
+	if m.PackBytes.Load() != 2*int64(len(b)) {
+		t.Fatal("rebuild bytes missing", m.PackBytes.Load())
+	}
+	for _, id := range r.Packs {
+		if ok, e := m.Store.Has(context.Background(), "p/"+id); e != nil || !ok {
+			t.Fatal(ok, e)
+		}
+	}
+}
