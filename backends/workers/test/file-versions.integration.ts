@@ -1,4 +1,3 @@
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -13,9 +12,7 @@ test("file tools retain read versions through reopen and guard writes by volume 
     const call = JSON.parse(lastUser(body));
     return toolCall(call.name, call.args, `call_${crypto.randomUUID()}`);
   });
-  const camelfs=await serveFakeCamelfsd("agent-file-token");
-  t.after(()=>camelfs.close());
-  const f = await startFixture({ camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)), vars:{TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:"agent-file-token"}, modelURL: model.url });
+  const f = await startFixture({ entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)), modelURL: model.url });
   t.after(() => f.stop());
   const call = async (path: string, options: { method?: string; body?: unknown; raw?: string; key?: string } = {}) => {
     const response = await fetch(f.url + path, {

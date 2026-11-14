@@ -83,7 +83,7 @@ test('pilot early stop cancels active and late admissions without inventing work
     }
     if (path === '/pilot/cleanup') { cleanups++; return Response.json({ state: 'deleted' }); }
     if (path === '/v1/me') return Response.json({ code: 'UNAUTHORIZED' }, { status: 401 });
-    return Response.json({ pending_attempts: 0, holds: 0, held_micros: 0, end_user_holds: 0, end_user_held_micros: 0 });
+    return Response.json({ pending_attempts: 0, holds: 0, held_micros: 0 });
   };
   try {
     const report = await runPilotLoad(loadOptions);

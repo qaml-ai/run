@@ -85,10 +85,10 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 			if m.APIWrite {
 				return Result{}, failure("held", 409)
 			}
-			return Result{}, failure("fenced", 409)
+			return Result{}, fenced(r, now)
 		}
 	} else if m.Fence != nil {
-		return Result{}, failure("fenced", 409)
+		return Result{}, fenced(r, now)
 	}
 	result := Result{Version: m.Version, Previous: prev}
 	if prev != nil && *prev == m.Version {

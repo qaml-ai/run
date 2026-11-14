@@ -61,4 +61,3 @@ export default {
     return application.fetch(request, env, context);
   },
 };
-export { CamelfsStub } from "./camelfs-stub.ts";

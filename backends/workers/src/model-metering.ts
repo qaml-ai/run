@@ -15,6 +15,7 @@ import { AgentInvocation } from './agent-invocation.ts';
 import { MODEL_INVOCATION, PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 import { accountingModel, modelCallKind } from './model-call-context.ts';
 import { logUntrustedModelUsage } from './model-usage-log.ts';
+import { isSubscriptionProvider } from './platform-pricing.ts';
 
 export type ModelReceipt = { tenant: string; agent: string; platform: boolean; catalogPriced?: boolean; event: ModelAttemptEvent };
 export type ModelBillingContext = {
@@ -74,7 +75,12 @@ export function meterProvider<P extends Provider<any>>(
         // Keep its source URL intact: changing it here would rebase twice.
         if ('baseUrl' in credentials && credentials.baseUrl && !FETCH_APIS.includes(model.api)) model = { ...model, baseUrl: credentials.baseUrl };
       }
-      let limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant, reads);
+      const platform = options.endpointIdentity ? false : credentials ? credentials.platform : identity.platform !== false;
+      const billedModel = accountingModel(model, options.endpointIdentity);
+      const checksCreditAtBegin = platform && !isSubscriptionProvider(billedModel.provider) && !/:free$/.test(billedModel.id);
+      // ModelAttempts checks spendable credit immediately before a metered platform call.
+      let limit = await modelSpendLimit(service.db, identity) ?? await (checksCreditAtBegin
+        ? service.accounts.spendLimit(identity.tenant) : service.accounts.runLimit(identity.tenant, reads));
       if (!limit && identity.subject && model.api !== "openai-codex-responses") {
         const refused = await new EndUserCredits(service.db).refusal(identity.tenant, identity.subject, identity.bucket ?? 'default');
         if (refused) limit = creditError(refused);
@@ -86,10 +92,8 @@ export function meterProvider<P extends Provider<any>>(
         if (stop) await stopped?.(identity, stop);
         throw typeof limit === 'string' ? new Error(limit) : limit;
       }
-      const platform = options.endpointIdentity ? false : credentials ? credentials.platform : identity.platform !== false;
       const catalogPriced = await billing.mode(identity.tenant, undefined, reads) === "prepaid";
-      // Provider generation observations, renewal and settlement share the same
-      // mutable holds. Finish must follow every preceding accounting write.
+      // Finish must follow every preceding accounting write.
       let pending: Promise<unknown> = Promise.resolve();
       const hook: ModelAttemptHook = event => {
         const next = pending.then(async () => {
@@ -106,21 +110,18 @@ export function meterProvider<P extends Provider<any>>(
               } } : {}) },
             ...(identity.subject ? { endUser: { id: identity.subject, bucket: identity.bucket ?? 'default' } } : {}),
           } : event;
-          const answer = await dbPhase(event.type === "begin" ? "hold" : event.type === "progress" ? "renew" : "other", () => service.event(identity.tenant, identity.agent, platform, catalogPriced, attributed, catalogPriced));
-          return answer;
+          return dbPhase(event.type === "begin" ? "admission" : "other", () =>
+            service.event(identity.tenant, identity.agent, platform, catalogPriced, attributed, reads));
         });
         pending = next.catch(() => {});
         return next;
       };
       const estimate = estimateModelAttempt(model, transcript, options);
       const gateway = !platform && (model.provider === 'cloudflare-ai-gateway' || !!credentials?.baseUrl && model.provider === 'openrouter');
-      const billedModel = accountingModel(model, options.endpointIdentity);
       let refusal: Promise<void> | undefined;
       const source = await attemptStream(billedModel, typeof key === 'string' ? key : '', options.modelCallKind ?? modelCallKind(transcript), hook,
-        (sink, halt, affordable) => stream(model, transcript, {
+        sink => stream(model, transcript, {
           ...options,
-          signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,
-          ...(affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { maxTokens: affordable } : {}),
           ...(FETCH_APIS.includes(model.api) ? { fetch: callFetch(sink, { ...(options.fetch ? { base: options.fetch } : {}) }) } : {}),
         }), estimate, stop => { refusal = stopped?.(identity, creditRunStop(stop)); }, gateway, options.supersede);
       for await (const event of source) {

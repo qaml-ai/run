@@ -3,6 +3,7 @@ import { createHmac, createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
+import { EndUserCredits } from "../src/end-user-credits.ts";
 import { callFixture } from "./voice-call-fixture.ts";
 
 const webhookSecret = "synthetic-webhook-secret";
@@ -111,10 +112,41 @@ test("ElevenLabs shares provisioning and settles signed reports and deadline onc
   assert.equal(byCall.get(`voice_elevenlabs:${second.id}`), 0.12);
   assert.equal(byCall.get(`voice_elevenlabs:${third.id}`), 0.025);
 
+  // The signed URL is a secret shown once: the create answers with the internal `Idempotency-Secret: once` marker,
+  // which the middleware strips and turns into a 409 for a keyed retry instead of replaying the URL.
+  const unkeyed = await f.create({ provider: "elevenlabs", maxMinutes: 40 });
+  assert.equal(unkeyed.status, 201, JSON.stringify(unkeyed.json));
+  assert.equal(unkeyed.headers.get("idempotency-secret"), null, "the marker never reaches the client");
+  assert.equal((await f.request(`/v1/voice/sessions/${unkeyed.json.id}`, "DELETE")).status, 200);
+  const keyed = await f.create({ provider: "elevenlabs", maxMinutes: 40 }, { "Idempotency-Key": "eleven-create-1" });
+  assert.equal(keyed.status, 201, JSON.stringify(keyed.json));
+  assert.equal(keyed.headers.get("idempotency-secret"), null);
+  const replay = await f.create({ provider: "elevenlabs", maxMinutes: 40 }, { "Idempotency-Key": "eleven-create-1" });
+  assert.deepEqual([replay.status, replay.json.code], [409, "IDEMPOTENCY_CONFLICT"]);
+  assert.equal(signed, 6, "the keyed retry made no provider request");
+  assert.equal((await f.request(`/v1/voice/sessions/${keyed.json.id}`, "DELETE")).status, 200);
+
+  // With the production ledger (no fake), a subject-paid settle posts once under `voice_elevenlabs:<id>` and may
+  // take the balance below zero: 0.05 granted, 72 s at 0.10/min = 0.12 charged.
+  await f.restart({ TEST_VOICE_CREDITS: "real" });
+  const tenant = "camelrun-proto-local";
+  const ledgerCredits = new EndUserCredits(f.db as never);
+  await ledgerCredits.setSettings(tenant, { enabled: true });
+  await ledgerCredits.post(tenant, f.input.subject, { kind: "grant", amount: 50_000, key: "fixture-grant" });
+  hasDuration = true;
+  const paid = await f.create({ provider: "elevenlabs", maxMinutes: 40 });
+  assert.equal(paid.status, 201, JSON.stringify(paid.json));
+  assert.equal((await notify({ type: "post_call_transcription", data: { agent_id: "agent-1", conversation_id: paid.json.connect.conversationId } })).status, 200);
+  assert.equal((await f.request(`/v1/voice/sessions/${paid.json.id}`)).json.state, "ended");
+  const rows = (await f.db.query("select raw from end_user_ledger where tenant = $1 and idempotency_key = $2", [tenant, `voice_elevenlabs:${paid.json.id}`])).rows;
+  assert.equal(rows.length, 1, "one ledger row for the call");
+  assert.equal(Number(rows[0].raw), 120_000);
+  assert.equal(Number((await f.db.query("select balance from end_users where tenant = $1 and id = $2", [tenant, f.input.subject])).rows[0].balance), -70_000);
+
   // An ElevenLabs call with no per-minute price configured is refused at create, never priced at $0.
   await f.restart({ AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "" });
   const unpriced = await f.create({ provider: "elevenlabs" });
   assert.equal(unpriced.status, 400, JSON.stringify(unpriced.json));
   assert.equal(unpriced.json.code, "REALTIME_UNPRICED");
-  assert.equal(signed, 4, "no provider traffic for an unpriced call");
+  assert.equal(signed, 7, "no provider traffic for an unpriced call");
 });

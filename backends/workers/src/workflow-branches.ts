@@ -20,9 +20,9 @@ export async function childBranch(env: RepoEnv, tenant: string, storage: Pick<Du
   const existing = await ctx.repo.ref(name);
   if (existing && existing.owner !== `workflow:${effect.workflow}`) throw new RepoError('workflow branch belongs to another owner', 409, 'exists');
   if (!existing) {
-    try { await branch(ctx, { name, from: { version: cached ?? base.version }, owner: `workflow:${effect.workflow}`, who: `workflow:${effect.workflow}`, why: 'workflow child' }); }
+    try { await branch(ctx, { name, from: { version: cached ?? base.version }, owner: `workflow:${effect.workflow}` }); }
     catch (error) {
-      if (repoErrorFrom(error)?.code !== 'exists') throw error;
+      if (repoErrorFrom(error)?.code !== 'ref_exists') throw error;
       if ((await ctx.repo.ref(name))?.owner !== `workflow:${effect.workflow}`) throw error;
     }
   }

@@ -349,6 +349,9 @@ cd infra/camelfs/terraform
 tofu init -backend=false && tofu validate && tofu fmt -check -recursive && tofu test
 ```
 
+`./check-sg-descriptions.sh` (from `infra/camelfs`; `apply.sh` runs it before every plan) refuses security group and
+rule descriptions with characters AWS rejects only at apply time (an apostrophe did, during the compute flip).
+
 Without `tofu` installed: `docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/work" -w /work ghcr.io/opentofu/opentofu:1.10 <command>`.
 Eight runs: the first apply (no listener, no service, no compute rules; the short-lived CA, its PEM for the hosts' pin, both NLB paths);
 the tables' keys and protection; the balancers (h2 off, sources, DNS modes, health route); the host groups (443 to

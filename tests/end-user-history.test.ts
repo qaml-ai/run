@@ -14,11 +14,11 @@ async function history(credits: EndUserCredits, db: { query: (text: string, valu
   await credits.post(tenant, "p", { kind: "grant", amount: 10 * USD, key: "pi_1" });
   const before = now - 2 * DAY, yesterday = now - DAY;
   // Two days ago: bot:1 spends all its allowance and some of the balance; builder some of its allowance.
-  await credits.charge(tenant, "p", "bot:1", 600_000, "charge:1", {}, before);
-  await credits.charge(tenant, "p", "bot:1", 600_000, "charge:2", {}, before + 1);
-  await credits.charge(tenant, "p", "builder", 200_000, "charge:3", {}, before + 2);
+  await credits.debit(tenant, "p", "bot:1", (600_000) / 1_000_000, "charge:1", {}, { now: before });
+  await credits.debit(tenant, "p", "bot:1", (600_000) / 1_000_000, "charge:2", {}, { now: before + 1 });
+  await credits.debit(tenant, "p", "builder", (200_000) / 1_000_000, "charge:3", {}, { now: before + 2 });
   // Yesterday: builder past its allowance.
-  await credits.charge(tenant, "p", "builder", USD, "charge:4", {}, yesterday);
+  await credits.debit(tenant, "p", "builder", (USD) / 1_000_000, "charge:4", {}, { now: yesterday });
   // A refund and an adjustment two days ago, the grant today.
   await credits.post(tenant, "p", { kind: "refund", amount: USD, key: "re_1" });
   await credits.post(tenant, "p", { kind: "adjustment", amount: -250_000, key: "adj_1" });

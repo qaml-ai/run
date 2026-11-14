@@ -1,4 +1,4 @@
-// Generated from src/billing.ts; Workers host imports/types and free-hourly error code.
+// Generated from src/billing.ts; only host imports/types are adapted.
 // Regenerate with scripts/reuse-billing.mjs; --check rejects policy drift.
 import { randomUUID } from "node:crypto";
 import type { Tenants } from "./billing-host.ts";
@@ -28,6 +28,9 @@ import { CODE_LIMITS, DECISION_LIMITS, SANDBOX_LIMITS } from "../../../src/limit
  * a turn already running stops after its current response, so the overdraft is
  * bounded by one response and the time around it.
  */
+/** The error code of the free hourly allowance's refusal (a 429): a spend refusal, as a 402 credit refusal is. */
+export const FREE_HOURLY_LIMIT = "FREE_HOURLY_LIMIT";
+
 export type BillingMode = "prepaid" | "none";
 
 /**
@@ -394,16 +397,20 @@ export class Billing {
     if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`, "INSUFFICIENT_CREDIT");
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
-      return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`, "FREE_HOURLY_LIMIT");
+      return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`, FREE_HOURLY_LIMIT);
     }
     return undefined;
   }
 
   /**
-   * What a prepaid tenant can spend now, read afresh in `sql` (credit-holds.ts): its balance, and on free credit no more
+   * What a prepaid tenant can spend now, read afresh in `sql`: its balance, and on free credit no more
    * than is left of the hour's allowance; nothing while a payment is disputed.
    */
-  async spendable(tenant: string, sql: Sql): Promise<number> {
+  async spendable(tenant: string, sql: Sql, reads?: BillingReads): Promise<number> {
+    if (reads?.account) {
+      const { balance, purchased, lastHour, disputed } = await reads.account();
+      return disputed ? 0 : purchased > 0 ? balance : Math.min(balance, this.pricing.free.hourlySpend - lastHour);
+    }
     const { rows: [row] } = await sql.query(`
       select balance, purchased, (select coalesce(sum(amount), 0) from credit_spend_minutes where tenant = $1 and minute >= $2) as last_hour,
         exists (select 1 from billing_disputes where tenant = $1 and not closed) as disputed

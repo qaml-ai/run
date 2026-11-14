@@ -44,7 +44,6 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
@@ -117,6 +116,7 @@
       "tag": "delete-job-hosts",
       "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
     },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
     { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
@@ -136,7 +136,6 @@
     }
   ],
   // The camelFS v0 host (EC2 m8id) through the camel-fs-proto tunnel to its import proxy on 127.0.0.1:8790 (VPC service camel-fs-proto).
-  "vpc_services": [{ "binding": "CAMELFS", "service_id": "01a1d207-1c73-78f3-bba9-42db316bf4f2" }],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
@@ -191,6 +190,9 @@
     "SCHEDULE_EMAIL_FROM": "camelrun@staging.camelai.dev",
     "ADMIN_TENANTS": "pilot-admin",
     "CAMELFS_URL": "https://fs.camelai.dev",
+    "CAMELFS_COMPUTE": "1",
+    "CAMELFS_POOLS": "{\"default\":\"test\"}",
+    "GUEST_IMAGE_SHA256": "b349e90c1ff2e860408ca4ebfe7236292ab167983c95fbcdd253ea8893f04083",
     "AGENT_OPEN_SIGNUP": "false",
     "AGENT_MAX_AGENTS": "2100",
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",

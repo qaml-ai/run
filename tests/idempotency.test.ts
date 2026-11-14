@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Hono } from "hono";
+import { HttpError } from "../src/http.ts";
+import { idempotency } from "../src/idempotency.ts";
+import { testDatabase } from "./database.ts";
 import { listen, runtime, until } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
@@ -53,6 +57,45 @@ test("a response carrying a secret shown once is never kept or replayed: its key
   }
   const kept = await r.db.query("select count(*)::int as count from idempotency_keys where body is not null and key like 'secret-%'");
   assert.equal(kept.rows[0].count, 0, "no secret-bearing answer is stored");
+});
+
+test("a response header marks one success as shown once while regular successes replay", async () => {
+  const { db } = await testDatabase();
+  const app = new Hono();
+  app.use("*", idempotency({ db: () => db, tenant: () => "alice", skip: () => false, secret: () => false }));
+  app.onError((error, c) => {
+    if (!(error instanceof HttpError)) throw error;
+    return c.json({ code: error.code, error: error.message }, 409);
+  });
+  app.post("/once", c => {
+    c.header("Idempotency-Secret", "once");
+    return c.json({ signedUrl: "fixture-signed-url" }, 201, { "Cache-Control": "no-store" });
+  });
+  app.post("/normal", c => c.json({ created: true }, 201));
+  const post = (path: string, keyed = true) => app.request(path, {
+    method: "POST", headers: keyed ? { "Idempotency-Key": path } : undefined,
+  });
+
+  const once = await post("/once");
+  assert.equal(once.status, 201);
+  assert.equal(once.headers.get("Idempotency-Secret"), null);
+  const unkeyed = await post("/once", false);
+  assert.equal(unkeyed.status, 201);
+  assert.equal(unkeyed.headers.get("Idempotency-Secret"), null);
+  const retry = await post("/once");
+  assert.equal(retry.status, 409);
+  const conflict = await retry.json();
+  assert.equal(conflict.code, "IDEMPOTENCY_CONFLICT");
+  assert.match(conflict.error, /shown once/);
+  assert.deepEqual((await db.query("select status, body, content_type from idempotency_keys where key = '/once'")).rows,
+    [{ status: 201, body: null, content_type: null }]);
+
+  const normal = await post("/normal");
+  const replay = await post("/normal");
+  assert.equal(normal.status, 201);
+  assert.equal(replay.status, 201);
+  assert.equal(replay.headers.get("Idempotent-Replayed"), "true");
+  assert.deepEqual(await replay.json(), await normal.json());
 });
 
 test("a key whose request died mid-way is taken over after a while, and a body past the limit is refused before it is read whole", async t => {

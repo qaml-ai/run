@@ -8,6 +8,8 @@ export * from "./worker-entry.ts";
 /** Binding-only fake ledger for verifying amounts and dedupe before the generated debit lands. */
 export class VoiceCall extends ProductionVoiceCall {
   constructor(ctx: DurableObjectState, env: Env & { TEST_VOICE_CREDITS?: string }) {
+    // "real": no fake ledger; the production EndUserCredits (end_user_ledger) is the one charged.
+    if (env.TEST_VOICE_CREDITS === "real") { super(ctx, env); return; }
     const payer = env.TEST_VOICE_CREDITS === "1";
     let depleted = false;
     const VOICE_CREDITS: VoiceCredits = {
