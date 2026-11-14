@@ -19,6 +19,8 @@ export class CamelAgent extends DurableObject<Env> {
     guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
   }
 
+  clearComputerAttached() { return this.#runtime.clearComputerAttached(); }
+
   removeMember(member: string) { return this.#runtime.removeMember(member); }
 
   /** Binding-only pilot counters; no runtime state, SQL or values are exposed. */

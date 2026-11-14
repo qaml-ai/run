@@ -9,7 +9,8 @@ import { HttpError } from '../errors.ts';
 import { COMMON, SHELL, BROWSER, COMPUTER_TOOLS, PROVIDERS, isBrowserProvider, fileCommand, storable, type Credentials, type ComputerDriver, type Provider } from './policy.ts';
 import { remoteDriver, type RemoteBindings } from './remote.ts';
 import { connectionForkable, FORK_LIMITS, forkableProvider, forkedFrom, forkRows, forkUnsupported, noSession, notForkable, snapshotFailed, snapshotRef, type ForkedFrom, type SnapshotRef } from '../../../../src/core/computer-fork.ts';
-export type ComputerEnv = ControlEnv & RemoteBindings & { COMPUTER_MANAGED_ENABLED?: string };
+import { writeComputerConnections, type AttachmentHintEnv, type LocalAttachmentHint } from './attachment-hint.ts';
+export type ComputerEnv = ControlEnv & AttachmentHintEnv & RemoteBindings & { COMPUTER_MANAGED_ENABLED?: string };
 const id = () => `cmp_${crypto.randomUUID().replaceAll('-', '')}`;
 /** A fork snapshot's sealed reference: the snapshot and the provider account's credentials that drop it, bound to its row. */
 type SnapshotSecret = { snapshot: string; ref: SnapshotRef; provider: string; credentials: Credentials };
@@ -46,7 +47,7 @@ export class ComputerService {
   readonly env: ComputerEnv;
   readonly tenant: string;
   readonly factory: typeof remoteDriver;
-  constructor(env: ComputerEnv, tenant: string, factory = remoteDriver) { this.env = env; this.tenant = tenant; this.factory = factory; }
+  constructor(env: ComputerEnv, tenant: string, factory = remoteDriver, private readonly localAttachmentHint?: LocalAttachmentHint) { this.env = env; this.tenant = tenant; this.factory = factory; }
   get managedEnabled() {
     // This experiment does not enable unpaid platform compute. Money integration
     // must supply real settlement before this test-only switch can be removed.
@@ -67,14 +68,14 @@ export class ComputerService {
   async create(value: unknown) {
     const parsed = connectionInput(value, this.managedEnabled);
     if (parsed.managed && parsed.provider === 'boat') parsed.provider = 'lambda';
-    return transaction(this.env, async sql => {
+    return writeComputerConnections(this.env, async sql => {
       const exists = await sql.query('select id from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3) for update', [this.tenant, parsed.agent, Date.now()]);
       if (!exists.rowCount) throw new HttpError(404, 'Unknown agent');
       if ((await sql.query('select 1 from computer_connections where tenant=$1 and agent=$2', [this.tenant, parsed.agent])).rowCount) throw new HttpError(409, 'This agent already has a computer connection');
       const connection = id(), credentials = await seal(JSON.stringify({ connection, credentials: parsed.credentials }), this.env);
       const row = (await sql.query('insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents,forkable) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *', [connection, this.tenant, parsed.agent, parsed.provider, JSON.stringify(credentials), parsed.leaseSeconds, parsed.dailySeconds, Date.now(), parsed.managed, parsed.subagents ?? true, parsed.forkable ?? null])).rows[0];
-      return publicConnection(row);
-    });
+      return { value: publicConnection(row), agents: [parsed.agent] };
+    }, this.localAttachmentHint);
   }
   async credentials(c: any): Promise<Credentials> {
     const envelope = JSON.parse(await unseal(c.credentials, this.env));
@@ -124,20 +125,15 @@ export class ComputerService {
   }
   /** Connections for `agents` that start from `snapshot` (forkSnapshot), for the fork route. Each agent must have none yet. */
   async forkInto(source: string, snapshot: { id: string; connection: string; provider: string; at: number }, agents: string[]) {
-    // One transaction: every target gets its connection, or none does.
-    return transaction(this.env, async sql => {
+    return attachConnection(this.env, this.tenant, async sql => {
       const seed = await forkRows.attachable(sql, snapshot.id, this.tenant);
       const c = (await sql.query("select * from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%' for share", [this.tenant, snapshot.connection])).rows[0];
       if (!seed || !c) throw new HttpError(409, "The source's computer connection was removed; nothing to fork");
-      const forks = [];
       for (const agent of agents) {
         if (!(await sql.query('select 1 from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3) for update', [this.tenant, agent, Date.now()])).rowCount) throw new HttpError(404, `Unknown agent ${agent}`);
-        const row = await attachConnection(this.env, sql, this.tenant, agent, c, seed);
-        if (!row) throw new HttpError(409, `Agent ${agent} already has a computer connection; remove it first`);
-        forks.push(publicConnection(row));
       }
-      return forks;
-    });
+      return { c, seed, agents, requireNew: true };
+    }, this.localAttachmentHint);
   }
   /** A child's computer when its work is done (a delegate call answered): its session stops, its connection stays. */
   async release(agent: string) {
@@ -253,7 +249,10 @@ export class ComputerService {
   }
   private async detach(c: any) {
     await this.stop(c, await withSql(this.env, sql => latest(sql, c.id)));
-    await withSql(this.env, sql => sql.query("update computer_connections set agent=$2,credentials=$3 where id=$1", [c.id, `removed:${c.id}`, '{}']));
+    await writeComputerConnections(this.env, async sql => {
+      const { rowCount } = await sql.query("update computer_connections set agent=$2,credentials=$3 where id=$1 and agent=$4", [c.id, `removed:${c.id}`, '{}', c.agent]);
+      return { value: undefined, agents: rowCount ? [c.agent] : [] };
+    }, this.localAttachmentHint);
     // The last connection started from a fork snapshot takes it with it.
     const orphan = c.seed ? await withSql(this.env, sql => forkRows.orphaned(sql, c.seed, Date.now() - FORK_LIMITS.dropGraceMs)) : undefined;
     if (orphan) await dropSnapshot(this.env, orphan);
@@ -281,29 +280,57 @@ export class ComputerService {
     await withSql(this.env, sql => releaseComputer(sql, this.tenant, c.id)); return { confirmed: true }; }
   async usage() { return withSql(this.env, async sql => (await sql.query('select workspace,provider,count(*)::integer as sessions,sum(greatest(0,least(coalesce(closed_at,$2),expires_at)-created_at))/1000.0 as seconds from computer_leases where tenant=$1 group by workspace,provider', [this.tenant, Date.now()])).rows.map(row => ({ ...row, costUsd: 0 }))); }
 }
-/** A connection for `agent` with `c`'s provider and settings (credentials sealed for it), started from `seed` when forked. */
-async function attachConnection(env: ComputerEnv, db: Sql, tenant: string, agent: string, c: any, seed?: { id: string; agent: string; provider: string; created_at: string | number }) {
-  const connection = id(), credentials = await new ComputerService(env, tenant).credentials(c), secret = await seal(JSON.stringify({ connection, credentials }), env);
-  const from: ForkedFrom | null = seed ? { agent: seed.agent, connection: c.id, snapshot: seed.id, provider: seed.provider, at: Number(seed.created_at) } : null;
-  return (await db.query('insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents,seed,forked_from,forkable) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) on conflict(tenant,agent) do nothing returning *', [connection, tenant, agent, c.provider, JSON.stringify(secret), c.lease_seconds, c.daily_seconds, Date.now(), c.managed, c.subagents, seed?.id ?? null, from && JSON.stringify(from), c.forkable ?? null])).rows[0];
+/** Attach every target in one transaction, with credentials sealed for each connection. */
+async function attachConnection(env: ComputerEnv, tenant: string, targets: (sql: Sql) => Promise<{
+  c: any;
+  seed?: { id: string; agent: string; provider: string; created_at: string | number };
+  agents: string[];
+  requireNew?: boolean;
+} | undefined>, local?: LocalAttachmentHint) {
+  return writeComputerConnections(env, async sql => {
+    const target = await targets(sql);
+    if (!target) return { value: [], agents: [] };
+    const { c, seed, agents, requireNew } = target;
+    const credentials = await new ComputerService(env, tenant).credentials(c);
+    const from: ForkedFrom | null = seed ? { agent: seed.agent, connection: c.id, snapshot: seed.id, provider: seed.provider, at: Number(seed.created_at) } : null;
+    const value = [], attached: string[] = [];
+    for (const agent of agents) {
+      const connection = id(), secret = await seal(JSON.stringify({ connection, credentials }), env);
+      const row = (await sql.query('insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents,seed,forked_from,forkable) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) on conflict(tenant,agent) do nothing returning *', [connection, tenant, agent, c.provider, JSON.stringify(secret), c.lease_seconds, c.daily_seconds, Date.now(), c.managed, c.subagents, seed?.id ?? null, from && JSON.stringify(from), c.forkable ?? null])).rows[0];
+      if (!row && requireNew) throw new HttpError(409, `Agent ${agent} already has a computer connection; remove it first`);
+      if (row) {
+        value.push(publicConnection(row));
+        attached.push(agent);
+      }
+    }
+    return { value, agents: attached };
+  }, local);
 }
+
 /**
- * Copy the parent's attachment for a child just made: a new machine, never the parent's session. `computer` is the
- * delegate or spawn_agent call's choice: "none" attaches nothing; `{ seed }` (a fork snapshot the call took,
- * `ComputerService.forkSnapshot`) attaches a connection whose sessions start from it, whatever the parent's `subagents`.
+ * Copy the parent's attachment for a child just made: a new machine, never the parent's session. A fork snapshot
+ * supplies the starting disk regardless of the parent's subagents setting.
  */
-export async function inheritComputer(env: ComputerEnv, tenant: string, parent: string, child: string, sql?: Sql, computer?: 'none' | { seed: string }) {
-  if (computer === 'none') return;
-  const run = async (db: Sql) => {
-    parent = await computerOwner(db, tenant, parent);
-    // Locked (FOR SHARE) until the child's transaction ends, so a drop cannot take it meanwhile.
-    const seed = computer?.seed ? await forkRows.attachable(db, computer.seed, tenant) : undefined;
+export async function inheritComputer(env: ComputerEnv, tenant: string, parent: string, child: string, computer?: { seed: string }) {
+  await attachConnection(env, tenant, async sql => {
+    const owner = await computerOwner(sql, tenant, parent);
+    // Locked until the attachment commits, so a drop cannot take it meanwhile.
+    const seed = computer?.seed ? await forkRows.attachable(sql, computer.seed, tenant) : undefined;
     if (computer?.seed && !seed) throw new HttpError(409, "The fork's snapshot is gone; fork again");
-    const c = (await db.query(seed ? "select * from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%' for share" : 'select * from computer_connections where tenant=$1 and agent=$2 and subagents for share', [tenant, seed ? seed.connection : parent])).rows[0];
+    const c = (await sql.query(seed ? "select * from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%' for share" : 'select * from computer_connections where tenant=$1 and agent=$2 and subagents for share', [tenant, seed ? seed.connection : owner])).rows[0];
     if (!c) { if (seed) throw new HttpError(409, "The parent's computer connection was removed; nothing to fork"); return; }
-    await attachConnection(env, db, tenant, child, c, seed);
-  };
-  if (sql) await run(sql); else await transaction(env, run);
+    return { c, seed, agents: [child] };
+  });
+}
+
+/** Account deletion removes connection history and all rows that reference it. */
+export async function deleteTenantComputerConnections(env: ComputerEnv, tenant: string) {
+  await writeComputerConnections(env, async sql => {
+    for (const table of ["computer_operations", "computer_commands", "computer_leases", "managed_computers", "computer_snapshots"])
+      await sql.query(`delete from ${table} where tenant=$1`, [tenant]);
+    const { rows } = await sql.query<{ agent: string }>("delete from computer_connections where tenant=$1 returning agent", [tenant]);
+    return { value: undefined, agents: rows.map(row => row.agent).filter(agent => !agent.startsWith("removed:")) };
+  });
 }
 
 /** A fork snapshot row's sealed reference, opened and checked against its row. */

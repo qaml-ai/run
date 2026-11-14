@@ -15,7 +15,7 @@ import { repoErrorFrom } from "./repos/repo-policy.ts";
 import type { Webhooks } from "./webhook-policy.ts";
 import type { DeliveryMessage } from "./webhooks.ts";
 import { createStripe, type BillingEnv } from "./billing-routes.ts";
-import { ComputerService, dropTenantSnapshots, type ComputerEnv } from "./computers/service.ts";
+import { ComputerService, deleteTenantComputerConnections, dropTenantSnapshots, type ComputerEnv } from "./computers/service.ts";
 import { transaction } from "./postgres.ts";
 
 export type AccountLifecycleEnv = FileBindings & BillingEnv & {
@@ -86,11 +86,12 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       }
     },
     removeComputers: async tenant => {
-      for (const { agent } of (await db.query("select distinct agent from computer_connections where tenant=$1", [tenant])).rows)
+      for (const { agent } of (await db.query("select distinct agent from computer_connections where tenant=$1 and agent not like 'removed:%'", [tenant])).rows)
         await new ComputerService(env as unknown as ComputerEnv, tenant).removeAgent(agent);
       // Fork snapshots go too: their rows are deleted with the account, and they are the only handle to them.
       await dropTenantSnapshots(env as unknown as ComputerEnv, tenant);
     },
+    deleteComputerConnections: tenant => deleteTenantComputerConnections(env as unknown as ComputerEnv, tenant),
     purgeTenantIndex: async tenant => {
       await env.TENANTS.getByName(tenant).purgeAccountData();
     },
