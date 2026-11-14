@@ -86,7 +86,7 @@ func hostItem(h HostInfo, epoch, now int64) attrs {
 }
 
 func (c *Controller) Register(ctx context.Context, h HostInfo) (int64, error) {
-	if h.Pool == "" || h.Host == "" || h.BootID == "" || h.Slots < 0 || h.Shape.MemoryMiB < 0 || strings.HasPrefix(h.Host, waitPrefix) {
+	if h.Pool == "" || h.Host == "" || h.BootID == "" || h.Slots < 0 || h.Shape.MemoryMiB < 0 || (strings.HasPrefix(h.Host, waitPrefix) || strings.HasPrefix(h.Host, enrollmentPrefix)) {
 		return 0, ErrInvalid
 	}
 	key := hostKey(h.Pool, h.Host)

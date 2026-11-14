@@ -1,56 +1,14 @@
 {
- "attachment-policy.ts": [
-  [
-   " * The chunk list is the file's content at the time: chunks are content-addressed and never\n * rewritten, so the reference reads the same bytes after the file is changed or deleted.\n",
-   " * The immutable version and blob retain the bytes after the file is changed or deleted.\n"
-  ],
-  [
-   "export type FileRef = {\n  type: \"file\"; path: string; volume: string; version: number; size: number; contentType: string; chunks: string[];\n",
-   "export type RepoFileRef = {\n  type: \"file\"; path: string; repo: string; version: string; blob: string; repoPath?: string; size: number; contentType: string;\n"
-  ],
-  [
-   "  head?: string;\n};\n\n",
-   "  head?: string;\n};\n\n// TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR\nexport type LegacyFileRef = Omit<RepoFileRef,'repo'|'blob'|'repoPath'|'version'> & {volume:string;version:number;chunks:string[];key:string};\nexport type FileRef = RepoFileRef | LegacyFileRef;\n\n"
-  ],
-  [
-   "  return !!value && value.type === \"file\" && typeof value.path === \"string\" && typeof value.volume === \"string\" &&\n    Number.isSafeInteger(value.version) && Number.isSafeInteger(value.size) && value.size >= 0 && typeof value.contentType === \"string\" &&\n    Array.isArray(value.chunks) && value.chunks.every((hash: unknown) => typeof hash === \"string\" && /^[a-f0-9]{64}$/.test(hash)) &&\n",
-   "  // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR\n  if(value && typeof value.volume==='string' && typeof value.key==='string' && Number.isSafeInteger(value.version) && Array.isArray(value.chunks)) return value.type==='file' && typeof value.path==='string' && Number.isSafeInteger(value.size) && value.size>=0 && typeof value.contentType==='string';\n  return !!value && value.type === \"file\" && typeof value.path === \"string\" && typeof value.repo === \"string\" &&\n    /^[a-f0-9]{40}$/.test(value.version) && Number.isSafeInteger(value.size) && value.size >= 0 && typeof value.contentType === \"string\" &&\n    typeof value.blob === \"string\" && /^[a-f0-9]{40}$/.test(value.blob) &&\n"
-  ]
- ],
- "delegation-policy.ts": [
-  [
-   "type Mount = { volumeId: string; path: string; mode: 'ro' | 'rw'; subpath?: string; notify?: boolean; instructions?: string };\n",
-   "type Mount = import('./repos/mounts.ts').AgentMount;\n"
-  ],
-  [
-   "  return { mounts: [...mounts.map(({ volumeId, path, mode, subpath, instructions }) => ({ volumeId, path, mode, ...(instructions !== undefined ? { instructions } : {}), ...subpath ? { subpath } : {} })), { workspace: false }] };\n",
-   "  return { mounts: [...mounts.map(mount => {\n    const { path, mode, subpath, instructions } = mount;\n    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR\n    const source = 'volumeId' in mount ? {volumeId:mount.volumeId} : {repo:mount.repo,...(mount.ref ? {ref:mount.ref} : {})};\n    return {...source,path,mode,...(instructions !== undefined ? {instructions} : {}),...(subpath ? {subpath} : {})};\n  }), { workspace: false }] };\n"
-  ]
- ],
  "hosted-mcp-tools.ts": [
   [
    "    mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),\n",
-   "    mounts: z.array(z.union([z.object({volumeId:z.unknown()}).passthrough(),z.object({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).optional(),\n"
-  ],
-  [
-   "  }, async ({ agent, ...schedule }) => {\n",
-   "  }, async ({ agent, ...schedule }) => {\n    if(schedule.mounts?.some(m=>\"volumeId\"in m))throw new Error(\"Volumes are replaced by repos: mount { repo }\");\n"
+   "    mounts: z.array(z.union([z.object({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).optional(),\n"
   ]
  ],
  "runtime-identity.ts": [
   [
    "  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version?: number; snapshot?: string;\n",
    "  tenant: string; agent: string; call: string; tool: string; repo: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version: string;\n"
-  ]
- ],
- "schedule-policy.ts": [
-  [
-   "  dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: \"continue\" | \"fresh\"; spendLimit?: { usd: number }; mounts?: {volumeId?:string;path?:string;mode?:\"ro\"|\"rw\";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail; createdAt: number;\n",
-   "  dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: \"continue\" | \"fresh\"; spendLimit?: { usd: number }; mounts?: {repo?:string;ref?:string;instructions?:string;path?:string;mode?:\"ro\"|\"rw\";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail; createdAt: number;\n"
-  ],
-  [
-   "  const mounts = body.mounts === undefined ? undefined : z.array(z.union([z.strictObject({volumeId:z.string(),path:z.string(),mode:z.enum(['ro','rw']),subpath:z.string().optional(),notify:z.boolean().optional()}),z.strictObject({workspace:z.boolean(),path:z.string().optional()})])).max(16).parse(body.mounts);\n",
-   "  if (Array.isArray(body.mounts) && body.mounts.some((m:any)=>m && \"volumeId\" in m)) throw new Error(\"Volumes are replaced by repos: mount { repo }\");\n  const mounts = body.mounts === undefined ? undefined : z.array(z.union([z.strictObject({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum(['ro','rw']),subpath:z.string().optional(),notify:z.boolean().optional()}),z.strictObject({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).parse(body.mounts);\n"
   ]
  ]
 }

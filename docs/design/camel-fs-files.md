@@ -118,6 +118,11 @@ so (`landed: "forwarded"`).
 
 ## 4. Jobs and workflows
 
+**Superseded for jobs (Miguel, 2026-11-14): there is no `job()`.** Agents compute through one `bash` tool (one VM
+per agent per branch), and workflow steps are agent turns or child agents, each child with its own `bash` VM on
+its own `fork/<effect>` branch (camel-fs-compute.md §6). What follows about `job()` is the record of the replaced
+design. Its branch, merge and fast-forward effects still describe how a workflow merges its children's branches.
+
 `job({ at: { repo, ref?, version? }, commit?: true | { onto: ref } })`. `at` is a place in a repo, the same shape as
 `POST /v1/repos`' `from` (§1): `repo` is the repo id, and at most one of `ref` (a name, default `main`) or `version`
 (40 hex) picks the version; a bare ref or version means nothing without its repo, so neither is accepted alone
@@ -740,7 +745,7 @@ Over the host's Unix socket (unchanged transport):
   computer and `bash` VMs checkpoint many times without ending.
   - **Identity:** from the verified TLS handshake only. `{host}` must equal the client certificate's
     `spiffe://camelfs/host/<id>`, else `403 forbidden`.
-  - **Body:** `{ "commit", "expect", "holder": "<host>:<bootEpoch>:<mount>", "epoch", "root"? }`.
+  - **Body:** `{ "commit", "expect", "holder": { "host", "boot", "mount" }, "epoch", "root"? }`.
   - **Checks, in order:**
     1. `hostwire.ParseHolder`;
     2. `checkHolder(certHostID, holder)`: holder.host is the certificate's host and holder.boot is the host's
@@ -788,6 +793,7 @@ the image; the ref item carries `root?` (§6).
 | `too_deep` | 413 | a history walk (`is-ancestor`, `merge-base`) past 50,000 commits visited; not provable, not a negative answer |
 | `conflict` | 409 | a merge with conflicts (body lists them) |
 | `no_fence` | 409 | a checkpoint on a mount without a fence |
+| `lineage_conflict` | 409 | `PUT /v1/lineages/{lineage}` for a lineage that exists under a different tenant; the body carries `{ tenant }` |
 | `lineage_deleted` | 410 | any route on a lineage whose `lineages` item carries `deletedAt` (§9.9 `DELETE /v1/lineages/{lineage}`) |
 | `unavailable` | 503 | S3 or DynamoDB unreachable, or throttled past the tier's retries; safe to retry with the same `Idempotency-Key` |
 
@@ -806,13 +812,16 @@ unremembered retry of a move that already happened lands on ref-move rule 3 (sam
 the moved-to commit, or answers `412 stale` with `current` equal to the retry's commit, which the caller reads as
 success.
 
-**Lineages.** `PUT /v1/lineages/{lineage}` `{ "tenant", "kind": "workspace" | "image", "defaultBranch": "main" }` → `201`, or `200` when it already exists with the same tenant (anything else `409`).
+**Lineages.** `PUT /v1/lineages/{lineage}` `{ "tenant", "kind": "workspace" | "image", "defaultBranch": "main" }` → `201`, or `200` when it already exists with the same tenant; a different tenant is `409 lineage_conflict` with
+`{ "tenant" }`.
 The runtime calls it at repo creation, before the first commit. `GET` returns the item.
 
 **Delete a lineage.** `DELETE /v1/lineages/{lineage}`, with a runtime token only (`sub` in `runtime:*`).
 - While any ref is held, it answers `409 held` with `{ "held": [names] }` and changes nothing.
 - Otherwise it deletes every ref (their epochs kept, so no fence from before can match later) and marks the
-  `lineages` item `deletedAt`, in one conditional write.
+  `lineages` item `deletedAt`, in one conditional write → `204`.
+- A replay with the same `Idempotency-Key` returns `204` again. A new key on a deleted lineage gets
+  `410 lineage_deleted`.
 - The objects are left to GC: the mark finds them unreachable. Results under `results/<lineage>/` follow the same
   path (L102).
 - From then on every route on that lineage answers `410 lineage_deleted`.
@@ -849,8 +858,10 @@ leases end.
 - `expect` is required: `cas` never creates a ref (`400 invalid_request`; creation is `POST refs`).
 - The commit must be the lineage's (`400 unknown_commit`).
 - `expect` must be current (`412 stale`). `commit == expect` is a no-op (rule 3).
-- A commit made for this move must pass rule 1 (`409 bad_parent`); any other recorded commit must pass rule 2
-  (`409 not_fast_forward`).
+- `cas` always applies **rule 2**: it fast-forwards to the commit, which must reach `expect`, else
+  `409 not_fast_forward`. A host's checkpoint commit has `parents[0] = expect`, so it reaches it in one step.
+  `bad_parent` belongs to the moves the tier builds itself (`write`, `merge`, `restore`, rule 1).
+- After the stale and fence checks, `cas` refuses a commit with more than 2 parents as `409 bad_parent`.
 - The ref is then written under `version = :expect`, plus `holder` and `leaseEpoch` equal to the token's `fence`
   claim for a fenced token, else `attribute_not_exists(holder)` (`409 fenced` either way).
 - The reply's `diff` (from `expect`'s tree to the commit's) is what the host puts in its result and what the agent
@@ -880,7 +891,8 @@ per tool call.
 **Merge.** `POST /v1/lineages/{lineage}/refs/{name}/merge` `{ "theirs": "<version>", "mode": "merge" | "squash" |
 "ff-only", "author", "message", "time", "trailers"? }` → `201 { "version", "tree", "ff": true | false, "merged",
 "took" }` or `409 conflict` (9.5's body; nothing moved). When the head is an ancestor of `theirs` (rule 2's walk), `merge`
-and `ff-only` move the ref to `theirs`, a fast-forward with zero new bytes. Otherwise `ff-only` is
+and `ff-only` move the ref to `theirs`, a fast-forward with zero new bytes. The reply then has `ff: true`,
+`merged: []` and `took: { ours: 0, theirs: <changed paths> }`. Otherwise `ff-only` is
 `409 not_fast_forward`, and `merge` computes the merge base (9.4), merges the trees (9.5) and commits
 `parents: [head, theirs]` (`squash`: `[head]`) under rule 1. Either way the
 ref moves under the same condition as `write`.
@@ -914,7 +926,7 @@ mints, and the tier only verifies. proto-block's C1 spec is the build contract, 
 ```
 header: { "alg": "EdDSA", "typ": "camelfs+jwt", "kid": "…" }
 claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_123", "lin": "t_9:repo_4",
-          "acc": "r" | "w", "refs": ["main", "published/*"], "fence"?: { "holder": "…", "epoch": 7 },
+          "acc": "r" | "w", "refs": ["main", "published/*"], "fence"?: { "holder": "<host>:<boot>:<mount>", "epoch": 7 },
           "iat": 1763046000, "exp": 1763046900 }
 ```
 
@@ -939,6 +951,12 @@ claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_12
   `kid`, never the token.
 
 **For runtime callers, a fence lives only inside the signed token.**
+- **The holder's two spellings, one rule everywhere:**
+  - Every JSON request or reply body uses the object `{ "host", "boot", "mount" }`: the lease routes of §9.9, and
+    the host CAS route of §9.7.
+  - The JWT `fence` claim and the value stored on the DynamoDB ref item use the canonical string
+    `"<host>:<boot>:<mount>"` (`hostwire.Holder.String()`), with `epoch` a number.
+  - The tier decodes the object, then compares canonical strings. On the host route it runs `checkHolder` first.
 - A token with `fence` writes exactly the one ref in its `refs`. Its `cas`, lease renew and release are conditioned
   on that holder and epoch. No route on the API listener takes a fence in a request body.
 - **Hosts use no token** (decided 2026-11-14). Their CAS is the host route of §9.7, on `--listen-hosts`.

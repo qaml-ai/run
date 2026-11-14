@@ -37,14 +37,12 @@ export async function presentedFile(
       throw new Error(`At most ${FILE_LIMITS.attachments} files can be presented in a run`);
     outputs.presented.push({ callId: identity.callId, file });
     await tx.put(outputKey(identity.requestId), outputs);
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    if ('volume' in file) await tx.put('file-pin-volumes',[...new Set([...(await tx.get<string[]>('file-pin-volumes')??[]),file.volume])]);
     return true;
   });
   if (!added) return;
   const origin = env.PUBLIC_BASE_URL ?? identity.origin;
   const link = origin && env.FILE_SIGNING_SECRET
-    ? "volume" in file ? signVolumeLink(env,origin,identity.tenant,file.volume,{path:volumePath}) : await signRepoLink(await repoContext(env as RepoEnv, identity.tenant, file.repo), origin, { path: file.repoPath ?? volumePath.replace(/^\/+/, ""), version: file.version as string })
+    ? await signRepoLink(await repoContext(env as RepoEnv, identity.tenant, file.repo), origin, { path: file.repoPath ?? volumePath.replace(/^\/+/, ""), version: file.version as string })
     : undefined;
   await emit({
     type: "event", requestId: identity.requestId,
@@ -58,11 +56,4 @@ export async function fileOutputs(storage: DurableObjectStorage, requestId: stri
     ...(outputs?.files.length ? { files: outputs.files } : {}),
     ...(outputs?.presented.length ? { presented: outputs.presented.map(item => item.file) } : {}),
   };
-}
-
-
-// TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-export async function releaseLegacyPresentedFiles(storage:DurableObjectStorage,env:FileBindings,tenant:string,agent:string) {
-  for(const volume of await storage.get<string[]>('file-pin-volumes')??[])await env.VOLUMES.getByName(`${tenant}:${volume}`).unpin(`agent:${agent}`);
-  await storage.delete('file-pin-volumes');
 }

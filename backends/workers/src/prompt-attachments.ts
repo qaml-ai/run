@@ -1,4 +1,3 @@
-import { LegacyPromptAttachments, withLegacyAttachmentReferences } from "./legacy-prompt-attachments.ts";
 import { Buffer } from "node:buffer";
 import {
   createAssistantMessageEventStream,
@@ -62,7 +61,7 @@ export {
   type AttachedFile,
 } from "./attachment-markers.ts";
 type Identity = AttachmentAudioScope & {
-  mounts: import("./repos/mounts.ts").AgentMount[];
+  mounts: import("./repos/mounts.ts").Mount[];
 };
 type AttachmentEnv = FileBindings & KeyEnv & MediaBindings;
 
@@ -123,16 +122,7 @@ export class PromptAttachments {
     identity: Identity,
     inputs: unknown,
   ): Promise<AttachedFile[]> {
-    const checked = attachmentInputs(inputs);
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    const legacy=identity.mounts.filter((m):m is import("./files.ts").LegacyVolumeMount=>"volumeId" in m);
-    const workspace=identity.mounts.find(m=>m.path==='/workspace'&&m.mode==='rw')??identity.mounts.find(m=>m.mode==='rw');
-    const isLegacy=(input:typeof checked[number])=>"path"in input ? legacy.some(m=>input.path===m.path||input.path.startsWith(m.path+'/')) : !!workspace&&'volumeId'in workspace;
-    const old=checked.filter(isLegacy), fresh=checked.filter(i=>!isLegacy(i));
-    const oldFiles=old.length?await new LegacyPromptAttachments(this.storage,this.env).stage({...identity,mounts:legacy},old):[];
-    const freshFiles=fresh.length?await this.stageRepos(identity,fresh):[];
-    let oi=0,ni=0;
-    return checked.map(i=>isLegacy(i)?oldFiles[oi++]:freshFiles[ni++]);
+    return this.stageRepos(identity, inputs);
   }
   private async stageRepos(identity:Identity,inputs:unknown):Promise<AttachedFile[]> {
     const checked=attachmentInputs(inputs);
@@ -205,8 +195,6 @@ export function withAttachmentReferences<A extends Api>(
   authorizeFile?: (key: string) => Promise<boolean>,
   authorizeRepoFile?: (file:FileRef)=>Promise<boolean>,
 ): Provider<A> {
-  // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-  provider = withLegacyAttachmentReferences(provider,env,getTenant,authorizeFile);
   const hydrate = async (model: Model<A>, context: TranscriptContext) => {
     const tenant = await getTenant();
     let documentBytes = 0;

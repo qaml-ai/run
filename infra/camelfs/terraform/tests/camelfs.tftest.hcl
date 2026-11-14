@@ -295,8 +295,9 @@ run "roles_and_policies" {
     condition = (
       [for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Condition.StringEquals["acm-pca:TemplateArn"] if statement.Sid == "IssueHostCertificates"] == [["arn:aws:acm-pca:::template/EndEntityCertificate/V1"]]
       && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : anytrue([for action in flatten([statement.Action]) : startswith(action, "acm-pca:")])])
+      && toset(flatten([for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Action if statement.Sid == "FetchIssuedCertificates"])) == toset(["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate", "acm-pca:DescribeCertificateAuthority"])
     )
-    error_message = "Only the api role issues certificates, and only with the server+client end-entity template; hosts touch the CA not at all."
+    error_message = "Only the api role issues certificates, and only with the server+client end-entity template; it may fetch and describe the CA, nothing more; hosts touch the CA not at all."
   }
 }
 

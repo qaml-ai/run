@@ -9,7 +9,7 @@ in flight at the deploy ends cleanly, as a fault or an abort, never hangs.
 
 The durable journal and its replay (`workflow_effects`, `workflow_steps`, snapshots), budgets and the ledger, capacity
 (`WorkflowCapacity`), billing and usage roll-up (#820, #830, #846), `job_run`, `job()`/`commit()` on forks
-(workflow-jobs.ts, workflow-volumes.ts, workflow-forks.ts), the job-hosts work (#837–#851, #856, #857), the owner model,
+(workflow-jobs.ts, workflow-branches.ts, workflow-forks.ts), the job-hosts work (#837–#851, #856, #857), the owner model,
 the `workflows` builtin's `workflow_start`, `workflow_status`, `workflow_items`, `workflow_abort`, `workflow_budget`.
 
 ## Why: the bug fixes of #815–#858, by the feature that caused them
@@ -64,9 +64,8 @@ To fix a workflow the owner aborts it and starts a new one. Finished effect resu
 restart pays only for what the old script never finished.
 
 **Key.** `(scope, kind, canonical args)`; the args are the VM's canonical JSON, which already keys an effect's
-identity (`key_conflict`). For `agent()` with `repo`, the canonical args include the fork's base: the volume's head
-version at the time the workflow forked it (workflow-volumes.ts knows it when it makes the fork). The same prompt
-against a volume that has since changed is a different key, so a result never outlives the tree it was made on.
+identity (`key_conflict`). A repo-valued `agent()` or `job()` adds the resolved base tree to the key.
+A string-valued job `at` still adds the volume's seq. A changed tree gets a different key.
 
 **Scope.** The owner agent: `(tenant, owner.id)`; a workflow started through the API with no owner scopes to
 `(tenant, "api")`. Reasons: the owner is who aborts and restarts, so that is where the repeats are; prompts are rarely
@@ -79,18 +78,13 @@ changes.
 aborted or cancelled outcomes; `commit` and `push` (they change a volume or a branch: effects, not results); anything
 whose args carry `nocache: true` (the script's opt-out, for a prompt that must run again).
 
-**Forks.** An `agent()` result with a `fork` is reusable only while the fork exists. Today `ForkJanitor` deletes a
-workflow's forks when it ends (#811/#815). With the cache: when a cacheable result with a fork lands, the cache entry
-takes a pin on the fork (`workflow-forks.ts` keeps `pinned_by` beside the fork id); `forks.ended()` deletes unpinned
-forks only; an entry's expiry or eviction releases its pin and the janitor of the *source* workflow object deletes the
-fork on its next alarm (the cache object calls back `WORKFLOWS.getByName(source).forkReleased(id)`; a failed callback
-is retried from the cache object's alarm, as fork deletes are today). A hit hands the new workflow the same `fork` id;
-`commit(result.fork)` on it works as it did in the old workflow.
+**Forks.** A landed agent result retains `{ repo, version }` through `cache/<keyhash16>`, owned by
+`cache:<tenant>:<owner>`, for 3 days. A hit creates the receiving workflow's own branch from that version.
+A missing version is a cache miss. Workflow end deletes only refs owned by that workflow, retrying held refs.
 
-**`commit()` is idempotent per fork, not cached.** The volume records `committed_forks(fork_id → seq)` (the Volume
-commit + fork pins work, task #1). A second `commit(fork)` of a fork already merged answers the same
-`{ committed: true, seq }`; one whose base moved answers `{ committed: false, conflicts }` as now. So a restarted script
-that commits a cached fork pays nothing and gets the truth.
+**`commit()` is idempotent, not cached.** It merges the fork ref into its base ref. Success answers
+`{ committed: true, version, changed, files? }`; merging it again answers `changed: false`.
+Conflicts answer `{ committed: false, conflicts }`. A fork of a bare version has no base ref to merge into.
 
 **Lifetime and size.** An entry lives 7 days from its last hit, at most 2,000 entries and 64 MiB per scope (LRU on
 `last_hit_at`); a result larger than 1 MiB is not cached (the workflow still gets it; only the restart pays again).
@@ -105,10 +99,9 @@ Not the owner agent's storage (an API-started workflow has none, and the owner's
 1. At issue (`advance()` → before `executor.start`): for a cacheable kind, `results.lookup(kind, args)`; on a hit the
    effect is journaled as `origin = 'cache'`, `cached_from = source`, and landed in the same transaction with the stored
    outcome and `usage = { costUsd: 0 }`; `counts.cached` increments; the event `effect_cached` records the source. No
-   capacity slot is taken and no child starts. A lookup that throws is a miss (logged `workflow_cache_failed`), never a
-   fault: the cache is an optimization.
-2. At landing (`land()`), after the ledger write commits: `results.put(…)` in `waitUntil`, best effort; a failed put is
-   dropped and logged. The journal is the truth; the cache is never.
+   capacity slot is taken and no child starts. Storage errors throw and leave the effect pending for retry.
+2. At landing (`land()`), retain the cached fork version before journaling the result. A storage error throws, so the
+   child row stays unlanded and retries. The journal remains the source for replay.
 
 A hit is deterministic for replay: the journal row carries the outcome, so a replayed step delivers it from the journal
 and never asks the cache again.
