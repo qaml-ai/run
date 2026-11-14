@@ -2,11 +2,15 @@
 package compute
 
 import (
+	"context"
 	"errors"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/refstore"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 type Tables struct{ VMs, Hosts, Deliveries, Usage string }
@@ -16,9 +20,20 @@ type Controller struct {
 	Tables     Tables
 	Now        func() time.Time
 	RuntimeURL string
+	Pusher     Pusher
+	Refs       *refstore.Store
+	Objects    store.Store
+	CommitTree func(ctx context.Context, lineage, version string) (string, error)
+	Log        func(event string, fields map[string]any)
+	HostFresh  time.Duration
 
 	// afterWrite is used by tests to lose a successful write's response.
 	afterWrite func() error
+}
+
+type Pusher interface {
+	Boot(ctx context.Context, h Host, spec hostwire.BootSpec) error
+	Stop(ctx context.Context, h Host, id string, checkpoint bool) error
 }
 
 type Phase string
@@ -66,6 +81,7 @@ type Shape struct {
 	VCPUs     int `json:"vcpus"`
 	MemoryMiB int `json:"memoryMiB"`
 	DiskGiB   int `json:"diskGiB"`
+	DiskMiB   int `json:"diskMiB,omitempty"`
 }
 
 type Job struct {
@@ -74,6 +90,7 @@ type Job struct {
 	Env      map[string]string
 	Outputs  []string
 	Commit   bool
+	Pids     int
 }
 
 type Session struct{ IdleStopS int64 }
@@ -84,6 +101,7 @@ type CreateRequest struct {
 	Shape                     Shape
 	Job                       *Job
 	Session                   *Session
+	Internet                  bool
 	Network                   map[string]types.AttributeValue
 	Deadline                  time.Time
 }
@@ -104,6 +122,11 @@ type VM struct {
 	TimedOut                        bool
 	ResultRef, EndVersion           string
 	CheckpointError                 string
+	Tree, RefLeaseHolder            string
+	RefLeaseEpoch, RefLeaseDeadline int64
+	RefLeaseReleased                bool
+	ResultSha256                    string
+	ResultBytes                     int64
 	BilledTo, UsageSeq              int64
 }
 
@@ -114,6 +137,8 @@ type EndRequest struct {
 	TimedOut              bool
 	ResultRef, EndVersion string
 	CheckpointError       string
+	ResultSha256          string
+	ResultBytes           int64
 }
 
 type HostInfo struct {
@@ -121,6 +146,7 @@ type HostInfo struct {
 	Shape                    Shape
 	Slots                    int
 	Features                 []string
+	Images                   []string
 	Draining                 bool
 }
 
@@ -131,7 +157,7 @@ type Host struct {
 	MemoryMiB, FreeMiB    int
 	VMs                   []string
 	Restarting            bool
-	lost                  bool
+	Lost                  bool
 }
 
 type Waiter struct {

@@ -33,6 +33,8 @@ func apiRole(args []string) error {
 	jwksFile := f.String("jwks-file", "", "runtime JWKS file (alternative to CAMELFS_JWKS)")
 	issuer := f.String("token-issuer", "", "runtime issuer URL")
 	maxTTL := f.Duration("token-max-ttl", auth.DefaultMaxTTL, "maximum token lifetime")
+	var computeFlags apiComputeFlags
+	computeFlags.bind(f)
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -74,11 +76,20 @@ func apiRole(args []string) error {
 		return err
 	}
 	repo := &objects.Repository{DB: db, Store: st, TempDir: tmp}
-	server := &http.Server{Handler: api.NewStorageServer(repo, version, keys), ReadHeaderTimeout: 5 * time.Second}
+	computeAPI, err := computeFlags.open(ctx, *region, repo)
+	if err != nil {
+		return err
+	}
+	var hosts *api.HostServer
+	if computeAPI != nil {
+		hosts = computeAPI.hostServer
+	}
+	server := &http.Server{Handler: api.WithHostRoutes(api.NewStorageServer(repo, version, keys), hosts), ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
 	}
+	defer computeAPI.start(ctx)()
 	stopped := make(chan error, 1)
 	go func() { stopped <- server.Serve(listener) }()
 	log.Printf("op=api listen=%s", listener.Addr())
@@ -89,6 +100,9 @@ func apiRole(args []string) error {
 		case <-hup:
 			if err := keys.Reload(); err != nil {
 				log.Printf("op=jwks-reload error=%v", err)
+			}
+			if err := computeAPI.reload(); err != nil {
+				log.Printf("op=hosts-ca-reload error=%v", err)
 			}
 		case <-ctx.Done():
 			shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)

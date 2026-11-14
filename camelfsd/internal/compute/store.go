@@ -82,11 +82,11 @@ func (i item) list(key string) []string {
 }
 
 func shapeItem(shape Shape) types.AttributeValue {
-	return m(attrs{"vcpus": n(int64(shape.VCPUs)), "memoryMiB": n(int64(shape.MemoryMiB)), "diskGiB": n(int64(shape.DiskGiB))})
+	return m(attrs{"vcpus": n(int64(shape.VCPUs)), "memoryMiB": n(int64(shape.MemoryMiB)), "diskGiB": n(int64(shape.DiskGiB)), "diskMiB": n(int64(shape.DiskMiB))})
 }
 
 func readShape(i item) Shape {
-	return Shape{VCPUs: int(i.number("vcpus")), MemoryMiB: int(i.number("memoryMiB")), DiskGiB: int(i.number("diskGiB"))}
+	return Shape{VCPUs: int(i.number("vcpus")), MemoryMiB: int(i.number("memoryMiB")), DiskGiB: int(i.number("diskGiB")), DiskMiB: int(i.number("diskMiB"))}
 }
 
 func vmItem(v VM) attrs {
@@ -100,6 +100,7 @@ func vmItem(v VM) attrs {
 		network = attrs{}
 	}
 	i["network"] = m(network)
+	i["internet"] = b(v.Internet)
 	if v.Job != nil {
 		env := attrs{}
 		for key, value := range v.Job.Env {
@@ -110,7 +111,7 @@ func vmItem(v VM) attrs {
 			outputs = append(outputs, s(path))
 		}
 		i["job"] = m(attrs{"command": s(v.Job.Command), "timeoutS": n(v.Job.TimeoutS), "env": m(env),
-			"outputs": &types.AttributeValueMemberL{Value: outputs}, "commit": b(v.Job.Commit)})
+			"outputs": &types.AttributeValueMemberL{Value: outputs}, "commit": b(v.Job.Commit), "pids": n(int64(v.Job.Pids))})
 	}
 	if v.Session != nil {
 		i["session"] = m(attrs{"idleStopS": n(v.Session.IdleStopS)})
@@ -123,7 +124,7 @@ func readVM(i item) VM {
 	req := CreateRequest{
 		ID: i.text("id"), Lineage: i.text("lineage"), Ref: i.text("ref"), Version: i.text("version"),
 		Mode: i.text("mode"), Image: i.text("image"), Shape: readShape(i.object("shape")), Pool: i.text("pool"),
-		Payer: i.text("payer"), Network: attrs(i.object("network")), Deadline: time.UnixMilli(deadline).UTC(),
+		Payer: i.text("payer"), Internet: i.flag("internet"), Network: attrs(i.object("network")), Deadline: time.UnixMilli(deadline).UTC(),
 	}
 	if job := i.object("job"); job != nil {
 		env := map[string]string{}
@@ -131,7 +132,7 @@ func readVM(i item) VM {
 			env[key] = job.object("env").text(key)
 		}
 		req.Job = &Job{Command: job.text("command"), TimeoutS: job.number("timeoutS"), Env: env,
-			Outputs: job.list("outputs"), Commit: job.flag("commit")}
+			Outputs: job.list("outputs"), Commit: job.flag("commit"), Pids: int(job.number("pids"))}
 	}
 	if session := i.object("session"); session != nil {
 		req.Session = &Session{IdleStopS: session.number("idleStopS")}
@@ -143,7 +144,9 @@ func readVM(i item) VM {
 		LastListedAt: i.timestamp("lastListedAt"), StopRequestedAt: i.timestamp("stopRequestedAt"), EndedAt: i.timestamp("endedAt"),
 		StopCheckpoint: i.flag("stopCheckpoint"), StopReason: EndCode(i.text("stopReason")), Code: EndCode(i.text("code")),
 		Exit: int(i.number("exit")), TimedOut: i.flag("timedOut"), ResultRef: i.text("resultRef"), EndVersion: i.text("endVersion"),
-		CheckpointError: i.text("checkpointError"), BilledTo: i.number("billedTo"), UsageSeq: i.number("usageSeq"),
+		CheckpointError: i.text("checkpointError"), ResultSha256: i.text("resultSha256"), ResultBytes: i.number("resultBytes"),
+		Tree: i.text("tree"), RefLeaseHolder: i.text("refLeaseHolder"), RefLeaseEpoch: i.number("refLeaseEpoch"),
+		RefLeaseDeadline: i.number("refLeaseDeadline"), RefLeaseReleased: i.flag("refLeaseReleased"), BilledTo: i.number("billedTo"), UsageSeq: i.number("usageSeq"),
 	}
 }
 

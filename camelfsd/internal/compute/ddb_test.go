@@ -73,12 +73,12 @@ func must[T any](t *testing.T) func(T, error) T {
 
 func (f *fixture) register(pool, boot string, slots int) int64 {
 	f.t.Helper()
-	return must[int64](f.t)(f.Register(f.t.Context(), HostInfo{Pool: pool, Host: "host", BootID: boot, Slots: slots, Shape: Shape{4, 8192, 50}}))
+	return must[int64](f.t)(f.Register(f.t.Context(), HostInfo{Pool: pool, Host: "host", BootID: boot, Slots: slots, Shape: Shape{VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50}}))
 }
 
 func (f *fixture) request(id, pool string) CreateRequest {
 	return CreateRequest{ID: id, Pool: pool, Lineage: "lineage", Ref: "main", Payer: "payer", Mode: JobMode,
-		Job: &Job{Command: "true", TimeoutS: 300}, Shape: Shape{2, 1024, 25}, Deadline: f.now.Add(4 * time.Minute)}
+		Job: &Job{Command: "true", TimeoutS: 300}, Shape: Shape{VCPUs: 2, MemoryMiB: 1024, DiskGiB: 25}, Deadline: f.now.Add(4 * time.Minute)}
 }
 
 func (f *fixture) checkHost(pool string, free int, ids ...string) {
@@ -415,7 +415,7 @@ func TestDDBHostRestartAndLost(t *testing.T) {
 		if crashAt == 0 {
 			must[VM](t)(f.End(ctx, id, EndRequest{Code: HostLost, At: f.now}))
 		} else {
-			h := HostInfo{Pool: id, Host: "host", BootID: "new", Slots: 1, Shape: Shape{4, 8192, 50}}
+			h := HostInfo{Pool: id, Host: "host", BootID: "new", Slots: 1, Shape: Shape{VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50}}
 			c := f.fresh()
 			count := 0
 			c.afterWrite = func() error {
