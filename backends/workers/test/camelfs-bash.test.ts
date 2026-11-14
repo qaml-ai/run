@@ -44,14 +44,14 @@ function fixture(t: TestContext) {
   const pending: Promise<unknown>[] = [];
   const errors: string[] = [];
   const calls: { method: string; path: string; body: any }[] = [];
-  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string } }>();
+  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string }; stopBody?: unknown }>();
   const results = new Map<string, string>();
   const flags = {
     refusal: undefined as { status: number; code?: string } | undefined,
     drop: false, leaseExpired: false, checkpointError: false,
     crash: "", crashAfter: "", runs: 0, pollerStarts: 0, tailStatus: 200, unchanged: false,
     stdout: "ok", startup: undefined as { phase: string; code?: string; reason?: string } | undefined,
-    onPoll: () => {},
+    onPoll: () => {}, stopSticks: false,
   };
   const repoId = agentRepoId(conf.tenantId, conf.id);
   conf.config.mounts = [{ repo: repoId, path: "/", ref: "main", mode: "rw" }];
@@ -84,6 +84,11 @@ function fixture(t: TestContext) {
     }
     const vm = vms.get(id)!;
     if (!op) { flags.onPoll(); return Response.json(vm); }
+    if (op === "stop") {
+      vm.stopBody = body;
+      if (!flags.stopSticks) vm.phase = "ended";
+      return Response.json({ id, phase: vm.phase });
+    }
     if (op === "deadline") {
       if (flags.leaseExpired) return fail(409, "lease_expired");
       vm.deadline = body.deadline;
@@ -410,4 +415,30 @@ test("checkpointBody matches the body the host's contract test validates", async
   const fixture = JSON.parse(readFileSync(new URL("../../../camelfsd/internal/computehost/testdata/runtime-checkpoint.json", import.meta.url), "utf8"));
   assert.deepEqual(checkpointBody({ message: "bash: echo hi", time: 1794672935561, agent: "client_b456abcd", requestId: "run_01JD7Q2W3E4R5T6Y" }), fixture);
   assert.deepEqual(checkpointBody({ message: "Save VM file changes", time: 1 }), { message: "Save VM file changes", time: 1, trailers: { kind: "auto" } });
+});
+
+test("agent deletion stops every live VM without a checkpoint and waits until each has ended", async t => {
+  const f = fixture(t);
+  await f.run("one");
+  await f.flush();
+  const vm = f.row()!.vm_id;
+  assert.equal(f.row()!.state, "running");
+  await f.sessions.stopAll();
+  assert.deepEqual(f.vms.get(vm)!.stopBody, { checkpoint: false });
+  assert.equal(f.vms.get(vm)!.phase, "ended");
+  assert.equal(f.row()!.state, "stopped");
+  // Nothing left to stop: a second call makes no tier request.
+  const before = f.calls.length;
+  await f.sessions.stopAll();
+  assert.equal(f.calls.length, before);
+});
+
+test("agent deletion stays pending while a VM has not ended", async t => {
+  const f = fixture(t);
+  await f.run("one");
+  await f.flush();
+  f.flags.stopSticks = true;
+  f.vms.get(f.row()!.vm_id)!.phase = "stopping";
+  await assert.rejects(f.sessions.stopAll(50), /did not stop within/);
+  assert.notEqual(f.row()!.state, "stopped");
 });
