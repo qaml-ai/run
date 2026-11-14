@@ -36,7 +36,10 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Only route templates and a validated, escaped lineage enter the access log.
 // Unknown paths, object ids, queries and request bodies are never logged.
-func storageLogRoute(path string) (route, lineage string) {
+// The lineage is validated on the decoded path; the ref action is read from the escaped path (like
+// parseRefRequest) so an encoded slash in a ref name cannot pose as an action.
+func storageLogRoute(method string, u *url.URL) (route, lineage string) {
+	path := u.Path
 	route, lineage = "/v1/unknown", "-"
 	if !strings.HasPrefix(path, "/v1/lineages/") {
 		return
@@ -53,7 +56,7 @@ func storageLogRoute(path string) (route, lineage string) {
 		if len(parts) == 2 {
 			return "/v1/lineages/:lineage/refs", lineage
 		}
-		return "/v1/lineages/:lineage/refs/:name", lineage
+		return "/v1/lineages/:lineage/refs/:name" + refLogAction(method, u.EscapedPath()), lineage
 	}
 	if len(parts) == 2 {
 		switch parts[1] {
@@ -73,14 +76,39 @@ func storageLogRoute(path string) (route, lineage string) {
 	return
 }
 
+// refLogAction names the action of a single-ref route for the log template, the same way parseRefRequest
+// derives it (method + escaped-path suffix), so the ref's name never reaches the log.
+func refLogAction(method, path string) string {
+	switch {
+	case (method == http.MethodPut || method == http.MethodDelete) && strings.Contains(path, "/watchers/"):
+		return "/watchers/:watcher"
+	case method == http.MethodPost && strings.HasSuffix(path, "/lease/renew"):
+		return "/lease/renew"
+	case (method == http.MethodPost || method == http.MethodDelete) && strings.HasSuffix(path, "/lease"):
+		return "/lease"
+	case method == http.MethodPost:
+		switch path[strings.LastIndex(path, "/")+1:] {
+		case "cas", "write", "merge", "restore":
+			return "/" + path[strings.LastIndex(path, "/")+1:]
+		}
+	}
+	return ""
+}
+
 func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	route, lineage := storageLogRoute(r.URL.Path)
+	route, lineage := storageLogRoute(r.Method, r.URL)
 	rw := &statusWriter{ResponseWriter: w}
 	var timing *commitTiming
 	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/commits" {
 		timing = &commitTiming{}
 		r = r.WithContext(context.WithValue(r.Context(), commitTimingKey{}, timing))
+	}
+	var moves *refTiming
+	switch route {
+	case "/v1/lineages/:lineage/refs/:name/write", "/v1/lineages/:lineage/refs/:name/merge", "/v1/lineages/:lineage/refs/:name/restore":
+		moves = &refTiming{}
+		r = r.WithContext(context.WithValue(r.Context(), refTimingKey{}, moves))
 	}
 	defer func() {
 		status := rw.status
@@ -92,6 +120,10 @@ func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
 		if timing != nil {
 			phases = fmt.Sprintf(" prechecksMs=%.3f readMs=%.3f readWaves=%d buildMs=%.3f putMs=%.3f putKeys=%d cacheMs=%.3f",
 				ms(timing.prechecks), ms(timing.read), timing.readWaves, ms(timing.build), ms(timing.Put), timing.PutKeys, ms(timing.Cache))
+		}
+		if moves != nil {
+			phases = fmt.Sprintf(" objectsMs=%.3f putKeys=%d buildMs=%.3f ddbMs=%.3f ddbRetries=%d",
+				ms(moves.objects.Put), moves.objects.PutKeys, ms(moves.build), ms(moves.ddb), moves.retries)
 		}
 		log.Printf("op=%s:%s lineage=%s status=%d ms=%.3f%s", r.Method, route, lineage, status, ms(time.Since(start)), phases)
 	}()
