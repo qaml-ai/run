@@ -68,7 +68,7 @@ output "api_task_role_arn" {
 }
 
 output "host_policy_arn" {
-  description = "The host policy (bucket read/write, objects table): attach it to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf, host_managed_policies) and to any other host that runs camelfsd --role host."
+  description = "The host policy (bucket read/write, objects table): attach it to the instance role of every host that runs camelfsd host --compute (the proto host's camel-fs-proto role for the first host)."
   value       = aws_iam_policy.host.arn
 }
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=camelRun KVM instance-store preparation
-Before=camelfsd.service camel-egress-proxy.service camel-jobhost.service
+Before=camelfsd.service camel-egress-proxy.service
 After=local-fs.target
 
 [Service]

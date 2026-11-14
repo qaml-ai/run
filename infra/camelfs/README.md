@@ -299,14 +299,15 @@ to expect by name.
    Terraform's own revision, so a port or setting Terraform adds reaches it on apply; afterwards Terraform's
    revision changes ship with the next deploy, which copies the family's latest revision.
 
-6. **Hosts.** Once `infra/job-hosts` is applied, let its pool roles and security group in:
+6. **Hosts.** Let a compute host's security group and role in (the first host is the proto instance; the flip plan
+   has the exact values):
 
    ```bash
-   # the hosts' group reaches the internal balancer on 443, and the tier reaches it on the compute port
-   infra/camelfs/apply.sh host_security_group_ids='["sg-..."]'     # infra/job-hosts: aws_security_group.hosts
-   # the pool roles get the host policy: add this module's host_policy_arn to host_managed_policies in
-   # infra/job-hosts/terraform/iam.tf (one line), then infra/job-hosts/apply.sh
-   tofu -chdir=infra/camelfs/terraform output -raw host_policy_arn
+   # the hosts' group reaches the hosts NLB (8443 enrollment, 8794), and the tier reaches it on the compute port
+   infra/camelfs/apply.sh host_security_group_ids='["sg-..."]' enroll_roles='{"test":"arn:aws:iam::…:role/<host role>"}'
+   # the host's instance role gets the host policy (one call, by hand; detach to roll back)
+   aws iam attach-role-policy --role-name <host role> \
+     --policy-arn "$(tofu -chdir=infra/camelfs/terraform output -raw host_policy_arn)"
    ```
 
    The proto host (`i-06fa9b78a2a9d188b`) can be let in the same way for the first end-to-end run: its security
