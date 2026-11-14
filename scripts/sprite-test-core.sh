@@ -403,9 +403,17 @@ prepare() {
   sed -i "s/^bind '/[[ \$- == *i* ]] \&\& bind '/" ~/.bashrc
   docker_up || return 1
   pg_up || return 1
-  # npm ci again when package-lock.json or Node changed.
-  mark="$lock $(node -v)"
-  [ "$(cat ~/.lock 2>/dev/null)" = "$mark" ] || { echo '== npm ci (package-lock.json or Node changed)'; npm ci --silent --no-audit --no-fund && sync && echo "$mark" > ~/.lock; } || return 1
+  # npm ci in every directory that has its own package-lock.json (the root and each workspace with its own, e.g.
+  # backends/workers), whenever that lockfile or Node changed: a stale workspace node_modules otherwise survives a
+  # lockfile change there (the root lockfile alone said nothing about it). One mark per directory.
+  local lockfile dir key mark
+  while IFS= read -r lockfile; do
+    dir=$(dirname "$lockfile"); key=$(printf '%s' "$dir" | tr -c 'A-Za-z0-9' '_')
+    mark="$(sha256sum "$lockfile" | cut -d' ' -f1) $(node -v)"
+    [ "$(cat ~/.lock-"$key" 2>/dev/null)" = "$mark" ] && continue
+    echo "== npm ci in $dir ($lockfile or Node changed)"
+    (cd "$dir" && npm ci --silent --no-audit --no-fund) && sync && echo "$mark" > ~/.lock-"$key" || return 1
+  done < <(find . -name package-lock.json -not -path '*/node_modules/*' | sort)
   # In a subshell, so a cd or a variable there does not leak into the command.
   ( repo_prepare ) || { echo "== the repo's prepare step failed"; return 1; }
 }
@@ -538,7 +546,8 @@ else
   sha=$(git rev-parse --verify "$ref^{commit}")
 fi
 short=$(git rev-parse --short "$sha")
-lock=$(git rev-parse "$sha:package-lock.json")
+# Every lockfile in the tree, so a sprite is "at" a commit only with all of its workspaces installed.
+lock=$(git ls-tree -r --name-only "$sha" | grep -E '(^|/)package-lock\.json$' | while read -r f; do git rev-parse "$sha:$f"; done | sha1sum | cut -c1-40)
 build=-; [[ -z ${sprite_build_path:-} ]] || build=$(git rev-parse "$sha:$sprite_build_path")
 fp=$sha:$lock:$build
 run=$(date +%Y%m%d-%H%M%S)-$$; owner=$(whoami)@$(hostname -s)/$run
