@@ -88,24 +88,41 @@ test("an interrupted result waiter re-arms durable settlement recovery", { timeo
   assert.equal(result.status, "completed");
 });
 
-test("a tracked turn retains its elapsed-time deadline after a hard restart", { timeout: 60000 }, async t => {
+test("a tracked turn retains its elapsed-time deadline after a hard restart", { timeout: 120000 }, async t => {
   const { f, call, waitForReceipt, receiptCount } = await fixture(t);
   const { id } = await call("/v1/agents", { model: "test/echo", runLimits: { maxSeconds: 4 } });
-  const started = Date.now();
+  const requestPath = `/v1/agents/${id}/requests/restart-deadline`;
+  // Far longer than the 4 s limit: the test ends at the deadline, and no machine is slow enough for the provider to win.
+  const providerDelayMs = 60000;
   await call(`/v1/agents/${id}/requests`, {
-    id: "restart-deadline", method: "prompt", params: { text: "slow:15000:must stop at deadline" },
+    id: "restart-deadline", method: "prompt", params: { text: `slow:${providerDelayMs}:must stop at deadline` },
   });
+  let attemptStartedAt: number | undefined;
   for (let i = 0; i < 100; i++) {
-    if (Number((await f.db.query("select count(*) n from model_attempts where agent=$1", [id])).rows[0].n)) break;
+    const { rows } = await f.db.query("select min(started_at) as started_at from model_attempts where agent=$1", [id]);
+    if (rows[0].started_at != null) {
+      attemptStartedAt = Number(rows[0].started_at);
+      break;
+    }
     await delay(20);
   }
+  assert.ok(attemptStartedAt !== undefined, "the model attempt must start before the restart");
+  const before = await call(requestPath);
+  assert.equal(before.state, "running");
+  assert.ok(Number.isFinite(before.began), "the running turn must have a persisted start time");
   await f.restart({}, true);
+  const restarted = Date.now();
   await waitForReceipt();
-  assert.ok(Date.now() - started < 12000, "the restored deadline must interrupt the 15-second provider call");
   assert.equal(await receiptCount(), 1);
-  const result = await call(`/v1/agents/${id}/requests/restart-deadline`);
+  const result = await call(requestPath);
   assert.equal(result.state, "completed");
+  // The elapsed-time deadline uses this persisted start and the unchanged run limit.
+  assert.equal(result.began, before.began, "the restart must preserve the deadline's start time");
   assert.equal(result.outcome.result.code, "turn_limit", JSON.stringify(result));
+  assert.ok(!JSON.stringify(result).includes("must stop at deadline"), "the deadline interrupted the provider call: its answer never arrived");
+  // The deadline (began + 4 s) has passed by the time the Worker is back, so it fires at once. One recomputed at
+  // restart would fire no earlier than restarted + 4 s: the restart's own duration does not enter this bound.
+  assert.ok(result.endedAt < restarted + 4000, `the restored deadline fired ${result.endedAt - restarted} ms after the restart, as a fresh deadline would`);
   assert.equal(Number((await f.db.query("select count(*) n from credit_holds")).rows[0].n), 0);
 });
 
