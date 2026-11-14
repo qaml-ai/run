@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -109,19 +110,29 @@ func TestTreeSizeSidecarCache(t *testing.T) {
 	if _, err := r.SizedTree(ctx, id); err == nil || err.Error() != "corrupt tree sizes" || len(spy.gets) != 1 {
 		t.Fatalf("local corruption: ts GETs=%d err=%v", len(spy.gets), err)
 	}
+	remote := filepath.Join(spy.Store.(store.Local).Dir, "l", "ts", id)
+	if err := os.WriteFile(remote, []byte("[]"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.DB.DB.Exec("DELETE FROM tree_sizes WHERE id=?", id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SizedTree(ctx, id); err == nil || err.Error() != "corrupt tree sizes" || len(spy.gets) != 2 {
+		t.Fatalf("remote corruption: ts GETs=%d err=%v", len(spy.gets), err)
+	}
 	unreachable := store.GitHash("tree", nil)
 	if _, err := r.DB.DB.Exec("INSERT INTO tree_sizes VALUES(?,?,?)", unreachable, []byte("[]"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.SizedTree(ctx, unreachable); !errors.Is(err, os.ErrNotExist) || len(spy.gets) != 1 {
+	if _, err := r.SizedTree(ctx, unreachable); !errors.Is(err, os.ErrNotExist) || len(spy.gets) != 2 {
 		t.Fatalf("unreachable tree: ts GETs=%d err=%v", len(spy.gets), err)
 	}
 	// An identical tree cached from another lineage is also unreachable.
-	if _, err := r.DB.DB.Exec("UPDATE tree_sizes SET bytes=? WHERE id=?", b, id); err != nil {
+	if _, err := r.DB.DB.Exec("INSERT INTO tree_sizes VALUES(?,?,?)", id, b, 0); err != nil {
 		t.Fatal(err)
 	}
 	other := r.ForLineage("other")
-	if _, err := other.SizedTree(ctx, id); !errors.Is(err, os.ErrNotExist) {
+	if _, err := other.SizedTree(ctx, id); !errors.Is(err, os.ErrNotExist) || len(spy.gets) != 2 {
 		t.Fatalf("cross-lineage tree: %v", err)
 	}
 }

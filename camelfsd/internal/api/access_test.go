@@ -51,7 +51,11 @@ func TestStorageAccessLog(t *testing.T) {
 			if w.Code != tc.status {
 				t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body.String())
 			}
-			pattern := `op=` + regexp.QuoteMeta(tc.method+":"+tc.route+" lineage="+tc.lineage) + ` status=` + strconv.Itoa(tc.status) + ` ms=[0-9]+\.[0-9]{3}$`
+			pattern := `op=` + regexp.QuoteMeta(tc.method+":"+tc.route+" lineage="+tc.lineage) + ` status=` + strconv.Itoa(tc.status) + ` ms=[0-9]+\.[0-9]{3}`
+			if tc.method == "POST" && tc.route == "/v1/lineages/:lineage/commits" {
+				pattern += ` prechecksMs=[0-9]+\.[0-9]{3} readMs=[0-9]+\.[0-9]{3} readWaves=[0-9]+ buildMs=[0-9]+\.[0-9]{3} putMs=[0-9]+\.[0-9]{3} putKeys=[0-9]+ cacheMs=[0-9]+\.[0-9]{3}`
+			}
+			pattern += "$"
 			line := strings.TrimSpace(logs.String())
 			if strings.Count(line, "\n") != 0 || !regexp.MustCompile(pattern).MatchString(line) {
 				t.Fatalf("access log: %q; want %s", line, pattern)

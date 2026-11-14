@@ -45,7 +45,7 @@ term. A repo need not contain code: a shared docs folder is a repo with one bran
 | `GET /v1/repos`, `GET /v1/repos/:id`, `DELETE /v1/repos/:id` | list, inspect (`{ id, name, key, refs, bytes, files, createdAt }`), delete (every ref goes; objects follow by reachability) |
 | `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` (§9.9's `cas`) under the ref-move rules (§6): a new commit's first parent is the current version, a move to a recorded commit is a fast-forward, and a rewind is a `restore`, a new commit |
 | `POST /v1/repos/:id/branches { name, from?: ref \| version, owner?, ttl? }` | an O(1) branch inside the repo (shares chunks on hosts); `owner` ties its life to a workflow, job or agent |
-| `GET /v1/repos/:id/history?ref=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts |
+| `GET /v1/repos/:id/history?ref=&after=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts; the repo's only log (§6: there is no separate `log` route or event store) |
 | `GET /v1/repos/:id/diff?from=&to=&path=` | changed paths between any two versions, O(changed) |
 | `GET /v1/repos/:id/blame?version=&path=` | per line: version, agent, run, call |
 | `POST /v1/repos/:id/restore { ref, version, message? }` | a new commit on `ref` whose tree is `version`'s tree; history is never rewritten |
@@ -292,11 +292,35 @@ parents from the head (with `merges: true` to descend). Who and why travel in ea
 multi-step fast-forward (rule 2) adds the target's whole ancestry to the walk, as git's does. Only a ref's create
 and delete are outside history: `createdAt` and `createdBy` sit on the item, and a delete is final.
 
+**The repo log is history; there is no second event store** (fs-architect, 2026-11-14, for wf-repos' R1/R2).
+`RepoDO`'s `ref_log` and `events` tables go with `RepoDO`, and nothing replaces them.
+
+- **`GET /v1/repos/:id/log` is deleted.** `history` (§1) is the one route:
+  - it walks first parents from the ref's head through 9.4's commit reads;
+  - each entry is `{ version, parents, author, message, trailers, time }`;
+  - the cursor is a commit id;
+  - `ref` is required, so there is no lineage-wide log.
+- **Who and why** come from the commit: `author`, the message, and the `Camel-*` trailers. The operation is the
+  `Camel-Checkpoint` / `Camel-Op` trailer (`api`, `turn`, `job`, `merge`, `restore`), written by whoever makes the
+  commit.
+- **A console's "recent activity across branches"** is `GET …/refs` ordered by `updatedAt`, plus each ref's
+  `history`. That is a read, not a feed.
+- **Live changes** are the notify webhook (§9.11) into the watcher's outbox, not a pollable events table.
+- **Not in the log, on purpose:**
+  - Ref creates and deletes. A ref's creation is its item's `createdAt`/`createdBy`. A delete is final, and the
+    deleted ref's commits stay readable by id from any ref that reaches them.
+  - Lease and fence events (take, renew, release, takeover). These are operational facts, not history. They go to
+    the tier's structured logs and metrics (camel-fs.md §1.12), keyed by lineage, ref, holder and epoch.
+
+  If a product need for either appears (an audit trail of branch deletions, say), it becomes a `deliveries`-style
+  item written in the same transaction as the delete, decided then; it is not built speculatively now.
+
 **Leases and fences** sit on the ref item. A host's CAS is conditioned on
 `version = :expect AND holder = :holder AND leaseEpoch = :epoch`, where holder and epoch come **only from the
 verified token's `fence` claim**, never from a request body (§9.10). An API writer's CAS is conditioned on
 `attribute_not_exists(holder)`.
-A lease is taken with `attribute_not_exists(holder) OR leaseDeadline < :now`, and the new epoch is the old one + 1.
+A lease is live while `now < leaseDeadline`: it expires **at** its deadline. So a lease is taken with
+`attribute_not_exists(holder) OR leaseDeadline <= :now`, and the new epoch is the old one + 1.
 `:now` is the tier node's clock (AWS Time Sync, sub-millisecond skew between nodes) against a 10-minute lease
 renewed every TTL/3, so skew is noise. A node whose clock disagrees with DynamoDB's own write time by more than a
 second refuses lease operations loudly. The rules of camel-fs.md §1.2 hold unchanged: one writer per branch,
@@ -313,7 +337,8 @@ contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` wi
   repos.
 - The tier refuses `507 storage_limit` with `{ limit }`, with **no** ref change, when
   `otherBytes + repoBytesAfter > limitBytes`.
-- `files` is the entry count of `main`. `bytes` and `files` come back in every write's result.
+- Every write's result carries `bytes` (the lineage's usage, `markedBytes + writtenSince`, below) and `files` (the
+  recursive file count of the moved-to tree).
 
 **How repo bytes are kept: decided (Miguel, 2026-11-13 ~17:40), the mark count plus bytes written since.**
 `repoBytes` is the exact distinct-blob bytes reachable from all of the repo's heads, as measured by the last GC mark
@@ -754,16 +779,25 @@ The runtime calls it at repo creation, before the first commit. `GET` returns th
 the partition (`refs?prefix=published/` lists a repo's publishes).
 
 **Create.** `POST /v1/lineages/{lineage}/refs` `{ "name", "version", "owner", "expiresAt"? }` → `201` with the
-item. Condition: `attribute_not_exists(name)`, else `409 ref_exists`. `version` must be a commit of the lineage
+item. Condition: `attribute_not_exists(name)`, or an expired unheld ref (`expiresAt <= :now`, no live lease), else
+`409 ref_exists`. `version` must be a commit of the lineage
 (`400 unknown_commit`). A branch copies nothing, whatever the tree's size, and may be created at any commit (rule 4). The owner prefix set and the name
 alphabet of §1 are enforced here.
 
-**Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. Condition: `version = :expect`
-and no live lease (`held` otherwise). Final: the ref's history stays reachable only from other refs.
+**Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. `expect` is optional: with it the
+condition includes `version = :expect` (`412 stale`); without it, only that no lease is live (`409 held`). Final:
+the ref's history stays reachable only from other refs.
+
+**Expiry and epochs, everywhere in this section:**
+- An unheld ref whose `expiresAt <= now` reads as **absent** on every route (`404 ref_not_found`, missing from
+  listings) and may be re-created.
+- `leaseEpoch` **never decreases** for a ref name, across delete and re-create, so a fence from a ref's earlier life
+  can never match a later one. C2 carries the epoch across the delete.
 
 **CAS (hosts, and any caller that wrote its own commit or moves to a recorded one).**
 `POST /v1/lineages/{lineage}/refs/{name}/cas` `{ "commit", "expect", "root"?, "quota"? }` →
 `200 { "version", "tree", "parents", "diff": [ …9.4's change shape… ], "bytes", "files" }`.
+- `expect` is required: `cas` never creates a ref (`400 invalid_request`; creation is `POST refs`).
 - The commit must be the lineage's (`400 unknown_commit`).
 - `expect` must be current (`412 stale`). `commit == expect` is a no-op (rule 3).
 - A commit made for this move must pass rule 1 (`409 bad_parent`); any other recorded commit must pass rule 2
@@ -808,9 +842,10 @@ never rewritten.
 
 **Leases.** `POST /v1/lineages/{lineage}/refs/{name}/lease` `{ "holder": { "host", "boot", "mount" }, "ttlMs" }`
 (`ttlMs` ≤ 600,000) → `200 { "epoch", "deadline", "version", "tree" }`. Condition:
-`attribute_not_exists(holder) OR leaseDeadline < :now`, else `409 held`; the epoch is the previous epoch + 1.
+`attribute_not_exists(holder) OR leaseDeadline <= :now` (a lease is live while `now < leaseDeadline`), else `409 held`;
+the epoch is the previous epoch + 1.
 `POST …/lease/renew` `{ "ttlMs" }` → `200 { "deadline" }`, with the condition `holder = :holder
-AND leaseEpoch = :epoch AND leaseDeadline >= :now`, where holder and epoch come from the token's `fence` claim
+AND leaseEpoch = :epoch AND leaseDeadline > :now`, where holder and epoch come from the token's `fence` claim
 (`409 fenced`). `DELETE …/lease` → `204`, under the same condition. The lease's `POST` needs a runtime token (§9.10); the
 runtime then mints the fence-scoped token from its answer. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
 `leaseEpoch`.
@@ -993,6 +1028,10 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
   runs that write under a 5 s deadline (SDK retries included), and re-mints on any retry. A DynamoDB transaction
   commits within its request, so a ULID's time is within ≈ 5 s of its commit, against a watermark 2 heartbeats
   (≈ 20 s) back; tier clock skew is milliseconds. That is what lets the watermark below be safe.
+- **Clock assumption:** the watermark assumes the skew between tier tasks' clocks is well under 15 s (Fargate
+  NTP keeps it at milliseconds). A task whose clock drifts past that could write below a watermark another task's
+  reader has passed. The tier checks its clock against DynamoDB's response time and refuses usage writes beyond
+  that bound, loudly (ledger L98).
 
 **The route.** `GET /v1/usage?after=<cursor>&limit=1000` →
 `{ "events": [ … ], "cursor": "<opaque>", "watermark": "<ulid-time>" }`.
@@ -1008,6 +1047,9 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
 - Pricing and charging then run from those rows exactly as the meter does today.
 - The inbound usage webhook is deleted. A poller that falls behind by more than the 35-day TTL loses events, so its
   lag is an alarm (`usage_poll_lag`) long before that.
+
+**The credit deadline is a lease, and a lapsed one is final** (camel-fs-compute.md §4): no extension revives a
+VM's lease once `now ≥ deadline`, so the usage events never cover time the runtime did not extend credit for.
 
 **Notifications stay pushed.** `vm.ended` and ref moves remain on §9.11's webhook outbox. `vm.ended` is a hint:
 if one is lost, the next poll's final `usage.vm` event and `GET /v1/vms/{id}` reconcile the job.
