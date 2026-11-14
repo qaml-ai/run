@@ -40,13 +40,42 @@ The VM record in `<work>/vms/<id>.json` reserves the slot before launch. A new
 Launcher sees the reservations and can stop a recorded VM by ID. Destroy
 waits up to five seconds for the scope to stop, then removes the tap, policy,
 jail and record. A failed cleanup retains the reservation for retry.
-`Adopt` is a stub for K2c.
+Use `Launcher.Adopt(id)` to recover a handle from the VM record, then
+`VM.Reconnect(ctx)` to dial port 5000 and retrieve the guest's session inventory.
+The guest serves one connection at a time and accepts another after EOF.
+The Firecracker scope outlives the launcher. An explicit guest `exit` syncs
+and shuts down the VM.
 
-The pinned guest serves one vsock connection and reboots when that connection
-closes. Keeping Firecracker in an independent scope makes it survive the
-launcher's exit while another client holds the guest connection. A daemon
-that owns the connection still causes the guest to shut down when it dies.
-Re-adoption therefore also needs a guest lifecycle change.
+## Guest sessions
+
+`VM.Request(ctx, req, onLog, onEvent)` takes an optional event callback for
+`exec` or `exec_tail`. The request returns the acknowledgement. The callback
+receives events for that exec ID in wire order, including after the request
+returns. Use a fresh callback when reattaching. Callbacks must return
+promptly and may hand messages to another goroutine.
+
+`shell_open` starts a persistent Bash in `/repo` if it exists, with the VM's
+boot environment. `exec` with a shell runs one command at a time in that
+shell. The command inherits shell state, and explicit `env` entries are
+exported in the shell. `stdin` is a JSON string passed as UTF-8 bytes. A shell
+that exits or times out is removed from the session inventory. Without a
+shell ID, `exec` uses a separate Bash process group.
+
+Each shell command is evaluated in a wrapper with separate pipes for
+stdout and stderr. The wrapper closes fd 3 during evaluation and writes
+a fresh 128-bit random token followed by the exit status to fd 3 after
+evaluation. The guest reads and checks the sentinel on the dedicated
+status pipe. It never parses stdout or stderr for sentinels.
+
+Output offsets count bytes across both streams. Resume with `exec_tail` at
+the next offset after the last chunk received. The guest sends an
+acknowledgement, then any truncation marker, retained bytes and exit. If
+the exec is still running, subsequent live events follow the replay. The
+most recent eight accepted IDs keep up to 1 MiB each, and the most recent
+64 completions keep their exit records. Active IDs stay registered until
+completion. Repeating an ID while it is registered reattaches at offset
+zero if the command, shell, env and stdin match. Once both records have
+aged out, `exec_tail` returns `exec_unknown`.
 
 ## KVM lane
 
@@ -54,8 +83,12 @@ On the dedicated EC2 KVM test host with base rules provisioned, from
 `camelfsd/` run as root.
 
 ```sh
-CAMELFSD_KVM=1 GUEST_IMAGE=/nvme/camel/base.ext4 go test -tags=kvm ./internal/vmhost
+CAMELFSD_KVM=1 GUEST_IMAGE=/nvme/camel/session-base.ext4 go test -tags=kvm ./internal/vmhost
 ```
+
+Use an image built with this guest. The reconnect test logs boot-to-exec,
+exec round-trip, and the freeze and walk times for an unchanged 10,000-file
+repo.
 
 `GUEST_KERNEL` defaults to `/var/lib/camel/guest/vmlinux`. Set `GUEST_INITRD`
 if the kernel requires it and `CAMELFSD_KVM_WORK` if the guest image's
