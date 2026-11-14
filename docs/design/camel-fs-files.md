@@ -217,7 +217,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - Keys: `<lineage>/{o,t,k,r,c,ts}/<hash>`.
   - The guest image (K1) at `guest/<sha256>…`, put only by the GitHub OIDC role
     `camelfs-prod-guest-image-publisher`.
-  - VM results at `<lineage>/results/<vm>`, tagged `kind=result`, expired after 7 days, written only by the tier.
+  - VM results at `<lineage>/results/<vm>`, expired after 7 days, written by the host and verified by the tier
+    (camel-fs-compute.md §2; how the lifecycle selects them is fs-infra's open detail).
 - **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
   - `camelfs-prod-objects` (`lineage` + `id`);
   - `camelfs-prod-refs` (`lineage` + `name`);
@@ -237,7 +238,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
 
   The api task role reads no secret.
 - **IAM:** the host policy `camelfs-prod-host` allows the bucket and `objects` only. It explicitly denies every
-  other table and any write to `*/results/*`, so a host moves a ref only through the tier's fence check.
+  other table, so a host moves a ref only through the tier's fence check. Hosts may `s3:PutObject` under
+  `*/results/*` (the K4 change; #967 had denied it).
 
 Nothing in the runtime holds a ref. `camelfsd --role api` is a stateless Go tier behind an ALB in us-west-2: the §9
 plane plus a `refs` package, any node serving any request. Hosts run `camelfsd --role host` (the block layer and the
@@ -969,6 +971,10 @@ proves only "this came through Cloudflare", and anyone can proxy their own zone 
   - The ALB strips any client-supplied `X-Amzn-Mtls-Clientcert-*` headers and sets its own from the verified leaf.
     The tier reads the host id from them, and only the ALBs' security groups reach the tasks.
   - A call from host A about host B's VM is refused: the host id in the path must equal the certificate's.
+  - **A host's `cas` and lease calls** are accepted only when the lease holder's `host` equals the certificate's
+    host id **and** its `boot` equals that host's current `bootEpoch` (`hosts` item), else `403 forbidden`. The
+    holder string is `<host>:<bootEpoch>:<vm id>`, and the tier takes the ref lease just before it writes
+    `booting` (camel-fs-compute.md §2). A rebooted host's old leases are refused on sight (L16).
 - **Tier → host** (port 8792, `--listen-compute`).
   - The tier presents its own client certificate (URI SAN `spiffe://camelfs/tier`).
   - The host serves a certificate with its own id, which the tier checks against the host it meant to call
