@@ -33,7 +33,7 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   class Runtime {
     constructor(...args: unknown[]) { constructed = args; }
   }
-  for (const name of [...methods, "arm", "dueHumanInputs"]) Object.defineProperty(Runtime.prototype, name, {
+  for (const name of [...methods, "clearComputerAttached", "arm", "dueHumanInputs"]) Object.defineProperty(Runtime.prototype, name, {
     value: function (...args: unknown[]) { calls.push({ name, args, receiver: this }); return result; },
   });
   class Host {
@@ -46,7 +46,7 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   const ctx = {}, env = { PILOT_DB_PROFILE: "1" }, agent = new Agent(ctx, env);
   // `note` (the voice call's journal-only write) composes runtime calls rather than forwarding one, so it is on the
   // boundary but not in the delegation checks below.
-  assert.deepEqual(Object.getOwnPropertyNames(Agent.prototype), ["constructor", "note", ...methods]);
+  assert.deepEqual(Object.getOwnPropertyNames(Agent.prototype), ["constructor", "note", "clearComputerAttached", ...methods]);
   assert.deepEqual(Object.getOwnPropertySymbols(Agent.prototype), [ARM_AGENT, DUE_HUMAN_INPUTS]);
   assert.deepEqual(Reflect.ownKeys(agent), ["ctx", "env"], "the runtime cannot be read through an RPC property");
   assert.deepEqual(constructed, [ctx, env, agent]);
@@ -76,4 +76,6 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   const disabled = new Agent(ctx, {});
   await assert.rejects(disabled.databaseProfile(), /Pilot database profiling is disabled/);
   assert.equal(calls.at(-1)?.name, "dueHumanInputs", "disabled profiling never reaches the runtime");
+  assert.equal(disabled.clearComputerAttached(), result, "connection writes clear the local hint with pilot profiling disabled");
+  assert.deepEqual([calls.at(-1)?.name, calls.at(-1)?.args], ["clearComputerAttached", []]);
 });
