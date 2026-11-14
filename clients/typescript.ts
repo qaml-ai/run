@@ -1796,20 +1796,20 @@ export interface WorkflowSummary {
   /** Who started it: an agent through the `workflows` builtin (which then owns it); absent for a start through the API. */
   owner?: { kind: "agent" | "workflow"; id: string };
 }
-/** One effect of a workflow: an `agent()`, `job()`, `commit()` or `push()` call, by its key. */
+/** One effect of a workflow: an `agent()` or `commit()` call, by its key. */
 export interface WorkflowItem {
   key: string;
   /** 1, one more each time the effect is re-issued (a refused effect re-issued on resume). */
   attempt: number;
   /** Whether this attempt is the one that counts. */
   current: boolean;
-  kind: "agent" | "job" | "commit" | "push";
+  kind: "agent" | "commit";
   /** `script`, `reissue`, or `cache`: its result was reused from an earlier workflow of the same owner (see `cachedFrom`), at no cost. */
   origin: string;
   /** Where a reused result came from: `workflowId:key:attempt`. */
   cachedFrom?: string;
   status: "pending" | "running" | "done" | "failed" | "refused" | "aborted" | (string & {});
-  /** What the script called it with (an agent's prompt and options, a job's command). */
+  /** What the script called it with, such as an agent's prompt and options. */
   args: unknown;
   /** Its answer, once `done`. */
   result?: unknown;
@@ -1850,7 +1850,7 @@ export class Workflows {
   }
   /** Its status, counts, spend and, once it ends, its result. */
   get(id: string): Promise<WorkflowSummary> { return this.transport.json(this.path(id), this.key()); }
-  /** Its effects (agents, jobs, commits, pushes) in journal order, a page at a time (`limit` at most 500); pass `next` back as `after`. */
+  /** Its effects (agents and commits) in journal order, a page at a time (`limit` at most 500); pass `next` back as `after`. */
   items(id: string, query: WorkflowItemsQuery = {}): Promise<{ items: WorkflowItem[]; next?: number }> {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
     return this.transport.json(`${this.path(id, "/items")}${params.size ? `?${params}` : ""}`, this.key());
