@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -8,12 +8,13 @@ import type { UsageRecord } from "../src/client-sessions/state.ts";
 import type { Db } from "../src/db.ts";
 import { EndUserCredits } from "../src/end-user-credits.ts";
 import { nodeConfig } from "../src/node-config.ts";
-import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { createNode, nodeDeps } from "../src/node.ts";
 import { terminationReasonToEnd } from "../src/voice/calls/elevenlabs.ts";
 import { ASK_AGENT, PENDING, STAY_SILENT } from "../src/voice/calls/prompts.ts";
 import { enqueueEvents, type WebhookEvent } from "../src/webhooks.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
+import { agentStarted, ownNodes } from "./node-fixture.ts";
 import { until } from "./runtime-server.ts";
 import { fakeElevenLabs, fakeOpenAICalls, fakeSubmit, sign } from "./voice-calls-fakes.ts";
 
@@ -41,7 +42,8 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; balance?:
   const openai = await fakeOpenAICalls(t);
   const submit = fakeSubmit([{ text: "It's noon." }, { text: "Later reply", delay: 250 }]);
   const root = await mkdtemp(join(tmpdir(), "agent-elevenlabs-calls-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // One teardown: the node closes before its directory goes (under process hosting its children write until then).
+  const { nodes } = ownNodes(t, root);
   const { url } = await testDatabase();
   await writeFile(join(root, "tenants.json"), JSON.stringify({
     tenants: { alice: { tokenSha256: sha(token), apiKeys: {
@@ -51,9 +53,7 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; balance?:
   }));
   const events: WebhookEvent[] = [];
   const usage: UsageRecord[] = [];
-  let node: RuntimeNode | undefined;
   let db!: Db;
-  t.after(async () => { await node?.close(); });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
@@ -90,8 +90,8 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; balance?:
         record: (_tenant, record) => { usage.push(record); },
       },
     });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const request = (method: string, path: string, input?: unknown, headers?: Record<string, string>) =>
@@ -105,6 +105,7 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; balance?:
   };
   const agent = await http("POST", "/v1/agents", { name: "voice-agent" });
   assert.equal(agent.status, 201, JSON.stringify(agent.json));
+  await agentStarted(nodes[0], agent.json.id);
   const create = async (patch: Record<string, unknown> = {}, key?: string) => {
     const response = await request("POST", path, {
       agent: agent.json.id, provider: "elevenlabs", subject: "user-1", ...patch,
@@ -130,7 +131,7 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; balance?:
   const balance = async () => (await db.query("select balance from end_users where tenant = 'alice' and id = 'user-1'")).rows[0].balance;
   const ledger = async (callId: string) => (await db.query("select raw, amount from end_user_ledger where idempotency_key = $1", [`voice_elevenlabs:${callId}`])).rows;
   return { base, warn, info, log, eleven, http, create, live, order, usage, submit, byCall, post, tool, balance, ledger, db,
-    calls: node!.calls!, initial, advance: (minutes: number) => { now = initial + minutes * minute; } };
+    calls: nodes[0].calls!, initial, advance: (minutes: number) => { now = initial + minutes * minute; } };
 }
 
 test("checks credit before provider requests and provisions webhook tools once per persona", async t => {
