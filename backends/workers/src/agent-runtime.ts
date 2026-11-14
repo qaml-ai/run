@@ -1,3 +1,5 @@
+import { vmFiles, type VmFilesScope } from "./camelfs/vm-files.ts";
+import type { VmFilesProvider } from "./repos/vm-route.ts";
 import { BashSessions } from "./camelfs/bash.ts";
 import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
@@ -273,8 +275,14 @@ export class AgentRuntime extends AgentContext {
       (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
   }
 
-  // K5b2 supplies the provider for this runtime.
-  vmFiles?: import("./repos/vm-route.ts").VmFilesProvider;
+  readonly vmFiles: VmFilesProvider = (scope: VmFilesScope) => {
+    const runtime = this;
+    return vmFiles({
+      ...this.env,
+      get bashSessions() { return runtime.bashSessions; },
+    }, scope);
+  };
+
   fileVersions = new DurableFileVersions(this.ctx.storage);
 
   // Pi can reopen its Harness after a storage failure without replacing this

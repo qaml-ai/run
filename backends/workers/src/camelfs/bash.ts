@@ -15,6 +15,7 @@ import type { TierClaims } from "./claims.ts";
 import { TierError, tierConfigured, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
+import { guestFiles, VM_FILES_STDOUT_BYTES, type VmFiles } from "./vm-files.ts";
 
 export const BASH_WORKDIR = '/workspace';
 export type BashEnv = HostPriceEnv & { CAMELFS_COMPUTE?: string; CAMELFS_POOLS?: string; GUEST_IMAGE_SHA256?: string; COMPUTER_INSTANCE?: string };
@@ -41,13 +42,14 @@ const RENEW_MS = 180_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const isTier = (error: unknown, status: number, code: string) => error instanceof TierError && error.status === status && error.code === code;
+const vmStopped = (error: unknown) => isTier(error, 409, "not_running") || isTier(error, 409, "ended") || isTier(error, 409, "lease_expired");
 const computeBusy = "compute is busy, retry shortly";
 
 type Branch = { branch: string; lineage: string; ref: string };
 type Vm = Branch & { vm_id: string; shell: string | null; state: "creating" | "running" | "stopped"; deadline: number; created_at: number };
 type Boot = ReturnType<typeof bootSpec> & { id: string; lineage: string; ref: string; deadline: number };
 type Intent = { vm: Vm; first: boolean; body: { execId: string; command: string; shell: string; cwd?: string; timeoutS: number } };
-type Checkpoint = { vm: Vm; callId: string; requestId: string; message: string; time: number; started?: boolean };
+type Checkpoint = { vm: Vm; callId: string; requestId?: string; message: string; time: number; started?: boolean };
 type SessionResult = BashResult & { checkpointWarning?: string };
 type Receipt = { intent?: Intent; result?: SessionResult; checkpoint?: Checkpoint };
 type Args = { command: string; cwd?: string; timeoutSeconds?: number };
@@ -73,6 +75,7 @@ function bootSpec(env: Env, conf: Config) {
 }
 
 export class BashSessions {
+  private readonly savedHeads = new Map<string, Head>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private get sql() { return this.storage.sql; }
 
@@ -122,11 +125,37 @@ export class BashSessions {
     finally { if (this.locks.get(branch) === settled) this.locks.delete(branch); }
   }
 
+  // File-tool ops (VmFiles) do not queue behind bash: each is its own one-off exec, so they run concurrently with a bash
+  // command and serialize only against a checkpoint in flight, so that a checkpoint sees a consistent tree. A checkpoint
+  // waits for the file ops already running; a file op waits for the checkpoint already running.
+  private readonly checkpointLocks = new Map<string, Promise<unknown>>();
+  private readonly fileOps = new Map<string, Set<Promise<unknown>>>();
+  private async checkpointLocked<T>(branch: string, action: () => Promise<T>): Promise<T> {
+    const next = (this.checkpointLocks.get(branch) ?? Promise.resolve())
+      .then(() => Promise.allSettled([...this.fileOps.get(branch) ?? []]))
+      .then(action);
+    const settled = next.catch(() => {});
+    this.checkpointLocks.set(branch, settled);
+    try { return await next; }
+    finally { if (this.checkpointLocks.get(branch) === settled) this.checkpointLocks.delete(branch); }
+  }
+  private async fileOp<T>(branch: string, action: () => Promise<T>): Promise<T> {
+    await this.checkpointLocks.get(branch);
+    const ops = this.fileOps.get(branch) ?? new Set<Promise<unknown>>();
+    this.fileOps.set(branch, ops);
+    const running = action();
+    const settled = running.catch(() => {});
+    ops.add(settled);
+    try { return await running; }
+    finally { ops.delete(settled); if (!ops.size && this.fileOps.get(branch) === ops) this.fileOps.delete(branch); }
+  }
+
   private row(branch: string) {
     return this.sql.exec<Vm>("SELECT * FROM agent_vms WHERE branch=?", branch).toArray()[0];
   }
 
   private stop(vmId: string) {
+    this.savedHeads.delete(vmId);
     this.sql.exec("UPDATE agent_vms SET state='stopped' WHERE vm_id=?", vmId);
   }
 
@@ -237,7 +266,7 @@ export class BashSessions {
     return this.serial(branch.branch, async () => {
       const previous = this.receipt(key);
       if (previous?.result) return previous.result;
-      await this.checkpoints(branch.branch);
+      await this.checkpointLocked(branch.branch, () => this.checkpoints(branch.branch));
       let intent = previous?.intent;
       const replay = !!intent;
       for (let attempt = 0; ; attempt++) {
@@ -259,6 +288,7 @@ export class BashSessions {
         const path = "/v1/vms/" + vm.vm_id + "/exec";
         let streamed: Awaited<ReturnType<typeof bashStream>>;
         try {
+          this.savedHeads.delete(vm.vm_id);
           streamed = await bashStream(this.env, { method: "POST", path, body, claims: claims(vm) }, body.execId, started + (body.timeoutS + 30) * 1000, () => {
             if (first) console.log(JSON.stringify({ type: "bash_vm_first_output", vm: vm.vm_id, firstOutputMs: Date.now() - vm.created_at }));
           });
@@ -286,25 +316,95 @@ export class BashSessions {
           this.sql.exec("INSERT OR IGNORE INTO agent_vm_shell_used VALUES(?)", vm.vm_id);
           this.save(key, branch.branch, { result, checkpoint });
         });
-        this.defer(sleep(0).then(() => this.serial(branch.branch, () => this.checkpoints(branch.branch))).catch(() => this.arm(Date.now() + 1_000)));
+        this.scheduleCheckpoint(branch.branch);
         console.log(JSON.stringify({ type: "bash_exec", vm: vm.vm_id, callId, ms: ms ?? Date.now() - started, exitCode: result.exitCode, truncated: result.truncated, bytes }));
         return result;
       }
     });
   }
 
+  runningFiles(lineage: string, ref: string): VmFiles | undefined {
+    const branch = JSON.stringify([lineage, ref]);
+    const vm = this.row(branch);
+    if (vm?.state !== "running") return;
+    const ensureRunning = () => {
+      const current = this.row(branch);
+      if (current?.state !== "running" || current.vm_id !== vm.vm_id) throw new HttpError(409, "the VM stopped; retry");
+    };
+    const onVm = <T>(work: () => Promise<T>) => this.fileOp(branch, async () => {
+      ensureRunning();
+      try {
+        const value = await work();
+        ensureRunning();
+        return value;
+      } catch (error) {
+        if (vmStopped(error))
+          this.stop(vm.vm_id);
+        ensureRunning();
+        throw error;
+      }
+    });
+    return guestFiles(
+      (execId, command, stdin, mutation) => onVm(async () => {
+        const timeoutS = 120;
+        const body = { execId, command, stdin, cwd: BASH_WORKDIR, timeoutS };
+        const checkpoint = { vm, callId: execId, message: "Save VM file changes", time: Date.now() };
+        const key = JSON.stringify(["vmfiles", vm.vm_id]);
+        if (mutation) {
+          await this.arm(Date.now() + 1_000);
+          this.savedHeads.delete(vm.vm_id);
+          // Record the pending save before dispatch. The mutation can succeed even if its response is lost.
+          this.save(key, branch, { checkpoint });
+        }
+        try {
+          const { result } = await bashStream(this.env, {
+            method: "POST", path: "/v1/vms/" + vm.vm_id + "/exec", body, claims: claims(vm),
+          }, execId, Date.now() + (timeoutS + 30) * 1000, () => {}, VM_FILES_STDOUT_BYTES);
+          return result;
+        } finally {
+          if (mutation) this.scheduleCheckpoint(branch);
+        }
+      }),
+      () => this.checkpointLocked(branch, async () => {
+        ensureRunning();
+        await this.checkpoints(branch);
+        ensureRunning();
+        const saved = this.savedHeads.get(vm.vm_id);
+        if (saved) return saved;
+        const reply = await this.request<Head & { changed: boolean }>(vm, "POST", "/checkpoint", {
+          message: "Save VM file changes", time: Date.now(),
+        });
+        if (reply.changed) this.recordHead(vm, reply);
+        return this.rememberHead(vm, reply);
+      }),
+    );
+  }
+
+  private scheduleCheckpoint(branch: string) {
+    this.defer(sleep(0).then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch)))).catch(() => this.arm(Date.now() + 1_000)));
+  }
+
+  private rememberHead(vm: Vm, { version, tree }: Head) {
+    const head = { version, tree };
+    const current = this.row(vm.branch);
+    if (current?.state === "running" && current.vm_id === vm.vm_id) this.savedHeads.set(vm.vm_id, head);
+    return head;
+  }
+
   private async checkpoints(branch: string) {
     const rows = this.sql.exec<{ id: string; receipt: string }>("SELECT id,receipt FROM agent_vm_calls WHERE branch=? AND checkpoint=1 ORDER BY rowid", branch).toArray();
     for (const row of rows) {
-      const { result, checkpoint } = JSON.parse(row.receipt) as Required<Pick<Receipt, "result" | "checkpoint">>;
+      const { result, checkpoint } = JSON.parse(row.receipt) as { result?: SessionResult; checkpoint: Checkpoint };
       const { vm, callId, requestId, message, time } = checkpoint;
       const started = Date.now();
+      let failure = result?.checkpointError;
       let changed: boolean | undefined;
       try {
-        if (!result.checkpointError) {
+        if (!result?.checkpointError) {
           if (!checkpoint.started) this.save(row.id, branch, { result, checkpoint: { ...checkpoint, started: true } });
           const reply = await this.request<Head & { diff: unknown; changed: boolean }>(vm, "POST", "/checkpoint", { message, trailers: { "Camel-Tool-Call": callId }, time });
           changed = reply.changed;
+          this.rememberHead(vm, reply);
           if (changed) this.recordHead(vm, reply);
           else if (checkpoint.started) {
             const status = await this.request<Status>(vm, "GET");
@@ -313,18 +413,23 @@ export class BashSessions {
         }
       } catch (error) {
         const reason = (error instanceof TierError ? error.code : "checkpoint_failed").replace(/[\r\n]+/g, " ");
-        result.checkpointError = reason;
-        // Persist the warning and the failure together, before publishing the event.
+        this.savedHeads.delete(vm.vm_id);
+        if (vmStopped(error))
+          this.stop(vm.vm_id);
+        failure = reason;
+        if (result) result.checkpointError = reason;
+        // Persist the warning and the bash failure together, before publishing the event.
         this.storage.transactionSync(() => {
           this.sql.exec("INSERT OR REPLACE INTO agent_vm_checkpoint_warnings VALUES(?,?)", branch, reason);
-          this.save(row.id, branch, { result, checkpoint });
+          if (result) this.save(row.id, branch, { result, checkpoint });
         });
       }
-      if (result.checkpointError) {
+      if (requestId && result?.checkpointError) {
         await this.checkpointFailed(callId, requestId, result.checkpointError);
       }
-      this.save(row.id, branch, { result });
-      console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, changed, error: result.checkpointError }));
+      if (result) this.save(row.id, branch, { result });
+      else this.sql.exec("DELETE FROM agent_vm_calls WHERE id=?", row.id);
+      console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, changed, error: failure }));
     }
   }
 
@@ -343,7 +448,7 @@ export class BashSessions {
   async wake(conf: Config) {
     if (!bashEnabled(this.env)) return;
     for (const { branch } of this.sql.exec<{ branch: string }>("SELECT DISTINCT branch FROM agent_vm_calls WHERE checkpoint=1").toArray())
-      this.defer(this.serial(branch, () => this.checkpoints(branch)));
+      this.defer(this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))));
     if (this.renewing) return;
     this.renewing = true;
     try { await this.renew(conf); }
@@ -380,7 +485,7 @@ export class BashSessions {
           this.sql.exec("DELETE FROM agent_vm_renewal WHERE vm_id=?", vm.vm_id);
         });
       } catch (error) {
-        if (isTier(error, 409, "lease_expired") || isTier(error, 409, "not_running") || isTier(error, 409, "ended")) this.stop(vm.vm_id);
+        if (vmStopped(error)) this.stop(vm.vm_id);
         else {
           this.sql.exec("UPDATE agent_vm_renewal SET next=? WHERE vm_id=?", Date.now() + RENEW_MS, vm.vm_id);
           this.sql.exec("INSERT OR IGNORE INTO agent_vm_renewal VALUES(?,?,?,?)", vm.vm_id, Date.now() + RENEW_MS, vm.refused, vm.proposed);
