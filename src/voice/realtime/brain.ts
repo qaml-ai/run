@@ -579,17 +579,20 @@ export class RealtimeBrain {
 
   private async holdSlice() {
     try {
-      await this.hooks.admit();
+      try {
+        await this.hooks.admit();
+      } catch (error) {
+        // A rate or concurrency refusal is not about money: the slice's audio is already flowing and must still be
+        // paid, so its end user's hold is still taken below, and the session goes on.
+        if ((error as HttpError)?.status !== 429 || spendRefusal(error)) throw error;
+        this.hooks.log("voice_realtime_slice_refused", { error: safeError(error) });
+      }
       return await this.hooks.hold(REALTIME_LIMITS.holdUsd);
     } catch (error) {
       const refused = error as HttpError;
       if (spendRefusal(refused)) {
         const endUser = refused.code === "END_USER_CREDIT";
         this.hooks.budget(endUser ? "end_user" : "tenant", endUser ? refused.details?.reason as string : undefined, endUser ? refused.details?.bucket as string : undefined);
-      } else if (refused?.status === 429) {
-        // A rate or concurrency refusal: this slice goes unheld, and the next metering checkpoint asks again.
-        this.hooks.log("voice_realtime_slice_refused", { error: safeError(refused) });
-        return undefined;
       } else this.hooks.failed("realtime_credit_failed");
       throw error;
     }
@@ -614,7 +617,7 @@ export class RealtimeBrain {
       const credit = await hold;
       if (costUsd > 0) await credit?.settle(costUsd);
       else await credit?.release();
-      return closing || this.closed ? undefined : this.holdSlice();
+      return closing ? undefined : this.holdSlice();
     })();
     void this.meteredHold.catch(error => {
       if (spendRefusal(error)) return;
