@@ -75,10 +75,10 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; balance?:
       order.push("refusal");
       return refusal(...args);
     });
-    const hold = credits.hold.bind(credits);
-    t.mock.method(credits, "hold", async (...args: Parameters<EndUserCredits["hold"]>) => {
-      order.push("hold");
-      return hold(...args);
+    const debit = credits.debit.bind(credits);
+    t.mock.method(credits, "debit", async (...args: Parameters<EndUserCredits["debit"]>) => {
+      order.push("debit");
+      return debit(...args);
     });
     const made = await createNode(config, {
       ...deps, voiceCallOverrides: {
@@ -216,7 +216,7 @@ test("a tenant-paid call defaults to thirty minutes and preserves a shorter cap"
   assert.equal(shorter.maxMinutes, 4);
   assert.equal(shorter.expiresAt - f.initial, 4 * minute);
   assert.equal(f.order.includes("refusal"), false);
-  assert.equal(f.order.includes("hold"), false);
+  assert.equal(f.order.includes("debit"), false);
   assert.equal(f.eleven.agents.length, 1);
   assert.equal(f.eleven.agents[0].conversation_config.conversation.max_duration_seconds, 1800);
   assert.equal((await f.post(call.connect.conversationId)).status, 200);

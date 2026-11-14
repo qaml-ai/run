@@ -108,7 +108,7 @@ test("a lost commit acknowledgement can be delivered again without a second debi
   assert.equal(await total(db),-200000,"automatic delivery retry also commits each attempt once");
 });
 
-test("end-user settlement preserves holds on rollback and charges once after a lost commit acknowledgement", async () => {
+test("end-user settlement rolls back and charges once after a lost commit acknowledgement", async () => {
   const { db, account } = await setup();
   const credits = new EndUserCredits(db);
   await credits.setSettings("payg", { enabled: true, markupBps: 2_000 });
@@ -142,14 +142,12 @@ test("end-user settlement preserves holds on rollback and charges once after a l
   await assert.rejects(delivery.event("payg", "agent", true, true, finish(id, 0.1)), /crash before commit/);
   assert.equal(await total(db), 0);
   assert.equal((await credits.get("payg", "person")).balance, 1_000_000);
-  assert.equal(Number((await db.query("select count(*) n from end_user_holds where id=$1", [id])).rows[0].n), 1, "rollback restores the hold");
   seam = "after";
   await assert.rejects(delivery.event("payg", "agent", true, true, finish(id, 0.1)), /lost commit acknowledgement/);
   await Promise.all(Array.from({ length: 8 }, () => attempts.event("payg", "agent", true, true, finish(id, 0.1))));
   assert.equal(await total(db), -100_000);
   assert.equal((await credits.get("payg", "person")).balance, 880_000);
   assert.equal(Number((await db.query("select count(*) n from end_user_ledger where kind='usage'")).rows[0].n), 1);
-  assert.equal(Number((await db.query("select count(*) n from end_user_holds")).rows[0].n), 0);
   const rows = (await db.query("select workspace, responses, cost from workspace_usage")).rows;
   assert.equal(rows.length, 1);
   assert.deepEqual(rows[0], { workspace: original.id, responses: 1, cost: 0.1 });

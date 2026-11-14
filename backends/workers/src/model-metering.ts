@@ -113,10 +113,8 @@ export function meterProvider<P extends Provider<any>>(
       const gateway = !platform && (model.provider === 'cloudflare-ai-gateway' || !!credentials?.baseUrl && model.provider === 'openrouter');
       let refusal: Promise<void> | undefined;
       const source = await attemptStream(billedModel, typeof key === 'string' ? key : '', options.modelCallKind ?? modelCallKind(transcript), hook,
-        (sink, halt, affordable) => stream(model, transcript, {
+        sink => stream(model, transcript, {
           ...options,
-          signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,
-          ...(affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { maxTokens: affordable } : {}),
           ...(FETCH_APIS.includes(model.api) ? { fetch: callFetch(sink, { ...(options.fetch ? { base: options.fetch } : {}) }) } : {}),
         }), estimate, stop => { refusal = stopped?.(identity, creditRunStop(stop)); }, gateway, options.supersede);
       for await (const event of source) {
