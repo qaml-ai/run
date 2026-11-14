@@ -20,6 +20,9 @@ import (
 
 const baselineIntent = "baseline.json"
 
+// SessionBaselineTimeout bounds the boot-path handshake on both sides.
+const SessionBaselineTimeout = 500 * time.Millisecond
+
 type baselineRecord struct {
 	Lineage, Tree, Root string
 }
@@ -115,7 +118,7 @@ func (m *Manager) SessionBaseline(ctx context.Context, id string, freeze func(co
 		logBaseline(id, v.Tree, start, 0, Checkpoint{}, err)
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	ctx, cancel := context.WithTimeout(ctx, SessionBaselineTimeout)
 	defer cancel()
 	stop := context.AfterFunc(m.baselineCtx, cancel)
 	defer stop()
@@ -126,21 +129,34 @@ func (m *Manager) SessionBaseline(ctx context.Context, id string, freeze func(co
 		guest <- freeze(ctx)
 		cancel()
 	}()
+	phase := "connecting to guest"
 	c, closeStream, err := v.streams.acceptCheckpoint(ctx, armed)
 	if err == nil {
 		deadline, _ := ctx.Deadline()
 		c.SetDeadline(deadline)
 		stop := context.AfterFunc(ctx, func() { c.Close() })
 		if err = wire.Send(c, map[string]bool{"ready": true}); err == nil {
+			phase = "waiting for workspace freeze"
 			var header wire.Header
 			if err = wire.JSON(c, &header); err == nil {
+				phase = "capturing workspace snapshot"
 				err = snap.capture(v, c, header)
+				if err == nil {
+					phase = "waiting for guest thaw"
+				}
 			}
 		}
 		stop()
 		closeStream()
 	}
-	err = errors.Join(err, <-guest)
+	guestErr := <-guest
+	var timeout net.Error
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(guestErr, context.DeadlineExceeded) ||
+		(errors.As(err, &timeout) && timeout.Timeout()) {
+		err = fmt.Errorf("baseline timed out %s: %w", phase, context.DeadlineExceeded)
+	} else {
+		err = errors.Join(err, guestErr)
+	}
 	freezeMs := ms(start)
 	if err != nil {
 		m.discardBaseline(snap)

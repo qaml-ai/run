@@ -63,7 +63,11 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 	}
 	ctx, cancel := streamContext(parent, req.TimeoutMs)
 	defer cancel()
-	defer func() { err = streamError(ctx, err, "checkpoint") }()
+	stage := "checkpoint"
+	if req.Op == "camelfs_baseline" {
+		stage = "baseline freeze"
+	}
+	defer func() { err = streamError(ctx, err, stage) }()
 	if err = g.checkMount(); err != nil {
 		return nil, err
 	}
@@ -125,6 +129,9 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 		}
 	}
 	if req.Op == "camelfs_baseline" {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		trailerSent = true
 		return message{}, g.baseline(c, req.JobID)
 	}

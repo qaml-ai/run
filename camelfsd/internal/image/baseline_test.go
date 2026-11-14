@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/testguest"
 	"github.com/qaml-ai/run/camelfsd/internal/testutil"
+	"github.com/qaml-ai/run/camelfsd/internal/wire"
 )
 
 func baselineMount(t *testing.T, m *Manager, tree, job string) *Mount {
@@ -243,6 +246,53 @@ func TestBaselineDiskCapAndRecovery(t *testing.T) {
 	warm := baselineMount(t, m, tree, "recovered")
 	if !warm.Warm || warm.Root != point.Root {
 		t.Fatalf("complete baseline not recovered: %+v", warm)
+	}
+	if files, err := os.ReadDir(m.baselineDir()); err != nil || len(files) != 0 {
+		t.Fatalf("baseline leftovers: %v %v", files, err)
+	}
+}
+
+func TestSessionBaselineFreezeTimeout(t *testing.T) {
+	m, parent := unit3(t)
+	content := []byte("file")
+	sha := fmtHash(content)
+	if _, err := m.objects("l").Upload(t.Context(), "l", sha, int64(len(content)), bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := m.objects("l").Import(t.Context(), objects.Request{Lineage: "l", ParentTree: parent,
+		Files: map[string]objects.File{"hello": {SHA256: sha}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := baselineMount(t, m, tree.Tree, "slow-freeze")
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	publish, discard := m.SessionBaseline(t.Context(), v.JobID, func(ctx context.Context) error {
+		c, err := (&net.Dialer{}).DialContext(ctx, "unix", v.Vsock+"_5200")
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		var ready struct{ Ready bool }
+		if err := wire.JSON(c, &ready); err != nil {
+			return err
+		}
+		if !ready.Ready {
+			return errors.New("guest did not get ready")
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if discard != nil {
+		discard()
+	}
+	if publish != nil || !strings.Contains(logs.String(), "baseline timed out waiting for workspace freeze") {
+		t.Fatalf("unexpected baseline outcome: %s", logs.String())
+	}
+	if !m.NeedsBaseline(v.JobID) {
+		t.Fatal("timed-out capture must leave the unchanged checkpoint fallback eligible")
 	}
 	if files, err := os.ReadDir(m.baselineDir()); err != nil || len(files) != 0 {
 		t.Fatalf("baseline leftovers: %v %v", files, err)

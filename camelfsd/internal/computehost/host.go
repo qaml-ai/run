@@ -423,6 +423,7 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 	ctx, cancel := context.WithTimeout(h.ctx, h.Mounts.ApplyMax+time.Minute)
 	defer cancel()
 	var imageTime, mountTime, firstExec time.Duration
+	var syncMs float64
 	var phases vmhost.BootTimings
 	err := func() error {
 		if !validShape(q.Shape, h.Shape) || q.Session == nil {
@@ -457,10 +458,11 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 		if err := h.Mounts.SessionStreams(ctx, q.ID, vm.GuestSocket(), vm.GuestUID(), true); err != nil {
 			return err
 		}
-		_, err = guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": q.ID, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
+		applied, err := guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": q.ID, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
 		if err != nil {
 			return err
 		}
+		syncMs, _ = applied["syncMs"].(float64)
 		publish, discard := h.captureBaseline(ctx, q.ID, vm)
 		defer func() {
 			if discard != nil {
@@ -484,7 +486,7 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 		return nil
 	}()
 	// first_exec includes boot, apply and the baseline handshake; disk..vsock are its launcher phases.
-	slog.Info("compute_boot", "vm", q.ID, "image", ms(imageTime), "mount", ms(mountTime), "first_exec", ms(firstExec),
+	slog.Info("compute_boot", "vm", q.ID, "image", ms(imageTime), "mount", ms(mountTime), "first_exec", ms(firstExec), "syncMs", syncMs,
 		"disk", ms(phases.Disk), "assets", ms(phases.Assets), "tap", ms(phases.Tap), "policy", ms(phases.Policy),
 		"scope", ms(phases.Scope), "vsock", ms(phases.Vsock), "error", err)
 	if err != nil {
@@ -592,7 +594,7 @@ func (h *Host) startAdopted(ctx context.Context, s *session, r record, vm *vmhos
 
 func (h *Host) captureBaseline(ctx context.Context, id string, vm guestRequester) (func(), func()) {
 	return h.Mounts.SessionBaseline(ctx, id, func(ctx context.Context) error {
-		_, err := guestRequest(ctx, vm, map[string]any{"op": "camelfs_baseline", "jobId": id, "timeoutMs": 500})
+		_, err := guestRequest(ctx, vm, map[string]any{"op": "camelfs_baseline", "jobId": id, "timeoutMs": image.SessionBaselineTimeout.Milliseconds()})
 		return err
 	})
 }

@@ -60,6 +60,7 @@ type guest struct {
 	pending         []operation
 	pendingEntries  map[string]entry
 	freeze          func() (func() error, error)
+	syncWorkspace   func(string) error
 	sessions        sessionState
 	vm              bool
 	session         bool
