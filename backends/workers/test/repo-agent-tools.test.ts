@@ -151,8 +151,8 @@ test('repo attachment markers require mounted ancestry and respect subpaths',asy
 });
 test('new and stored mount inputs reject volumes; dreaming keeps its HTTP shape',()=>{
   const legacy={volumeId:'vol_'+ 'a'.repeat(24),path:'/workspace',mode:'rw'};
-  assert.throws(()=>configuration({mounts:[legacy] as never},'camel-test/deterministic'),/Unsupported field: volumeId/);
-  assert.throws(()=>storedConfiguration({mounts:[legacy] as never},'camel-test/deterministic'),/Unsupported field: volumeId/);
+  assert.throws(()=>configuration({mounts:[legacy] as never},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
+  assert.throws(()=>storedConfiguration({mounts:[legacy] as never},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
   const config={enabled:true,volumeId:'repo_'+'a'.repeat(24),schedule:{time:'03:00',timeZone:'UTC'},budgetUsd:1,instructions:''};
   assert.equal(dreamConfig(config).volumeId,config.volumeId);
   assert.throws(()=>dreamConfig({...config,volumeId:legacy.volumeId}),/Invalid dreaming configuration/);
