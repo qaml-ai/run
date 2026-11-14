@@ -45,6 +45,9 @@ func TestPublicAddress(t *testing.T) {
 		"::", "::1", "0:0:0:0:0:0:0:1", "::ffff:169.254.169.254", "::ffff:8.8.8.8",
 		"0:0:0:0:0:ffff:a9fe:a9fe", "64:ff9b::a9fe:a9fe", "64:ff9b:1::1", "fc00::1",
 		"fd00:ec2::254", "fe80::1", "fe80::1%eth0", "febf::1", "ff02::1", "not-an-ip",
+		// IPv4-compatible, 6to4 and Teredo forms that embed a private IPv4, and documentation/discard ranges.
+		"::10.0.0.1", "::169.254.169.254", "2002:a9fe:a9fe::1", "2002:0a00:0001::1", "2001::1", "2001:0:a9fe:a9fe::1",
+		"2001:db8::1", "100::1", "192.0.2.1", "198.51.100.1", "203.0.113.10",
 	} {
 		ip, _ := netip.ParseAddr(raw)
 		if publicAddress(ip) {
@@ -52,7 +55,7 @@ func TestPublicAddress(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{
-		"140.82.112.3", "104.16.0.1", "203.0.113.10", "2606:4700::6810:1",
+		"140.82.112.3", "104.16.0.1", "8.8.8.8", "2606:4700::6810:1", "2001:4860:4860::8888",
 		"100.63.255.255", "100.128.0.0", "172.15.255.255", "172.32.0.0",
 	} {
 		if !publicAddress(netip.MustParseAddr(raw)) {
