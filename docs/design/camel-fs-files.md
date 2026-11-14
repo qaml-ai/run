@@ -1162,6 +1162,9 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
     `iat`/`exp` and the maximum TTL) still applies.
   - The runtime mints that token only for its one leased poller (K5). Any other `sub` is `403 forbidden`.
   - Customers reconcile their own bill from the same events through the runtime's API, filtered to their payer.
+- **Observable:** every `GET /v1/usage` writes one access-log line, `op=GET:/v1/usage status=… ms=… events=<n>`, and
+  nothing from the events themselves (#1165). A poller that is refused shows as a run of non-200 lines; a healthy one
+  shows a `200` every ≈ 20 s, with `events=0` between bursts.
 
 **The poller.** The runtime runs one leased poller per camel-fs deployment, every ≈ 20 s.
 - One Postgres transaction per page: `INSERT … ON CONFLICT (id) DO NOTHING` for every event (on `eventId`), plus the
