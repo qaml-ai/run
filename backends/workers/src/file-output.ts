@@ -3,6 +3,8 @@ import type { FileBindings } from "./files.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./repos/agent-files.ts";
 import { repoContext, type RepoEnv } from "./repos/registry.ts";
 import { signRepoLink } from "./repos/links.ts";
+import { signFile } from "./images.ts";
+import { downloadHeaders, safeName } from "./file-policy.ts";
 
 type Outputs = {
   files: WrittenRepoFile[];
@@ -28,7 +30,23 @@ export async function presentedFile(
   file: PresentedRepoFile,
   path: string,
   emit: (event: unknown) => Promise<void>,
+  bytes?: Uint8Array,
 ) {
+  const origin = env.PUBLIC_BASE_URL ?? identity.origin;
+  // A VM version can disappear at idle stop. Keep the presented bytes under the
+  // tenant's signed-file prefix so the download does not depend on the branch.
+  const vmLink = bytes && origin && env.FILE_SIGNING_SECRET
+    ? await (async () => {
+      const name = safeName(file.path);
+      const key = `files/${encodeURIComponent(identity.tenant)}/presented/${file.blob}/${encodeURIComponent(name)}`;
+      const headers = downloadHeaders(file.contentType, name);
+      const link = await signFile(env, identity.tenant, key, origin);
+      await env.BUCKET.put(key, bytes, {
+        httpMetadata: { contentType: headers["Content-Type"], contentDisposition: headers["Content-Disposition"] },
+      });
+      return link;
+    })()
+    : undefined;
   const added = await storage.transaction(async tx => {
     const outputs = await tx.get<Outputs>(outputKey(identity.requestId)) ?? { files: [], presented: [] };
     if (outputs.presented.some(item => item.callId === identity.callId)) return false;
@@ -39,8 +57,7 @@ export async function presentedFile(
     return true;
   });
   if (!added) return;
-  const origin = env.PUBLIC_BASE_URL ?? identity.origin;
-  const link = origin && env.FILE_SIGNING_SECRET
+  const link = bytes ? vmLink : origin && env.FILE_SIGNING_SECRET
     ? await signRepoLink(await repoContext(env as RepoEnv, identity.tenant, file.repo), origin, { path: file.repoPath ?? path.replace(/^\/+/, ""), version: file.version as string })
     : undefined;
   await emit({

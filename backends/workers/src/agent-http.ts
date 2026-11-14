@@ -779,6 +779,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.id,
           (conf.config.mounts ?? []) as never,
           path,
+          this.vmFiles,
         ))!;
       }
       if (path.startsWith("/files/")) {
@@ -790,6 +791,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.id,
           decodeURIComponent(path.slice(7)),
           conf.config.mounts as never,
+          "turn",
+          this.vmFiles,
         );
       }
       return json({ error: "Unsupported backend operation", code: "NOT_FOUND" }, 404);

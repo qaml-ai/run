@@ -179,3 +179,36 @@ test('recursive copies and moves commit once, and pathless versions select the o
   const grep=await run('grep',{path:'/work/src/a',pattern:'a'});
   assert.match((grep.output[0]as any).text,/a/);
 });
+
+test('version tools read committed history and report a held ref', async t => {
+  const { env, create, write } = fixture(t), ctx = await create({ key: 'agent:a' });
+  const first = await write(ctx, { 'a.txt': { bytes: bytes('first') } });
+  await write(ctx, { 'a.txt': { bytes: bytes('second') } });
+  const vm = new Proxy({}, { get: (_, key) => {
+    if (key !== 'then') assert.fail('version tools must not access the VM filesystem');
+  } });
+  let running = true;
+  const tools = repoTools(env, 't', 'a', async () => [{ repo: ctx.repoId, path: '/workspace', mode: 'rw' }],
+    undefined, undefined, undefined, {}, async () => running ? vm as never : undefined);
+  const run = (name: string, args: any) => tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never);
+  const note = { type: 'text', text: 'showing checkpointed versions; the running VM may have newer changes' };
+  const historyArgs = { path: '/workspace/a.txt' };
+  const history = (await run('history', historyArgs)).output;
+  assert.equal(JSON.parse(history[0].text).versions.length, 2);
+  assert.deepEqual(history[1], note);
+  assert.deepEqual((await run('diff', {})).output, [{ type: 'text', text: 'modified a.txt' }, note]);
+  const held = { code: 'held', message: 'the VM holds this branch; stop it or let it checkpoint first' };
+  await assert.rejects(run('checkpoint', { message: 'held' }), held);
+  await assert.rejects(run('restore', { version: first.version }), held);
+
+  running = false;
+  assert.deepEqual((await run('history', historyArgs)).output, history.slice(0, 1));
+  assert.deepEqual((await run('read', { path: '/workspace/a.txt' })).output, [{ type: 'text', text: 'second' }]);
+  const repo = env.REPOS.getByName('t:' + ctx.repoId);
+  const cas = repo.cas.bind(repo);
+  repo.cas = async () => { throw new Error('repo:409:held:{}'); };
+  await assert.rejects(run('checkpoint', { message: 'raced a lease' }), held);
+  repo.cas = cas;
+  await ctx.repo.acquire({ ref: 'main', holder: 'vm', ttlMs: 10_000 });
+  await assert.rejects(run('restore', { version: first.version }), { ...held, code: 'fenced' });
+});

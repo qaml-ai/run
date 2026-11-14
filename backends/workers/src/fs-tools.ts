@@ -27,7 +27,9 @@ export function compatibleFileTools(tools: ToolRegistration[]): ToolRegistration
         }
         if (encoding === undefined && !("length" in (input as object))) {
           const content = result.output?.find(part => part.type === "text")?.text ?? "";
-          return { ...result, structuredOutput: { path, content } };
+          const metadata = result.output?.[1];
+          const version = metadata?.type === "text" ? JSON.parse(metadata.text).version : undefined;
+          return { ...result, structuredOutput: { path, content, ...(version ? { version } : {}) } };
         }
         const read = valueOf(result) as { data: string; nextOffset?: number };
         const data = encoding === "utf8" ? new TextDecoder().decode(Uint8Array.from(atob(read.data), char => char.charCodeAt(0))) : read.data;

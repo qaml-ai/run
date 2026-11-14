@@ -49,6 +49,7 @@ import { senderExtension } from "./sender-extension.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
+import { VmRouteError } from "./repos/vm-route.ts";
 import { selectAgentTools, wordedFileTools } from "./file-tool-selection.ts";
 import { Env } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
@@ -329,7 +330,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
                 config.tenantId,
                 config.id,
                 async () => (config.config.mounts as never) ?? [],
-                async (file, resolvedPath) => {
+                async (file, resolvedPath, bytes) => {
                   await presentedFile(
                     this.ctx.storage,
                     this.env,
@@ -342,6 +343,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
                     file,
                     resolvedPath,
                     (event) => this.emit(event),
+                    bytes,
                   );
                 },
                 async (file) =>
@@ -352,8 +354,18 @@ export function createHarness(this: AgentRuntime): PiHarness {
                   ),
                 this.fileVersions,
                 { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
+                this.vmFiles,
               )[index];
-              return impl.execute(args as never, api, context);
+              try {
+                return await impl.execute(args as never, api, context);
+              } catch (error) {
+                if (!(error instanceof VmRouteError)) throw error;
+                return {
+                  isError: true,
+                  output: [{ type: "text" as const, text: error.message }],
+                  diagnostics: [{ severity: "error" as const, code: error.code, message: error.message }],
+                };
+              }
             },
           })),
         );
