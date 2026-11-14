@@ -41,7 +41,7 @@ const json = (value: unknown) => Response.json(value, { headers: { 'cache-contro
 const testConfig = (env: MediaBindings) => env.TEST_MODE === '1' ? JSON.parse(env.TEST_MEDIA_TENANTS ?? '{}') : {};
 
 /** Credentials resolve at call time; they never enter agent history or public responses. */
-export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string, invocation?: AgentInvocation) {
+export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string, invocation?: AgentInvocation, checkCredit = true) {
   const { accounts, keyScopes } = services ?? await keyServices(env, invocation);
   // Match src/node.ts's standalone media resolution: an address-only scope is
   // a gateway that needs no key, while an absent entry falls back to the account.
@@ -57,7 +57,7 @@ export async function mediaKey(env: MediaBindings, tenant: string, scope: string
   const resolved = await accounts.providerKey(tenant, provider, reads);
   if (resolved) {
     const platform = chargesPlatform(resolved.source);
-    if (platform) { const limited = await accounts.billing.creditLimit(tenant, reads); if (limited) throw limited; }
+    if (platform && checkCredit) { const limited = await accounts.billing.creditLimit(tenant, reads); if (limited) throw limited; }
     const azure = platform && provider === 'openai' && azureDeployment ? mediaAzure(env) : undefined;
     if (azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform: true };
     return { apiKey: resolved.key, platform };

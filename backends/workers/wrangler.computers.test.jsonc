@@ -17,6 +17,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
+      { "name": "VOICE_CALLS", "class_name": "VoiceCall" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -89,7 +90,8 @@
       "tag": "delete-job-hosts",
       "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
     },
-    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] }
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
+    { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] }
   ],
   "hyperdrive": [
     {

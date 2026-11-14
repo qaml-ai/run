@@ -34,6 +34,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "VOICE_CALLS", "class_name": "VoiceCall" },
       { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       { "name": "CAMELFS_SMOKE", "class_name": "CamelfsSmoke" },
       {
@@ -117,6 +118,7 @@
       "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
     },
     { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
+    { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] },
     { "tag": "camelfs-smoke", "new_sqlite_classes": ["CamelfsSmoke"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
@@ -135,7 +137,6 @@
       }
     }
   ],
-  // The camelFS v0 host (EC2 m8id) through the camel-fs-proto tunnel to its import proxy on 127.0.0.1:8790 (VPC service camel-fs-proto).
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

@@ -73,7 +73,7 @@ export async function withTemporaryWorker({ prefix, entry: entrySource, bindings
         const contentType = response.headers.get("content-type") ?? "unknown";
         const data = contentType.includes("application/json") ? await response.json().catch(() => null) : null;
         const known = new Set(["Not found", "Pilot operator request failed", "Tenant outside bootstrap scope", "Agent outside bootstrap scope", "Bootstrap expired", "Unauthorized",
-          "Pilot migration request failed", "Migration failed", "Database is ahead of this checkout", "L90 request failed", "Refused key"]);
+          "Pilot migration request failed", "Migration failed", "Database is ahead of this checkout"]);
         const category = known.has(data?.error) ? data.error : "unclassified";
         // Only the migration Worker sends these: migration names and SQLSTATE codes.
         const detail = ["migration", "code", "applied", "unknown"].filter(key => data?.[key] != null).map(key => `; ${key}=${JSON.stringify(data[key])}`).join("");

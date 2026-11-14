@@ -200,7 +200,7 @@ test("every Wrangler config migrates WorkflowObject and WorkflowResults before r
     assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "REPOS" || binding.class_name === "RepoDO"), name);
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
-    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), ["workflow-results", "repos", "delete-volumes", "camelfs-usage", ...(name === "wrangler.jsonc" ? [] : ["delete-job-hosts"]), "delete-repo-do", ...(name === "wrangler.pilot.jsonc" ? ["camelfs-smoke"] : [])], name);
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), ["workflow-results", "repos", "delete-volumes", "camelfs-usage", ...(name === "wrangler.jsonc" ? [] : ["delete-job-hosts"]), "delete-repo-do", "voice-calls", ...(name === "wrangler.pilot.jsonc" ? ["camelfs-smoke"] : [])], name);
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
     assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
       { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },
@@ -210,7 +210,8 @@ test("every Wrangler config migrates WorkflowObject and WorkflowResults before r
       { tag: "camelfs-usage", new_sqlite_classes: ["CamelfsUsagePoller"] },
       ...(name === "wrangler.jsonc" ? [] : [{ tag: "delete-job-hosts", deleted_classes: ["JobHost", "JobHostRegistry", "HostJob"] }]),
       { tag: "delete-repo-do", deleted_classes: ["RepoDO"] },
-      // delete-repo-do already ran on the pilot, so classes added later follow it.
+      { tag: "voice-calls", new_sqlite_classes: ["VoiceCall"] },
+      // delete-repo-do already ran on the pilot, so classes added later follow it. The smoke is pilot-only.
       ...(name === "wrangler.pilot.jsonc" ? [{ tag: "camelfs-smoke", new_sqlite_classes: ["CamelfsSmoke"] }] : []),
     ], name);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);

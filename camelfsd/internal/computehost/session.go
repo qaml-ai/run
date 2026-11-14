@@ -197,6 +197,18 @@ func (h *Host) shellRoute(w http.ResponseWriter, r *http.Request) {
 func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 	var q hostwire.ExecRequest
 	op := "exec"
+	// One line per exec request (start or tail): ids, timing and outcome only, never the command, env or output.
+	begin := time.Now()
+	var exitCode, timedOut any
+	var execErr error
+	defer func() {
+		slog.Info("compute_exec", "vm", r.PathValue("id"), "exec", q.ExecID, "op", op, "ms", ms(time.Since(begin)),
+			"exitCode", exitCode, "timedOut", timedOut, "error", execErr)
+	}()
+	fail := func(err error) {
+		execErr = err
+		report(w, err)
+	}
 	var offset int64
 	tail := r.Method == http.MethodGet
 	if tail {
@@ -204,22 +216,22 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		if raw := r.URL.Query().Get("offset"); raw != "" {
 			n, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil || n < 0 {
-				report(w, invalidRequest)
+				fail(invalidRequest)
 				return
 			}
 			offset = n
 		}
 	} else if err := decode(w, r, &q); err != nil {
-		report(w, err)
+		fail(err)
 		return
 	}
 	if q.StdinBlob != nil && (q.Stdin != nil || !q.StdinBlob.Valid()) {
-		report(w, invalidRequest)
+		fail(invalidRequest)
 		return
 	}
 	s, vm, err := h.lookup(r.PathValue("id"))
 	if err != nil {
-		report(w, err)
+		fail(err)
 		return
 	}
 	var token string
@@ -227,7 +239,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		var release func()
 		token, release, err = h.execInput(r.Context(), s, *q.StdinBlob)
 		if err != nil {
-			report(w, err)
+			fail(err)
 			return
 		}
 		defer release()
@@ -251,7 +263,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if err != nil {
-		report(w, err)
+		fail(err)
 		return
 	}
 	if reply["ok"] != true {
@@ -265,7 +277,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		case "":
 			status, code = 502, "guest_error"
 		}
-		report(w, &httpError{status, code, ""})
+		fail(&httpError{status, code, ""})
 		return
 	}
 	handle := func(e vmhost.Reply) bool {
@@ -277,6 +289,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		case "tail_truncated":
 			event, data = "tail_truncated", map[string]any{"firstOffset": e["firstOffset"]}
 		case "exec_exit":
+			exitCode, timedOut = e["code"], e["timedOut"]
 			event, data = "exit", map[string]any{"code": e["code"], "timedOut": e["timedOut"], "ms": e["ms"], "truncated": e["truncated"]}
 		default:
 			slog.Warn("compute_exec_event_unknown", "event", e["event"])
@@ -313,6 +326,9 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ctx.Done():
+			if exitCode == nil {
+				execErr = context.Cause(ctx)
+			}
 			return
 		case <-done:
 			for {
