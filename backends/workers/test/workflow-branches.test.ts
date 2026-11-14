@@ -28,7 +28,7 @@ test('branches from cached versions, and missing versions throw without a branch
   await f.write(ctx,{a:{bytes:new TextEncoder().encode('new')}});
   const fork = await childBranch(f.env,'t',storage as never,{workflow:'wf',key:'cached',attempt:1},repoAt(ctx.repoId),old.version);
   assert.equal((await ctx.stub.resolve(fork.ref)).version,old.version);
-  await assert.rejects(childBranch(f.env,'t',storage as never,{workflow:'wf',key:'missing',attempt:1},repoAt(ctx.repoId),'f'.repeat(40)), /no-ref/);
+  await assert.rejects(childBranch(f.env,'t',storage as never,{workflow:'wf',key:'missing',attempt:1},repoAt(ctx.repoId),'f'.repeat(40)), /no_ref/);
   assert.throws(()=>repoAt({repo:ctx.repoId,ref:'main',version:old.version}),/not both/);
 });
 test('end retains held refs and retries with backoff, then deletes only workflow refs', async t => {

@@ -82,14 +82,14 @@
         "WorkflowObject"
       ]
     },
+    { "tag": "job-hosts", "new_sqlite_classes": ["JobHost", "HostJob", "JobHostRegistry"] },
     {
       "tag": "workflow-results",
       "new_sqlite_classes": [
         "WorkflowResults"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
-    { "tag": "job-hosts", "new_sqlite_classes": ["JobHost", "HostJob", "JobHostRegistry"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
   ],
   "hyperdrive": [
     {
