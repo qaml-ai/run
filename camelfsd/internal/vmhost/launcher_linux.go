@@ -75,6 +75,10 @@ type VM struct {
 	scopeAttempted, tapOwned, jailOwned bool
 }
 
+func (v *VM) Slot() int           { return v.record.Slot }
+func (v *VM) GuestSocket() string { return filepath.Join(v.root, "guest.vsock") }
+func (v *VM) GuestUID() int       { return v.host.uidBase() + v.record.Slot }
+
 func (v *VM) ID() string { return v.record.ID }
 
 func (l *Launcher) Adopt(id string) (*VM, error) {
@@ -138,13 +142,25 @@ func (l *Launcher) Boot(ctx context.Context, id string, shape Shape, boot Boot) 
 }
 
 func (v *VM) Request(ctx context.Context, req any, onLog LogFunc, events ...EventFunc) (Reply, error) {
-	v.mu.Lock()
-	c := v.channel
-	v.mu.Unlock()
-	if c == nil {
-		return nil, errors.New("guest channel is closed")
+	c, err := v.getChannel(ctx)
+	if err != nil {
+		return nil, err
 	}
 	return c.request(ctx, req, onLog, events...)
+}
+
+func (v *VM) getChannel(ctx context.Context) (*channel, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.channel != nil {
+		select {
+		case <-v.channel.closed:
+		default:
+			return v.channel, nil
+		}
+	}
+	_, err := v.reconnect(ctx)
+	return v.channel, err
 }
 
 // Reconnect replaces the current channel and returns the guest's session inventory.
@@ -154,8 +170,13 @@ func (v *VM) Reconnect(ctx context.Context) (Reply, error) {
 	if v.gone || v.root == "" {
 		return nil, errors.New("VM has no guest socket")
 	}
+	return v.reconnect(ctx)
+}
+
+func (v *VM) reconnect(ctx context.Context) (Reply, error) {
 	if v.channel != nil {
-		v.channel.conn.Close()
+		_ = v.channel.conn.Close()
+		v.channel = nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, bootDeadline)
 	defer cancel()
@@ -175,11 +196,15 @@ func (v *VM) Reconnect(ctx context.Context) (Reply, error) {
 	return reply, nil
 }
 
-func (l *Launcher) validate(id string, shape Shape) (int64, error) {
+func (l *Launcher) validate(id string, shape Shape, imagePath ...string) (int64, error) {
 	if !jobID.MatchString(id) {
 		return 0, errors.New("invalid job id")
 	}
-	image, err := os.Stat(l.Image)
+	path := l.Image
+	if len(imagePath) > 0 {
+		path = imagePath[0]
+	}
+	image, err := os.Stat(path)
 	if err != nil {
 		return 0, err
 	}
@@ -233,7 +258,7 @@ func (l *Launcher) jailPath(id string) string {
 	return filepath.Join(l.Work, "jail", id)
 }
 
-func (l *Launcher) reserve(id string, shape Shape) (*VM, error) {
+func (l *Launcher) reserve(id string, shape Shape, imageSHA string) (*VM, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	dir := filepath.Dir(l.recordPath(id))
@@ -276,7 +301,7 @@ func (l *Launcher) reserve(id string, shape Shape) (*VM, error) {
 			}
 			continue
 		}
-		r := VMRecord{id, slot, addr.Tap, l.jailPath(id), scopeName(id), time.Now().UTC(), l.imageSHA, shape}
+		r := VMRecord{id, slot, addr.Tap, l.jailPath(id), scopeName(id), time.Now().UTC(), imageSHA, shape}
 		if err := writeJSON(l.recordPath(id), r, 0600); err != nil {
 			return nil, err
 		}
@@ -313,7 +338,14 @@ func (l *Launcher) readRecord(id string) (VMRecord, error) {
 }
 
 func (l *Launcher) start(ctx context.Context, id string, shape Shape, boot Boot) (*VM, error) {
-	size, err := l.validate(id, shape)
+	if boot.Session && boot.Repo == "" {
+		return nil, errors.New("session requires a branch disk")
+	}
+	path := boot.Image
+	if path == "" {
+		path = l.Image
+	}
+	size, err := l.validate(id, shape, path)
 	if err != nil {
 		return nil, err
 	}
@@ -324,18 +356,25 @@ func (l *Launcher) start(ctx context.Context, id string, shape Shape, boot Boot)
 	if !filepath.IsAbs(fc) || !filepath.IsAbs(l.Jailer) {
 		return nil, errors.New("Firecracker and jailer paths must be absolute")
 	}
-	l.imageOnce.Do(func() { l.imageSHA, l.imageErr = imageSHA(l.Image) })
-	if l.imageErr != nil {
-		return nil, l.imageErr
+	var sha string
+	if boot.Image == "" {
+		l.imageOnce.Do(func() { l.imageSHA, l.imageErr = imageSHA(path) })
+		sha, err = l.imageSHA, l.imageErr
+	} else {
+		// The compute host verified and atomically published this image by SHA.
+		sha = strings.TrimSuffix(filepath.Base(path), ".ext4")
+	}
+	if err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	v, err := l.reserve(id, shape)
+	v, err := l.reserve(id, shape, sha)
 	if err != nil {
 		return nil, err
 	}
-	err = v.prepareAndLaunch(ctx, fc, size, boot)
+	err = v.prepareAndLaunch(ctx, fc, path, size, boot)
 	if err != nil {
 		err = errors.Join(err, v.destroyLocked(context.Background()))
 	}
@@ -357,7 +396,7 @@ func jailRoot(r VMRecord, fc string) string {
 	return filepath.Join(r.Jail, filepath.Base(fc), jailerVMID(r.ID), "root")
 }
 
-func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot Boot) error {
+func (v *VM) prepareAndLaunch(ctx context.Context, fc, imagePath string, size int64, boot Boot) error {
 	l, r := v.host, v.record
 	uid := l.uidBase() + r.Slot
 	v.root = jailRoot(r, fc)
@@ -373,7 +412,7 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	}
 	files := configFiles{kernel: "/kernel", disk: "/root.ext4", vsock: "guest.vsock"}
 	disk := filepath.Join(v.root, files.disk)
-	if err := cloneDisk(ctx, l.Image, disk, size, l.Reflink); err != nil {
+	if err := cloneDisk(ctx, imagePath, disk, size, l.Reflink); err != nil {
 		return err
 	}
 	if err := os.Chown(disk, uid, uid); err != nil {
@@ -390,6 +429,11 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	}
 	if boot.Repo != "" {
 		files.repo = "/repo"
+		if boot.Session {
+			if err := os.Chown(boot.Repo, uid, uid); err != nil {
+				return err
+			}
+		}
 		if err := mountAsset(boot.Repo, filepath.Join(v.root, files.repo), false, uid); err != nil {
 			return err
 		}
@@ -402,7 +446,7 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	if err := writePolicy(l.PolicyDir, addr.GuestIP, l.policy(r.ID, boot.Internet)); err != nil {
 		return err
 	}
-	config := firecrackerConfig(files, addr, r.Shape, l.Build, l.KVM, boot.Internet)
+	config := firecrackerConfig(files, addr, r.Shape, l.Build, l.KVM, boot.Internet, boot.Session)
 	if err := writeJSON(filepath.Join(v.root, "config.json"), config, 0644); err != nil {
 		return err
 	}
@@ -451,4 +495,30 @@ func imageSHA(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Exited reports an exited child or an adopted scope that is no longer present.
+func (v *VM) Exited() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.exited != nil {
+		select {
+		case <-v.exited:
+			return true
+		default:
+			return false
+		}
+	}
+	_, err := os.Stat(filepath.Join("/sys/fs/cgroup/system.slice", v.record.Scope, "cgroup.events"))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// Subscribe returns a stream completion signal for this exec attachment. A
+// replacement attachment or a disconnected guest channel also closes it.
+func (v *VM) Subscribe(ctx context.Context, req any, event EventFunc) (Reply, <-chan struct{}, error) {
+	c, err := v.getChannel(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.exchange(ctx, req, nil, event)
 }
