@@ -52,7 +52,7 @@ func TestJobAddress(t *testing.T) {
 }
 
 func TestBaseRules(t *testing.T) {
-	want, err := os.ReadFile("../../../infra/job-hosts/image/files/camel-host.nft")
+	want, err := os.ReadFile("../../../infra/job-hosts/kvm/files/camel-host.nft")
 	if err != nil {
 		t.Fatal(err)
 	}

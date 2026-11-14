@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
 import { chargedSpan, DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostSessionCost, hostShare, parseHostInstance, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
-import { hostRoles, hostShape } from "../src/jobs/host-pricing.ts";
+import { hostShape } from "../src/jobs/host-pricing.ts";
 import { ComputerMeter, CONTAINER_RATES, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 
 const close = (a: number, b: number, what: string) => assert.ok(Math.abs(a - b) <= Math.abs(b) * 1e-9, `${what}: ${a} vs ${b}`);
@@ -29,13 +28,6 @@ test("about what a job costs at the defaults", () => {
   assert.ok(2 * CONTAINER_RATES.vcpuSecond * 3600 + 8 * CONTAINER_RATES.memoryGiBSecond * 3600 < hour({ vcpus: 2, memoryMiB: 8192 }));
 });
 
-test("the pools' sandbox memory is what the image reserves (versions.env)", () => {
-  const pins = readFileSync(new URL("../../../infra/job-hosts/image/versions.env", import.meta.url), "utf8");
-  const gib = (name: string) => Number(pins.split("\n").find(line => line.startsWith(`NE_MEMPOOL_${name}=`))?.split("=")[1]?.replace(/G$/, ""));
-  assert.equal(gib("TEST"), HOST_POOL_PRICES.test.memoryGiB);
-  assert.equal(gib("BUILD"), HOST_POOL_PRICES.build.memoryGiB);
-});
-
 test("VM shape uses resource overrides and falls back to the instance defaults", () => {
   const spec = (limits?: { cpus?: number; memoryMiB?: number }, instance: "standard-1" | "standard-3" = "standard-1") => ({ limits, instance });
   assert.deepEqual(hostShape(spec()), { vcpus: 1, memoryMiB: 4096, diskMiB: Math.ceil(8e9 / 2 ** 20) }, "standard-1");
@@ -44,11 +36,6 @@ test("VM shape uses resource overrides and falls back to the instance defaults",
   assert.equal(hostPool(hostShape(spec({ cpus: 4, memoryMiB: 12288 }))), "test");
   assert.equal(hostPool(hostShape(spec({ cpus: 2, memoryMiB: 32768 }))), "build");
   assert.equal(hostPool(hostShape(spec({ cpus: 16 }))), "build");
-});
-
-test("JOB_HOST_ROLE_ARNS: pool=arn entries; anything else fails the whole setting closed", () => {
-  assert.deepEqual(hostRoles("build=arn:aws:iam::1:role/b, test=arn:aws:iam::1:role/t"), [{ pool: "build", arn: "arn:aws:iam::1:role/b" }, { pool: "test", arn: "arn:aws:iam::1:role/t" }]);
-  for (const bad of [undefined, "", "arn:aws:iam::1:role/t", "gpu=arn:aws:iam::1:role/g", "test=", "test=arn:aws:iam::1:role/t,oops"]) assert.equal(hostRoles(bad), undefined, String(bad));
 });
 
 test("the markup and each pool's host price are settings; a setting that does not parse refuses, never charges nothing", () => {

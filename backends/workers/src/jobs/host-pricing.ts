@@ -98,18 +98,6 @@ export function hostPool(shape: HostShape): HostPool {
 }
 
 /**
- * JOB_HOST_ROLE_ARNS: comma-separated `pool=arn` entries, one role per pool (infra/job-hosts/terraform), so the attested
- * role says which pool a host serves. An entry without a known pool fails the whole setting closed (undefined).
- */
-export function hostRoles(value: string | undefined): { pool: HostPool; arn: string }[] | undefined {
-  const entries = (value ?? "").split(",").map(entry => entry.trim()).filter(Boolean).map(entry => {
-    const at = entry.indexOf("="), pool = entry.slice(0, at).trim(), arn = entry.slice(at + 1).trim();
-    return at > 0 && HOST_POOLS.includes(pool as HostPool) && arn.startsWith("arn:") ? { pool: pool as HostPool, arn } : undefined;
-  });
-  return entries.length && entries.every(Boolean) ? entries as { pool: HostPool; arn: string }[] : undefined;
-}
-
-/**
  * A job's VM on a host: its limits where it gives them, else its instance type's resources (what the same job gets in a
  * Cloudflare container), in whole vCPUs.
  */

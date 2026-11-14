@@ -1,15 +1,9 @@
-# Runtime source revision; use a revision containing the nested-KVM launcher flags.
-RUN_REF=main
 # Daemon source revision: choose a ref containing the camelfsd egress subcommand.
 # A branch rebuilds the binary and restarts both camelfsd services when it moves.
 CAMELFSD_REF=main
-# Runtime enrollment endpoint, e.g. https://run-pilot.camelai.dev (required).
-RUNTIME_URL=
-# aws uses the instance role; test needs JOB_HOST_TEST_SECRET in /etc/camel/jobhost-test.env.
-ATTESTOR=aws
-# Scheduling pool for the TypeScript jobhost and the Go compute host: test or build.
+# Scheduling pool of the compute host: test or build.
 POOL=test
-# Maximum concurrent jobs or sessions per host process.
+# Maximum concurrent sessions.
 SLOTS=1
 # Advertised total host CPU capacity, not a per-guest allocation.
 JOB_VCPUS=2
@@ -27,8 +21,6 @@ CAMELFSD_VIRTUAL_SIZE=68719476736
 AWS_REGION=us-west-2
 # Empty discovers instance store by model; an override still requires safety checks.
 NVME_DEVICE=
-# Optional artifact location; defaults to CAMELFSD_STORE.
-GUEST_IMAGE_S3_PREFIX=
 
 # Set both endpoints to enable the Go compute host. Leave both empty for storage-only mode.
 TIER_ENROLL_URL=
