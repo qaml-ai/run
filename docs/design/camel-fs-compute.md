@@ -82,7 +82,7 @@ is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md 
 | `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. The VM also stops by itself after `idleStopS` (≈ 10 s by default) with no `exec` in flight, with a checkpoint first. Warm sleep (a memory snapshot, §6 v2) is a later addition behind the same API, as a `sleeping` state |
 | events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, version?, checkpointError? }` (on the notify webhook with `type: "vm.ended"`, camel-fs-files.md §9.11), `usage.vm` (§4) |
 
-VM status includes `reason` when recorded, such as `no_host_fits` or `no_capacity` with `code: "start_failed"`.
+`reason` is set on some ended VMs. With `code: "start_failed"` it is one of `no_host_fits`, `no_capacity`, `ref_held`, `ref_unavailable`, `lineage_deleted` or `ref_deleted`.
 
 **What the session-only shape removes from this API:**
 - job mode (`mode`, `job: { command, timeoutS, env, outputs, commit }`);
@@ -152,6 +152,7 @@ Placement is warm- and feature-aware, from the `warm` table camel-fs.md §1.2 al
 **A host's `bootEpoch` follows its kernel boot.** The host sends `/proc/sys/kernel/random/boot_id` as
 `Register.BootID`, and the tier answers the same epoch for the same `BootID`.
 - So VMs and their leases survive a daemon restart.
+- A re-register on the same boot updates the host's shape and slots by delta. A shrink below the slots VMs already hold is refused with `409 capacity_in_use`.
 - A new kernel boot bumps the epoch, which fences every older holder and ends that boot's VMs `host_lost`.
 
 Hosts reach the tier in-VPC over mutual TLS (camel-fs-files.md §9.12). They enroll once with their STS
