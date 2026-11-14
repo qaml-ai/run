@@ -53,14 +53,16 @@ type Manager struct {
 	pins            map[string]map[string]bool
 	PrehydrateBytes atomic.Int64
 	Config
-	Store    store.Store
-	Cache    *cache.Cache
-	Refs     refs.Repository
-	deviceMu sync.Mutex // Serializes free NBD selection and attachment.
-	mu       sync.Mutex
-	mounts   map[string]*Mount
-	stop     chan struct{}
-	sweepMu  sync.Mutex
+	Store        store.Store
+	Cache        *cache.Cache
+	Refs         refs.Repository
+	deviceMu     sync.Mutex // Serializes free NBD selection and attachment.
+	mu           sync.Mutex
+	mounts       map[string]*Mount
+	stop         chan struct{}
+	sweepMu      sync.Mutex
+	baselineSlot chan struct{}
+	baselineWork sync.WaitGroup
 }
 type Request struct {
 	// TEMPORARY: removed with jobhost phase 2
@@ -104,6 +106,9 @@ type Mount struct {
 	preparedSnapshot                           string
 	preparedRanges                             []chunk.Range
 	pendingRanges                              []chunk.Range
+	baselineCtx                                context.Context
+	baselineCancel                             context.CancelFunc
+	needsBaseline                              bool
 }
 
 // Hydration defaults on for JSON callers. Only an absent JSON fence enables
@@ -189,7 +194,7 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
-	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{})}
+	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
 	if c.RecoverSessions {
 		if err := m.recoverSessions(entries); err != nil {
 			return nil, err
@@ -367,6 +372,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e != nil {
 		return nil, e
 	}
+	v.needsBaseline = q.Session && !(v.Warm && v.Root != "" && r.Tree == v.Tree)
 	if v.Fence == nil {
 		if v.DM != "" {
 			_, e = run(ctx, "blockdev", "--setro", v.Image)
@@ -385,6 +391,9 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		return nil, e
 	}
 	m.mu.Lock()
+	if v.Session {
+		v.baselineCtx, v.baselineCancel = context.WithCancel(context.Background())
+	}
 	m.mounts[q.JobID] = v
 	m.mu.Unlock()
 	if v.DM != "" {
@@ -606,6 +615,7 @@ func (m *Manager) cleanup(v *Mount) error {
 	return nil
 }
 func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
+	m.CancelBaseline(id)
 	v := m.lookup(id)
 	if v == nil {
 		return false, os.ErrNotExist
@@ -636,6 +646,11 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 		v.releaseOrigin()
 		v.releaseOrigin = nil
 	}
+	if v.Session {
+		if e := m.recoverBaseline(v); e != nil {
+			return false, e
+		}
+	}
 	if e := os.RemoveAll(filepath.Dir(v.Dest)); e != nil {
 		return false, e
 	}
@@ -661,6 +676,7 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	for _, id := range ids {
 		if v := m.lookup(id); v != nil && v.Session {
+			m.CancelBaseline(id)
 			v.mu.Lock()
 			if v.streams != nil {
 				v.streams.close()
@@ -672,6 +688,7 @@ func (m *Manager) Close() {
 			log.Printf("op=cleanup jobId=%s error=%v", id, e)
 		}
 	}
+	m.baselineWork.Wait()
 }
 
 func (m *Manager) lookup(id string) *Mount { m.mu.Lock(); defer m.mu.Unlock(); return m.mounts[id] }

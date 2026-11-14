@@ -93,7 +93,7 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 	}()
 	// Legacy jobhost arms port 5200 first and expects the connect wait to
 	// stay outside freezeMs. Session checkpoints walk before opening it.
-	if req.LegacyCheckpoint {
+	if req.LegacyCheckpoint || req.Op == "camelfs_baseline" {
 		if err = connect(); err != nil {
 			return nil, err
 		}
@@ -124,6 +124,10 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 			return nil, err
 		}
 	}
+	if req.Op == "camelfs_baseline" {
+		trailerSent = true
+		return message{}, g.baseline(c, req.JobID)
+	}
 	walkStart := time.Now()
 	ops, bytes, skipped, err := g.diff(ctx)
 	if err != nil {
@@ -131,7 +135,20 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 	}
 	walkMs := elapsed(walkStart)
 	if len(ops) == 0 && !req.LegacyCheckpoint {
-		return message{"changed": false, "files": 0, "bytes": 0, "walkMs": walkMs}, nil
+		result := message{"changed": false, "files": 0, "bytes": 0, "walkMs": walkMs}
+		if req.BaselineIfUnchanged {
+			if e := connect(); e != nil {
+				result["baselineError"] = errorText(e)
+			} else {
+				trailerSent = true
+				if e := g.baseline(c, req.JobID); e != nil {
+					result["baselineError"] = errorText(e)
+				} else {
+					result["baselineCaptured"] = true
+				}
+			}
+		}
+		return result, nil
 	}
 	if !req.LegacyCheckpoint {
 		if err = connect(); err != nil {
@@ -160,18 +177,8 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 	}
 	trailerSent = true
 	streamMs := elapsed(streamStart)
-	var ack struct {
-		Ack   bool
-		Error *string
-	}
-	if err = wire.JSON(c, &ack); err != nil {
-		return nil, readError(err, "unexpected EOF awaiting checkpoint ack")
-	}
-	if !ack.Ack {
-		if ack.Error != nil {
-			return nil, errors.New(*ack.Error)
-		}
-		return nil, errors.New("invalid checkpoint ack")
+	if err = checkpointAck(c); err != nil {
+		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
 		return nil, err
@@ -197,6 +204,30 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 		result["changed"] = true
 	}
 	return result, nil
+}
+
+func (g *guest) baseline(c transport, job string) error {
+	if err := wire.Send(c, wire.Header{V: 1, Kind: "baseline", JobID: job, BaseTree: g.index.Tree}); err != nil {
+		return err
+	}
+	return checkpointAck(c)
+}
+
+func checkpointAck(c transport) error {
+	var ack struct {
+		Ack   bool
+		Error *string
+	}
+	if err := wire.JSON(c, &ack); err != nil {
+		return readError(err, "unexpected EOF awaiting checkpoint ack")
+	}
+	if !ack.Ack {
+		if ack.Error != nil {
+			return errors.New(*ack.Error)
+		}
+		return errors.New("invalid checkpoint ack")
+	}
+	return nil
 }
 
 func (g *guest) diff(ctx context.Context) ([]operation, int64, int, error) {

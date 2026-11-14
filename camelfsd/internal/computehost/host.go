@@ -218,10 +218,7 @@ func (h *Host) Recover(ctx context.Context) error {
 				var inventory vmhost.Reply
 				inventory, err = vm.Reconnect(ctx)
 				if err == nil && r.StartedAt == nil && inventory["tree"] == r.Spec.Tree && r.Stop == nil {
-					now := time.Now().UnixMilli()
-					r.StartedAt = &now
-					r.Slot = vm.Slot()
-					err = h.save(s, r)
+					err = h.startAdopted(ctx, s, r, vm)
 				}
 				if err == nil && r.Pending == nil && inventory["checkpointPending"] == true {
 					err = h.checkpointed(ctx, vm, "", true)
@@ -230,10 +227,7 @@ func (h *Host) Recover(ctx context.Context) error {
 			if err == nil && r.StartedAt == nil && r.Stop == nil {
 				_, err = guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": id, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
 				if err == nil {
-					now := time.Now().UnixMilli()
-					r.StartedAt = &now
-					r.Slot = vm.Slot()
-					err = h.save(s, r)
+					err = h.startAdopted(ctx, s, r, vm)
 				}
 			}
 		}
@@ -458,10 +452,16 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 			return err
 		}
 		_, err = guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": q.ID, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
-		firstExec = time.Since(start)
 		if err != nil {
 			return err
 		}
+		publish, discard := h.captureBaseline(ctx, q.ID, vm)
+		defer func() {
+			if discard != nil {
+				discard()
+			}
+		}()
+		firstExec = time.Since(start)
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		r = s.row
@@ -471,9 +471,14 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 			return err
 		}
 		s.vm = vm
+		if publish != nil {
+			discard = nil
+			h.work.Add(1)
+			go func() { defer h.work.Done(); publish() }()
+		}
 		return nil
 	}()
-	// first_exec spans Launcher.Boot through the first camelfs_apply round trip; disk..vsock are its launcher phases.
+	// first_exec includes boot, apply and the baseline handshake; disk..vsock are its launcher phases.
 	slog.Info("compute_boot", "vm", q.ID, "image", ms(imageTime), "mount", ms(mountTime), "first_exec", ms(firstExec),
 		"disk", ms(phases.Disk), "assets", ms(phases.Assets), "tap", ms(phases.Tap), "policy", ms(phases.Policy),
 		"scope", ms(phases.Scope), "vsock", ms(phases.Vsock), "error", err)
@@ -496,7 +501,13 @@ func (h *Host) markStop(s *session, checkpoint bool, code string) error {
 	}
 	r.Stop = &hostwire.Stop{Checkpoint: checkpoint}
 	r.EndCode = code
-	return h.save(s, r)
+	if err := h.save(s, r); err != nil {
+		return err
+	}
+	if h.Mounts != nil {
+		h.Mounts.CancelBaseline(r.Spec.ID)
+	}
+	return nil
 }
 
 func (h *Host) queueStopLocked(s *session, checkpoint bool, code string) error {
@@ -564,7 +575,32 @@ func (h *Host) stop(s *session) {
 	}
 }
 
+func (h *Host) startAdopted(ctx context.Context, s *session, r record, vm *vmhost.VM) error {
+	publish, discard := h.captureBaseline(ctx, r.Spec.ID, vm)
+	now := time.Now().UnixMilli()
+	r.StartedAt, r.Slot = &now, vm.Slot()
+	if err := h.save(s, r); err != nil {
+		if discard != nil {
+			discard()
+		}
+		return err
+	}
+	if publish != nil {
+		h.work.Add(1)
+		go func() { defer h.work.Done(); publish() }()
+	}
+	return nil
+}
+
+func (h *Host) captureBaseline(ctx context.Context, id string, vm guestRequester) (func(), func()) {
+	return h.Mounts.SessionBaseline(ctx, id, func(ctx context.Context) error {
+		_, err := guestRequest(ctx, vm, map[string]any{"op": "camelfs_baseline", "jobId": id, "timeoutMs": 500})
+		return err
+	})
+}
+
 func (h *Host) cleanup(ctx context.Context, id string) error {
+	h.Mounts.CancelBaseline(id)
 	if err := h.Launcher.Destroy(ctx, id); err != nil {
 		return err
 	}
