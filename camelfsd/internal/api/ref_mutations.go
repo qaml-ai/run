@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -88,7 +91,7 @@ func refTimingFrom(ctx context.Context) *refTiming {
 	return &refTiming{}
 }
 
-func (s *StorageServer) moveHead(ctx context.Context, head refstore.Ref, kind, version, tree string, parents []string, q *quotaRequest) (int64, error) {
+func (s *StorageServer) moveHead(ctx context.Context, head refstore.Ref, kind, version, tree string, parents []string, q *quotaRequest, snapshot *refstore.Usage) (int64, error) {
 	var bytes int64
 	timing := refTimingFrom(ctx)
 	start := time.Now()
@@ -96,8 +99,17 @@ func (s *StorageServer) moveHead(ctx context.Context, head refstore.Ref, kind, v
 	_, err := s.refs.Cas(ctx, head.Lineage, head.Name, refstore.Move{
 		Kind: kind, Version: version, Tree: tree, Parents: parents, Expect: &head.Version, RequireExisting: true, APIWrite: true, Known: &head,
 		Prepare: func(refstore.Ref) error {
+			var usage refstore.Usage
 			var err error
-			bytes, err = s.checkQuota(ctx, head.Lineage, q)
+			if snapshot != nil {
+				usage = *snapshot
+			} else {
+				usage, err = s.refs.ReadUsage(ctx, head.Lineage)
+				if err != nil {
+					return err
+				}
+			}
+			bytes, err = s.checkQuota(ctx, head.Lineage, q, usage)
 			return err
 		},
 	})
@@ -211,7 +223,6 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 			return err
 		}
 		batch := repo.BeginPublication()
-		batch.OnBlobUpload(func(ctx context.Context, blob objects.Blob) error { return s.countUpload(ctx, l, blob) })
 		edits := append([]change(nil), changes...)
 		for i, raw := range inline {
 			if raw != nil {
@@ -247,7 +258,8 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		}
 		timing.build += time.Since(built)
 		var flushed objects.FlushTiming
-		if err := batch.FlushTimed(ctx, &flushed); err != nil {
+		usage, err := s.flushRefWrite(ctx, l, batch, &flushed)
+		if err != nil {
 			return err
 		}
 		timing.objects.Put += flushed.Put
@@ -268,7 +280,7 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		if err != nil {
 			return err
 		}
-		bytes, err := s.moveHead(ctx, head, "commit", version, tree, parents, q.Quota)
+		bytes, err := s.moveHead(ctx, head, "commit", version, tree, parents, q.Quota, &usage)
 		var failure *refstore.Error
 		if attempt == 0 && q.Expect == nil && errors.As(err, &failure) && failure.Code == "stale" {
 			refTimingFrom(ctx).retries++
@@ -282,6 +294,43 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		return nil
 	}
 	panic("unreachable write retry")
+}
+
+func (s *StorageServer) flushRefWrite(ctx context.Context, lineage string, batch *objects.Repository, flushed *objects.FlushTiming) (refstore.Usage, error) {
+	var usage refstore.Usage
+	var usageErr error
+	usageDone := make(chan struct{})
+	go func() {
+		defer close(usageDone)
+		usage, usageErr = s.refs.ReadUsage(ctx, lineage)
+	}()
+
+	var createdBytes atomic.Int64
+	batch.OnBlobUpload(func(ctx context.Context, blob objects.Blob) error {
+		<-usageDone
+		// Account for successful uploads even if the usage read failed.
+		if err := s.countUpload(ctx, lineage, blob); err != nil {
+			return err
+		}
+		createdBytes.Add(writtenBytes(blob))
+		return nil
+	})
+	err := batch.FlushTimed(ctx, flushed)
+	<-usageDone
+	if err != nil {
+		return refstore.Usage{}, err
+	}
+	if usageErr != nil {
+		return refstore.Usage{}, usageErr
+	}
+	// The read precedes every addition for this attempt. Fold those bytes
+	// into the snapshot exactly once, after their durable accounting.
+	created := createdBytes.Load()
+	if usage.WrittenSince > math.MaxInt64-created {
+		return refstore.Usage{}, fmt.Errorf("lineage usage overflows int64")
+	}
+	usage.WrittenSince += created
+	return usage, nil
 }
 
 func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name string, repo *objects.Repository) error {
@@ -314,7 +363,7 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 			if err != nil {
 				return err
 			}
-			bytes, err := s.moveHead(ctx, head, "move", q.Theirs, theirs.tree, theirs.parents, q.Quota)
+			bytes, err := s.moveHead(ctx, head, "move", q.Theirs, theirs.tree, theirs.parents, q.Quota, nil)
 			if err != nil {
 				return err
 			}
@@ -354,7 +403,7 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 		return err
 	}
 	refTimingFrom(ctx).objects = flushed
-	bytes, err := s.moveHead(ctx, head, "commit", version, result.Tree, parents, q.Quota)
+	bytes, err := s.moveHead(ctx, head, "commit", version, result.Tree, parents, q.Quota, nil)
 	if err != nil {
 		return err
 	}
@@ -393,7 +442,7 @@ func (s *StorageServer) refRestore(w http.ResponseWriter, r *http.Request, l, na
 	if err != nil {
 		return err
 	}
-	bytes, err := s.moveHead(ctx, head, "commit", version, target.tree, parents, q.Quota)
+	bytes, err := s.moveHead(ctx, head, "commit", version, target.tree, parents, q.Quota, nil)
 	if err != nil {
 		return err
 	}

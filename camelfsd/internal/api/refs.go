@@ -376,7 +376,11 @@ func (s *StorageServer) casRef(ctx context.Context, l, name, commitID, expect, r
 			if err != nil {
 				return err
 			}
-			bytes, err = s.checkQuota(ctx, l, quota)
+			usage, err := s.refs.ReadUsage(ctx, l)
+			if err != nil {
+				return err
+			}
+			bytes, err = s.checkQuota(ctx, l, quota, usage)
 			return err
 		}}
 	if _, err := s.refs.Cas(ctx, l, name, move); err != nil {

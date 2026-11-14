@@ -549,6 +549,46 @@ func TestRefMutationRoutes(t *testing.T) {
 		t.Fatalf("uncommitted upload must count: %+v %v", usage, err)
 	}
 
+	create("quota-edge", baseID)
+
+	// Each new upload tips the post-upload total to the requested boundary.
+	for _, tc := range []struct {
+		name    string
+		margin  int64
+		status  int
+		code    string
+		enqueue bool
+	}{
+		{"below-mark", 11, 201, "", false},
+		{"at-mark", 10, 201, "", true},
+		{"above-mark", 9, 201, "", true},
+		{"below-limit", 1, 201, "", true},
+		{"at-limit", 0, 201, "", true},
+		{"above-limit", -1, 507, "storage_limit", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := client.DeleteItem(t.Context(), &dynamodb.DeleteItemInput{TableName: aws.String(marks), Key: lineageKey(l)}); err != nil {
+				t.Fatal(err)
+			}
+			usage, err := s.refs.ReadUsage(t.Context(), l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const limit = 100
+			text := tc.name
+			wantBytes := usage.MarkedBytes + usage.WrittenSince + int64(len(text))
+			reply := write("quota-edge", []map[string]any{{"path": "boundary", "text": text}},
+				map[string]any{"quota": map[string]int64{"limitBytes": limit, "otherBytes": limit - tc.margin - wantBytes}}, tc.status, tc.code)
+			if tc.status == 201 {
+				check(reply["bytes"], float64(wantBytes))
+			}
+			mark, err := client.GetItem(t.Context(), &dynamodb.GetItemInput{TableName: aws.String(marks), Key: lineageKey(l), ConsistentRead: aws.Bool(true)})
+			if err != nil || (mark.Item["lineage"] != nil) != tc.enqueue {
+				t.Fatalf("mark = %v, err = %v, want enqueue = %v", mark, err, tc.enqueue)
+			}
+		})
+	}
+
 	// Change the head after CAS validation, before the DynamoDB condition runs.
 	create("race", baseID)
 	create("other", baseID)
