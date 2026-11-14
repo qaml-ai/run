@@ -34,7 +34,7 @@ function glob(pattern: string): RegExp {
 export function fakeCamelfsd(token: string) {
   const blobs = new Map<string, Uint8Array>(), trees = new Map<string, Tree>(), commits = new Map<string, Uint8Array>();
   const lineages = new Map<string, { blobs: Set<string>; trees: Set<string>; commits: Set<string> }>();
-  const writes = new Map<string, { input: string; result: CommitResult }>();
+  const writes = new Map<string, { result: CommitResult }>();
   const calls: string[] = [];
   const scope = (l: string) => {
     if (!lineages.has(l)) lineages.set(l, { blobs: new Set(), trees: new Set(), commits: new Set() });
@@ -207,17 +207,14 @@ export function fakeCamelfsd(token: string) {
     }
     if (request.method === "POST" && route === "commits") {
       const input = await q(["parents", "baseTree", "changes", "author", "message", "trailers", "time"], ["parents", "changes", "author", "message", "trailers", "time"]);
+      // As the daemon (storage.go): a remembered Idempotency-Key replays its first answer whatever this body says.
+      const key = request.headers.get("Idempotency-Key"), cacheKey = `${l}\0${key}`;
+      if (key && writes.has(cacheKey)) return json(writes.get(cacheKey)!.result, 201);
       const parents: string[] = input.parents;
       if (!Number.isSafeInteger(input.time) || !Array.isArray(parents) || parents.length > 2 || parents.some(p => !hash(p)) || !Array.isArray(input.changes) ||
         typeof input.author !== "string" || !input.author || /[\r\n\0<>]/.test(input.author) || typeof input.message !== "string" ||
         !input.trailers || typeof input.trailers !== "object" || Array.isArray(input.trailers) || Object.entries(input.trailers).some(([k, v]) => !k || /[\r\n:]/.test(k) || typeof v !== "string" || /[\r\n]/.test(v))) bad();
       if (input.changes.length > 10000) bad("too_large", 413);
-      const key = request.headers.get("Idempotency-Key"), fingerprint = JSON.stringify(input), cacheKey = `${l}\0${key}`;
-      if (key && writes.has(cacheKey)) {
-        const previous = writes.get(cacheKey)!;
-        if (previous.input !== fingerprint) bad();
-        return json(previous.result, 201);
-      }
       const parentInfo = parents.map(p => info(l, p, true));
       const baseId = input.baseTree ?? parentInfo[0]?.tree ?? EMPTY_TREE;
       const base = tree(l, baseId, true), files = new Map(base.files);
@@ -235,7 +232,7 @@ export function fakeCamelfsd(token: string) {
       commits.set(object.id, object.bytes); own.commits.add(object.id);
       const result = { tree: id, commit: object.id, changed: changes(base, trees.get(id)!).length,
         bytes: named, parents, time: input.time };
-      if (key) writes.set(cacheKey, { input: fingerprint, result });
+      if (key) writes.set(cacheKey, { result });
       return json(result, 201);
     }
     if (request.method === "GET" && (route === "merge-base" || (route.startsWith("commits/") && route.endsWith("/is-ancestor")))) {
