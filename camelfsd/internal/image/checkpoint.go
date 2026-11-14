@@ -132,7 +132,7 @@ func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree stri
 			suspended = false
 		}
 	}
-	r, e = m.uploadSnapshot(ctx, v, r, snap, tree, ranges, &out)
+	r, e = m.uploadSnapshot(ctx, v.Request, r, snap, tree, ranges, &out)
 	if e != nil {
 		return out, e
 	}
@@ -195,7 +195,7 @@ func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree stri
 }
 
 // uploadSnapshot records immutable chunks and the root shared by checkpoints and baselines.
-func (m *Manager) uploadSnapshot(ctx context.Context, v *Mount, r root.Root, snap, tree string, ranges []chunk.Range, out *Checkpoint) (root.Root, error) {
+func (m *Manager) uploadSnapshot(ctx context.Context, v Request, r root.Root, snap, tree string, ranges []chunk.Range, out *Checkpoint) (root.Root, error) {
 	sf, e := os.Open(snap)
 	if e != nil {
 		return r, e

@@ -160,6 +160,9 @@ func (h *Host) save(s *session, r record) error {
 
 func (h *Host) Close() {
 	h.cancel()
+	if h.Mounts != nil {
+		h.Mounts.StopBaselines()
+	}
 	h.mu.Lock()
 	h.mu.Unlock()
 	h.work.Wait()
@@ -476,8 +479,7 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 		s.vm = vm
 		if publish != nil {
 			discard = nil
-			h.work.Add(1)
-			go func() { defer h.work.Done(); publish() }()
+			go publish()
 		}
 		return nil
 	}()
@@ -504,13 +506,7 @@ func (h *Host) markStop(s *session, checkpoint bool, code string) error {
 	}
 	r.Stop = &hostwire.Stop{Checkpoint: checkpoint}
 	r.EndCode = code
-	if err := h.save(s, r); err != nil {
-		return err
-	}
-	if h.Mounts != nil {
-		h.Mounts.CancelBaseline(r.Spec.ID)
-	}
-	return nil
+	return h.save(s, r)
 }
 
 func (h *Host) queueStopLocked(s *session, checkpoint bool, code string) error {
@@ -589,8 +585,7 @@ func (h *Host) startAdopted(ctx context.Context, s *session, r record, vm *vmhos
 		return err
 	}
 	if publish != nil {
-		h.work.Add(1)
-		go func() { defer h.work.Done(); publish() }()
+		go publish()
 	}
 	return nil
 }
@@ -603,7 +598,6 @@ func (h *Host) captureBaseline(ctx context.Context, id string, vm guestRequester
 }
 
 func (h *Host) cleanup(ctx context.Context, id string) error {
-	h.Mounts.CancelBaseline(id)
 	if err := h.Launcher.Destroy(ctx, id); err != nil {
 		return err
 	}

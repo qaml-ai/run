@@ -15,6 +15,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -48,21 +49,25 @@ type Config struct {
 	VirtualSize             int64
 	MaxFiles                int
 	MaxBytes, MaxPathsBytes int64
+	BaselineDiskMax         int64
 }
 type Manager struct {
 	pins            map[string]map[string]bool
 	PrehydrateBytes atomic.Int64
 	Config
-	Store        store.Store
-	Cache        *cache.Cache
-	Refs         refs.Repository
-	deviceMu     sync.Mutex // Serializes free NBD selection and attachment.
-	mu           sync.Mutex
-	mounts       map[string]*Mount
-	stop         chan struct{}
-	sweepMu      sync.Mutex
-	baselineSlot chan struct{}
-	baselineWork sync.WaitGroup
+	Store          store.Store
+	Cache          *cache.Cache
+	Refs           refs.Repository
+	deviceMu       sync.Mutex // Serializes free NBD selection and attachment.
+	mu             sync.Mutex
+	mounts         map[string]*Mount
+	stop           chan struct{}
+	sweepMu        sync.Mutex
+	baselineSlot   chan struct{}
+	baselineWork   sync.WaitGroup
+	baselineCtx    context.Context
+	baselineCancel context.CancelFunc
+	baselineBytes  int64 // Reserved logical bytes, guarded by mu.
 }
 type Request struct {
 	// TEMPORARY: removed with jobhost phase 2
@@ -106,8 +111,6 @@ type Mount struct {
 	preparedSnapshot                           string
 	preparedRanges                             []chunk.Range
 	pendingRanges                              []chunk.Range
-	baselineCtx                                context.Context
-	baselineCancel                             context.CancelFunc
 	needsBaseline                              bool
 }
 
@@ -188,6 +191,12 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e := blank(c); e != nil {
 		return nil, e
 	}
+	if c.BaselineDiskMax < 0 {
+		return nil, apierr.Invalid("invalid baseline disk cap")
+	}
+	if c.BaselineDiskMax == 0 {
+		c.BaselineDiskMax = 2 * min(c.VirtualSize, math.MaxInt64/2)
+	}
 	if c.CowMax < 0 || c.CowMax%512 != 0 {
 		return nil, apierr.Invalid("invalid cow-max")
 	}
@@ -195,11 +204,15 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
 	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
+	if err := m.recoverBaselines(); err != nil {
+		return nil, err
+	}
 	if c.RecoverSessions {
 		if err := m.recoverSessions(entries); err != nil {
 			return nil, err
 		}
 	}
+	m.baselineCtx, m.baselineCancel = context.WithCancel(context.Background())
 	go m.maintain()
 	return m, nil
 }
@@ -372,7 +385,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e != nil {
 		return nil, e
 	}
-	v.needsBaseline = q.Session && !(v.Warm && v.Root != "" && r.Tree == v.Tree)
+	v.needsBaseline = q.Session && r.Tree != v.Tree
 	if v.Fence == nil {
 		if v.DM != "" {
 			_, e = run(ctx, "blockdev", "--setro", v.Image)
@@ -391,9 +404,6 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		return nil, e
 	}
 	m.mu.Lock()
-	if v.Session {
-		v.baselineCtx, v.baselineCancel = context.WithCancel(context.Background())
-	}
 	m.mounts[q.JobID] = v
 	m.mu.Unlock()
 	if v.DM != "" {
@@ -615,7 +625,6 @@ func (m *Manager) cleanup(v *Mount) error {
 	return nil
 }
 func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
-	m.CancelBaseline(id)
 	v := m.lookup(id)
 	if v == nil {
 		return false, os.ErrNotExist
@@ -668,6 +677,7 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 func (m *Manager) Close() {
 	defer m.Cache.Close()
 	close(m.stop)
+	m.StopBaselines()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {
@@ -676,7 +686,6 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	for _, id := range ids {
 		if v := m.lookup(id); v != nil && v.Session {
-			m.CancelBaseline(id)
 			v.mu.Lock()
 			if v.streams != nil {
 				v.streams.close()

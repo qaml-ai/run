@@ -145,8 +145,14 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 	for _, o := range ops {
 		a.Bytes += o.Size
 	}
-	if apply && from != v.Tree {
-		v.Apply = &a
+	if apply {
+		v.Apply = nil
+		if from != v.Tree {
+			v.Apply = &a
+		}
+		if v.Session {
+			v.needsBaseline = a.Files > 0
+		}
 	}
 	if v.Vsock == "" {
 		return nil
@@ -583,14 +589,17 @@ func (m *Manager) streamCheckpoint(ctx context.Context, id string, timeout int, 
 	e = wire.JSON(c, &header)
 	if e == nil && baseline && header.Kind == "baseline" {
 		start := time.Now()
-		snap, err := captureBaseline(v, c, header)
-		c.Close()
+		snap, err := m.reserveBaseline(v)
 		if err == nil {
-			defer os.Remove(snap)
-			m.runBaseline(ctx, v, snap, start, ms(start))
-		} else {
-			logBaseline(v.JobID, v.Tree, start, 0, Checkpoint{}, err)
+			err = snap.capture(v, c, header)
+			if err == nil {
+				go m.publishCapturedBaseline(v, snap, start, ms(start))
+				return out, nil
+			}
+			m.discardBaseline(snap)
 		}
+		logBaseline(v.JobID, v.Tree, start, ms(start), Checkpoint{}, err)
+		wire.Send(c, map[string]any{"ack": false, "error": err.Error()})
 		return out, nil
 	}
 	var r received

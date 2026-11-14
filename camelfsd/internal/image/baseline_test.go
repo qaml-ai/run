@@ -3,6 +3,8 @@ package image
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
+	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -32,11 +35,7 @@ func TestSessionBaseline(t *testing.T) {
 	if _, err := exec.LookPath("debugfs"); err != nil {
 		t.Skip("debugfs required")
 	}
-	for _, fallback := range []bool{false, true} {
-		name := "boot"
-		if fallback {
-			name = "unchanged checkpoint"
-		}
+	for _, name := range []string{"boot", "unchanged checkpoint", "stop before publish"} {
 		t.Run(name, func(t *testing.T) {
 			m, parent := unit3(t)
 			content := []byte("materialized file\n")
@@ -63,7 +62,7 @@ func TestSessionBaseline(t *testing.T) {
 				t.Fatalf("debugfs: %v %s", err, out)
 			}
 			guest := func(context.Context) error { return testguest.Baseline(v.Vsock, v.JobID, tree.Tree) }
-			if fallback {
+			if name == "unchanged checkpoint" {
 				if !m.NeedsBaseline(v.JobID) {
 					t.Fatal("missing baseline was not detected")
 				}
@@ -79,6 +78,7 @@ func TestSessionBaseline(t *testing.T) {
 				if err := <-done; err != nil {
 					t.Fatal(err)
 				}
+				m.baselineWork.Wait()
 			} else {
 				publish, _ := m.SessionBaseline(t.Context(), v.JobID, guest)
 				if publish == nil {
@@ -87,20 +87,75 @@ func TestSessionBaseline(t *testing.T) {
 				if _, err := m.Refs.TreeRoot("l", tree.Tree); err == nil {
 					t.Fatal("capture published a root")
 				}
-				publish()
+				if name == "stop before publish" {
+					m.BaselineDiskMax = m.VirtualSize
+					otherPending := baselineMount(t, m, tree.Tree, "over-cap")
+					if !m.NeedsBaseline(otherPending.JobID) {
+						t.Fatal("expected a missing baseline before checking the cap")
+					}
+					second, discard := m.SessionBaseline(t.Context(), otherPending.JobID, func(context.Context) error {
+						t.Error("guest was asked to freeze while the baseline budget was full")
+						return errors.New("unexpected freeze")
+					})
+					if discard != nil {
+						discard()
+					}
+					if second != nil {
+						t.Error("accepted another snapshot beyond disk cap")
+					}
+					// The first exec can run after capture. Hold the single
+					// publisher slot across the subsequent stop so release
+					// wins the race and deletes the mount before publication.
+					m.baselineSlot <- struct{}{}
+					done := make(chan struct{})
+					go func() { defer close(done); publish() }()
+					_, err := m.Release(t.Context(), v.JobID)
+					<-m.baselineSlot
+					<-done
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := os.Stat(v.Image); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("released mount image still present: %v", err)
+					}
+					if _, err := os.Stat(filepath.Join(filepath.Dir(v.Image), "state.json")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("baseline recreated released mount state: %v", err)
+					}
+				} else {
+					publish()
+				}
+			}
+			if files, err := os.ReadDir(m.baselineDir()); err != nil || len(files) != 0 {
+				t.Fatalf("baseline leftovers: %v %v", files, err)
 			}
 			id, err := m.Refs.TreeRoot("l", tree.Tree)
 			if err != nil {
 				t.Fatal(err)
 			}
-			current, err := m.Status(t.Context(), v.JobID)
-			if err != nil || current.Root != id {
-				t.Fatalf("mount base was not updated: %+v %v", current, err)
+			if name != "stop before publish" {
+				current, err := m.Status(t.Context(), v.JobID)
+				if err != nil || current.Root != id {
+					t.Fatalf("mount base was not updated: %+v %v", current, err)
+				}
+			}
+			assertNoBaseline := func(manager *Manager, id string) {
+				t.Helper()
+				publish, discard := manager.SessionBaseline(t.Context(), id, func(context.Context) error {
+					t.Error("exact-root mount requested a guest freeze")
+					return errors.New("unexpected freeze")
+				})
+				if discard != nil {
+					discard()
+				}
+				if publish != nil || manager.NeedsBaseline(id) {
+					t.Fatal("exact-root mount needs a baseline")
+				}
 			}
 			warm := baselineMount(t, m, tree.Tree, "second")
 			if !warm.Warm || warm.State != "warm" || warm.Apply != nil || warm.Root != id {
 				t.Fatalf("expected exact warm mount: %+v", warm)
 			}
+			assertNoBaseline(m, warm.JobID)
 			out, err := exec.Command("debugfs", "-R", "dump /hello "+filepath.Join(dir, "restored"), warm.Image).CombinedOutput()
 			if err != nil {
 				t.Fatalf("debugfs: %v %s", err, out)
@@ -124,6 +179,7 @@ func TestSessionBaseline(t *testing.T) {
 			if cold.Warm || cold.State != "hydrated" || cold.Apply != nil || cold.Root != id {
 				t.Fatalf("expected exact shared root materialization: %+v", cold)
 			}
+			assertNoBaseline(other, cold.JobID)
 			out, err = exec.Command("debugfs", "-R", "dump /hello "+filepath.Join(dir, "shared"), cold.Image).CombinedOutput()
 			if err != nil {
 				t.Fatalf("debugfs: %v %s", err, out)
@@ -136,5 +192,59 @@ func TestSessionBaseline(t *testing.T) {
 				t.Fatalf("baseline wrote %d commits: %v", commits, err)
 			}
 		})
+	}
+}
+
+func TestBaselineDiskCapAndRecovery(t *testing.T) {
+	m, tree := unit3(t)
+	m.BaselineDiskMax = m.VirtualSize
+	v := baselineMount(t, m, tree, "first")
+	snap, err := m.reserveBaseline(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second, err := m.reserveBaseline(v); err == nil {
+		m.discardBaseline(second)
+		t.Error("accepted another snapshot beyond disk cap")
+	}
+	m.discardBaseline(snap)
+	snap, err = m.reserveBaseline(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.discardBaseline(snap)
+	if err := clone(v.Dest, snap.path()); err != nil {
+		t.Fatal(err)
+	}
+	// Leave a complete intent just before promotion, plus an unrelated
+	// incomplete capture. Startup must publish one and discard the other.
+	base, err := m.mountRoot(t.Context(), "l", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var point Checkpoint
+	if _, err := m.uploadSnapshot(t.Context(), v.Request, base, snap.path(), tree,
+		[]chunk.Range{{Length: base.VirtualSize}}, &point); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(baselineRecord{"l", tree, point.Root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Atomic(filepath.Join(snap.dir, baselineIntent), body); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Atomic(filepath.Join(m.baselineDir(), "partial", "image.img"), []byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.recoverBaselines(); err != nil {
+		t.Fatal(err)
+	}
+	warm := baselineMount(t, m, tree, "recovered")
+	if !warm.Warm || warm.Root != point.Root {
+		t.Fatalf("complete baseline not recovered: %+v", warm)
+	}
+	if files, err := os.ReadDir(m.baselineDir()); err != nil || len(files) != 0 {
+		t.Fatalf("baseline leftovers: %v %v", files, err)
 	}
 }
