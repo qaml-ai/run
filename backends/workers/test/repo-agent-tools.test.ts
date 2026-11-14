@@ -19,7 +19,7 @@ const { createRepo, repoContext, deleteRepo } = await import('../src/repos/regis
 const { repoTools } = await import("../src/repos/tools.ts");
 const { agentRepoId, releaseAgentFiles } = await import("../src/repos/mounts.ts");
 const { PromptAttachments } = await import("../src/prompt-attachments.ts");
-const {inheritLegacyHistoryPins}=await import('../src/legacy-prompt-attachments.ts');
+const {configImpl}=await import('../src/agent-config.ts');
 const {readDreamMemory,publishDreamMemory}=await import('../src/repos/dream-memory.ts');
 const {authorizedAttachment}=await import('../src/repos/attachments.ts');
 const {configuration,storedConfiguration}=await import('../src/api-contract.ts');
@@ -56,7 +56,7 @@ function fixture(t: any) {
         return repos.get(id);
       } } };
   const create = async (input = {}) => { const { info } = await createRepo(env, 't', input); return repoContext(env, 't', info.id); };
-  const write = (ctx: any, changes: any, extra = {}) => commitChanges(ctx, { ref: 'main', changes, message: 'test', author: 'api:t', who: 'api:t', why: 'test', ...extra });
+  const write = (ctx: any, changes: any, extra = {}) => commitChanges(ctx, { ref: 'main', op: 'api', changes, message: 'test', author: 'api:t', who: 'api:t', why: 'test', ...extra });
   return { env, fake, create, write, index };
 }
 
@@ -69,21 +69,26 @@ test('agent writes commit once with trailers; stale reads, checkpoints and resto
   const count=()=>fake.calls.filter(c=>c.includes('/commits')&&c.startsWith('POST ')).length;
   for(const [name,args] of [['write',{path:'/workspace/a.txt',content:'hello'}],['edit',{path:'/workspace/a.txt',edits:[{oldText:'hello',newText:'world'}]}],['cp',{from:'/workspace/a.txt',to:'/workspace/b.txt'}],['mv',{from:'/workspace/b.txt',to:'/workspace/c.txt'}]] as const) {
     const before=count();await run(name,args);assert.equal(count(),before+1,name);
-    const head=await ctx.stub.resolve('main'),v=await ctx.stub.commit(head.version);
-    assert.equal(v?.author,'agent:a');assert.deepEqual(v?.trailers,{'Camel-Agent':'a','Camel-Checkpoint':'automatic','Camel-Run':'run-1','Camel-Call':'call-1'});
+    const head=await ctx.repo.resolve('main'),v=await ctx.repo.commit(head.version);
+    assert.equal(v?.author,'agent:a');assert.deepEqual(v?.trailers,{'Camel-Agent':'a','Camel-Checkpoint':'automatic','Camel-Run':'run-1','Camel-Call':'call-1','Camel-Op':'turn'});
   }
   await run('write',{path:'/workspace/b.txt',content:'recreated after move'});
   const checkpoint=await run('checkpoint',{message:'tests pass'}),before=count();
   assert.equal(await run('checkpoint',{message:'tests pass'}),checkpoint,'the same name for the same point is free');assert.equal(count(),before);
   const renamed=await run('checkpoint',{message:'again'});
   assert.notEqual(renamed,checkpoint,'a new name is a new empty commit, not dropped');assert.equal(count(),before+1);
-  assert.equal((await ctx.stub.commit(renamed))!.message,'again');
+  assert.equal((await ctx.repo.commit(renamed))!.message,'again');
+  assert.equal((await ctx.repo.commit(renamed))!.trailers['Camel-Op'],'turn');
   await run('write',{path:'/workspace/a.txt',content:'later'});
   assert.match(await run('diff',{}),/modified a.txt/);
-  await run('restore',{version:checkpoint.slice(0,7)});
+  const restored = await run('restore',{version:checkpoint.slice(0,7)});
+  assert.equal((await ctx.repo.commit(restored))!.trailers['Camel-Op'],'restore');
   assert.equal(await run('read',{path:'/workspace/a.txt'}),'world');
-  assert.match(await run('history',{path:'/workspace/a.txt'}),/agent:a/);
-  await commitChanges(ctx,{ref:'main',changes:{'a.txt':{bytes:bytes('other')}},message:'other',author:'api:t',who:'api:t',why:'test'});
+  const history = JSON.parse(await run('history',{path:'/workspace/a.txt',limit:1}));
+  assert.equal(history.versions[0].author,'agent:a');
+  assert.equal(history.next,restored);
+  assert.ok(JSON.parse(await run('history',{path:'/workspace/a.txt',after:history.next})).versions.length);
+  await commitChanges(ctx,{ref:'main',op:'api',changes:{'a.txt':{bytes:bytes('other')}},message:'other',author:'api:t',who:'api:t',why:'test'});
   await assert.rejects(run('write',{path:'/workspace/a.txt',content:'bad'}),/changed since you last read it/);
   mounts[0].mode='ro' as any;
   for(const name of ['write','checkpoint','restore'])await assert.rejects(run(name,{path:'/workspace/a.txt',content:'bad',message:'bad',version:checkpoint}),/Mount is read-only/);
@@ -98,33 +103,30 @@ test('attachments of a message are one commit; fork and deletion preserve the pa
   assert.equal(fake.calls.filter(c=>c.startsWith('POST ')&&c.includes('/commits')).length-commitsBefore,1);
   const fork=await createRepo(env,'t',{key:'agent:b',from:{repo:ctx.repoId,version:files[0].version}});
   const child=await repoContext(env,'t',fork.info.id);
-  await commitChanges(child,{ref:'main',changes:{'uploads/message/one.txt':{bytes:bytes('child')}},message:'child',author:'agent:b',who:'agent:b',why:'test'});
-  assert.notEqual((await child.stub.resolve('main')).tree,(await ctx.stub.resolve('main')).tree);
-  assert.equal((await ctx.stub.resolve('main')).version,files[0].version);
+  await commitChanges(child,{ref:'main',op:'turn',changes:{'uploads/message/one.txt':{bytes:bytes('child')}},message:'child',author:'agent:b',who:'agent:b',why:'test'});
+  assert.notEqual((await child.repo.resolve('main')).tree,(await ctx.repo.resolve('main')).tree);
+  assert.equal((await ctx.repo.resolve('main')).version,files[0].version);
   const removedMount=await create();
-  await removedMount.stub.watch('main','b');
+  await removedMount.repo.watch('main','b');
   await deleteRepo(env,'t',removedMount.repoId);
   await releaseAgentFiles(env,'t','b',[{repo:removedMount.repoId,path:'/removed',mode:'ro',notify:true}]);
-  await assert.rejects(repoContext(env,'t',fork.info.id),err('no-repo'));
-  assert.ok(await ctx.stub.ref('main'));
+  await assert.rejects(repoContext(env,'t',fork.info.id),err('no_repo'));
+  assert.ok(await ctx.repo.ref('main'));
 });
-test('stored legacy volume mounts still read and write through volume tools',async()=>{
-  const files=new Map<string,any>();let reads=0,writes=0;
-  const volume={initialize:async()=>{},stat:async(path:string)=>{const f=files.get(path);if(!f)throw new Error('FILE_404:missing');return f;},read:async(path:string)=>{reads++;return {file:files.get(path),bytes:bytes(files.get(path).text)};},write:async(path:string,data:Uint8Array,contentType:string)=>{writes++;const file={path,text:new TextDecoder().decode(data),version:writes,size:data.length,contentType,key:'legacy'};files.set(path,file);return file;}};
-  const env:any={VOLUMES:{getByName:(id:string)=>{assert.equal(id,'t:agent:stored');return volume;}},REPOS:{getByName:()=>{throw new Error('Legacy mount must not access repos');}}};
-  const tools=repoTools(env,'t','stored',async()=>[{volumeId:'agent:stored',path:'/workspace',mode:'rw'}]);
-  await tools.find(t=>t.name==='write')!.execute({path:'/workspace/old.txt',content:'still works'},{} as never,{} as never);
-  const result=await tools.find(t=>t.name==='read')!.execute({path:'/workspace/old.txt'},{} as never,{} as never);
-  assert.equal((result.output[0] as any).text,'still works');assert.equal(writes,1);assert.equal(reads,1);
-});
-
-test('legacy fork history retains only source-authorized pins, and repo refs need no pins',async()=>{
-  const pinned:unknown[]=[],key='files/t/vol_legacy/blob';
-  const env:any={VOLUMES:{getByName:(id:string)=>{assert.equal(id,'t:vol_legacy');return {hasPin:async(owner:string,k:string)=>owner==='agent:parent'&&k===key,pin:async(owner:string,keys:string[])=>{pinned.push({owner,keys});}};}}};
-  assert.deepEqual(await inheritLegacyHistoryPins(env,'t','parent','child',[{content:[{type:'file',repo:'repo_new',blob:'a'.repeat(40),version:'b'.repeat(40)}]}]),[]);
-  assert.deepEqual(pinned,[]);
-  assert.deepEqual(await inheritLegacyHistoryPins(env,'t','parent','child',[{content:[{type:'file',key}]}]),['vol_legacy']);
-  assert.deepEqual(pinned,[{owner:'agent:child',keys:[key]}]);
+test('stored volume mounts are refused with a counted log and a repair route', async () => {
+  const lines: string[] = [], original = console.error;
+  console.error = line => lines.push(line);
+  try {
+    const stored = {id:'stored', config:{mounts:[{volumeId:'vol_old',path:'/workspace'}, {volumeId:'vol_other',path:'/data'}]}};
+    const host = {ctx:{storage:{get:async(key:string)=>key==='configuration'?stored:undefined}},env:new Proxy({}, {get:()=>assert.fail('refusal must not read volumes')})};
+    await assert.rejects(configImpl.call(host as never), (error: any) => {
+      assert.equal(error.status, 409);
+      assert.match(error.message, /Mount of volume vol_old at \/workspace is retired/);
+      assert.match(error.message, /PUT \/v1\/agents\/stored\/mounts with the full mounts array and remount: true/);
+      return true;
+    });
+    assert.deepEqual(lines.map(line => JSON.parse(line)), [{type:'legacy_volume_mount_refused',agent:'stored',volumes:2}]);
+  } finally { console.error = original; }
 });
 
 test('dream memory publishes versioned refs and retries restore without new versions',async t=>{
@@ -132,10 +134,11 @@ test('dream memory publishes versioned refs and retries restore without new vers
   await write(ctx,{'old.txt':{bytes:bytes('old')}});
   await publishDreamMemory(env,'t',ctx.repoId,{'memory.txt':'remember'},'night');
   assert.deepEqual(await readDreamMemory(env,'t',ctx.repoId),{'memory.txt':'remember'});
-  const snapshot=await ctx.stub.ref('dream/night'),head=await ctx.stub.ref('main');
+  const snapshot=await ctx.repo.ref('dream/night'),head=await ctx.repo.ref('main');
   assert.ok(snapshot);assert.notEqual(head?.version,snapshot.version);
+  for (const version of [head!.version, snapshot.version]) assert.equal((await ctx.repo.commit(version))!.trailers['Camel-Op'],'turn');
   await publishDreamMemory(env,'t',ctx.repoId,{'memory.txt':'ignored retry'},'night');
-  assert.equal((await ctx.stub.ref('main'))?.version,head?.version);
+  assert.equal((await ctx.repo.ref('main'))?.version,head?.version);
   await branch(ctx,{name:'dream/interrupted',from:{version:head!.version},who:'test'});
   await publishDreamMemory(env,'t',ctx.repoId,{'memory.txt':'after interruption'},'interrupted');
   assert.deepEqual(await readDreamMemory(env,'t',ctx.repoId),{'memory.txt':'after interruption'});
@@ -152,10 +155,10 @@ test('repo attachment markers require mounted ancestry and respect subpaths',asy
   assert.equal(await authorizedAttachment(env,'t',[{...mount,subpath:'/other'}],ref),false);
   assert.equal(await authorizedAttachment(env,'t',[mount],{...ref,repo:fork.repoId,version:privateWrite.version}),false);
 });
-test('new mount input rejects volumes while stored mounts remain valid; dreaming keeps its HTTP shape',()=>{
+test('new and stored mount inputs reject volumes; dreaming keeps its HTTP shape',()=>{
   const legacy={volumeId:'vol_'+ 'a'.repeat(24),path:'/workspace',mode:'rw'};
-  assert.throws(()=>configuration({mounts:[legacy]},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
-  assert.deepEqual(storedConfiguration({mounts:[legacy]},'camel-test/deterministic').config.mounts,[legacy]);
+  assert.throws(()=>configuration({mounts:[legacy] as never},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
+  assert.throws(()=>storedConfiguration({mounts:[legacy] as never},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
   const config={enabled:true,volumeId:'repo_'+'a'.repeat(24),schedule:{time:'03:00',timeZone:'UTC'},budgetUsd:1,instructions:''};
   assert.equal(dreamConfig(config).volumeId,config.volumeId);
   assert.throws(()=>dreamConfig({...config,volumeId:legacy.volumeId}),/Invalid dreaming configuration/);
@@ -171,8 +174,8 @@ test('recursive copies and moves commit once, and pathless versions select the o
   for(const [name,args]of [['cp',{from:'/work/src',to:'/work/copy',recursive:true}],['mv',{from:'/work/copy',to:'/work/moved'}]] as const){const before=count();await run(name,args);assert.equal(count(),before+1);}
   const before=count();await run('cp',{from:'/work/src',to:'/shared/copied',recursive:true});assert.equal(count(),before+1);
   const checkpoint=await run('checkpoint',{message:'own workspace'});
-  assert.equal((await own.stub.commit((await own.stub.ref('main'))!.version))?.message,'own workspace');
-  assert.equal((await shared.stub.commit((await shared.stub.ref('main'))!.version))?.message,'cp /work/src');
+  assert.equal((await own.repo.commit((await own.repo.ref('main'))!.version))?.message,'own workspace');
+  assert.equal((await shared.repo.commit((await shared.repo.ref('main'))!.version))?.message,'cp /work/src');
   const grep=await run('grep',{path:'/work/src/a',pattern:'a'});
   assert.match((grep.output[0]as any).text,/a/);
 });

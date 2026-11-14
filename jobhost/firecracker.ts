@@ -8,7 +8,7 @@
 // or plain KVM with `kvm`; nothing here has run on one yet.
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { connect, type Socket } from "node:net";
-import { open, rm, writeFile } from "node:fs/promises";
+import { open, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { DEFAULT_EGRESS, removePolicy, writePolicy } from "./egress-proxy.ts";
@@ -118,6 +118,11 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
     vsockPath,
     async boot(id: string, shape: VmShape, boot: { internet?: boolean; repo?: string } = {}): Promise<Vm> {
       if (!/^[A-Za-z0-9._-]{1,96}$/.test(id)) throw new Error("Invalid job id");
+      // A job disk is the base image grown by truncate + resize2fs; truncating below the filesystem corrupts it, so a
+      // shape smaller than the base is refused before anything is allocated.
+      const baseBytes = (await stat(options.image)).size;
+      if (!Number.isSafeInteger(shape.diskMiB) || shape.diskMiB * 2 ** 20 < baseBytes)
+        throw new Error(`invalid_request: job disk ${shape.diskMiB} MiB is smaller than the base image ${Math.ceil(baseBytes / 2 ** 20)} MiB`);
       const slot = [...free][0];
       if (slot === undefined) throw new Error("No free job slot on this host");
       free.delete(slot);
@@ -148,7 +153,8 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
         const allow = internet ? [...(options.egress ?? DEFAULT_EGRESS), ...(options.runtimeHost ? [options.runtimeHost] : [])] : [];
         await writePolicy(options.policyDir, address.guestIp, { job: id, allow });
         const base = firecrackerConfig({ id, kernel: options.kernel, initrd: options.initrd, disk, vsockPath: vsock, tap: address.tap, mac: address.mac }, shape, options.build, boot.repo, options.kvm);
-        base["boot-source"].boot_args += ` root=/dev/vda rw init=/sbin/camel-init ${guestNetArgs(address, internet)}`;
+        // RESTART uses the x86 i8042 reset port directly, even with the i8042 driver blacklisted.
+        base["boot-source"].boot_args += ` reboot=k root=/dev/vda rw init=/sbin/camel-init ${guestNetArgs(address, internet)}`;
         if (boot.repo) base["boot-source"].boot_args += " camel.repo=/dev/vdb";
         await writeFile(config, JSON.stringify(base));
         await rm(vsock, { force: true });

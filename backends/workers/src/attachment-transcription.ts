@@ -211,7 +211,7 @@ export async function transcribeAttachments(
             "SHA-256",
             new TextEncoder().encode(
               JSON.stringify([
-                "blob" in file ? file.blob : file.chunks,
+                file.blob,
                 file.contentType,
                 scope.keyScope,
                 scope.identity,

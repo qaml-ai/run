@@ -72,10 +72,20 @@ func (d *DB) Close() error { return d.DB.Close() }
 
 // RecordTreeParent records the host's image lookup hint.
 func (d *DB) RecordTreeParent(ctx context.Context, tree, parent string) error {
+	return d.recordTreeParent(ctx, d.DB, tree, parent)
+}
+
+func (d *DB) RecordTreeParentTx(ctx context.Context, tx *sql.Tx, tree, parent string) error {
+	return d.recordTreeParent(ctx, tx, tree, parent)
+}
+
+func (d *DB) recordTreeParent(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, tree, parent string) error {
 	if d.storageOnly {
 		return nil
 	}
-	_, err := d.DB.ExecContext(ctx, "INSERT OR IGNORE INTO tree_parents(tree,parent) VALUES(?,?)", tree, parent)
+	_, err := db.ExecContext(ctx, "INSERT OR IGNORE INTO tree_parents(tree,parent) VALUES(?,?)", tree, parent)
 	return err
 }
 

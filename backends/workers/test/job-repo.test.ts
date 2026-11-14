@@ -11,6 +11,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
       return { url: 'data:text/javascript,export const keyServices=async env=>({accounts:{billing:{storageLimit:async()=>env.limit}}});', shortCircuit: true };
     return next(specifier, context);
   } });
+const { statPaths } = await import('../src/repos/reads.ts');
 const { RepoDO } = await import('../src/repos/repo-do.ts');
 const { TenantRepos } = await import('../src/repos/tenant-repos.ts');
 const { commitChanges, setRefToVersion, branch, advanceRef } = await import('../src/repos/write.ts');
@@ -51,7 +52,7 @@ function fixture(t: any) {
         return repos.get(id);
       } } };
   const create = async (input = {}) => { const { info } = await createRepo(env, 't', input); return repoContext(env, 't', info.id); };
-  const write = (ctx: any, changes: any, extra = {}) => commitChanges(ctx, { ref: 'main', changes, message: 'test', author: 'api:t', who: 'api:t', why: 'test', ...extra });
+  const write = (ctx: any, changes: any, extra = {}) => commitChanges(ctx, { ref: 'main', op: 'api', changes, message: 'test', author: 'api:t', who: 'api:t', why: 'test', ...extra });
   return { env, fake, create, write, index };
 }
 
@@ -62,44 +63,43 @@ test('repo job resolves, branches, leases, advances with root and releases', asy
   const f = fixture(t), ctx = await f.create(), spec = input(ctx.repoId), events: string[] = [];
   const saved = await prepareRepo(ctx, spec, 'h', async (name, run) => { events.push(name); return run(); });
   assert.deepEqual(events, ['resolveMs', 'branchMs', 'leaseMs']);
-  assert.equal((await ctx.stub.ref('job/attempt'))?.owner, 'workflow:w');
+  assert.equal((await ctx.repo.ref('job/attempt'))?.owner, 'workflow:w');
   assert.deepEqual(saved.fence, { holder: 'host:h/attempt', epoch: 1 });
   const mount = { lineage: saved.lineage, tree: saved.tree, parent: saved.expect };
   const c = await f.fake.checkpoint(mount, spec.id);
   const result = output(c.commit, c.tree);
   await finishJobRepo(ctx, spec, saved, result, measure);
-  assert.equal(result.camelfs.ref, 'job/attempt'); assert.equal(result.camelfs.version, c.commit);
-  assert.deepEqual((await ctx.stub.commit(c.commit))?.parents, [saved.expect]);
-  assert.equal((await ctx.stub.ref('job/attempt'))?.root, 'a'.repeat(64));
+  assert.equal(result.camelfs.ref, 'job/attempt');
+  // Host authority: the ref moves to the host's own checkpoint commit, never a re-made one.
+  assert.equal(result.camelfs.version, c.commit);
+  assert.equal(result.camelfs.commit, c.commit);
+  assert.equal((await ctx.repo.ref('job/attempt'))?.version, c.commit);
+  assert.equal((await ctx.repo.ref('job/attempt'))?.root, 'a'.repeat(64));
   await releaseJobRepo(f.env, spec.id, saved);
-  assert.equal((await ctx.stub.ref('job/attempt'))?.holder, null);
+  assert.equal((await ctx.repo.ref('job/attempt'))?.holder, null);
 });
 test('recovery renews the persisted fence; takeover fails visibly and preserves output', async t => {
   const f = fixture(t), ctx = await f.create(), spec = input(ctx.repoId);
   const saved = await prepareRepo(ctx, spec, 'h', measure);
   await renewJobRepo(f.env, spec.id, saved);
-  assert.equal((await ctx.stub.ref('job/attempt'))?.leaseEpoch, saved.fence.epoch);
+  assert.equal((await ctx.repo.ref('job/attempt'))?.leaseEpoch, saved.fence.epoch);
   await releaseJobRepo(f.env, spec.id, saved);
-  await ctx.stub.acquire({ ref: 'job/attempt', holder: 'other', ttlMs: 600000 });
+  await ctx.repo.acquire({ ref: 'job/attempt', holder: 'other', ttlMs: 600000 });
   await assert.rejects(renewJobRepo(f.env, spec.id, saved), /fenced/);
   const c = await ctx.storage.commit(ctx.lineage, { parents: [saved.expect], changes: [], message: 'checkpoint', author: 'job:attempt', trailers: {} });
   const result = { ...output(c.commit, c.tree), exitCode: 9 };
   await finishJobRepo(ctx, spec, saved, result, measure);
   assert.equal(result.exitCode, 9); assert.equal(result.camelfs.checkpointError, `cas: repo:409:fenced:{}`);
-  assert.equal((await ctx.stub.ref('job/attempt'))?.version, saved.expect);
+  assert.equal((await ctx.repo.ref('job/attempt'))?.version, saved.expect);
 });
-test('inline workflow files are committed on the precreated job branch and reused', async t => {
-  const f = fixture(t), values = new Map(), host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async (k: string) => values.get(k), put: async (k: string,v: any) => values.set(k,v) } };
+test('workflow repo at records cleanup before dispatch and shares target validation', async t => {
+  const f = fixture(t), ctx = await f.create(), values = new Map();
+  const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { put: async (k: string,v: unknown) => values.set(k,v) } };
   const jobs: any = new WorkflowJobs(f.env, host);
-  const args = { files: { 'hello.txt': 'hello' }, command: 'cat hello.txt', timeoutSeconds: 30, commit: true };
-  const { spec } = await jobs.jobSpec('inline', args);
-  assert.equal(spec.files, undefined); assert.equal(spec.repo.ref, 'job/inline');
-  assert.equal(spec.repo.owner, 'workflow:wf_one');
-  const ctx = await repoContext(f.env, 't', spec.repo.repo), head = await ctx.stub.ref('job/inline');
-  assert.ok(head); assert.equal((await ctx.stub.stat('job/inline', ['hello.txt'])).entries['hello.txt']?.size, 5);
-  const saved = await prepareRepo(ctx, spec, 'h', measure);
-  assert.equal(saved.expect, head.version);
-  assert.deepEqual((await jobs.jobSpec('inline', args)).spec.repo, spec.repo);
+  const {spec} = await jobs.jobSpec('repo-at', { at: {repo:ctx.repoId,ref:'main'}, command:'true',timeoutSeconds:30 });
+  assert.deepEqual(spec.repo,{tenant:'t',repo:ctx.repoId,ref:'main',owner:'workflow:wf_one'});
+  assert.equal(values.get(`workflow-repo:${ctx.repoId}`),true);
+  await assert.rejects(jobs.jobSpec('invalid',{at:{repo:ctx.repoId,ref:'main',version:'a'.repeat(40)},command:'true',timeoutSeconds:30}), /not both/);
 });
 test('repo specs validate tenant, owner, ref/version exclusion, and containers refuse repos', async () => {
   const spec = input('repo_1'); assert.equal(jobSpec(spec).repo?.repo, 'repo_1');
@@ -119,16 +119,29 @@ test('a stale mounted version becomes a bounded checkpoint error', async t => {
   assert.match(result.camelfs.checkpointError, /^cas: .*stale/);
   assert.ok(result.camelfs.checkpointError.length <= 300);
   assert.equal(result.camelfs.version, undefined);
-  assert.equal((await ctx.stub.ref('job/attempt'))?.version, saved.expect);
+  assert.equal((await ctx.repo.ref('job/attempt'))?.version, saved.expect);
+});
+test('inline workflow files are committed on the precreated job branch and reused', async t => {
+  const f = fixture(t), values = new Map(), host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async (k: string) => values.get(k), put: async (k: string,v: any) => values.set(k,v) } };
+  const jobs: any = new WorkflowJobs(f.env, host);
+  const args = { files: { 'hello.txt': 'hello' }, command: 'cat hello.txt', timeoutSeconds: 30, commit: true };
+  const { spec } = await jobs.jobSpec('inline', args);
+  assert.equal(spec.files, undefined); assert.equal(spec.repo.ref, 'job/inline');
+  assert.equal(spec.repo.owner, 'workflow:wf_one');
+  const ctx = await repoContext(f.env, 't', spec.repo.repo), head = await ctx.repo.ref('job/inline');
+  assert.ok(head); assert.equal((await statPaths(ctx, head.tree, ['hello.txt']))['hello.txt']?.size, 5);
+  const saved = await prepareRepo(ctx, spec, 'h', measure);
+  assert.equal(saved.expect, head.version);
+  assert.deepEqual((await jobs.jobSpec('inline', args)).spec.repo, spec.repo);
 });
 
 test('inline workflow files surface a missing main instead of creating it', async t => {
   const f = fixture(t), ctx = await f.create({ key: 'workflow:wf_one' });
-  const main = await ctx.stub.ref('main'); assert.ok(main);
-  await ctx.stub.deleteRef('main', main.version);
-  const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async () => undefined, put: async () => assert.fail('failed preparation must not be recorded') } };
+  const main = await ctx.repo.ref('main'); assert.ok(main);
+  await ctx.repo.deleteRef('main', main.version);
+  const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async () => undefined, put: async (k: string) => { if (!k.startsWith('workflow-repo:')) assert.fail('failed preparation must not be recorded'); } } };
   const jobs: any = new WorkflowJobs(f.env, host);
-  await assert.rejects(jobs.jobSpec('missing-main', { files: { 'hello.txt': 'hello' }, command: 'true', timeoutSeconds: 30 }), err('no-ref'));
-  assert.equal(await ctx.stub.ref('main'), null);
-  assert.equal(await ctx.stub.ref('job/missing-main'), null);
+  await assert.rejects(jobs.jobSpec('missing-main', { files: { 'hello.txt': 'hello' }, command: 'true', timeoutSeconds: 30 }), err('no_ref'));
+  assert.equal(await ctx.repo.ref('main'), null);
+  assert.equal(await ctx.repo.ref('job/missing-main'), null);
 });

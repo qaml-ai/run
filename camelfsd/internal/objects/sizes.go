@@ -7,29 +7,50 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 // SizedTree supplies the same entries as ReadTree, including stored sizes.
 // Its sidecar is required: reads never recover sizes from blob metadata or data.
 func (r *Repository) SizedTree(ctx context.Context, id string) ([]Entry, error) {
-	es, e := r.ReadTree(ctx, id)
-	if e != nil {
-		return nil, e
+	if !root.Hex(id, 40) {
+		return nil, apierr.Invalid("invalid tree id")
 	}
-	var b []byte
-	e = r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM tree_sizes WHERE id=?", id).Scan(&b)
-	cold := e == sql.ErrNoRows
-	if cold {
-		b, e = r.Store.Get(ctx, "ts/"+id)
-		if errors.Is(e, os.ErrNotExist) {
-			return nil, &MissingTreeSizes{Tree: id}
+	// Authorize the tree before consulting either shared content cache.
+	if r.lineage != "" {
+		ok, err := r.Reachable(ctx, r.lineage, id, "tree")
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, os.ErrNotExist
 		}
 	}
-	if e != nil {
-		return nil, e
+	r.observe("tree")
+	var tree []byte
+	var treeErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tree, treeErr = r.objectBytes(ctx, id, "tree")
+	}()
+	b, cold, err := r.treeSizesBytes(ctx, id)
+	wg.Wait()
+	if treeErr != nil {
+		return nil, treeErr
+	}
+	es, errTree := decodeTree(tree)
+	if errTree != nil {
+		return nil, errTree
+	}
+	if err != nil {
+		return nil, err
 	}
 	var sizes []Entry
 	if store.VerifyTreeSizes(id, b) != nil || json.Unmarshal(b, &sizes) != nil || len(es) != len(sizes) {
@@ -42,15 +63,28 @@ func (r *Repository) SizedTree(ctx context.Context, id string) ([]Entry, error) 
 		es[i].Size = sizes[i].Size
 	}
 	if cold {
-		if e = r.cacheTreeSizes(ctx, id, b); e != nil {
+		if e := cacheTreeSizes(ctx, r.DB.DB, id, b); e != nil {
 			return nil, e
 		}
 	}
 	return es, nil
 }
 
-func (r *Repository) cacheTreeSizes(ctx context.Context, id string, b []byte) error {
-	_, e := r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO tree_sizes VALUES(?,?,?)", id, b, time.Now().UnixMilli())
+func (r *Repository) treeSizesBytes(ctx context.Context, id string) ([]byte, bool, error) {
+	var b []byte
+	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM tree_sizes WHERE id=?", id).Scan(&b)
+	cold := e == sql.ErrNoRows
+	if cold {
+		b, e = r.Store.Get(ctx, "ts/"+id)
+		if errors.Is(e, os.ErrNotExist) {
+			return nil, false, &MissingTreeSizes{Tree: id}
+		}
+	}
+	return b, cold, e
+}
+
+func cacheTreeSizes(ctx context.Context, db sqlExecutor, id string, b []byte) error {
+	_, e := db.ExecContext(ctx, "INSERT OR IGNORE INTO tree_sizes VALUES(?,?,?)", id, b, time.Now().UnixMilli())
 	return e
 }
 

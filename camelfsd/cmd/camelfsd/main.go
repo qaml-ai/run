@@ -1,3 +1,5 @@
+//go:build !guest
+
 package main
 
 import (
@@ -37,17 +39,13 @@ func (d *dirs) Set(s string) error {
 	*d = append(*d, s)
 	return nil
 }
-func main() {
-	if e := run(os.Args[1:]); e != nil {
-		log.Print(e)
-		os.Exit(1)
-	}
-}
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: camelfsd host|api|client|version")
+		return fmt.Errorf("usage: camelfsd host|api|cleanup|client|version|guest|init")
 	}
 	switch args[0] {
+	case "guest", "init":
+		return runGuest(args)
 	case "testguest":
 		return testguest.Run(args[1:])
 	case "version":
@@ -129,6 +127,10 @@ func host(args []string) error {
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
+	// Fail at start, not at the first cold mount, when the host lacks a device-mapper target.
+	if e = image.ProbeDeviceMapper(ctx); e != nil {
+		return e
+	}
 	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e

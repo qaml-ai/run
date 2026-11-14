@@ -95,7 +95,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
       agentId: async () => (await this.config()).id,
       authorizeRepoFile: async file=>{
         const conf=await this.config();
-        return (await import('./repos/attachments.ts')).authorizedAttachment(this.env,conf.tenantId,(conf.config.mounts??[]) as import('./files.ts').AgentMount[],file);
+        return (await import('./repos/attachments.ts')).authorizedAttachment(this.env,conf.tenantId,(conf.config.mounts??[]) as import('./files.ts').Mount[],file);
       },
       onRetryEvent: async (event) => {
         await this.emit({ type: "event", requestId: (await this.currentRun()).id, event });

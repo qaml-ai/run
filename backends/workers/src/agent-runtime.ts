@@ -292,6 +292,8 @@ export class AgentRuntime extends AgentContext {
 
   pendingWaits = new Map<string, Promise<void>>();
 
+  billingFlush?: Promise<void>;
+
   // A durable watchdog must survive losing in-memory waiters. Live waiters
   // need limit checks; other maintenance can wait for its actual deadline.
   maintenance: { at: number; tracksRuns: boolean } | undefined;

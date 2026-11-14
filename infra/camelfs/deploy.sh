@@ -48,6 +48,10 @@ fi
 image="$registry/$repository:$tag"
 
 if [[ $# -eq 0 ]]; then
+  # The final image stage runs arm64 binaries (apt, useradd), so the builder needs arm64 emulation unless the host
+  # is arm64 itself: Docker Desktop ships it; on Linux, `docker run --privileged --rm tonistiigi/binfmt --install arm64`.
+  docker buildx inspect --bootstrap 2>/dev/null | grep -qE 'Platforms:.*linux/arm64' \
+    || die "This docker builder cannot run linux/arm64 (the image's final stage does): on Linux run 'docker run --privileged --rm tonistiigi/binfmt --install arm64' once, or build on an arm64 host."
   log "Building $image (linux/arm64)"
   aws ecr get-login-password | docker login --username AWS --password-stdin "$registry" >/dev/null
   docker buildx build --platform linux/arm64 -f "$here/Dockerfile" -t "$image" --push "$repo"

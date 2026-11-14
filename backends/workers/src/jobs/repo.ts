@@ -9,28 +9,31 @@ const log = (type: string, id: string, error: unknown) => console.error(JSON.str
 
 export async function prepareRepo(ctx: RepoContext, spec: JobSpec, host: string, measure: Measure): Promise<RepoDispatch> {
   const repo = spec.repo!, ref = `job/${spec.id}`;
-  const target = await measure("resolveMs", async () => await ctx.stub.resolve(repo.ref ?? repo.version ?? "main"));
-  const head = await measure("branchMs", async () => await ctx.stub.ref(ref) ?? await branch(ctx, { name: ref, from: { version: target.version }, owner: repo.owner, who: `job:${spec.id}` }));
+  const target = await measure("resolveMs", async () => await ctx.repo.resolve(repo.ref ?? repo.version ?? "main"));
+  const head = await measure("branchMs", async () => await ctx.repo.ref(ref) ?? await branch(ctx, { name: ref, from: { version: target.version }, owner: repo.owner, who: `job:${spec.id}` }));
   if (!head) throw new Error("Job branch was not created");
   const holder = `host:${host}/${spec.id}`;
-  const lease = await measure("leaseMs", () => ctx.stub.acquire({ ref, holder, ttlMs: JOB_LEASE_MS }));
+  const lease = await measure("leaseMs", () => ctx.repo.acquire({ ref, holder, ttlMs: JOB_LEASE_MS }));
   return { repo, expect: head.version, tree: head.tree, lineage: ctx.lineage, fence: { holder, epoch: lease.epoch } };
 }
 export const openJobRepo = (env: unknown, repo: NonNullable<JobSpec["repo"]>) => repoContext(env as RepoEnv, repo.tenant, repo.repo);
 export async function renewJobRepo(env: unknown, id: string, saved: RepoDispatch) {
   const ctx = await openJobRepo(env, saved.repo);
-  await ctx.stub.renew({ ref: `job/${id}`, ...saved.fence }, JOB_LEASE_MS);
+  await ctx.repo.renew({ ref: `job/${id}`, ...saved.fence }, JOB_LEASE_MS);
 }
 export async function releaseJobRepo(env: unknown, id: string, saved: RepoDispatch) {
-  try { const ctx = await openJobRepo(env, saved.repo); await ctx.stub.release({ ref: `job/${id}`, ...saved.fence }); }
+  try { const ctx = await openJobRepo(env, saved.repo); await ctx.repo.release({ ref: `job/${id}`, ...saved.fence }); }
   catch (error) { log("host_job_lease_release_failed", id, error); }
 }
 export async function finishJobRepo(ctx: RepoContext, spec: JobSpec, saved: RepoDispatch, result: JobResult, measure: Measure) {
   if (result.ok && spec.commit && result.camelfs?.commit) {
     try {
-      await measure("advanceMs", () => advanceRef(ctx, { ref: `job/${spec.id}`, expect: saved.expect, commit: result.camelfs!.commit!, root: result.camelfs!.root, fence: saved.fence, who: `job:${spec.id}`, why: "job checkpoint" }));
+      // The host's checkpoint commit is the job's result as it is (host authority): never re-committed here. It is
+      // marked by the daemon's own trailers (Camel-Checkpoint: job, Camel-Job); Camel-Op on it is the daemon's to add.
+      const advanced = await measure("advanceMs", () => advanceRef(ctx, { ref: `job/${spec.id}`, expect: saved.expect, commit: result.camelfs!.commit!, root: result.camelfs!.root, fence: saved.fence, who: `job:${spec.id}`, why: "job checkpoint" }));
+      const version = advanced.version;
       result.camelfs.ref = `job/${spec.id}`;
-      result.camelfs.version = result.camelfs.commit;
+      result.camelfs.version = result.camelfs.commit = version;
     } catch (error) { result.camelfs.checkpointError = (`cas: ${error instanceof Error ? error.message : String(error)}`).slice(0, 300); }
   }
 }
