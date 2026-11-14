@@ -21,6 +21,11 @@
 locals {
   service_enabled = var.certificate_issued
   scaling_enabled = var.certificate_issued && var.api_min_count > 0
+  # The enrollment and hosts target groups are registered only once the daemon listens on their ports (K4c, api_features
+  # "compute"): registered earlier, their health checks (on the api port) still passed through the balancers' groups
+  # only where a rule allowed it, and 2026-11-14 showed what a group without one does — Target.Timeout and ECS
+  # replacing healthy tasks every few minutes.
+  compute_enabled = contains(var.api_features, "compute")
   container_name  = "camelfsd"
   cluster_name    = "${var.name}-${var.env}"
   service_name    = "${var.name}-${var.env}-api"
@@ -150,6 +155,31 @@ resource "aws_vpc_security_group_egress_rule" "api_https" {
   description       = "S3, DynamoDB, Secrets Manager, ECR, logs"
 }
 
+# Health checks of the enrollment and hosts target groups probe /v0/health on the API PORT (the enrollment and hosts
+# ports serve no unauthenticated route), so the internal ALB's and the NLB's groups must reach the tasks on 8790
+# for that one purpose. No listener forwards host traffic to 8790 (the internal ALB's only listener forwards
+# POST /v1/hosts/enroll to the enrollment port; the NLB forwards to the hosts port), so these rules carry health
+# checks and nothing else.
+resource "aws_vpc_security_group_ingress_rule" "api_health_from_internal" {
+  for_each                     = { alb_internal = aws_security_group.alb_internal.id, nlb_hosts = aws_security_group.nlb_hosts.id }
+  security_group_id            = aws_security_group.api.id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = var.api_port
+  to_port                      = var.api_port
+  description                  = "${each.key}: health checks on the api port"
+}
+
+resource "aws_vpc_security_group_egress_rule" "internal_health_to_api" {
+  for_each                     = { alb_internal = aws_security_group.alb_internal.id, nlb_hosts = aws_security_group.nlb_hosts.id }
+  security_group_id            = each.value
+  referenced_security_group_id = aws_security_group.api.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.api_port
+  to_port                      = var.api_port
+  description                  = "API tasks: health checks on the api port"
+}
+
 # The hosts' compute listener (K4): boot/stop pushed in-VPC. The matching ingress is on each host group (alb.tf).
 resource "aws_vpc_security_group_egress_rule" "api_to_hosts_compute" {
   for_each                     = toset(var.host_security_group_ids)
@@ -177,11 +207,11 @@ resource "aws_ecs_task_definition" "api" {
     cpu_architecture        = "ARM64"
   }
 
-  # The only writable path: the task's ephemeral storage, for the daemon's host-local SQLite caches (CAMELFS_DATA).
-  # Nothing on it is truth (camel-fs.md §1.11); a replaced task starts empty.
-  volume {
-    name = "data"
-  }
+  # No bind volume and no read-only root (2026-11-14): a Fargate bind mount (`host {}`) is an empty root-owned
+  # directory, so the daemon (uid 1000) could not create storage.db under it and every task crash-looped with
+  # "unable to open database file". The daemon writes only under --data, which is the image's own
+  # /var/lib/camelfs (owned by camelfs) on the task's ephemeral storage; nothing on it is truth (camel-fs.md
+  # §1.11), and a replaced task starts empty.
 
   container_definitions = jsonencode([{
     name         = local.container_name
@@ -196,9 +226,8 @@ resource "aws_ecs_task_definition" "api" {
       { name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn },
       { name = "CAMELFS_NOTIFY_KEY", valueFrom = aws_secretsmanager_secret.notify_key.arn },
     ]
-    mountPoints = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
-    # The image runs as a non-root user; everything but the data volume is read-only.
-    readonlyRootFilesystem = true
+    # The image runs as a non-root user that owns /var/lib/camelfs (the Dockerfile); see the volume note above.
+    readonlyRootFilesystem = false
     # SIGTERM: finish in-flight requests (seconds); SIGKILL after this.
     stopTimeout     = 30
     linuxParameters = { initProcessEnabled = true }
@@ -262,18 +291,15 @@ resource "aws_ecs_service" "api" {
     }
   }
 
-  # The enrollment port, behind the internal balancer's plain-TLS listener (mtls.tf).
-  load_balancer {
-    target_group_arn = aws_lb_target_group.enroll.arn
-    container_name   = local.container_name
-    container_port   = var.enroll_port
-  }
-
-  # The hosts port, behind the NLB in TCP passthrough (mtls.tf).
-  load_balancer {
-    target_group_arn = aws_lb_target_group.hosts.arn
-    container_name   = local.container_name
-    container_port   = var.hosts_port
+  # The enrollment port, behind the internal balancer's plain-TLS listener, and the hosts port, behind the NLB in
+  # TCP passthrough (mtls.tf): registered once "compute" is on and the daemon listens there.
+  dynamic "load_balancer" {
+    for_each = local.compute_enabled ? { enroll = { group = aws_lb_target_group.enroll.arn, port = var.enroll_port }, hosts = { group = aws_lb_target_group.hosts.arn, port = var.hosts_port } } : {}
+    content {
+      target_group_arn = load_balancer.value.group
+      container_name   = local.container_name
+      container_port   = load_balancer.value.port
+    }
   }
 
   depends_on = [aws_lb_listener.api_https, aws_lb_listener.enroll, aws_lb_listener.hosts]

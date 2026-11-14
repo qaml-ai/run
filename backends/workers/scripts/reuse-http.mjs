@@ -24,7 +24,7 @@ const policy = name => {
   if (!property) throw new Error(`Source idempotency ${name} missing`);
   return property.initializer.getText(api);
 };
-outputs.set("idempotency-routes.ts", header("api.ts") + `export const skipMoneyIdempotency: (path: string) => boolean = ${policy("skip")};\nexport const secretMoneyIdempotency: (path: string) => boolean = ${policy("secret")};\n`);
+outputs.set("idempotency-routes.ts", header("api.ts") + `export const skipMoneyIdempotency: (path: string) => boolean = ${policy("skip")};\nexport const secretMoneyIdempotency: (path: string) => boolean = ${policy("secret").replace("|volumes\\/[^/]+\\/links", "")};\n`);
 
 const http = ts.createSourceFile("http.ts", await read("http.ts"), ts.ScriptTarget.Latest, true);
 const names = new Set(["errorFields", "errorCode", "errorHeaders", "errorStatus"]);

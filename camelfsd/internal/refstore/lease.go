@@ -9,10 +9,11 @@ import (
 
 type Lease struct {
 	Epoch, Deadline int64
+	Version, Tree   string
 }
 
 func validateTTL(ttlMs int64) error {
-	if ttlMs < 1000 || ttlMs > 600000 {
+	if ttlMs <= 0 || ttlMs > 600000 {
 		return failure("bad_ttl", 400)
 	}
 	return nil
@@ -37,11 +38,14 @@ func (s *Store) Acquire(ctx context.Context, lineage, name, holder string, ttlMs
 		if !r.live(now) {
 			return Lease{}, failure("no_ref", 404)
 		}
-		lease := Lease{Epoch: r.LeaseEpoch, Deadline: now + ttlMs}
-		values := attributes{":current": str(r.Version), ":now": num(now), ":holder": str(holder), ":deadline": num(lease.Deadline), ":epoch": num(r.LeaseEpoch)}
+		lease := Lease{Epoch: r.LeaseEpoch, Deadline: now + ttlMs, Version: r.Version, Tree: r.Tree}
+		values := attributes{":current": str(r.Version), ":now": num(now), ":holder": str(holder),
+			":deadline": num(lease.Deadline), ":epoch": num(r.LeaseEpoch)}
 		condition := "#version = :current AND "
 		update := "SET #leaseDeadline = :deadline"
 		if r.held(now) {
+			// The same holder re-acquiring keeps its epoch and extends the deadline: a caller that lost
+			// the reply to its own acquire (compute's recovery) retries safely. Another holder is refused.
 			if *r.Holder != holder {
 				return Lease{}, failure("held", 409)
 			}
@@ -81,8 +85,11 @@ func (s *Store) fencedUpdate(ctx context.Context, lineage, name string, fence Fe
 		return err
 	}
 	values[":holder"], values[":epoch"], values[":now"] = str(fence.Holder), num(fence.Epoch), num(now)
-	_, err := s.update(ctx, lineage, name, heldBy, update, values, types.ReturnValueNone)
+	_, err := s.update(ctx, lineage, name, heldBy+" AND attribute_exists(#version)", update, values, types.ReturnValueNone)
 	if ddb.IsConditionFailed(err) {
+		if _, err := s.Get(ctx, lineage, name); err != nil {
+			return err
+		}
 		return failure("fenced", 409)
 	}
 	return err

@@ -10,7 +10,7 @@ import (
 
 // Keep the key and leaseEpoch after deleting a ref. An old fence must never
 // become valid again when the same name is recreated and acquired.
-const removeRef = "REMOVE #version, #tree, #root, #owner, #expiresAt, #holder, #leaseDeadline, #watchers, #createdAt, #updatedAt"
+const removeRef = "REMOVE #version, #tree, #root, #owner, #expiresAt, #holder, #leaseDeadline, #watchers, #createdAt, #createdBy, #updatedAt"
 
 func deleteCheck(r Ref, expect *string, now int64) error {
 	if !r.live(now) {
@@ -54,12 +54,16 @@ func (s *Store) Delete(ctx context.Context, lineage, name string, expect *string
 }
 
 func (s *Store) DeleteOwned(ctx context.Context, lineage, owner string) (deleted, held []string, err error) {
-	if !store.Lineage(lineage) || !ownerPattern.MatchString(owner) {
+	return s.DeleteOwnedMatching(ctx, lineage, owner, nil)
+}
+
+func (s *Store) DeleteOwnedMatching(ctx context.Context, lineage, owner string, matches func(string) bool) (deleted, held []string, err error) {
+	if !store.Lineage(lineage) || !ValidOwner(owner) {
 		return nil, nil, failure("invalid", 400)
 	}
 	err = s.scan(ctx, lineage, "", "", func(r Ref) (bool, error) {
 		now := s.now().UnixMilli()
-		if !r.live(now) || r.Owner == nil || *r.Owner != owner {
+		if !r.live(now) || (matches != nil && !matches(r.Name)) || r.Owner == nil || *r.Owner != owner {
 			return true, nil
 		}
 		if r.held(now) {
@@ -100,6 +104,37 @@ func (s *Store) SweepExpired(ctx context.Context, lineage string) error {
 			attributes{":now": num(now)}, types.ReturnValueNone)
 		if ddb.IsConditionFailed(err) {
 			err = nil
+		}
+		return err == nil, err
+	})
+}
+
+// Held lists all currently held refs, including refs whose own expiry has passed.
+func (s *Store) Held(ctx context.Context, lineage string) ([]string, error) {
+	now := s.now().UnixMilli()
+	var held []string
+	err := s.scan(ctx, lineage, "", "", func(r Ref) (bool, error) {
+		if r.held(now) {
+			held = append(held, r.Name)
+		}
+		return true, nil
+	})
+	return held, err
+}
+
+// ClearDeleting runs after the lineage is frozen and its leases have drained.
+// Ref writes are disabled by the lineage guard, so a partial sweep is retryable.
+func (s *Store) ClearDeleting(ctx context.Context, lineage string) error {
+	frozen := *s
+	frozen.guard = nil
+	return s.scan(ctx, lineage, "", "", func(r Ref) (bool, error) {
+		if r.Version == "" {
+			return true, nil
+		}
+		_, err := frozen.update(ctx, lineage, r.Name, "#version = :current", removeRef,
+			attributes{":current": str(r.Version)}, types.ReturnValueNone)
+		if ddb.IsConditionFailed(err) {
+			err = nil // Another delete request already swept this ref.
 		}
 		return err == nil, err
 	})

@@ -387,8 +387,8 @@ run "service_with_an_image" {
   # The mock gives every target group one ARN, so the service's load_balancer set collapses here; the registrations
   # are the public api group, the enrollment group and the hosts NLB group, each naming the api container on its port.
   assert {
-    condition     = length(aws_lb_target_group.api) == 1 && alltrue([for registration in aws_ecs_service.api[0].load_balancer : registration.container_name == "camelfsd" && contains([8790, 8793, 8794], registration.container_port)])
-    error_message = "The service registers the api container with the public api group, the enrollment group and the hosts NLB group."
+    condition     = length(aws_lb_target_group.api) == 1 && [for registration in aws_ecs_service.api[0].load_balancer : registration.container_port] == [8790]
+    error_message = "Without \"compute\" the service registers the api port alone: the enrollment and hosts groups wait for a daemon that listens on their ports."
   }
   assert {
     condition     = aws_ecs_task_definition.api.runtime_platform[0].cpu_architecture == "ARM64" && contains(aws_ecs_task_definition.api.requires_compatibilities, "FARGATE")
@@ -414,7 +414,19 @@ run "service_with_every_feature" {
   }
 
   assert {
+<<<<<<< HEAD
     condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--lineages-table", "camelfs-prod-lineages", "--marks-table", "camelfs-prod-marks", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]
+=======
+    condition     = toset([for registration in aws_ecs_service.api[0].load_balancer : registration.container_port]) == toset([8790, 8793, 8794])
+    error_message = "With \"compute\" the service registers the enrollment and hosts groups too."
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.api_health_from_internal) == 2 && alltrue([for rule in aws_vpc_security_group_ingress_rule.api_health_from_internal : rule.from_port == 8790]) && length(aws_vpc_security_group_egress_rule.internal_health_to_api) == 2
+    error_message = "The internal ALB and the NLB reach the tasks on the api port for health checks, both directions."
+  }
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]
+>>>>>>> origin/camelfs/files-model
     error_message = "With refs and compute on, the command carries C2's and K4c's full flag set (wf-durable, 2026-11-14; no file flags: the tier keeps its key in memory) and then api_extra_args."
   }
   assert {

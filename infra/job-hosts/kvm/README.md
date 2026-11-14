@@ -45,10 +45,11 @@ Set `GUEST_IMAGE_S3_PREFIX` in the host config if the artifact is outside
 Setup verifies the compressed and raw hashes before replacing the installed
 base image. The guest uses the static Go agent. NodeSource 22 is for the host.
 
-Ubuntu adaptations: NodeSource's node is linked at `/usr/local/bin/node`;
-reused proxy dependencies are replaced by a systemd drop-in; rules copied from
-the source checkout are included via `/etc/nftables.d/camel-host.nft` in
-`/etc/nftables.conf`. UID 940 is required by those rules. Existing nftables rules
+NodeSource’s Node binary is linked at `/usr/local/bin/node` for the job host
+agent. `camel-egress-proxy.service` runs `camelfsd egress` as `camel-proxy`.
+Select a `CAMELFSD_REF` that contains the subcommand. The rules from the
+source checkout are included via `/etc/nftables.d/camel-host.nft` in
+`/etc/nftables.conf` and require `camel-proxy` to have UID 940. Existing nftables rules
 are preserved in the configuration (Ubuntu's default flush still applies on reload).
 `rsync`, `openssl` and `xz-utils` are installed alongside the host packages.
 
