@@ -25,6 +25,7 @@ import (
 
 type vmAPI struct {
 	controller *compute.Controller
+	host       HostPusher
 	images     []string
 	pools      []string
 	idle       map[string]int64
@@ -36,11 +37,17 @@ type vmAPI struct {
 func (s *StorageServer) EnableCompute(c *compute.Controller, images, pools []string, idle map[string]int64, heartbeat time.Duration) {
 	v := &vmAPI{controller: c, images: images, pools: pools, idle: idle, heartbeat: heartbeat,
 		imageBytes: make(map[string]int64)}
+	// The production controller already carries the pusher with the tier's rotating TLS credentials.
+	v.host, _ = c.Pusher.(HostPusher)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/vms", v.handle(v.create))
 	mux.HandleFunc("GET /v1/vms/{id}", v.handle(v.get))
 	mux.HandleFunc("POST /v1/vms/{id}/stop", v.handle(v.stop))
 	mux.HandleFunc("POST /v1/vms/{id}/deadline", v.handle(v.deadline))
+	mux.HandleFunc("POST /v1/vms/{id}/shells", v.handle(v.shell))
+	mux.HandleFunc("POST /v1/vms/{id}/exec", v.handle(v.exec))
+	mux.HandleFunc("GET /v1/vms/{id}/exec/{execId}", v.handle(v.execTail))
+	mux.HandleFunc("POST /v1/vms/{id}/checkpoint", v.handle(v.checkpoint))
 	mux.HandleFunc("GET /v1/usage", v.handle(v.usage))
 	s.compute = mux
 }
@@ -62,6 +69,10 @@ func (v *vmAPI) handle(fn func(http.ResponseWriter, *http.Request, auth.Claims) 
 			err = &storageError{404, "not_found", nil}
 		case errors.Is(err, compute.ErrConflict), errors.Is(err, compute.ErrCondition):
 			err = &storageError{409, "conflict", nil}
+		case errors.Is(err, compute.ErrPhase):
+			err = &storageError{409, "not_running", nil}
+		case errors.Is(err, compute.ErrCheckpointInProgress):
+			err = &storageError{409, "checkpoint_in_progress", nil}
 		case errors.Is(err, compute.ErrTooManyExecs):
 			err = &storageError{429, "too_many_execs", nil}
 		case errors.Is(err, compute.ErrLeaseExpired):
@@ -73,11 +84,14 @@ func (v *vmAPI) handle(fn func(http.ResponseWriter, *http.Request, auth.Claims) 
 }
 
 func vmWriteAllowed(claims auth.Claims, lineage, ref string) bool {
-	return runtimeSubject(claims) && claims.Access == "w" && claims.Lineage == lineage &&
-		slices.ContainsFunc(claims.Refs, func(glob string) bool {
-			matches, _ := path.Match(glob, ref)
-			return matches
-		})
+	return runtimeSubject(claims) && claims.Access == "w" && vmRefAllowed(claims, lineage, ref)
+}
+
+func vmRefAllowed(claims auth.Claims, lineage, ref string) bool {
+	return claims.Lineage == lineage && slices.ContainsFunc(claims.Refs, func(glob string) bool {
+		matches, _ := path.Match(glob, ref)
+		return matches
+	})
 }
 
 type vmCreate struct {
