@@ -17,37 +17,9 @@ This document covers five things:
 It builds on [camel-fs.md](camel-fs.md) §1.4–§1.5 (Firecracker on nested KVM; jobs and computers on one substrate)
 and on the job-hosts plan, whose image, netns pool, egress proxy and isolation suite stay.
 
-## 1. One host process: the TypeScript host agent folds into `camelfsd host`
+## 1. One host process
 
-Today a VM host runs two programs that talk over a Unix socket:
-
-| | `camelfsd host` (Go) | `jobhost` (TypeScript, Node) |
-|---|---|---|
-| owns | the block layer: images, the lazy origin (NBD), hydration, the chunk cache, mounts, checkpoints | enrollment, the WebSocket to the runtime, slots, Firecracker (`firecracker.ts`, `vm.ts`), the netns pool (`network.ts`), the egress proxy (`egress-proxy.ts`), the guest channel (`guest.ts` host side), the import proxy (`camelfsd.ts`) |
-| size | the daemon | ≈ 1,700 lines in `jobhost/` plus `shared/job-host-protocol.ts` |
-
-Inside each guest, `camel-guest` (also `jobhost/guest.ts`, run by `camel-init` behind `socat` on vsock 5000) runs
-Node.
-
-**After the merge**, one Go binary has three roles:
-
-- **`camelfsd host`** owns the block device, Firecracker, the slots and the guest channel in one process.
-  - Compute is a module behind `--compute` (K2a; the flag does not exist yet). Without the flag it is exactly today's storage-only host: no
-    Firecracker, no netns pool, no slots, no `/v1/vms` routes. With it, the host advertises its shape (vCPUs,
-    memory, slots, pool, features) and runs VMs.
-  - The module is the Go port of `vm.ts`/`firecracker.ts` (launcher, jailer, the `VmLauncher` seam kept as an
-    interface), `network.ts` (the netns pool), `egress-proxy.ts` and the host half of `guest.ts`. It also keeps the
-    `isolation-suite.ts` checks as Go tests run against a real host.
-  - The import proxy is not ported: the import is deleted by phase 2 (L82).
-- **`camelfsd guest`** is the same binary built static for the guest. It replaces Node's `camel-guest` and keeps
-  its op set:
-  - today's ops: `run`, `collect`, `free`, `exit`, `camelfs_apply`, `camelfs_checkpoint`, `camelfs_checkpointed`;
-  - added for sessions (§2): `exec` with a persistent shell, and streaming output;
-  - on vsock 5000 directly, with no `socat`.
-
-  The guest image no longer needs Node, which shrinks it and closes the guest-side Node limits (L39, L40). Its
-  `camel-init` replacement powers off cleanly with `reboot(LINUX_REBOOT_CMD_POWER_OFF)` (L62).
-- **`camelfsd api`** is the stateless tier (C1), which gains the compute routes of §2.
+Compute hosts run `camelfsd host --compute`.
 
 **Process model.** VMs must survive a `camelfsd` restart, or a daemon deploy kills every running VM on the host.
 - Each Firecracker runs under the jailer in its own systemd scope, not as a child that dies with the daemon.

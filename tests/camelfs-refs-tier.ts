@@ -54,7 +54,7 @@ try {
   const url = `http://127.0.0.1:${port}`;
   for (let i = 0; ; i++) {
     if (daemon.exitCode !== null) throw new Error(`camelfsd api exited ${daemon.exitCode}`);
-    if ((await fetch(`${url}/v0/health`).catch(() => null))?.ok) break;
+    if ((await fetch(`${url}/v1/health`).catch(() => null))?.ok) break;
     if (i > 100) throw new Error("camelfsd api did not become healthy");
     await new Promise(resolve => setTimeout(resolve, 100));
   }

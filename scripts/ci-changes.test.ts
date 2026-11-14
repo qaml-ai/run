@@ -68,7 +68,7 @@ test("PR guest images follow the guest's inputs, the build script, and the workf
   for (const path of ["camelfsd/internal/guest/guest.go", "camelfsd/scripts/build-guest-image.sh", ".github/workflows/ci.yml"]) {
     assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=true$/m, path);
   }
-  assert.match(changes({ event: "pull_request", paths: ["README.md", "jobhost/guest.ts"] }), /^guest_image=false$/m);
+  assert.match(changes({ event: "pull_request", paths: ["README.md", "src/server.ts"] }), /^guest_image=false$/m);
   // camelfsd/scripts/guest-inputs.txt names the guest's inputs; host/tier-only camelfsd code does not rebuild it.
   for (const path of ["camelfsd/internal/api/refs.go", "camelfsd/internal/computehost/host.go", "camelfsd/cmd/camelfsd/main.go"]) {
     assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=false$/m, path);
