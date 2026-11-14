@@ -110,15 +110,16 @@ test("a listening session past its free hourly allowance (429 FREE_HOURLY_LIMIT)
 });
 
 test("a listening session refused by a rate or concurrency limit (any other 429) drops that utterance and goes on", async t => {
-  let refusals = 1;
-  const { node, fake, transcription, events } = await voiceCluster(t, { admit: async () => { if (refusals-- > 0) throw new HttpError(429, "too many at once", "RATE_LIMITED"); } });
+  let refusals = 0;
+  const { node, fake, transcription, events } = await voiceCluster(t, { admit: async () => { if (refusals > 0) { refusals--; throw new HttpError(429, "too many at once", "RATE_LIMITED"); } } });
   const a = await node("http://a");
   const created = await a.voice.create("alice", { discord: discordGrant(), brain: "listen", silenceMs: 200 });
   const connection = await until(() => fake.open()[0], "the connection");
   connection.others = [ANA];
   connection.handlers.ready();
+  refusals = 1;
   speak(connection, ANA, 0.6);
-  await until(async () => (await a.voice.get("alice", created.id)).lastSpeechAt ? true : undefined, "the first utterance seen");
+  await until(() => refusals === 0 ? true : undefined, "the refused admission");
   await sleep(300);
   assert.equal(transcription.calls.length, 0, "the refused utterance is not transcribed");
   assert.equal((await events("voice.session.ended")).length, 0, "no budget ending");
