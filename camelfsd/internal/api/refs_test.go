@@ -91,7 +91,7 @@ func TestRefsRoutes(t *testing.T) {
 		t.Fatal(got)
 	}
 	call("PUT", "", put("t"), "", 200, "")
-	call("PUT", "", put("other"), "", 409, "conflict")
+	call("PUT", "", put("other"), "", 409, "lineage_conflict")
 	call("GET", "", nil, "", 200, "")
 
 	blob := call("PUT", "/blobs", map[string]string{"body": "seed"}, "", 201, "")["blob"].(string)

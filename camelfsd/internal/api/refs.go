@@ -296,8 +296,12 @@ func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name s
 	if err != nil {
 		return err
 	}
+	// cas moves the ref to a commit the lineage already has, so it is always a fast-forward check (rule 2):
+	// the commit must reach expect. bad_parent (rule 1) belongs to the moves the tier builds itself (write,
+	// merge, restore), whose parents it chooses; cas still refuses a commit with more than two parents.
 	kind := "move"
-	if len(commit.parents) > 0 && commit.parents[0] == body.Expect {
+	if len(commit.parents) > 2 {
+		// refstore's rule 1 refuses it as bad_parent, after the stale and fence checks.
 		kind = "commit"
 	}
 	var diff []diffChange

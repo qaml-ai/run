@@ -97,7 +97,7 @@ func (s *lineageStore) create(ctx context.Context, l string, body lineageItem) (
 		return lineageItem{}, 0, lineageDeleted()
 	}
 	if existing.Tenant != body.Tenant {
-		return lineageItem{}, 0, &storageError{409, "conflict", nil}
+		return lineageItem{}, 0, &storageError{409, "lineage_conflict", map[string]any{"tenant": existing.Tenant}}
 	}
 	return existing, 200, nil
 }
