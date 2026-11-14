@@ -728,9 +728,12 @@ Over the host's Unix socket (unchanged transport):
 
 - **Before boot**, the caller creates the branch (`job/<id>` at the version the job mounts, §9.9 `POST refs`,
   `owner: job:<id>`; for inline `files` that version is the scratch commit of §4). The **tier** takes the ref lease
-  just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`, and hands the host the holder and
-  the epoch in the boot spec over hostwire (camel-fs-compute.md §2). The lease is the tier's to renew for the
-  VM's life.
+  just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`.
+  - `booting` is written with the lease fields under a host-epoch condition.
+  - The boot spec carries `Lease { Holder { Host, Boot, Mount }, Epoch, Deadline }` to the host over hostwire, and
+    a resend carries the current values.
+  - The tier's control loop renews the lease when less than 400 s of its 600 remain.
+  - The tier releases the lease after `ended`, through a release item staged in the End transaction.
 - **The host's CAS: `POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas`**, registered **only** on the
   tier's `--listen-hosts` mux (§9.12). It is not on the API listener and is not folded into `ended`, because
   computer and `bash` VMs checkpoint many times without ending.
@@ -1003,8 +1006,11 @@ proves only "this came through Cloudflare", and anyone can proxy their own zone 
 - **Host → tier: `--listen-hosts`** (default `0.0.0.0:8794`) on `camelfsd api`, behind an **internal NLB in TCP
   passthrough** (`fs-internal.camelai.dev`).
   - The TLS handshake is the tier's own Go listener, not a load balancer's: `RequireAndVerifyClientCert` against
-    `--hosts-ca-pem`. Its server certificate is `--tier-cert`/`--tier-key`, the same certificate the tier presents
-    as a client to hosts, and both reload on SIGHUP.
+    `--hosts-ca-pem`. Its server certificate is the same certificate the tier presents as a client to hosts.
+  - **Where that certificate comes from:**
+    - In production (K4c3) the tier issues its own certificate from the Private CA at start (`--hosts-ca`, the CA's
+      ARN), renews it every 8 h, and refreshes the CA bundle hourly.
+    - `--tier-cert`/`--tier-key`/`--hosts-ca-pem` are the dev and test override. They reload on SIGHUP.
   - Expired, not-yet-valid and foreign-CA certificates fail the handshake.
   - **No certificate header is trusted anywhere.** AWS does not guarantee that an ALB strips client-supplied
     `X-Amzn-Mtls-*` headers, so nothing reads them, and no ALB terminates host TLS.
