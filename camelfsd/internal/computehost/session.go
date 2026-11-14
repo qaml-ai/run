@@ -23,15 +23,24 @@ type guestRequester interface {
 }
 
 type httpError struct {
-	status int
-	code   string
+	status  int
+	code    string
+	message string // optional: why, for a caller to act on (never request content)
 }
 
-func (e *httpError) Error() string { return e.code }
+func (e *httpError) Error() string {
+	if e.message != "" {
+		return e.code + ": " + e.message
+	}
+	return e.code
+}
 
-var invalidRequest = &httpError{400, "invalid_request"}
+var invalidRequest = &httpError{400, "invalid_request", ""}
 
-func conflict(code string) error { return &httpError{409, code} }
+// invalid is a 400 invalid_request that says which rule the request broke.
+func invalid(reason string) error { return &httpError{400, "invalid_request", reason} }
+
+func conflict(code string) error { return &httpError{409, code, ""} }
 
 func jsonReply(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -61,7 +70,7 @@ func report(w http.ResponseWriter, err error) {
 	var tier *tierError
 	switch {
 	case errors.As(err, &host):
-		replyError(w, host.status, host.code, "", nil)
+		replyError(w, host.status, host.code, host.message, nil)
 	case errors.As(err, &tier) && tier.Code != "":
 		// The tier answers only the §9.8 shape; anything else is a broken tier, not a refusal to relay.
 		var envelope errorEnvelope
@@ -90,7 +99,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, body any, optional bool)
 		if optional && err == io.EOF {
 			return nil
 		}
-		return invalidRequest
+		return invalid("request body: " + err.Error())
 	}
 	var extra any
 	if d.Decode(&extra) != io.EOF {
@@ -256,7 +265,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		case "":
 			status, code = 502, "guest_error"
 		}
-		report(w, &httpError{status, code})
+		report(w, &httpError{status, code, ""})
 		return
 	}
 	handle := func(e vmhost.Reply) bool {
@@ -378,15 +387,15 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	trailers := image.Trailers{Kind: "auto"}
 	if len(q.Trailers) != 0 && string(q.Trailers) != "null" {
 		if err := json.Unmarshal(q.Trailers, &trailers); err != nil {
-			return out, invalidRequest
+			return out, invalid("trailers: " + err.Error())
 		}
 	}
 	if trailers.Kind == "job" || trailers.Job != "" || trailers.ExitCode != nil {
-		return out, invalidRequest
+		return out, invalid("trailers: a session checkpoint takes no job kind, job or exitCode")
 	}
 	meta := image.CheckpointRequest{Message: &q.Message, Trailers: &trailers, Time: q.Time}
 	if err := meta.Validate(); err != nil {
-		return out, invalidRequest
+		return out, invalid(err.Error())
 	}
 	baseline := h.Mounts.NeedsBaseline(id)
 	type result struct {

@@ -44,7 +44,7 @@ func stageExecInput(ctx context.Context, objects store.Store, dir, lineage strin
 		return nil, err
 	}
 	if n != *blob.Size || hex.EncodeToString(hash.Sum(nil)) != blob.SHA256 {
-		return nil, &httpError{502, "blob_mismatch"}
+		return nil, &httpError{502, "blob_mismatch", ""}
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
