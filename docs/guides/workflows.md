@@ -11,8 +11,8 @@ Write a workflow when a task covers more than about 10 files, tables,
 documents or sources, or is a port, migration, audit or research sweep: list
 its units, give each to its own `agent()`, and keep the agent that owns the
 workflow to planning, checking and reporting. When the units edit files, give
-each `repo` (the volume) and `commit()` its fork. Run a single command with
-`job_run`, not a workflow, and use [`delegate`](multi-agent.md) for a few
+each `repo` and `commit()` its fork. To run commands from a workflow, ask a
+child agent to use its `bash` tool. Use [`delegate`](multi-agent.md) for a few
 sub-agents whose answers you need in this turn. The `workflows` builtin tells
 agents the same. An agent need not poll a workflow it started: a
 `<workflow_notification>` tells it when the workflow finishes or stops.
@@ -32,16 +32,14 @@ Its globals:
 | --- | --- |
 | `agent(prompt, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, type?, class?, output?, instructions?, label?, definition?, model? }`. With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted sub-agent returns `null` (the item records why), so `.filter(Boolean)` is the idiom |
 | `parallel(fns)`, `parallel(items, fn)` | Runs the functions (or `fn` over each item) at once, up to the workflow's `concurrency`, and waits for all of them, even after one fails. **Every `agent()` inside it needs an explicit `key`** (the workflow faults with `key_required` otherwise): branches finish in any order, and keys are how results are matched to calls on replay |
-| `agent(prompt, { repo })` | With `repo` (a volume id), the sub-agent gets its own copy of that volume at `/repo` (a fork: no bytes copied) and edits it with its file tools; it answers `{ text, fork }` (or the validated object with `fork` in it) |
-| `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
-| `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, commit?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow; a workflow started with an API key is paid by its account, and its usage shows under the workflow's id. A job the account's credit or monthly spend limit refuses pauses the workflow (`payer_exhausted`) until it is raised. Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere). `commit: true` (camelFS job hosts only) checkpoints `/repo` when the command ends, even if it failed, and answers its `tree`, `root` and `commit`, or `checkpointError`. |
-| `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
+| `agent(prompt, { repo })` | `repo` is a repo id, or `{ repo, ref }` or `{ repo, version }` (default: the `main` branch). The child works on a branch of its own, at `/repo`. Its answer includes `fork: { repo, ref, base }`. |
+| `commit(fork, opts)` | Merges the child's branch (`result.fork`) into the branch it started from. Answers `{ committed: true, version, changed, files? }`, or `{ committed: false, conflicts }` when both sides changed the same files. Committing the same fork again answers `changed: false`. A fork started from a `version` has no branch to merge into: `commit()` answers `null`, and its item records why. |
 | `log(...parts)` | A line in the workflow's log |
 | `args` | What it was started with (`args` in the start), frozen |
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
 | `toBase64(value)`, `fromBase64(text, opts?)` | Base64 of any text (as UTF-8) or bytes, and back: text, or a `Uint8Array` with `{ as: "bytes" }`. `btoa`/`atob` take Latin-1 only. `TextEncoder` and `TextDecoder` (UTF-8) are there too |
 
-A workflow's forks are deleted when it ends, once its commits have landed. One whose result is cached (below) is kept by the cache instead, for as long as the result is.
+A workflow's branches are deleted when it ends, after its commits have landed. A cached result keeps its version for 3 days.
 
 A script is compiled before it starts: a syntax error is refused as `script_error`, with
 its line and column, and nothing runs.
@@ -119,9 +117,9 @@ When the script itself goes wrong (`key_required`, `key_conflict`,
 ## Changing a workflow: start a new one
 
 A workflow's script is not edited. To change one, abort it (or let it end) and
-start a new one with the fixed script. Its `agent()` and `job()` calls whose
+start a new one with the fixed script. Its `agent()` calls whose
 arguments match a result an earlier workflow of the same owner finished are
-answered from that result, at no cost: no sub-agent or container runs. Such an
+answered from that result without starting a sub-agent or charging for the call. Such an
 item has `origin: "cache"` and `cachedFrom` (`workflowId:key:attempt`), and the
 summary's `counts.cached` counts them.
 
@@ -129,19 +127,18 @@ summary's `counts.cached` counts them.
   account for a workflow started with an API key; workflows of other owners
   never share results.
 - Only results that finished (`done`) are reused: never a failed, refused or
-  aborted one, and never a `commit()` or `push()` (they change a volume or a
-  branch).
-- `agent(prompt, { repo })` and `job({ at })` are reused only while that
-  volume is unchanged since the earlier call started. A reused agent's answer
-  has a fork of its own: a copy of the earlier one, which `commit()` lands as
-  before. A result with a fork is reused for at most 3 days.
+  aborted one. Each `commit()` runs because it changes a branch.
+- `agent(prompt, { repo })` results are reused only while the base tree matches
+  the one the earlier call started from. A reused agent answer gets a
+  fresh branch at the cached version, which `commit()` lands as before. A
+  result with a fork is reused for at most 3 days.
 - An `agent()` is also keyed by the model it resolves to (its `class` or
   `model`, or the workflow's `classes` pin) and by the named `definition`'s
   revision: a restart with a stronger class, or an edited definition, runs
   again.
 - Two identical calls (same arguments, different keys) in one workflow share a
   result too: the second is answered from the first once it finished. Pass
-  `nocache: true` to an `agent()` or `job()` to run it regardless.
+  `nocache: true` to an `agent()` to run it regardless.
 - A result is kept for 7 days from the last time it was reused; an owner keeps
   at most 2,000 results and 64 MiB (the least recently used go first), and a
   result over 1 MiB is not kept.
@@ -171,8 +168,7 @@ curl -X POST $CAMELRUN_URL/v1/workflows \
 curl $CAMELRUN_URL/v1/workflows/wf_…/items?status=failed -H "Authorization: Bearer $CAMELAI_API_KEY"
 ```
 
-`items` is the journal: one row per effect (`kind` `agent`, `job`,
-`commit` or `push`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
+`items` is the journal: one row per effect (`kind` `agent` or `commit`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
 `failed`, `refused`, `aborted`), `args`, `result`, `reason`, `costUsd` and
 `model`, its `origin` (`script`, `reissue`, or `cache` with `cachedFrom`), in
 the order they were issued; pass `next` back as `after`. `counts` on the
@@ -272,22 +268,3 @@ const lead = await agents.upsert("port-lead", {
 `workflows: false` turns the builtin off for an agent that may delegate but
 should not start workflows. Both settings go on the agent's configuration
 (`upsert`, `createAgent`), set by whoever configures it, never by the agent.
-
-## Running one command: `job_run`
-
-When an agent only needs to run a command (a build, a test, a script), it does not need a workflow. On a runtime with
-workflows and jobs (the Cloudflare pilot today), every agent has the `job_run` tool. It runs one shell command in a
-fresh container and waits for it to finish, up to 15 minutes:
-
-```
-job_run({ command, timeoutSeconds? (300), at?: volumeId, files?: { path: text }, outputs?: [path], internet?: false })
--> { ok, exitCode, timedOut, stdout, stderr, outputs?, missing?, seconds }
-```
-
-- `at` starts the command with that volume's files in its working directory (a copy: changes are not saved back).
-- `outputs` names files the command writes under `$JOB_OUT`, and returns them inline.
-- `stdout` and `stderr` are each cut to their last 4,000 characters, and each output to its first 4,000.
-
-The container time is metered as the agent's own computer time, against its spend limit. The tool's call id names the
-job, so a replayed call runs nothing again and answers the same way. `workflow_start` tells an agent with `job_run` to
-use it for a single command.

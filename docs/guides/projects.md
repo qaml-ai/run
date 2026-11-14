@@ -1,5 +1,10 @@
 # Projects
 
+On Workers, create a keyed repo with `POST /v1/repos` and mount it with
+`{ repo, path, mode }`. Publish a version by advancing a ref such as
+`published` via `PUT /v1/repos/{id}/refs/published` with `{ version, expect }`.
+Serve the tree at that ref. The project SDK below uses the Node volume API.
+
 A project is something an agent builds for your users, a bot, a site, a report,
 that your application then runs or serves. The agent works on the files with its
 file tools; your application checks them and publishes versions. The pattern:

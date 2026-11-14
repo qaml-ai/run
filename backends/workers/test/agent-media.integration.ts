@@ -25,9 +25,9 @@ test("agent image tools generate and edit through shared media, save mounted fil
     MEDIA_BASE_URL: `http://127.0.0.1:${(provider.address() as any).port}`,
     PLATFORM_OPENAI_KEY: "fake-image-key",
   });
-  const shared = await r.call("/v1/volumes", { body: {} });
+  const shared = await r.call("/v1/repos", { body: { name: "Shared images" } });
   assert.equal(shared.status, 201, shared.text);
-  const created = await r.call("/v1/agents", { body: { codeMode: false, builtins: ["generate_image"], subject: "fixture-person", context: { project: "images" }, mounts: [{ workspace: true, path: "/scratch" }, { volumeId: shared.json.id, path: "/workspace", mode: "rw" }] } });
+  const created = await r.call("/v1/agents", { body: { codeMode: false, builtins: ["generate_image"], subject: "fixture-person", context: { project: "images" }, mounts: [{ workspace: true, path: "/scratch" }, { repo: shared.json.id, path: "/workspace", mode: "rw" }] } });
   assert.equal(created.status, 201, created.text);
   const id = created.json.id;
   const generated = await r.prompt(id, "Create the image", OPERATOR, { actor: "fixture-operator" });

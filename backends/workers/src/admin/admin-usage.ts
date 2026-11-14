@@ -96,7 +96,6 @@ const INTEGRATIONS: { key: string; label: string; sql: string }[] = [
   { key: "mcp_clients", label: "Connected an MCP client", sql: "select tenant from oauth_grants" },
   { key: "webhooks", label: "Run webhooks", sql: "select tenant from webhook_endpoints" },
   { key: "end_user_credits", label: "Meters their own users", sql: "select tenant from end_user_settings where enabled" },
-  { key: "volumes", label: "Volumes", sql: "select tenant from volumes where purged_at is null" },
   { key: "voice", label: "Voice calls", sql: "select tenant from voice_sessions" },
 ];
 
@@ -251,7 +250,7 @@ export interface AdminAccountDetail {
   agents: AdminAccountAgent[];
   live_agents: number;
   channels: { type: string; name: string }[];
-  counts: { api_keys: number; definitions: number; volumes: number; schedules: number };
+  counts: { api_keys: number; definitions: number; schedules: number };
   /** Providers it keeps its own key for, and the MCP clients it connected. */
   provider_keys: string[];
   mcp_clients: string[];
@@ -317,7 +316,7 @@ export async function adminAccount(db: Db, tenant: string, options: { days: numb
     sql.query("select channel->>'type' as type, channel->>'name' as name from channels where tenant = $1 order by created_at", [tenant]),
     sql.query(`
       select (select count(*) from api_tokens where tenant = $1) as api_keys, (select count(*) from definitions where tenant = $1) as definitions,
-        (select count(*) from volumes where tenant = $1 and purged_at is null) as volumes, (select count(*) from schedules where tenant = $1) as schedules`, [tenant]),
+        (select count(*) from schedules where tenant = $1) as schedules`, [tenant]),
     sql.query("select provider from provider_keys where tenant = $1 order by provider", [tenant]),
     sql.query("select distinct client_name from oauth_grants where tenant = $1 order by client_name", [tenant]),
   ]));
@@ -354,7 +353,7 @@ export async function adminAccount(db: Db, tenant: string, options: { days: numb
     }),
     live_agents: n(agents.rows[0]?.total),
     channels: channels.rows.map(channel => ({ type: String(channel.type), name: String(channel.name ?? "") })),
-    counts: { api_keys: n(counts.rows[0].api_keys), definitions: n(counts.rows[0].definitions), volumes: n(counts.rows[0].volumes), schedules: n(counts.rows[0].schedules) },
+    counts: { api_keys: n(counts.rows[0].api_keys), definitions: n(counts.rows[0].definitions), schedules: n(counts.rows[0].schedules) },
     provider_keys: keys.rows.map(key => String(key.provider)),
     mcp_clients: clients.rows.map(client => String(client.client_name)),
   };

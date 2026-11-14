@@ -7,14 +7,14 @@
 // results in their original batches, which a deterministic VM turns into the same state.
 //
 // This is our own driver, not pi-codemode's: its VM driver keeps its state in closures that cannot be snapshotted,
-// and workflow scripts see their own globals (agent, job, commit, push, parallel, log, now, random), not code mode's tools.
+// and workflow scripts see their own globals (agent, commit, parallel, log, now, random), not code mode's tools.
 import { EvalFlags, Intrinsics, JSException, QuickJS, type JSValueHandle } from "quickjs-wasi";
 import {
   WORKFLOW_STEP_PROTOCOL, type IssuedEffect, type WorkflowBatch, type WorkflowFaultCode, type WorkflowStepOutcome, type WorkflowStepRequest,
 } from "./workflow-protocol.ts";
 
 /** Bumped whenever this driver or its prelude changes what a snapshot holds or what a script observes. */
-export const WORKFLOW_DRIVER_VERSION = 3;
+export const WORKFLOW_DRIVER_VERSION = 4;
 /**
  * sha256 of `quickjs-wasi/quickjs.wasm` as this package pins it. Wrangler compiles the module at build time, so its
  * bytes cannot be read at runtime; a test checks this against the installed file, so a dependency bump fails until it
@@ -248,36 +248,14 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       if (opts) for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("agent", args, opts);
     },
-    // One command in a container of its own (jobs/): its files from a volume (\`at\`) or given inline, its named outputs
-    // kept in the workflow's volume. Answers { exitCode, timedOut, stdout, stderr, outputs, ... }, or null if it could
-    // not run (its item says why).
-    job(opts) {
-      options(opts, "job");
-      if (!opts || typeof opts.command !== "string" || opts.command === "") throw new TypeErrorCtor("job({ command }) needs a command");
-      if (typeof opts.timeoutSeconds !== "number" || !(opts.timeoutSeconds > 0)) throw new TypeErrorCtor("job() needs timeoutSeconds, a positive number");
-      const args = {};
-      for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
-      return effect("job", args, opts);
-    },
-    // Land a child's edits (its fork: agent(..., { repo }).fork) on the volume it was forked from, all or nothing. Answers
-    // { committed: true, seq, files, removed }, or { committed: false, conflicts: [{ path, headVersion }] } when the base
-    // changed under any of the files: nothing is written then, and the script decides (a fixer, a rebase, a skip).
+    // Merge a child's branch onto its base ref.
     commit(fork, opts) {
       options(opts, "commit");
-      const volume = typeof fork === "string" ? fork : fork && typeof fork.volume === "string" ? fork.volume : undefined;
-      if (!volume) throw new TypeErrorCtor("commit(fork) needs a fork: what agent(..., { repo }) answered as .fork, or its volume id");
-      const args = { fork: volume };
+      fork = fork && fork.fork ? fork.fork : fork;
+      if (!fork || typeof fork.repo !== "string" || typeof fork.ref !== "string" || !fork.base) throw new TypeErrorCtor("commit(fork) needs a fork: what agent(..., { repo }) answered as .fork");
+      const args = { fork };
       if (opts) for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("commit", args, opts);
-    },
-    // Push a volume to a GitHub branch, as a job, with the GitHub App's installation token (never shown to the script).
-    push(opts) {
-      options(opts, "push");
-      if (!opts || typeof opts.volume !== "string" || typeof opts.repo !== "string" || typeof opts.branch !== "string" || typeof opts.app !== "string")
-        throw new TypeErrorCtor("push({ volume, repo, branch, app }) needs a volume id, an owner/name repository, a branch and a GitHub App");
-      const args = {};
-      for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
-      return effect("push", args, opts);
     },
     // Waits for every branch, even after one fails, so no branch is still issuing effects outside parallel().
     async parallel(items, fn) {
@@ -309,6 +287,9 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       return opts && opts.as === "bytes" ? bytes : utf8Decode(bytes);
     },
   };
+  // Report calls to the removed effects as script faults, even if the script catches the throw.
+  const removed = () => fault("script_error", "job() and push() were removed; run commands with the bash tool in a child agent.");
+  for (const name of ["job", "push"]) defineProperty(globalThis, name, { value: removed });
   for (const name of keysOf(globals)) defineProperty(globalThis, name, { value: globals[name], enumerable: true });
   if (typeof globalThis.TextEncoder === "undefined") defineProperty(globalThis, "TextEncoder", { value: TextEncoderShim, writable: true, configurable: true });
   if (typeof globalThis.TextDecoder === "undefined") defineProperty(globalThis, "TextDecoder", { value: TextDecoderShim, writable: true, configurable: true });

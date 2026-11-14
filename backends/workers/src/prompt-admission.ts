@@ -1,3 +1,5 @@
+import type { RunLimitsSnapshot } from "./run-limits.ts";
+
 /** Admission held while files are prepared, before raw request data can be discarded. */
 export const PROMPT_PREPARATION_PREFIX = "prompt-preparation:";
 const PREPARATION_LEASE_MS = 30 * 60_000;
@@ -9,6 +11,7 @@ export type PromptPreparation = {
   fingerprint: string;
   expiresAt: number;
   admitted: boolean;
+  limitsSnapshot?: RunLimitsSnapshot;
 };
 type Storage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "list">;
 
@@ -21,7 +24,7 @@ export class PromptPreparations {
     this.release = release;
   }
 
-  async begin(input: Omit<PromptPreparation, "expiresAt" | "admitted">, admit: () => Promise<void>, now = Date.now()) {
+  async begin(input: Omit<PromptPreparation, "expiresAt" | "admitted" | "limitsSnapshot">, admit: () => Promise<RunLimitsSnapshot>, now = Date.now()) {
     const key = PROMPT_PREPARATION_PREFIX + input.requestId;
     let receipt = await this.storage.get<PromptPreparation>(key);
     if (receipt && receipt.fingerprint !== input.fingerprint)
@@ -38,9 +41,10 @@ export class PromptPreparations {
       if (!receipt) {
         receipt = { ...input, expiresAt: now + PREPARATION_LEASE_MS, admitted: false };
         await this.storage.put(key, receipt);
-        await admit();
-        await this.storage.put(key, { ...receipt, admitted: true });
+        receipt = { ...receipt, admitted: true, limitsSnapshot: await admit() };
+        await this.storage.put(key, receipt);
       }
+      return receipt.limitsSnapshot;
     } catch (error) {
       await this.fail(input.requestId);
       throw error;

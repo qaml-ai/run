@@ -74,9 +74,8 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   });
   model.server.listen(0, "127.0.0.1"); await once(model.server, "listening");
   t.after(() => { model.server.closeAllConnections(); return new Promise<void>(resolve => model.server.close(() => resolve())); });
-  // No AGENT_PUBLIC_URL, as on a local `wrangler dev`: children are configured with the origin the workflow was
-  // started at (its owner agent's), and never started at all when they were not.
-  const fixture = await startFixture({ noPublicUrl: true, vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "wf-fixture/wf-model", strong: "wf-fixture/wf-model", max: "wf-fixture/wf-model" }) } });
+  // The fixture's public origin also identifies the signer trusted by the repo tier.
+  const fixture = await startFixture({ vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "wf-fixture/wf-model", strong: "wf-fixture/wf-model", max: "wf-fixture/wf-model" }) } });
   t.after(() => fixture.stop());
   const call = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") => {
     const response = await fetch(fixture.url + path, { method, headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });

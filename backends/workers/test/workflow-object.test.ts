@@ -72,7 +72,7 @@ test("pause, resume and abort", { timeout: 60_000 }, async () => {
   await assert.rejects(gone.runner.resume(), /aborted workflow cannot be resumed/);
 });
 
-test("abort and start again: finished agent() results with the same arguments come from the owner's cache at no cost; new and opted-out ones run; a failing cache is a miss", { timeout: 60_000 }, async () => {
+test("abort and start again: finished agent() results with the same arguments come from the owner's cache at no cost; new and opted-out ones run; storage failures retry", { timeout: 60_000 }, async () => {
   const script = (files: string[], summary: string) => `
     const reviews = await parallel(${JSON.stringify(files)}, file => agent("review " + file, { key: "review:" + file }));
     const summary = await agent(${JSON.stringify(summary)} + reviews.length);
@@ -115,7 +115,7 @@ test("abort and start again: finished agent() results with the same arguments co
   assert.equal(at(changed).counts.cached, undefined);
   results.version = 0;
 
-  // nocache: true runs again; a lookup that throws is a miss and the effect runs.
+  // nocache runs again. A storage failure leaves the effect pending.
   const fresh = harness({ results });
   fresh.init({ code: `const a = await agent("review a", { key: "review:a", nocache: true }); return a.answer;` });
   await fresh.wake();
@@ -125,10 +125,12 @@ test("abort and start again: finished agent() results with the same arguments co
   results.failLookup = "the cache is down";
   const down = harness({ results });
   down.init({ code: script(["a"], "summarize ") });
+  await assert.rejects(down.wake(), /the cache is down/);
+  assert.equal(down.world.queue.length, 0);
+  results.failLookup = undefined;
   await down.wake();
   await down.run();
   assert.equal(at(down).status, "completed");
-  assert.equal(at(down).counts.cached, undefined, "every effect ran");
 });
 
 test("a failed outcome never reaches the cache; only ok results are offered", { timeout: 60_000 }, async () => {
@@ -183,32 +185,41 @@ test("a crash between steps: a new object over the same storage picks up where t
   assert.equal(at(second).result, "re: bA");
 });
 
-test("every Wrangler config adds WorkflowObject and WorkflowResults with their own new_sqlite_classes migrations, after the existing ones", () => {
+test("every Wrangler config migrates WorkflowObject and WorkflowResults before repos, adds CamelfsUsagePoller, and deletes retired classes", () => {
   const configs = ["wrangler.jsonc", "wrangler.test.jsonc", "wrangler.pilot.jsonc", "wrangler.computers.test.jsonc"];
   for (const name of configs) {
     const config = new Function(`return (${readFileSync(new URL(`../${name}`, import.meta.url), "utf8")});`)() as {
       durable_objects: { bindings: { name: string; class_name: string; script_name?: string }[] };
-      migrations: { tag: string; new_sqlite_classes?: string[] }[];
+      migrations: { tag: string; new_sqlite_classes?: string[]; deleted_classes?: string[] }[];
     };
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowObject"), [{ name: "WORKFLOWS", class_name: "WorkflowObject" }], name);
+    assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "CamelfsUsagePoller"), [{ name: "CAMELFS_USAGE", class_name: "CamelfsUsagePoller" }], name);
     const tags = config.migrations.map(migration => migration.tag);
     assert.equal(new Set(tags).size, tags.length, `${name}: unique tags`);
-    // After the existing ones: last, or followed only by the job hosts' (test configs, docs/design/job-hosts-plan.md).
+    assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "VOLUMES" || binding.class_name === "Volume"), name);
+    assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "REPOS" || binding.class_name === "RepoDO"), name);
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
-    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results"), [], `${name}: nothing but the job hosts' and the result cache's after it`);
-    // The result cache (workflow-results.ts): bound, with only the pilot's job hosts after its migration.
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), ["workflow-results", "repos", "delete-volumes", "camelfs-usage", ...(name === "wrangler.jsonc" ? [] : ["delete-job-hosts"]), "delete-repo-do", "voice-calls"], name);
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
     assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
       { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },
       ...(name === "wrangler.pilot.jsonc" ? [{ tag: "job-hosts", new_sqlite_classes: ["JobHost", "HostJob", "JobHostRegistry"] }] : []),
+      { tag: "repos", new_sqlite_classes: ["RepoDO"] },
+      { tag: "delete-volumes", deleted_classes: ["Volume"] },
+      { tag: "camelfs-usage", new_sqlite_classes: ["CamelfsUsagePoller"] },
+      ...(name === "wrangler.jsonc" ? [] : [{ tag: "delete-job-hosts", deleted_classes: ["JobHost", "JobHostRegistry", "HostJob"] }]),
+      { tag: "delete-repo-do", deleted_classes: ["RepoDO"] },
+      { tag: "voice-calls", new_sqlite_classes: ["VoiceCall"] },
     ], name);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);
-    // Every class bound locally has a migration that creates it.
+    const deleted = new Set(config.migrations.flatMap(migration => migration.deleted_classes ?? []));
+    // Every class bound locally still exists.
     for (const binding of config.durable_objects.bindings.filter(binding => !binding.script_name))
-      assert.ok(config.migrations.some(migration => migration.new_sqlite_classes?.includes(binding.class_name)), `${name}: ${binding.class_name}`);
+      assert.ok(!deleted.has(binding.class_name) && config.migrations.some(migration => migration.new_sqlite_classes?.includes(binding.class_name)), `${name}: ${binding.class_name}`);
   }
   assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"), /export \{ WorkflowObject \} from "\.\/workflow-object\.ts";/);
+  assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"), /export \{ CamelfsUsagePoller \} from "\.\/camelfs\/usage-poller\.ts";/);
   assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"), /export \{ WorkflowResults \} from "\.\/workflow-results\.ts";/);
 });
 

@@ -19,20 +19,16 @@ const SETTLED = new Set(["completed", "failed", "aborted", "paused", "budget_exh
 /**
  * The builtin's description. When to write a workflow is the wording the choice eval chose (evals/workflows, #847):
  * concrete triggers and "you plan, agents do the units" took should-split prompts from 1 of 6 to 6 of 6 with no false
- * splits. The job_run sentence is there only where the agent has job_run (agent-jobs.ts).
+ * splits.
  */
-export function workflowStartDescription(jobRun: boolean) {
-  return "Start a workflow: a JavaScript script that runs sub-agents (agent(prompt, { key, type, class, output })), waits on them (parallel(items, fn)), and returns a result. " +
+export const WORKFLOW_START_DESCRIPTION = "Start a workflow: a JavaScript script that runs sub-agents (agent(prompt, { key, type, class, output })), waits on them (parallel(items, fn)), and returns a result. " +
   "Write a workflow when a task covers more than about 10 files, tables, documents or sources, or is a port, migration, audit or research sweep: list its units, give each to its own agent(), and keep yourself to planning, checking and reporting. " +
   "When the units edit files, pass repo: your volume and commit() each fork. Do not do the units yourself. " +
-  (jobRun ? "Run a single command with job_run, not a workflow. " : "") +
   "Use delegate for a few sub-agents whose answers you need in this turn. " +
   "A workflow outlives your turn: when it ends or stops for its budget you get a <workflow_notification> message, which only the runtime writes, so you need not poll it. You own it: you can stop it. " +
-  "To change a running workflow, abort it and start a new one: finished agent() and job() results with the same arguments are reused, not paid for again. " +
+  "To change a running workflow, abort it and start a new one: finished agent() results with the same arguments are reused at no cost. " +
   "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`. " +
-  "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them. " +
-  "job({ command, timeoutSeconds, at: volumeId, outputs }) runs one shell command on a copy of the volume in a container of its own and answers its exit code and output.";
-}
+  "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them.";
 /**
  * What a stopped or failed workflow's owner can do next, as workflow_status shows it (the notification says it too).
  * MODEL-FACING.
@@ -42,8 +38,6 @@ export function workflowNext(view: { status?: string; fault?: unknown }): string
   if (view.fault) return "To change it, abort it and start a new workflow: finished results are reused.";
   return undefined;
 }
-/** The description where the agent has no job_run. */
-export const WORKFLOW_START_DESCRIPTION = workflowStartDescription(false);
 
 export interface WorkflowToolsHost {
   env: WorkflowEnv;
@@ -55,8 +49,6 @@ export interface WorkflowToolsHost {
   /** What the agent may still spend (USD), Infinity without a spend limit. */
   remaining(): Promise<number>;
   maxBudgetUsd?: number;
-  /** The agent also has job_run: workflow_start says to use it for a single command. */
-  jobRun?: boolean;
   /**
    * The agent's children table (delegation.ts): a workflow it starts is a background child of its, whose endings come
    * as a child's. `register` writes its row before the workflow is made; `reopen` opens its next attempt once it goes
@@ -96,7 +88,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       execute: async (args: Record<string, unknown>, api) => text(await run(args, api.callId, api)) });
 
   return [
-    tool("workflow_start", workflowStartDescription(!!host.jobRun), {
+    tool("workflow_start", WORKFLOW_START_DESCRIPTION, {
       script: { type: "string", description: `The workflow's JavaScript: its body runs as an async function (await and return at the top level), at most ${WORKFLOW_SCRIPT_CHARS} characters` },
       args: { description: "JSON the script reads as `args`" },
       budgetUsd: { type: "number", description: "The most the workflow may spend in USD; it pauses when that is spent" },
@@ -139,7 +131,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       }
       return brief(args.workflowId, view);
     }),
-    tool("workflow_items", "A workflow's effects (its agents, jobs, commits and pushes): their keys, status and results, to read samples or find failures. origin \"cache\" marks a result reused from an earlier workflow.", {
+    tool("workflow_items", "Inspect the workflow's agents and commits, including their keys, status and results. origin \"cache\" marks a result reused from an earlier workflow.", {
       workflowId: id, status: { type: "string", description: "Only effects in this status (pending, done, failed, refused)" }, limit: { type: "integer", description: "At most this many (default 50)" },
     }, ["workflowId"], async args => (await own(args.workflowId)).items({ ...(args.status ? { status: args.status } : {}), limit: Math.min(200, Number(args.limit ?? 50)) })),
     tool("workflow_pause", "Pause a workflow: nothing new starts. With stopChildren, its running sub-agents stop too.", {

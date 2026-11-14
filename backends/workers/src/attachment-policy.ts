@@ -10,11 +10,10 @@ export type Media = { kind: "image"; mimeType: string; width: number; height: nu
 
 /**
  * A file as the transcript keeps it, in a user message or a tool result, in place of its bytes.
- * The chunk list is the file's content at the time: chunks are content-addressed and never
- * rewritten, so the reference reads the same bytes after the file is changed or deleted.
+ * The immutable version and blob retain the bytes after the file is changed or deleted.
  */
-export type FileRef = {
-  type: "file"; path: string; volume: string; version: number; size: number; contentType: string; chunks: string[];
+export type RepoFileRef = {
+  type: "file"; path: string; repo: string; version: string; blob: string; repoPath?: string; size: number; contentType: string;
   media?: Media;
   /** Audio transcribed when it was attached (transcription.ts): the model reads this in place of the sound. */
   transcript?: FileTranscript;
@@ -24,10 +23,12 @@ export type FileRef = {
   head?: string;
 };
 
+export type FileRef = RepoFileRef;
+
 export function validFileRef(value: any): value is FileRef {
-  return !!value && value.type === "file" && typeof value.path === "string" && typeof value.volume === "string" &&
-    Number.isSafeInteger(value.version) && Number.isSafeInteger(value.size) && value.size >= 0 && typeof value.contentType === "string" &&
-    Array.isArray(value.chunks) && value.chunks.every((hash: unknown) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash)) &&
+  return !!value && value.type === "file" && typeof value.path === "string" && typeof value.repo === "string" &&
+    /^[a-f0-9]{40}$/.test(value.version) && Number.isSafeInteger(value.size) && value.size >= 0 && typeof value.contentType === "string" &&
+    typeof value.blob === "string" && /^[a-f0-9]{40}$/.test(value.blob) &&
     (value.transcript === undefined || (typeof value.transcript?.text === "string" && Number.isFinite(value.transcript.seconds) && typeof value.transcript.model === "string"));
 }
 

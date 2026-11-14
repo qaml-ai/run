@@ -13,6 +13,5 @@
   "workflowArgs": {
     "glob": "lib/m*.js",
     "instructions": "Migrate this module of ledger-labels (/workspace) as MIGRATION.md says: ES module syntax, the same exports, each legacyFormat call replaced by an identical template literal. Change only this file."
-  },
-  "workflowNote": "job_run and a workflow's job() run in containers with Node 24 and Python, and no network."
+  }
 }

@@ -1,18 +1,18 @@
 import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import { TenantWatchers } from "./tenant-watchers.ts";
-import { TenantStorage } from "./tenant-storage.ts";
+import { TenantRepos, type RepoRow } from "./repos/tenant-repos.ts";
 const agentOf = "CASE WHEN instr(id, ':') > 0 THEN substr(id, 1, instr(id, ':') - 1) ELSE id END";
 
 /** One tenant serializes admission. No fleet registry, heartbeat or PG advisory lock. */
 export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   private readonly watchers: TenantWatchers;
-  private readonly files: TenantStorage;
+  private readonly repos: TenantRepos;
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     guardAlarms(this, ctx, "TenantAdmission", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
     this.watchers = new TenantWatchers(ctx.storage.sql, write => ctx.storage.transactionSync(write));
-    this.files = new TenantStorage(ctx.storage, env.BUCKET as R2Bucket);
+    this.repos = new TenantRepos(ctx.storage);
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)",
     );
@@ -88,15 +88,21 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
       return true;
     });
   }
-  nativeStorageUsed(tenant: string) { return this.files.used(tenant); }
-  recordNativeFile(tenant: string, key: string, bytes: number) { return this.files.record(tenant, key, bytes); }
-  deleteNativeFile(tenant: string, key: string) { return this.files.deleted(tenant, key); }
-  alarm() { return this.files.alarm(); }
+  registerRepo(row: RepoRow, sourceId?: string) { return this.repos.register(row, sourceId); }
+  repoRow(id: string) { return this.repos.row(id); }
+  listRepos(input: {after?: string; limit?: number} = {}) { return this.repos.list(input); }
+  markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
+  repoUsage(id: string, bytes: number, files: number) { return this.repos.usage(id,bytes,files); }
+  reposUsed(exclude?: string) { return this.repos.used(exclude); }
+  // The Volume-era TenantStorage left one pending alarm on the pilot (L90 sweep, 2026-11-14). This no-op consumes it
+  // when it fires: no table or state is read, and nothing re-arms it. Remove once no tenant reports a pending alarm.
+  async alarm() {}
   /** Called after account deletion has stopped and purged every owned agent. */
   async purgeAccountData() {
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     this.watchers.initialize();
+    this.repos.initialize();
     // Keep the reusable object's empty schema: old delayed releases stay harmless.
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS creations (token TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at INTEGER NOT NULL)");

@@ -28,7 +28,12 @@ export async function withMoneyIdempotency(request: Request, env: IdempotencyEnv
   });
   activeRequests.add(request);
   try {
-    const response = await app.fetch(request);
+    let response = await app.fetch(request);
+    // Replay records retain content type and body, so restore repo cache policy here too.
+    if (/^\/v1\/repos(?:\/|$)/.test(new URL(request.url).pathname)) {
+      response = new Response(response.body, response);
+      response.headers.set("cache-control", "no-store");
+    }
     return handled && result === undefined ? undefined : response;
   } finally {
     activeRequests.delete(request);

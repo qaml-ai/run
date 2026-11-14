@@ -1,21 +1,22 @@
 # Runtime source revision; use a revision containing the nested-KVM launcher flags.
 RUN_REF=main
-# Daemon source revision: pin a commit of this repository (camelfsd/ is on main since #907; this job host needs its
-# unit 6 or later). A branch rebuilds and restarts camelfsd whenever it moves.
+# Daemon source revision: choose a ref containing the camelfsd egress subcommand.
+# A branch rebuilds the binary and restarts both camelfsd services when it moves.
 CAMELFSD_REF=main
 # Runtime enrollment endpoint, e.g. https://run-pilot.camelai.dev (required).
 RUNTIME_URL=
 # aws uses the instance role; test needs JOB_HOST_TEST_SECRET in /etc/camel/jobhost-test.env.
 ATTESTOR=aws
-# Runtime scheduling pool: test or build.
+# Scheduling pool for the TypeScript jobhost and the Go compute host: test or build.
 POOL=test
-# Maximum concurrent jobs.
-SLOTS=1
-# Advertised total host CPU capacity, not a per-guest allocation.
-JOB_VCPUS=2
-# Advertised total host memory capacity in MiB, not a per-guest allocation.
-JOB_MEMORY_MIB=2048
-# Authenticated import API, listening on host loopback.
+# Maximum concurrent session VMs on this host.
+SLOTS=2
+# The host's advertised capacity for session VMs: the tier places a VM only on a host whose total shape fits it,
+# and the runtime asks for up to 4096 MiB per session. Size these from the instance, leaving ~4 GiB of memory for the
+# host itself (camelfsd, Firecracker, page cache). m8id.xlarge (4 vCPU, 16 GiB): 4 / 12288 / 2 slots.
+JOB_VCPUS=4
+JOB_MEMORY_MIB=12288
+# camelfsd's runtime API (bearer from /etc/camel/camelfs-api.env), on host loopback; the tunnel points here.
 CAMELFS_API_PORT=8790
 # Daemon object store URL (required; replace both placeholders).
 CAMELFSD_STORE='s3://<bucket>/camelfsd/<prefix>'
@@ -27,7 +28,16 @@ CAMELFSD_VIRTUAL_SIZE=68719476736
 AWS_REGION=us-west-2
 # Empty discovers instance store by model; an override still requires safety checks.
 NVME_DEVICE=
-# Empty uses http://archive.ubuntu.com/ubuntu for the noble guest.
-UBUNTU_MIRROR=
-# Size of the guest base image in GiB.
-GUEST_IMAGE_GIB=6
+# Optional artifact location; defaults to CAMELFSD_STORE.
+GUEST_IMAGE_S3_PREFIX=
+
+# Set both endpoints to enable the Go compute host. Leave both empty for storage-only mode.
+TIER_ENROLL_URL=
+TIER_HOSTS_ENDPOINT=
+TIER_CA=/etc/camel/tier-ca.pem
+# S3 object containing the private tier CA PEM and its pinned lowercase SHA-256.
+TIER_CA_S3=
+TIER_CA_SHA256=
+CAMELFSD_IMAGES_STORE=
+LISTEN_COMPUTE=0.0.0.0:8792
+CAMELFSD_DISK_MIB=8192

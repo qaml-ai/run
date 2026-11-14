@@ -70,21 +70,13 @@ export function modelRuntime(
     TEST_MODEL_BASE_URL?: string;
     TEST_MODEL_API?: Api;
     TEST_MODE?: string;
-  } & ImageBindings & ModelTimeoutEnv & { VOLUMES?: FileBindings["VOLUMES"] },
+  } & ImageBindings & ModelTimeoutEnv,
   getTenant: () => Promise<string>,
   hooks: ModelHooks = {},
 ) {
   const models = createModels();
   const decorate = (provider: Provider) => {
-    const authorizeFile = async (key: string) => {
-      const agent = await hooks.agentId?.();
-      if (!agent || !env.VOLUMES) return false;
-      const tenant = await getTenant();
-      if (!key.startsWith(`files/${encodeURIComponent(tenant)}/`)) return false;
-      const volume = decodeURIComponent(key.split("/")[2] ?? "");
-      return env.VOLUMES.getByName(`${tenant}:${volume}`).hasPin(`agent:${agent}`, key);
-    };
-    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant, authorizeFile), env, getTenant, authorizeFile);
+    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant), env as FileBindings & import("./repos/registry.ts").RepoEnv, getTenant, hooks.authorizeRepoFile);
     return withSettings(hooks.wrapProvider ? hooks.wrapProvider(images) : images, hooks, env);
   };
   const contextModels = new Map<string, Model<Api>>();
@@ -105,10 +97,9 @@ export function modelRuntime(
       catalog.set(providerId, entries);
       const provider: Provider = {
         id: providerId, name: providerId,
-        auth: { apiKey: { name: providerId, resolve: async () => {
-          const credential = await hooks.credentials?.(providerId);
-          return credential ? { auth: { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless", baseUrl: credential.baseUrl, headers: credential.headers } } : { auth: {} };
-        } } },
+        // Pi resolves auth before calling the stream. withSettings prepares
+        // credentials inside the provider step, with the same policy as billing.
+        auth: { apiKey: { name: providerId, resolve: async () => ({ auth: {} }) } },
         getModels: () => [...entries.values()],
         stream: (model, context, options) => streamApi(model, false, context, options),
         streamSimple: (model, context, options) => streamApi(model, true, context, options),

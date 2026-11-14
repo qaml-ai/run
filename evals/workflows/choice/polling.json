@@ -2,10 +2,6 @@
   "version": 1,
   "about": "Prompts that need a workflow and a wait, for counting how the owner waits: workflow_status calls (polling) against the <workflow_notification>s it gets. Each runs to its end.",
   "prompts": [
-    { "id": "one-job", "files": { "dir": "lib", "count": 3, "template": "module" },
-      "prompt": "Start a workflow that runs `sleep 45 && ls lib` as a job on your volume, and tell me its output when it finishes." },
-    { "id": "two-jobs", "files": { "dir": "lib", "count": 3, "template": "module" },
-      "prompt": "Start two workflows, one running the job `sleep 20 && echo first` and one running `sleep 60 && echo second`, both on your volume. Tell me each one's output as it finishes." },
     { "id": "three-agents", "files": { "dir": "docs", "count": 3, "template": "doc" },
       "prompt": "Start a workflow with three worker agents, each writing a one-line summary of one of /repo/docs/d001.md, d002.md and d003.md (give each repo: your volume), and return their summaries. Tell me the three summaries when it is done." }
   ]

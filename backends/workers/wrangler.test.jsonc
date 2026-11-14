@@ -18,6 +18,8 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "VOICE_CALLS", "class_name": "VoiceCall" },
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -27,24 +29,8 @@
         "class_name": "TenantAdmission"
       },
       {
-        "name": "VOLUMES",
-        "class_name": "Volume"
-      },
-      {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
-      },
-      {
-        "name": "JOB_HOSTS",
-        "class_name": "JobHost"
-      },
-      {
-        "name": "HOST_JOBS",
-        "class_name": "HostJob"
-      },
-      {
-        "name": "JOB_HOST_REGISTRY",
-        "class_name": "JobHostRegistry"
       },
       {
         "name": "WORKFLOWS",
@@ -95,7 +81,16 @@
       "new_sqlite_classes": [
         "WorkflowResults"
       ]
-    }
+    },
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] },
+    {
+      "tag": "delete-job-hosts",
+      "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
+    },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
+    { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] }
   ],
   "hyperdrive": [
     {

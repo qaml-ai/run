@@ -3,7 +3,7 @@ export type DelegateResponse = { run: string; messageIndex: number; taken: numbe
 export type Session = { childHeld?: Map<string, { usd: number; holders: number }>; delegateResponse?: DelegateResponse; delegating?: { active: number } };
 type SpendContext = { left?: number };
 const budgetLeft = async (ctx: SpendContext, _session: Session, _run: string) => ctx.left;
-type Mount = { volumeId: string; path: string; mode: 'ro' | 'rw'; subpath?: string; notify?: boolean; instructions?: string };
+type Mount = import('./repos/mounts.ts').Mount;
 /**
  * The spend limit a delegate call's child gets, held for it until it ends (`releaseBudget`): an even share of what the
  * run may still spend that no other child in flight holds, split among this run's calls in flight that hold none yet
@@ -39,6 +39,6 @@ export function releaseBudget(session: Session, runId: string, usd: number) {
  */
 export function childMounts(mounts: Mount[] | undefined) {
   if (!mounts?.length) return {};
-  return { mounts: [...mounts.map(({ volumeId, path, mode, subpath, instructions }) => ({ volumeId, path, mode, ...(instructions !== undefined ? { instructions } : {}), ...subpath ? { subpath } : {} })), { workspace: false }] };
+  return { mounts: [...mounts.map(({ repo, ref, path, mode, subpath, instructions }) => ({ repo, ...(ref ? {ref} : {}), path, mode, ...(instructions !== undefined ? { instructions } : {}), ...subpath ? { subpath } : {} })), { workspace: false }] };
 }
 

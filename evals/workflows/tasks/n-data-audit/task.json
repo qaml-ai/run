@@ -33,6 +33,5 @@
       "reviews",
       "addresses"
     ]
-  },
-  "workflowNote": "job_run and a workflow's job() run in containers with Node 24 and Python, and no network."
+  }
 }

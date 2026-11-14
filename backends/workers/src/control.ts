@@ -1,3 +1,5 @@
+import { safeError } from "./observability.ts";
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { applying, prepareApply } from "../../../shared/apply-scope.ts";
 import { forgetAgentDreaming } from "../../../shared/dreaming.ts";
 import { disableAgentTriggers } from "../../../src/triggers.ts";
@@ -125,7 +127,7 @@ export async function authenticate(
 }
 
 const mountIdentity = (mounts: AgentConfiguration['mounts']) => JSON.stringify((mounts ?? []).map(mount =>
-  [mount.volumeId, mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
+  [mount.repo, mount.ref ?? "main", mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
 
 export class Directory {
   private env: ControlEnv;
@@ -201,7 +203,7 @@ export class Directory {
     // An agent whose first configuration never applied (initialized false: the apply failed) is still being
     // created: a retry applies it as a creation, since there is no configuration on the agent to queue a change on.
     if (applying() && previousEntry) {
-      const mounts = fields.mounts === undefined ? previousEntry.config.mounts : await (await import("./file-mounts.ts")).prepareMounts(this.env, this.tenantId, id, fields.mounts);
+      const mounts = fields.mounts === undefined ? previousEntry.config.mounts : await (await import("./repos/mounts.ts")).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv, this.tenantId, id, fields.mounts);
       if (previousEntry.configHash !== await digest(canonical({ ...config, mounts })) || JSON.stringify(previousEntry.resolvedModel) !== JSON.stringify(resolvedModel)) throw new ApiError(409, "Atomic apply cannot reconfigure an existing agent; use its configuration endpoint");
       return previousEntry;
     }
@@ -210,7 +212,7 @@ export class Directory {
         if (canonical(config[field] ?? null) !== canonical(previousEntry.config[field] ?? null))
           throw new ApiError(409, `An agent's ${field} cannot change`);
       if (fields.mounts !== undefined && fields.remount !== true) {
-        const mounts = await (await import('./file-mounts.ts')).prepareMounts(this.env, this.tenantId, id, fields.mounts);
+        const mounts = await (await import('./repos/mounts.ts')).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv, this.tenantId, id, fields.mounts);
         if (mountIdentity(mounts) !== mountIdentity(previousEntry.config.mounts))
           throw new ApiError(409, `An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
       }
@@ -236,13 +238,14 @@ export class Directory {
       : async () => {};
     let rate: RateLimitState | undefined;
     try {
-    const requested=(input as {mounts?:unknown;remount?:boolean}).mounts;
+    const requested= (input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
-    // Volume initialization uses its own SQL and DO calls. Keep those outside
+    // Repo preparation uses SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
-    config.mounts=await (await import('./file-mounts.ts')).prepareMounts(this.env,this.tenantId,id,requested===undefined?before?.config.mounts:requested);
+    config.mounts=(requested===undefined && before?.config.mounts ? before.config.mounts : await (await import('./repos/mounts.ts')).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv,this.tenantId,id,requested));
     const admitCreate = config.type !== "run" ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
     let createdHere = false;
+    let priorMounts:AgentConfiguration["mounts"];
     let entry = await transaction(this.env, async (sql) => {
       // A transaction-scoped lock covers the absent row as well as concurrent creates.
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
@@ -259,6 +262,7 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      priorMounts=old?.config.mounts;
       createdHere = !old;
       if (old && fields.subject !== undefined && fields.subject !== old.config.subject)
         throw new ApiError(409, "An agent's subject cannot change");
@@ -315,6 +319,10 @@ export class Directory {
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
       return next;
     });
+    if(!applying()) for(const mount of priorMounts??[]) {
+      if(mount.repo&&mount.notify&&!entry.config.mounts?.some(next=>next.repo===mount.repo&&(next.ref??'main')===(mount.ref??'main')&&next.notify))
+        await (await import('./repos/mounts.ts')).unwatchMount(this.env as import('./repos/registry.ts').RepoEnv,this.tenantId,id,mount as import('./repos/mounts.ts').Mount);
+    }
     if (!entry.initialized && !applying()) {
       const initialized = await this.initialize(entry, runtimeOrigin);
       if ('failed' in initialized) return initialized;
@@ -343,6 +351,7 @@ export class Directory {
   }
   private async initialize(entry: DirectoryEntry, runtimeOrigin?: string): Promise<DirectoryEntry | DirectoryFailure> {
     if (!entry.initialized) {
+      const started = Date.now();
       const response = await this.env.AGENTS.getByName(entry.id).fetch(
         new Request("https://agent/configuration", {
           method: "PUT",
@@ -357,7 +366,11 @@ export class Directory {
             runtimeOrigin,
           }),
         }),
-      ).catch(() => undefined);
+      ).catch(error => {
+        if (this.env.AGENT_CREATE_DIAGNOSTICS === "1")
+          console.error(JSON.stringify({ type: "agent_create_rpc_failed", ms: Date.now() - started, error: safeError(error) }));
+        return undefined;
+      });
       // The new revision is committed above (uninitialized): an agent that threw or failed applying it is a retry
       // away, as DELETE's cleanup is, so it answers 503 rather than a refusal. Another upsert applies it again.
       if (!response || response.status >= 500)
@@ -421,7 +434,7 @@ export class Directory {
         error: "Agent revoked; cleanup pending",
         code: "CLEANUP_PENDING",
       };
-    await (await import('./file-mounts.ts')).releaseAgentFiles(this.env,this.tenantId,entry.id,(entry.config.mounts??[]) as import("./files.ts").Mount[]);
+    await (await import('./repos/mounts.ts')).releaseAgentFiles(this.env as import("./repos/registry.ts").RepoEnv,this.tenantId,entry.id,(entry.config.mounts??[]) as import("./files.ts").Mount[]);
     entry.cleanupPending = false;
     entry.config = {};
     entry.configHash = "";
@@ -461,8 +474,8 @@ async function verifyAgent(sql: Sql, tenantId: string, agentId: string) {
     throw new ApiError(403, "Agent unavailable", "AGENT_GONE");
 }
 /** Run admission already checked credit through Accounts.runLimit. Verify the agent is still active. */
-export async function verifyTurnAgent(env: PostgresEnv, tenantId: string, agentId: string) {
-  await withSql(env, sql => verifyAgent(sql, tenantId, agentId));
+export async function verifyTurnAgent(env: PostgresEnv, tenantId: string, agentId: string, invocation?: AgentInvocation) {
+  await withSql(env, sql => verifyAgent(sql, tenantId, agentId), invocation);
 }
 export type TurnReceipt = {
   tenantId: string;
@@ -487,6 +500,7 @@ export async function settleTurn(
     METRICS?: AnalyticsEngineDataset;
   },
   receipt: TurnReceipt,
+  invocation?: AgentInvocation,
 ): Promise<{ duplicate: boolean }> {
   if (
     !Number.isSafeInteger(receipt.costMicros) ||
@@ -512,8 +526,8 @@ export async function settleTurn(
       `turn:${receipt.tenantId}:${receipt.agentId}:${receipt.requestId}`,
     ),
     key = `workers:receipt:${id}`;
-  const { accounts: { billing } } = await keyServices(env);
-  const prepaid = await billing.mode(receipt.tenantId) === "prepaid";
+  const { accounts: { billing } } = await keyServices(env, invocation);
+  const prepaid = await billing.mode(receipt.tenantId, undefined, invocation?.tenant(billing, receipt.tenantId)) === "prepaid";
   const result = await transaction(env, async (sql) => {
     // Admin tenants can run on their own keys without a prepaid account row.
     // Serialize all of their receipts too, without manufacturing a credit balance.
@@ -571,10 +585,10 @@ export async function settleTurn(
       ),
     ]);
     return { duplicate: false };
-  });
+  }, {}, invocation);
   if (faultAfterCommit && env.TEST_MODE === "1")
     throw new Error("injected lost PG acknowledgement");
-  if (env.WEBHOOKS) await publishPending(env as WebhookEnv);
+  if (env.WEBHOOKS) await publishPending(env as WebhookEnv, invocation);
   env.METRICS?.writeDataPoint({
     blobs: [receipt.tenantId, receipt.agentId, receipt.model ?? "local/fake"],
     doubles: [receipt.costMicros],

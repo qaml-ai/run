@@ -1848,7 +1848,7 @@ export interface WorkflowSummary {
   /** Who started it: an agent through the `workflows` builtin (which then owns it); absent for a start through the API. */
   owner?: { kind: "agent" | "workflow"; id: string };
 }
-/** One effect of a workflow: an `agent()`, `job()`, `commit()` or `push()` call, by its key. */
+/** One effect of a workflow: an `agent()` or `commit()` call, by its key. */
 export interface WorkflowItem {
   key: string;
   /** 1, one more each time the effect is re-issued (a refused effect re-issued on resume). */
@@ -1861,7 +1861,7 @@ export interface WorkflowItem {
   /** Where a reused result came from: `workflowId:key:attempt`. */
   cachedFrom?: string;
   status: "pending" | "running" | "done" | "failed" | "refused" | "aborted" | (string & {});
-  /** What the script called it with (an agent's prompt and options, a job's command). */
+  /** What the script called it with, such as an agent's prompt and options. */
   args: unknown;
   /** Its answer, once `done`. */
   result?: unknown;

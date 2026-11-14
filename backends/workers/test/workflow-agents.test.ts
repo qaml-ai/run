@@ -1,3 +1,4 @@
+import { StorageError } from '../src/repos/storage.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { agentCacheSalt, WorkflowAgents, workflowRun, type EffectUsage, type LandedOutcome, type WorkflowChildren } from '../src/workflow-agents.ts';
@@ -174,8 +175,8 @@ test('abort: queued children never start, running ones are stopped', async () =>
 test('agent() options a workflow child cannot have are refused on the effect', async () => {
   const w = world();
   await w.agents.start(effect('c', { prompt: 'x', computer: 'fork' }));
-  assert.match(String((w.landed[0]!.outcome as { error: string }).error), /no computer/);
-  await assert.rejects(w.agents.start({ key: 's', attempt: 1, kind: 'job', args: { command: 'true' } }), /agent\(\) effects/);
+  assert.match(String((w.landed[0]!.outcome as { error: string }).error), /cannot set computer configuration/);
+  await assert.rejects(w.agents.start({ key: 's', attempt: 1, kind: 'commit', args: {} }), /agent\(\) effects/);
 });
 
 test('a definition cannot bill a workflow child to an end user: its subject (and agent spend limit) are not taken', async () => {
@@ -227,6 +228,10 @@ test('a create that fails with a 5xx or no status is tried again with the same k
   await assert.rejects(w.agents.start(effect('b')), /reset/);
   await w.agents.recover();
   assert.equal(w.submitted.length, 2);
+  w.failCreate(new StorageError(0,'transport_error'));
+  await assert.rejects(w.agents.start(effect('storage')), StorageError);
+  assert.equal((await w.agents.rows.withStatus('queued')).length,1);
+  await w.agents.recover();
   w.failCreate(Object.assign(new Error('Unknown definition'), { status: 400 }));
   await w.agents.start(effect('c'));
   assert.deepEqual(w.landed.at(-1)!.outcome, { ok: false, error: 'Unknown definition' });

@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"io"
 	"net/http"
 	"os"
@@ -17,29 +14,58 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 )
 
 type Store interface {
+	Head(context.Context, string) (Info, error)
 	Get(context.Context, string) ([]byte, error)
 	Put(context.Context, string, []byte) error
 	Has(context.Context, string) (bool, error)
 }
 type Local struct{ Dir string }
 
+func guestManifest(key string) bool {
+	sha, ok := strings.CutPrefix(key, "guest/")
+	if !ok {
+		return false
+	}
+	sha, ok = strings.CutSuffix(sha, ".json")
+	return ok && root.Hex(sha, 64)
+}
+
 func valid(k string) bool {
-	p, h, ok := strings.Cut(k, "/")
-	return ok && (p == "c" || p == "r") && root.Hex(h, 64) || ok && (p == "o" || p == "t") && root.Hex(h, 40)
+	_, p, h, ok := splitKey(k)
+	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts" || p == "tr") && root.Hex(h, 40))
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
 		return fmt.Errorf("invalid key")
 	}
-	p, h, _ := strings.Cut(k, "/")
+	_, p, h, _ := splitKey(k)
+	if p == "tr" {
+		if !root.Hex(string(b), 64) {
+			return fmt.Errorf("invalid tree root")
+		}
+		return nil
+	}
+	if p == "ts" {
+		return VerifyTreeSizes(h, b)
+	}
 	actual := root.Hash(b)
-	if p == "o" || p == "t" {
+	if p == "o" || p == "t" || p == "k" {
 		kind := "blob"
 		if p == "t" {
 			kind = "tree"
+		}
+		if p == "k" {
+			kind = "commit"
 		}
 		actual = GitHash(kind, b)
 	}
@@ -72,30 +98,72 @@ func GitHash(kind string, b []byte) string {
 func BlobKey(b []byte) string { return "o/" + GitHash("blob", b) }
 
 // PutBlobFile publishes an already verified blob without buffering it in memory.
-func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
-	if !valid(key) || !strings.HasPrefix(key, "o/") {
-		return fmt.Errorf("invalid blob key")
-	}
-	if _, e := f.Seek(0, 0); e != nil {
-		return e
-	}
+func PutBlobFile(ctx context.Context, s Store, key string, f *os.File, metadata ...string) error {
+	_, err := PutBlobFileIfAbsent(ctx, s, key, f, metadata...)
+	return err
+}
+
+var blobPutMu sync.Mutex
+
+// PutBlobFileIfAbsent reports whether this call created the durable object.
+func PutBlobFileIfAbsent(ctx context.Context, s Store, key string, f *os.File, metadata ...string) (bool, error) {
 	switch v := s.(type) {
+	case *scoped:
+		k, e := v.key(key)
+		if e != nil {
+			return false, e
+		}
+		return PutBlobFileIfAbsent(ctx, v.Store, k, f, metadata...)
 	case *Uploaded:
-		return v.putFile(ctx, key, f)
+		return v.putFile(ctx, key, f, metadata...)
 	case *limited:
 		if e := v.acquire(ctx); e != nil {
-			return e
+			return false, e
 		}
-		defer v.release()
-		return PutBlobFile(ctx, v.Store, key, f)
+		defer v.release(ctx)
+		return PutBlobFileIfAbsent(ctx, v.Store, key, f, metadata...)
+	}
+	_, kind, _, _ := splitKey(key)
+	if !valid(key) || kind != "o" {
+		return false, fmt.Errorf("invalid blob key")
+	}
+	if _, e := f.Seek(0, 0); e != nil {
+		return false, e
+	}
+	sha := ""
+	if len(metadata) > 0 {
+		sha = metadata[0]
+	}
+	if sha == "" {
+		h := sha256.New()
+		if _, e := io.Copy(h, f); e != nil {
+			return false, e
+		}
+		sha = fmt.Sprintf("%x", h.Sum(nil))
+		if _, e := f.Seek(0, 0); e != nil {
+			return false, e
+		}
+	}
+	st, e := f.Stat()
+	if e != nil {
+		return false, e
+	}
+	switch v := s.(type) {
 	case Local:
+		exists, e := v.Has(ctx, key)
+		if e != nil || exists {
+			return false, e
+		}
+		if e := writeMetadata(filepath.Join(v.Dir, key), Info{Size: st.Size(), SHA256: sha}); e != nil {
+			return false, ioFailure(e)
+		}
 		dst := filepath.Join(v.Dir, key)
 		if e := os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
-			return e
+			return false, ioFailure(e)
 		}
 		tmp, e := os.CreateTemp(filepath.Dir(dst), ".tmp-")
 		if e != nil {
-			return e
+			return false, ioFailure(e)
 		}
 		defer os.Remove(tmp.Name())
 		_, e = io.Copy(tmp, f)
@@ -107,26 +175,60 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File) error {
 			e = ce
 		}
 		if e != nil {
-			return e
+			return false, ioFailure(e)
 		}
-		return os.Rename(tmp.Name(), dst)
+		e = os.Link(tmp.Name(), dst)
+		if errors.Is(e, os.ErrExist) {
+			return false, nil
+		}
+		return e == nil, ioFailure(e)
 	case *S3:
 		k := v.key(key)
-		_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f})
-		return e
+		for {
+			_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f,
+				IfNoneMatch: aws.String("*"), Metadata: map[string]string{"x-camel-sha256": sha}})
+			var apiErr smithy.APIError
+			if errors.As(e, &apiErr) {
+				switch apiErr.ErrorCode() {
+				case "PreconditionFailed":
+					return false, nil
+				case "ConditionalRequestConflict":
+					if _, e := f.Seek(0, 0); e != nil {
+						return false, e
+					}
+					continue
+				}
+			}
+			return e == nil, ioFailure(e)
+		}
 	default:
+		// Custom stores can implement the same atomic operation.
+		if dest, ok := s.(interface {
+			PutBlobFileIfAbsent(context.Context, string, *os.File, string) (bool, error)
+		}); ok {
+			return dest.PutBlobFileIfAbsent(ctx, key, f, sha)
+		}
+		// Test and embedded stores use the Store interface.
+		blobPutMu.Lock()
+		defer blobPutMu.Unlock()
+		exists, e := s.Has(ctx, key)
+		if e != nil || exists {
+			return false, e
+		}
 		b, e := io.ReadAll(f)
 		if e != nil {
-			return e
+			return false, e
 		}
-		return s.Put(ctx, key, b)
+		e = s.Put(ctx, key, b)
+		return e == nil, e
 	}
 }
 func (l Local) Get(c context.Context, k string) ([]byte, error) {
-	if !valid(k) {
+	if !valid(k) && !guestManifest(k) {
 		return nil, fmt.Errorf("invalid key")
 	}
-	return os.ReadFile(filepath.Join(l.Dir, k))
+	b, e := os.ReadFile(filepath.Join(l.Dir, k))
+	return b, ioFailure(e)
 }
 func (l Local) Has(c context.Context, k string) (bool, error) {
 	if !valid(k) {
@@ -136,15 +238,33 @@ func (l Local) Has(c context.Context, k string) (bool, error) {
 	if os.IsNotExist(e) {
 		return false, nil
 	}
-	return e == nil, e
+	return e == nil, ioFailure(e)
 }
 func (l Local) Put(c context.Context, k string, b []byte) error {
 	if e := verify(k, b); e != nil {
 		return e
 	}
-	return Atomic(filepath.Join(l.Dir, k), b)
+	_, kind, _, _ := splitKey(k)
+	if kind == "o" {
+		if e := writeMetadata(filepath.Join(l.Dir, k), Info{Size: int64(len(b)), SHA256: root.Hash(b)}); e != nil {
+			return ioFailure(e)
+		}
+	}
+	path := filepath.Join(l.Dir, k)
+	if kind == "tr" {
+		e := atomicFile(path, b, os.Link)
+		if errors.Is(e, os.ErrExist) {
+			return nil
+		}
+		return ioFailure(e)
+	}
+	return ioFailure(Atomic(path, b))
 }
 func Atomic(p string, b []byte) error {
+	return atomicFile(p, b, os.Rename)
+}
+
+func atomicFile(p string, b []byte, install func(string, string) error) error {
 	if e := os.MkdirAll(filepath.Dir(p), 0700); e != nil {
 		return e
 	}
@@ -163,7 +283,7 @@ func Atomic(p string, b []byte) error {
 	if e != nil {
 		return e
 	}
-	return os.Rename(f.Name(), p)
+	return install(f.Name(), p)
 }
 
 type S3 struct {
@@ -208,20 +328,21 @@ func (s *S3) key(k string) string {
 	return s.Prefix + "/" + k
 }
 func (s *S3) Get(c context.Context, k string) ([]byte, error) {
-	if !valid(k) {
+	if !valid(k) && !guestManifest(k) {
 		return nil, fmt.Errorf("invalid key")
 	}
 	key := s.key(k)
 	o, e := s.Client.GetObject(c, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &key})
 	var missing *types.NoSuchKey
 	if errors.As(e, &missing) {
-		return nil, os.ErrNotExist
+		return nil, ioFailure(os.ErrNotExist)
 	}
 	if e != nil {
-		return nil, e
+		return nil, ioFailure(e)
 	}
 	defer o.Body.Close()
-	return io.ReadAll(o.Body)
+	b, e := io.ReadAll(o.Body)
+	return b, ioFailure(e)
 }
 func (s *S3) Has(c context.Context, k string) (bool, error) {
 	if !valid(k) {
@@ -233,15 +354,37 @@ func (s *S3) Has(c context.Context, k string) (bool, error) {
 	if errors.As(e, &nf) {
 		return false, nil
 	}
-	return e == nil, e
+	return e == nil, ioFailure(e)
 }
 func (s *S3) Put(c context.Context, k string, b []byte) error {
 	if e := verify(k, b); e != nil {
 		return e
 	}
 	key := s.key(k)
-	_, e := s.Client.PutObject(c, &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)})
-	return e
+	input := &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)}
+	_, kind, _, _ := splitKey(k)
+	if kind == "tr" {
+		input.IfNoneMatch = aws.String("*")
+	}
+	if kind == "o" {
+		input.Metadata = map[string]string{"x-camel-sha256": root.Hash(b)}
+	}
+	for {
+		input.Body = bytes.NewReader(b)
+		_, e := s.Client.PutObject(c, input)
+		var apiErr smithy.APIError
+		if kind == "tr" && errors.As(e, &apiErr) {
+			switch apiErr.ErrorCode() {
+			case "PreconditionFailed":
+				return nil
+			case "ConditionalRequestConflict":
+				if c.Err() == nil {
+					continue
+				}
+			}
+		}
+		return ioFailure(e)
+	}
 }
 func Parallel(ctx context.Context, n int, items []string, fn func(string) error) error {
 	if n < 1 {
@@ -285,8 +428,12 @@ func PutChunks(ctx context.Context, s Store, b map[string][]byte) (int, error) {
 	var mu sync.Mutex
 	n := 0
 	e := Parallel(ctx, Depth(s), keys, func(h string) error {
-		if uploaded, ok := s.(*Uploaded); ok {
-			known, e := uploaded.known(ctx, "c/"+h)
+		inventory, key := s, "c/"+h
+		if scoped, ok := s.(*scoped); ok {
+			inventory, key = scoped.Store, fullKey(s, key)
+		}
+		if uploaded, ok := inventory.(*Uploaded); ok {
+			known, e := uploaded.known(ctx, key)
 			if e != nil || known {
 				return e
 			}
@@ -307,16 +454,35 @@ const DefaultDepth = 64
 // One shared budget covers foreground reads, prefetch, hydration and uploads.
 type limited struct {
 	Store
-	slots chan struct{}
+	slots      chan struct{}
+	background chan struct{}
 }
 
+// Reuse an existing host budget through wrappers; never create per-mount slots.
+func hasDepth(s Store) bool {
+	switch v := s.(type) {
+	case *limited:
+		return true
+	case *scoped:
+		return hasDepth(v.Store)
+	case *Uploaded:
+		return hasDepth(v.Store)
+	}
+	return false
+}
 func WithDepth(s Store, n int) Store {
+	if hasDepth(s) {
+		return s
+	}
 	if n < 1 {
 		n = DefaultDepth
 	}
-	return &limited{s, make(chan struct{}, n)}
+	return &limited{Store: s, slots: make(chan struct{}, n), background: make(chan struct{}, max(1, n-min(8, max(1, n/4))))}
 }
 func Depth(s Store) int {
+	if v, ok := s.(*scoped); ok {
+		return Depth(v.Store)
+	}
 	if v, ok := s.(*Uploaded); ok {
 		return Depth(v.Store)
 	}
@@ -325,7 +491,31 @@ func Depth(s Store) int {
 	}
 	return DefaultDepth
 }
+
+type backgroundKey struct{}
+
+func IsBackground(ctx context.Context) bool { return ctx.Value(backgroundKey{}) == true }
+
+// Background shares a bounded speculative budget, leaving slots for demand.
+func Background(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundKey{}, true)
+}
 func (s *limited) acquire(ctx context.Context) error {
+	if ctx.Value(backgroundKey{}) == true {
+		select {
+		case s.background <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		select {
+		case s.slots <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			<-s.background
+			return ctx.Err()
+		}
+	}
+
 	select {
 	case s.slots <- struct{}{}:
 		return nil
@@ -333,25 +523,46 @@ func (s *limited) acquire(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
-func (s *limited) release() { <-s.slots }
+func (s *limited) release(ctx context.Context) {
+	<-s.slots
+	if ctx.Value(backgroundKey{}) == true {
+		<-s.background
+	}
+}
 func (s *limited) Get(ctx context.Context, k string) ([]byte, error) {
 	if e := s.acquire(ctx); e != nil {
 		return nil, e
 	}
-	defer s.release()
+	defer s.release(ctx)
 	return s.Store.Get(ctx, k)
 }
 func (s *limited) Put(ctx context.Context, k string, b []byte) error {
 	if e := s.acquire(ctx); e != nil {
 		return e
 	}
-	defer s.release()
+	defer s.release(ctx)
 	return s.Store.Put(ctx, k, b)
 }
 func (s *limited) Has(ctx context.Context, k string) (bool, error) {
 	if e := s.acquire(ctx); e != nil {
 		return false, e
 	}
-	defer s.release()
+	defer s.release(ctx)
 	return s.Store.Has(ctx, k)
+}
+
+func (s *S3) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	if !validReadKey(key) {
+		return nil, fmt.Errorf("invalid key")
+	}
+	k := s.key(key)
+	out, e := s.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &k})
+	var missing *types.NoSuchKey
+	if errors.As(e, &missing) {
+		return nil, ioFailure(os.ErrNotExist)
+	}
+	if e != nil {
+		return nil, ioFailure(e)
+	}
+	return storeReader{out.Body}, nil
 }

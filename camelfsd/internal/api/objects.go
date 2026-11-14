@@ -12,6 +12,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 func (s *Server) objects(w http.ResponseWriter, r *http.Request, reply func(int, any), fail func(error)) {
@@ -20,7 +21,11 @@ func (s *Server) objects(w http.ResponseWriter, r *http.Request, reply func(int,
 		fail(fmt.Errorf("objects require SQLite"))
 		return
 	}
-	repo := objects.Repository{DB: db, Store: s.Manager.Store, TempDir: s.Manager.Data}
+	if r.Method == "GET" && !store.Lineage(r.URL.Query().Get("lineage")) {
+		fail(apierr.Invalid("lineage required"))
+		return
+	}
+	repo := (&objects.Repository{DB: db, Store: s.Manager.Store, TempDir: s.Manager.Data}).ForLineage(r.URL.Query().Get("lineage"))
 	handle := func(e error) {
 		var missing *objects.Missing
 		switch {
@@ -49,10 +54,6 @@ func (s *Server) objects(w http.ResponseWriter, r *http.Request, reply func(int,
 	}
 	switch {
 	case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/v0/blobs/"):
-		if r.Header.Get("Content-Length") == "" {
-			handle(apierr.Invalid("invalid missing content length"))
-			return
-		}
 		b, e := repo.Upload(r.Context(), r.URL.Query().Get("lineage"), strings.TrimPrefix(r.URL.Path, "/v0/blobs/"), r.ContentLength, r.Body)
 		if e != nil {
 			handle(e)

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { selectFileTools } from '../src/file-tool-selection.ts';
 
-const names = new Set(['read', 'write', 'ls', 'present_file']);
-const files = ['read', 'write', 'ls', 'present_file'].map(name => ({ name }));
+const names = new Set(['read', 'write', 'ls', 'present_file','checkpoint','restore','history','diff']);
+const files = ['read', 'write', 'ls', 'present_file','checkpoint','restore','history','diff'].map(name => ({ name }));
 const visible = (tools: { name: string }[]) => tools.map(tool => tool.name);
 
 test('fileTools:false hides file operations from the model but keeps them callable by code', () => {

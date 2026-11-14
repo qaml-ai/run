@@ -9,7 +9,7 @@ import {
   type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
-import { digest, FileError } from "./volume.ts";
+import { digest, FileError } from "./file-errors.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "../../../src/image-header.ts";
 import { requestImageLimit } from "../../../src/request-images.ts";
 import { makeMarker, parseMarker, type ImageReference } from "./image-request-marker.ts";
@@ -184,8 +184,7 @@ export async function handleSignedFileRequest(
       !claim.tenant ||
       !Number.isFinite(claim.expiresAt) ||
       claim.expiresAt <= Date.now() ||
-      (!claim.key.startsWith(`images/${encodeURIComponent(claim.tenant)}/`) &&
-        !claim.key.startsWith(`files/${encodeURIComponent(claim.tenant)}/`))
+      !claim.key.startsWith(`images/${encodeURIComponent(claim.tenant)}/`)
     )
       throw new FileError("Expired or invalid file capability", 403);
     const object = await env.BUCKET.get(claim.key);
@@ -269,7 +268,7 @@ export async function imageInputs(
 }
 const MARKER = "[camelrun-image-ref:v1]";
 const ownedImageKey = (tenant: string, key: string) =>
-  key.startsWith(`images/${encodeURIComponent(tenant)}/`) || key.startsWith(`files/${encodeURIComponent(tenant)}/`);
+  key.startsWith(`images/${encodeURIComponent(tenant)}/`);
 export function imageReferenceInput(
   text: string,
   refs: ImageRef[],
@@ -305,7 +304,6 @@ export function withImageReferences<A extends Api>(
   provider: Provider<A>,
   env: ImageBindings,
   getTenant: () => Promise<string>,
-  authorizeFile?: (key: string) => Promise<boolean>,
 ): Provider<A> {
   const hydrate = async (model: Model<A>, context: TranscriptContext) => {
     const locations: {
@@ -367,7 +365,6 @@ export function withImageReferences<A extends Api>(
       } else if (ref) {
         if (ref.type !== "image_ref" || ref.tenant !== tenant || !ownedImageKey(tenant, ref.key) || !Number.isSafeInteger(ref.size) || ref.size < 1 || ref.size > IMAGE_LIMITS.derivativeBytes)
           throw new FileError("Invalid image reference");
-        if (ref.key.startsWith("files/") && !await authorizeFile?.(ref.key)) continue;
         if (canStream) {
           const reference = { key: ref.key, size: ref.size, mimeType: ref.mimeType, nonce: crypto.randomUUID() };
           references.push(reference);

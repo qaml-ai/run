@@ -28,27 +28,26 @@ function storage(t: { after(fn: () => void): void }) {
   return { sql, atomic };
 }
 
-const CAPS: TenantCaps = { children: 4, jobs: 2, workflows: 2 };
+const CAPS: TenantCaps = { children: 4, workflows: 2 };
 
-test("caps: defaults, the busy-agent tier and computer limit bound them, operator and tenant settings", () => {
-  assert.deepEqual(tenantCaps({}, "t", { busyAgents: null }), { children: 256, jobs: 16, workflows: 20 });
-  assert.deepEqual(tenantCaps({}, "t", { busyAgents: 50, computerLimit: 4 }), { children: 45, jobs: 4, workflows: 20 }, "Free tier: 90% of 50 busy agents");
-  assert.deepEqual(tenantCaps({}, "t", { busyAgents: 250 }), { children: 225, jobs: 16, workflows: 20 }, "Tier 1 runs a 64-wide workflow");
-  const env = { AGENT_WORKFLOW_LIMITS: JSON.stringify({ children: 100, workflows: 5 }), AGENT_WORKFLOW_TENANT_LIMITS: JSON.stringify({ big: { children: 2000, jobs: 64 } }) };
-  assert.deepEqual(tenantCaps(env, "t", { busyAgents: 4000 }), { children: 100, jobs: 16, workflows: 5 });
-  assert.deepEqual(tenantCaps(env, "big", { busyAgents: 1000, computerLimit: 32 }), { children: 900, jobs: 32, workflows: 5 }, "a tenant's own setting is still bounded by its tier");
+test("caps: defaults, the busy-agent tier bounds them, operator and tenant settings", () => {
+  assert.deepEqual(tenantCaps({}, "t", { busyAgents: null }), { children: 256, workflows: 20 });
+  assert.deepEqual(tenantCaps({}, "t", { busyAgents: 50 }), { children: 45, workflows: 20 }, "Free tier: 90% of 50 busy agents");
+  assert.deepEqual(tenantCaps({}, "t", { busyAgents: 250 }), { children: 225, workflows: 20 }, "Tier 1 runs a 64-wide workflow");
+  const env = { AGENT_WORKFLOW_LIMITS: JSON.stringify({ children: 100, workflows: 5 }), AGENT_WORKFLOW_TENANT_LIMITS: JSON.stringify({ big: { children: 2000 } }) };
+  assert.deepEqual(tenantCaps(env, "t", { busyAgents: 4000 }), { children: 100, workflows: 5 });
+  assert.deepEqual(tenantCaps(env, "big", { busyAgents: 1000 }), { children: 900, workflows: 5 }, "a tenant's own setting is still bounded by its tier");
   assert.throws(() => tenantCaps({ AGENT_WORKFLOW_LIMITS: '{"children":0}' }, "t", { busyAgents: null }), /positive whole number/);
   assert.throws(() => tenantCaps({ AGENT_WORKFLOW_TENANT_LIMITS: '{"t":{"gpus":1}}' }, "t", { busyAgents: null }), /unknown field gpus/);
-  assert.deepEqual(workflowCaps({}, tenantCaps({}, "t", { busyAgents: null })), { concurrency: 16, jobConcurrency: 8 });
-  assert.deepEqual(workflowCaps({ concurrency: 64, jobConcurrency: 8 }, { children: 45, jobs: 4, workflows: 20 }), { concurrency: 45, jobConcurrency: 4 });
+  assert.deepEqual(workflowCaps({}, tenantCaps({}, "t", { busyAgents: null })), { concurrency: 16 });
+  assert.deepEqual(workflowCaps({ concurrency: 64 }, { children: 45, workflows: 20 }), { concurrency: 45 });
   assert.throws(() => workflowCaps({ concurrency: 65 }, CAPS), /concurrency must be a whole number from 1 to 64/);
-  assert.throws(() => workflowCaps({ jobConcurrency: 0 }, CAPS), /jobConcurrency/);
 });
 
 test("a workflow's own cap queues its extra requests; a release grants the next; acquire is idempotent by key", t => {
   const { sql, atomic } = storage(t);
   const ledger = new CapacityLedger(sql, atomic, () => 1_000);
-  assert.deepEqual(ledger.open("w1", { concurrency: 2 }, CAPS).caps, { concurrency: 2, jobConcurrency: 2 });
+  assert.deepEqual(ledger.open("w1", { concurrency: 2 }, CAPS).caps, { concurrency: 2 });
   const a = ledger.acquire("w1", "child", "impl:a").acquired, b = ledger.acquire("w1", "child", "impl:b").acquired;
   assert.ok(a.granted && b.granted);
   const c = ledger.acquire("w1", "child", "impl:c").acquired;
@@ -60,14 +59,8 @@ test("a workflow's own cap queues its extra requests; a release grants the next;
   const grants = ledger.release("w1", a.granted ? a.lease.id : "");
   assert.deepEqual(grants.map(g => [g.workflow, g.kind, g.key]), [["w1", "child", "impl:c"]]);
   assert.deepEqual(ledger.release("w1", a.granted ? a.lease.id : ""), [], "releasing twice is a no-op");
-  // Jobs are their own kind, with their own caps.
-  assert.ok(ledger.acquire("w1", "job", "test:1").acquired.granted);
-  assert.ok(ledger.acquire("w1", "job", "test:2").acquired.granted);
-  const job = ledger.acquire("w1", "job", "test:3").acquired;
-  assert.equal(job.granted ? "" : job.reason, "workflow_cap");
-  assert.deepEqual(ledger.usage("w1").workflows[0].jobs, { held: 2, waiting: 1, cap: 2 });
   assert.throws(() => ledger.acquire("nope", "child", "x"), /not open/);
-  assert.throws(() => ledger.acquire("w1", "gpu" as never, "x"), /kind is child or job/);
+  assert.throws(() => ledger.acquire("w1", "gpu" as never, "x"), /kind is child/);
 });
 
 test("fair share: a workflow holding the tenant's capacity cannot starve another; spare capacity goes round robin", t => {

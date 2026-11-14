@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
@@ -22,16 +23,18 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
-const MaxBlob = 256 << 20
+const MaxBlob = 5 << 30
 const InlineTree = 400 << 10
 
 var ErrIgnored = errors.New("ignored-path")
 var ErrHash = errors.New("hash-mismatch")
 
 type Repository struct {
-	DB      *refs.DB
-	Store   store.Store
-	TempDir string
+	lineage     string
+	publication *publication
+	DB          *refs.DB
+	Store       store.Store
+	TempDir     string
 	// Query observes repository reads for diagnostics and query-budget tests.
 	Query func(string)
 }
@@ -51,9 +54,10 @@ type Result struct {
 	ImportMs float64 `json:"importMs"`
 }
 type Blob struct {
-	SHA256 string `json:"sha256"`
-	SHA1   string `json:"sha1"`
-	Size   int64  `json:"size"`
+	Existing bool   `json:"-"`
+	SHA256   string `json:"sha256"`
+	SHA1     string `json:"sha1"`
+	Size     int64  `json:"size"`
 }
 type Entry struct {
 	Path string `json:"path"`
@@ -81,9 +85,13 @@ func Path(p string) error {
 }
 
 func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int64, body io.Reader) (Blob, error) {
+	r = r.ForLineage(lineage)
 	b := Blob{SHA256: hash, Size: size}
-	if lineage == "" || !root.Hex(hash, 64) || size < 0 || size > MaxBlob {
+	if !store.Lineage(lineage) || hash != "" && !root.Hex(hash, 64) || size < -1 {
 		return b, apierr.Invalid("invalid blob request")
+	}
+	if size > MaxBlob {
+		return b, &apierr.Error{Status: 413, Code: "blob-too-large", Cause: fmt.Errorf("blob exceeds %d bytes", MaxBlob)}
 	}
 	f, e := os.CreateTemp(r.TempDir, "camelfsd-blob-")
 	if e != nil {
@@ -92,25 +100,51 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 	defer os.Remove(f.Name())
 	defer f.Close()
 	h256, h1 := sha256.New(), sha1.New()
-	fmt.Fprintf(h1, "blob %d\x00", size)
-	n, e := io.Copy(io.MultiWriter(f, h256, h1), io.LimitReader(body, size+1))
+	limit := size
+	var dst io.Writer = io.MultiWriter(f, h256)
+	if size >= 0 {
+		fmt.Fprintf(h1, "blob %d\x00", size)
+		dst = io.MultiWriter(dst, h1)
+	} else {
+		limit = MaxBlob
+	}
+	n, e := io.Copy(dst, io.LimitReader(body, limit+1))
+	if n > MaxBlob {
+		return b, &apierr.Error{Status: 413, Code: "blob-too-large", Cause: fmt.Errorf("blob exceeds %d bytes", MaxBlob)}
+	}
+	if e != nil {
+		if size >= 0 && errors.Is(e, io.ErrUnexpectedEOF) {
+			return b, apierr.Invalid("invalid content length")
+		}
+		return b, e
+	}
+	if size >= 0 && n != size {
+		return b, apierr.Invalid("invalid content length")
+	}
+	if size < 0 {
+		size = n
+		b.Size = n
+		// Git's blob hash prefixes the measured length. Replay the bounded temp file.
+		fmt.Fprintf(h1, "blob %d\x00", size)
+		if _, e = f.Seek(0, io.SeekStart); e != nil {
+			return b, e
+		}
+		if _, e = io.Copy(h1, f); e != nil {
+			return b, e
+		}
+	}
+	if hash != "" && fmt.Sprintf("%x", h256.Sum(nil)) != hash {
+		return b, ErrHash
+	}
+	b.SHA256 = fmt.Sprintf("%x", h256.Sum(nil))
+	b.SHA1 = fmt.Sprintf("%x", h1.Sum(nil))
+	created, e := store.PutBlobFileIfAbsent(ctx, r.Store, "o/"+b.SHA1, f, b.SHA256)
+	b.Existing = !created
 	if e != nil {
 		return b, e
 	}
-	if n != size {
-		return b, apierr.Invalid("invalid content length")
-	}
-	if fmt.Sprintf("%x", h256.Sum(nil)) != hash {
-		return b, ErrHash
-	}
-	b.SHA1 = fmt.Sprintf("%x", h1.Sum(nil))
-	key := "o/" + b.SHA1
 
-	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f); e != nil {
-		return b, e
-	}
-
-	_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", lineage, hash, b.SHA1, size, time.Now().UnixMilli())
+	e = r.Record(ctx, lineage, b.SHA1, "blob", &b)
 	return b, e
 }
 
@@ -122,14 +156,24 @@ type node struct {
 func newNode() *node { return &node{map[string]*node{}, map[string]Entry{}} }
 
 type treeObject struct {
-	id    string
-	bytes []byte
+	id      string
+	bytes   []byte
+	entries []Entry
 }
 
 func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
+	r = r.ForLineage(q.Lineage)
+	batch := r.BeginPublication()
+	out, e := batch.importTrees(ctx, q)
+	if e == nil && r.publication == nil {
+		e = batch.Flush(ctx)
+	}
+	return out, e
+}
+func (r *Repository) importTrees(ctx context.Context, q Request) (Result, error) {
 	start := time.Now()
 	out := Result{}
-	if q.Lineage == "" || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
+	if !store.Lineage(q.Lineage) || q.Files == nil || len(q.Files) > 200000 || q.ParentTree != "" && !root.Hex(q.ParentTree, 40) {
 		return out, apierr.Invalid("invalid tree request")
 	}
 	// Validate the complete listing before consulting blob availability.
@@ -225,10 +269,10 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 		old := map[string]Entry{}
 		if parent != "" {
 			entries, err := r.read(ctx, parent)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			if err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, os.ErrNotExist) {
 				return "", err
 			}
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) {
 				parent = ""
 			}
 			for _, entry := range entries {
@@ -270,6 +314,9 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 			}
 		}
 		if same {
+			if err := r.Record(ctx, q.Lineage, parent, "tree", nil); err != nil {
+				return "", err
+			}
 			return parent, nil
 		}
 		var buf bytes.Buffer
@@ -283,22 +330,22 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 			b = []byte{}
 		}
 		id := store.GitHash("tree", b)
-		pending = append(pending, treeObject{id, b})
+		pending = append(pending, treeObject{id, b, entries})
 		return id, nil
 	}
 	out.Tree, e = build(top, q.ParentTree)
 	if e != nil {
 		return out, e
 	}
-	// Store large trees before the transaction. Failed transactions can leave only
-	// harmless content-addressed objects, never a row referring to absent bytes.
 	for _, obj := range pending {
-		if len(obj.bytes) > InlineTree {
-
-			if err := (&store.Uploaded{Store: r.Store, DB: r.DB.DB}).Put(ctx, "t/"+obj.id, obj.bytes); err != nil {
-				return out, err
-			}
-
+		r.publication.puts["t/"+obj.id] = obj.bytes
+		sizes, err := json.Marshal(obj.entries)
+		if err != nil {
+			return out, err
+		}
+		r.publication.puts["ts/"+obj.id] = sizes
+		if e = r.Record(ctx, q.Lineage, obj.id, "tree", nil); e != nil {
+			return out, e
 		}
 	}
 	tx, e := r.DB.DB.BeginTx(ctx, nil)
@@ -308,9 +355,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	defer tx.Rollback()
 	for _, obj := range pending {
 		var b any = obj.bytes
-		if len(obj.bytes) > InlineTree {
-			b = nil
-		}
+
 		res, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO objects VALUES(?,'tree',?,?,?)", obj.id, b, len(obj.bytes), time.Now().UnixMilli())
 		if err != nil {
 			return out, err
@@ -323,7 +368,7 @@ func (r *Repository) Import(ctx context.Context, q Request) (Result, error) {
 	}
 	out.Blobs = len(q.Files)
 	if q.ParentTree != "" && q.ParentTree != out.Tree {
-		_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO tree_parents(tree,parent) VALUES(?,?)", out.Tree, q.ParentTree)
+		e = r.DB.RecordTreeParent(ctx, out.Tree, q.ParentTree)
 		if e != nil {
 			return out, e
 		}
@@ -339,24 +384,18 @@ func (r *Repository) observe(query string) {
 }
 
 func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
-	var b []byte
 	if !root.Hex(id, 40) {
 		return nil, apierr.Invalid("invalid tree id")
 	}
 	r.observe("tree")
-	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='tree'", id).Scan(&b)
+	b, e := r.Object(ctx, id, "tree")
 	if e != nil {
 		return nil, e
 	}
-	if b == nil {
-		b, e = r.Store.Get(ctx, "t/"+id)
-		if e != nil {
-			return nil, e
-		}
-	}
-	if store.GitHash("tree", b) != id {
-		return nil, fmt.Errorf("corrupt tree")
-	}
+	return decodeTree(b)
+}
+
+func decodeTree(b []byte) ([]Entry, error) {
 	entries := []Entry{}
 	for len(b) > 0 {
 		end := bytes.IndexByte(b, 0)
@@ -374,67 +413,7 @@ func (r *Repository) read(ctx context.Context, id string) ([]Entry, error) {
 }
 
 func (r *Repository) Entries(ctx context.Context, id string) ([]Entry, error) {
-	out := []Entry{}
-	var walk func(string, string) error
-	walk = func(tree, prefix string) error {
-		entries, e := r.read(ctx, tree)
-		if e != nil {
-			return e
-		}
-		for _, entry := range entries {
-			entry.Path = prefix + entry.Path
-			if entry.Mode == "40000" {
-				if e = walk(entry.SHA1, entry.Path+"/"); e != nil {
-					return e
-				}
-				continue
-			}
-
-			out = append(out, entry)
-		}
-		return nil
-	}
-	e := walk(id, "")
-	if e != nil {
-		return nil, e
-	}
-	// Bounded IN batches avoid one size query per file without depending on
-	// SQLite's host-parameter limit for large trees.
-	sizes := map[string]int64{}
-	for start := 0; start < len(out); start += 500 {
-		batch := out[start:min(start+500, len(out))]
-		args := make([]any, len(batch))
-		marks := make([]string, len(batch))
-		for i, f := range batch {
-			args[i] = f.SHA1
-			marks[i] = "?"
-		}
-		r.observe("sizes")
-		rows, err := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE sha1 IN ("+strings.Join(marks, ",")+") GROUP BY sha1", args...)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var sha string
-			var size int64
-			if err = rows.Scan(&sha, &size); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			sizes[sha] = size
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-	for i := range out {
-		out[i].Size = sizes[out[i].SHA1]
-	}
-
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, e
+	return r.TreeEntries(ctx, id)
 }
 func (r *Repository) File(ctx context.Context, id, path string) (Entry, error) {
 	if e := Path(path); e != nil {
@@ -442,7 +421,7 @@ func (r *Repository) File(ctx context.Context, id, path string) (Entry, error) {
 	}
 	parts := strings.Split(path, "/")
 	for i, part := range parts {
-		entries, e := r.read(ctx, id)
+		entries, e := r.SizedTree(ctx, id)
 		if e != nil {
 			return Entry{}, e
 		}

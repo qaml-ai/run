@@ -12,9 +12,11 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,13 +24,13 @@ import (
 func TestLifecycleAndTree(t *testing.T) {
 	t.Setenv("CAMELFSD_TEST_NO_REFLINK", "1")
 	data := t.TempDir()
-	s := store.Local{Dir: t.TempDir()}
+	s := testutil.TrackTreePuts(t, store.Local{Dir: t.TempDir()})
 	db, e := refs.Open(filepath.Join(data, "refs.db"))
 	if e != nil {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	m, e := image.New(image.Config{Data: data, Cold: "prehydrate", HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
+	m, e := image.New(image.Config{Data: data, HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -60,14 +62,45 @@ func TestLifecycleAndTree(t *testing.T) {
 	b := make([]byte, 3*root.ChunkSize)
 	b[100] = 1
 	os.WriteFile(path, b, 0600)
-	imp := call("POST", "/v0/images", map[string]any{"lineage": "l", "name": "main", "path": path, "tree": tree}, 200)
+	imp := call("POST", "/v0/images", map[string]any{"lineage": "l", "path": path, "tree": tree}, 200)
 	if imp["tree"] != tree {
 		t.Fatal(imp)
 	}
-	mount := call("POST", "/v0/mounts", map[string]any{"jobId": "j1", "lineage": "l", "ref": "main"}, 200)
+	parent := strings.Repeat("a", 40)
+	mountRequest := map[string]any{"jobId": "j1", "lineage": "l", "root": imp["root"], "fence": map[string]any{"holder": "runtime", "epoch": 1}}
+	if out := call("POST", "/v0/mounts", mountRequest, 400); out["error"] != "invalid_request" || out["detail"] != "missing field parent" {
+		t.Fatal(out)
+	}
+	for _, invalid := range []any{"", "not-a-sha", strings.Repeat("z", 40), nil, 123} {
+		mountRequest["parent"] = invalid
+		if out := call("POST", "/v0/mounts", mountRequest, 400); out["error"] != "invalid_request" {
+			t.Fatal(out)
+		}
+	}
+	mountRequest["parent"] = parent
+	mount := call("POST", "/v0/mounts", mountRequest, 200)
 	if mount["warm"] != true {
 		t.Fatal(mount)
 	}
+	checkSavedParent := func(want string) {
+		t.Helper()
+		raw, e := os.ReadFile(filepath.Join(data, "mounts", "j1", "state.json"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		var state struct{ Parent refs.Value }
+		if e := json.Unmarshal(raw, &state); e != nil || state.Parent.Commit != want {
+			t.Fatal(state, e)
+		}
+	}
+	checkParents := func(id, want string) {
+		t.Helper()
+		commit, e := m.Commit(context.Background(), id, "l")
+		if e != nil || !slices.Equal(commit["parents"].([]string), []string{want}) {
+			t.Fatal(commit, e)
+		}
+	}
+	checkSavedParent(parent)
 	f, e := os.OpenFile(mount["image"].(string), os.O_RDWR, 0)
 	if e != nil {
 		t.Fatal(e)
@@ -88,19 +121,29 @@ func TestLifecycleAndTree(t *testing.T) {
 	if e != nil || got != cp["root"] {
 		t.Fatal(got, e)
 	}
+	checkParents(cpResult.Commit, parent)
+	checkSavedParent(cpResult.Commit)
+	second, e := m.Checkpoint(context.Background(), "j1")
+	if e != nil {
+		t.Fatal(e)
+	}
+	checkParents(second.Commit, cpResult.Commit)
+	checkSavedParent(second.Commit)
 	tm := call("POST", "/v0/mounts", map[string]any{"jobId": "treejob", "lineage": "l", "tree": tree}, 200)
 	if tm["root"] != cp["root"] {
 		t.Fatal(tm)
 	}
-	ref, e := db.Get("l", "job/treejob")
-	if e != nil || ref.Owner != "job:treejob" || ref.Tree != tree || ref.Holder == "" {
-		t.Fatal(ref, e)
-	}
 	call("POST", "/v0/mounts", map[string]any{"jobId": "bad", "lineage": "l", "root": got, "tree": tree}, 400)
 	call("POST", "/v0/mounts", map[string]any{"jobId": "..", "lineage": "l", "root": got}, 400)
-	call("POST", "/v0/mounts", map[string]any{"jobId": "r", "lineage": "l", "root": got}, 200)
+	call("POST", "/v0/mounts", map[string]any{"jobId": "r", "lineage": "l", "root": got, "fence": nil}, 200)
 	call("POST", "/v0/mounts/r/checkpoint", map[string]any{}, 409)
-	call("GET", "/v0/mounts/treejob", nil, 200)
+	status := call("GET", "/v0/mounts/treejob", nil, 200)
+	if _, ok := status["hydrationMBps"].(float64); !ok {
+		t.Fatal("missing hydration throughput", status)
+	}
+	if _, ok := status["firstFileMs"]; ok {
+		t.Fatal("firstFileMs belongs to caller")
+	}
 	call("POST", "/v0/trees", map[string]any{}, 400)
 	call("PUT", "/v0/blobs/"+strings.Repeat("a", 64), map[string]any{}, 400)
 	for _, j := range []string{"j1", "treejob", "r"} {
@@ -108,14 +151,7 @@ func TestLifecycleAndTree(t *testing.T) {
 	}
 	call("GET", "/v0/health", nil, 200)
 	call("POST", "/v0/images", map[string]any{"lineage": "l", "name": "x", "path": "/etc/passwd"}, 400)
-	os.Remove(mount["image"].(string))
-	os.Remove(filepath.Join(data, "images", got+".img"))
-	cold := call("POST", "/v0/mounts", map[string]any{"jobId": "cold", "lineage": "l", "root": got}, 200)
-	content, e := os.ReadFile(cold["image"].(string))
-	if e != nil || string(content[root.ChunkSize+7:root.ChunkSize+14]) != "changed" {
-		t.Fatal(e)
-	}
-	call("DELETE", "/v0/mounts/cold", nil, 200)
+
 }
 
 func TestErrorStatusUsesTypes(t *testing.T) {
@@ -126,12 +162,81 @@ func TestErrorStatusUsesTypes(t *testing.T) {
 	}{
 		{fmt.Errorf("invalid disk JSON not allowed"), 500, "internal"},
 		{fmt.Errorf("context: %w", apierr.Invalid("bad input")), 400, "invalid-request"},
-		{fmt.Errorf("context: %w", refs.ErrFenced), 409, "fenced"},
 		{fmt.Errorf("context: %w", os.ErrNotExist), 404, "not-found"},
 	} {
 		status, code := errorStatus(q.err)
 		if status != q.status || code != q.code {
 			t.Fatalf("%v: %d %s", q.err, status, code)
+		}
+	}
+}
+
+func TestFenceOwnership(t *testing.T) {
+	t.Setenv("CAMELFSD_TEST_NO_REFLINK", "1")
+	data := t.TempDir()
+	st := store.Local{Dir: t.TempDir()}
+	db, e := refs.Open(filepath.Join(data, "refs.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	m, e := image.New(image.Config{Data: data, VirtualSize: 16 << 20}, st, cache.New(filepath.Join(data, "cache"), st, 4), db)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer m.Close()
+	repo := objects.Repository{DB: db, Store: st}
+	tr, e := repo.Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	s := &Server{Manager: m}
+	for _, fenced := range []bool{false, true} {
+		job := "read"
+		var fence *refs.Fence
+		var parent string
+		if fenced {
+			job = "write"
+			fence = &refs.Fence{Holder: "runtime", Epoch: 7}
+			parent = strings.Repeat("a", 40)
+		}
+		_, e := m.Mount(context.Background(), image.Request{JobID: job, Lineage: "l", Tree: tr.Tree, Parent: parent, Fence: fence})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if !fenced {
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, httptest.NewRequest("POST", "/v0/mounts/"+job+"/checkpoint", strings.NewReader("{}")))
+			if w.Code != 409 || !strings.Contains(w.Body.String(), "no_fence") {
+				t.Fatal(w.Code, w.Body.String())
+			}
+		} else {
+			cp, e := m.Checkpoint(context.Background(), job)
+			if e != nil || cp.Tree == "" || cp.Commit == "" || cp.Root == "" || cp.Timings == nil {
+				t.Fatal(cp, e)
+			}
+			for _, key := range []string{"l/t/" + cp.Tree, "l/k/" + cp.Commit, "l/r/" + cp.Root} {
+				ok, e := st.Has(context.Background(), key)
+				if e != nil || !ok {
+					t.Fatal(key, e)
+				}
+			}
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, httptest.NewRequest("GET", "/v0/mounts/"+job, nil))
+			if !strings.Contains(w.Body.String(), `"fence":{"holder":"runtime","epoch":7}`) {
+				t.Fatal(w.Body.String())
+			}
+		}
+	}
+	var n int
+	if e = db.DB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='refs'").Scan(&n); e != nil || n != 0 {
+		t.Fatal(n, e)
+	}
+	for _, route := range []string{"/v0/forks"} {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest("POST", route, strings.NewReader("{}")))
+		if w.Code != 404 {
+			t.Fatal(route, w.Code)
 		}
 	}
 }

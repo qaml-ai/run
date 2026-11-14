@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
@@ -21,7 +22,7 @@ test('hidden file tools remain available to host code, while the model only rece
     provider.closeAllConnections();
     return new Promise<void>(resolve => provider.close(() => resolve()));
   });
-  const fixture = await startFixture({ modelURL: `http://127.0.0.1:${(provider.address() as any).port}/v1` });
+  const fixture = await startFixture({ entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)), modelURL: `http://127.0.0.1:${(provider.address() as any).port}/v1` });
   t.after(() => fixture.stop());
   const agents = new Agents({ url: fixture.url, apiKey: fixture.token, connection: 'lazy', pollMs: 10 });
   t.after(() => agents.close());

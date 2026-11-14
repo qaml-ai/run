@@ -1,0 +1,292 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"slices"
+	"time"
+
+	"github.com/qaml-ai/run/camelfsd/internal/compute"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
+)
+
+type HostServer struct {
+	controller *compute.Controller
+	pools      []string
+	images     []string
+	grace      time.Duration
+	routes     *http.ServeMux
+	findHost   func(context.Context, []string, string) (compute.Host, error)
+	cas        HostCASFunc
+}
+
+// HostCASFunc moves a ref for a host checkpoint (StorageServer.HostCAS): lineage, ref, commit, expect, root,
+// the holder string and the lease epoch. It returns the reply body, or a storage error.
+type HostCASFunc func(ctx context.Context, lineage, name, commit, expect, root, holder string, epoch int64) (map[string]any, error)
+
+// EnableCAS serves POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas, the ref move after a session
+// checkpoint. Without it the route answers 404 like any unknown host route.
+func (s *HostServer) EnableCAS(cas HostCASFunc) {
+	s.cas = cas
+	s.routes.HandleFunc("POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas", s.authenticated(s.hostCAS))
+}
+
+func (s *HostServer) hostCAS(w http.ResponseWriter, r *http.Request, hostID string) error {
+	var q struct {
+		Commit string          `json:"commit"`
+		Expect string          `json:"expect"`
+		Root   string          `json:"root"`
+		Holder hostwire.Holder `json:"holder"`
+		Epoch  int64           `json:"epoch"`
+	}
+	if err := readHostRequest(w, r, &q); err != nil {
+		return err
+	}
+	if _, err := hostwire.ParseHolder(q.Holder.String()); err != nil || q.Holder.Host != hostID {
+		return errHostForbidden
+	}
+	host, err := s.findHost(r.Context(), s.pools, hostID)
+	if errors.Is(err, compute.ErrHost) || (err == nil && (host.Restarting || host.Lost)) {
+		return errHostForbidden
+	}
+	if err != nil {
+		return err
+	}
+	holder := hostwire.Holder{Host: hostID, Boot: host.BootEpoch, Mount: q.Holder.Mount}
+	reply, err := s.cas(r.Context(), r.PathValue("lineage"), r.PathValue("name"), q.Commit, q.Expect, q.Root, holder.String(), q.Epoch)
+	if err != nil {
+		storageFail(w, err)
+		return nil
+	}
+	jsonReply(w, http.StatusOK, reply)
+	return nil
+}
+
+func NewHostServer(c *compute.Controller, pools, images []string, grace time.Duration) *HostServer {
+	s := &HostServer{controller: c, pools: slices.Clone(pools), images: uniqueStrings(append([]string{}, images...)), grace: grace, routes: http.NewServeMux(),
+		findHost: c.FindHost}
+	s.routes.HandleFunc("POST /v1/hosts/{host}/register", s.authenticated(s.register))
+	s.routes.HandleFunc("POST /v1/hosts/{host}/heartbeat", s.authenticated(s.heartbeat))
+	s.routes.HandleFunc("POST /v1/hosts/{host}/vms/{id}/started", s.authenticated(s.started))
+	s.routes.HandleFunc("POST /v1/hosts/{host}/vms/{id}/ended", s.authenticated(s.ended))
+	return s
+}
+
+func (s *HostServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.routes.ServeHTTP(w, r)
+}
+
+type hostError struct {
+	status int
+	code   string
+}
+
+func (e hostError) Error() string { return e.code }
+
+func (s *HostServer) authenticated(handler func(http.ResponseWriter, *http.Request, string) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := hostIdentity(r)
+		if err == nil {
+			err = handler(w, r, id)
+		}
+		var reply hostError
+		switch {
+		case err == nil:
+			return
+		case errors.As(err, &reply):
+		case errors.Is(err, errHostForbidden):
+			reply = hostError{403, "forbidden"}
+		case errors.Is(err, compute.ErrHost), errors.Is(err, compute.ErrNotFound):
+			reply = hostError{409, "stale_epoch"}
+		case errors.Is(err, compute.ErrCapacityInUse):
+			reply = hostError{409, "capacity_in_use"}
+		case errors.Is(err, compute.ErrCondition), errors.Is(err, compute.ErrPhase):
+			reply = hostError{409, "conflict"}
+		case errors.Is(err, compute.ErrInvalid):
+			reply = hostError{400, "invalid_request"}
+		default:
+			slog.Warn("host_request_failed", "host", id, "error", err)
+			reply = hostError{500, "internal"}
+		}
+		storageFail(w, &storageError{reply.status, reply.code, nil})
+	}
+}
+
+func readHostRequest(w http.ResponseWriter, r *http.Request, body any) error {
+	return readHostBody(w, r, body, 64<<20)
+}
+
+func readHostBody(w http.ResponseWriter, r *http.Request, body any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(body); err != nil {
+		return compute.ErrInvalid
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return compute.ErrInvalid
+	}
+	return nil
+}
+
+func (s *HostServer) register(w http.ResponseWriter, r *http.Request, id string) error {
+	var q hostwire.Register
+	if err := readHostRequest(w, r, &q); err != nil {
+		return err
+	}
+	if !slices.Contains(s.pools, q.Pool) || !validHostAddr(q.Addr) || q.Shape.DiskMiB < 0 || q.Shape.VCPUs < 0 {
+		return compute.ErrInvalid
+	}
+	for _, image := range q.Images {
+		if !root.Hex(image, 64) {
+			return compute.ErrInvalid
+		}
+	}
+	current, err := s.findHost(r.Context(), s.pools, id)
+	if err == nil && current.Pool != q.Pool {
+		return errHostForbidden
+	}
+	if err != nil && !errors.Is(err, compute.ErrHost) {
+		return err
+	}
+	epoch, err := s.controller.Register(r.Context(), compute.HostInfo{Host: id, BootID: q.BootID, Pool: q.Pool, Addr: q.Addr,
+		Shape: compute.Shape{VCPUs: q.Shape.VCPUs, MemoryMiB: q.Shape.MemoryMiB, DiskMiB: q.Shape.DiskMiB},
+		Slots: q.Slots, Features: uniqueStrings(q.Features), Images: uniqueStrings(q.Images)})
+	if err == nil {
+		jsonReply(w, http.StatusOK, hostwire.Registered{BootEpoch: epoch, Images: s.images})
+	}
+	return err
+}
+
+func uniqueStrings(values []string) []string {
+	values = slices.Clone(values)
+	slices.Sort(values)
+	return slices.Compact(values)
+}
+
+func (s *HostServer) heartbeat(w http.ResponseWriter, r *http.Request, id string) error {
+	var q hostwire.Heartbeat
+	if err := readHostRequest(w, r, &q); err != nil {
+		return err
+	}
+	ctx := r.Context()
+	h, err := s.findHost(ctx, s.pools, id)
+	if err != nil {
+		return err
+	}
+	listed := make([]compute.Listed, len(q.Running))
+	for i, vm := range q.Running {
+		if vm.ID == "" {
+			return compute.ErrInvalid
+		}
+		listed[i] = compute.Listed{ID: vm.ID, Finished: vm.Finished}
+		if vm.StartedAt != nil {
+			at := time.UnixMilli(*vm.StartedAt)
+			listed[i].StartedAt = &at
+		}
+	}
+	reply, err := s.controller.Reconcile(ctx, h.Pool, id, q.BootEpoch, q.Free, time.UnixMilli(q.At), listed, s.grace)
+	if err != nil {
+		return err
+	}
+	out := hostwire.HeartbeatReply{BootEpoch: q.BootEpoch, Stop: make([]hostwire.StopOrder, 0, len(reply.Stop)), Boot: make([]hostwire.BootSpec, 0, len(reply.Boot))}
+	for _, stop := range reply.Stop {
+		out.Stop = append(out.Stop, hostwire.StopOrder{ID: stop.ID, Checkpoint: stop.Checkpoint})
+	}
+	for _, vm := range reply.Boot {
+		spec, err := vm.BootSpec()
+		if err != nil {
+			return err
+		}
+		out.Boot = append(out.Boot, spec)
+	}
+	jsonReply(w, http.StatusOK, out)
+	return nil
+}
+
+func (s *HostServer) currentHost(ctx context.Context, id string, epoch int64) (compute.Host, error) {
+	h, err := s.findHost(ctx, s.pools, id)
+	if err == nil && (h.BootEpoch != epoch || h.Restarting || h.Lost) {
+		err = compute.ErrHost
+	}
+	return h, err
+}
+
+func (s *HostServer) started(w http.ResponseWriter, r *http.Request, id string) error {
+	var q hostwire.Started
+	if err := readHostRequest(w, r, &q); err != nil {
+		return err
+	}
+	ctx := r.Context()
+	h, err := s.currentHost(ctx, id, q.BootEpoch)
+	if err != nil {
+		return err
+	}
+	if _, err := s.controller.StartedFromHost(ctx, r.PathValue("id"), h, time.UnixMilli(q.At)); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (s *HostServer) ended(w http.ResponseWriter, r *http.Request, hostID string) error {
+	var q hostwire.Ended
+	if err := readHostRequest(w, r, &q); err != nil {
+		return err
+	}
+	ctx, id := r.Context(), r.PathValue("id")
+	h, err := s.currentHost(ctx, hostID, q.BootEpoch)
+	if err != nil {
+		return err
+	}
+	v, err := s.controller.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if v.Host != hostID || v.Pool != h.Pool || v.HostEpoch != q.BootEpoch {
+		return compute.ErrHost
+	}
+	if v.Phase == compute.Ended {
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+	switch compute.EndCode(q.Code) {
+	case compute.Stopped, compute.StartFailed:
+	default:
+		return compute.ErrInvalid
+	}
+	if v.BootingAt == nil {
+		return compute.ErrPhase
+	}
+	_, err = s.controller.EndFromHost(ctx, id, h, compute.EndRequest{At: time.UnixMilli(q.At), Code: compute.EndCode(q.Code),
+		EndVersion: q.Version, CheckpointError: q.CheckpointError})
+	if err == nil {
+		w.WriteHeader(http.StatusNoContent)
+	}
+	return err
+}
+
+// CommitTreeResolver resolves an explicitly pinned version within its lineage.
+func CommitTreeResolver(repo *objects.Repository) func(context.Context, string, string) (string, error) {
+	return func(ctx context.Context, lineage, version string) (string, error) {
+		if !root.Hex(version, 40) {
+			return "", compute.ErrInvalid
+		}
+		commit, err := readCommit(ctx, repo.ForLineage(lineage), version)
+		if err != nil {
+			return "", err
+		}
+		tree, _ := commit["tree"].(string)
+		if !root.Hex(tree, 40) {
+			return "", compute.ErrInvalid
+		}
+		return tree, nil
+	}
+}

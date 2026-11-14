@@ -1,3 +1,9 @@
+import { vmFiles, type VmFilesScope } from "./camelfs/vm-files.ts";
+import type { VmFilesProvider } from "./repos/vm-route.ts";
+import { BashSessions } from "./camelfs/bash.ts";
+import { workspaceRefKey } from "./repos/tree-cache.ts";
+import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
+import { AgentInvocation } from "./agent-invocation.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
 import { SharedAgents } from "../../../src/shared-agents.ts";
@@ -55,6 +61,7 @@ import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, hist
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
+import { RepoTreeCache } from "./repos/tree-cache.ts";
 import { DbProfile } from "./db-profile.ts";
 
 class AgentContext {
@@ -76,10 +83,14 @@ export class AgentRuntime extends AgentContext {
     if (env.TEST_MODE === "1") testAgentRuntimes.set(host, this);
   }
 
-  readonly sharedAgents = new SharedAgents(database(this.env));
+  readonly repoTrees = new RepoTreeCache(this.ctx.storage);
+
+  sharedAgents(invocation?: AgentInvocation) {
+    return new SharedAgents(database(this.env, invocation));
+  }
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
 
-  async databaseProfile(reset = false) {
+  async databaseProfile(_invocation: AgentInvocation, reset = false) {
     if (!this.dbProfile.enabled) throw new Error("Pilot database profiling is disabled");
     await this.serial;
     await this.eventsProcessed;
@@ -87,8 +98,8 @@ export class AgentRuntime extends AgentContext {
     return { epoch: this.instanceId, ...this.dbProfile.snapshot(reset) };
   }
 
-  purgeAccountData(tenant: string, id: string) {
-    return purgeAccountDataImpl.call(this, tenant, id);
+  purgeAccountData(invocation: AgentInvocation, tenant: string, id: string) {
+    return purgeAccountDataImpl.call(this, invocation, tenant, id);
   }
 
   instanceId = crypto.randomUUID();
@@ -129,7 +140,7 @@ export class AgentRuntime extends AgentContext {
   delegateWakeLimit = (this.env as Env & { AGENT_WAKES_PER_HOUR?: string }).AGENT_WAKES_PER_HOUR;
 
   wakeBudget = new DelegationWakeBudget(this.ctx.storage, this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined);
-  admitDelegateWake(id: string): Promise<WakeDecision> {
+  admitDelegateWake(_invocation: AgentInvocation, id: string): Promise<WakeDecision> {
     return admitDelegateWakeImpl.call(this, id);
   }
 
@@ -156,21 +167,22 @@ export class AgentRuntime extends AgentContext {
   }
 
   receiveAgentMessage(
+    invocation: AgentInvocation,
     request: NoticeRequest,
     notice: RuntimeNotice,
   ): Promise<unknown> {
-    return receiveAgentMessageImpl.call(this, request, notice);
+    return receiveAgentMessageImpl.call(this, invocation, request, notice);
   }
 
-  receiveProgress(report: ChildProgressReport): Promise<Receipt> {
+  receiveProgress(_invocation: AgentInvocation, report: ChildProgressReport): Promise<Receipt> {
     return receiveProgressImpl.call(this, report);
   }
 
-  receiveEnding(ending: ChildEnding): Promise<Receipt> {
-    return receiveEndingImpl.call(this, ending);
+  receiveEnding(invocation: AgentInvocation, ending: ChildEnding): Promise<Receipt> {
+    return receiveEndingImpl.call(this, invocation, ending);
   }
 
-  hasChild(id: string): Promise<boolean> {
+  hasChild(_invocation: AgentInvocation, id: string): Promise<boolean> {
     return hasChildImpl.call(this, id);
   }
 
@@ -189,16 +201,16 @@ export class AgentRuntime extends AgentContext {
     return currentRunImpl.call(this, api);
   }
 
-  agentSpend(conf: Config) {
-    return agentSpendImpl.call(this, conf);
+  agentSpend(conf: Config, requestId?: string, invocation?: AgentInvocation) {
+    return agentSpendImpl.call(this, conf, requestId, invocation);
   }
 
   imageTools() {
     return imageToolsImpl.call(this);
   }
 
-  admitRequest(conf: Config, id: string, bucket?: string, endUser?: string) {
-    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, conf, id, bucket, endUser));
+  admitRequest(invocation: AgentInvocation, conf: Config, id: string, bucket?: string, endUser?: string) {
+    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, invocation, conf, id, bucket, endUser));
   }
 
   toolFileBudgets = new Map<string, { left: number }>();
@@ -214,8 +226,8 @@ export class AgentRuntime extends AgentContext {
     return requestResponseImpl.call(this, record);
   }
 
-  endUserLimit(conf: Config, bucket?: string, endUser?: string) {
-    return endUserLimitImpl.call(this, conf, bucket, endUser);
+  endUserLimit(conf: Config, bucket?: string, endUser?: string, invocation?: AgentInvocation) {
+    return endUserLimitImpl.call(this, conf, bucket, endUser, invocation);
   }
 
   sourceIdentity(api?: ToolExecutionApi) {
@@ -239,25 +251,39 @@ export class AgentRuntime extends AgentContext {
     this.computerSerial = next.catch(() => {});
     return next;
   }
-  computerNames() {
-    return computerNamesImpl.call(this);
+  computerNames(invocation?: AgentInvocation) {
+    return computerNamesImpl.call(this, invocation);
   }
 
-  hasNativeComputer(config?: AgentConfiguration) {
-    return hasNativeComputerImpl.call(this, config);
+  hasNativeComputer(config?: AgentConfiguration, invocation?: AgentInvocation) {
+    return hasNativeComputerImpl.call(this, config, invocation);
   }
 
-  refreshComputerTools() {
-    return refreshComputerToolsImpl.call(this);
+  refreshComputerTools(invocation?: AgentInvocation) {
+    return refreshComputerToolsImpl.call(this, invocation);
   }
 
-  enabledTools(config: AgentConfiguration) {
-    return enabledToolsImpl.call(this, config);
+  enabledTools(config: AgentConfiguration, invocation?: AgentInvocation) {
+    return enabledToolsImpl.call(this, config, invocation);
   }
 
   workspaceToolNames: string[] = [];
   /** The file tools as made, before wordedFileTools fits their descriptions to the configuration. */
   workspaceFileTools: ToolRegistration[] = [];
+
+  private sessions?: BashSessions;
+  get bashSessions() {
+    return this.sessions ??= new BashSessions(this.ctx.storage, this.env, work => this.ctx.waitUntil(work), (at, invocation) => this.arm(at, invocation),
+      (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
+  }
+
+  readonly vmFiles: VmFilesProvider = (scope: VmFilesScope) => {
+    const runtime = this;
+    return vmFiles({
+      ...this.env,
+      get bashSessions() { return runtime.bashSessions; },
+    }, scope);
+  };
 
   fileVersions = new DurableFileVersions(this.ctx.storage);
 
@@ -289,6 +315,8 @@ export class AgentRuntime extends AgentContext {
   readonly initialCursor = Date.now() * 1000;
 
   pendingWaits = new Map<string, Promise<void>>();
+
+  billingFlush?: Promise<void>;
 
   // A durable watchdog must survive losing in-memory waiters. Live waiters
   // need limit checks; other maintenance can wait for its actual deadline.
@@ -377,18 +405,19 @@ export class AgentRuntime extends AgentContext {
   }
 
   onHuman(doc: { requests: Record<string, HumanInput> }) {
-    return onHumanImpl.call(this, doc);
+    return AgentInvocation.run(invocation => onHumanImpl.call(this, invocation, doc));
   }
 
   track(id: string) {
     return trackImpl.call(this, id);
   }
 
-  settle(id: string, waitMs: number): Promise<RequestRecord> {
-    return settleImpl.call(this, id, waitMs);
+  settle(id: string, waitMs: number, invocation?: AgentInvocation): Promise<RequestRecord> {
+    return settleImpl.call(this, id, waitMs, invocation);
   }
 
   submit(
+    invocation: AgentInvocation,
     input: unknown,
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
@@ -396,71 +425,80 @@ export class AgentRuntime extends AgentContext {
     member?: string,
     placement?: Placement,
   ) {
-    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint, member, placement);
+    return submitImpl.call(this, invocation, input, notice, delivery, acceptedFingerprint, member, placement);
   }
 
-  admitDelegated(input: unknown, placement: Placement) {
-    return admitDelegatedImpl.call(this, input, placement);
+  admitDelegated(invocation: AgentInvocation, input: unknown, placement: Placement) {
+    return admitDelegatedImpl.call(this, invocation, input, placement);
   }
 
   /** A settled input, including cancellation or expiry, releases prompts waiting behind it. */
   kickInputPrompts() {
-    const work = this.admission.then(() => releaseInputPrompts(this));
+    const work = this.admission.then(() => AgentInvocation.run(invocation => releaseInputPrompts(this, invocation)));
     this.admission = work.catch(() => {});
     this.ctx.waitUntil(work);
   }
 
-  abortRequests(queued: 'cancel' | 'keep' = 'cancel', keepChildren = false) {
-    return abortRequestsImpl.call(this, queued, keepChildren);
+  abortRequests(invocation: AgentInvocation, queued: 'cancel' | 'keep' = 'cancel', keepChildren = false) {
+    return abortRequestsImpl.call(this, invocation, queued, keepChildren);
   }
 
   resumeKeptQueue() {
     return resumeKeptQueueImpl.call(this);
   }
 
-  removeMember(member: string) {
+  /** A notify delivery for a repo this agent watches: an idempotent outbox row, drained by the alarm. */
+  async stageRepoMove(invocation: AgentInvocation, move: RefMove) {
+    // Lifecycle dispatches queued jobs when its alarm fires.
+    await stageRepoMove(this.ctx.storage, move, () => this.arm(undefined, invocation));
+    // A foreign move updates reachability only; it never derives a tree (R4).
+    this.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
+  }
+  vmEnded(_invocation: AgentInvocation, delivery: string, vm: string) { return this.bashSessions.ended(delivery, vm); }
+
+  removeMember(_invocation: AgentInvocation, member: string) {
     return removeMemberImpl.call(this, member);
   }
 
-  cancelRequest(id: string) {
-    return cancelRequestImpl.call(this, id);
+  cancelRequest(invocation: AgentInvocation, id: string) {
+    return cancelRequestImpl.call(this, invocation, id);
   }
 
   cancellations = new Set<string>();
-  resumeCancellation(record: RequestRecord) {
-    return resumeCancellationImpl.call(this, record);
+  resumeCancellation(invocation: AgentInvocation, record: RequestRecord) {
+    return resumeCancellationImpl.call(this, invocation, record);
   }
 
-  restoreCancellations() {
-    return restoreCancellationsImpl.call(this);
+  restoreCancellations(invocation: AgentInvocation) {
+    return restoreCancellationsImpl.call(this, invocation);
   }
 
-  abortExecutions() {
-    return abortExecutionsImpl.call(this);
+  abortExecutions(invocation: AgentInvocation) {
+    return abortExecutionsImpl.call(this, invocation);
   }
 
   markCancelledRequests() {
     return markCancelledRequestsImpl.call(this);
   }
 
-  cancelHostIntent(record: RequestRecord) {
-    return cancelHostIntentImpl.call(this, record);
+  cancelHostIntent(invocation: AgentInvocation, record: RequestRecord) {
+    return cancelHostIntentImpl.call(this, invocation, record);
   }
 
   cancelHumanInputs(requestId?: string) {
     return cancelHumanInputsImpl.call(this, requestId);
   }
 
-  startHostRequest(intent: RequestRecord) {
-    return startHostRequestImpl.call(this, intent);
+  startHostRequest(invocation: AgentInvocation, intent: RequestRecord) {
+    return startHostRequestImpl.call(this, invocation, intent);
   }
 
-  restoreHostAdmissions() {
-    return restoreHostAdmissionsImpl.call(this);
+  restoreHostAdmissions(invocation: AgentInvocation) {
+    return restoreHostAdmissionsImpl.call(this, invocation);
   }
 
-  releaseConfigurationWaiters(order: number) {
-    return releaseConfigurationWaitersImpl.call(this, order);
+  releaseConfigurationWaiters(invocation: AgentInvocation, order: number) {
+    return releaseConfigurationWaitersImpl.call(this, invocation, order);
   }
 
   configureRequest(input: unknown, replacement = false, origin?: string) {
@@ -468,11 +506,11 @@ export class AgentRuntime extends AgentContext {
   }
 
   acceptConfigurationRequest(input: unknown, replacement: boolean, origin?: string) {
-    return acceptConfigurationRequestImpl.call(this, input, replacement, origin);
+    return AgentInvocation.run(invocation => acceptConfigurationRequestImpl.call(this, input, replacement, origin, invocation));
   }
 
   applyConfigurationRequest(input: unknown, origin?: string) {
-    return applyConfigurationRequestImpl.call(this, input, origin);
+    return AgentInvocation.run(invocation => applyConfigurationRequestImpl.call(this, input, origin, invocation));
   }
 
   requireApplication(allowDisconnected: unknown) {
@@ -480,6 +518,7 @@ export class AgentRuntime extends AgentContext {
   }
 
   admit(
+    invocation: AgentInvocation,
     input: unknown,
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
@@ -487,39 +526,39 @@ export class AgentRuntime extends AgentContext {
     member?: string,
     placement?: Placement,
   ) {
-    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint, member, placement);
+    return admitImpl.call(this, invocation, input, notice, delivery, acceptedFingerprint, member, placement);
   }
 
   activity() {
     return activityImpl.call(this);
   }
 
-  state() {
-    return stateImpl.call(this);
+  state(invocation: AgentInvocation) {
+    return stateImpl.call(this, invocation);
   }
 
   history(url: URL) {
     return historyImpl.call(this, url);
   }
 
-  answerHumanInputs(answers: Array<{ id: string; body: unknown }>, via: "api" | "agent" | "channel", system?: "expired" | "superseded") {
-    return answerHumanInputsImpl.call(this, answers, via, system);
+  answerHumanInputs(invocation: AgentInvocation, answers: Array<{ id: string; body: unknown }>, via: "api" | "agent" | "channel", system?: "expired" | "superseded") {
+    return answerHumanInputsImpl.call(this, invocation, answers, via, system);
   }
 
-  closeHumanInputs(system: "expired" | "superseded", sender?: string, shared = false) {
-    return closeHumanInputsImpl.call(this, system, sender, shared);
+  closeHumanInputs(invocation: AgentInvocation, system: "expired" | "superseded", sender?: string, shared = false) {
+    return closeHumanInputsImpl.call(this, invocation, system, sender, shared);
   }
 
-  dueHumanInputs(at: number) {
-    return dueHumanInputsImpl.call(this, at);
+  dueHumanInputs(invocation: AgentInvocation, at: number) {
+    return dueHumanInputsImpl.call(this, invocation, at);
   }
 
-  fetch(request: Request): Promise<Response> {
-    return this.dbProfile.run(new URL(request.url).pathname === "/history" ? "history" : "other", () => fetchImpl.call(this, request));
+  fetch(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return this.dbProfile.run(new URL(request.url).pathname === "/history" ? "history" : "other", () => fetchImpl.call(this, invocation, request));
   }
 
-  fetchRequest(request: Request): Promise<Response> {
-    return fetchRequestImpl.call(this, request);
+  fetchRequest(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return fetchRequestImpl.call(this, invocation, request);
   }
 
   requestUsage(record: RequestRecord, usage: Awaited<ReturnType<AgentRuntime["usageForRequest"]>>) {
@@ -530,12 +569,12 @@ export class AgentRuntime extends AgentContext {
     return usageViewImpl.call(this, usage);
   }
 
-  usageForRequest(id: string) {
-    return usageForRequestImpl.call(this, id);
+  usageForRequest(id: string, invocation?: AgentInvocation) {
+    return usageForRequestImpl.call(this, id, invocation);
   }
 
-  flushBilling(propagate = false) {
-    return flushBillingImpl.call(this, propagate);
+  flushBilling(invocation: AgentInvocation, propagate = false) {
+    return flushBillingImpl.call(this, invocation, propagate);
   }
 
   scheduleTools(): ScheduleToolsHost {
@@ -546,24 +585,25 @@ export class AgentRuntime extends AgentContext {
     return createScheduleImpl.call(this, raw);
   }
 
-  arm(retry?: number) {
-    return armImpl.call(this, retry);
+  arm(retry?: number, invocation?: AgentInvocation) {
+    if (!invocation) return AgentInvocation.run(scope => armImpl.call(this, scope, retry));
+    return armImpl.call(this, invocation, retry);
   }
 
-  onStart() {
-    return this.dbProfile.run("other", () => onStartImpl.call(this));
+  onStart(invocation: AgentInvocation) {
+    return this.dbProfile.run("other", () => onStartImpl.call(this, invocation));
   }
 
-  restorePending() {
-    return restorePendingImpl.call(this);
+  restorePending(invocation: AgentInvocation) {
+    return restorePendingImpl.call(this, invocation);
   }
 
-  onJob(context: { job: { fn: string } }) {
-    return this.dbProfile.run("other", () => onJobImpl.call(this, context));
+  onJob(invocation: AgentInvocation, context: { job: { fn: string } }) {
+    return this.dbProfile.run("other", () => onJobImpl.call(this, invocation, context));
   }
 
-  wake() {
-    return wakeImpl.call(this);
+  wake(invocation: AgentInvocation) {
+    return wakeImpl.call(this, invocation);
   }
 
   recoverWatchers() {
@@ -578,14 +618,15 @@ export class AgentRuntime extends AgentContext {
     return checkWatchersImpl.call(this, tenant, agent);
   }
 
-  webSocketEvents(request: Request): Promise<Response> {
-    return webSocketEventsImpl.call(this, request);
+  webSocketEvents(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return webSocketEventsImpl.call(this, invocation, request);
   }
 
   negotiateAgentEvents(
+    invocation: AgentInvocation,
     request: Request,
   ): Promise<Response | undefined> {
-    return negotiateAgentEventsImpl.call(this, request);
+    return negotiateAgentEventsImpl.call(this, invocation, request);
   }
 
   restoreWebSockets() {
@@ -604,28 +645,28 @@ export class AgentRuntime extends AgentContext {
     return retireAttachedSocketImpl.call(this, socket);
   }
 
-  webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) {
+  webSocketMessage(_invocation: AgentInvocation, socket: WebSocket, _data: string | ArrayBuffer) {
     return webSocketMessageImpl.call(this, socket, _data);
   }
 
-  webSocketClose(socket: WebSocket, code: number) {
+  webSocketClose(_invocation: AgentInvocation, socket: WebSocket, code: number) {
     return webSocketCloseImpl.call(this, socket, code);
   }
 
-  webSocketError(socket: WebSocket) {
-    return webSocketErrorImpl.call(this, socket);
+  webSocketError(invocation: AgentInvocation, socket: WebSocket) {
+    return webSocketErrorImpl.call(this, invocation, socket);
   }
 
-  replayEvents(request: Request) {
-    return replayEventsImpl.call(this, request);
+  replayEvents(invocation: AgentInvocation, request: Request) {
+    return replayEventsImpl.call(this, invocation, request);
   }
 
   runReplay(request: Request, id: string): Generator<{ id: number; data: unknown }> {
     return runReplayImpl.call(this, request, id);
   }
 
-  events(request: Request): Promise<Response> {
-    return eventsImpl.call(this, request);
+  events(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return eventsImpl.call(this, invocation, request);
   }
 
 }

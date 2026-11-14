@@ -50,7 +50,7 @@ export function endingRecord(workflowId: string, name: string, summary: EndingSu
     : summary.status === "aborted" ? `Workflow ${name} was aborted.`
     : summary.status === "failed" ? `Workflow ${name} failed (${failure?.code ?? "error"}): ${String(cut(failure?.message ?? "no message"))}`
     : stopped === "budget_exhausted" ? `Workflow ${name} stopped: its budget is spent. Raise it with workflow_budget to go on.`
-    : `Workflow ${name} stopped: a sub-agent or job was refused for credit. It tries again by itself; workflow_resume tries now.`;
+    : `Workflow ${name} stopped: a sub-agent was refused for credit. It tries again by itself. Use workflow_resume to retry now.`;
   const output = {
     workflowId, status: summary.status, ...(summary.result !== undefined ? { result: cut(summary.result) } : {}),
     ...(summary.error && !fault ? { error: cut(summary.error) } : {}), ...(fault ? { fault } : {}),

@@ -1,0 +1,370 @@
+package computehost
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"maps"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/qaml-ai/run/camelfsd/internal/root"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
+)
+
+type images struct {
+	dir      string
+	store    store.Store
+	diskMiB  int
+	verified atomic.Pointer[map[string]int64]
+	mu       sync.Mutex
+	inflight map[string]*imageDownload
+}
+
+type imageDownload struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int
+	err     error
+}
+
+func (i *images) scan() error {
+	files, err := os.ReadDir(i.dir)
+	if err != nil {
+		return err
+	}
+	verified := make(map[string]int64)
+	for _, file := range files {
+		name := file.Name()
+		path := filepath.Join(i.dir, name)
+		switch {
+		case file.IsDir() && strings.HasPrefix(name, ".download-"):
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			slog.Info("compute_image_cache_removed", "path", path, "reason", "incomplete_download")
+			continue
+		case file.Type().IsRegular() && strings.HasPrefix(name, ".tmp-"):
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			slog.Info("compute_image_cache_removed", "path", path, "reason", "temporary_file")
+			continue
+		}
+		sha, ok := strings.CutSuffix(name, ".ext4")
+		if !ok || !root.Hex(sha, 64) || !file.Type().IsRegular() {
+			continue
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		hash := sha256.New()
+		size, err := io.Copy(hash, f)
+		if err := errors.Join(err, f.Close()); err != nil {
+			return fmt.Errorf("verify cached image %s: %w", path, err)
+		}
+		if fmt.Sprintf("%x", hash.Sum(nil)) == sha {
+			verified[sha] = size
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		slog.Info("compute_image_cache_removed", "path", path, "reason", "sha256_mismatch")
+	}
+	i.verified.Store(&verified)
+	return nil
+}
+
+func (i *images) list() []string {
+	list := []string{}
+	if verified := i.verified.Load(); verified != nil {
+		for sha := range *verified {
+			list = append(list, sha)
+		}
+	}
+	sort.Strings(list)
+	return list
+}
+
+func (i *images) ensure(ctx context.Context, sha string, diskMiB int) (string, error) {
+	if !root.Hex(sha, 64) || diskMiB <= 0 || int64(diskMiB) > math.MaxInt64>>20 {
+		return "", errors.New("invalid image or disk size")
+	}
+	path := filepath.Join(i.dir, sha+".ext4")
+	for {
+		if verified := i.verified.Load(); verified != nil {
+			if size, ok := (*verified)[sha]; ok {
+				if size > int64(diskMiB)<<20 {
+					return "", errors.New("guest image exceeds VM disk")
+				}
+				return path, nil
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		flight, joined := i.join(ctx, sha, path)
+		if flight == nil {
+			continue
+		} // A concurrent download published this SHA.
+		select {
+		case <-ctx.Done():
+			if joined {
+				i.leave(flight)
+			}
+			return "", ctx.Err()
+		case <-flight.done:
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if joined && flight.err != nil {
+				return "", flight.err
+			}
+		}
+	}
+}
+
+func (i *images) join(ctx context.Context, sha, path string) (*imageDownload, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if verified := i.verified.Load(); verified != nil {
+		if _, ok := (*verified)[sha]; ok {
+			return nil, false
+		}
+	}
+	if flight := i.inflight[sha]; flight != nil {
+		// Let a flight with no remaining callers finish cleaning up before retrying.
+		if flight.waiters == 0 {
+			return flight, false
+		}
+		flight.waiters++
+		return flight, true
+	}
+	if i.inflight == nil {
+		i.inflight = make(map[string]*imageDownload)
+	}
+	shared, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	flight := &imageDownload{done: make(chan struct{}), cancel: cancel, waiters: 1}
+	i.inflight[sha] = flight
+	go i.fetch(shared, sha, path, flight)
+	return flight, true
+}
+
+func (i *images) leave(flight *imageDownload) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	flight.waiters--
+	if flight.waiters == 0 {
+		flight.cancel()
+	}
+}
+
+func (i *images) fetch(ctx context.Context, sha, path string, flight *imageDownload) {
+	defer flight.cancel()
+	maxBytes := min(int64(i.diskMiB), math.MaxInt64>>20) << 20
+	err := i.download(ctx, path, sha, maxBytes)
+	var size int64
+	if err == nil {
+		var info os.FileInfo
+		info, err = os.Stat(path)
+		if err == nil {
+			size = info.Size()
+		}
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if err == nil {
+		verified := map[string]int64{}
+		if current := i.verified.Load(); current != nil {
+			verified = maps.Clone(*current)
+		}
+		verified[sha] = size
+		i.verified.Store(&verified)
+	}
+	flight.err = err
+	delete(i.inflight, sha)
+	close(flight.done)
+}
+
+func (i *images) download(ctx context.Context, path, sha string, maxBytes int64) error {
+	base := "guest/" + sha
+	manifest, err := store.OpenReader(ctx, i.store, base+".json")
+	if err != nil {
+		return err
+	}
+	var m struct {
+		SHA256     string `json:"sha256"`
+		ZstdSHA256 string `json:"zstdSha256"`
+		Bytes      int64  `json:"bytes"`
+		ZstdBytes  int64  `json:"zstdBytes"`
+	}
+	err = json.NewDecoder(io.LimitReader(manifest, 64<<10)).Decode(&m)
+	manifest.Close()
+	if err != nil {
+		return err
+	}
+	if m.SHA256 != sha || !root.Hex(m.ZstdSHA256, 64) || m.Bytes <= 0 || m.Bytes > maxBytes || m.ZstdBytes <= 0 || m.ZstdBytes == math.MaxInt64 {
+		return errors.New("invalid guest manifest or guest image exceeds VM disk")
+	}
+	dir, err := os.MkdirTemp(i.dir, ".download-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	compressed, err := os.Create(filepath.Join(dir, "guest.zst"))
+	if err != nil {
+		return err
+	}
+	response, err := store.OpenReader(ctx, i.store, base+".ext4.zst")
+	if err != nil {
+		compressed.Close()
+		return err
+	}
+	hash := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(compressed, hash), io.LimitReader(response, m.ZstdBytes+1))
+	if err := errors.Join(copyErr, response.Close(), compressed.Close()); err != nil {
+		return fmt.Errorf("compressed guest image: %w", err)
+	}
+	if n != m.ZstdBytes {
+		return errors.New("compressed guest image size mismatch")
+	}
+	if fmt.Sprintf("%x", hash.Sum(nil)) != m.ZstdSHA256 {
+		return errors.New("compressed guest image SHA-256 mismatch")
+	}
+
+	cmd := exec.CommandContext(ctx, zstdPath, "-q", "-d", "-c", "--", compressed.Name())
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	image, err := os.OpenFile(filepath.Join(dir, "guest.ext4"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer image.Close()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	hash.Reset()
+	n, copyErr = copySparse(image, io.TeeReader(io.LimitReader(out, m.Bytes+1), hash))
+	out.Close()
+	if err := errors.Join(copyErr, cmd.Wait()); err != nil {
+		return err
+	}
+	if n != m.Bytes || fmt.Sprintf("%x", hash.Sum(nil)) != sha {
+		return errors.New("ext4 guest image hash or size mismatch")
+	}
+	if err := image.Truncate(n); err != nil {
+		return err
+	}
+	if err := image.Sync(); err != nil {
+		return err
+	}
+	if err := image.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(image.Name(), path); err != nil {
+		return err
+	}
+	// Persist the rename: without it a power loss can drop the verified image and cost another download.
+	return syncDir(filepath.Dir(path))
+}
+
+// zstdPath is the decompressor host setup installs (Ubuntu's zstd package); it is not resolved through PATH.
+const zstdPath = "/usr/bin/zstd"
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
+}
+
+// copySparse coalesces short pipe reads into full blocks before testing for
+// zeros. The caller truncates the result after verifying the size and hash.
+func copySparse(dst *os.File, src io.Reader) (int64, error) {
+	const blockSize = 64 << 10
+	buf, zeros := make([]byte, blockSize), make([]byte, blockSize)
+	var total int64
+	for {
+		n, err := io.ReadFull(src, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return total, err
+		}
+		if n > 0 {
+			if bytes.Equal(buf[:n], zeros[:n]) {
+				if _, err := dst.Seek(int64(n), io.SeekCurrent); err != nil {
+					return total, err
+				}
+			} else if _, err := dst.Write(buf[:n]); err != nil {
+				return total, err
+			}
+			total += int64(n)
+		}
+		if n < len(buf) {
+			return total, nil
+		}
+	}
+}
+
+// queuePrewarmLocked replaces the pending list on re-registration. A single
+// worker processes the list, and boot requests can join its active download.
+func (h *Host) queuePrewarmLocked(allowed []string) {
+	h.prewarmPending = nil
+	if h.ctx.Err() != nil {
+		return
+	}
+	verified := h.images.verified.Load()
+	for _, sha := range allowed {
+		if _, cached := (*verified)[sha]; !cached {
+			h.prewarmPending = append(h.prewarmPending, sha)
+		}
+	}
+	if h.prewarming || len(h.prewarmPending) == 0 {
+		return
+	}
+	h.prewarming = true
+	h.work.Add(1)
+	go h.prewarm()
+}
+
+func (h *Host) prewarm() {
+	defer h.work.Done()
+	for {
+		h.mu.Lock()
+		if h.ctx.Err() != nil || len(h.prewarmPending) == 0 {
+			h.prewarming = false
+			h.prewarmPending = nil
+			h.mu.Unlock()
+			return
+		}
+		sha := h.prewarmPending[0]
+		h.prewarmPending = h.prewarmPending[1:]
+		h.mu.Unlock()
+		if _, cached := (*h.images.verified.Load())[sha]; cached {
+			continue
+		}
+
+		start := time.Now()
+		if _, err := h.images.ensure(h.ctx, sha, h.Shape.DiskMiB); err == nil {
+			slog.Info("compute_image_prewarmed", "sha", sha, "ms", ms(time.Since(start)))
+		} else if h.ctx.Err() == nil {
+			slog.Warn("compute_image_prewarm_failed", "sha", sha, "error", err)
+		}
+	}
+}

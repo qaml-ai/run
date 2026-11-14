@@ -1,3 +1,5 @@
+//go:build !guest
+
 package main
 
 import (
@@ -37,17 +39,13 @@ func (d *dirs) Set(s string) error {
 	*d = append(*d, s)
 	return nil
 }
-func main() {
-	if e := run(os.Args[1:]); e != nil {
-		log.Print(e)
-		os.Exit(1)
-	}
-}
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: camelfsd host|client|version")
+		return fmt.Errorf("usage: camelfsd host|api|cleanup|client|version|guest|init|egress")
 	}
 	switch args[0] {
+	case "guest", "init":
+		return runGuest(args)
 	case "testguest":
 		return testguest.Run(args[1:])
 	case "version":
@@ -65,6 +63,10 @@ func run(args []string) error {
 			return fmt.Errorf("data required")
 		}
 		return image.Cleanup(context.Background(), *data, nil)
+	case "api":
+		return apiRole(args[1:])
+	case "egress":
+		return runEgress(args[1:])
 	case "host":
 		return host(args[1:])
 	default:
@@ -73,22 +75,24 @@ func run(args []string) error {
 }
 func host(args []string) error {
 	f := flag.NewFlagSet("host", flag.ContinueOnError)
+	apiListen := f.String("listen-api", "127.0.0.1:8790", "runtime API address (requires api-token-file)")
+	apiTokenFile := f.String("api-token-file", "", "raw bearer or CAMELFS_API_TOKEN env file; enables runtime API")
 	socket := f.String("socket", "/run/camelfsd/api.sock", "Unix socket")
 	data := f.String("data", "/nvme/camelfs", "data directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
 	region := f.String("region", "us-west-2", "AWS region")
-	cold := f.String("cold", "clone", "clone or prehydrate")
+	cowMax := f.Int64("cow-max", 0, "sparse COW maximum bytes (default virtual size)")
 	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
 	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	virtualSize := f.Int64("virtual-size", 1<<30, "blank image size")
+	baselineDiskMax := f.Int64("baseline-disk-max", 0, "maximum queued baseline image bytes (default twice the workspace virtual size)")
 	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
 	maxBytes := f.Int64("max-bytes", 8<<30, "checkpoint byte cap")
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
 	streamIdle := f.Duration("stream-idle", 30*time.Second, "guest stream idle timeout")
 	applyMax := f.Duration("apply-max", 30*time.Minute, "apply overall cap")
-	leaseTTL := f.Duration("lease-ttl", 5*time.Minute, "lease lifetime; renewal is ttl/5")
-	packSize := f.Int64("hydration-pack-size", 4<<20, "hydration window size")
+	compute := addHostComputeFlags(f)
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
@@ -96,6 +100,9 @@ func host(args []string) error {
 	}
 	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 || *fetchDepth < 1 {
 		return fmt.Errorf("invalid host flags")
+	}
+	if e := compute.validate(); e != nil {
+		return e
 	}
 	if e := os.MkdirAll(*data, 0700); e != nil {
 		return e
@@ -127,7 +134,11 @@ func host(args []string) error {
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, LeaseTTL: *leaseTTL, Origin: origin, HydrationPackSize: *packSize, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, Cold: *cold, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	// Fail at start, not at the first cold mount, when the host lacks a device-mapper target.
+	if e = image.ProbeDeviceMapper(ctx); e != nil {
+		return e
+	}
+	m, e := image.New(image.Config{RecoverSessions: compute.enabled, StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
@@ -163,7 +174,37 @@ func host(args []string) error {
 	if e = os.Chmod(*socket, 0600); e != nil {
 		return e
 	}
-	server := http.Server{Handler: &api.Server{Manager: m, Version: version, Store: *url}, ReadHeaderTimeout: 5 * time.Second}
+	token := ""
+	if *apiTokenFile != "" {
+		token, e = readAPIToken(*apiTokenFile)
+		if e != nil {
+			return e
+		}
+	}
+	handler := &api.Server{Manager: m, Version: version, Store: *url, APIToken: token}
+	if token != "" {
+		al, err := net.Listen("tcp", *apiListen)
+		if err != nil {
+			return err
+		}
+		defer al.Close()
+		runtimeAPI := &http.Server{Handler: handler.RuntimeHandler(), ReadHeaderTimeout: 5 * time.Second}
+		defer runtimeAPI.Close()
+		go func() {
+			if err := runtimeAPI.Serve(al); err != nil && err != http.ErrServerClosed {
+				log.Printf("runtime API stopped: %v", err)
+				cancel()
+			}
+		}()
+	}
+	if compute.enabled {
+		stop, err := compute.start(ctx, *data, *region, m, cancel)
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
+	server := http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		<-ctx.Done()

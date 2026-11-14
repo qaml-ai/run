@@ -48,6 +48,15 @@ func treeCommand(socket, cmd string, args []string, out io.Writer) error {
 		return b, resp.StatusCode, e
 	}
 	if cmd == "tree" || cmd == "cat" {
+		f := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		lineage := f.String("lineage", "", "lineage")
+		if e := f.Parse(args); e != nil {
+			return e
+		}
+		args = f.Args()
+		if *lineage == "" {
+			return fmt.Errorf("lineage required")
+		}
 		if len(args) != 1 && cmd == "tree" || len(args) != 2 && cmd == "cat" {
 			return fmt.Errorf("expected tree [path]")
 		}
@@ -55,7 +64,7 @@ func treeCommand(socket, cmd string, args []string, out io.Writer) error {
 		if cmd == "cat" {
 			path += "/files/" + escapePath(args[1])
 		}
-		b, status, e := call("GET", path, nil, 0)
+		b, status, e := call("GET", path+"?lineage="+url.QueryEscape(*lineage), nil, 0)
 		if e != nil {
 			return e
 		}

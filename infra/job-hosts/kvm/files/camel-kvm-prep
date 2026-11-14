@@ -12,7 +12,8 @@ echo '== NVMe'
 device=${NVME_DEVICE:-$(lsblk -dpno NAME,MODEL | awk '$2=="Amazon" && $3=="EC2" && $4=="NVMe" && $5=="Instance" && $6=="Storage" {print $1; exit}')}
 [[ -n $device && -b $device ]] || fail 'No instance-store block device found; set NVME_DEVICE'
 device=$(readlink -f "$device")
-model=$(lsblk -dnro MODEL "$device" | xargs)
+# Not -r: raw mode escapes spaces as \x20, and the model would never match.
+model=$(lsblk -dno MODEL "$device" | xargs)
 label=$(blkid -s LABEL -o value "$device" || true)
 if [[ $label != camel-nvme ]]; then
   # Check partitions too. A labelled override is not permission to erase an EBS disk.

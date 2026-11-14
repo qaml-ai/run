@@ -19,26 +19,35 @@ type flight struct {
 	err  error
 }
 type Cache struct {
-	verified map[string]time.Time
-	Hashes   atomic.Int64
-	fdMu     sync.Mutex
-	fds      map[string]*list.Element
-	lru      list.List
-	Dir      string
-	Store    store.Store
-	mu       sync.Mutex
-	flights  map[string]*flight
-	slots    chan struct{}
+	verified        map[string]time.Time
+	Hashes          atomic.Int64
+	fdMu            sync.Mutex
+	fds             map[string]*list.Element
+	lru             list.List
+	Dir             string
+	Store           store.Store
+	mu              sync.Mutex
+	flights         map[string]*flight
+	atomic          func(string, []byte) error
+	writeAt         func(*os.File, []byte, int64) (int, error)
+	cloneRange      func(*os.File, *os.File, int64) error
+	ReflinkedChunks atomic.Int64
 }
 
 func New(dir string, s store.Store, n int) *Cache {
 	if n < 1 {
 		n = 64
 	}
-	return &Cache{Dir: dir, Store: s, flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}, slots: make(chan struct{}, n)}
+	return &Cache{atomic: store.Atomic, writeAt: func(f *os.File, b []byte, off int64) (int, error) { return f.WriteAt(b, off) }, cloneRange: cloneRange, Dir: dir, Store: store.WithDepth(s, n), flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}}
 }
 func (c *Cache) Ensure(h string) (string, error) { return c.EnsureContext(context.Background(), h) }
 func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
+	return c.ensure(ctx, h, c.Store, nil)
+}
+func (c *Cache) EnsureLineage(ctx context.Context, lineage, h string) (string, error) {
+	return c.ensure(ctx, h, store.ForLineage(c.Store, lineage), nil)
+}
+func (c *Cache) ensure(ctx context.Context, h string, source store.Store, publish func(string, []byte) error) (string, error) {
 	if !root.Hex(h, 64) {
 		return "", fmt.Errorf("invalid hash")
 	}
@@ -77,19 +86,16 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 			return p, nil
 		}
 	}
-	select {
-	case c.slots <- struct{}{}:
-	case <-ctx.Done():
-		f.err = ctx.Err()
-		return "", f.err
-	}
-	defer func() { <-c.slots }()
-	b, e := c.Store.Get(ctx, "c/"+h)
+	b, e := source.Get(ctx, "c/"+h)
 	if e == nil && (c.hash(b) != h || len(b) != int(root.ChunkSize)) {
 		e = fmt.Errorf("chunk hash mismatch")
 	}
 	if e == nil {
-		e = store.Atomic(p, b)
+		if publish != nil {
+			e = publish(p, b)
+		} else {
+			e = c.atomic(p, b)
+		}
 	}
 	f.err = e
 	if e == nil {
@@ -97,6 +103,9 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 		c.mu.Lock()
 		c.verified[h] = time.Now()
 		c.mu.Unlock()
+	}
+	if e != nil && e != context.Canceled {
+		return "", fmt.Errorf("fetch chunk %s: %w", h, e)
 	}
 	return f.path, e
 }

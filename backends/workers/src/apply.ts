@@ -1,37 +1,37 @@
+import { repoContext } from "./repos/registry.ts";
 import { applyResources, validateApply } from '../../../shared/apply.ts';
 import { applyScope, applyPreparation, ApplyChanged } from '../../../shared/apply-scope.ts';
 import { transaction } from './postgres.ts';
 import { Directory, type ControlEnv, type DirectoryEntry } from './control.ts';
 import { definitionRoutes, provisionDefinition, definitionUpsert, resolveDefinition, definitionId } from './definitions.ts';
-import { createVolume } from './file-mounts.ts';
+import { createRepo, type RepoEnv } from './repos/registry.ts';
+import { repoProvision } from './repos/provision.ts';
 import { reserveAgentCreation } from './agent-capacity.ts';
 import { body } from './validation.ts';
 import { ApiError } from './api-contract.ts';
 import type { AuthContext } from './control.ts';
 
 export async function apply(request: Request, env: ControlEnv, auth: AuthContext) {
-  const input = validateApply(await body(request, 1024 * 1024), message => new ApiError(400, message));
+  const raw = await body(request, 1024 * 1024);
+  if (raw && typeof raw === 'object' && 'volumes' in raw) throw new ApiError(400, 'Volumes are replaced by repos: use /v1/repos');
+  const input = validateApply(raw, message => new ApiError(400, message));
   const agents = new Map<string, DirectoryEntry>();
-  const volumes = new Map<string, Awaited<ReturnType<typeof createVolume>>>();
+  const repos = new Map<string, {key:string;name:string;row:import('./repos/tenant-repos.ts').RepoRow}>();
   const directory = new Directory(env, auth.tenantId);
   const preparation = { values: new Map<string, Promise<unknown>>(), locked: false };
   const origin = new URL(request.url).origin;
-  return applyPreparation.run(preparation, async () => {
+  return repoProvision.run(repos,()=>applyPreparation.run(preparation, async () => {
     const execute = (preview: boolean) => transaction(env, async sql => {
       if (!preview) {
         await sql.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [`apply:${auth.tenantId}`]);
         preparation.locked = true;
       }
       agents.clear();
-      volumes.clear();
+      repos.clear();
       const run = () => applyScope.run({ sql }, () => applyResources(input, {
         error: message => new ApiError(400, message),
         async save(kind, key, value) {
-          if (kind === 'volumes') {
-            const saved = await createVolume(env, auth.tenantId, { ...value, key });
-            volumes.set(key, saved);
-            return { id: saved.id, action: saved.existing ? 'unchanged' : 'create' };
-          }
+          if (kind === 'volumes') throw new ApiError(400, 'Volumes are replaced by repos: use /v1/repos');
           if (kind === 'definitions') {
             const old = await resolveDefinition(env, auth.tenantId, await definitionId(auth.tenantId, key)).catch(error => { if (error.status === 404) return undefined; throw error; });
             const response = await definitionRoutes(new Request(new URL('/v1/definitions', request.url), { method: 'POST', headers: { 'content-type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(value) }), env, auth);
@@ -64,7 +64,8 @@ export async function apply(request: Request, env: ControlEnv, auth: AuthContext
           releases.push(await reserveAgentCreation(env as import('./agent.ts').Env, auth.tenantId, entry.id));
         const result = await execute(false);
         // Initialize committed records only. Existing initialized agents receive no configuration call.
-        for (const volume of volumes.values()) await env.VOLUMES.getByName(`${auth.tenantId}:${volume.id}`).initialize(auth.tenantId, volume.id, volume.name, volume.createdAt);
+        for (const repo of repos.values()) await createRepo(env as RepoEnv,auth.tenantId,{key:repo.key,name:repo.name});
+        for (const entry of agents.values()) for(const mount of entry.config.mounts??[]) if(mount.repo&&mount.notify) await (await repoContext(env as RepoEnv, auth.tenantId, mount.repo, `agent:${entry.id}`)).repo.watch(mount.ref??'main',entry.id);
         for (const entry of agents.values()) {
           const saved = await directory.initializeCommitted(entry, origin);
           if ('failed' in saved) throw new ApiError(saved.status, saved.error);
@@ -77,5 +78,5 @@ export async function apply(request: Request, env: ControlEnv, auth: AuthContext
         await Promise.all(releases.map(release => release()));
       }
     }
-  });
+  }));
 }

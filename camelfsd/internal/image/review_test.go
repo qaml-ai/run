@@ -1,64 +1,12 @@
 package image
 
 import (
-	"context"
-	"os"
-	"path/filepath"
+	"github.com/qaml-ai/run/camelfsd/internal/chunk"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"reflect"
 	"testing"
-	"time"
-
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
-	"github.com/qaml-ai/run/camelfsd/internal/chunk"
-	"github.com/qaml-ai/run/camelfsd/internal/objects"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
-	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
-func TestTreeMountReclaimsExpiredJobLease(t *testing.T) {
-	t.Setenv("CAMELFSD_TEST_NO_REFLINK", "1")
-	data := t.TempDir()
-	s := store.Local{Dir: t.TempDir()}
-	db, e := refs.Open(filepath.Join(data, "refs.db"))
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer db.Close()
-	m, e := New(Config{Data: data, Cold: "prehydrate", HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer m.Close()
-	path := filepath.Join(data, "base.img")
-	if e = os.WriteFile(path, make([]byte, root.ChunkSize), 0600); e != nil {
-		t.Fatal(e)
-	}
-	tr, err := m.objects().Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tree := tr.Tree
-	imp, e := m.Import(context.Background(), ImportRequest{Lineage: "l", Name: "main", Path: path, Tree: tree})
-	if e != nil {
-		t.Fatal(e)
-	}
-	db.Ensure("l", "job/retry")
-	db.CAS("l", "job/retry", refs.Value{}, refs.Value{Root: imp.Root, Tree: tree, Owner: "job:retry"}, refs.Fence{})
-	db.Now = func() time.Time { return time.Now().Add(-10 * time.Minute) }
-	epoch, e := db.Lease("l", "job/retry", "crashed")
-	if e != nil {
-		t.Fatal(e)
-	}
-	db.Now = time.Now
-	mount, e := m.Mount(context.Background(), Request{JobID: "retry", Lineage: "l", Tree: tree})
-	if e != nil {
-		t.Fatal(e)
-	}
-	if mount.LeaseEpoch <= epoch || mount.Root != imp.Root {
-		t.Fatal(mount)
-	}
-}
 func TestSparseHolesOnlyReadParentChunks(t *testing.T) {
 	const size = int64(4 << 30)
 	if got := rangesFromExtents(nil, size, nil); len(got) != 0 {

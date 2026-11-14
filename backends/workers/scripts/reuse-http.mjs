@@ -2,13 +2,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "../node_modules/typescript/lib/typescript.js";
+import { diverge } from "./repo-divergence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = name => readFile(resolve(here, "../../../src", name), "utf8");
 const header = name => `// Generated from src/${name}; only infrastructure imports are adapted.\n// Run node backends/workers/scripts/reuse-http.mjs --check to reject source drift.\n`;
 const outputs = new Map();
 outputs.set("idempotency.ts", header("idempotency.ts") + (await read("idempotency.ts")).replace('"./db.ts"', '"./postgres.ts"').replace('"./http.ts"', '"./errors.ts"'));
-outputs.set("runtime-identity.ts", header("identity.ts") + (await read("identity.ts")).replace('"./db.ts"', '"./postgres.ts"').replace('"./http.ts"', '"./errors.ts"'));
+outputs.set("runtime-identity.ts", diverge("runtime-identity.ts", header("identity.ts") + (await read("identity.ts")).replace('"./db.ts"', '"./postgres.ts"').replace('"./http.ts"', '"./errors.ts"')));
 
 const api = ts.createSourceFile("api.ts", await read("api.ts"), ts.ScriptTarget.Latest, true);
 let options;
@@ -23,7 +24,7 @@ const policy = name => {
   if (!property) throw new Error(`Source idempotency ${name} missing`);
   return property.initializer.getText(api);
 };
-outputs.set("idempotency-routes.ts", header("api.ts") + `export const skipMoneyIdempotency: (path: string) => boolean = ${policy("skip")};\nexport const secretMoneyIdempotency: (path: string) => boolean = ${policy("secret")};\n`);
+outputs.set("idempotency-routes.ts", header("api.ts") + `export const skipMoneyIdempotency: (path: string) => boolean = ${policy("skip")};\nexport const secretMoneyIdempotency: (path: string) => boolean = ${policy("secret").replace("|volumes\\/[^/]+\\/links", "")};\n`);
 
 const http = ts.createSourceFile("http.ts", await read("http.ts"), ts.ScriptTarget.Latest, true);
 const names = new Set(["errorFields", "errorCode", "errorHeaders", "errorStatus"]);

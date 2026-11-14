@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 /** Swap only the server fixture. All assertions and fake-provider responses stay upstream. */
 import {
   fakeModel,
@@ -14,7 +15,6 @@ export async function compatibilityRuntime(
   respond: any,
   env: Record<string, string> = {},
   tenantsFile?: any,
-  _options?: any,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'camelrun-proto-sdk-files-'));
   t.after(() => rm(root, {recursive:true,force:true}));
@@ -36,6 +36,7 @@ export async function compatibilityRuntime(
     ),
   ];
   const server = await startFixture({
+    entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),
     token: OPERATOR,
     tenant: "alice",
     modelURL: env.AGENT_BASE_URL ?? model.url,
@@ -108,6 +109,7 @@ export async function compatibilityRuntime(
     call,
     prompt,
     model,
+    camelfsCalls: server.camelfsCalls,
     get logs() { return server.worker.logs().split("\n"); },
     child: {
       kill: () => {

@@ -1,3 +1,4 @@
+import { diverge } from "./repo-divergence.mjs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +43,8 @@ for (const statement of ast.statements) {
   }
   parts.push(text);
 }
-const output = '// Ported from the first 12 service tests and standalone Stripe signature test in tests/billing.test.ts; assertions and bodies unchanged.\n' + parts.join("\n\n") + "\n";
+let output = '// Ported from the first 12 service tests and standalone Stripe signature test in tests/billing.test.ts; assertions and bodies unchanged.\n' + parts.join("\n\n") + "\n";
+output = diverge("test/billing-core.test.ts", output);
 const path = resolve(here, "../test/billing-core.test.ts");
 if (process.argv.includes("--check")) {
   if (await readFile(path, "utf8") !== output) throw new Error("Billing core tests drifted");

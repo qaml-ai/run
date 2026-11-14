@@ -11,11 +11,8 @@ import { HttpError } from "./errors.ts";
 import { journeyKept } from "./account-journey-state.ts";
 import type { Journey } from "../../../src/core/journey.ts";
 import type { OAuth } from "./account-oauth.ts";
-interface VolumeService {
-  list(tenant: string): Promise<{ id: string }[]>;
-  call(id: string, tenant: string, action: string, query?: unknown): Promise<unknown>;
-  stream(tenant: string, file: unknown): AsyncIterable<Uint8Array>;
-}
+import { exportRepos } from './account-repos.ts';
+import type { RepoEnv } from './repos/registry.ts';
 import type { Webhooks } from "./webhook-policy.ts";
 import { ZipWriter } from "../../../src/zip.ts";
 import { sourceView as mcpServerView } from "./tool-sources.ts";
@@ -23,13 +20,13 @@ import { sourceView as mcpServerView } from "./tool-sources.ts";
 /**
  * A tenant's data as one zip (GET /v1/account/export), written as it is read: each agent's
  * configuration and whole history (a page of turns at a time), its definitions, channels and
- * webhooks (secrets left out, as the API shows them), every volume's files, and its credit ledger
+ * webhooks (secrets left out, as the API shows them), every repo's main tree, and its credit ledger
  * and usage. Nothing is held beyond the page, file chunk or ledger page being written.
  */
 export interface ExportOptions {
   accounts: Accounts;
   clients: ClientSessions;
-  volumes?: VolumeService;
+  repos?: RepoEnv;
   definitions?: Definitions;
   channels?: Channels;
   /** The tenant's GitHub Apps, their keys and secrets masked. */
@@ -57,8 +54,8 @@ tokens.json                your API tokens' names and prefixes (never the tokens
 keys.json                  which provider keys are set (the last four characters, never the keys)
 oauth-grants.json          the applications you let act for your account
 discord.json               managed Discord server bindings and pending setup metadata (never credentials or session/state hashes)
-volumes/<id>/volume.json   each volume's name and size
-volumes/<id>/files/...     each volume's files
+repos/<id>/repo.json       each repo's name, key, refs and creation time
+repos/<id>/main/...        each repo's files at main
 billing/ledger.jsonl       your credit ledger, one entry per line, newest first
 billing/usage.json         model usage per day and model
 billing/attempts.jsonl     durable model attempts and settlement state (no key fingerprints)
@@ -147,18 +144,7 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
     setupAttempts: attempts.rows.map(row => ({ guildId: row.guild_id, expiresAt: Number(row.expires_at) })),
   }));
 
-  const volumes = options.volumes;
-  if (volumes) {
-    for (const { id } of await volumes.list(tenant)) {
-      yield* zip.file(`volumes/${id}/volume.json`, json(await volumes.call(id, tenant, "info")));
-      for (let after: string | undefined; ;) {
-        const { files, next } = await volumes.call(id, tenant, "list", { path: "/", ...(after !== undefined ? { after } : {}) }) as { files: { path: string; size: number; chunks: string[]; updatedAt: number }[]; next?: string };
-        for (const file of files) yield* zip.file(`volumes/${id}/files${file.path}`, volumes.stream(tenant, file), new Date(file.updatedAt));
-        if (!next) break;
-        after = next;
-      }
-    }
-  }
+  if (options.repos) for await (const file of exportRepos(options.repos, tenant)) yield* zip.file(file.name, file.body);
 
   yield* zip.file("billing/ledger.jsonl", (async function* () {
     for (let before: number | undefined; ;) {

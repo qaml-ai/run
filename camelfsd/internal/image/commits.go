@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+
 	"regexp"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ type Trailers struct {
 	ExitCode *int   `json:"exitCode,omitempty"`
 }
 type CheckpointRequest struct {
+	Time      *int64    `json:"-"`
 	TimeoutMs int       `json:"timeoutMs"`
 	Message   *string   `json:"message,omitempty"`
 	Trailers  *Trailers `json:"trailers,omitempty"`
@@ -68,25 +70,30 @@ func (m *Manager) writeCommit(ctx context.Context, v *Mount, tree string, q Chec
 		if t.ExitCode != nil {
 			fmt.Fprintf(&trailers, "Camel-Exit: %d\n", *t.ExitCode)
 		}
+		// Camel-Op names why a commit exists in the repo log (#993). The kind is validated above, so
+		// every checkpoint with trailers has exactly one op: a job's, or an agent turn's (auto or manual).
+		if op := map[string]string{"job": "job", "auto": "turn", "manual": "turn"}[t.Kind]; op != "" {
+			fmt.Fprintf(&trailers, "Camel-Op: %s\n", op)
+		}
 	}
 	body := "tree " + tree + "\n"
 	if v.Parent.Commit != "" {
 		body += "parent " + v.Parent.Commit + "\n"
 	}
 	now := time.Now().Unix()
+	if q.Time != nil {
+		now = time.UnixMilli(*q.Time).Unix()
+	}
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n%s", who, who, now, now, msg, trailers.String())
-	id := store.GitHash("commit", []byte(body))
-	_, e := m.objects().DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO objects VALUES(?,'commit',?,?,?)", id, []byte(body), len(body), time.Now().UnixMilli())
-	return id, e
+	return m.objects(v.Lineage).PutObject(ctx, v.Lineage, "commit", []byte(body))
 }
-func (m *Manager) Commit(ctx context.Context, id string) (map[string]any, error) {
-	var b []byte
-	e := m.objects().DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='commit'", id).Scan(&b)
+func (m *Manager) Commit(ctx context.Context, id string, lineages ...string) (map[string]any, error) {
+	if len(lineages) != 1 || !store.Lineage(lineages[0]) {
+		return nil, apierr.Invalid("lineage required")
+	}
+	b, e := m.objects(lineages...).Object(ctx, id, "commit")
 	if e != nil {
 		return nil, e
-	}
-	if store.GitHash("commit", b) != id {
-		return nil, fmt.Errorf("corrupt commit")
 	}
 	headers, body, _ := strings.Cut(string(b), "\n\n")
 	out := map[string]any{"commit": id}

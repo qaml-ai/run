@@ -14,7 +14,7 @@ import { searchOrder } from "./web-search-policy.ts";
 import { spendInput } from "./agent-spend-policy.ts";
 import { identityInput, bucketInput } from "./security-policy.ts";
 import { checkScope } from "./key-scopes.ts";
-import { VOLUME_LIMITS } from "./volume-policy.ts";
+import { MOUNT_LIMIT } from "./file-policy.ts";
 import { attachmentMessages } from "./attachment-markers.ts";
 import { humanInputSettings, type HumanInputSettings } from "./input-policy.ts";
 import { rejectWorkflow } from "./workflow-refusal.ts";
@@ -63,7 +63,7 @@ export interface AgentConfiguration {
   workspaceId?: string | null;
   humanInput?: HumanInputSettings;
   subagents?: Record<string, unknown>;
-  mounts?: { volumeId?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
+  mounts?: { repo?: string; ref?: string; instructions?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
 }
 export class ApiError extends Error {
   readonly status: number;
@@ -208,12 +208,13 @@ export function configuration(input: unknown, defaultModel: string, operation: "
     } catch (error) { throw new ApiError((error as {status?: number}).status ?? 400, (error as Error).message, (error as Error).message.startsWith("HISTORY_TOO_LARGE") ? "HISTORY_TOO_LARGE" : "INVALID_HISTORY"); }
   }
   if (fields.mounts !== undefined) {
-    if (!Array.isArray(fields.mounts) || fields.mounts.length > VOLUME_LIMITS.mounts) throw new BadRequest(`At most ${VOLUME_LIMITS.mounts} mounts`);
+    if (!Array.isArray(fields.mounts) || fields.mounts.length > MOUNT_LIMIT) throw new BadRequest(`At most ${MOUNT_LIMIT} mounts`);
     config.mounts = fields.mounts.map(raw => {
-      const mount = object(raw, ["volumeId", "path", "mode", "subpath", "workspace", "notify", "instructions"]);
+      if (raw && typeof raw === "object" && "volumeId" in raw) throw new BadRequest("Volumes are replaced by repos: mount { repo }");
+      const mount = object(raw, ["repo", "ref", "path", "mode", "subpath", "workspace", "notify", "instructions"]);
       if ("workspace" in mount) {
         if (typeof mount.workspace !== "boolean" || Object.keys(mount).some(key => key !== "workspace" && (mount.workspace !== true || !["path", "instructions"].includes(key)))) throw new BadRequest("Invalid workspace mount");
-      } else if (typeof mount.volumeId !== "string" || !["rw", "ro"].includes(String(mount.mode))) throw new BadRequest("Invalid mount");
+      } else if (typeof mount.repo !== "string" || !["rw", "ro"].includes(String(mount.mode))) throw new BadRequest("Invalid mount");
       if (mount.instructions !== undefined && (typeof mount.instructions !== "string" || mount.instructions.length > 4096)) throw new BadRequest("Mount instructions must be at most 4096 characters");
       if (mount.notify !== undefined && typeof mount.notify !== "boolean") throw new BadRequest("notify must be a boolean");
       if (mount.path !== undefined && (typeof mount.path !== "string" || !mount.path.startsWith("/") || mount.path.split("/").some(x => x === ".." || x === "."))) throw new BadRequest("Invalid mount path");
@@ -228,4 +229,9 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (ttlSeconds != null && idleTtlSeconds != null) throw new BadRequest("Give ttlSeconds or idleTtlSeconds, not both");
   if (idleTtlSeconds !== undefined) config.idleTtlSeconds = idleTtlSeconds as number | null;
   return { config, ttlSeconds: (ttlSeconds ?? idleTtlSeconds ?? ttlSeconds) as number | null | undefined };
+}
+
+/** Stored configs use the same validation as new ones. */
+export function storedConfiguration(input: AgentConfiguration, model: string, mode: "create" | "patch" = "create") {
+  return configuration(input, model, mode);
 }

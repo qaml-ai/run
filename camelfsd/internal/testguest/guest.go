@@ -147,6 +147,13 @@ func Apply(vsock, job, mount, index string) (err error) {
 				defer unix.Close(f)
 				return unix.Fchmod(f, mode(o.Mode))
 			}
+			if o.Op == "link" {
+				received += int64(len(o.Target))
+				if e := unix.Unlinkat(fd, name, 0); e != nil && e != unix.ENOENT {
+					return e
+				}
+				return unix.Symlinkat(o.Target, fd, name)
+			}
 			if o.Op != "put" {
 				return fmt.Errorf("bad apply op")
 			}
@@ -445,4 +452,25 @@ func prune(root int, path string) {
 			return
 		}
 	}
+}
+
+// Baseline drives the checkpoint socket's snapshot handshake. The caller
+// must keep the image quiescent until the ack, as the guest does with fsfreeze.
+func Baseline(vsock, job, tree string) error {
+	c, err := dial(vsock+"_5200", true, time.Now().Add(time.Second))
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := wire.Send(c, wire.Header{V: 1, Kind: "baseline", JobID: job, BaseTree: tree}); err != nil {
+		return err
+	}
+	var reply struct{ Ack bool }
+	if err := wire.JSON(c, &reply); err != nil {
+		return err
+	}
+	if !reply.Ack {
+		return fmt.Errorf("baseline refused")
+	}
+	return nil
 }

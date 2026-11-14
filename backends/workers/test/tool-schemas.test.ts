@@ -17,7 +17,7 @@ const { agentScheduleTools } = await import('../src/agent-schedules.ts');
 const { delegateTool, agentsTools, REPORT_PROGRESS, SEND_MESSAGE } = await import('../src/multi-agent-policy.ts');
 const { DECIDE } = await import('../src/decision-policy.ts');
 const { GENERATE_IMAGE } = await import('../src/media/images.ts');
-const { volumeTools } = await import('../src/files.ts');
+const { repoTools } = await import('../src/repos/tools.ts');
 const { compatibleFileTools } = await import('../src/fs-tools.ts');
 const { tools } = await import('../src/hosted-mcp-tools.ts');
 const { askHuman, askUser } = await import('../src/human.ts');
@@ -29,7 +29,7 @@ hooks.deregister();
 // an open harness, are checked by tests/contract/areas/tool-schemas.contract.test.ts on a real model request.
 test('every tool a model can receive has a top-level object schema', () => {
   const registrations = [computerTool({}, 'fixture'), ...attachedComputerTools({} as never, async () => ({ id: 'fixture', tenantId: 'fixture' }), async run => run())];
-  registrations.push(askHuman, askUser, hostExecutionTool({} as never), ...compatibleFileTools(volumeTools({} as never, 'fixture', 'fixture')), ...agentScheduleTools(['schedule'], {} as never));
+  registrations.push(askHuman, askUser, hostExecutionTool({} as never), ...compatibleFileTools(repoTools({} as never, 'fixture', 'fixture')), ...agentScheduleTools(['schedule'], {} as never));
   for (const tool of registrations) assertToolSchema(tool.name, tool.parameters);
   for (const tool of tools(() => ({} as never))) assertToolSchema(tool.name, z.toJSONSchema(z.object(tool.input)));
   const builtins = ['web_fetch', 'web_search', 'x_search', 'ask_user', 'request_decision'];

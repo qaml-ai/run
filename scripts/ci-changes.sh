@@ -6,10 +6,22 @@ tests=true
 image=true
 draft=false
 quick=
+guest_image=true
 if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
   base=$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")
   head=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
   git fetch --no-tags origin "$base" "$head"
+elif [ "$GITHUB_EVENT_NAME" = push ]; then
+  base=$(jq -r '.before' "$GITHUB_EVENT_PATH")
+  head=$GITHUB_SHA
+fi
+range="${base:-}...${head:-}"
+if [ "$GITHUB_EVENT_NAME" = push ]; then range="$base..$head"; fi
+if [ -n "${base:-}" ]; then
+  op=...; if [ "$GITHUB_EVENT_NAME" = push ]; then op=..; fi
+  if ! "$(dirname "$0")/guest-image-changed.sh" "$base" "$head" "$op"; then guest_image=false; fi
+fi
+if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
   if git diff --no-renames --name-only -z "$base...$head" | python3 -c '
 import sys
 paths = sys.stdin.buffer.read().decode().split("\0")
@@ -66,3 +78,5 @@ print(" ".join("tests/" + t for t in sorted(picked)[:40]))
 fi
 printf 'tests=%s\nimage=%s\n' "$tests" "$image" >> "$GITHUB_OUTPUT"
 if [ "$draft" = true ]; then printf 'draft=true\nquick=%s\n' "$quick" >> "$GITHUB_OUTPUT"; fi
+
+printf 'guest_image=%s\n' "$guest_image" >> "$GITHUB_OUTPUT"
