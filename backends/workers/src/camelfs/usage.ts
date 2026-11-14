@@ -87,13 +87,24 @@ function eventCharge(event: UsageEvent): ComputerCharge | string | undefined {
 }
 
 // MONEY: a retry uses the same receipt ID (meterBilling prefixes it with "computer:").
-export async function settleUsage(env: UsageEnv, charge: MeterBilling["charge"] = meterBilling(env, HOSTS_PROVIDER).charge) {
+/** One settle pass stops starting charges after this long, so a slow charge path cannot hold a 20 s poll tick for
+ * minutes; the rows it did not reach stay unsettled for the next pass. */
+export const SETTLE_PASS_MS = 10_000;
+export async function settleUsage(
+  env: UsageEnv, charge: MeterBilling["charge"] = meterBilling(env, HOSTS_PROVIDER).charge,
+  { budgetMs = SETTLE_PASS_MS, now = Date.now }: { budgetMs?: number; now?: () => number } = {},
+) {
+  const deadline = now() + budgetMs;
   await withSql(env, async sql => {
     const { rows } = await sql.query<{ event_id: string; vm: string; body: UsageEvent }>(
       `select event_id, vm, body from camelfs_usage_events where settled_at is null
        order by received_at, body->>'ulid', event_id limit 500`,
     );
     for (const { event_id: eventId, vm, body } of rows) {
+      if (now() >= deadline) {
+        console.log(JSON.stringify({ type: "usage_settle_deferred", remaining: rows.length - rows.findIndex(row => row.event_id === eventId) }));
+        break;
+      }
       const result = eventCharge(body);
       if (typeof result === "string") {
         await sql.query(`update camelfs_usage_events set settled_at = now(), unbillable_reason = $2
@@ -120,7 +131,13 @@ export async function settleUsage(env: UsageEnv, charge: MeterBilling["charge"] 
       }
       await sql.query(`update camelfs_usage_events set settled_at = now(), settle_error = $2 where event_id = $1`,
         [eventId, settleError]);
-      if (settleError) console.error(JSON.stringify({ type: "usage_charge_dropped", eventId, vm, final: body.final, reason: settleError }));
+      if (settleError) {
+        // MONEY: a charge the meter refused for good is a charge we failed to bill: the same metric as an unbillable event.
+        console.error(JSON.stringify({ type: "usage_charge_dropped", eventId, vm, final: body.final, reason: settleError }));
+        emitSourceMetric("usage_unbillable", {
+          dimensions: { reason: `charge_${settleError}` }, rollups: [["reason"]], metrics: { usage_unbillable: 1 },
+        });
+      }
       else console.log(JSON.stringify({ type: "usage_settled", eventId, vm, final: body.final }));
     }
   });

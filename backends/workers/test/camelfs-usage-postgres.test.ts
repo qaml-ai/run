@@ -50,6 +50,7 @@ test("terminal charge refusals settle with an error and a transient failure can 
   const { db, url } = await testDatabase();
   const env = config(url);
   const errors = t.mock.method(console, "error", () => {});
+  const logs = t.mock.method(console, "log", () => {});
   const statuses = new Map([["vm:1", 404], ["vm:2", 409], ["vm:3", 503]]);
   await pollUsage(env, async () => page([...statuses.keys()].map(eventId => ({ ...event, eventId })), "page"));
   const settle = () => settleUsage(env, async charge => {
@@ -67,8 +68,28 @@ test("terminal charge refusals settle with an error and a transient failure can 
   assert.deepEqual(await rows(), expected);
   assert.deepEqual(errors.mock.calls.map(call => JSON.parse(call.arguments[0]).type),
     ["usage_charge_dropped", "usage_charge_dropped", "usage_charge_failed"]);
+  // A dropped charge is counted on the same metric as an unbillable event.
+  assert.deepEqual(logs.mock.calls.map(call => JSON.parse(call.arguments[0])).filter(line => line.type === "usage_unbillable")
+    .map(line => [line.reason, line.usage_unbillable]), [["charge_404", 1], ["charge_409", 1]]);
   statuses.clear();
   await settle();
   expected[2].settled = true;
   assert.deepEqual(await rows(), expected);
+});
+
+test("a settle pass stops starting charges once its time budget is spent; the rest settle on the next pass", async t => {
+  const { db, url } = await testDatabase();
+  const env = config(url);
+  t.mock.method(console, "log", () => {});
+  await pollUsage(env, async () => page(["vm:1", "vm:2", "vm:3"].map(eventId => ({ ...event, eventId })), "page"));
+  let clock = 0;
+  const charged: string[] = [];
+  // Each charge takes 6 s of the 10 s budget: the pass starts two and leaves the third.
+  await settleUsage(env, async charge => { charged.push(charge.id); clock += 6_000; }, { budgetMs: 10_000, now: () => clock });
+  assert.deepEqual(charged, ["camelfs:vm:1", "camelfs:vm:2"]);
+  const unsettled = async () => (await db.query("select event_id from camelfs_usage_events where settled_at is null order by event_id")).rows.map(r => r.event_id);
+  assert.deepEqual(await unsettled(), ["vm:3"]);
+  await settleUsage(env, async charge => { charged.push(charge.id); }, { budgetMs: 10_000, now: () => clock });
+  assert.deepEqual(charged, ["camelfs:vm:1", "camelfs:vm:2", "camelfs:vm:3"]);
+  assert.deepEqual(await unsettled(), []);
 });
