@@ -244,6 +244,10 @@ func TestApplyCheckpointCommit(t *testing.T) {
 	if e != nil || !bytes.Equal(raw, printed) {
 		t.Fatal(e)
 	}
+	// The repo log reads who and why from trailers (#993): an agent's manual checkpoint is a turn op.
+	if !bytes.HasSuffix(raw, []byte("Camel-Agent: bot\nCamel-Checkpoint: manual\nCamel-Op: turn\n")) {
+		t.Fatalf("checkpoint trailers: %q", raw)
+	}
 	m.Release(context.Background(), "j")
 	warm := mount3(t, m, out.Tree, "warm")
 	if warm.Apply != nil || !warm.Warm {

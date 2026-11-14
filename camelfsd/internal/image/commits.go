@@ -69,6 +69,11 @@ func (m *Manager) writeCommit(ctx context.Context, v *Mount, tree string, q Chec
 		if t.ExitCode != nil {
 			fmt.Fprintf(&trailers, "Camel-Exit: %d\n", *t.ExitCode)
 		}
+		// Camel-Op names why a commit exists in the repo log (#993). The kind is validated above, so
+		// every checkpoint with trailers has exactly one op: a job's, or an agent turn's (auto or manual).
+		if op := map[string]string{"job": "job", "auto": "turn", "manual": "turn"}[t.Kind]; op != "" {
+			fmt.Fprintf(&trailers, "Camel-Op: %s\n", op)
+		}
 	}
 	body := "tree " + tree + "\n"
 	if v.Parent.Commit != "" {
