@@ -9,12 +9,13 @@ import (
 // Loop runs one tier node's share of background work. Item conditions
 // arbitrate concurrent passes from different nodes.
 type Loop struct {
-	C        *Controller
-	Pools    func(context.Context) ([]string, error)
-	Now      func() time.Time
-	Period   time.Duration
-	HostLost time.Duration
-	Wait     time.Duration
+	C          *Controller
+	Pools      func(context.Context) ([]string, error)
+	Now        func() time.Time
+	Period     time.Duration
+	HostLost   time.Duration
+	Enrollment bool
+	Wait       time.Duration
 	// BootTimeout ends a VM that stayed booting (no start report) this long as start_failed (default 5 min). It is
 	// never billed: usage needs startedAt. A host that later lists it gets it in Stop.
 	BootTimeout time.Duration
@@ -52,6 +53,9 @@ func (l *Loop) Pass(ctx context.Context) error {
 	}
 	var result error
 	for _, pool := range pools {
+		if l.Enrollment {
+			result = errors.Join(result, l.C.expireEnrollments(ctx, pool, now))
+		}
 		result = errors.Join(result, l.passPool(ctx, pool, now))
 	}
 	return result
