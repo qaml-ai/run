@@ -34,6 +34,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -124,7 +125,8 @@
         "JobHostRegistry"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
   // stopped by its code through ctx.container. Under the durable_object policy
