@@ -208,7 +208,7 @@ export class VoiceCall extends DurableObject<Env> {
         const row = await this.row();
         if (row.call.state === "ended" || await this.ctx.storage.get(`response:${id}`)) return;
         const at = Date.now();
-        const charge: VoiceCharge = { key: `voice_openai:${row.call.id}:${id}`,
+        const charge: VoiceCharge = { key: `voice_realtime:${row.call.id}:${id}`,
           startedAt: await this.ctx.storage.get<number>(`response-start:${id}`) ?? at, at, usage, audioSeconds: usage.outputAudio / 20 };
         await this.ctx.storage.put(`charge:${id}`, charge);
         await this.arm(row);

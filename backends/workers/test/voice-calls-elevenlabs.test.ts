@@ -8,7 +8,7 @@ import { callFixture } from "./voice-call-fixture.ts";
 const webhookSecret = "synthetic-webhook-secret";
 const inbound = "/v1/voice/providers/elevenlabs";
 
-test("ElevenLabs shares provisioning and settles signed reports and deadline once", { timeout: 90_000 }, async t => {
+test("ElevenLabs shares provisioning and settles signed reports and deadline once", { timeout: 120_000 }, async t => {
   let agents = 0, signed = 0, reads = 0;
   let hasDuration = true;
   let toolSecret: string;
@@ -110,4 +110,11 @@ test("ElevenLabs shares provisioning and settles signed reports and deadline onc
   assert.equal(byCall.get(`voice_elevenlabs:${first.id}`), 0.12);
   assert.equal(byCall.get(`voice_elevenlabs:${second.id}`), 0.12);
   assert.equal(byCall.get(`voice_elevenlabs:${third.id}`), 0.025);
+
+  // An ElevenLabs call with no per-minute price configured is refused at create, never priced at $0.
+  await f.restart({ AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "" });
+  const unpriced = await f.create({ provider: "elevenlabs" });
+  assert.equal(unpriced.status, 400, JSON.stringify(unpriced.json));
+  assert.equal(unpriced.json.code, "REALTIME_UNPRICED");
+  assert.equal(signed, 4, "no provider traffic for an unpriced call");
 });

@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 import { fakeModel } from "../../../tests/runtime-server.ts";
 import { callFixture, eventually } from "./voice-call-fixture.ts";
 
-test("OpenAI brokers SDP, journals speech without a run, meters raw cost once, and hangs up", { timeout: 90_000 }, async t => {
+test("OpenAI brokers SDP, journals speech without a run, meters raw cost once, and hangs up", { timeout: 150_000 }, async t => {
   const hangups: string[] = [], offers: string[] = [];
   const server = createServer(async (request, response) => {
     const parts: Buffer[] = [];
@@ -158,4 +158,46 @@ test("OpenAI brokers SDP, journals speech without a run, meters raw cost once, a
   await eventually(async () => (await f.request(tenantPath)).json.turns === 1);
   assert.equal(Number((await f.db.query("select count(*) from voice_test_debits")).rows[0].count), before);
   assert.equal((await f.request(tenantPath, "DELETE")).json.costUsd, 0.128);
+
+  // A tenant out of prepaid credit can hang up a live call (the cleanup credential lookup skips
+  // admission) but cannot create one, and its next response ends the call with `budget`.
+  const tenant = "camelrun-proto-local";
+  const setBalance = (balance: number) => f.db.query("update credit_accounts set balance=$2 where tenant=$1", [tenant, balance]);
+  const refusedUntilSeen = () => eventually(async () => {
+    const refused = await f.create({ provider: "openai", sdp: "refused-offer" });
+    return refused.status === 402 && refused.json.code === "INSUFFICIENT_CREDIT" && refused.json;
+  });
+  const exhaustedSocket = once(sockets, "connection");
+  const exhausted = await f.create({ provider: "openai", sdp: "exhausted-offer" });
+  assert.equal(exhausted.status, 201, JSON.stringify(exhausted.json));
+  await exhaustedSocket;
+  await setBalance(0);
+  await refusedUntilSeen();
+  const hangupsBefore = hangups.length;
+  const hungUp = await f.request(`/v1/voice/sessions/${exhausted.json.id}`, "DELETE");
+  assert.equal(hungUp.status, 200, JSON.stringify(hungUp.json));
+  assert.equal(hungUp.json.state, "ended");
+  assert.equal(hungUp.json.reason, "client");
+  assert.equal(hangups.length, hangupsBefore + 1, "the provider call was hung up");
+
+  await setBalance(100_000_000);
+  const recreditedSocket = once(sockets, "connection");
+  const recredited = await eventually(async () => {
+    const result = await f.create({ provider: "openai", sdp: "recredited-offer" });
+    return result.status === 201 && result.json;
+  });
+  const [recreditedSideband] = await recreditedSocket;
+  const recreditedPath = `/v1/voice/sessions/${recredited.id}`;
+  await setBalance(0);
+  await refusedUntilSeen();
+  recreditedSideband.send(JSON.stringify({ type: "response.created", response: { id: "response-exhausted" } }));
+  assert.equal((await f.request(recreditedPath)).json.state, "live", "the response in flight is allowed to finish");
+  recreditedSideband.send(JSON.stringify({ ...done, response: { ...done.response, id: "response-exhausted" } }));
+  const outOfCredit = await eventually(async () => {
+    const result = await f.request(recreditedPath);
+    return result.json.state === "ended" && result.json;
+  });
+  assert.equal(outOfCredit.reason, "budget");
+  assert.equal(outOfCredit.turns, 1);
+  assert.equal(outOfCredit.costUsd, 0.128, "the response that ran is settled in full");
 });
