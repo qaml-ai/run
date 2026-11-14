@@ -175,6 +175,9 @@ export class Directory {
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
     queueConfiguration = false,
+    // A delegated child is not an API create: like Node (src/node.ts creates children without admit), it is bounded by
+    // its parent's maxParallel, not the tenant's per-minute create counter.
+    countCreate = true,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
@@ -243,7 +246,7 @@ export class Directory {
     // Repo preparation uses SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
     config.mounts=(requested===undefined && before?.config.mounts ? before.config.mounts : await (await import('./repos/mounts.ts')).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv,this.tenantId,id,requested));
-    const admitCreate = config.type !== "run" ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
+    const admitCreate = config.type !== "run" && countCreate ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
     let createdHere = false;
     let priorMounts:AgentConfiguration["mounts"];
     let entry = await transaction(this.env, async (sql) => {
