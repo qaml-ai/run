@@ -37,6 +37,11 @@ func (c *Controller) End(ctx context.Context, id string, end EndRequest) (VM, er
 }
 
 func (c *Controller) end(ctx context.Context, v VM, end EndRequest, now time.Time, stop *stopIntent) (VM, error) {
+	return c.endWithHostSnapshot(ctx, v, end, now, stop, nil)
+}
+
+// A sweep or a heartbeat can end a missing VM only while its host snapshot still holds.
+func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndRequest, now time.Time, stop *stopIntent, snapshot *Host) (VM, error) {
 	cond := "#phase = :phase AND #leaseDeadline = :lease"
 	expr := "SET #phase = :ended, #endedAt = :at, #code = :code, #exit = :exit, #timedOut = :timedOut, " +
 		"#resultRef = :resultRef, #endVersion = :version, #checkpointError = :checkpointError"
@@ -59,8 +64,8 @@ func (c *Controller) end(ctx context.Context, v VM, end EndRequest, now time.Tim
 			cond += " AND attribute_not_exists(#lastListedAt)"
 		}
 	case Stopped:
-		if v.StopReason == LeaseExpired {
-			end.Code = LeaseExpired
+		if v.StopReason == LeaseExpired || v.StopReason == Timeout {
+			end.Code = v.StopReason
 		}
 	case Exit, Timeout, StartFailed, LeaseExpired:
 	default:
@@ -91,9 +96,14 @@ func (c *Controller) end(ctx context.Context, v VM, end EndRequest, now time.Tim
 	case v.Phase == Requested:
 		writes = append(writes, c.deleteWaiter(v))
 	case v.Host != "":
-		host := change(c.Tables.Hosts, hostKey(v.Pool, v.Host), "contains(#vms, :id)",
-			"SET #free = #free + :one DELETE #vms :vm",
-			attrs{":id": s(v.ID), ":one": n(1), ":vm": ss(v.ID)})
+		hostCond := "contains(#vms, :id)"
+		hostValues := attrs{":id": s(v.ID), ":one": n(1), ":vm": ss(v.ID), ":mem": n(int64(v.Shape.MemoryMiB))}
+		if snapshot != nil {
+			hostCond += " AND #bootEpoch = :epoch AND #lastSeenAt = :seen"
+			hostValues[":epoch"], hostValues[":seen"] = n(snapshot.BootEpoch), n(snapshot.LastSeenAt)
+		}
+		host := change(c.Tables.Hosts, hostKey(v.Pool, v.Host), hostCond,
+			"SET #free = #free + :one, #freeMiB = #freeMiB + :mem DELETE #vms :vm", hostValues)
 		writes = append(writes, types.TransactWriteItem{Update: host})
 	}
 

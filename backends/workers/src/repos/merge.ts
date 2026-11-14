@@ -9,16 +9,16 @@ export async function mergeRefs(ctx: RepoContext, input: {
   message?: string;
 }) {
   const mode = input.mode ?? 'merge';
-  check(['ff', 'merge', 'squash'].includes(mode), 'bad-mode');
+  check(['ff', 'merge', 'squash'].includes(mode), 'bad_mode');
   const ours = await ctx.stub.resolve(input.into), theirs = await ctx.stub.resolve(input.from), base = await ctx.stub.mergeBase(ours.version, theirs.version);
   const author = `api:${ctx.tenant}`;
   if (mode === 'ff' && base !== ours.version)
-    throw new RepoError('not-fast-forward', 409, 'not-fast-forward');
+    throw new RepoError('not_fast_forward', 409, 'not_fast_forward');
   if (base === theirs.version)
     return { version: ours.version, changed: false };
   if (mode === 'ff' || (mode === 'merge' && base === ours.version)) {
     if (base !== ours.version)
-      throw new RepoError('not-fast-forward', 409, 'not-fast-forward');
+      throw new RepoError('not_fast_forward', 409, 'not_fast_forward');
     return setRefToVersion(ctx, { ref: input.into, version: theirs.version, expect: ours.version, newCommit: false, author, who: author, why: 'merge' });
   }
   const baseTree = base ? (await ctx.stub.commit(base))!.tree : EMPTY_TREE;

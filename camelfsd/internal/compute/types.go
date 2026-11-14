@@ -1,4 +1,4 @@
-// Package compute persists the VM lifecycle and host slot accounting.
+// Package compute persists the VM lifecycle and host capacity accounting.
 package compute
 
 import (
@@ -128,8 +128,10 @@ type Host struct {
 	HostInfo
 	BootEpoch, LastSeenAt int64
 	Free                  int
+	MemoryMiB, FreeMiB    int
 	VMs                   []string
 	Restarting            bool
+	lost                  bool
 }
 
 type Waiter struct {

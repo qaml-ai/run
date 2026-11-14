@@ -89,6 +89,6 @@ test('unconfigured repo storage returns 503', { timeout: 120000 }, async (t) => 
   for (const method of ['GET', 'POST']) {
     const r = await fetch(f.url + '/v1/repos', { method, headers: { authorization: `Bearer ${f.token}` } });
     assert.equal(r.status, 503);
-    assert.equal((await r.json() as any).code, 'storage-unavailable');
+    assert.equal((await r.json() as any).code, 'storage_unavailable');
   }
 });

@@ -1,17 +1,18 @@
 # Two principals, least privilege (camel-fs.md §1.10: "hosts hold an instance role scoped to the bucket prefixes
 # and tables, as the job-hosts plan's role is scoped"; the api tier is the authorization boundary):
 #
-#   api        the Fargate task role of camelfsd api: every table and the bucket (no delete; results/ for VM
-#              results that outgrow an item), and the hosts' Private CA as registration authority (issue and fetch
+#   api        the Fargate task role of camelfsd api: every table and the bucket (no delete; it reads the hosts'
+#              VM results under results/), and the hosts' Private CA as registration authority (issue and fetch
 #              end-entity certificates, nothing else on the CA). The only principal that touches refs, lineages,
 #              deliveries, hosts and vms. The token verification keys reach the task as an injected environment
 #              variable, so the task role reads no secret; the execution role reads that one secret for the
 #              injection.
 #   host       camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and
 #              commits a checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks
-#              its fence), reads no lineage registry, touches no control table and writes no VM result (the tier
-#              does, from the host's "ended" call); no secret at all: its identity is the certificate the tier
-#              issues it at enrollment (§9.12). Delivered as a customer-managed
+#              its fence), reads no lineage registry and touches no control table; it PUTs the VM results it
+#              produced under results/<lineage>/<vm> (tens of MiB, too big to route through the tier; wf-durable,
+#              2026-11-14) with the same bucket statement as its objects; no secret at all: its identity is the
+#              certificate the tier issues it at enrollment (§9.12). Delivered as a customer-managed
 #              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
 #              host_managed_policies) and to the proto host's role, and as a role + instance profile of its own
 #              for hosts outside those pools. The role trusts ec2.amazonaws.com only, with the job-hosts
@@ -78,13 +79,13 @@ locals {
   table_arns = { for table, resource in aws_dynamodb_table.camelfs : table => resource.arn }
 
   # The bucket, read and write, never delete. CopyObject (a cross-lineage fork, camel-fs-files.md §9) is a GetObject
-  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject. PutObjectTagging: the tier
-  # tags VM results kind=result for the bucket's 7-day expiry rule (bucket.tf).
+  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject. VM results (results/…) are
+  # expired by prefix (bucket.tf), so nothing tags.
   bucket_rw_statements = [
     {
       Sid      = "ObjectsReadWrite"
       Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes", "s3:PutObjectTagging"]
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
       Resource = ["${aws_s3_bucket.objects.arn}/*"]
     },
     {
@@ -208,13 +209,13 @@ locals {
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
       },
-      # VM results are the tier's to write (the host hands the body to the tier in its "ended" call, K4): a host
-      # never puts under <lineage>/results/, whatever the shared bucket statement allows.
+      # A host writes its VMs' results and never reads any (the tier does): results/ is write-only for hosts, whatever
+      # the shared bucket statement allows.
       {
-        Sid      = "NoResults"
+        Sid      = "NoResultReads"
         Effect   = "Deny"
-        Action   = ["s3:PutObject", "s3:PutObjectTagging"]
-        Resource = ["${aws_s3_bucket.objects.arn}/*/results/*"]
+        Action   = ["s3:GetObject", "s3:GetObjectAttributes"]
+        Resource = ["${aws_s3_bucket.objects.arn}/results/*"]
       },
       # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref, a lineage or a
       # control table directly (it asks the tier, which checks the fence), and never assumes another role.

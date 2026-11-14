@@ -13,6 +13,7 @@ import type { Vm, VmLauncher } from "./vm.ts";
 import { lookup } from "node:dns/promises";
 
 export type Check = { name: string; ok: boolean; detail: string };
+// At least the base image (6 GiB): a job disk is the base grown by truncate + resize2fs, never shrunk.
 const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 8192 };
 
 type Ran = { exitCode: number | null; stdout: string; stderr: string };

@@ -27,7 +27,7 @@ func (c *Controller) Create(ctx context.Context, req CreateRequest) (VM, error) 
 	if !errors.Is(err, ErrNotFound) {
 		return VM{}, err
 	}
-	if req.Pool == "" || req.Deadline.IsZero() || req.Deadline.UnixMilli() <= now {
+	if req.Pool == "" || req.Shape.MemoryMiB < 0 || req.Deadline.IsZero() || req.Deadline.UnixMilli() <= now {
 		return VM{}, ErrInvalid
 	}
 	v = VM{CreateRequest: req, CreatedAt: now, Phase: Requested, LeaseDeadline: req.Deadline.UnixMilli()}
@@ -71,21 +71,25 @@ func (c *Controller) Place(ctx context.Context, id string) (VM, error) {
 	if err != nil || v.Phase != Requested {
 		return v, err
 	}
+	return c.place(ctx, v, c.now().UnixMilli())
+}
+
+func (c *Controller) place(ctx context.Context, v VM, now int64) (VM, error) {
+	id := v.ID
 	hosts, err := c.Hosts(ctx, v.Pool)
 	if err != nil {
 		return VM{}, err
 	}
-	now := c.now().UnixMilli()
 	for _, h := range rank(hosts, v.Shape, now) {
 		vm := change(c.Tables.VMs, vmKey(id), "#phase = :requested AND #leaseDeadline > :now",
 			"SET #phase = :placed, #host = :host, #hostEpoch = :epoch, #placedAt = :now",
 			attrs{":requested": s(string(Requested)), ":placed": s(string(Placed)), ":host": s(h.Host),
 				":epoch": n(h.BootEpoch), ":now": n(now)})
 		host := change(c.Tables.Hosts, hostKey(h.Pool, h.Host),
-			"#free > :zero AND #bootEpoch = :epoch AND #draining = :false AND #lastSeenAt > :cutoff",
-			"SET #free = #free - :one ADD #vms :vm",
+			"#free > :zero AND #freeMiB >= :mem AND #bootEpoch = :epoch AND #draining = :false AND #lastSeenAt > :cutoff",
+			"SET #free = #free - :one, #freeMiB = #freeMiB - :mem ADD #vms :vm",
 			attrs{":zero": n(0), ":epoch": n(h.BootEpoch), ":false": b(false), ":cutoff": n(now - hostFreshMS),
-				":one": n(1), ":vm": ss(id)})
+				":one": n(1), ":mem": n(int64(v.Shape.MemoryMiB)), ":vm": ss(id)})
 		err = c.transact(ctx, types.TransactWriteItem{Update: vm}, types.TransactWriteItem{Update: host}, c.deleteWaiter(v))
 		if err == nil {
 			return c.Get(ctx, id)
@@ -115,9 +119,10 @@ func (c *Controller) MarkBooting(ctx context.Context, id string) (VM, error) {
 	default:
 		return v, ErrPhase
 	}
-	return c.updateVM(ctx, id, "#phase = :placed AND #leaseDeadline > :now",
+	return c.updateVM(ctx, id, "#phase = :placed AND "+vmHost+" AND #leaseDeadline > :now",
 		"SET #phase = :booting, #bootingAt = :now",
-		attrs{":placed": s(string(Placed)), ":booting": s(string(Booting)), ":now": n(c.now().UnixMilli())})
+		attrs{":placed": s(string(Placed)), ":booting": s(string(Booting)), ":now": n(c.now().UnixMilli()),
+			":host": s(v.Host), ":epoch": n(v.HostEpoch)})
 }
 
 const vmHost = "#host = :host AND #hostEpoch = :epoch"
