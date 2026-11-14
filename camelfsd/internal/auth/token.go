@@ -143,6 +143,9 @@ func (k *Keys) envelopeClaims(raw []byte, kid string, now time.Time) (envelope, 
 	return envelope{Subject: sub, KeyID: kid, IssuedAt: iat, ExpiresAt: exp, payload: obj}, nil
 }
 
+// UsageSubject is the runtime's usage poller (GET /v1/usage). Its read token carries no lineage (Verify).
+const UsageSubject = "runtime:usage"
+
 func (k *Keys) Verify(token string, now time.Time) (Claims, error) {
 	if k.options.Typ != RuntimeType {
 		return Claims{}, BadType
@@ -153,6 +156,19 @@ func (k *Keys) Verify(token string, now time.Time) (Claims, error) {
 	}
 	obj := env.payload
 	lin, acc := stringField(obj, "lin"), stringField(obj, "acc")
+	_, hasLineage := obj["lin"]
+	if !hasLineage && env.Subject == UsageSubject && acc == "r" {
+		// The usage poller's ledger is cross-lineage: its read token is the one token with no lineage, and the API
+		// serves it only GET /v1/usage. Anything else without a lineage is still BadLineage.
+		var refs []string
+		if json.Unmarshal(obj["refs"], &refs) != nil || refs == nil || len(refs) != 0 {
+			return Claims{}, BadRefs
+		}
+		if _, fenced := obj["fence"]; fenced {
+			return Claims{}, BadFence
+		}
+		return Claims{Subject: env.Subject, Access: acc, KeyID: env.KeyID, IssuedAt: env.IssuedAt, ExpiresAt: env.ExpiresAt, Refs: refs}, nil
+	}
 	if !store.Lineage(lin) {
 		return Claims{}, BadLineage
 	}
