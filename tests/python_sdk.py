@@ -1230,9 +1230,10 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_voice_sessions_need_the_runtime_to_hold_calls(self):
-        # This runtime runs without AGENT_VOICE, so Discord sessions are off.
+        # AGENT_VOICE is off, so Discord operations return 404. Client-held calls are enabled
+        # and the shared list endpoint still returns both collections.
         discord = {"guildId": "1", "channelId": "2", "userId": "3", "sessionId": "s", "endpoint": "c-1.discord.media", "token": "t"}
-        for call in (lambda: self.agents.voice.create(discord, subject="user_1", agent=None, silence_ms=600, voice="coral"), lambda: self.runtime.voice.list(state="live"),
+        for call in (lambda: self.agents.voice.create(discord, subject="user_1", agent=None, silence_ms=600, voice="coral"),
                      lambda: self.runtime.voice.end("vs_000000000000000000000000"), lambda: self.agents.voice.stop_speaking("vs_000000000000000000000000"),
                      lambda: self.agents.voice.say("vs_000000000000000000000000", "Hello"), lambda: self.agents.voice.prompt("vs_000000000000000000000000", "Say hi"),
                      lambda: self.agents.voice.play("vs_000000000000000000000000", "https://example.com/song.mp3"), lambda: self.agents.voice.play("vs_000000000000000000000000", file=b"RIFF"),
@@ -1241,6 +1242,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 await call()
             self.assertEqual(refused.exception.status, 404)
             self.assertIn("Voice sessions are not enabled", str(refused.exception))
+        self.assertEqual(await self.runtime.voice.list(state="live"), {"sessions": [], "next": None, "calls": []})
         with sync.Agents(self.token, url=self.url) as agents:
             with self.assertRaises(AgentError) as refused:
                 await asyncio.to_thread(agents.voice.get, "vs_000000000000000000000000")
