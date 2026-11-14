@@ -5,6 +5,7 @@ import type { AgentRuntime } from "../agent-runtime.ts";
 import type { Config, Env } from "../agent-types.ts";
 import { meterBilling } from "../computers/meter-billing.ts";
 import { computerSpec } from "../computers/provider.ts";
+import { HttpError } from "../errors.ts";
 import { HOSTS_PROVIDER, hostPool, hostSecondRate, hostShape, type HostPriceEnv } from "../jobs/host-pricing.ts";
 import { workspaceMount, type Mount } from "../repos/mounts.ts";
 import { HttpRepoClient } from "../repos/http-client.ts";
@@ -25,13 +26,15 @@ const RENEW_MS = 180_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const isTier = (error: unknown, status: number, code: string) => error instanceof TierError && error.status === status && error.code === code;
+const computeBusy = "compute is busy, retry shortly";
 
 type Branch = { branch: string; lineage: string; ref: string };
 type Vm = Branch & { vm_id: string; shell: string | null; state: "creating" | "running" | "stopped"; deadline: number; created_at: number };
 type Boot = ReturnType<typeof bootSpec> & { id: string; lineage: string; ref: string; deadline: number };
 type Intent = { vm: Vm; first: boolean; body: { execId: string; command: string; shell: string; cwd?: string; timeoutS: number } };
 type Checkpoint = { vm: Vm; callId: string; requestId: string; message: string; time: number; started?: boolean };
-type Receipt = { intent?: Intent; result?: BashResult; checkpoint?: Checkpoint };
+type SessionResult = BashResult & { checkpointWarning?: string };
+type Receipt = { intent?: Intent; result?: SessionResult; checkpoint?: Checkpoint };
 type Args = { command: string; cwd?: string; timeoutSeconds?: number };
 type Head = { version: string; tree: string };
 type Status = { phase: string; code?: string; lastCheckpoint?: Head };
@@ -86,6 +89,7 @@ export class BashSessions {
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_boot (branch TEXT PRIMARY KEY, body TEXT NOT NULL, seq INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_shell_used (vm_id TEXT PRIMARY KEY)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_heads (branch TEXT PRIMARY KEY, version TEXT NOT NULL, tree TEXT NOT NULL)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_checkpoint_warnings (branch TEXT PRIMARY KEY, reason TEXT NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_renewal (vm_id TEXT PRIMARY KEY, next INTEGER NOT NULL, refused INTEGER NOT NULL, proposed INTEGER)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_deliveries (id TEXT PRIMARY KEY)");
     this.sql.exec(`CREATE TABLE IF NOT EXISTS agent_vm_calls (
@@ -136,7 +140,9 @@ export class BashSessions {
     // MONEY: admission checks spend limits and available credit before create or renewal, without a hold.
     try { await this.admit({ tenant: conf.tenantId, agent: conf.id }); }
     catch (error) {
-      if ([402, 429].includes((error as { status?: number })?.status ?? 0)) return false;
+      const { status, code } = (error ?? {}) as { status?: number; code?: string };
+      if (status === 402 || (status === 429 && code === "FREE_HOURLY_LIMIT")) return false;
+      if (status === 429) throw new HttpError(429, computeBusy);
       throw error;
     }
     return true;
@@ -210,7 +216,7 @@ export class BashSessions {
 
   completed(key: string) { return this.receipt(key)?.result; }
 
-  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args): Promise<BashResult> {
+  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args): Promise<SessionResult> {
     return this.serial(branch.branch, async () => {
       const previous = this.receipt(key);
       if (previous?.result) return previous.result;
@@ -247,11 +253,19 @@ export class BashSessions {
           intent = undefined;
           continue;
         }
-        const { result, bytes, ms } = streamed;
+        const { bytes, ms } = streamed;
+        const result: SessionResult = streamed.result;
         const checkpoint = { vm, callId, requestId, message: (`bash: ${body.command.split(/\r?\n/, 1)[0]}`).slice(0, 72), time: Date.now() };
         // The wake is durable before the receipt leaves a pending checkpoint.
         await this.arm(Date.now() + 1_000);
         this.storage.transactionSync(() => {
+          const warning = this.sql.exec<{ reason: string }>(
+            "DELETE FROM agent_vm_checkpoint_warnings WHERE branch=? RETURNING reason", branch.branch,
+          ).toArray()[0];
+          if (warning) {
+            result.checkpointWarning = `Warning: files from your previous command were not saved to your branch: ${warning.reason}\n`;
+            result.stdout = result.checkpointWarning + result.stdout;
+          }
           this.sql.exec("INSERT OR IGNORE INTO agent_vm_shell_used VALUES(?)", vm.vm_id);
           this.save(key, branch.branch, { result, checkpoint });
         });
@@ -281,11 +295,15 @@ export class BashSessions {
           }
         }
       } catch (error) {
-        result.checkpointError = error instanceof TierError ? error.code : "checkpoint_failed";
+        const reason = (error instanceof TierError ? error.code : "checkpoint_failed").replace(/[\r\n]+/g, " ");
+        result.checkpointError = reason;
+        // Persist the warning and the failure together, before publishing the event.
+        this.storage.transactionSync(() => {
+          this.sql.exec("INSERT OR REPLACE INTO agent_vm_checkpoint_warnings VALUES(?,?)", branch, reason);
+          this.save(row.id, branch, { result, checkpoint });
+        });
       }
       if (result.checkpointError) {
-        // Persist the failure before publishing it so recovery never reissues the failed checkpoint.
-        if (!this.receipt(row.id)?.result?.checkpointError) this.save(row.id, branch, { result, checkpoint });
         await this.checkpointFailed(callId, requestId, result.checkpointError);
       }
       this.save(row.id, branch, { result });
@@ -377,9 +395,16 @@ export function bashTool(runtime: AgentRuntime) {
         const { lineage, repo } = await repoContext(runtime.env as RepoEnv, conf.tenantId, mount.repo, `agent:${conf.id}`);
         if (!(repo instanceof HttpRepoClient)) throw new Error("Bash requires a camel-fs workspace");
         const ref = repo.tierRefName(mount.ref ?? "main");
-        result = await runtime.bashSessions.execute(conf, { branch: JSON.stringify([lineage, ref]), lineage, ref }, key, api.callId, run.id, args);
+        try {
+          result = await runtime.bashSessions.execute(conf, { branch: JSON.stringify([lineage, ref]), lineage, ref }, key, api.callId, run.id, args);
+        } catch (error) {
+          if (error instanceof TierError && error.status === 429) throw new HttpError(429, computeBusy);
+          throw error;
+        }
       }
-      return { output: [{ type: "text", text: JSON.stringify(result) }], structuredOutput: result, isError: !!result.error };
+      const { checkpointWarning = "", ...structuredOutput } = result;
+      const text = checkpointWarning + JSON.stringify({ ...structuredOutput, stdout: structuredOutput.stdout.slice(checkpointWarning.length) });
+      return { output: [{ type: "text", text }], structuredOutput, isError: !!structuredOutput.error };
     },
   });
 }

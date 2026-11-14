@@ -12,7 +12,17 @@ for (const name of files) {
   source = source.replaceAll('import { network } from "./node-context.ts";', 'import { network } from "./account-network.ts";');
   source = source.replaceAll('"./core/no-redirect.ts"', '"../../../src/core/no-redirect.ts"');
   source = source.replaceAll('import type { Accounts } from "./accounts.ts";', 'import type { Accounts } from "./billing-host.ts";');
-  const output = `// Generated from src/${name}.ts; only host imports/types are adapted.\n// Regenerate with scripts/reuse-billing.mjs; --check rejects policy drift.\n${source}`;
+  if (name === "billing") {
+    // Workers compute admission distinguishes free-credit exhaustion from request throttling.
+    const freeHourlyError = /(return new HttpError\(429, `This account has reached its spending limit on free credit:[^\n]+`)(\);)/;
+    if (!freeHourlyError.test(source)) throw new Error("Could not identify the free-hourly billing error");
+    source = source.replace(
+      freeHourlyError,
+      '$1, "FREE_HOURLY_LIMIT"$2',
+    );
+  }
+  const adaptations = name === "billing" ? "Workers host imports/types and free-hourly error code." : "only host imports/types are adapted.";
+  const output = `// Generated from src/${name}.ts; ${adaptations}\n// Regenerate with scripts/reuse-billing.mjs; --check rejects policy drift.\n${source}`;
   const path = resolve(here, `../src/${name}.ts`);
   if (process.argv.includes("--check")) {
     if (await readFile(path, "utf8") !== output) throw new Error(`${name}.ts differs from src; regenerate`);

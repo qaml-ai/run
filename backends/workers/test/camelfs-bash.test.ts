@@ -12,7 +12,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
     return { url: 'data:text/javascript,export const runtimeSigner=async()=>({camelfsToken:async()=> "test"})', shortCircuit: true };
   return next(specifier, context);
 } });
-const { BashSessions, BASH_WORKDIR } = await import("../src/camelfs/bash.ts");
+const { BashSessions, BASH_WORKDIR, bashTool } = await import("../src/camelfs/bash.ts");
 const { BASH_OUTPUT_KEEP } = await import("../src/camelfs/bash-stream.ts");
 const { handleCamelfsNotify } = await import("../src/camelfs/notify.ts");
 hooks.deregister();
@@ -46,7 +46,8 @@ function fixture(t: TestContext) {
   const vms = new Map<string, { phase: string; deadline: number; lastCheckpoint?: { version: string; tree: string } }>();
   const results = new Map<string, string>();
   const flags = {
-    refused: false, drop: false, leaseExpired: false, checkpointError: false,
+    refusal: undefined as { status: number; code?: string } | undefined,
+    drop: false, leaseExpired: false, checkpointError: false,
     crash: "", crashAfter: "", runs: 0, pollerStarts: 0, tailStatus: 200, unchanged: false,
     stdout: "ok",
   };
@@ -113,10 +114,13 @@ function fixture(t: TestContext) {
   function restart() {
     sessions = new BashSessions(storage, env, work => pending.push(work), async () => {},
       async (_, __, error) => { errors.push(error); },
-      async () => { if (flags.refused) throw Object.assign(new Error("credit"), { status: 402 }); });
+      async () => { if (flags.refusal) throw Object.assign(new Error("admission refused"), flags.refusal); });
   }
   restart();
-  const run = (key: string) => sessions.execute(conf, branch, key, key, "run", { command: "echo hi" });
+  const run = (key: string, target = branch) => sessions.execute(conf, target, JSON.stringify(["run", key]), key, "run", { command: "echo hi" });
+  const replayTool = (key: string) => bashTool({
+    config: async () => conf, currentRun: async () => ({ id: "run" }), bashSessions: sessions,
+  } as never).execute({ command: "echo hi" }, { callId: key } as never, {} as never);
   const flush = async () => { while (pending.length) await Promise.all(pending.splice(0)); };
   const row = () => db.prepare("SELECT vm_id,state,deadline FROM agent_vms").get() as { vm_id: string; state: string; deadline: number } | undefined;
   async function ended(id: string, vm: string) {
@@ -126,7 +130,7 @@ function fixture(t: TestContext) {
     const request = new Request("https://runtime/notify", { method: "POST", body, headers: { "Camel-Signature": `t=${ts},v1=${signature}` } });
     assert.equal((await handleCamelfsNotify(request, env as never)).status, 204);
   }
-  return { db, conf, flags, calls, errors, vms, row, run, flush, restart, ended, get sessions() { return sessions; } };
+  return { db, conf, flags, calls, errors, vms, row, run, replayTool, flush, restart, ended, get sessions() { return sessions; } };
 }
 
 test("creates once, reuses its shell, checkpoints after the result, and replaces an idle VM", async t => {
@@ -162,17 +166,17 @@ test("creates once, reuses its shell, checkpoints after the result, and replaces
 test("refusal never creates or renews and an expired lease stops the row", async t => {
   t.mock.timers.enable({ apis: ["Date"] });
   const f = fixture(t);
-  f.flags.refused = true;
+  f.flags.refusal = { status: 402 };
   await assert.rejects(f.run("one"), /no credit for compute/);
   assert.equal(f.calls.length, 0);
-  f.flags.refused = false;
+  f.flags.refusal = undefined;
   await f.run("two");
   await f.flush();
   const original = f.row()!.deadline;
   t.mock.timers.tick(180_000);
   await f.sessions.wake(f.conf);
   assert.equal(f.row()!.deadline, original + 180_000);
-  f.flags.refused = true;
+  f.flags.refusal = { status: 402 };
   t.mock.timers.tick(180_000);
   await f.sessions.wake(f.conf);
   assert.equal(f.calls.filter(c => c.path.endsWith("/deadline")).length, 1);
@@ -180,13 +184,73 @@ test("refusal never creates or renews and an expired lease stops the row", async
   f.vms.get(f.row()!.vm_id)!.phase = "ended";
   await f.sessions.wake(f.conf);
   assert.equal(f.row()!.state, "stopped");
-  f.flags.refused = false;
+  f.flags.refusal = undefined;
   await f.run("three");
   await f.flush();
   f.flags.leaseExpired = true;
   t.mock.timers.tick(180_000);
   await f.sessions.wake(f.conf);
   assert.equal(f.row()!.state, "stopped");
+});
+
+for (const { status, code, spendsCredit, message } of [
+  { status: 402, code: "SPEND_LIMIT", spendsCredit: true, message: "no credit for compute" },
+  { status: 429, code: "FREE_HOURLY_LIMIT", spendsCredit: true, message: "no credit for compute" },
+  { status: 429, code: "RATE_LIMITED", spendsCredit: false, message: "compute is busy, retry shortly" },
+]) {
+  test(`${status} ${code} has the correct admission text and renewal behavior`, async t => {
+    t.mock.timers.enable({ apis: ["Date"] });
+    const f = fixture(t);
+    f.flags.refusal = { status, code };
+    await assert.rejects(f.run("blocked"), { message });
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.row(), undefined);
+
+    f.flags.refusal = undefined;
+    await f.run("started");
+    await f.flush();
+    const originalDeadline = f.row()!.deadline;
+    f.flags.refusal = { status, code };
+    t.mock.timers.tick(180_000);
+    await f.sessions.wake(f.conf);
+    assert.equal(f.row()!.deadline, originalDeadline);
+    assert.equal(f.db.prepare("SELECT refused FROM agent_vm_renewal").get()?.refused, Number(spendsCredit));
+    assert.equal(f.calls.filter(call => call.path.endsWith("/deadline")).length, 0);
+
+    f.flags.refusal = undefined;
+    f.restart();
+    t.mock.timers.tick(180_000);
+    await f.sessions.wake(f.conf);
+    assert.equal(f.calls.filter(call => call.path.endsWith("/deadline")).length, spendsCredit ? 0 : 1);
+    assert.equal(f.row()!.deadline, originalDeadline + (spendsCredit ? 0 : 360_000));
+  });
+}
+
+test("a checkpoint warning survives a restart and prefixes the next result once on its branch", async t => {
+  const f = fixture(t);
+  const warning = "Warning: files from your previous command were not saved to your branch: host_unreachable\n";
+  f.flags.checkpointError = true;
+  await f.run("failed");
+  await f.flush();
+  f.restart();
+  f.flags.checkpointError = false;
+
+  assert.equal((await f.run("other", { branch: "other", lineage: "t:r", ref: "fork/child/main" })).stdout, "ok");
+  assert.equal((await f.run("next")).stdout, warning + "ok");
+  const shown = await f.replayTool("next");
+  assert.equal(shown.structuredOutput?.stdout, warning + "ok");
+  const text = shown.output?.[0];
+  assert.equal(text?.type, "text");
+  if (text?.type !== "text") assert.fail("expected text output");
+  assert.ok(text.text.startsWith(warning));
+  assert.equal(JSON.parse(text.text.slice(warning.length)).stdout, "ok");
+  await f.flush();
+
+  f.restart();
+  assert.deepEqual(await f.replayTool("next"), shown);
+  assert.equal((await f.run("after")).stdout, "ok");
+  assert.equal(f.flags.runs, 4);
+  await f.flush();
 });
 
 test("replays each persisted boot/exec boundary without running twice", async t => {
