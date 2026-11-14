@@ -202,7 +202,7 @@ export function realtimeTranscriptionCost(seconds: number): number {
  * realtime model has it, else the nearest (nova → marin, onyx → cedar, fable → ballad).
  */
 export const REALTIME_VOICE_FOR: Readonly<Record<string, string>> = Object.freeze({ nova: "marin", onyx: "cedar", fable: "ballad" });
-export function realtimeVoice(provider: RealtimeProvider, voice: string): string {
+export function realtimeVoice(provider: Pick<RealtimeProvider, "voices" | "customVoices" | "voiceFor">, voice: string): string {
   if (provider.customVoices) return provider.voiceFor?.[voice] ?? voice;
   if (provider.voices.includes(voice)) return voice;
   const near = provider.voiceFor?.[voice] ?? REALTIME_VOICE_FOR[voice];

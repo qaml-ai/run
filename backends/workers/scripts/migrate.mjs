@@ -7,9 +7,13 @@ const MIGRATION = /^\d{3}_.*\.sql$/;
 /** The repository migrations, in order, as [{ name, sql }]. The path is resolved
  * lazily: the pilot's temporary migration Worker bundles this module, not the directory. */
 export async function readMigrations() {
-  const migrations = resolve(dirname(fileURLToPath(import.meta.url)), "../../../migrations");
-  const files = (await readdir(migrations)).filter((x) => MIGRATION.test(x)).sort();
-  return Promise.all(files.map(async (name) => ({ name, sql: await readFile(resolve(migrations, name), "utf8") })));
+  const here = dirname(fileURLToPath(import.meta.url));
+  const read = async (directory, prefix = "") => {
+    const files = (await readdir(directory)).filter(name => MIGRATION.test(name)).sort();
+    return Promise.all(files.map(async name => ({ name: prefix + name, sql: await readFile(resolve(directory, name), "utf8") })));
+  };
+  const [shared, workers] = await Promise.all([read(resolve(here, "../../../migrations")), read(resolve(here, "../migrations"), "workers:")]);
+  return [...shared, ...workers];
 }
 
 /** Compare schema_migrations with `migrations`, by name (no checksum is kept).
@@ -38,7 +42,7 @@ export async function applyMigrations(db, migrations) {
   );
   const applied = [];
   for (const { name: file, sql } of migrations) {
-    if (!MIGRATION.test(file)) throw new Error(`Not a migration file name: ${file}`);
+    if (!MIGRATION.test(file.replace(/^workers:/, ""))) throw new Error(`Not a migration file name: ${file}`);
     if (
       (await db.query("select 1 from schema_migrations where name=$1", [file]))
         .rowCount

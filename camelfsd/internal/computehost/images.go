@@ -1,6 +1,7 @@
 package computehost
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -244,7 +246,7 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 		return errors.New("compressed guest image SHA-256 mismatch")
 	}
 
-	cmd := exec.CommandContext(ctx, "zstd", "-q", "-d", "-c", "--", compressed.Name())
+	cmd := exec.CommandContext(ctx, zstdPath, "-q", "-d", "-c", "--", compressed.Name())
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -258,7 +260,7 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 		return err
 	}
 	hash.Reset()
-	n, copyErr = io.Copy(io.MultiWriter(hash, image), io.LimitReader(out, m.Bytes+1))
+	n, copyErr = copySparse(image, io.TeeReader(io.LimitReader(out, m.Bytes+1), hash))
 	out.Close()
 	if err := errors.Join(copyErr, cmd.Wait()); err != nil {
 		return err
@@ -266,11 +268,103 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 	if n != m.Bytes || fmt.Sprintf("%x", hash.Sum(nil)) != sha {
 		return errors.New("ext4 guest image hash or size mismatch")
 	}
+	if err := image.Truncate(n); err != nil {
+		return err
+	}
 	if err := image.Sync(); err != nil {
 		return err
 	}
 	if err := image.Close(); err != nil {
 		return err
 	}
-	return os.Rename(image.Name(), path)
+	if err := os.Rename(image.Name(), path); err != nil {
+		return err
+	}
+	// Persist the rename: without it a power loss can drop the verified image and cost another download.
+	return syncDir(filepath.Dir(path))
+}
+
+// zstdPath is the decompressor host setup installs (Ubuntu's zstd package); it is not resolved through PATH.
+const zstdPath = "/usr/bin/zstd"
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
+}
+
+// copySparse coalesces short pipe reads into full blocks before testing for
+// zeros. The caller truncates the result after verifying the size and hash.
+func copySparse(dst *os.File, src io.Reader) (int64, error) {
+	const blockSize = 64 << 10
+	buf, zeros := make([]byte, blockSize), make([]byte, blockSize)
+	var total int64
+	for {
+		n, err := io.ReadFull(src, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return total, err
+		}
+		if n > 0 {
+			if bytes.Equal(buf[:n], zeros[:n]) {
+				if _, err := dst.Seek(int64(n), io.SeekCurrent); err != nil {
+					return total, err
+				}
+			} else if _, err := dst.Write(buf[:n]); err != nil {
+				return total, err
+			}
+			total += int64(n)
+		}
+		if n < len(buf) {
+			return total, nil
+		}
+	}
+}
+
+// queuePrewarmLocked replaces the pending list on re-registration. A single
+// worker processes the list, and boot requests can join its active download.
+func (h *Host) queuePrewarmLocked(allowed []string) {
+	h.prewarmPending = nil
+	if h.ctx.Err() != nil {
+		return
+	}
+	verified := h.images.verified.Load()
+	for _, sha := range allowed {
+		if _, cached := (*verified)[sha]; !cached {
+			h.prewarmPending = append(h.prewarmPending, sha)
+		}
+	}
+	if h.prewarming || len(h.prewarmPending) == 0 {
+		return
+	}
+	h.prewarming = true
+	h.work.Add(1)
+	go h.prewarm()
+}
+
+func (h *Host) prewarm() {
+	defer h.work.Done()
+	for {
+		h.mu.Lock()
+		if h.ctx.Err() != nil || len(h.prewarmPending) == 0 {
+			h.prewarming = false
+			h.prewarmPending = nil
+			h.mu.Unlock()
+			return
+		}
+		sha := h.prewarmPending[0]
+		h.prewarmPending = h.prewarmPending[1:]
+		h.mu.Unlock()
+		if _, cached := (*h.images.verified.Load())[sha]; cached {
+			continue
+		}
+
+		start := time.Now()
+		if _, err := h.images.ensure(h.ctx, sha, h.Shape.DiskMiB); err == nil {
+			slog.Info("compute_image_prewarmed", "sha", sha, "ms", ms(time.Since(start)))
+		} else if h.ctx.Err() == nil {
+			slog.Warn("compute_image_prewarm_failed", "sha", sha, "error", err)
+		}
+	}
 }

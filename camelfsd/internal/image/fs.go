@@ -14,6 +14,10 @@ import (
 )
 
 func clone(src, dst string) error {
+	return cloneImage(src, dst, true)
+}
+
+func cloneImage(src, dst string, sync bool) error {
 	f, e := os.Open(src)
 	if e != nil {
 		return e
@@ -35,7 +39,7 @@ func clone(src, dst string) error {
 	} else {
 		e = unix.IoctlFileClone(int(g.Fd()), int(f.Fd()))
 	}
-	if e == nil {
+	if e == nil && sync {
 		e = g.Sync()
 	}
 	ok = e == nil

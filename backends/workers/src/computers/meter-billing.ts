@@ -14,8 +14,7 @@ export const CONTAINER_PROVIDER = "cloudflare";
  * charged and an unbilled one only sees it in its usage. Agent spend limits count it too.
  *
  * Admission, for every payer, is its tenant's as a fresh run's (`accounts.runLimit`): the monthly spend limit, then
- * prepaid credit, which is the balance less this node's charges not yet written (credit holds are not subtracted, as
- * for a fresh run; a model call takes its own hold). An agent payer is also the agent's: it exists, its spend limit. A
+ * prepaid credit, including this node's charges not yet written. An agent payer must also exist and be within its spend limit. A
  * refusal is a 402; a workflow's job pauses on it (`payer_exhausted`).
  *
  * A workflow payer (a job of a workflow an API key started, which no agent owns) is its tenant, and the usage is
@@ -24,15 +23,15 @@ export const CONTAINER_PROVIDER = "cloudflare";
  */
 export function meterBilling(env: KeyEnv & WebhookEnv, provider = CONTAINER_PROVIDER): MeterBilling {
   return {
-    async admit(payer: ComputerPayer) {
+    async admit(payer: ComputerPayer, invocation) {
       const { accounts } = await keyServices(env);
       if (payer.kind === "workflow") {
-        const refused = await accounts.runLimit(payer.tenant);
+        const refused = await accounts.runLimit(payer.tenant, invocation?.tenant(accounts.billing, payer.tenant));
         if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
         return;
       }
       await admitAuxiliaryUsage(env, payer, true, async () => {
-        const refused = await accounts.runLimit(payer.tenant);
+        const refused = await accounts.runLimit(payer.tenant, invocation?.tenant(accounts.billing, payer.tenant));
         if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
       });
     },

@@ -182,6 +182,15 @@ func applyJSON(r io.Reader, value any) error {
 	return readError(wire.JSON(r, value), "unexpected EOF in apply stream")
 }
 
+func syncWorkspace(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return unix.Syncfs(int(f.Fd()))
+}
+
 func (g *guest) apply(parent context.Context, req request) (result message, err error) {
 	start := time.Now()
 	ctx, cancel := streamContext(parent, req.TimeoutMs)
@@ -206,7 +215,7 @@ func (g *guest) apply(parent context.Context, req request) (result message, err 
 		if err != nil {
 			wire.Send(c, message{"applied": false, "error": errorText(err)})
 		} else {
-			wire.Send(c, message{"applied": true, "applyMs": result["applyMs"]})
+			wire.Send(c, message{"applied": true, "applyMs": result["applyMs"], "syncMs": result["syncMs"]})
 		}
 	}()
 	c.SetDeadline(ready)
@@ -267,10 +276,20 @@ func (g *guest) apply(parent context.Context, req request) (result message, err 
 		indexed.Mode = e.Mode
 		idx.Entries[i] = indexed
 	}
+	// Finish workspace writeback before the host asks us to freeze it.
+	syncStart := time.Now()
+	sync := g.syncWorkspace
+	if sync == nil {
+		sync = syncWorkspace
+	}
+	if err = sync(g.repo); err != nil {
+		return nil, fmt.Errorf("sync workspace: %w", err)
+	}
+	syncMs := elapsed(syncStart)
 	if err = g.saveIndex(ctx, idx); err != nil {
 		return nil, err
 	}
-	return message{"applyMs": elapsed(start), "files": files, "entries": len(idx.Entries)}, nil
+	return message{"applyMs": elapsed(start), "syncMs": syncMs, "files": files, "entries": len(idx.Entries)}, nil
 }
 
 func minTime(a, b time.Time) time.Time {

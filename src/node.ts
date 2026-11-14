@@ -13,7 +13,6 @@ import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
 import { ComputerTransfers } from "./computers/transfers.ts";
 import { Computers } from "./computers/service.ts";
-import { CreditHolds } from "./credit-holds.ts";
 import { Workspaces } from "./workspaces.ts";
 import { anthropicFederationFromEnvironment } from "./anthropic-federation.ts";
 import { ModelAttempts } from "./model-attempts.ts";
@@ -27,7 +26,7 @@ import type { NodeConfig } from "./node-config.ts";
 import { configuredModel, contentFilterFallbacks, defaultModels } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
-import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
+import { enqueueEvents, ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, ROBOTS_TXT, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
@@ -119,7 +118,10 @@ import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
 import { DEFAULT_VOICES, speechProvider } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
-import { VOICE_CHANNEL, VoiceSessions, type VoiceTransport } from "./voice-sessions.ts";
+import { VoiceCalls, type VoiceCallsOptions } from "./voice-calls.ts";
+import { elevenlabsCalls } from "./voice/calls/elevenlabs.ts";
+import { openaiCalls } from "./voice/calls/openai.ts";
+import { VOICE_CHANNEL, VoiceSessions, voiceAdmission, type VoiceTransport } from "./voice-sessions.ts";
 import { openaiRealtime } from "./voice/realtime/openai.ts";
 import { grokRealtime } from "./voice/realtime/grok.ts";
 import { elevenlabsAgents } from "./voice/realtime/elevenlabs.ts";
@@ -181,6 +183,8 @@ export type NodeDeps = {
    * simulation's in-memory store).
    */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
+  /** Test hooks for client-held calls. */
+  voiceCallOverrides?: Partial<Pick<VoiceCallsOptions, "admit" | "credit" | "enqueue" | "now" | "pendingMs" | "lateMs" | "record" | "retiring" | "submitStreaming">>;
   /** Voice connections by provider (src/voice-sessions.ts): Discord's (src/voice-discord.ts) with AGENT_VOICE=true, unless given (a test's fake). */
   voiceTransports?: Partial<Record<"discord", VoiceTransport> & { browser: BrowserTransport }>;
   /** What a voice server's host must match, when a test serves its own. */
@@ -234,6 +238,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
 
 /** A runtime node: its HTTP surface, and the handles that start it and take it out of the cluster. */
 export type RuntimeNode = {
+  calls?: VoiceCalls;
   /** The URL peers reach this node at, which it heartbeats and owns actors under. */
   node: string;
   app: Hono<Env>;
@@ -423,14 +428,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // A provider's key for speech to text and images, as a model call resolves it: its key scope's, its own, else the
   // platform's, which a prepaid tenant pays for (per second of audio, per token of an image).
-  const providerKey = async (tenant: string, keyScope: string | undefined, provider: string, azureDeployment?: string) => {
+  const providerKey = async (tenant: string, keyScope: string | undefined, provider: string, azureDeployment?: string, checkCredit = true) => {
     const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
     // A scope's entry, as its model calls take it: its key, or an address (a gateway) that needs none.
     if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     if (!resolved) return undefined;
     const platform = chargesPlatform(resolved.source);
-    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    if (platform && checkCredit) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
     // The platform's key goes to its Azure OpenAI deployment when there is one, falling back on OpenAI (azure-openai.ts).
     const azure = secrets.azureOpenAI;
     if (platform && provider === "openai" && azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform };
@@ -486,8 +491,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
-  const creditHolds = new CreditHolds(db, accounts.billing);
-  const computers = new Computers({ tenantComputerLimit: tenant => tenants.computerLimit(tenant), db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, provider: config.computerProvider, microvm: config.microvm, priceAtCost: config.computerAtCost, boatUrl: config.boatUrl, runtime: publicUrl, endUsers: () => endUsers, credit: () => creditHolds, payer: agent => clients.payerOf(agent) });
+  const computers = new Computers({ tenantComputerLimit: tenant => tenants.computerLimit(tenant), db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, provider: config.computerProvider, microvm: config.microvm, priceAtCost: config.computerAtCost, boatUrl: config.boatUrl, runtime: publicUrl, endUsers: () => endUsers, payer: agent => clients.payerOf(agent) });
   let sweepingComputers = false;
   const computerTimer = setInterval(() => {
     if (sweepingComputers) return;
@@ -975,14 +979,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return [id, openaiRealtime(config.voice.realtimeUrl ? { baseUrl: config.voice.realtimeUrl } : {})];
   })) : undefined;
   // A voice session spends while the account may (its answers are not runs: no rate limit).
-  const admitVoice = async (tenant: string) => {
-    const refused = await accounts.runLimit(tenant);
-    if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
-  };
+  const admitVoice = voiceAdmission(accounts);
+  const voiceCreditExhausted = async (tenant: string) =>
+    await accounts.billing.mode(tenant) === "prepaid" && await accounts.billing.spendable(tenant, db) <= 0;
   const voice = voiceTransports && new VoiceSessions({
     // Recordings are kept in the node's object storage, under recordings/.
     db, storage, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
-    admit: admitVoice,
+    admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted,
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
     transcriber,
@@ -1018,6 +1021,34 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       },
     } : {}),
   });
+  const calls = config.voice.realtime.some(provider => provider === "openai" || provider === "elevenlabs") ? new VoiceCalls({
+    db, node, admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted, agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+    ...(deps.voiceCallOverrides?.record ? {} : {
+      recordIn: (sql, tenant, usage) => accounts.recordUsageIn(sql, tenant, "", usage),
+      usageCommitted: tenant => accounts.usageCommitted(tenant),
+    }),
+    submitStreaming: submitStreamingAnywhere, credit: endUsers,
+    creditEnabled: deps.voiceCallOverrides && "credit" in deps.voiceCallOverrides ? undefined : (tenant, sql) => endUsers.enabled(tenant, sql),
+    providers: {
+      openai: config.voice.realtime.includes("openai") ? openaiCalls({ baseUrl: config.voice.realtimeUrl }) : undefined,
+      elevenlabs: config.voice.realtime.includes("elevenlabs") ? elevenlabsCalls({
+        db, publicUrl: links.publicUrl, baseUrl: config.voice.endpoints.elevenlabs,
+        seal: async text => JSON.stringify(accounts.seal("elevenlabs-voice-calls", text)),
+        unseal: async sealed => accounts.unseal("elevenlabs-voice-calls", JSON.parse(sealed)),
+      }) : undefined,
+    },
+    key: async (tenant, keyScope, provider) => {
+      const key = await providerKey(tenant, keyScope, provider, undefined, false);
+      return key?.apiKey && !("baseUrl" in key && key.baseUrl) ? { apiKey: key.apiKey, platform: key.platform } : undefined;
+    },
+    perTenant: async tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant,
+    liveSessions: async (tenant, sql) => voice?.countLive(tenant, sql) ?? Number((await (sql ?? db).query(
+      "select count(*) as count from voice_sessions where tenant = $1 and state <> 'ended'", [tenant])).rows[0].count),
+    enqueue: (events, sql) => enqueueEvents(sql ?? db, events), kickWebhooks: () => webhooks.kick(),
+    publicUrl: links.publicUrl, retiring: () => retiringSince !== undefined || closing,
+    ...deps.voiceCallOverrides,
+  }) : undefined;
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
   const loads = await deps.listen({
@@ -1369,7 +1400,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     await rateLimits.run(tenant);
   };
   app.route("/", api({ dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
-    rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
+    rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}), ...(calls ? { calls } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
       admit: admitAlone,
@@ -1504,6 +1535,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
       if (!config.publicUrlSet) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+      calls?.start();
       resolve(server.address() as AddressInfo);
     });
     // As soon as it listens, as before: whether a newer deployment replaced this task (ECS only).
@@ -1608,7 +1640,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     }
     if (retiringSince !== undefined) {
       void clients.releaseIdle().then(() => volumes.releaseIdle()).catch(error => console.error(JSON.stringify({ type: "retire_release_failed", error: errorText(error) })));
-      if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size && !voice?.size) {
+      if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size && !voice?.size && !calls?.size) {
         retired = true;
         console.log(JSON.stringify({ type: "retired", node, ms: Date.now() - retiringSince }));
       }
@@ -1627,7 +1659,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       }
     }
     const capped = retiringSince !== undefined && Date.now() - retiringSince > retireMaxMs;
-    void protection.update(clients.inFlight() > 0 && !capped);
+    void protection.update((clients.inFlight() > 0 || !!calls?.size) && !capped);
   }, 1_000);
   workTimer.unref();
   let retireTimer: ReturnType<typeof setInterval> | undefined;
@@ -1737,6 +1769,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     scheduler.stop();
     await scheduleMailer?.stop();
     channels.stop();
+    await calls?.close();
     await voice?.stop();
     await voiceHost?.close();
     await turnHost?.close();
@@ -1833,7 +1866,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   };
 
   return {
-    node, app, clients, server, start,
+    node, app, clients, server, calls, start,
     reloadTenants: () => reloadTenants(true),
     run: work => work(),
     drain: (signal = "drain") => leave(signal, config.drainMs),

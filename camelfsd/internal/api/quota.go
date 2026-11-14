@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"math"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/ddb"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 )
 
 type quotaRequest struct {
@@ -23,7 +26,7 @@ func (q *quotaRequest) validate() error {
 }
 
 func (s *StorageServer) countUpload(ctx context.Context, lineage string, blob objects.Blob) error {
-	if s.refs == nil || blob.Existing || blob.Size == 0 {
+	if s.refs == nil || writtenBytes(blob) == 0 {
 		return nil
 	}
 	// Uncommitted uploads count until a mark. Re-referencing an unswept
@@ -31,10 +34,16 @@ func (s *StorageServer) countUpload(ctx context.Context, lineage string, blob ob
 	return s.refs.AddWritten(ctx, lineage, blob.Size)
 }
 
-func (s *StorageServer) checkQuota(ctx context.Context, lineage string, q *quotaRequest) (int64, error) {
-	usage, err := s.refs.ReadUsage(ctx, lineage)
-	if err != nil {
-		return 0, err
+func writtenBytes(blob objects.Blob) int64 {
+	if blob.Existing || blob.Size <= 0 {
+		return 0
+	}
+	return blob.Size
+}
+
+func (s *StorageServer) checkQuota(ctx context.Context, lineage string, q *quotaRequest, usage refstore.Usage) (int64, error) {
+	if usage.MarkedBytes > math.MaxInt64-usage.WrittenSince {
+		return 0, fmt.Errorf("lineage usage overflows int64")
 	}
 	bytes := usage.MarkedBytes + usage.WrittenSince
 	if q == nil {

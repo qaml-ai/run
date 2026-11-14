@@ -295,8 +295,7 @@ func verifyPeer(leaf *x509.Certificate, chain [][]byte, roots *x509.CertPool, us
 func (i *Identity) issue(ctx context.Context, enroll bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	uri, _ := url.Parse(hostURI + i.HostID)
-	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{URIs: []*url.URL{uri}}, i.key)
+	der, err := hostcert.NewCSR(i.key, hostURI+i.HostID)
 	if err != nil {
 		return err
 	}
@@ -340,6 +339,9 @@ func (ca *TierCA) client(certs []tls.Certificate) *http.Client {
 		// Verify the private certificate chain and SPIFFE URI in place of DNS.
 		InsecureSkipVerify: true,
 		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("tier presented no certificate")
+			}
 			leaf := cs.PeerCertificates[0]
 			if err := hostcert.CheckLeaf(leaf, hostcert.TierURI); err != nil {
 				return err

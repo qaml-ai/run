@@ -1156,10 +1156,15 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
   (`now − 2 × heartbeat`), so a writer still committing cannot be skipped by a reader that has already passed it.
 - The cursor encodes the 16 shard positions. An empty page with an advanced watermark is normal.
 - **The poller's token only.** The route is cross-lineage, so §9.10's `lin` and `refs` cannot scope it.
-  - It requires `sub == "runtime:usage"` exactly, and ignores `lin` and `refs` for authorization. The token
-    still passes the verifier's shape rules.
+  - It requires `sub == "runtime:usage"` and `acc: "r"` exactly. That token is the one exemption from §9.10's
+    lineage and refs rules: it carries no `lin`, its `refs` is the empty list `[]`, it has no `fence`, and the
+    API serves it this route only (any other route is `403`). Every other shape rule (signature, `typ`, `kid`,
+    `iat`/`exp` and the maximum TTL) still applies.
   - The runtime mints that token only for its one leased poller (K5). Any other `sub` is `403 forbidden`.
   - Customers reconcile their own bill from the same events through the runtime's API, filtered to their payer.
+- **Observable:** every `GET /v1/usage` writes one access-log line, `op=GET:/v1/usage status=… ms=… events=<n>`, and
+  nothing from the events themselves (#1165). A poller that is refused shows as a run of non-200 lines; a healthy one
+  shows a `200` every ≈ 20 s, with `events=0` between bursts.
 
 **The poller.** The runtime runs one leased poller per camel-fs deployment, every ≈ 20 s.
 - One Postgres transaction per page: `INSERT … ON CONFLICT (id) DO NOTHING` for every event (on `eventId`), plus the

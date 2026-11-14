@@ -66,7 +66,9 @@ suite, attested enrollment (`shared/job-host-attest.ts`), and the guest vsock pr
 **Decided (Miguel, 2026-11-14): one `bash` tool, one VM per agent per branch, no jobs.** Agents get one `bash` tool,
 backed by a VM that starts on the agent's first call and lives on that agent's branch (§6). The job interface goes:
 there is no `job()` in workflows and no `job_run` agent tool. Parallel compute comes from child agents, each with
-its own `bash` VM on its own branch. QuickJS code mode stays for small scripts that need no VM.
+its own `bash` VM on its own branch. QuickJS code mode stays for small scripts that need no VM. A code-mode script
+may call `bash`, and that wait is **off the script's clock** (`OFF_THE_CLOCK`, as `delegate` is): the bash tool's own
+`timeoutSeconds` bounds it, not the script deadline (L124).
 
 So the VM has one shape, a **session**: it boots, runs many `exec`s, checkpoints, and stops when idle. Every route
 is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md §9.10).
@@ -75,12 +77,17 @@ is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md 
 |---|---|
 | `POST /v1/vms` `{ id, lineage, ref, version?, image, shape: { vcpus, memoryMiB, diskGiB }, pool, idleStopS, network, usage: { payer }, deadline }` | idempotent by `id` (the runtime's id for this agent's VM on this branch). It takes the lease on `ref` (§9.9; the tier takes it just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase. `deadline` is the credit lease of §4 |
 | `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied. **A lapsed lease is final**: a call made at or after the current deadline (`now ≥ deadline`) answers `409 lease_expired` and never revives it (§4) |
-| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended` (v2 adds `sleeping` after `running`, §6). Ended codes: `stopped` (a requested stop), `idle` (the idle stop), `host_lost`, `start_failed`, `lease_expired` (§4). Admission is the runtime's, before `POST /v1/vms`, so it is never an ended code |
+| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, code?, reason?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended` (v2 adds `sleeping` after `running`, §6). Ended codes: `stopped` (a requested stop), `idle` (the idle stop), `host_lost`, `start_failed`, `lease_expired` (§4). Admission is the runtime's, before `POST /v1/vms`, so it is never an ended code |
 | `POST /v1/vms/{id}/shells` → `{ shell }` | a persistent shell: cwd, environment and shell state survive between `exec`s, which are the `bash` tool's semantics |
-| `POST /v1/vms/{id}/exec` `{ command, shell, cwd?, timeoutS, env?, stdin? }` | runs one command in the shell. Output streams live as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`). The guest keeps at least the last exec per shell, bounded by 8 execs × 1 MiB of stdout and stderr per VM (stream-tagged, with offsets), plus the last 64 exit records. It lives in the guest's memory, so it survives a daemon restart, and it is dropped when the VM stops. A client whose stream dropped re-reads it with `GET …/exec/{execId}?offset=`. Past those bounds the read answers `410 tail_truncated` with `firstOffset` in the error's `details` (§9.8's error object, #1063), or `404 exec_unknown` for an exec it no longer knows. Nothing is written to S3 or a table for an exec |
-| `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the host's in-VPC `cas` on the VM's ref under its lease (camel-fs-files.md §9.7). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved |
+| `POST /v1/vms/{id}/exec` `{ command, shell?, cwd?, timeoutS, env?, stdin? \| stdinBlob? }` | runs one command. `stdinBlob { blob, size, sha256 }` (not combinable with `stdin`) names a §9 blob as the command's input: the tier checks the blob is in the VM's lineage (`404 not_in_tree` otherwise), the host fetches only `<lineage>/o/<blob>` and streams the raw bytes to the guest on vsock port 5202 (`hostwire.ExecInputPort`, session VMs only, behind a single-use 128-bit token), and a size or sha256 mismatch answers `502 blob_mismatch`. This is how a file write through a running machine carries up to the ref path's 256 MiB (#1109, L110). **Deploy order (expand/contract; #1109):** the tier and the host both decode exec bodies strictly (an unknown field is a `400`; the host already did), so `stdinBlob` must be understood downstream before anything upstream sends it: (1) the compute host and guest image first (an old host answers `400`; an old guest image has no 5202 stream and refuses `transfer_corrupt`); (2) the tier second (an old tier answers `400` to a runtime that sends `stdinBlob`); (3) the runtime last (until then it keeps sending inline `stdin`, ≈ 12 MiB, which the new tier and host still accept). Roll back in reverse: runtime, then tier, then host. Until all three are on #1109, file writes on a running VM can fail with `400`; reads and `bash` are unaffected. With `shell`, it runs in that persistent shell (the `bash` tool always passes its shell). Without one, it is a one-off `bash -lc` that may run concurrently with other execs and leaves every shell's cwd and environment untouched; the runtime's file tools use these (§6). Output streams live as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`). The guest keeps at least the last exec per shell, bounded by 8 execs × 1 MiB of stdout and stderr per VM (stream-tagged, with offsets), plus the last 64 exit records. It lives in the guest's memory, so it survives a daemon restart, and it is dropped when the VM stops. A client whose stream dropped re-reads it with `GET …/exec/{execId}?offset=`. Past those bounds the read answers `410 tail_truncated` with `firstOffset` in the error's `details` (§9.8's error object, #1063), or `404 exec_unknown` for an exec it no longer knows. Nothing is written to S3 or a table for an exec |
+| `GET /v1/vms/{id}/exec/{execId}?offset=` | the same exec's output stream from byte `offset`, for a client whose `POST …/exec` stream was cut (the host keeps the tails of recent execs). Both streams send a `: keepalive` SSE comment every 20 s while the command is quiet (#1147), under the public ALB's 60 s idle timeout. The runtime resuming a cut stream is L124's open part |
+| `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | `trailers` is camelfsd's `image.Trailers` and nothing else (unknown keys are `400 invalid_request`); a session's checkpoint sends `{ kind: "auto", agent, run }`, from which the host writes `Camel-Agent`, `Camel-Run`, `Camel-Checkpoint: auto` and `Camel-Op: turn` and authors the commit as `agent:<id>` (one fixture, `computehost/testdata/runtime-checkpoint.json`, pins both sides). It is the camel-fs.md §1.3 checkpoint plus the host's in-VPC `cas` on the VM's ref under its lease (camel-fs-files.md §9.7). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved |
 | `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. The VM also stops by itself after `idleStopS` (≈ 10 s by default) with no `exec` in flight, with a checkpoint first. Warm sleep (a memory snapshot, §6 v2) is a later addition behind the same API, as a `sleeping` state |
 | events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, version?, checkpointError? }` (on the notify webhook with `type: "vm.ended"`, camel-fs-files.md §9.11), `usage.vm` (§4) |
+
+`reason` is set on some ended VMs. With `code: "start_failed"` it is one of `no_host_fits`, `no_capacity`, `ref_held`, `ref_unavailable`, `lineage_deleted` or `ref_deleted`.
+
+After a successful lineage delete, the tier uses the `lineage` index to find the lineage’s VMs, end unstarted VMs, and stop booting or running VMs without a checkpoint. A ref delete ends unstarted VMs on that ref.
 
 **What the session-only shape removes from this API:**
 - job mode (`mode`, `job: { command, timeoutS, env, outputs, commit }`);
@@ -150,6 +157,7 @@ Placement is warm- and feature-aware, from the `warm` table camel-fs.md §1.2 al
 **A host's `bootEpoch` follows its kernel boot.** The host sends `/proc/sys/kernel/random/boot_id` as
 `Register.BootID`, and the tier answers the same epoch for the same `BootID`.
 - So VMs and their leases survive a daemon restart.
+- A re-register on the same boot updates the host's shape and slots by delta. A shrink below the slots VMs already hold is refused with `409 capacity_in_use`.
 - A new kernel boot bumps the epoch, which fences every older holder and ends that boot's VMs `host_lost`.
 
 Hosts reach the tier in-VPC over mutual TLS (camel-fs-files.md §9.12). They enroll once with their STS
@@ -314,9 +322,14 @@ scripts.
   the end of a turn is superseded. The idle stop checkpoints first. The agent's
   `checkpoint`/`restore`/`history`/`diff` tools are unchanged.
 - **File tools and the lease, plainly:** while a VM is running on a branch, it holds the branch's lease, and the
-  agent's file tools on that branch go into the VM (reads and writes run in the guest; the next checkpoint makes
-  them durable). When the VM is stopped, the branch is unheld, and file tools and API writes work on the ref
-  directly. There is never a second writer.
+  agent's file tools on that branch go into the VM (reads and writes run in the guest as one-off execs, §2; the next
+  checkpoint makes them durable).
+  - File operations run beside a running `bash` command. They serialize only against a checkpoint in flight: a
+    checkpoint waits for the file operations already running, and a file operation waits for a checkpoint already
+    running.
+  - A write that races a running command is accepted behaviour (the lead, 2026-11-14), not a limitation.
+  - When the VM is stopped, the branch is unheld, and file tools and API writes work on the ref directly. There is
+    never a second writer.
 - **Sprite-like VMs: they sleep after seconds of inactivity and wake on the next call** (Miguel, 2026-11-14).
   Two tiers:
   - **v1 (now): idle stop with checkpoint.**
@@ -324,8 +337,12 @@ scripts.
       branch, measured at ≈ 110–220 ms), and stops it.
     - `idleStopS` is one constant with a default of ≈ 10 **seconds**, at most 1 hour, counted only while no
       `exec` runs.
-    - The next `bash` call boots a fresh VM from the branch's latest tree: a warm mount ≈ 2 ms plus a Firecracker
-      boot ≈ 0.5 s (a cold host hydrates first, ≈ 3.7 s for a 660 MB root).
+    - The next `bash` call boots a fresh VM from the branch's latest tree. **Measured after K2f** (#1116, proto host,
+      create → first exec at 50 MB / 500 MB / 2 GB):
+      - the same host, on the same or a checkpointed tree: ≈ 0.6–0.7 s;
+      - a new host reusing the tree's shared root: 1.7 / 5.8 / 20.2 s (chunk download, ledger L119);
+      - a tree no host has a root for: 8.5 / 12.5 / 27.6 s (the per-file apply, L120);
+      - a host's guest image is prewarmed after it registers, so no wake waits for it (L112).
         - **A fresh root per boot.** Every boot starts from the guest image's root filesystem, with the branch mounted
       at `/workspace` (the shell starts there). Only `/workspace` is the branch; installed packages, `/tmp` and
       the shell's environment are gone after a sleep.
@@ -349,8 +366,9 @@ scripts.
   > stderr and exit code. Files under /workspace are saved to your branch after every command; everything else on
   > the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps
   > after about 10 seconds with no command running, and a sleep ends every process, including background `&` jobs
-  > and servers; a command that is still running keeps it awake. The first command after a sleep waits a few
-  > seconds while the machine starts. Output over 32 KiB per stream is cut in the middle, and the result says how
+  > and servers; a command that is still running keeps it awake. The first command after a sleep usually starts
+  > within a second; the first command on a new or large repository can take up to half a minute while its files
+  > are copied in. Output over 32 KiB per stream is cut in the middle, and the result says how
   > many bytes were dropped.
   >
   > `command`: The command to run in bash, in a persistent shell: the working directory and environment carry

@@ -179,3 +179,18 @@ test('presenting on a running machine saves it first and never stores bytes outs
   assert.equal(presented[0].version, 'c'.repeat(40));
   assert.equal(presented[0].repoPath, 'nested/a.txt');
 });
+
+test('machine answers about the file map to file errors, not a stopped machine; present_file never reads the bytes', async () => {
+  const { vm, provider } = memoryVm();
+  let reads = 0;
+  const original = vm.read.bind(vm);
+  vm.read = async (...args) => { reads++; return original(...args); };
+  const tools = repoTools(noRef as never, 't', 'a', async () => mounts, async () => {}, undefined, undefined, {}, undefined, provider);
+  const run = (name: string, args: any) => tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never);
+  await run('present_file', { path: '/workspace/a.txt' });
+  assert.equal(reads, 0, 'presenting on a running machine needs only stat + checkpoint');
+  for (const [code, pattern] of [['no_file', /:File not found: \/workspace\/x\.txt$/], ['too_large', /:File is too large for file tools while your machine is running; use bash to work with it\.$/], ['bad_path', /:Invalid path: \/workspace\/x\.txt$/]] as const) {
+    vm.write = async () => { throw Object.assign(new Error(code), { code }); };
+    await assert.rejects(run('write', { path: '/workspace/x.txt', content: 'x' }), (e: Error) => pattern.test(e.message) && !/stopped during this operation/.test(e.message));
+  }
+});

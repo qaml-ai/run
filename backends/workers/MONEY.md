@@ -8,7 +8,7 @@ No production database, AWS credential or live Stripe key was used.
 ## What moved
 
 The source implementations of Accounts, Billing, BillingPayments, AutoTopup,
-CardCredit, BillingAlerts, CreditHolds, EndUserCredits, ModelAttempts, Workspaces,
+CardCredit, BillingAlerts, EndUserCredits, ModelAttempts, Workspaces,
 Webhooks, Stripe, Tenants, KeyScopes, ModelProviders, ConsoleAuth, OAuth,
 EmailAccounts, Passwords, RateLimits and BrowserTokens now run against the Workers
 database adapter. Generated copies change host imports; scripts reject source
@@ -23,14 +23,12 @@ Provider secrets use the same AES-256-GCM records and associated data as `src/`.
 API tokens have the source's tenant authority; a named key scope selects provider
 credentials. This does not invent per-token permission scopes absent from source.
 
-The fixed $0.01 turn reservation is gone. Each provider attempt invokes the source
-estimate/hold policy before dispatch, renews/extends its holds, applies the source
-last-call allowance, and settles the tenant and optional subject together. The
-source policy retains lot expiry, markup, free allowances, hourly limits,
-dispute restrictions, refund corrections and its permitted bounded overdraft.
-Duplicate model finishes and turn receipts do not debit twice. Expired holds do
-not cause a late, real charge to disappear. Subject, actor, bucket, request and
-workspace attribution travel through the available prompt/child paths.
+Platform model calls for prepaid tenants admit with positive spendable credit,
+including the free hourly allowance and dispute checks. Admitted calls settle in
+full and may leave a negative balance. End-user holds still determine the output
+budget when applicable. Duplicate model finishes and turn receipts do not debit
+twice. Subject, actor, bucket, request and workspace attribution travel through
+the available prompt/child paths.
 
 Native account and billing mail uses [Cloudflare Email Sending](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/). It has the
 simplest Workers interface and needs no AWS access key or SigV4 implementation.

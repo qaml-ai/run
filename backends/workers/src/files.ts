@@ -10,7 +10,6 @@ import {
 } from "./images.ts";
 export interface FileBindings extends ImageBindings, SecurityEnv {
   TENANTS: DurableObjectNamespace<import("./tenant.ts").TenantAdmission>;
-  REPOS: DurableObjectNamespace<import("./repos/repo-do.ts").RepoDO>;
   HYPERDRIVE: {
     connectionString: string;
   };

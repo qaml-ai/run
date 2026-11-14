@@ -8,7 +8,7 @@ import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { camelfsdClient, serveImportProxy } from "../jobhost/camelfsd.ts";
 import { Guest } from "../jobhost/guest.ts";
@@ -91,9 +91,6 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
     assert.equal(deniedHost.status, 404);
     await deniedHost.arrayBuffer();
   });
-
-  await timed("runtime storage client: every section 9 call",
-    () => storageContract(`http://127.0.0.1:${apiPort}`, () => token));
 
   // Read-only routes are deliberately absent from the import proxy.
   const get = <T>(path: string): Promise<T> => new Promise((resolve, reject) => {
@@ -218,17 +215,20 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
 
 // Error transport is independent of daemon setup. In particular the
 // authorization check must never turn an incomplete walk into false/null.
-async function storageContract(origin: string, tokenFor: (lineage: string) => string) {
+async function storageContract(t: TestContext, origin: string, tokenFor: (lineage: string, acc?: string) => string) {
   const statuses: { method: string; path: string; status: number }[] = [];
-  const storage = camelfsStorage({ CAMELFS_API_TOKEN: tokenFor("contract:storage"), CAMELFS: { async fetch(input, init) {
-    const url = new URL(typeof input === "string" ? input : input.url);
-    const lineage = decodeURIComponent(url.pathname.split("/")[3]);
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `Bearer ${tokenFor(lineage)}`);
-    const response = await fetch(origin + url.pathname + url.search, { ...init, headers });
+  const fetchReal = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const response = await fetchReal(url, init);
+    if (!(url instanceof URL)) return response;
     statuses.push({ method: init?.method ?? "GET", path: url.pathname, status: response.status });
     return response;
-  } } });
+  });
+  const storage = camelfsStorage("agent:contract", ({ path, claims }, init) => {
+    const headers = new Headers(init.headers);
+    headers.set("authorization", `Bearer ${tokenFor(claims.lin, claims.acc)}`);
+    return fetch(new URL(path, origin), { ...init, headers });
+  });
   const lineage = "contract:storage";
   const bytes = (s: string) => new TextEncoder().encode(s);
   const text = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -458,7 +458,7 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
         });
         assert.equal(registration.status, 201, await registration.text());
       }
-      await storageContract(origin, tokenFor);
+      await storageContract(t, origin, tokenFor);
       if (process.env.CAMELFS_DDB_LOCAL) {
         await refsContract(request => fetch(request), origin, tokenFor);
       }
@@ -471,10 +471,9 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
   });
 });
 
-test("camelFS storage client preserves too_deep and operation context", async () => {
-  const storage = camelfsStorage({ CAMELFS_API_TOKEN: "contract-error-token", CAMELFS: {
-    async fetch() { return new Response(JSON.stringify({ error: { code: "too_deep", message: "too_deep" } }), { status: 413 }); },
-  } });
+test("camelFS storage client preserves too_deep and operation context", async t => {
+  const storage = camelfsStorage("agent:contract", async () =>
+    Response.json({ error: { code: "too_deep", message: "too_deep" } }, { status: 413 }));
   for (const [op, run] of [
     ["isAncestor", () => storage.isAncestor("l", "a", "b")],
     ["mergeBase", () => storage.mergeBase("l", "a", "b")],
@@ -536,12 +535,11 @@ async function refsContract(send: (request: Request) => Promise<Response>, origi
   await call("PUT", "", 200, { body: metadata });
   const item = await call("GET", "", 200, { token: read });
   for (const [key, value] of Object.entries(metadata)) assert.equal(item[key], value);
-  const storage = camelfsStorage({ CAMELFS_API_TOKEN: runtime, CAMELFS: {
-    async fetch(input, init) {
-      const url = new URL(typeof input === "string" ? input : input.url);
-      return send(new Request(origin + url.pathname + url.search, init));
-    },
-  } });
+  const storage = camelfsStorage("runtime:contract", ({ path, claims }, init) => {
+    const headers = new Headers(init.headers);
+    headers.set("authorization", `Bearer ${tokenFor(claims.lin, claims.acc, { sub: "runtime:contract" })}`);
+    return send(new Request(origin + path, { ...init, headers }));
+  });
   const owner = "agent:contract";
   const commit = (parents: string[], changes: CommitInput["changes"] = [], message = "contract") =>
     storage.commit(lineage, { parents, changes, author: owner, message, time: 123, trailers: {} });

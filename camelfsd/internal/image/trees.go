@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"os"
 	"path/filepath"
 )
@@ -83,6 +85,18 @@ func (m *Manager) baseRoot(ctx context.Context, l, t string) (string, error) {
 		if !errors.Is(e, sql.ErrNoRows) {
 			return "", e
 		}
+		if i == 0 {
+			id, e := m.sharedTreeRoot(ctx, l, t)
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			if e == nil {
+				return id, nil
+			}
+			if !errors.Is(e, os.ErrNotExist) {
+				slog.Warn("compute_tree_root_lookup_failed", "lineage", l, "tree", t, "error", e)
+			}
+		}
 		e = repo.DB.DB.QueryRowContext(ctx, "SELECT parent FROM tree_parents WHERE tree=?", t).Scan(&t)
 		if errors.Is(e, sql.ErrNoRows) {
 			if _, err := repo.Entries(ctx, t); err != nil {
@@ -95,4 +109,36 @@ func (m *Manager) baseRoot(ctx context.Context, l, t string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func (m *Manager) sharedTreeRoot(ctx context.Context, lineage, tree string) (string, error) {
+	b, err := store.ForLineage(m.Store, lineage).Get(ctx, "tr/"+tree)
+	if err != nil {
+		return "", err
+	}
+	id := string(b)
+	if !root.Hex(id, 64) {
+		return "", fmt.Errorf("invalid shared root ID")
+	}
+	r, err := m.load(ctx, lineage, id)
+	if err != nil {
+		return "", err
+	}
+	if r.Tree != tree {
+		return "", fmt.Errorf("shared root tree mismatch")
+	}
+	ok, err := m.objects(lineage).Reachable(ctx, lineage, id, "root")
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("shared root is outside lineage")
+	}
+	return id, m.Refs.RecordTree(lineage, tree, id)
+}
+
+func (m *Manager) shareTreeRoot(ctx context.Context, lineage, tree, id string) {
+	if err := store.ForLineage(m.Store, lineage).Put(ctx, "tr/"+tree, []byte(id)); err != nil {
+		slog.Warn("compute_tree_root_share_failed", "lineage", lineage, "tree", tree, "root", id, "error", err)
+	}
 }

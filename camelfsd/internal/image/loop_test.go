@@ -36,7 +36,7 @@ func TestLoopGuestCycle(t *testing.T) {
 	go func() {
 		guest <- testguest.Checkpoint(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, dir, idx)
 	}()
-	cp, e := m.SessionCheckpoint(t.Context(), v.JobID, CheckpointRequest{TimeoutMs: 5000}, acceptCheckpoint)
+	cp, e := m.SessionCheckpoint(t.Context(), v.JobID, false, CheckpointRequest{TimeoutMs: 5000}, acceptCheckpoint)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -87,7 +87,7 @@ func TestLoopFreeze5000(t *testing.T) {
 		go func() {
 			done <- testguest.Checkpoint(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, dir, idx)
 		}()
-		cp, e := m.SessionCheckpoint(t.Context(), v.JobID, CheckpointRequest{TimeoutMs: 30000}, acceptCheckpoint)
+		cp, e := m.SessionCheckpoint(t.Context(), v.JobID, false, CheckpointRequest{TimeoutMs: 30000}, acceptCheckpoint)
 		if e != nil {
 			t.Fatal(e)
 		}

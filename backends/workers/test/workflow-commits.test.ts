@@ -122,7 +122,7 @@ test("a commit with a lost landing keeps the sweep armed", { timeout: 60_000 }, 
 });
 
 test('commit merges cleanly, reports conflicts, rejects snapshots and retries storage failures', async t => {
-  const f = fixture(t), ctx = await f.create();
+  const f = await fixture(t), ctx = await f.create();
   const { childBranch, repoAt } = await import('../src/workflow-branches.ts');
   const mem = { get:async()=>undefined,put:async()=>{} };
   const fork = await childBranch(f.env,'t',mem as never,{workflow:'wf_1',key:'a',attempt:1},repoAt(ctx.repoId));
@@ -145,12 +145,12 @@ test('commit merges cleanly, reports conflicts, rejects snapshots and retries st
   assert.equal(conflict.committed,false);
   assert.equal(conflict.conflicts[0].path,'a');
   assert.equal(conflict.conflicts[0].reason,'both_modified');
-  const fetch = f.env.CAMELFS.fetch;
-  f.env.CAMELFS.fetch = async () => { throw new Error('storage unavailable'); };
+  const url = f.env.CAMELFS_URL;
+  f.env.CAMELFS_URL = "invalid URL";
   await j.executor.start(effect('retry',{fork:conflicting})); await j.settled();
   assert.equal(j.landed.length,5,'storage failures do not land');
   assert.ok([...j.rows.values()].some((row:any)=>row.key==='retry'&&row.kind==='commit'));
-  f.env.CAMELFS.fetch = fetch;
+  f.env.CAMELFS_URL = url;
   await j.executor.recover(); await j.settled();
   assert.equal((j.landed[5][2] as any).value.committed,false);
   assert.equal(j.rows.size,0);
@@ -158,7 +158,7 @@ test('commit merges cleanly, reports conflicts, rejects snapshots and retries st
 });
 
 test('result cache keys on trees and recreates branches; a missing version is a logged miss', async t => {
-  const f = fixture(t), ctx = await f.create(), old = await ctx.repo.resolve('main');
+  const f = await fixture(t), ctx = await f.create(), old = await ctx.repo.resolve('main');
   const rows = new Map<string, unknown>(), keys: string[] = [];
   let cached: any;
   const cache = { lookup: async (_kind: string,key: string) => { keys.push(key); return cached; } };
@@ -167,7 +167,9 @@ test('result cache keys on trees and recreates branches; a missing version is a 
   const results = (WorkflowObject.prototype as any).resultCache.call(self,f.env,'wf_new');
   const args = JSON.stringify({prompt:'edit',repo:ctx.repoId,model:'test/model'});
   await results.lookup('agent',args,{key:'a',attempt:1});
-  await f.write(ctx,{}, {allowEmpty:true});
+  await f.write(ctx,{temporary:{bytes:new TextEncoder().encode('temporary')}});
+  await f.write(ctx,{temporary:null});
+  assert.notEqual((await ctx.repo.resolve('main')).version,old.version);
   await results.lookup('agent',args,{key:'a',attempt:1});
   assert.equal(keys[0],keys[1],'new versions with equal trees share keys');
   cached = {value:{text:'cached'},source:'old:k:1',fork:{repo:ctx.repoId,version:old.version}};

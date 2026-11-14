@@ -1,6 +1,5 @@
 import { handleCamelfsNotify, type NotifyEnv } from "./camelfs/notify.ts";
 import { handleCamelfsSmoke } from "./camelfs/smoke.ts";
-import { handlePilotReset } from "./camelfs/pilot-reset.ts";
 import { tierConfigured } from "./camelfs/tier.ts";
 import { storedConfiguration } from "./api-contract.ts";
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
@@ -50,6 +49,8 @@ import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
 import { publicAdminSite } from "./admin-site.ts";
 import { handleServiceRequest } from "./service-api.ts";
+import { handleElevenLabsInbound } from "./voice/calls/elevenlabs-inbound.ts";
+import { handleVoiceCalls } from "./voice-calls-api.ts";
 import { handleMediaRequest } from "./media-api.ts";
 import { handleComputerRequest } from "./computers/api.ts";
 import { websocketAuthorization } from "./live-transport.ts";
@@ -102,12 +103,13 @@ import {
   agentSpendView,
 } from "./agent-spend.ts";
 export { CamelAgent };
+export { VoiceCall } from "./voice-call.ts";
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
+export { CamelfsSmoke } from "./camelfs/smoke.ts";
 export { CamelfsUsagePoller } from "./camelfs/usage-poller.ts";
 import { startUsagePoller } from "./camelfs/usage-poller.ts";
-export { RepoDO } from "./repos/repo-do.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";
@@ -277,6 +279,8 @@ const worker = {
       // Channels' webhooks come before any authentication: each delivery proves itself.
       const delivery = await channelWebhook(request, env, ctx);
       if (delivery) return delivery;
+      const voiceProvider = await handleElevenLabsInbound(request, env);
+      if (voiceProvider) return voiceProvider;
       const publicResponse = await publicRoutes(request, env);
       if (publicResponse) return publicResponse;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
@@ -390,8 +394,6 @@ const worker = {
           if (workflow) return workflow;
         }
         if (path === "/v1/internal/camelfs/smoke") return handleCamelfsSmoke(request, env as RepoEnv, auth);
-        // TEMPORARY(pilot-switch): R5 deletes this route.
-        if (path === "/v1/internal/camelfs/pilot-reset") return handlePilotReset(request, env as never, auth);
         const workflows = await workflowRoutes(request, env as unknown as WorkflowEnv & { AGENT_WORKFLOW_TENANTS?: string }, auth.tenantId);
         if (workflows) return workflows;
         const money = await moneyRoutes(request, env, auth, ctx);
@@ -436,6 +438,8 @@ const worker = {
             return json(await inboxSql(env, sql => readInbox(sql, auth.tenantId, query)));
           } catch (error) { if (error instanceof InboxQueryError) throw new ApiError(400, error.message); throw error; }
         }
+        const voice = await handleVoiceCalls(request, env, auth);
+        if (voice) return voice;
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
         const files = await handleFileRequest(request, env, auth);

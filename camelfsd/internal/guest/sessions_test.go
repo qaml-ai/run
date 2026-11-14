@@ -1,16 +1,23 @@
 package guest
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/wire"
 )
 
 type sessionPeer struct {
@@ -23,7 +30,6 @@ type sessionPeer struct {
 func sessionPeerFor(t *testing.T, g *guest) *sessionPeer {
 	t.Helper()
 	host, guest := net.Pipe()
-	host.SetDeadline(time.Now().Add(15 * time.Second))
 	p := &sessionPeer{t, host, json.NewDecoder(host), make(chan error, 1)}
 	go func() {
 		defer guest.Close()
@@ -33,8 +39,13 @@ func sessionPeerFor(t *testing.T, g *guest) *sessionPeer {
 	return p
 }
 
+// peerStepTimeout bounds one exchange, not the whole test: a test may make dozens of exec round trips
+// (TestExecRetention runs execExits+1 bash processes), which can exceed any fixed total on a loaded runner.
+const peerStepTimeout = 15 * time.Second
+
 func (p *sessionPeer) send(m message) {
 	p.t.Helper()
+	p.conn.SetWriteDeadline(time.Now().Add(peerStepTimeout))
 	if err := json.NewEncoder(p.conn).Encode(m); err != nil {
 		p.t.Fatal(err)
 	}
@@ -43,6 +54,7 @@ func (p *sessionPeer) send(m message) {
 func (p *sessionPeer) read() message {
 	p.t.Helper()
 	var m message
+	p.conn.SetReadDeadline(time.Now().Add(peerStepTimeout))
 	if err := p.dec.Decode(&m); err != nil {
 		p.t.Fatal(err)
 	}
@@ -295,5 +307,69 @@ func TestCheckpointNoChangesDoesNotConnect(t *testing.T) {
 	reply, err := g.checkpoint(context.Background(), request{TimeoutMs: 1000})
 	if err != nil || !thawed || reply["changed"] != false || reply["files"] != 0 || reply["bytes"] != 0 || reply["walkMs"] == nil || reply["freezeMs"] == nil {
 		t.Fatal(reply, err, thawed)
+	}
+}
+
+func TestExecStreamedInput(t *testing.T) {
+	chunk := bytes.Repeat([]byte{0, 255, 42, 130}, 1<<18)
+	for _, tc := range []struct {
+		name   string
+		chunks int
+		size   int64
+		code   float64
+	}{
+		{"large", 33, 33 << 20, 0},
+		{"short", 1, 2 << 20, 125},
+		{"long", 1, 0, 125},
+		{"empty", 0, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := fixture(t)
+			t.Cleanup(g.sessions.close)
+			digest := sha256.New()
+			for range tc.chunks {
+				digest.Write(chunk)
+			}
+			sha := fmt.Sprintf("%x", digest.Sum(nil))
+			token := strings.Repeat("a", 32)
+			server := streamListener(t, g, hostwire.ExecInputPort, func(c net.Conn) error {
+				var got string
+				if err := wire.JSON(c, &got); err != nil {
+					return err
+				}
+				if got != token {
+					return fmt.Errorf("wrong token: %q", got)
+				}
+				if err := wire.Send(c, true); err != nil {
+					return err
+				}
+				for range tc.chunks {
+					if _, err := c.Write(chunk); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			p := sessionPeerFor(t, g)
+			const cmd = "wc -c; sha256sum </proc/self/fd/0"
+			accepted(t, p.req(message{"op": "exec", "execId": "stream", "command": cmd, "timeoutS": 10,
+				"stdinBlob": hostwire.ExecBlob{Blob: strings.Repeat("b", 40), Size: &tc.size, SHA256: sha}, "stdinToken": token}))
+			out, exit := p.end("stream", 0)
+			if exit["code"] != tc.code {
+				t.Fatalf("output %q, exit %v", out, exit)
+			}
+			err := <-server
+			if err != nil && (tc.name != "long" || !errors.Is(err, syscall.EPIPE)) {
+				t.Fatal(err)
+			}
+			if tc.code == 0 {
+				want := fmt.Sprintf("%d\n%s  -\n", tc.size, sha)
+				if out != want {
+					t.Fatalf("got %q, want %q", out, want)
+				}
+			} else if !strings.Contains(out, "stdin blob stream size mismatch") {
+				t.Fatalf("unexpected refusal: %q", out)
+			}
+		})
 	}
 }

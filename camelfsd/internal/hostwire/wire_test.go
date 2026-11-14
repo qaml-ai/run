@@ -36,7 +36,7 @@ func TestUnitWireJSON(t *testing.T) {
 	}{
 		{&Register{BootID: "boot", Pool: "p", Addr: "h:8792", Shape: Shape{1, 2, 3}, Slots: 4, Features: []string{"x"}, Images: []string{"img"}},
 			`{"bootId":"boot","pool":"p","addr":"h:8792","shape":{"vcpus":1,"memoryMiB":2,"diskMiB":3},"slots":4,"features":["x"],"images":["img"]}`},
-		{&Registered{2}, `{"bootEpoch":2}`},
+		{&Registered{BootEpoch: 2, Images: []string{"img"}}, `{"bootEpoch":2,"images":["img"]}`},
 		{&Heartbeat{2, 3, 4, []Running{{"v", &start, true}}}, `{"bootEpoch":2,"at":3,"free":4,"running":[{"id":"v","startedAt":3,"finished":true}]}`},
 		{&HeartbeatReply{2, []StopOrder{{"v", true}}, []BootSpec{}}, `{"bootEpoch":2,"stop":[{"id":"v","checkpoint":true}],"boot":[]}`},
 		{&BootSpec{ID: "v", Lineage: "lin", Ref: "main", Version: "c", Tree: "t", Parent: "c", Image: "i",

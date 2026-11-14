@@ -85,7 +85,7 @@ func TestDaemonStreams(t *testing.T) {
 	checkpoint := make(chan error, 1)
 	var tree string
 	go func() {
-		result, err := m.SessionCheckpoint(ctx, "j", image.CheckpointRequest{TimeoutMs: 5000}, func(context.Context, image.Checkpoint) error { return nil })
+		result, err := m.SessionCheckpoint(ctx, "j", false, image.CheckpointRequest{TimeoutMs: 5000}, func(context.Context, image.Checkpoint) error { return nil })
 		tree = result.Tree
 		checkpoint <- err
 	}()

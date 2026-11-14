@@ -151,3 +151,64 @@ func TestUnitRankPrefersImageAfterFit(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestUnitPlacementCapacity(t *testing.T) {
+	shape := Shape{VCPUs: 2, MemoryMiB: 2048, DiskMiB: 2048}
+	hosts := []Host{
+		{HostInfo: HostInfo{Host: "small", Shape: Shape{VCPUs: 2, MemoryMiB: 1024, DiskGiB: 2}}, LastSeenAt: 2, Free: 5},
+		{HostInfo: HostInfo{Host: "stale", Shape: shape}, LastSeenAt: 1, Free: 5},
+		{HostInfo: HostInfo{Host: "draining", Shape: shape, Draining: true}, LastSeenAt: 2, Free: 5},
+	}
+	fits, count, best, free := placementCapacity(hosts, shape, 1)
+	if fits || count != 2 || best.Host != "small" || free != nil {
+		t.Fatalf("fits=%v count=%d best=%+v free=%+v", fits, count, best, free)
+	}
+	hosts = append(hosts, Host{HostInfo: HostInfo{Host: "full", Shape: shape}, LastSeenAt: 2})
+	fits, count, best, free = placementCapacity(hosts, shape, 1)
+	if !fits || count != 3 || best.Host != "full" || free.Host != "full" {
+		t.Fatalf("fits=%v count=%d best=%+v free=%+v", fits, count, best, free)
+	}
+}
+
+func TestUnitFirstExecLog(t *testing.T) {
+	var fields map[string]any
+	c := Controller{Log: func(event string, values map[string]any) {
+		if event != "vm_first_exec" {
+			t.Fatal(event)
+		}
+		fields = values
+	}}
+	placed, booting, running := int64(20), int64(30), int64(40)
+	v := VM{CreatedAt: 10, PlacedAt: &placed, BootingAt: &booting, StartedAt: &running}
+	c.firstExecLog(v, "exec", 50)
+	for key, want := range map[string]int64{"placedAt": 20, "bootingAt": 30, "runningAt": 40, "latencyMs": 40} {
+		if got, ok := fields[key].(int64); !ok || got != want {
+			t.Errorf("%s: got %T %v, want %d", key, fields[key], fields[key], want)
+		}
+	}
+	c.firstExecLog(VM{}, "exec", 50)
+	for _, key := range []string{"placedAt", "bootingAt", "runningAt"} {
+		if _, ok := fields[key]; ok {
+			t.Errorf("unexpected %s", key)
+		}
+	}
+}
+
+func TestUnitUnplaceableLogRate(t *testing.T) {
+	now := time.UnixMilli(100)
+	var reasons []string
+	l := Loop{C: &Controller{Log: func(event string, fields map[string]any) {
+		if event != "vm_unplaceable" {
+			t.Fatal(event)
+		}
+		reasons = append(reasons, fields["reason"].(string))
+	}}}
+	v := VM{CreateRequest: CreateRequest{ID: "vm", Pool: "test"}}
+	l.logUnplaceable(v, noHostFits, now, 0, nil)
+	l.logUnplaceable(v, noHostFits, now.Add(time.Second), 0, nil)
+	l.logUnplaceable(v, noHostFits, now.Add(time.Minute), 0, nil)
+	l.logUnplaceable(v, "full", now.Add(time.Minute+time.Second), 1, &Host{})
+	if !slices.Equal(reasons, []string{noHostFits, noHostFits, "full"}) {
+		t.Fatal(reasons)
+	}
+}

@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import { repoHistory } from './history.ts';
 import { RE2JS } from "re2js";
 import { Buffer } from "node:buffer";
@@ -13,7 +14,7 @@ import { agentRepoId, workspaceMount, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
 import { setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
-import { heldFileError, lastSaved, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, vmHeld, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
+import { heldFileError, lastSaved, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, vmHeld, vmStat, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
 
 const TOOL_READ_BYTES = 1024 * 1024;
 export function repoTools(
@@ -29,6 +30,7 @@ export function repoTools(
   identity: Record<string,string> = {},
   scope?: RepoTreeScope,
   vmFiles?: VmFilesProvider,
+  invocation?: AgentInvocation,
 ) {
   const mountPath = async (raw: string, write = false) => {
     const mounts = await getMounts();
@@ -54,9 +56,9 @@ export function repoTools(
     };
   };
   const resolve = (t: Awaited<ReturnType<typeof mountPath>>) =>
-    resolveVmFiles(env, { tenant, agent: agentId, repo: t.mount.repo, ref: t.ref }, vmFiles);
+    resolveVmFiles(env, { tenant, agent: agentId, repo: t.mount.repo, ref: t.ref }, vmFiles, invocation);
   const store = (t: Awaited<ReturnType<typeof mountPath>>) =>
-    agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity, scope);
+    agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity, scope, invocation);
   const target = async (raw: string, write = false) => {
     const t = await mountPath(raw, write);
     const vm = await resolve(t);
@@ -75,7 +77,7 @@ export function repoTools(
   const writeFile = async (t: Awaited<ReturnType<typeof target>>, bytes: Uint8Array, contentType: string, expected?: string) => {
     if (!t.vm) return t.v.write(t.path, bytes, contentType, expected);
     const vm = t.vm, path = vmRepoPath(t.path);
-    const written = await vmOperation(t.ref, () => vm.write(path, bytes, { expectSha256: expected }));
+    const written = await vmOperation(t.ref, () => vm.write(path, bytes, { expectSha256: expected }), t.show(t.path));
     return { ...vmEntry(t.path, written), contentType };
   };
   const output = (value: unknown) => ({
@@ -232,7 +234,7 @@ export function repoTools(
         // checkpoint, through the VM backend), then present the ref's version, so the link survives the machine's sleep.
         const file = t.vm
           ? await (async (vm) => {
-            const { file } = await readVmToolFile(vm, t.ref, t.path);
+            const stat = await vmStat(vm, t.ref, t.path), file = vmEntry(t.path, stat);
             const saved = await vmOperation(t.ref, () => vm.checkpoint());
             return { ...file, version: saved.version };
           })(t.vm)
@@ -360,7 +362,7 @@ export function repoTools(
         const version = await guard(t, async () => {
           if (t.vm) {
             const vm = t.vm;
-            await vmOperation(t.ref, () => vm.delete([p], expect ? { expectSha256: expect } : undefined));
+            await vmOperation(t.ref, () => vm.delete([p], expect ? { expectSha256: expect } : undefined), t.show(t.path));
             return undefined;
           }
           return (await t.v.commit({ [p]: null }, expect, `delete ${p}`)).version;
@@ -428,7 +430,7 @@ export function repoTools(
         },
       }),
     ),
-    ...versionTools(refTarget, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity),
+    ...versionTools(refTarget, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity, invocation),
   ];
 }
 function versionTools(
@@ -437,6 +439,7 @@ function versionTools(
   output: (value: unknown) => { output: {type: 'text'; text: string}[] },
   agent: string,
   identity: Record<string,string>,
+  invocation?: AgentInvocation,
 ) {
   const committed = (t: { running: boolean; v: { ref: string } }, value: unknown) => {
     const result = output(value);
@@ -465,11 +468,11 @@ function versionTools(
       const t = await target(path ?? await workspace(), true), head = await t.v.ctx.repo.ref(t.v.ref), previous = head && await t.v.ctx.repo.commit(head.version);
       // Naming the same point twice is free; a new name for it is a new (empty) commit, never a dropped message.
       if (previous?.trailers['Camel-Checkpoint'] === 'manual' && previous.message === message) return output(previous.version);
-      return output((await explicitWrite(t.v.ref, () => t.v.commit({}, {}, message, {'Camel-Checkpoint':'manual'}, 'turn', true, 'checkpoint'))).version);
+      return output((await explicitWrite(t.v.ref, () => t.v.commit({}, {}, message, {'Camel-Checkpoint':'manual'}))).version);
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
-      const result = await explicitWrite(t.v.ref, () => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}));
+      const result = await explicitWrite(t.v.ref, () => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}, invocation));
       t.v.moved(result);
       return output(result.version);
     }}),

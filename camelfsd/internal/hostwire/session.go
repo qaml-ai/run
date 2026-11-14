@@ -1,6 +1,12 @@
 package hostwire
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+
+	"github.com/qaml-ai/run/camelfsd/internal/root"
+)
 
 // ShellRequest is the optional body of POST /v1/vms/{id}/shells.
 // The same shellKey on the same VM returns the same shellId and never opens a second shell; the key is recorded in the
@@ -23,14 +29,57 @@ type ShellCreated struct {
 // with a different command/shell/env → 409 exec_conflict.
 // Without shell it is a one-off bash -lc, may run concurrently.
 type ExecRequest struct {
-	ExecID   string            `json:"execId"`
-	Command  string            `json:"command"`
-	Shell    string            `json:"shell,omitempty"`
-	Cwd      string            `json:"cwd,omitempty"`
-	TimeoutS int64             `json:"timeoutS"`
-	Env      map[string]string `json:"env,omitempty"`
-	Stdin    *string           `json:"stdin,omitempty"`
+	ExecID    string            `json:"execId"`
+	Command   string            `json:"command"`
+	Shell     string            `json:"shell,omitempty"`
+	Cwd       string            `json:"cwd,omitempty"`
+	TimeoutS  int64             `json:"timeoutS"`
+	Env       map[string]string `json:"env,omitempty"`
+	Stdin     *string           `json:"stdin,omitempty"`
+	StdinBlob *ExecBlob         `json:"stdinBlob,omitempty"`
 }
+
+// UnmarshalJSON checks field presence so null cannot bypass stdinBlob
+// validation or the exclusion between the two input fields.
+func (q *ExecRequest) UnmarshalJSON(data []byte) error {
+	type fields ExecRequest
+	body := struct {
+		*fields
+		Stdin     json.RawMessage `json:"stdin"`
+		StdinBlob json.RawMessage `json:"stdinBlob"`
+	}{fields: (*fields)(q)}
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&body); err != nil {
+		return err
+	}
+	if body.StdinBlob != nil {
+		if body.Stdin != nil || bytes.Equal(body.StdinBlob, []byte("null")) {
+			return errors.New("stdinBlob must be an object and cannot be combined with stdin")
+		}
+		d = json.NewDecoder(bytes.NewReader(body.StdinBlob))
+		d.DisallowUnknownFields()
+		return d.Decode(&q.StdinBlob)
+	}
+	if body.Stdin != nil {
+		return json.Unmarshal(body.Stdin, &q.Stdin)
+	}
+	return nil
+}
+
+// ExecBlob names the uploaded stdin object and its expected content.
+type ExecBlob struct {
+	Blob   string `json:"blob"`
+	Size   *int64 `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+func (b ExecBlob) Valid() bool {
+	return root.Hex(b.Blob, 40) && b.Size != nil && *b.Size >= 0 && *b.Size <= 256<<20 && root.Hex(b.SHA256, 64)
+}
+
+// ExecInputPort is a guest-initiated stream, like the apply and checkpoint ports.
+const ExecInputPort = 5202
 
 // ExecChunk is the JSON data in a stdout or stderr SSE event.
 type ExecChunk struct {

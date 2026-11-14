@@ -11,6 +11,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,17 +28,24 @@ type Config struct {
 	VirtualSize             int64
 	MaxFiles                int
 	MaxBytes, MaxPathsBytes int64
+	BaselineDiskMax         int64
+	Now                     func() time.Time
 }
 type Manager struct {
 	pins map[string]map[string]bool
 	Config
-	Store   store.Store
-	Cache   *cache.Cache
-	Refs    refs.Repository
-	mu      sync.Mutex
-	mounts  map[string]*Mount
-	stop    chan struct{}
-	sweepMu sync.Mutex
+	Store          store.Store
+	Cache          *cache.Cache
+	Refs           refs.Repository
+	mu             sync.Mutex
+	mounts         map[string]*Mount
+	stop           chan struct{}
+	sweepMu        sync.Mutex
+	baselineSlot   chan struct{}
+	baselineWork   sync.WaitGroup
+	baselineCtx    context.Context
+	baselineCancel context.CancelFunc
+	baselineBytes  int64 // Reserved logical bytes, guarded by mu.
 }
 type Request struct {
 	JobID   string      `json:"jobId"`
@@ -50,17 +58,21 @@ type Mount struct {
 	mu      *sync.Mutex
 	streams *streams
 	Request
-	Root     string `json:"root"`
-	Image    string `json:"image"`
-	Warm     bool   `json:"warm"`
-	State    string `json:"state"`
-	Dest     string
-	Parent   refs.Value
-	Snapshot int
-	Promoted bool
+	Root          string `json:"root"`
+	Image         string `json:"image"`
+	Warm          bool   `json:"warm"`
+	State         string `json:"state"`
+	Dest          string
+	Parent        refs.Value
+	Snapshot      int
+	Promoted      bool
+	needsBaseline bool
 }
 
 func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
+	if c.Now == nil {
+		c.Now = time.Now
+	}
 	if c.StreamIdle == 0 {
 		c.StreamIdle = 30 * time.Second
 	}
@@ -103,13 +115,23 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e := blank(c); e != nil {
 		return nil, e
 	}
+	if c.BaselineDiskMax < 0 {
+		return nil, apierr.Invalid("invalid baseline disk cap")
+	}
+	if c.BaselineDiskMax == 0 {
+		c.BaselineDiskMax = 2 * min(c.VirtualSize, math.MaxInt64/2)
+	}
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
-	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{})}
+	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
+	if err := m.recoverBaselines(); err != nil {
+		return nil, err
+	}
 	if err := m.recoverSessions(entries); err != nil {
 		return nil, err
 	}
+	m.baselineCtx, m.baselineCancel = context.WithCancel(context.Background())
 	go m.maintain()
 	return m, nil
 }
@@ -224,6 +246,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e != nil {
 		return nil, e
 	}
+	v.needsBaseline = r.Tree != v.Tree
 	if e = m.save(v); e != nil {
 		return nil, e
 	}
@@ -304,6 +327,9 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 		v.streams.close()
 	}
 
+	if e := m.recoverBaseline(v, false); e != nil {
+		return false, e
+	}
 	if e := os.RemoveAll(filepath.Dir(v.Dest)); e != nil {
 		return false, e
 	}
@@ -320,6 +346,7 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 
 func (m *Manager) Close() {
 	close(m.stop)
+	m.StopBaselines()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {
@@ -334,8 +361,8 @@ func (m *Manager) Close() {
 			}
 			v.mu.Unlock()
 		}
-
 	}
+	m.baselineWork.Wait()
 }
 
 func (m *Manager) lookup(id string) *Mount { m.mu.Lock(); defer m.mu.Unlock(); return m.mounts[id] }

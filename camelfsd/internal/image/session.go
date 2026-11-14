@@ -40,6 +40,7 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 		var state struct {
 			JobID, Lineage, Root, Tree, Dest, Image, State, DM string
 			Fence                                              *refs.Fence
+			Apply                                              *struct{ Files int }
 			Parent                                             refs.Value
 			Snapshot                                           int
 			Promoted, Warm                                     bool
@@ -59,12 +60,21 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 		if err != nil {
 			return err
 		}
+		if err := m.recoverBaseline(&v, true); err != nil {
+			return err
+		}
+		v.needsBaseline = r.Tree != v.Tree && (state.Apply == nil || state.Apply.Files > 0)
 		m.protect(id, r, v.Root)
 		files, err := os.ReadDir(dir)
 		if err != nil {
 			return err
 		}
 		for _, file := range files {
+			if strings.HasPrefix(file.Name(), "baseline-") && strings.HasSuffix(file.Name(), ".img") {
+				if err := os.Remove(filepath.Join(dir, file.Name())); err != nil {
+					return err
+				}
+			}
 			if strings.HasPrefix(file.Name(), "snap-") && strings.HasSuffix(file.Name(), ".img") {
 				number, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(file.Name(), "snap-"), ".img"))
 				v.Snapshot = max(v.Snapshot, number)

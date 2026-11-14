@@ -12,7 +12,8 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
     return { url: 'data:text/javascript,export const runtimeSigner=async()=>({camelfsToken:async()=> "test"})', shortCircuit: true };
   return next(specifier, context);
 } });
-const { BashSessions, BASH_WORKDIR, bashTool } = await import("../src/camelfs/bash.ts");
+const { BashSessions, BASH_WORKDIR, bashTool, checkpointBody } = await import("../src/camelfs/bash.ts");
+const { agentRepoId } = await import("../src/repos/identity.ts");
 const { BASH_OUTPUT_KEEP } = await import("../src/camelfs/bash-stream.ts");
 const { handleCamelfsNotify } = await import("../src/camelfs/notify.ts");
 hooks.deregister();
@@ -43,19 +44,23 @@ function fixture(t: TestContext) {
   const pending: Promise<unknown>[] = [];
   const errors: string[] = [];
   const calls: { method: string; path: string; body: any }[] = [];
-  const vms = new Map<string, { phase: string; deadline: number; lastCheckpoint?: { version: string; tree: string } }>();
+  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string }; stopBody?: unknown }>();
   const results = new Map<string, string>();
   const flags = {
     refusal: undefined as { status: number; code?: string } | undefined,
-    drop: false, leaseExpired: false, checkpointError: false,
+    drop: false, stall: false, leaseExpired: false, checkpointError: false,
     crash: "", crashAfter: "", runs: 0, pollerStarts: 0, tailStatus: 200, unchanged: false,
-    stdout: "ok",
+    stdout: "ok", startup: undefined as { phase: string; code?: string; reason?: string } | undefined,
+    onPoll: () => {}, stopSticks: false,
   };
+  const repoId = agentRepoId(conf.tenantId, conf.id);
+  conf.config.mounts = [{ repo: repoId, path: "/", ref: "main", mode: "rw" }];
   let sessions: InstanceType<typeof BashSessions>;
   const env = {
     CAMELFS_URL: "https://tier.example", AGENT_PUBLIC_URL: "https://runtime.example",
     CAMELFS_COMPUTE: "1", CAMELFS_POOLS: JSON.stringify({ default: "test" }), GUEST_IMAGE_SHA256: "a".repeat(64), CAMELFS_NOTIFY_KEY: "fixture",
     CAMELFS_USAGE: { getByName: () => ({ start: async () => { flags.pollerStarts++; } }) },
+    TENANTS: { getByName: () => ({ repoRow: async () => ({ id: "child", lineage: branch.lineage, deletedAt: null }) }) },
     AGENTS: { getByName: (agent: string) => {
       assert.equal(agent, conf.id);
       return { vmEnded: (id: string, vm: string) => sessions.ended(id, vm) };
@@ -74,11 +79,16 @@ function fixture(t: TestContext) {
       assert.ok(JSON.parse(body.usage.payer).rate > 0);
       const vm = vms.get(body.id);
       if (vm) assert.equal(body.deadline, vm.deadline);
-      else vms.set(body.id, { phase: "running", deadline: body.deadline });
+      else vms.set(body.id, { phase: "running", ...flags.startup, deadline: body.deadline });
       return Response.json({ id: body.id, phase: "requested" }, { status: 202 });
     }
     const vm = vms.get(id)!;
-    if (!op) return Response.json(vm);
+    if (!op) { flags.onPoll(); return Response.json(vm); }
+    if (op === "stop") {
+      vm.stopBody = body;
+      if (!flags.stopSticks) vm.phase = "ended";
+      return Response.json({ id, phase: vm.phase });
+    }
     if (op === "deadline") {
       if (flags.leaseExpired) return fail(409, "lease_expired");
       vm.deadline = body.deadline;
@@ -102,6 +112,11 @@ function fixture(t: TestContext) {
       flags.runs++;
       results.set(key, flags.stdout);
     }
+    if (flags.stall) {
+      // A connection a load balancer dropped behind a proxy: the first bytes arrive, then nothing, and no end or error.
+      const first = new TextEncoder().encode(output(results.get(key)!));
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(first); } }), { headers: { "Content-Type": "text/event-stream" } });
+    }
     return stream(output(results.get(key)!) + (flags.drop ? "" : exit));
   }
   t.mock.method(globalThis, "fetch", async (url: URL, init: RequestInit) => {
@@ -119,7 +134,7 @@ function fixture(t: TestContext) {
   restart();
   const run = (key: string, target = branch) => sessions.execute(conf, target, JSON.stringify(["run", key]), key, "run", { command: "echo hi" });
   const replayTool = (key: string) => bashTool({
-    config: async () => conf, currentRun: async () => ({ id: "run" }), bashSessions: sessions,
+    env, config: async () => conf, currentRun: async () => ({ id: "run" }), bashSessions: sessions,
   } as never).execute({ command: "echo hi" }, { callId: key } as never, {} as never);
   const flush = async () => { while (pending.length) await Promise.all(pending.splice(0)); };
   const row = () => db.prepare("SELECT vm_id,state,deadline FROM agent_vms").get() as { vm_id: string; state: string; deadline: number } | undefined;
@@ -142,6 +157,13 @@ test("creates once, reuses its shell, checkpoints after the result, and replaces
   assert.equal(f.calls.filter(c => c.path.endsWith("/checkpoint")).length, 0);
   await f.flush();
   assert.equal(f.db.prepare("SELECT version FROM agent_vm_heads").get()?.version, "version");
+  // The host refuses unknown trailer keys (camelfsd image.Trailers): the checkpoint body is checkpointBody's shape.
+  const sent = f.calls.find(c => c.path.endsWith("/checkpoint"))!.body;
+  assert.deepEqual(Object.keys(sent).sort(), ["message", "time", "trailers"]);
+  assert.equal(sent.trailers.kind, "auto");
+  assert.equal(sent.trailers.agent, "agent-with-dash");
+  assert.equal(sent.trailers.run, "run");
+  assert.deepEqual(Object.keys(sent.trailers).sort().filter(k => !["agent", "kind", "run"].includes(k)), []);
   await f.run("two");
   await f.flush();
   assert.equal(f.flags.runs, 2);
@@ -341,4 +363,103 @@ test("the shape → pool mapping is CAMELFS_POOLS only, with no code-side defaul
   assert.throws(() => tierPool({ CAMELFS_POOLS: JSON.stringify({ test: "test" }) }, large), /no host pool for shape 64 vCPU/);
   assert.throws(() => tierPool({}, small), /no host pool for shape/);
   assert.throws(() => tierPool({ CAMELFS_POOLS: "not json" }, small), /no host pool for shape/);
+});
+
+test("an unfit VM ends with a plain bash tool result and one log", async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ["Date"] });
+  f.flags.startup = { phase: "ended", code: "start_failed", reason: "no_host_fits" };
+  const logs = t.mock.method(console, "log", () => {});
+  const result = await f.replayTool("unfit");
+  assert.deepEqual(result.output, [{
+    type: "text",
+    text: "No machine large enough for this agent is available, so the command did not run. Retrying will not help right now; tell the user that bash is unavailable.",
+  }]);
+  assert.equal(result.isError, true);
+  assert.equal(f.row()?.state, "stopped");
+  assert.equal(f.flags.runs, 0);
+  const { id, pool, shape } = f.calls[0].body;
+  assert.deepEqual(logs.mock.calls.map(call => JSON.parse(call.arguments[0])), [
+    { type: "bash_vm_unplaced", vm: id, pool, shape, reason: "no_host_fits", waitedMs: 0 },
+  ]);
+});
+
+test("bash reports a requested VM at the deadline and reuses it on retry", async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ["Date"] });
+  f.flags.startup = { phase: "requested" };
+  f.flags.onPoll = () => t.mock.timers.tick(60_000);
+  const logs = t.mock.method(console, "log", () => {});
+  const result = await f.replayTool("waiting");
+  assert.deepEqual(result.output, [{
+    type: "text",
+    text: "No machine is free for this agent right now, so the command did not run. It is still queued; try again in a minute.",
+  }]);
+  assert.equal(result.isError, true);
+  assert.equal(f.row()?.state, "creating");
+  assert.equal(f.flags.runs, 0);
+  const { id, pool, shape } = f.calls[0].body;
+  assert.deepEqual(logs.mock.calls.map(call => JSON.parse(call.arguments[0])), [
+    { type: "bash_vm_unplaced", vm: id, pool, shape, reason: "waiting", waitedMs: 60_000 },
+  ]);
+
+  f.flags.onPoll = () => {};
+  f.vms.get(id)!.phase = "running";
+  const retry = await f.replayTool("retry");
+  assert.equal(retry.isError, false);
+  assert.equal(f.row()?.vm_id, id);
+  assert.equal(f.row()?.state, "running");
+  assert.deepEqual(f.calls.filter(call => call.path === "/v1/vms").map(call => call.body.id), [id, id]);
+  await f.flush();
+});
+
+// The cross-language contract: camelfsd's TestRuntimeCheckpointBodyContract runs this exact body through the host's
+// own checkpoint validation (internal/computehost/testdata/runtime-checkpoint.json).
+test("checkpointBody matches the body the host's contract test validates", async () => {
+  const { readFileSync } = await import("node:fs");
+  const fixture = JSON.parse(readFileSync(new URL("../../../camelfsd/internal/computehost/testdata/runtime-checkpoint.json", import.meta.url), "utf8"));
+  assert.deepEqual(checkpointBody({ message: "bash: echo hi", time: 1794672935561, agent: "client_b456abcd", requestId: "run_01JD7Q2W3E4R5T6Y" }), fixture);
+  assert.deepEqual(checkpointBody({ message: "Save VM file changes", time: 1 }), { message: "Save VM file changes", time: 1, trailers: { kind: "auto" } });
+});
+
+test("agent deletion stops every live VM without a checkpoint and waits until each has ended", async t => {
+  const f = fixture(t);
+  await f.run("one");
+  await f.flush();
+  const vm = f.row()!.vm_id;
+  assert.equal(f.row()!.state, "running");
+  await f.sessions.stopAll();
+  assert.deepEqual(f.vms.get(vm)!.stopBody, { checkpoint: false });
+  assert.equal(f.vms.get(vm)!.phase, "ended");
+  assert.equal(f.row()!.state, "stopped");
+  // Nothing left to stop: a second call makes no tier request.
+  const before = f.calls.length;
+  await f.sessions.stopAll();
+  assert.equal(f.calls.length, before);
+});
+
+test("agent deletion stays pending while a VM has not ended", async t => {
+  const f = fixture(t);
+  await f.run("one");
+  await f.flush();
+  f.flags.stopSticks = true;
+  f.vms.get(f.row()!.vm_id)!.phase = "stopping";
+  await assert.rejects(f.sessions.stopAll(50), /did not stop within/);
+  assert.notEqual(f.row()!.state, "stopped");
+});
+
+test("a stream that goes silent without ending is resumed from the exec tail", async t => {
+  const f = fixture(t);
+  f.sessions.streamIdleMs = 50;
+  f.flags.stdout = "ok";
+  f.flags.stall = true;
+  const logs = t.mock.method(console, "log", () => {});
+  assert.deepEqual(await f.run("stalled"), { stdout: "ok", stderr: "!", exitCode: 0, timedOut: false, truncated: false });
+  // One resume, from where the stream stopped, after the idle watchdog took the silent stream for dead.
+  const tails = f.calls.filter(call => call.method === "GET" && call.path.includes("/exec/"));
+  assert.equal(tails.length, 1);
+  assert.match(tails[0].path, /offset=2/);
+  const resumes = logs.mock.calls.map(call => String(call.arguments[0])).filter(line => line.includes("bash_stream_resume")).map(line => JSON.parse(line));
+  assert.deepEqual(resumes.map(r => [r.offset, r.reason]), [[2, "idle"]]);
+  await f.flush();
 });

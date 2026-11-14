@@ -181,7 +181,11 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 	var replayRefMatches func(string) bool
 	if s.lineages != nil {
 		claims, _ := ClaimsFromContext(r.Context())
+		start := time.Now()
 		item, err := s.lineages.get(r.Context(), l)
+		if timing := readTimingFrom(r.Context()); timing != nil {
+			timing.lineage = time.Since(start)
+		}
 		if err != nil {
 			storageFail(w, ddbUnavailable(err))
 			return
@@ -480,7 +484,14 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			fail(e)
 			return
 		}
-		if e := require(ctx, repo, l, v.Tree, "tree", false); e != nil {
+		timing := readTimingFrom(ctx)
+		if timing == nil {
+			timing = &readTiming{}
+		}
+		start := time.Now()
+		e := require(ctx, repo, l, v.Tree, "tree", false)
+		timing.membership = time.Since(start)
+		if e != nil {
 			fail(e)
 			return
 		}
@@ -496,7 +507,9 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			}
 			cap = min(cap, *v.MaxBytes)
 		}
-		files, e := repo.Files(ctx, v.Tree, v.Paths)
+		start = time.Now()
+		files, e := repo.FilesObserved(ctx, v.Tree, v.Paths, timing.trees.record)
+		timing.tree = time.Since(start)
 		if e != nil {
 			fail(e)
 			return
@@ -518,7 +531,9 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 				fail(e)
 				return
 			}
+			start := time.Now()
 			b, e := repo.BlobInfo(ctx, l, f.SHA1)
+			timing.blob += time.Since(start)
 			if e != nil {
 				fail(e)
 				return
@@ -531,12 +546,14 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			entries[i] = f
 			keys = append(keys, strconv.Itoa(i))
 		}
+		start = time.Now()
 		e = store.Parallel(ctx, 64, keys, func(k string) error {
 			i, _ := strconv.Atoi(k)
 			b, e := blobBytes(ctx, repo, l, entries[i].SHA1)
 			data[i] = b
 			return e
 		})
+		timing.blob += time.Since(start)
 		if e != nil {
 			fail(e)
 			return
@@ -607,6 +624,9 @@ func blobBytes(ctx context.Context, r *objects.Repository, l, id string) ([]byte
 	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='blob'", id).Scan(&b)
 	if e != nil && e != sql.ErrNoRows {
 		return nil, e
+	}
+	if timing := readTimingFrom(ctx); timing != nil {
+		timing.blobs.record(b != nil)
 	}
 	if b == nil {
 		b, e = r.Store.Get(ctx, "o/"+id)

@@ -3,15 +3,16 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { nodeConfig } from "../src/node-config.ts";
-import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { createNode, nodeDeps } from "../src/node.ts";
 import { browserVoice, BROWSER_FRAME } from "../src/voice-browser.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
+import { ownNodes } from "./node-fixture.ts";
 import { until } from "./runtime-server.ts";
 import { fakeOpenAIRealtime, fakeTransport, sleep } from "./voice-fakes.ts";
 
@@ -37,11 +38,7 @@ async function open(url: string) {
 
 test("a voice session from a browser: its socket (on any node) carries the page's speech in and the bot's out, and the session's events", { timeout: 120_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-voice-browser-"));
-  const nodes: RuntimeNode[] = [];
-  t.after(async () => {
-    for (const node of nodes) await node.close().catch(() => {});
-    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
-  });
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key" } } } }));
   // OpenAI's Realtime API: each turn is heard as "hello there", and answered with 0.4 s of speech.
   const openai = await fakeOpenAIRealtime(t, { transcript: () => "hello there" });
@@ -56,8 +53,8 @@ test("a voice session from a browser: its socket (on any node) carries the page'
       AGENT_OPENAI_REALTIME_URL: openai.url,
     });
     const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fakeTransport().transport, browser: browserVoice() } });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
     nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   }));
   const call = async (base: string, method: string, path: string, body?: unknown) => {

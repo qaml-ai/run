@@ -10,7 +10,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"log/slog"
-	"net/url"
 	"os"
 	"slices"
 	"sync/atomic"
@@ -130,8 +129,7 @@ func issueTierCert(ctx context.Context, issuer hostcert.Issuer) (tls.Certificate
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	uri, _ := url.Parse(hostcert.TierURI)
-	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{URIs: []*url.URL{uri}}, key)
+	csr, err := hostcert.NewCSR(key, hostcert.TierURI)
 	if err != nil {
 		return tls.Certificate{}, err
 	}

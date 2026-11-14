@@ -217,22 +217,48 @@ unavailable (503). Conflict lists are in error.details.conflicts.
 
 ## Session mounts and guest streams
 
-Every session mount names a tree, its parent commit and the tier's lease fence.
-The compute host selects the lineage's tree root, looks up to 64 tree ancestors,
-or starts from a blank ext4 image (`--virtual-size`, default 1 GiB). A cached
-image is reflinked. A cold image is fully hydrated before Firecracker starts.
-The host retains session mount state for recovery after a daemon restart.
+Every session mount names a tree, its 40-hex parent commit and the tier's
+lease fence with a holder and a positive epoch. Mounts resolve the newest
+local lineage/tree root, then the exact shared root, then up to 64 local
+tree ancestors, then the blank image (`--virtual-size`, default 1 GiB).
+The host reflinks a cached image and fully hydrates a cold image before
+starting Firecracker.
+
+When a session applies a nonempty file delta, the host captures a baseline
+before first exec. One publisher per host processes these snapshots after
+thaw, including after the VM stops. `--baseline-disk-max` caps the total
+logical size of pending workspace snapshots and defaults to twice
+`--virtual-size`. A full queue skips the capture.
 
 Apply uses the guest Unix endpoint `<vsock>_5201` and checkpoint uses
-`<vsock>_5200`. Frames have a four-byte big-endian length and carry up to
-64 KiB of JSON or 1 MiB of data. The apply header's tree fields can be empty
-on the first mount.
+`<vsock>_5200`. Both sockets use mode 0600. Frames have a four-byte big-endian
+length and carry up to 64 KiB of JSON or 1 MiB of data. The tree fields in
+stream headers can be empty on the first mount.
 
 A pending session checkpoint arms the guest connection. The host sends ready,
 validates the stream and captures a disk snapshot before ack. The guest thaws
 on ack, nack, EOF or deadline. The host publishes blobs, trees, the commit and
 the image root, then performs the fenced CAS at the tier before sending
 `checkpointed{tree}` to the guest.
+
+The host records the published objects and tree root before CAS.
+It advances the session mount only after CAS succeeds. Checkpoint messages
+and trailers use the Camel-* mapping.
+
+Stream limits default to 30s idle, 30m apply, and 120000 ms per checkpoint
+(maximum 600000 ms). The flags `--max-files`, `--max-bytes`, and
+`--max-paths-bytes` default to 200000, 8589934592, and 67108864 respectively.
+The host validates guest paths and modes before ack.
+
+The host's shared store budget defaults to 64 operations (`--fetch-depth`).
+The cache verifies fetched chunks and keeps a 256-entry open-file LRU.
+The eviction sweep runs every minute. Above 80% disk usage it targets 60%,
+protecting live mounts, blank images, and snapshots.
+
+State lives in `images/`, `mounts/<jobId>/state.json`, `baselines/`, `cache/`,
+and `refs.db`. A data-directory lock excludes concurrent daemons. Startup
+recovers fenced session mounts and refuses unfenced mount state. Stop
+guests before running `camelfsd cleanup --data DIR` to clear old mount state.
 
 ## Host and API roles
 
