@@ -112,6 +112,8 @@ func TestDDBLoop(t *testing.T) {
 
 	f.now = f.now.Add(time.Second)
 	v := must[VM](t)(f.End(ctx, session.ID, EndRequest{At: f.now, Code: Stopped}))
+	// The idle stop bills to the idle deadline it enforced, not to when the sweep ran.
+	cutoff = *v.LastActivityAt + v.Session.IdleStopS*1000
 	if v.Code != Idle || v.StopRequestedAt == nil || *v.StopRequestedAt != cutoff || !v.StopCheckpoint {
 		t.Fatalf("timeout: %+v", v)
 	}
@@ -342,6 +344,11 @@ func TestDDBIdleWaitsForAllExecs(t *testing.T) {
 	cutoff := f.now.UnixMilli()
 	f.now = f.now.Add(time.Second)
 	v = must[VM](t)(f.End(ctx, req.ID, EndRequest{At: f.now, Code: Stopped}))
+	if want := *v.LastActivityAt + v.Session.IdleStopS*1000; want >= cutoff {
+		t.Fatalf("idle deadline %d not before the sweep %d", want, cutoff)
+	} else {
+		cutoff = want
+	}
 	if v.Code != Idle || !v.StopCheckpoint || *v.StopRequestedAt != cutoff || len(v.execs) != 0 {
 		t.Fatalf("idle VM: %+v", v)
 	}
