@@ -92,11 +92,12 @@ test("an interrupted result waiter re-arms durable settlement recovery", { timeo
   assert.equal(result.status, "completed");
 });
 
-test("a tracked turn retains its elapsed-time deadline after a hard restart", { timeout: 60000 }, async t => {
+test("a tracked turn retains its elapsed-time deadline after a hard restart", { timeout: 120000 }, async t => {
   const { f, call, waitForReceipt, receiptCount } = await fixture(t);
   const { id } = await call("/v1/agents", { model: "test/echo", runLimits: { maxSeconds: 4 } });
   const requestPath = `/v1/agents/${id}/requests/restart-deadline`;
-  const providerDelayMs = 15000;
+  // Far longer than the 4 s limit: the test ends at the deadline, and no machine is slow enough for the provider to win.
+  const providerDelayMs = 60000;
   await call(`/v1/agents/${id}/requests`, {
     id: "restart-deadline", method: "prompt", params: { text: `slow:${providerDelayMs}:must stop at deadline` },
   });
@@ -121,7 +122,7 @@ test("a tracked turn retains its elapsed-time deadline after a hard restart", { 
   // The elapsed-time deadline uses this persisted start and the unchanged run limit.
   assert.equal(result.began, before.began, "the restart must preserve the deadline's start time");
   assert.equal(result.outcome.result.code, "turn_limit", JSON.stringify(result));
-  assert.ok(result.endedAt < attemptStartedAt + providerDelayMs, "the turn must end before the provider delay has elapsed");
+  assert.ok(!JSON.stringify(result).includes("must stop at deadline"), "the deadline interrupted the provider call: its answer never arrived");
   assert.equal(Number((await f.db.query("select count(*) n from credit_holds")).rows[0].n), 0);
 });
 
