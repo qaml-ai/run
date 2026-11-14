@@ -27,7 +27,6 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
@@ -88,7 +87,8 @@
     {
       "tag": "delete-job-hosts",
       "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
-    }
+    },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] }
   ],
   "hyperdrive": [
     {

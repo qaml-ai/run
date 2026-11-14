@@ -16,7 +16,7 @@ type Target = {
   interceptWrite?: (hook: () => Promise<void>) => void;
   seedHistory?: (lineage: string, tree: string, parent: string, length: number) => Promise<string>;
 };
-type Ref = { name: string; version: string; tree: string; owner: string; createdBy: string; holder?: typeof holder; leaseEpoch: number };
+type Ref = { name: string; version: string; tree: string; root?: string; owner: string; createdBy: string; holder?: typeof holder; leaseEpoch: number };
 type Commit = { commit: string; tree: string; parents: string[] };
 type Lease = { epoch: number; deadline: number; version: string; tree: string };
 type Moved = { version: string; tree: string; bytes: number; files: number; parents: string[]; changed: unknown[]; diff: unknown[]; ff?: boolean };
@@ -30,7 +30,7 @@ function client(target: Target) {
   const now = target.now ?? Date.now;
   const claims = (): TokenClaims => {
     const iat = Math.floor(now() / 1000);
-    return { iss: target.issuer, aud: "camelrun:camelfs", sub: actor, lin, acc: "w", refs: ["main", "other", "work", "pub/*"],
+    return { iss: target.issuer, aud: "camelrun:camelfs", sub: actor, lin, acc: "w", refs: ["main", "other", "work", "pub/*", "owners/*"],
       iat, exp: iat + 120 };
   };
   async function request<T>(method: string, path: string, status: number | number[], body?: unknown, opts: {
@@ -104,7 +104,10 @@ export async function runCamelfsRefsCases(t: TestContext, target: Target) {
     for (const name of ["pub//a", "pub/../a", "pub/.", "pub/a.lock/b", "pub/@a", "x".repeat(201)]) {
       await c.fail("POST", "/refs", 400, "invalid_request", { name, owner, version: base.commit });
     }
-    await c.fail("POST", "/refs", 400, "invalid_request", { name: "other", owner: "other:x", version: base.commit });
+    for (const kind of ["agent", "workflow", "job", "user", "api", "cache"]) {
+      assert.equal((await c.create(base.commit, `owners/${kind}`, { owner: `${kind}:contract` })).owner, `${kind}:contract`);
+    }
+    await c.fail("POST", "/refs", 400, "invalid_request", { name: "other", owner: "volume:x", version: base.commit });
     await c.fail("POST", "/refs", 400, "unknown_commit", { name: "other", owner, version: unknown });
   });
 
@@ -190,12 +193,24 @@ export async function runCamelfsRefsCases(t: TestContext, target: Target) {
     const disjoint = await c.commit([], [], "disjoint");
     const error = await c.fail("POST", "/refs/main/cas", 409, "not_fast_forward", { expect: base.commit, commit: disjoint.commit });
     assert.deepEqual(error.error.details, { current: base.commit });
+    assert.equal((await c.get()).version, base.commit);
     assert.equal((await c.cas(base.commit, grandchild.commit)).version, grandchild.commit);
     const joining = await c.commit([disjoint.commit, grandchild.commit]);
     assert.equal((await c.cas(grandchild.commit, joining.commit)).version, joining.commit);
     assert.deepEqual((await c.cas(joining.commit, joining.commit)).diff, []);
     const stale = await c.fail("POST", "/refs/main/cas", 412, "stale", { expect: base.commit, commit: child.commit });
     assert.deepEqual(stale.error.details, { current: joining.commit });
+  });
+
+  await run("CAS stores the checkpoint root and clears it when the next move omits it", async c => {
+    const base = await c.seed();
+    const child = await c.commit([base.commit]);
+    const root = "a".repeat(64);
+    await c.cas(base.commit, child.commit, { root });
+    assert.equal((await c.get()).root, root);
+    const next = await c.commit([child.commit]);
+    await c.cas(child.commit, next.commit);
+    assert.equal((await c.get()).root ?? null, null);
   });
 
   await t.test("fast-forward rejects a history past 50,000 visited commits", {

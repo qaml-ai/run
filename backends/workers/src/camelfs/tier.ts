@@ -3,8 +3,7 @@ import type { TierClaims } from "./claims.ts";
 
 export type TierEnv = IdentityEnv & { CAMELFS_URL?: string };
 
-// TEMPORARY(R5)
-export const tierConfigured = (env: { CAMELFS_URL?: string }) => env.CAMELFS_URL !== undefined;
+export const tierConfigured = (env: { CAMELFS_URL?: string }) => !!env.CAMELFS_URL?.trim();
 
 export class TierError extends Error {
   readonly status: number;
@@ -34,6 +33,7 @@ type TierRequest = {
 export async function tierFetch(env: TierEnv, request: TierRequest, raw?: RequestInit): Promise<Response> {
   const { method, path, claims, body, idempotencyKey, timeoutMs = 30_000 } = request;
   const op = `${method} ${path}`;
+  if (!tierConfigured(env)) throw new TierError(503, "storage_unavailable", "CAMELFS_URL is required for repos", undefined, op);
   let stage = "url";
   let response: Response;
   try {

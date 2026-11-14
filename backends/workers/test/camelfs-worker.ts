@@ -2,8 +2,6 @@ import worker from "../src/index.ts";
 import type { Env } from "../src/agent.ts";
 export * from "../src/index.ts";
 
-export { CamelfsStub } from "./camelfs-stub.ts";
-
 /** Test-only RPC bridges for Worker integration fixtures. */
 export default {
   ...worker,
