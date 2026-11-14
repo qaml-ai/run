@@ -192,6 +192,11 @@ for (const kvm of [false, true]) test(`the Firecracker launcher clones, wires th
   await assert.rejects(stat(join(dir, "job-1.ext4")));
   // A job id that could escape the work directory is refused before anything is made.
   await assert.rejects(launcher.boot("../x", { vcpus: 1, memoryMiB: 1, diskMiB: 1 }), /Invalid job id/);
+  // A job disk below the base image is refused up front, naming both sizes, before any clone or tap.
+  const before = commands.length;
+  await writeFile(image, Buffer.alloc(3 * 2 ** 20));
+  await assert.rejects(launcher.boot("job-small", { vcpus: 1, memoryMiB: 1024, diskMiB: 2 }), /^Error: invalid_request: job disk 2 MiB is smaller than the base image 3 MiB$/);
+  assert.equal(commands.length, before);
 });
 
 test("the host CLI rejects invalid or missing --reflink values at startup", () => {
