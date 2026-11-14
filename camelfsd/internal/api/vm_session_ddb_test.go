@@ -348,7 +348,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("idle stop did not reach host")
 	}
-	callback := testTier(t, credentials, NewHostServer(c, []string{"build"}, 30*time.Second))
+	callback := testTier(t, credentials, NewHostServer(c, []string{"build"}, nil, 30*time.Second))
 	hostClient := testHostClient(t, ca.pool, ca.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+"a"))
 	raw, err := json.Marshal(hostwire.Ended{BootEpoch: epoch, At: now().UnixMilli(), Code: string(compute.Stopped),
 		Version: "idle-version", CheckpointError: "idle error"})

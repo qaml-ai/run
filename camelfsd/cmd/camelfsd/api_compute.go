@@ -167,7 +167,7 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 	if err := requireClockCheck(controller); err != nil {
 		return nil, err
 	}
-	c.hostServer = api.NewHostServer(controller, pools, grace)
+	c.hostServer = api.NewHostServer(controller, pools, images, grace)
 	if issuer != nil {
 		certificates := api.HostCertificates{Issuer: issuer, TLS: credentials}
 		c.hostServer.EnableRenewal(certificates)

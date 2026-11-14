@@ -44,6 +44,8 @@ type Host struct {
 	epoch            int64
 	registered       bool
 	registeredImages []string
+	prewarming       bool
+	prewarmPending   []string
 	vms              map[string]*session
 	work             sync.WaitGroup
 }
@@ -187,6 +189,7 @@ func (h *Host) register(ctx context.Context) error {
 		h.epoch = result.BootEpoch
 	}
 	h.registered, h.registeredImages = true, q.Images
+	h.queuePrewarmLocked(result.Images)
 	return nil
 }
 
