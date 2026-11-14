@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/refstore"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 )
 
 func matches(v VM, req CreateRequest) bool {
@@ -28,6 +32,9 @@ func (c *Controller) Create(ctx context.Context, req CreateRequest) (VM, error) 
 		return VM{}, err
 	}
 	if req.Pool == "" || req.Shape.MemoryMiB < 0 || req.Deadline.IsZero() || req.Deadline.UnixMilli() <= now {
+		return VM{}, ErrInvalid
+	}
+	if c.Refs != nil && (!hostwire.MountID.MatchString(req.ID) || req.ID == "." || req.ID == ".." || !root.Hex(req.Image, 64)) {
 		return VM{}, ErrInvalid
 	}
 	v = VM{CreateRequest: req, CreatedAt: now, Phase: Requested, LeaseDeadline: req.Deadline.UnixMilli()}
@@ -80,7 +87,7 @@ func (c *Controller) place(ctx context.Context, v VM, now int64) (VM, error) {
 	if err != nil {
 		return VM{}, err
 	}
-	for _, h := range rank(hosts, v.Shape, now) {
+	for _, h := range rankImage(hosts, v.Shape, c.hostCutoff(now), v.Image) {
 		vm := change(c.Tables.VMs, vmKey(id), "#phase = :requested AND #leaseDeadline > :now",
 			"SET #phase = :placed, #host = :host, #hostEpoch = :epoch, #placedAt = :now",
 			attrs{":requested": s(string(Requested)), ":placed": s(string(Placed)), ":host": s(h.Host),
@@ -88,7 +95,7 @@ func (c *Controller) place(ctx context.Context, v VM, now int64) (VM, error) {
 		host := change(c.Tables.Hosts, hostKey(h.Pool, h.Host),
 			"#free > :zero AND #freeMiB >= :mem AND #bootEpoch = :epoch AND #draining = :false AND #lastSeenAt > :cutoff",
 			"SET #free = #free - :one, #freeMiB = #freeMiB - :mem ADD #vms :vm",
-			attrs{":zero": n(0), ":epoch": n(h.BootEpoch), ":false": b(false), ":cutoff": n(now - hostFreshMS),
+			attrs{":zero": n(0), ":epoch": n(h.BootEpoch), ":false": b(false), ":cutoff": n(c.hostCutoff(now)),
 				":one": n(1), ":mem": n(int64(v.Shape.MemoryMiB)), ":vm": ss(id)})
 		err = c.transact(ctx, types.TransactWriteItem{Update: vm}, types.TransactWriteItem{Update: host}, c.deleteWaiter(v))
 		if err == nil {
@@ -119,10 +126,39 @@ func (c *Controller) MarkBooting(ctx context.Context, id string) (VM, error) {
 	default:
 		return v, ErrPhase
 	}
-	return c.updateVM(ctx, id, "#phase = :placed AND "+vmHost+" AND #leaseDeadline > :now",
-		"SET #phase = :booting, #bootingAt = :now",
-		attrs{":placed": s(string(Placed)), ":booting": s(string(Booting)), ":now": n(c.now().UnixMilli()),
-			":host": s(v.Host), ":epoch": n(v.HostEpoch)})
+	return c.markBooting(ctx, v)
+}
+
+func (c *Controller) markBooting(ctx context.Context, v VM) (VM, error) {
+	expr := "SET #phase = :booting, #bootingAt = :now"
+	values := attrs{":placed": s(string(Placed)), ":booting": s(string(Booting)), ":host": s(v.Host), ":epoch": n(v.HostEpoch)}
+	if c.Refs != nil {
+		target, holder, lease, err := c.acquireRef(ctx, v)
+		if err != nil {
+			var refErr *refstore.Error
+			switch {
+			case errors.As(err, &refErr) && refErr.Code == "held":
+				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, CheckpointError: "ref is leased by another holder"}, c.now(), nil)
+			case errors.As(err, &refErr) && refErr.Code == "no_ref", errors.Is(err, os.ErrNotExist), errors.Is(err, ErrInvalid):
+				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, CheckpointError: "mount version or ref unavailable"}, c.now(), nil)
+			default:
+				return VM{}, err
+			}
+		}
+		expr += ", #version = :version, #tree = :tree, #refLeaseHolder = :holder, #refLeaseEpoch = :refEpoch, #refLeaseDeadline = :refDeadline"
+		values[":version"], values[":tree"], values[":holder"] = s(target.Version), s(target.Tree), s(holder.String())
+		values[":refEpoch"], values[":refDeadline"] = n(lease.Epoch), n(lease.Deadline)
+	}
+	values[":now"] = n(c.now().UnixMilli())
+	if c.Refs == nil {
+		return c.updateVM(ctx, v.ID, "#phase = :placed AND "+vmHost+" AND #leaseDeadline > :now", expr, values)
+	}
+	// A reboot must fence a boot even while it is draining the prior VM rows.
+	vm := change(c.Tables.VMs, vmKey(v.ID), "#phase = :placed AND "+vmHost+" AND #leaseDeadline > :now", expr, values)
+	if err := c.transact(ctx, types.TransactWriteItem{Update: vm}, c.currentHostCheck(v)); err != nil {
+		return VM{}, err
+	}
+	return c.Get(ctx, v.ID)
 }
 
 const vmHost = "#host = :host AND #hostEpoch = :epoch"
@@ -135,6 +171,31 @@ func (c *Controller) Started(ctx context.Context, id, host string, hostEpoch int
 	if v.Host != host || v.HostEpoch != hostEpoch {
 		return v, ErrHost
 	}
+	return c.started(ctx, v, at, false)
+}
+
+func (c *Controller) StartedFromHost(ctx context.Context, id string, h Host, at time.Time) (VM, error) {
+	v, err := c.Get(ctx, id)
+	if err != nil {
+		return v, err
+	}
+	if !v.onHost(h) || h.Restarting || h.Lost {
+		return v, ErrHost
+	}
+	v, err = c.started(ctx, v, at, true)
+	if errors.Is(err, ErrCondition) {
+		current, hostErr := c.Host(ctx, h.Pool, h.Host)
+		if hostErr != nil {
+			return VM{}, hostErr
+		}
+		if current.BootEpoch != h.BootEpoch || current.Lost || current.Restarting {
+			return VM{}, ErrHost
+		}
+	}
+	return v, err
+}
+
+func (c *Controller) started(ctx context.Context, v VM, at time.Time, checkHost bool) (VM, error) {
 	if v.StartedAt != nil || v.Phase == Ended {
 		return v, nil
 	}
@@ -151,13 +212,21 @@ func (c *Controller) Started(ctx context.Context, id, host string, hostEpoch int
 		phase = Stopping
 	}
 	expr := "SET #phase = :next, #startedAt = :started, #billedTo = :started, #usageSeq = :zero"
-	values := attrs{":phase": s(string(v.Phase)), ":next": s(string(phase)), ":host": s(host),
-		":epoch": n(hostEpoch), ":started": n(started), ":zero": n(0)}
+	values := attrs{":phase": s(string(v.Phase)), ":next": s(string(phase)), ":host": s(v.Host),
+		":epoch": n(v.HostEpoch), ":started": n(started), ":zero": n(0)}
 	if v.Mode == JobMode && v.Job != nil {
 		expr += ", #deadlineAt = :deadline"
 		values[":deadline"] = n(started + v.Job.TimeoutS*1000 + JobDeadlineGrace.Milliseconds())
 	}
-	return c.updateVM(ctx, id, "#phase = :phase AND "+vmHost+" AND attribute_not_exists(#startedAt)", expr, values)
+	const condition = "#phase = :phase AND " + vmHost + " AND attribute_not_exists(#startedAt)"
+	if !checkHost {
+		return c.updateVM(ctx, v.ID, condition, expr, values)
+	}
+	vm := change(c.Tables.VMs, vmKey(v.ID), condition, expr, values)
+	if err := c.transact(ctx, types.TransactWriteItem{Update: vm}, c.currentHostCheck(v)); err != nil {
+		return VM{}, err
+	}
+	return c.Get(ctx, v.ID)
 }
 
 func (c *Controller) Listed(ctx context.Context, id, host string, hostEpoch int64, at time.Time) (VM, error) {
@@ -248,10 +317,14 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 	case Requested, Placed:
 		return c.end(ctx, v, EndRequest{At: time.UnixMilli(at), Code: reason}, now, &stopIntent{at, reason, checkpoint})
 	case Booting, Running:
-		return c.updateVM(ctx, v.ID, "#phase = :phase AND #leaseDeadline = :lease AND attribute_not_exists(#stopRequestedAt)",
+		updated, err := c.updateVM(ctx, v.ID, "#phase = :phase AND #leaseDeadline = :lease AND attribute_not_exists(#stopRequestedAt)",
 			"SET #phase = :stopping, #stopRequestedAt = :at, #stopCheckpoint = :checkpoint, #stopReason = :reason",
 			attrs{":phase": s(string(v.Phase)), ":stopping": s(string(Stopping)), ":at": n(at),
 				":checkpoint": b(checkpoint), ":reason": s(string(reason)), ":lease": n(v.LeaseDeadline)})
+		if err == nil {
+			c.pushStop(ctx, updated)
+		}
+		return updated, err
 	default:
 		return v, ErrPhase
 	}

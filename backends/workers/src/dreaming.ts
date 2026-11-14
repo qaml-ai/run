@@ -1,5 +1,5 @@
 import {readDreamMemory,publishDreamMemory} from './repos/dream-memory.ts';
-import { repoContext, versionEntries, type RepoEnv } from "./repos/registry.ts";
+import { repoContext, type RepoEnv } from "./repos/registry.ts";
 import { branch, setRefToVersion, commitChanges } from "./repos/write.ts";
 import { tenantDreamSecrets } from '../../../shared/dreaming-secrets.ts';
 import { keyServices } from './security-services.ts';

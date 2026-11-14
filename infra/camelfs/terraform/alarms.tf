@@ -9,16 +9,16 @@ data "aws_sns_topic" "alerts" {
 
 locals {
   alarm_topics = [data.aws_sns_topic.alerts.arn]
-  alb_dimensions = { for key, balancer in local.balancers : key => {
+  alb_dimensions = { for key, balancer in local.api_balancers : key => {
     LoadBalancer = aws_lb.api[key].arn_suffix
     TargetGroup  = aws_lb_target_group.api[key].arn_suffix
   } }
 }
 
-# --- Load balancers (public and internal alike) ---
+# --- The public ALB (the api target group) ---
 
 resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
-  for_each = local.balancers
+  for_each = local.api_balancers
 
   alarm_name          = "${var.name}-${var.env}-${each.key}-unhealthy-hosts"
   alarm_description   = "A camelFS api task has failed its ${var.api_health_path} check on the ${each.key} load balancer for 3 minutes"
@@ -37,7 +37,7 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
 
 # 5xx the balancer generates itself (no healthy target, target reset or timeout).
 resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
-  for_each = local.balancers
+  for_each = local.api_balancers
 
   alarm_name          = "${var.name}-${var.env}-${each.key}-alb-5xx"
   alarm_description   = "The camelFS ${each.key} load balancer returned 5xx (502/503/504) to clients"
@@ -55,7 +55,7 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "target_5xx" {
-  for_each = local.balancers
+  for_each = local.api_balancers
 
   alarm_name          = "${var.name}-${var.env}-${each.key}-target-5xx"
   alarm_description   = "camelFS api tasks returned 5xx on the ${each.key} load balancer"
@@ -75,7 +75,7 @@ resource "aws_cloudwatch_metric_alarm" "target_5xx" {
 # p99 of the targets' response time, for 3 of 5 minutes. The budget is §1.6's (50–300 ms per op from the tier's
 # seat); a sustained second means S3 or DynamoDB is slow, a merge is runaway, or the tier is undersized.
 resource "aws_cloudwatch_metric_alarm" "target_latency" {
-  for_each = local.balancers
+  for_each = local.api_balancers
 
   alarm_name          = "${var.name}-${var.env}-${each.key}-latency-p99"
   alarm_description   = "camelFS api p99 response time on the ${each.key} load balancer has exceeded ${var.api_latency_p99_ms} ms for 3 of 5 minutes"
@@ -87,6 +87,40 @@ resource "aws_cloudwatch_metric_alarm" "target_latency" {
   evaluation_periods  = 5
   datapoints_to_alarm = 3
   threshold           = var.api_latency_p99_ms / 1000
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+# --- The hosts' NLB and the enrollment listener: a target failing its health check for 3 minutes ---
+
+resource "aws_cloudwatch_metric_alarm" "hosts_nlb_unhealthy" {
+  alarm_name          = "${var.name}-${var.env}-hosts-nlb-unhealthy-hosts"
+  alarm_description   = "A camelFS api task has failed its health check on the hosts NLB for 3 minutes"
+  namespace           = "AWS/NetworkELB"
+  metric_name         = "UnHealthyHostCount"
+  dimensions          = { LoadBalancer = aws_lb.hosts.arn_suffix, TargetGroup = aws_lb_target_group.hosts.arn_suffix }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 3
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+resource "aws_cloudwatch_metric_alarm" "enroll_unhealthy" {
+  alarm_name          = "${var.name}-${var.env}-enroll-unhealthy-hosts"
+  alarm_description   = "A camelFS api task has failed its health check on the enrollment target group for 3 minutes"
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "UnHealthyHostCount"
+  dimensions          = { LoadBalancer = aws_lb.api["internal"].arn_suffix, TargetGroup = aws_lb_target_group.enroll.arn_suffix }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 3
+  threshold           = 0
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_topics
