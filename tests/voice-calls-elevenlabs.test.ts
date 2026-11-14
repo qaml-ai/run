@@ -191,11 +191,11 @@ test("client transcripts feed authenticated tools and late replies are sent as e
   assert.equal((await f.http("GET", `${path}/${call.id}`)).json.turns, 1);
   assert.deepEqual(await f.tool("ask_agent", conv), { status: 200, json: { reply: "It's noon." } });
   const params = f.submit.requests[0].params;
-  assert.match(String(params.text), /^\[Said in the call since your last reply\]\nAna: Can you check the time\?/);
+  assert.match(String(params.text), /^\[What was said in the call since your last request \(speakers not labeled\)\]\nAna: Can you check the time\?/);
   assert.deepEqual([params.metadata, params.endUser, params.bucket], [{ voiceCall: call.id, via: "voice" }, "user-1", "bot:7"]);
   assert.deepEqual(await f.tool("ask_agent", conv), { status: 200, json: { reply: PENDING } });
   await until(() => f.byCall(call.id, "voice.agent.replied").find(event => event.late === true && event.reply === "Later reply"), "late reply");
-  assert.doesNotMatch(String(f.submit.requests[1].params.text), /since your last reply/);
+  assert.doesNotMatch(String(f.submit.requests[1].params.text), /since your last request/);
   const open = await f.live({ provider: "openai", sdp: "v=0\r\ns=offer\r\n" });
   const rejected = await f.http("POST", `${path}/${open.id}/transcript`, transcript);
   assert.equal(rejected.status, 409);

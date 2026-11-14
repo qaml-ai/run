@@ -704,8 +704,8 @@ export class EndUserCredits {
   // Enforcement -------------------------------------------------------------
 
   /** Whether the tenant meters its end users. */
-  async enabled(tenant: string): Promise<boolean> {
-    return (await this.db.query("select enabled from end_user_settings where tenant = $1", [tenant])).rows[0]?.enabled === true;
+  async enabled(tenant: string, sql: Sql = this.db): Promise<boolean> {
+    return (await sql.query("select enabled from end_user_settings where tenant = $1", [tenant])).rows[0]?.enabled === true;
   }
 
   /**
@@ -713,11 +713,11 @@ export class EndUserCredits {
    * allowance today, then from the balance (marked up) within the daily limit, after every other hold. At least `min`
    * must be held, else the call is refused. Undefined: the tenant does not meter its end users.
    */
-  async reserve(tenant: string, endUser: string, bucket: string, call: { id: string; want: number; min: number }, now = Date.now()): Promise<Reserved | undefined> {
-    if (!await this.enabled(tenant)) return undefined;
+  async reserve(tenant: string, endUser: string, bucket: string, call: { id: string; want: number; min: number }, now = Date.now(), existingSql?: Sql): Promise<Reserved | undefined> {
+    if (!await this.enabled(tenant, existingSql)) return undefined;
     // A call that costs nothing (a model priced at zero) holds nothing, and is never refused.
     if (!(call.want > 0)) return { hold: { id: call.id, raw: 0, allowance: 0, paid: 0 } };
-    return transaction(this.db, async sql => {
+    const reserve = async (sql: Sql) => {
       const user = await lockEndUser(sql, tenant, endUser, now);
       // Expired holds go, and this call's own from an earlier try (a begin delivered again) is taken afresh.
       await sql.query("delete from end_user_holds where tenant = $1 and end_user = $2 and (expires_at <= $3 or id = $4)", [tenant, endUser, now, call.id]);
@@ -727,7 +727,8 @@ export class EndUserCredits {
       await sql.query("insert into end_user_holds (id, tenant, end_user, bucket, day, allowance, paid, expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         [call.id, tenant, endUser, bucket, left.day, taken.allowance, taken.paid, now + HOLD_MS, now]);
       return { hold: { id: call.id, ...taken }, most: split(Number.MAX_SAFE_INTEGER, left).raw };
-    });
+    };
+    return existingSql ? reserve(existingSql) : transaction(this.db, reserve);
   }
 
   /**
@@ -759,30 +760,33 @@ export class EndUserCredits {
   /**
    * Hold `usd` of `endUser`'s credit for work that is not a model call (audio to transcribe, images), before it is sent:
    * all of it, or as much as is left when that is within LAST_CALL_SHORTFALL of it, else a 402 END_USER_CREDIT. Settle it
-   * with what the work cost, or release it if none was done. Undefined: the tenant does not meter its end users.
+   * with what the work cost, or release it if none was done. ElevenLabs calls require the full amount.
+   * Undefined: the tenant does not meter its end users.
    */
-  async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}): Promise<CreditHold | undefined> {
+  async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}, now = Date.now(), sql?: Sql): Promise<CreditHold | undefined> {
     const id = randomUUID(), want = Math.ceil(usd * MICROS);
-    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: lastCallMin(want) });
+    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: call === "voice_elevenlabs" ? want : lastCallMin(want) }, now, sql);
     if (!reserved) return undefined;
     if (reserved.refused) throw creditError(reserved.refused);
     return {
+      id,
       settle: usd => this.settleHold(tenant, endUser, bucket, id, Math.round(usd * MICROS), `${call}:${id}`, { call, ...metadata }),
       release: () => this.release(id),
     };
   }
 
   /** Keep a call's hold another HOLD_MS from now: a call still streaming, slowly, that needs no more of it yet. */
-  async renew(tenant: string, endUser: string, id: string, now = Date.now()) {
-    await transaction(this.db, async sql => {
+  async renew(tenant: string, endUser: string, id: string, now = Date.now(), existingSql?: Sql) {
+    const renew = async (sql: Sql) => {
       await lockEndUser(sql, tenant, endUser, now);
       await sql.query("update end_user_holds set expires_at = $2 where id = $1 and expires_at > $3", [id, now + HOLD_MS, now]);
-    });
+    };
+    await (existingSql ? renew(existingSql) : transaction(this.db, renew));
   }
 
   /** Give a hold back without spending it (a call that never went out). */
-  async release(id: string) {
-    await this.db.query("delete from end_user_holds where id = $1", [id]);
+  async release(id: string, sql: Sql = this.db) {
+    await sql.query("delete from end_user_holds where id = $1", [id]);
   }
 
   /**
@@ -812,15 +816,16 @@ export class EndUserCredits {
   }
 
   /** Settle a hold that is not a model attempt's (a transcription, images): what the call cost (`raw`), posted once per `key`. */
-  async settleHold(tenant: string, endUser: string, bucket: string, hold: string, raw: number, key: string, metadata: Record<string, unknown> = {}, now = Date.now()) {
-    await transaction(this.db, async sql => {
+  async settleHold(tenant: string, endUser: string, bucket: string, hold: string, raw: number, key: string, metadata: Record<string, unknown> = {}, now = Date.now(), existingSql?: Sql) {
+    const settle = async (sql: Sql) => {
       const day = (await sql.query("select day from end_user_holds where id = $1", [hold])).rows[0]?.day;
       if ((await sql.query("select 1 from end_user_ledger where tenant = $1 and idempotency_key = $2", [tenant, key])).rowCount) {
         await sql.query("delete from end_user_holds where id = $1", [hold]);
         return;
       }
       await settleUsage(sql, { tenant, endUser, bucket, day: day ? dayText(day) : utcDay(now), hold, raw, key, metadata }, now);
-    });
+    };
+    await (existingSql ? settle(existingSql) : transaction(this.db, settle));
   }
 }
 
@@ -837,7 +842,7 @@ export const lastCallMin = (need: number) => Math.max(1, need - LAST_CALL_SHORTF
 export const HOLD_MS = 10 * 60_000;
 
 /** Credit held for work that is not a model call: settled with what it cost (USD), or released. */
-export type CreditHold = { settle(usd: number): Promise<void>; release(): Promise<void> };
+export type CreditHold = { id: string; settle(usd: number): Promise<void>; release(): Promise<void> };
 
 /** An end user's credit refusing work before it starts: 402, END_USER_CREDIT, with whose, which bucket and why. */
 export function creditError(refused: CreditRefusal) {

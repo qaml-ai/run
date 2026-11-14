@@ -790,7 +790,8 @@
                   "provider": {
                     "type": "string",
                     "enum": [
-                      "openai"
+                      "openai",
+                      "elevenlabs"
                     ]
                   },
                   "session": {
@@ -966,7 +967,8 @@
                   "provider": {
                     "type": "string",
                     "enum": [
-                      "openai"
+                      "openai",
+                      "elevenlabs"
                     ]
                   },
                   "session": {
@@ -1079,7 +1081,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "openai"
+                  "openai",
+                  "elevenlabs"
                 ]
               },
               "session": {
@@ -1155,7 +1158,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "openai"
+                  "openai",
+                  "elevenlabs"
                 ]
               },
               "session": {
@@ -1188,6 +1192,10 @@
               },
               "replyChars": {
                 "type": "number"
+              },
+              "reply": {
+                "type": "string",
+                "maxLength": 4000
               }
             },
             "required": [
@@ -1506,6 +1514,114 @@
                   "reported",
                   "text",
                   "seconds",
+                  "seq"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "elevenlabs"
+                    ]
+                  },
+                  "session": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "reported": {
+                    "type": "string",
+                    "enum": [
+                      "client"
+                    ]
+                  },
+                  "speakerId": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "seq": {
+                    "type": "number"
+                  },
+                  "seconds": {
+                    "type": "number"
+                  },
+                  "startedAt": {
+                    "type": "number"
+                  },
+                  "endedAt": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "session",
+                  "agent",
+                  "subject",
+                  "metadata",
+                  "reported",
+                  "speakerId",
+                  "text",
+                  "seq"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "elevenlabs"
+                    ]
+                  },
+                  "session": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "reported": {
+                    "type": "string",
+                    "enum": [
+                      "provider"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "seq": {
+                    "type": "number"
+                  },
+                  "secondsIntoCall": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "session",
+                  "agent",
+                  "subject",
+                  "metadata",
+                  "reported",
+                  "text",
                   "seq"
                 ]
               }
@@ -15475,8 +15591,7 @@
           "maxMinutes": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 720,
-            "default": 240
+            "maximum": 720
           },
           "metadata": {
             "type": "object",
@@ -15596,6 +15711,39 @@
             "additionalProperties": {}
           }
         },
+        "additionalProperties": false
+      },
+      "VoiceTranscriptInput": {
+        "type": "object",
+        "properties": {
+          "speaker": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "seconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 600
+          },
+          "startedAt": {
+            "type": "number",
+            "minimum": 0
+          },
+          "endedAt": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "speaker",
+          "text"
+        ],
         "additionalProperties": false
       },
       "VoiceBrowserToken": {
@@ -17386,6 +17534,157 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/providers/elevenlabs/post-call": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "elevenlabs-signature",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook acknowledged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {}
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/providers/elevenlabs/tools/{name}": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "x-voice-tool-secret",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversation_id": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "conversation_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ok": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "ok"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "reply": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "reply"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown tool or call",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {}
+                }
               }
             }
           },
@@ -30830,6 +31129,70 @@
                     {
                       "$ref": "#/components/schemas/VoiceCall"
                     }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/sessions/{id}/transcript": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceTranscriptInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The accepted utterance's sequence number",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "seq": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "seq"
                   ]
                 }
               }
