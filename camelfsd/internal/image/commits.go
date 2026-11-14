@@ -23,6 +23,7 @@ type Trailers struct {
 	ExitCode *int   `json:"exitCode,omitempty"`
 }
 type CheckpointRequest struct {
+	Time      *int64    `json:"-"`
 	TimeoutMs int       `json:"timeoutMs"`
 	Message   *string   `json:"message,omitempty"`
 	Trailers  *Trailers `json:"trailers,omitempty"`
@@ -69,12 +70,20 @@ func (m *Manager) writeCommit(ctx context.Context, v *Mount, tree string, q Chec
 		if t.ExitCode != nil {
 			fmt.Fprintf(&trailers, "Camel-Exit: %d\n", *t.ExitCode)
 		}
+		// Camel-Op names why a commit exists in the repo log (#993). The kind is validated above, so
+		// every checkpoint with trailers has exactly one op: a job's, or an agent turn's (auto or manual).
+		if op := map[string]string{"job": "job", "auto": "turn", "manual": "turn"}[t.Kind]; op != "" {
+			fmt.Fprintf(&trailers, "Camel-Op: %s\n", op)
+		}
 	}
 	body := "tree " + tree + "\n"
 	if v.Parent.Commit != "" {
 		body += "parent " + v.Parent.Commit + "\n"
 	}
 	now := time.Now().Unix()
+	if q.Time != nil {
+		now = time.UnixMilli(*q.Time).Unix()
+	}
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n%s", who, who, now, now, msg, trailers.String())
 	return m.objects(v.Lineage).PutObject(ctx, v.Lineage, "commit", []byte(body))
 }

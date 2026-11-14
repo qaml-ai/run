@@ -244,7 +244,15 @@ export class Delegation {
     console.log(JSON.stringify({ type: 'delegation_memory', agentId: parent, requestId, childCount: running.length, heapEstimateBytes, estimateScope: 'parent_delegation_bookkeeping', payloadStorageBytes: running.reduce((bytes, child) => bytes + (child.payloadBytes ?? 0), 0) }));
   }
   async cost(requestId: string) { return [...(await this.host.storage.list<ChildCharge>({ prefix: chargePrefix })).values()].filter(charge => charge.requestId === requestId).reduce((sum, charge) => sum + charge.usd, 0); }
-  async costSince(startedAt: number) { return [...(await this.host.storage.list<ChildCharge>({ prefix: chargePrefix })).values()].filter(charge => charge.at >= startedAt).reduce((sum, charge) => sum + charge.usd, 0); }
+  async costSince(startedAt: number) { return (await this.spendSince(startedAt)).total; }
+  async spendSince(startedAt: number, requestId?: string) {
+    let total = 0, forRequest = 0;
+    for (const charge of (await this.host.storage.list<ChildCharge>({ prefix: chargePrefix })).values()) {
+      if (charge.at >= startedAt) total += charge.usd;
+      if (charge.requestId === requestId) forRequest += charge.usd;
+    }
+    return { total, forRequest };
+  }
   /** A child's ending is charged when a call, notification or recovery takes it. */
   async settleInTransaction(tx: DurableObjectTransaction, child: DelegatedChild, requestId: string) {
     if (child.charged || child.folded) return child;

@@ -1,3 +1,5 @@
+import { safeError } from "./observability.ts";
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { applying, prepareApply } from "../../../shared/apply-scope.ts";
 import { forgetAgentDreaming } from "../../../shared/dreaming.ts";
 import { disableAgentTriggers } from "../../../src/triggers.ts";
@@ -17,9 +19,8 @@ import {
   type PostgresEnv,
   type Sql,
 } from "./postgres.ts";
-import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
-import { EndUserCredits, lastCallMin, lockEndUser, settleUsage, utcDay } from "./end-user-credits.ts";
-import { CreditHolds } from "./credit-holds.ts";
+import { postLedger, accrueUsage } from "./billing-sql.ts";
+import { EndUserCredits, lockEndUser, settleUsage, utcDay } from "./end-user-credits.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
 import { resolveAgentKey } from "./agent-key.ts";
@@ -126,7 +127,7 @@ export async function authenticate(
 }
 
 const mountIdentity = (mounts: AgentConfiguration['mounts']) => JSON.stringify((mounts ?? []).map(mount =>
-  [mount.repo ?? mount.volumeId, mount.ref ?? "main", mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
+  [mount.repo, mount.ref ?? "main", mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
 
 export class Directory {
   private env: ControlEnv;
@@ -174,13 +175,15 @@ export class Directory {
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
     queueConfiguration = false,
-    internalMounts?: AgentConfiguration["mounts"],
+    // A delegated child is not an API create: like Node (src/node.ts creates children without admit), it is bounded by
+    // its parent's maxParallel, not the tenant's per-minute create counter.
+    countCreate = true,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
       ? await prepareApply(`default-model:${JSON.stringify([this.tenantId, fields.keyScope])}`, () => defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined))
       : this.env.MODEL;
-    const { config, ttlSeconds } = configuration(internalMounts ? {...fields,mounts:undefined} : input, defaultModel);
+    const { config, ttlSeconds } = configuration(input, defaultModel);
     const workspaces = new Workspaces(database(this.env));
     if (config.workspaceId !== undefined) await workspaces.validate(this.tenantId, config.workspaceId);
     const key =
@@ -238,13 +241,12 @@ export class Directory {
       : async () => {};
     let rate: RateLimitState | undefined;
     try {
-    const requested=internalMounts ? undefined : (input as {mounts?:unknown;remount?:boolean}).mounts;
+    const requested= (input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
     // Repo preparation uses SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    config.mounts=internalMounts ?? (requested===undefined && before?.config.mounts ? before.config.mounts : await (await import('./repos/mounts.ts')).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv,this.tenantId,id,requested));
-    const admitCreate = config.type !== "run" ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
+    config.mounts=(requested===undefined && before?.config.mounts ? before.config.mounts : await (await import('./repos/mounts.ts')).prepareMounts(this.env as import("./repos/registry.ts").RepoEnv,this.tenantId,id,requested));
+    const admitCreate = config.type !== "run" && countCreate ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
     let createdHere = false;
     let priorMounts:AgentConfiguration["mounts"];
     let entry = await transaction(this.env, async (sql) => {
@@ -322,7 +324,7 @@ export class Directory {
     });
     if(!applying()) for(const mount of priorMounts??[]) {
       if(mount.repo&&mount.notify&&!entry.config.mounts?.some(next=>next.repo===mount.repo&&(next.ref??'main')===(mount.ref??'main')&&next.notify))
-        await (await import('./repos/mounts.ts')).unwatchMount(this.env,this.tenantId,id,mount as import('./repos/mounts.ts').Mount);
+        await (await import('./repos/mounts.ts')).unwatchMount(this.env as import('./repos/registry.ts').RepoEnv,this.tenantId,id,mount as import('./repos/mounts.ts').Mount);
     }
     if (!entry.initialized && !applying()) {
       const initialized = await this.initialize(entry, runtimeOrigin);
@@ -352,6 +354,7 @@ export class Directory {
   }
   private async initialize(entry: DirectoryEntry, runtimeOrigin?: string): Promise<DirectoryEntry | DirectoryFailure> {
     if (!entry.initialized) {
+      const started = Date.now();
       const response = await this.env.AGENTS.getByName(entry.id).fetch(
         new Request("https://agent/configuration", {
           method: "PUT",
@@ -366,7 +369,11 @@ export class Directory {
             runtimeOrigin,
           }),
         }),
-      ).catch(() => undefined);
+      ).catch(error => {
+        if (this.env.AGENT_CREATE_DIAGNOSTICS === "1")
+          console.error(JSON.stringify({ type: "agent_create_rpc_failed", ms: Date.now() - started, error: safeError(error) }));
+        return undefined;
+      });
       // The new revision is committed above (uninitialized): an agent that threw or failed applying it is a retry
       // away, as DELETE's cleanup is, so it answers 503 rather than a refusal. Another upsert applies it again.
       if (!response || response.status >= 500)
@@ -469,18 +476,9 @@ async function verifyAgent(sql: Sql, tenantId: string, agentId: string) {
   if (!row || row.revoked)
     throw new ApiError(403, "Agent unavailable", "AGENT_GONE");
 }
-export async function reserveTurn(
-  env: KeyEnv, tenantId: string, agentId: string, requestId: string,
-  reserveMicros = 0, min = lastCallMin(reserveMicros),
-): Promise<{ held: number }> {
-  if (!Number.isSafeInteger(reserveMicros) || reserveMicros < 0) throw new ApiError(400, "Invalid reservation");
-  const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
-  await withSql(env, sql => verifyAgent(sql, tenantId, agentId));
-  const { accounts: { billing } } = await keyServices(env);
-  if (!reserveMicros || await billing.mode(tenantId) === "none") return { held: 0 };
-  const hold = await new CreditHolds(database(env), billing).reserve(tenantId, id, reserveMicros, min);
-  if (!hold) throw new ApiError(402, "Insufficient credit or hourly allowance", "INSUFFICIENT_CREDIT");
-  return { held: hold.held };
+/** Run admission already checked credit through Accounts.runLimit. Verify the agent is still active. */
+export async function verifyTurnAgent(env: PostgresEnv, tenantId: string, agentId: string, invocation?: AgentInvocation) {
+  await withSql(env, sql => verifyAgent(sql, tenantId, agentId), invocation);
 }
 export type TurnReceipt = {
   tenantId: string;
@@ -505,6 +503,7 @@ export async function settleTurn(
     METRICS?: AnalyticsEngineDataset;
   },
   receipt: TurnReceipt,
+  invocation?: AgentInvocation,
 ): Promise<{ duplicate: boolean }> {
   if (
     !Number.isSafeInteger(receipt.costMicros) ||
@@ -530,8 +529,8 @@ export async function settleTurn(
       `turn:${receipt.tenantId}:${receipt.agentId}:${receipt.requestId}`,
     ),
     key = `workers:receipt:${id}`;
-  const { accounts: { billing } } = await keyServices(env);
-  const prepaid = await billing.mode(receipt.tenantId) === "prepaid";
+  const { accounts: { billing } } = await keyServices(env, invocation);
+  const prepaid = await billing.mode(receipt.tenantId, undefined, invocation?.tenant(billing, receipt.tenantId)) === "prepaid";
   const result = await transaction(env, async (sql) => {
     // Admin tenants can run on their own keys without a prepaid account row.
     // Serialize all of their receipts too, without manufacturing a credit balance.
@@ -551,8 +550,7 @@ export async function settleTurn(
         throw new ApiError(409, "Receipt changed", "IDEMPOTENCY_CONFLICT");
       return { duplicate: true };
     }
-    // A receipt may arrive after its hold expires or after a lost acknowledgement.
-    // src/ permits a running response's bounded overdraft; expiry never drops its charge.
+    // A receipt can arrive after the account spends its remaining credit or after a lost acknowledgement.
     const charged = receipt.modelMetered ? activeCharge(billing.pricing, receipt.activeMs ?? 0) : receipt.costMicros;
     if (charged > 0 && prepaid) await accrueUsage(sql, [{ tenant: receipt.tenantId, amount: charged,
       metadata: receipt.modelMetered ? { tokens: 0, activeMs: receipt.activeMs ?? 0 } : { responses: receipt.responses ?? 1, inputTokens: receipt.inputTokens ?? 0, outputTokens: receipt.outputTokens ?? 0 } }]);
@@ -577,10 +575,6 @@ export async function settleTurn(
         Date.now(),
       ],
     );
-    await sql.query("delete from credit_holds where id=$1 and tenant=$2", [
-      id,
-      receipt.tenantId,
-    ]);
     if (!receipt.modelMetered) await enqueueEvents(sql, [
       webhookEvent(
         "usage.recorded",
@@ -594,10 +588,10 @@ export async function settleTurn(
       ),
     ]);
     return { duplicate: false };
-  });
+  }, {}, invocation);
   if (faultAfterCommit && env.TEST_MODE === "1")
     throw new Error("injected lost PG acknowledgement");
-  if (env.WEBHOOKS) await publishPending(env as WebhookEnv);
+  if (env.WEBHOOKS) await publishPending(env as WebhookEnv, invocation);
   env.METRICS?.writeDataPoint({
     blobs: [receipt.tenantId, receipt.agentId, receipt.model ?? "local/fake"],
     doubles: [receipt.costMicros],
@@ -605,21 +599,6 @@ export async function settleTurn(
   });
   return result;
 }
-export async function releaseTurn(
-  env: PostgresEnv,
-  tenantId: string,
-  agentId: string,
-  requestId: string,
-): Promise<void> {
-  const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
-  await withSql(env, (sql) =>
-    sql.query("delete from credit_holds where id=$1 and tenant=$2", [
-      id,
-      tenantId,
-    ]),
-  );
-}
-
 /** Team accounts transfer existing credit in one transaction with ordered row locks. */
 export async function transfer(
   env: PostgresEnv,
@@ -650,14 +629,6 @@ export async function transfer(
         throw new ApiError(409, "Transfer changed", "IDEMPOTENCY_CONFLICT");
       return { transferred: amount, replayed: true };
     }
-    const held = Number(
-      (
-        await sql.query(
-          "select coalesce(sum(amount),0) held from credit_holds where tenant=$1 and expires_at > $2",
-          [from, Date.now()],
-        )
-      ).rows[0].held,
-    );
     const balance = Number(
       (
         await sql.query("select balance from credit_accounts where tenant=$1", [
@@ -665,10 +636,10 @@ export async function transfer(
         ])
       ).rows[0].balance,
     );
-    if (balance - held < amount)
+    if (balance < amount)
       throw new ApiError(
         402,
-        "Insufficient unreserved credit",
+        "Insufficient credit",
         "INSUFFICIENT_CREDIT",
       );
     await postLedger(sql, [
@@ -770,7 +741,7 @@ export async function controlRoutes(
       (
         await withSql(env, (sql) =>
           sql.query(
-            "select t.id,t.billing,t.limits,a.balance,a.purchased,(select coalesce(sum(amount),0) from credit_holds h where h.tenant=t.id) as held from tenants t join credit_accounts a on a.tenant=t.id where t.id=$1",
+            "select t.id,t.billing,t.limits,a.balance,a.purchased,0::bigint as held from tenants t join credit_accounts a on a.tenant=t.id where t.id=$1",
             [tenant],
           ),
         )
@@ -787,17 +758,7 @@ export async function controlRoutes(
         )
       ).rows,
     );
-  if (path === "/v1/credits/holds")
-    return json(
-      (
-        await withSql(env, (sql) =>
-          sql.query(
-            "select id,amount,expires_at from credit_holds where tenant=$1 order by created_at",
-            [tenant],
-          ),
-        )
-      ).rows,
-    );
+  if (path === "/v1/credits/holds") return json([]);
   if (path === "/v1/credits/transfer" && request.method === "POST") {
     if (auth.kind !== "operator")
       throw new ApiError(403, "Team account operator required", "FORBIDDEN");
@@ -985,7 +946,7 @@ export async function controlRoutes(
       (
         await withSql(env, (sql) =>
           sql.query(
-            "select (select count(*) from tenants) tenants,(select count(*) from agents where not revoked) agents,(select sum(balance) from credit_accounts) balance,(select count(*) from credit_holds) holds",
+            "select (select count(*) from tenants) tenants,(select count(*) from agents where not revoked) agents,(select sum(balance) from credit_accounts) balance,0::bigint holds",
           ),
         )
       ).rows[0],

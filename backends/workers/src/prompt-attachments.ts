@@ -1,4 +1,4 @@
-import { LegacyPromptAttachments, withLegacyAttachmentReferences } from "./legacy-prompt-attachments.ts";
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { Buffer } from "node:buffer";
 import {
   createAssistantMessageEventStream,
@@ -33,8 +33,7 @@ import { readAttachment } from "./repos/attachments.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import type { WriteInput } from "./repos/write.ts";
 
-import { uploadFile } from "./file-upload.ts";
-import { normalizePath, type FileEntry } from "./volume.ts";
+import { normalizePath } from "./file-errors.ts";
 import {
   boundedBytes,
   imageReferenceInput,
@@ -62,7 +61,7 @@ export {
   type AttachedFile,
 } from "./attachment-markers.ts";
 type Identity = AttachmentAudioScope & {
-  mounts: import("./repos/mounts.ts").AgentMount[];
+  mounts: import("./repos/mounts.ts").Mount[];
 };
 type AttachmentEnv = FileBindings & KeyEnv & MediaBindings;
 
@@ -82,7 +81,7 @@ export class PromptAttachments {
   async reference(identity: Identity, path: string): Promise<AttachedFile> {
     return (await this.stage(identity, [{ path }]))[0];
   }
-  async attach(identity: Identity, inputs: unknown): Promise<AttachedFile[]> {
+  async attach(identity: Identity, inputs: unknown, invocation?: AgentInvocation): Promise<AttachedFile[]> {
     const fingerprint = await digest(JSON.stringify(inputs));
     const key = `prompt-attachments:${identity.requestId}`;
     const prior = await this.storage.get<{
@@ -108,7 +107,7 @@ export class PromptAttachments {
         );
       return pending.files;
     }
-    const files = this.stage(identity, inputs).then(async (files) => {
+    const files = this.stage(identity, inputs, invocation).then(async (files) => {
       await this.storage.put(key, { fingerprint, files });
       return files;
     });
@@ -122,19 +121,11 @@ export class PromptAttachments {
   private async stage(
     identity: Identity,
     inputs: unknown,
+    invocation?: AgentInvocation,
   ): Promise<AttachedFile[]> {
-    const checked = attachmentInputs(inputs);
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    const legacy=identity.mounts.filter((m):m is import("./files.ts").LegacyVolumeMount=>"volumeId" in m);
-    const workspace=identity.mounts.find(m=>m.path==='/workspace'&&m.mode==='rw')??identity.mounts.find(m=>m.mode==='rw');
-    const isLegacy=(input:typeof checked[number])=>"path"in input ? legacy.some(m=>input.path===m.path||input.path.startsWith(m.path+'/')) : !!workspace&&'volumeId'in workspace;
-    const old=checked.filter(isLegacy), fresh=checked.filter(i=>!isLegacy(i));
-    const oldFiles=old.length?await new LegacyPromptAttachments(this.storage,this.env).stage({...identity,mounts:legacy},old):[];
-    const freshFiles=fresh.length?await this.stageRepos(identity,fresh):[];
-    let oi=0,ni=0;
-    return checked.map(i=>isLegacy(i)?oldFiles[oi++]:freshFiles[ni++]);
+    return this.stageRepos(identity, inputs, invocation);
   }
-  private async stageRepos(identity:Identity,inputs:unknown):Promise<AttachedFile[]> {
+  private async stageRepos(identity:Identity,inputs:unknown,invocation?:AgentInvocation):Promise<AttachedFile[]> {
     const checked=attachmentInputs(inputs);
     const repoMounts=identity.mounts.filter((m):m is Mount=>"repo" in m);
 
@@ -163,7 +154,7 @@ export class PromptAttachments {
     }
     let savedVersion:string|undefined;
     if (Object.keys(changes).length && scratch) {
-      const store=await agentStore(this.env as RepoEnv,identity.tenant,scratch.repo,scratch.ref??"main",identity.agent);
+      const store=await agentStore(this.env as RepoEnv,identity.tenant,scratch.repo,scratch.ref??"main",identity.agent,{},undefined,invocation);
       savedVersion=(await store.commit(changes,{},`attachments ${identity.requestId}`,{'Camel-Run':identity.requestId})).version??undefined;
     }
     for (const [index,input] of checked.entries()) {
@@ -193,7 +184,7 @@ export class PromptAttachments {
       } else if(entry.contentType==="application/pdf"&&entry.size<=FILE_LIMITS.documentBytes) ref.media=await inspectDocument(await readAttachment(this.env as RepoEnv,identity.tenant,ref));
       files.push(ref);
     }
-    return transcribeAttachments(this.env, this.storage, identity, files);
+    return transcribeAttachments(this.env, this.storage, identity, files, undefined, invocation);
   }
 }
 
@@ -202,11 +193,8 @@ export function withAttachmentReferences<A extends Api>(
   provider: Provider<A>,
   env: FileBindings & RepoEnv,
   getTenant: () => Promise<string>,
-  authorizeFile?: (key: string) => Promise<boolean>,
   authorizeRepoFile?: (file:FileRef)=>Promise<boolean>,
 ): Provider<A> {
-  // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-  provider = withLegacyAttachmentReferences(provider,env,getTenant,authorizeFile);
   const hydrate = async (model: Model<A>, context: TranscriptContext) => {
     const tenant = await getTenant();
     let documentBytes = 0;

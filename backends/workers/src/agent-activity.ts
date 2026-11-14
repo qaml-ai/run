@@ -1,9 +1,10 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { outcomeEnding, type Outcome } from '../../../shared/client-protocol.ts';
 import { withSql } from './postgres.ts';
 import type { ControlEnv } from './control.ts';
 
 /** Retain only a safe failure classification in the account-wide directory. */
-export async function recordAgentActivity(env: ControlEnv, tenant: string, agent: string, record: { endedAt?: number; outcome?: { result?: unknown; error?: string; uncertain?: boolean } }) {
+export async function recordAgentActivity(env: ControlEnv, tenant: string, agent: string, record: { endedAt?: number; outcome?: { result?: unknown; error?: string; uncertain?: boolean } }, invocation?: AgentInvocation) {
   const ending = outcomeEnding(record.outcome as Outcome | undefined);
   const code = (record.outcome?.result as { code?: unknown } | undefined)?.code;
   const failure = ending.stopped && ending.stopped !== 'input_required' ? ending.stopped
@@ -17,7 +18,7 @@ export async function recordAgentActivity(env: ControlEnv, tenant: string, agent
           last_error_at=greatest(coalesce(last_error_at,0),$3),
           last_error_class=case when coalesce(last_error_at,0)<=$3 then $4 else last_error_class end where id=$1 and tenant=$2`
       : 'update agents set last_active_at=greatest(coalesce(last_active_at,0),$3) where id=$1 and tenant=$2',
-      failure ? [agent, tenant, at, failure] : [agent, tenant, at]));
+      failure ? [agent, tenant, at, failure] : [agent, tenant, at]), invocation);
   } catch { console.error(JSON.stringify({ type: 'agent_activity_failed', agent })); }
 }
 

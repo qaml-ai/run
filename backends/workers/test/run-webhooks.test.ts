@@ -57,7 +57,8 @@ test("a batch without mirrors writes both outboxes in one statement", async t =>
   assert.match(statements[0].text, /insert into webhook_deliveries[\s\S]*on conflict \(id\) do nothing/);
   const legacyInsert = statements[0].text.split("insert into usage_webhook_outbox ")[1];
   assert.match(legacyInsert, /where exists \(select 1 from usage_webhooks/);
-  assert.doesNotMatch(legacyInsert, /on conflict/i);
+  // Same as enqueueEvents: a replayed batch is deduped by the legacy outbox id.
+  assert.match(legacyInsert, /on conflict \(id\) do nothing/);
   assert.deepEqual(statements[0].values?.slice(0, 2), [JSON.stringify([event]), JSON.stringify([legacy])]);
   assert.match(statements[1].text, /^select count\(\*\) as pending/);
   assert.equal(sendBatch.mock.callCount(), 1);

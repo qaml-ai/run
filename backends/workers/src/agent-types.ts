@@ -1,3 +1,5 @@
+import type { VoiceCall } from "./voice-call.ts";
+import type { BashEnv } from "./camelfs/bash.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { ComputerBindings } from "./computers/tool.ts";
@@ -10,6 +12,7 @@ import type { MediaBindings } from "./media-api.ts";
 import type { KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
+import type { UsagePollerBinding } from "./camelfs/usage-poller.ts";
 import type { CamelAgent } from "./agent.ts";
 
 export type Config = {
@@ -57,6 +60,7 @@ export type RequestRecord = {
   fingerprint: string;
   billing?: { tenantId: string; agentId: string; model?: string };
   agentSpendAt?: number | null;
+  limitsSnapshot?: import("./run-limits.ts").RunLimitsSnapshot;
   state: "queued" | "running" | "completed";
   startedAt: number;
   endedAt?: number;
@@ -77,11 +81,15 @@ export interface Env
     AccountEnv,
     ComputerEnv,
     MediaBindings,
-    AdminEnv {
+    AdminEnv,
+    BashEnv,
+    UsagePollerBinding {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
   AGENTS: DurableObjectNamespace<CamelAgent>;
+  VOICE_CALLS: DurableObjectNamespace<VoiceCall>;
+  AGENT_VOICE_SESSIONS_PER_TENANT?: string;
   AI: Ai;
   MODEL: string;
   API_TOKEN: string;

@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"os"
 	"path/filepath"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type Info struct {
@@ -17,7 +18,7 @@ type Info struct {
 }
 
 func (l Local) Head(ctx context.Context, key string) (Info, error) {
-	if !valid(key) {
+	if !validReadKey(key) {
 		return Info{}, fmt.Errorf("invalid key")
 	}
 	st, e := os.Stat(filepath.Join(l.Dir, key))
@@ -26,7 +27,7 @@ func (l Local) Head(ctx context.Context, key string) (Info, error) {
 	}
 	info := Info{Size: st.Size()}
 	_, kind, _, _ := splitKey(key)
-	if kind == "o" {
+	if kind == "o" && valid(key) {
 		raw, e := os.ReadFile(filepath.Join(l.Dir, key) + ".meta")
 		if e != nil {
 			return Info{}, ioFailure(e)
@@ -41,7 +42,7 @@ func (l Local) Head(ctx context.Context, key string) (Info, error) {
 	return info, nil
 }
 func (s *S3) Head(ctx context.Context, key string) (Info, error) {
-	if !valid(key) {
+	if !validReadKey(key) {
 		return Info{}, fmt.Errorf("invalid key")
 	}
 	k := s.key(key)

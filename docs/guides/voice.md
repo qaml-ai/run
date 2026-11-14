@@ -214,7 +214,7 @@ filtered by `q` without a provider key; library categories match none of these.
 
 ElevenLabs search uses the same credential resolution as speech: your saved
 ElevenLabs key, the tenant file's key, else `platformKeys.elevenlabs` where your
-account can use platform keys. Existing platform credit checks apply. There is
+account can use platform keys. The call ends at a metering checkpoint if platform usage leaves no spendable credit. Admitted usage is charged in full and can take the account balance below zero. There is
 no new configuration. Keys and upstream error bodies are never returned or logged.
 A missing key returns `400 VOICE_SEARCH_UNAVAILABLE`; an upstream failure returns
 `502 VOICE_SEARCH_FAILED`.

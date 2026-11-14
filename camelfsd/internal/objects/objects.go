@@ -138,18 +138,9 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 	}
 	b.SHA256 = fmt.Sprintf("%x", h256.Sum(nil))
 	b.SHA1 = fmt.Sprintf("%x", h1.Sum(nil))
-	var exists int
-	e = r.DB.DB.QueryRowContext(ctx, "SELECT count(*) FROM lineage_blobs WHERE lineage=? AND sha1=?", lineage, b.SHA1).Scan(&exists)
-	b.Existing = exists > 0
-	if e == nil && !b.Existing {
-		b.Existing, e = r.Reachable(ctx, lineage, b.SHA1, "blob")
-	}
+	created, e := store.PutBlobFileIfAbsent(ctx, r.Store, "o/"+b.SHA1, f, b.SHA256)
+	b.Existing = !created
 	if e != nil {
-		return b, e
-	}
-	key := "o/" + b.SHA1
-
-	if e = store.PutBlobFile(ctx, &store.Uploaded{Store: r.Store, DB: r.DB.DB}, key, f, b.SHA256); e != nil {
 		return b, e
 	}
 

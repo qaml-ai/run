@@ -1,17 +1,17 @@
 # Two principals, least privilege (camel-fs.md §1.10: "hosts hold an instance role scoped to the bucket prefixes
 # and tables, as the job-hosts plan's role is scoped"; the api tier is the authorization boundary):
 #
-#   api        the Fargate task role of camelfsd api: every table and the bucket (no delete; results/ for VM
-#              results that outgrow an item), and the hosts' Private CA as registration authority (issue and fetch
+#   api        the Fargate task role of camelfsd api: every table and the bucket (no delete), and the hosts'
+#              Private CA as registration authority (issue and fetch
 #              end-entity certificates, nothing else on the CA). The only principal that touches refs, lineages,
 #              deliveries, hosts and vms. The token verification keys reach the task as an injected environment
 #              variable, so the task role reads no secret; the execution role reads that one secret for the
 #              injection.
-#   host       camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and
-#              commits a checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks
-#              its fence), reads no lineage registry, touches no control table and writes no VM result (the tier
-#              does, from the host's "ended" call); no secret at all: its identity is the certificate the tier
-#              issues it at enrollment (§9.12). Delivered as a customer-managed
+#   host       camelfsd --role host on the VM hosts: the lineage object keys (<lineage>/{o,t,k,r,c,ts,tr}/*, read and
+#              write, no delete), the guest image (read) and the objects table (trees and commits a checkpoint
+#              publishes), nothing else — every other prefix is denied by omission: a host moves no ref (it asks the tier, which checks
+#              its fence), reads no lineage registry and touches no control table; no secret at all: its identity
+#              is the certificate the tier issues it at enrollment (§9.12). Delivered as a customer-managed
 #              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
 #              host_managed_policies) and to the proto host's role, and as a role + instance profile of its own
 #              for hosts outside those pools. The role trusts ec2.amazonaws.com only, with the job-hosts
@@ -48,7 +48,8 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-# Used by ECS itself: pull the image, write logs, and read the one secret it injects (CAMELFS_JWKS).
+# Used by ECS itself: pull the image, write logs, and read the two secrets it injects (CAMELFS_JWKS,
+# CAMELFS_NOTIFY_KEY).
 resource "aws_iam_role" "api_execution" {
   name               = "${var.name}-${var.env}-api-execution"
   description        = "camelFS api ECS task execution (image pull, logs, the JWKS injection)"
@@ -69,7 +70,7 @@ resource "aws_iam_role_policy" "api_execution_jwks" {
       Sid      = "InjectKeys"
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
+      Resource = [aws_secretsmanager_secret.token_verify_keys.arn, aws_secretsmanager_secret.notify_key.arn]
     }]
   })
 }
@@ -78,13 +79,13 @@ locals {
   table_arns = { for table, resource in aws_dynamodb_table.camelfs : table => resource.arn }
 
   # The bucket, read and write, never delete. CopyObject (a cross-lineage fork, camel-fs-files.md §9) is a GetObject
-  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject. PutObjectTagging: the tier
-  # tags VM results kind=result for the bucket's 7-day expiry rule (bucket.tf).
+  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject. Nothing tags. The API ROLE's
+  # statements: the whole bucket.
   bucket_rw_statements = [
     {
       Sid      = "ObjectsReadWrite"
       Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes", "s3:PutObjectTagging"]
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
       Resource = ["${aws_s3_bucket.objects.arn}/*"]
     },
     {
@@ -119,26 +120,39 @@ locals {
         Action   = local.dynamodb_item_actions
         Resource = values(local.table_arns)
       },
+      {
+        Sid      = "QueryVMLineage"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${local.table_arns["vms"]}/index/lineage"]
+      },
+      # The GC mark pass walks the marks table (C3b); no other table is ever scanned (a full scan of refs or usage
+      # is a capability the tier does not get).
+      {
+        Sid      = "ScanMarks"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Scan"]
+        Resource = [local.table_arns["marks"]]
+      },
       # Registration authority for the hosts' CA (mtls.tf): issue a host's or its own end-entity certificate from a
-      # CSR, and fetch it. IssueCertificate is restricted to the two end-entity templates (never a CA template,
-      # never passthrough of arbitrary extensions); validity is capped by the CA's short-lived mode (7 days). Which
-      # host id a certificate may carry is the tier's enrollment check: IAM cannot constrain a subject.
+      # CSR, and fetch it. IssueCertificate is restricted to the one end-entity template with server + client EKU
+      # (hosts serve --listen-compute and call the tier; the tier serves --listen-hosts and calls hosts; never a CA
+      # template, never passthrough of arbitrary extensions); validity is capped by the CA's short-lived mode (7
+      # days). Which host id a certificate may carry is the tier's enrollment check: IAM cannot constrain a subject.
       {
         Sid      = "IssueHostCertificates"
         Effect   = "Allow"
         Action   = ["acm-pca:IssueCertificate"]
         Resource = [aws_acmpca_certificate_authority.hosts.arn]
         Condition = {
-          StringEquals = { "acm-pca:TemplateArn" = [
-            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1",
-            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityClientAuthCertificate/V1",
-          ] }
+          StringEquals = { "acm-pca:TemplateArn" = ["arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1"] }
         }
       },
+      # DescribeCertificateAuthority: the tier reads the CA's key algorithm to pick the signing algorithm (K4c3).
       {
         Sid      = "FetchIssuedCertificates"
         Effect   = "Allow"
-        Action   = ["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate"]
+        Action   = ["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate", "acm-pca:DescribeCertificateAuthority"]
         Resource = [aws_acmpca_certificate_authority.hosts.arn]
       },
       {
@@ -198,23 +212,62 @@ locals {
     && try(tolist(statement.Principal.Service), [statement.Principal.Service]) == ["ec2.amazonaws.com"]
   ])
 
+  # A host's keys (camelfsd/README.md, "Durability and lineage scope"): <lineage>/{o,t,k,r,c,ts,tr}/<hash>, the lineage
+  # first; and the guest image under guest/ (K1), read only. Scoped to exactly those (the lead, 2026-11-14): anything
+  # else in the bucket — another prefix, a future one — is denied by omission, not by a deny statement to keep up.
+  # A lineage is one path segment and hashes are hex, so "*/o/*" cannot match a key outside a lineage's objects.
+  host_object_kinds = ["o", "t", "k", "r", "c", "ts", "tr"]
+  host_object_arns  = [for kind in local.host_object_kinds : "${aws_s3_bucket.objects.arn}/*/${kind}/*"]
+  host_bucket_statements = [
+    {
+      Sid      = "LineageObjectsReadWrite"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
+      Resource = local.host_object_arns
+    },
+    # The hosts' CA certificate a host pins at install (mtls.tf, the lead's ruling 2026-11-14): the one object of the
+    # trust bucket a host may read; the AOP CA next to it is the public listener's business.
+    {
+      Sid      = "TierCaRead"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = ["${aws_s3_bucket.trust.arn}/hosts-ca.pem"]
+    },
+    {
+      Sid      = "GuestImageRead"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:GetObjectAttributes"]
+      Resource = ["${aws_s3_bucket.objects.arn}/${var.guest_image_prefix}guest/*"]
+    },
+    {
+      Sid      = "LineageObjectsList"
+      Effect   = "Allow"
+      Action   = ["s3:ListBucket"]
+      Resource = [aws_s3_bucket.objects.arn]
+      Condition = {
+        StringLike = { "s3:prefix" = concat([for kind in local.host_object_kinds : "*/${kind}/*"], ["${var.guest_image_prefix}guest/*"]) }
+      }
+    },
+    {
+      Sid      = "ObjectsKeyThroughS3"
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+      Resource = [aws_kms_key.objects.arn]
+      Condition = {
+        StringEquals = { "kms:ViaService" = "s3.${var.region}.amazonaws.com" }
+      }
+    },
+  ]
+
   host_policy = {
     Version = "2012-10-17"
-    Statement = concat(local.bucket_rw_statements, [
+    Statement = concat(local.host_bucket_statements, [
       # Trees and commits a checkpoint publishes (L74). Reads of a tree by id on a cache miss.
       {
         Sid      = "ObjectsTable"
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
-      },
-      # VM results are the tier's to write (the host hands the body to the tier in its "ended" call, K4): a host
-      # never puts under <lineage>/results/, whatever the shared bucket statement allows.
-      {
-        Sid      = "NoResults"
-        Effect   = "Deny"
-        Action   = ["s3:PutObject", "s3:PutObjectTagging"]
-        Resource = ["${aws_s3_bucket.objects.arn}/*/results/*"]
       },
       # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref, a lineage or a
       # control table directly (it asks the tier, which checks the fence), and never assumes another role.

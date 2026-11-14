@@ -4,6 +4,7 @@ package wire
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"unicode/utf8"
@@ -11,6 +12,9 @@ import (
 
 const JSONMax = 64 << 10
 const DataMax = 1 << 20
+const FrameMax = DataMax + JSONMax
+
+var ErrEmptyFrame = errors.New("frame length 0 exceeds limit")
 
 func Read(r io.Reader, max int) ([]byte, error) {
 	progress(r)
@@ -20,7 +24,16 @@ func Read(r io.Reader, max int) ([]byte, error) {
 		return nil, e
 	}
 	n := binary.BigEndian.Uint32(h[:])
-	if n == 0 || n > DataMax+JSONMax || n > uint32(max) {
+	if n > FrameMax {
+		return nil, fmt.Errorf("frame exceeds frameMax")
+	}
+	if n == 0 {
+		return nil, ErrEmptyFrame
+	}
+	if n > uint32(max) {
+		if n > JSONMax && max == JSONMax {
+			return nil, fmt.Errorf("JSON frame exceeds jsonMax")
+		}
 		return nil, fmt.Errorf("frame length %d exceeds limit", n)
 	}
 	b := make([]byte, int(n))

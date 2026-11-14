@@ -1275,7 +1275,7 @@ export class ClientSessions {
       if (ended) {
         const res = (c as Context<ClientEnv>).env.outgoing;
         const cursor = await this.idleCursor(id) ?? 0;
-        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" });
         res.write(`event: ready\ndata: ${JSON.stringify({ version: 5, runId: requestId, watch: true })}\n\n`);
         res.end(`id: ${cursor}\ndata: ${JSON.stringify({ type: "response", id: requestId, outcome: ended.outcome })}\n\n`);
         return RESPONSE_ALREADY_SENT;

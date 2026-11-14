@@ -14,6 +14,10 @@ import (
 )
 
 func clone(src, dst string) error {
+	return cloneImage(src, dst, true)
+}
+
+func cloneImage(src, dst string, sync bool) error {
 	f, e := os.Open(src)
 	if e != nil {
 		return e
@@ -35,7 +39,7 @@ func clone(src, dst string) error {
 	} else {
 		e = unix.IoctlFileClone(int(g.Fd()), int(f.Fd()))
 	}
-	if e == nil {
+	if e == nil && sync {
 		e = g.Sync()
 	}
 	ok = e == nil
@@ -155,4 +159,20 @@ func rangesFromExtents(es []extent, size int64, parent map[string]string) []chun
 		hole(pos, size)
 	}
 	return out
+}
+
+// A session disk can share extents with unpublished checkpoint snapshots or
+// with an older tree. Shared extents alone cannot prove equality to its base.
+func sessionRanges(f *os.File, size int64, parent map[string]string) ([]chunk.Range, error) {
+	if os.Getenv("CAMELFSD_TEST_NO_REFLINK") == "1" {
+		return []chunk.Range{{Offset: 0, Length: size}}, nil
+	}
+	es, err := extents(f)
+	if err != nil {
+		return nil, err
+	}
+	for i := range es {
+		es[i].Flags &^= 0x2000
+	}
+	return rangesFromExtents(es, size, parent), nil
 }

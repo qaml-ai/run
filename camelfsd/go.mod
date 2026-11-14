@@ -6,9 +6,12 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.9
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.62
+	github.com/aws/aws-sdk-go-v2/service/acmpca v1.40.0
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.41.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.78.0
+	github.com/aws/smithy-go v1.22.2
 	github.com/mattn/go-sqlite3 v1.14.24
+	golang.org/x/net v0.37.0
 	golang.org/x/sys v0.31.0
 )
 
@@ -27,5 +30,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.25.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.29.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.17 // indirect
-	github.com/aws/smithy-go v1.22.2 // indirect
 )

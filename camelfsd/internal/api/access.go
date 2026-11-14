@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -36,7 +37,10 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Only route templates and a validated, escaped lineage enter the access log.
 // Unknown paths, object ids, queries and request bodies are never logged.
-func storageLogRoute(path string) (route, lineage string) {
+// The lineage is validated on the decoded path; the ref action is read from the escaped path (like
+// parseRefRequest) so an encoded slash in a ref name cannot pose as an action.
+func storageLogRoute(method string, u *url.URL) (route, lineage string) {
+	path := u.Path
 	route, lineage = "/v1/unknown", "-"
 	if !strings.HasPrefix(path, "/v1/lineages/") {
 		return
@@ -46,9 +50,18 @@ func storageLogRoute(path string) (route, lineage string) {
 		return
 	}
 	lineage = url.PathEscape(parts[0])
+	if len(parts) == 1 {
+		return "/v1/lineages/:lineage", lineage
+	}
+	if parts[1] == "refs" {
+		if len(parts) == 2 {
+			return "/v1/lineages/:lineage/refs", lineage
+		}
+		return "/v1/lineages/:lineage/refs/:name" + refLogAction(method, u.EscapedPath()), lineage
+	}
 	if len(parts) == 2 {
 		switch parts[1] {
-		case "blobs", "commits", "read", "diff", "merge", "grep":
+		case "blobs", "commits", "read", "diff", "merge", "merge-base", "grep":
 			route = "/v1/lineages/:lineage/" + parts[1]
 		}
 	} else if len(parts) == 3 {
@@ -60,18 +73,100 @@ func storageLogRoute(path string) (route, lineage string) {
 		case "commits":
 			route = "/v1/lineages/:lineage/commits/:commit"
 		}
+	} else if len(parts) == 4 {
+		switch {
+		case parts[1] == "trees" && parts[3] == "entry":
+			route = "/v1/lineages/:lineage/trees/:tree/entry"
+		case parts[1] == "commits" && parts[3] == "is-ancestor":
+			route = "/v1/lineages/:lineage/commits/:commit/is-ancestor"
+		}
 	}
 	return
 }
 
+// refLogAction names the action of a single-ref route for the log template, the same way parseRefRequest
+// derives it (method + escaped-path suffix), so the ref's name never reaches the log.
+func refLogAction(method, path string) string {
+	switch {
+	case (method == http.MethodPut || method == http.MethodDelete) && strings.Contains(path, "/watchers/"):
+		return "/watchers/:watcher"
+	case method == http.MethodPost && strings.HasSuffix(path, "/lease/renew"):
+		return "/lease/renew"
+	case (method == http.MethodPost || method == http.MethodDelete) && strings.HasSuffix(path, "/lease"):
+		return "/lease"
+	case method == http.MethodPost:
+		switch path[strings.LastIndex(path, "/")+1:] {
+		case "cas", "write", "merge", "restore":
+			return "/" + path[strings.LastIndex(path, "/")+1:]
+		}
+	}
+	return ""
+}
+
 func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
+	route, lineage := storageLogRoute(r.Method, r.URL)
+	loggedAccess(w, r, route, lineage, s.storage)
+}
+
+func vmLogRoute(pattern string) string {
+	_, route, _ := strings.Cut(pattern, " ")
+	if strings.HasPrefix(route, "/v1/vms/{id}") {
+		return strings.NewReplacer("{id}", ":id", "{execId}", ":execId").Replace(route)
+	}
+	return "/v1/vms"
+}
+
+type readTimingKey struct{}
+
+type readTiming struct {
+	lineage, membership, tree, blob time.Duration
+	trees, blobs                    readCacheCounts
+}
+
+type readCacheCounts struct {
+	hits, misses atomic.Int64
+}
+
+func (c *readCacheCounts) record(hit bool) {
+	if hit {
+		c.hits.Add(1)
+	} else {
+		c.misses.Add(1)
+	}
+}
+
+func readTimingFrom(ctx context.Context) *readTiming {
+	t, _ := ctx.Value(readTimingKey{}).(*readTiming)
+	return t
+}
+
+// usageCount carries how many events a GET /v1/usage page returned into its access log line.
+type usageCount struct{ events int }
+type usageCountKey struct{}
+
+func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string, serve http.HandlerFunc) {
 	start := time.Now()
-	route, lineage := storageLogRoute(r.URL.Path)
 	rw := &statusWriter{ResponseWriter: w}
 	var timing *commitTiming
 	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/commits" {
 		timing = &commitTiming{}
 		r = r.WithContext(context.WithValue(r.Context(), commitTimingKey{}, timing))
+	}
+	var reads *readTiming
+	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/read" {
+		reads = &readTiming{}
+		r = r.WithContext(context.WithValue(r.Context(), readTimingKey{}, reads))
+	}
+	var moves *refTiming
+	switch route {
+	case "/v1/lineages/:lineage/refs/:name/write", "/v1/lineages/:lineage/refs/:name/merge", "/v1/lineages/:lineage/refs/:name/restore":
+		moves = &refTiming{}
+		r = r.WithContext(context.WithValue(r.Context(), refTimingKey{}, moves))
+	}
+	var usage *usageCount
+	if route == "/v1/usage" {
+		usage = &usageCount{}
+		r = r.WithContext(context.WithValue(r.Context(), usageCountKey{}, usage))
 	}
 	defer func() {
 		status := rw.status
@@ -84,7 +179,25 @@ func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
 			phases = fmt.Sprintf(" prechecksMs=%.3f readMs=%.3f readWaves=%d buildMs=%.3f putMs=%.3f putKeys=%d cacheMs=%.3f",
 				ms(timing.prechecks), ms(timing.read), timing.readWaves, ms(timing.build), ms(timing.Put), timing.PutKeys, ms(timing.Cache))
 		}
-		log.Printf("op=%s:%s lineage=%s status=%d ms=%.3f%s", r.Method, route, lineage, status, ms(time.Since(start)), phases)
+		if moves != nil {
+			phases = fmt.Sprintf(" objectsMs=%.3f putKeys=%d buildMs=%.3f ddbMs=%.3f ddbRetries=%d headMs=%.3f readTreeMs=%.3f diffMs=%.3f cacheMs=%.3f usageMs=%.3f casMs=%.3f",
+				ms(moves.objects.Put), moves.objects.PutKeys, ms(moves.build), ms(moves.ddb), moves.retries,
+				ms(moves.head), ms(moves.treeRead.read), ms(moves.diff), ms(moves.objects.Cache), ms(moves.usage), ms(moves.cas))
+		}
+		if reads != nil {
+			treeHits, treeMisses := reads.trees.hits.Load(), reads.trees.misses.Load()
+			blobHits, blobMisses := reads.blobs.hits.Load(), reads.blobs.misses.Load()
+			phases = fmt.Sprintf(" lineageMs=%.3f treeMembershipMs=%.3f treeMs=%.3f treeReads=%d treeCacheHits=%d treeCacheMisses=%d blobMs=%.3f blobReads=%d blobCacheHits=%d blobCacheMisses=%d",
+				ms(reads.lineage), ms(reads.membership), ms(reads.tree), treeHits+treeMisses, treeHits, treeMisses,
+				ms(reads.blob), blobHits+blobMisses, blobHits, blobMisses)
+		}
+		if usage != nil {
+			phases = fmt.Sprintf(" events=%d", usage.events)
+		}
+		if lineage != "" {
+			route += " lineage=" + lineage
+		}
+		log.Printf("op=%s:%s status=%d ms=%.3f%s", r.Method, route, status, ms(time.Since(start)), phases)
 	}()
-	s.storage(rw, r)
+	serve(rw, r)
 }

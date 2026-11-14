@@ -86,7 +86,7 @@ case "${1:-}" in
       cf -X PUT "$api/zones/$zone/origin_tls_client_auth/settings" --data '{"enabled": true}' >/dev/null
       echo "Zone-level AOP enabled on $zone_name with certificate $cert_id (expires in 365 days: diary it)."
     fi
-    echo "Verify from an allowed path: curl --connect-to $hostname:443:<public ALB dns>:443 https://$hostname/v0/health must fail without the certificate and succeed through Cloudflare."
+    echo "Verify from an allowed path: curl --connect-to $hostname:443:<public ALB dns>:443 https://$hostname/v1/health must fail without the certificate and succeed through Cloudflare."
     ;;
   test)
     alb=$(aws elbv2 describe-load-balancers --names camelfs-prod-public --query 'LoadBalancers[0].[LoadBalancerArn,DNSName]' --output text)
@@ -99,19 +99,19 @@ case "${1:-}" in
     # api_min_count 0) still proves Cloudflare's certificate passed the handshake, since a TLS failure at the origin
     # is Cloudflare's own 525 (handshake failed) or 526 (invalid certificate), never the ALB's 503.
     running=$(aws ecs describe-services --cluster camelfs-prod --services camelfs-prod-api --query 'services[0].runningCount' --output text 2>/dev/null || echo 0)
-    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://$hostname/v0/health" || true)
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://$hostname/v1/health" || true)
     echo "through Cloudflare: HTTP $code (running tasks: $running)"
     case "$code" in
       200) ;;
       503) [[ "$running" == 0 ]] && echo "503 from the ALB with no healthy target: mTLS OK, no tasks yet (api_min_count 0)." \
              || { echo "FAIL: 503 through Cloudflare with $running task(s) running: the targets are unhealthy, not a certificate problem." >&2; exit 1; } ;;
       525|526) echo "FAIL: Cloudflare could not complete the TLS handshake with the origin ($code): the leaf is not what the listener's trust store expects (aop.sh status; aop_ca_version)." >&2; exit 1 ;;
-      *) echo "FAIL: https://$hostname/v0/health answered $code through Cloudflare (is the leaf uploaded and enabled? aop.sh status)." >&2; exit 1 ;;
+      *) echo "FAIL: https://$hostname/v1/health answered $code through Cloudflare (is the leaf uploaded and enabled? aop.sh status)." >&2; exit 1 ;;
     esac
     # Straight at the ALB with the hostname as SNI and no client certificate. From an address the ranges group
     # admits this ends in a TLS alert (curl 35/56): the handshake itself is refused. From anywhere else the
     # connection times out (curl 28): that proves the security group, not mTLS; say which.
-    set +e; curl -sS -o /dev/null --max-time 10 --connect-to "$hostname:443:$alb_dns:443" "https://$hostname/v0/health" 2>"$work/direct.err"; rc=$?; set -e
+    set +e; curl -sS -o /dev/null --max-time 10 --connect-to "$hostname:443:$alb_dns:443" "https://$hostname/v1/health" 2>"$work/direct.err"; rc=$?; set -e
     case $rc in
       0) echo "FAIL: the ALB answered a request without a client certificate." >&2; exit 1 ;;
       35|56) echo "direct to the ALB without the certificate: refused at the TLS handshake (curl $rc). PASS." ;;

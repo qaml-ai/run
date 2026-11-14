@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { Buffer } from 'node:buffer';
 import { Imager, imageRequest, imageOptions, type ImageSource } from './media/images.ts';
 import { Transcriber, openaiTranscription, transcribeRequest, languageInput } from './media/transcription.ts';
@@ -7,11 +8,13 @@ import { speechRequest, speechInput, speechChoiceInput } from './media/speech-ap
 import { speechProvider, DEFAULT_VOICES } from './media/voice-providers/tts.ts';
 import { speechPrices, ttsCost } from '../../../src/voice-providers/prices.ts';
 import { boundedBytes } from './images.ts';
-import { volume, type FileBindings } from './files.ts';
-import { normalizePath } from './volume.ts';
+import type { FileBindings } from './files.ts';
+import { repoContext, type RepoEnv } from './repos/registry.ts';
+import { commitChanges } from './repos/write.ts';
+import { normalizeRepoPath, repoErrorFrom } from './repos/repo-policy.ts';
 import { HttpError } from './errors.ts';
 import { withSql, transaction, database } from './postgres.ts';
-import { EndUserCredits } from './end-user-credits.ts';
+import { admitEndUser, EndUserCredits } from './end-user-credits.ts';
 import { publishPending, type WebhookEnv } from './webhooks.ts';
 import { keyServices, type KeyServices } from './security-services.ts';
 import { runAdmission, type AdmissionEnv } from './admission.ts';
@@ -38,8 +41,8 @@ const json = (value: unknown) => Response.json(value, { headers: { 'cache-contro
 const testConfig = (env: MediaBindings) => env.TEST_MODE === '1' ? JSON.parse(env.TEST_MEDIA_TENANTS ?? '{}') : {};
 
 /** Credentials resolve at call time; they never enter agent history or public responses. */
-export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string) {
-  const { accounts, keyScopes } = services ?? await keyServices(env);
+export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string, invocation?: AgentInvocation, checkCredit = true) {
+  const { accounts, keyScopes } = services ?? await keyServices(env, invocation);
   // Match src/node.ts's standalone media resolution: an address-only scope is
   // a gateway that needs no key, while an absent entry falls back to the account.
   const entry = scope ? await keyScopes.entry(tenant, scope, provider) : undefined;
@@ -47,10 +50,14 @@ export async function mediaKey(env: MediaBindings, tenant: string, scope: string
     apiKey: entry.apiKey ?? '', ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
     ...(entry.headers ? { headers: entry.headers } : {}), platform: false,
   };
-  const resolved = await accounts.providerKey(tenant, provider);
+  const reads = {
+    ...invocation?.tenant(accounts.billing, tenant),
+    account: () => accounts.billing.readAccount(tenant),
+  };
+  const resolved = await accounts.providerKey(tenant, provider, reads);
   if (resolved) {
     const platform = chargesPlatform(resolved.source);
-    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    if (platform && checkCredit) { const limited = await accounts.billing.creditLimit(tenant, reads); if (limited) throw limited; }
     const azure = platform && provider === 'openai' && azureDeployment ? mediaAzure(env) : undefined;
     if (azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform: true };
     return { apiKey: resolved.key, platform };
@@ -127,14 +134,13 @@ async function admit(env: MediaBindings, tenant: string, services: KeyServices) 
   // Compatibility for pre-money-track synthetic fixture settings only.
   if (env.TEST_MODE !== '1' || !env.TEST_MEDIA_TENANTS || services.accounts.tenants.has(tenant)) return;
   const configured = testConfig(env).tenants?.[tenant];
-  const row = (await withSql(env, sql => sql.query('select t.billing,t.limits,a.balance,coalesce((select sum(amount) from credit_holds where tenant=t.id),0) held from tenants t left join credit_accounts a on a.tenant=t.id where t.id=$1', [tenant]))).rows[0];
+  const row = (await withSql(env, sql => sql.query('select limits from tenants where id=$1', [tenant]))).rows[0];
   if (!row) throw new HttpError(401, 'Unknown account');
   const cap = configured?.maxMonthlyCost ?? row.limits?.maxMonthlyCost;
   if (cap !== undefined) {
     const spent = Number((await withSql(env, sql => sql.query('select coalesce(sum(cost),0) spent from usage where tenant=$1 and day >= $2', [tenant,new Date().toISOString().slice(0,7)+'-01']))).rows[0].spent);
     if (spent >= cap) throw new HttpError(402, 'Monthly spend limit reached', 'SPEND_LIMIT');
   }
-  if (row.billing !== 'none' && Number(row.balance) - Number(row.held) <= 0) throw new HttpError(402, 'Credit required', 'INSUFFICIENT_CREDIT');
   const rate = configured?.runsPerMinute ?? row.limits?.runsPerMinute;
   if (rate !== undefined && env.TENANTS && !await env.TENANTS.getByName(tenant).rate('runs',rate)) throw new HttpError(429,'Run rate limit reached','RATE_LIMIT');
 }
@@ -175,14 +181,15 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
     const file=form.get('file'); if (file instanceof Blob) audio={bytes:new Uint8Array(await file.arrayBuffer())};
   } else { try { input=JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400,'Expected JSON object'); } }
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new HttpError(400,'Expected object');
+  if ('volumeId' in input) throw new HttpError(400, 'Volumes are replaced by repos: use { repo, path }');
   const extras = ['subject','actor','context','keyScope','bucket'];
-  const fields = kind === 'images' ? ['prompt','images','mask','size','quality','format','n','background','volumeId','path'] : kind === 'transcriptions' ? ['data','url','language','prompt'] : ['text','voice','instructions','language','format','speech'];
+  const fields = kind === 'images' ? ['prompt','images','mask','size','quality','format','n','background','repo','path'] : kind === 'transcriptions' ? ['data','url','language','prompt'] : ['text','voice','instructions','language','format','speech'];
   if (Object.keys(input).some(k=>![...fields,...extras].includes(k))) throw new HttpError(400,'Unknown request field');
   for (const key of ['subject','actor','keyScope','bucket']) if (input[key]!==undefined && (typeof input[key]!=='string' || !input[key].length || input[key].length>256)) throw new HttpError(400,`Invalid ${key}`);
   for (const key of ['subject','actor']) if (input[key]!==undefined && (!input[key].trim() || input[key].length>200)) throw new HttpError(400,`Invalid ${key}`);
   if (input.context!==undefined && (!input.context || typeof input.context!=='object' || Array.isArray(input.context))) throw new HttpError(400,'context must be an object');
   if (input.context!==undefined && Buffer.byteLength(JSON.stringify(input.context))>4096) throw new HttpError(400,'context must be at most 4 KB of JSON');
-  for (const key of ['volumeId','path','text','voice','instructions','language','prompt','format']) if (input[key]!==undefined && typeof input[key]!=='string') throw new HttpError(400,`${key} must be a string`);
+  for (const key of ['repo','path','text','voice','instructions','language','prompt','format']) if (input[key]!==undefined && typeof input[key]!=='string') throw new HttpError(400,`${key} must be a string`);
   if (input.path?.length>1000 || (kind==='transcriptions' && input.prompt?.length>2000)) throw new HttpError(400,'Request field is too long');
   if (kind==='speech' && typeof input.text!=='string') throw new HttpError(400,'text must be a string');
   const tenant=auth.tenantId, pending: Promise<void>[]=[];
@@ -196,23 +203,48 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
   const azure=mediaAzure(env);
   const identity=input.subject!==undefined || input.context!==undefined ? {subject:input.subject,context:input.context}:undefined;
   const facts={...(input.bucket!==undefined?{bucket:input.bucket}:{}),...(input.keyScope?{keyScope:input.keyScope}:{}),...(input.actor?{actor:input.actor}:{}),...(identity?{identity}:{})};
-  const hold=input.subject ? (usd:number)=>new EndUserCredits(database(env)).hold(tenant,input.subject,input.bucket??'default',usd,kind==='images'?'image':kind==='transcriptions'?'transcription':'speech') : undefined;
+  const admitCredit=input.subject ? ()=>admitEndUser(new EndUserCredits(database(env)),tenant,input.subject,input.bucket??'default',kind==='images'?'image':kind==='transcriptions'?'transcription':'speech') : undefined;
   if (kind==='images') {
     if (typeof input.prompt!=='string' || !input.prompt.trim() || input.prompt.length>32000) throw new HttpError(400,'prompt must contain 1–32000 characters');
     if (!multipart) { if(input.images!==undefined && !Array.isArray(input.images)) throw new HttpError(400,'images must be an array'); const checked=(value:any)=>{if (value && Object.keys(value).some(k=>k!=='data' && k!=='url')) throw new HttpError(400,'Unknown image source field');return source(value);}; images=(input.images??[]).map(checked); mask=input.mask!==undefined?checked(input.mask):undefined; }
-    if (input.path!==undefined && input.volumeId===undefined) throw new HttpError(400,'path requires volumeId');
-    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.imageDeployment),price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(hold?{hold}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
-    return json(made);
+    if (input.path!==undefined && input.repo===undefined) throw new HttpError(400,'path requires repo');
+    try {
+      const made = await drain(imageRequest({
+        ...common,
+        imager: new Imager({
+          provider: openaiImages({ outbound: common.outbound, baseUrl }),
+          key: (t,s,p) => mediaKey(env,t,s,p,services,azure?.imageDeployment),
+          price: () => prices.image,
+        }),
+        owns: async (t,id) => !!await repoContext(env as RepoEnv,t,id),
+        save: async (t,id,path,bytes,contentType) => {
+          const ctx = await repoContext(env as RepoEnv,t,id);
+          const saved = await commitChanges(ctx, {
+            op: 'api', ref: 'main', changes: { [path]: { bytes } }, pathExpect: { [path]: 'none' },
+            message: 'save image', author: `api:${t}`,
+          });
+          return { path, size: bytes.byteLength, version: saved.version!, contentType };
+        },
+      }, tenant, {
+        prompt: input.prompt, images, mask, options: imageOptions(input), ...facts, ...(admitCredit ? { admitCredit } : {}),
+        ...(input.repo !== undefined ? { repo: { id: input.repo, path: normalizeRepoPath(input.path ?? 'images') } } : {}),
+      }, request.signal));
+      return json(made);
+    } catch (error) {
+      const repoError = repoErrorFrom(error);
+      if (repoError) throw new HttpError(repoError.status, repoError.code, repoError.code, repoError.detail);
+      throw error;
+    }
   }
   if(kind==='transcriptions') {
     audio??=source(input);
-    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.transcriptionDeployment),price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(hold?{hold}:{})},request.signal));
+    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.transcriptionDeployment),price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(admitCredit?{admitCredit}:{})},request.signal));
     return json(made);
   }
   const tts = speechPrices({AGENT_SPEECH_PRICES:env.AGENT_SPEECH_PRICES});
   const synthesizer=new Synthesizer({provider:openaiSpeech({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key,price:()=>prices.speech,chain:{provider:reference=>speechProvider(reference,common.outbound),defaultVoice:provider=>DEFAULT_VOICES[provider],price:(reference,made)=>ttsCost(tts,reference,made)}});
   let made: Awaited<ReturnType<typeof speechRequest>>;
-  try { made=await speechRequest({...common,synthesizer},tenant,{...speechInput(input,DEFAULT_VOICE),...facts,language:languageInput(input.language),choice:speechChoiceInput(input.speech),...(hold?{hold}:{})},request.signal); }
+  try { made=await speechRequest({...common,synthesizer},tenant,{...speechInput(input,DEFAULT_VOICE),...facts,language:languageInput(input.language),choice:speechChoiceInput(input.speech),...(admitCredit?{admitCredit}:{})},request.signal); }
   catch(error) { await Promise.all(pending); throw error; }
   const reader=made.body.getReader();
   const stream=new ReadableStream<Uint8Array>({async pull(c){try{const next=await reader.read();if(next.done){await Promise.all(pending);c.close();}else c.enqueue(next.value);}catch(e){await Promise.all(pending);c.error(e);}},async cancel(reason){try{await reader.cancel(reason);}finally{await Promise.all(pending);}}});

@@ -1,3 +1,6 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { RefMove } from "./camelfs/notify.ts";
+import { AgentInvocation } from "./agent-invocation.ts";
 import { DurableObject } from "cloudflare:workers";
 import { guardAlarms } from "./alarm-guard.ts";
 import type { Placement } from "../../../shared/owner.ts";
@@ -15,87 +18,103 @@ export class CamelAgent extends DurableObject<Env> {
   readonly #runtime = new AgentRuntime(this.ctx, this.env, this);
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    // After the runtime's lifecycle installed its alarm handler on this instance (field initializers run first).
+    // Lifecycle installs the alarm handler and dispatches each agent job through onJob.
     guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
   }
 
-  removeMember(member: string) { return this.#runtime.removeMember(member); }
+  /** Binding-only journal write. Pi's write operation appends without admitting a model turn. */
+  async note(tenant: string, id: string, content: string) {
+    const conf = await this.#runtime.config();
+    if (conf.tenantId !== tenant) throw new Error("Agent not found");
+    const root = await (await this.#runtime.harness.pi()).root(BACKGROUND_CONTEXT);
+    const write = await root.submit({
+      type: "write", requestId: id,
+      entry: { kind: "camel.import", data: { requestId: id, metadata: { via: "voice" } },
+        model: [{ role: "user", content, timestamp: Date.now() }] },
+    }, BACKGROUND_CONTEXT);
+    this.ctx.waitUntil(write.wait(BACKGROUND_CONTEXT).then(() => this.#runtime.historyIndex.changed()));
+  }
+
+  removeMember(member: string) { return AgentInvocation.run(invocation => this.#runtime.removeMember(invocation, member)); }
 
   /** Binding-only pilot counters; no runtime state, SQL or values are exposed. */
   databaseProfile(reset = false) {
     if (this.env.PILOT_DB_PROFILE !== "1")
       return Promise.reject(new Error("Pilot database profiling is disabled"));
-    return this.#runtime.databaseProfile(reset);
+    return AgentInvocation.run(invocation => this.#runtime.databaseProfile(invocation, reset));
   }
 
   protected [ARM_AGENT](retry?: number) {
-    return this.#runtime.arm(retry);
+    return AgentInvocation.run(invocation => this.#runtime.arm(retry, invocation));
   }
 
   protected [DUE_HUMAN_INPUTS](at: number) {
-    return this.#runtime.dueHumanInputs(at);
+    return AgentInvocation.run(invocation => this.#runtime.dueHumanInputs(invocation, at));
   }
 
   purgeAccountData(tenant: string, id: string) {
-    return this.#runtime.purgeAccountData(tenant, id);
+    return AgentInvocation.run(invocation => this.#runtime.purgeAccountData(invocation, tenant, id));
   }
 
   admitDelegateWake(id: string): Promise<WakeDecision> {
-    return this.#runtime.admitDelegateWake(id);
+    return AgentInvocation.run(invocation => this.#runtime.admitDelegateWake(invocation, id));
   }
 
   receiveAgentMessage(
     request: NoticeRequest,
     notice: RuntimeNotice,
   ): Promise<unknown> {
-    return this.#runtime.receiveAgentMessage(request, notice);
+    return AgentInvocation.run(invocation => this.#runtime.receiveAgentMessage(invocation, request, notice));
   }
 
   /** A child's progress report, delivered by the child's outbox (binding-only). */
   receiveProgress(report: ChildProgressReport): Promise<Receipt> {
-    return this.#runtime.receiveProgress(report);
+    return AgentInvocation.run(invocation => this.#runtime.receiveProgress(invocation, report));
   }
 
   /** A child's ending, delivered by the child's outbox until this answers (binding-only). */
   receiveEnding(ending: ChildEnding): Promise<Receipt> {
-    return this.#runtime.receiveEnding(ending);
+    return AgentInvocation.run(invocation => this.#runtime.receiveEnding(invocation, ending));
   }
 
   /** A child run its owner starts, with its placement in the chain (binding-only). */
   admitDelegated(request: unknown, placement: Placement) {
-    return this.#runtime.admitDelegated(request, placement);
+    return AgentInvocation.run(invocation => this.#runtime.admitDelegated(invocation, request, placement));
   }
 
   hasChild(id: string): Promise<boolean> {
-    return this.#runtime.hasChild(id);
+    return AgentInvocation.run(invocation => this.#runtime.hasChild(invocation, id));
   }
 
   cancelRequest(id: string) {
-    return this.#runtime.cancelRequest(id);
+    return AgentInvocation.run(invocation => this.#runtime.cancelRequest(invocation, id));
   }
 
   fetch(request: Request): Promise<Response> {
-    return this.#runtime.fetch(request);
+    return AgentInvocation.run(invocation => this.#runtime.fetch(invocation, request));
   }
 
   onStart() {
-    return this.#runtime.onStart();
+    return AgentInvocation.run(invocation => this.#runtime.onStart(invocation));
   }
 
   onJob(context: { job: { fn: string } }) {
-    return this.#runtime.onJob(context);
+    return AgentInvocation.run(invocation => this.#runtime.onJob(invocation, context));
   }
 
   webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) {
-    return this.#runtime.webSocketMessage(socket, _data);
+    return AgentInvocation.run(invocation => this.#runtime.webSocketMessage(invocation, socket, _data));
   }
 
   webSocketClose(socket: WebSocket, code: number) {
-    return this.#runtime.webSocketClose(socket, code);
+    return AgentInvocation.run(invocation => this.#runtime.webSocketClose(invocation, socket, code));
   }
 
   webSocketError(socket: WebSocket) {
-    return this.#runtime.webSocketError(socket);
+    return AgentInvocation.run(invocation => this.#runtime.webSocketError(invocation, socket));
   }
 
+  /** A camel-fs notify delivery for a watched repo (an idempotent outbox row). */
+  vmEnded(delivery: string, vm: string) { return AgentInvocation.run(invocation => this.#runtime.vmEnded(invocation, delivery, vm)); }
+  stageRepoMove(move: RefMove) { return AgentInvocation.run(invocation => this.#runtime.stageRepoMove(invocation, move)); }
 }

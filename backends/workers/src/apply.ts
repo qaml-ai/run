@@ -1,17 +1,20 @@
+import { repoContext } from "./repos/registry.ts";
 import { applyResources, validateApply } from '../../../shared/apply.ts';
 import { applyScope, applyPreparation, ApplyChanged } from '../../../shared/apply-scope.ts';
 import { transaction } from './postgres.ts';
 import { Directory, type ControlEnv, type DirectoryEntry } from './control.ts';
 import { definitionRoutes, provisionDefinition, definitionUpsert, resolveDefinition, definitionId } from './definitions.ts';
 import { createRepo, type RepoEnv } from './repos/registry.ts';
-import { repoProvision, planRepo } from './repos/provision.ts';
+import { repoProvision } from './repos/provision.ts';
 import { reserveAgentCreation } from './agent-capacity.ts';
 import { body } from './validation.ts';
 import { ApiError } from './api-contract.ts';
 import type { AuthContext } from './control.ts';
 
 export async function apply(request: Request, env: ControlEnv, auth: AuthContext) {
-  const input = validateApply(await body(request, 1024 * 1024), message => new ApiError(400, message));
+  const raw = await body(request, 1024 * 1024);
+  if (raw && typeof raw === 'object' && 'volumes' in raw) throw new ApiError(400, 'Volumes are replaced by repos: use /v1/repos');
+  const input = validateApply(raw, message => new ApiError(400, message));
   const agents = new Map<string, DirectoryEntry>();
   const repos = new Map<string, {key:string;name:string;row:import('./repos/tenant-repos.ts').RepoRow}>();
   const directory = new Directory(env, auth.tenantId);
@@ -28,11 +31,7 @@ export async function apply(request: Request, env: ControlEnv, auth: AuthContext
       const run = () => applyScope.run({ sql }, () => applyResources(input, {
         error: message => new ApiError(400, message),
         async save(kind, key, value) {
-          if (kind === 'volumes') {
-            // The shared apply envelope keeps its volumes field; Worker mounts receive repo ids.
-            const saved = await planRepo(env as RepoEnv,auth.tenantId,key,value.name as string|undefined);
-            return { id: saved.row.id, action: saved.existing ? 'unchanged' : 'create' };
-          }
+          if (kind === 'volumes') throw new ApiError(400, 'Volumes are replaced by repos: use /v1/repos');
           if (kind === 'definitions') {
             const old = await resolveDefinition(env, auth.tenantId, await definitionId(auth.tenantId, key)).catch(error => { if (error.status === 404) return undefined; throw error; });
             const response = await definitionRoutes(new Request(new URL('/v1/definitions', request.url), { method: 'POST', headers: { 'content-type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(value) }), env, auth);
@@ -66,7 +65,7 @@ export async function apply(request: Request, env: ControlEnv, auth: AuthContext
         const result = await execute(false);
         // Initialize committed records only. Existing initialized agents receive no configuration call.
         for (const repo of repos.values()) await createRepo(env as RepoEnv,auth.tenantId,{key:repo.key,name:repo.name});
-        for (const entry of agents.values()) for(const mount of entry.config.mounts??[]) if(mount.repo&&mount.notify) await env.REPOS.getByName(`${auth.tenantId}:${mount.repo}`).watch(mount.ref??'main',entry.id);
+        for (const entry of agents.values()) for(const mount of entry.config.mounts??[]) if(mount.repo&&mount.notify) await (await repoContext(env as RepoEnv, auth.tenantId, mount.repo, `agent:${entry.id}`)).repo.watch(mount.ref??'main',entry.id);
         for (const entry of agents.values()) {
           const saved = await directory.initializeCommitted(entry, origin);
           if ('failed' in saved) throw new ApiError(saved.status, saved.error);

@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
-const files = ["billing", "billing-payments", "auto-topup", "card-credit", "billing-alerts", "stripe", "storage-usage"];
+const files = ["billing", "billing-payments", "auto-topup", "card-credit", "billing-alerts", "stripe"];
 for (const name of files) {
   let source = await readFile(resolve(here, `../../../src/${name}.ts`), "utf8");
   source = source.replaceAll('"./db.ts"', '"./postgres.ts"').replaceAll('"./http.ts"', '"./errors.ts"');

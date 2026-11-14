@@ -23,13 +23,9 @@ export type RepoFileRef = {
   head?: string;
 };
 
-// TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-export type LegacyFileRef = Omit<RepoFileRef,'repo'|'blob'|'repoPath'|'version'> & {volume:string;version:number;chunks:string[];key:string};
-export type FileRef = RepoFileRef | LegacyFileRef;
+export type FileRef = RepoFileRef;
 
 export function validFileRef(value: any): value is FileRef {
-  // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-  if(value && typeof value.volume==='string' && typeof value.key==='string' && Number.isSafeInteger(value.version) && Array.isArray(value.chunks)) return value.type==='file' && typeof value.path==='string' && Number.isSafeInteger(value.size) && value.size>=0 && typeof value.contentType==='string';
   return !!value && value.type === "file" && typeof value.path === "string" && typeof value.repo === "string" &&
     /^[a-f0-9]{40}$/.test(value.version) && Number.isSafeInteger(value.size) && value.size >= 0 && typeof value.contentType === "string" &&
     typeof value.blob === "string" && /^[a-f0-9]{40}$/.test(value.blob) &&

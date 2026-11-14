@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import {
   withSql,
   transaction,
@@ -39,7 +40,8 @@ export async function enqueueEventsWithoutMirrors(sql: Sql, events: WebhookEvent
     insert into usage_webhook_outbox (id, tenant, body, due, created_at)
     select (e->>'id')::uuid, e->>'tenant', e, $3, $3
     from jsonb_array_elements($2::jsonb) as e
-    where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')`,
+    where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')
+    on conflict (id) do nothing`,
   [JSON.stringify(events), JSON.stringify(legacy), Date.now()]);
   recordEventMetrics(events);
 }
@@ -191,9 +193,9 @@ export async function pendingDeliveries(sql: Sql, now = Date.now()) {
   return pending as { pending: number; oldest: number | null; deliveries: string[]; emails: string[] };
 }
 
-export async function publishPending(env: WebhookEnv): Promise<number> {
+export async function publishPending(env: WebhookEnv, invocation?: AgentInvocation): Promise<number> {
   if (!env.WEBHOOKS) return 0;
-  const backlog = await withSql(env, sql => pendingDeliveries(sql));
+  const backlog = await withSql(env, sql => pendingDeliveries(sql), invocation);
   metric(env,'webhook_backlog',{WebhookBacklog:Number(backlog.pending),WebhookOldestPendingMs:backlog.oldest === null ? 0 : Math.max(0,Date.now()-Number(backlog.oldest))});
   if (backlog.deliveries.length)
     await env.WEBHOOKS.sendBatch(backlog.deliveries.map(id => ({ body: { id } })));

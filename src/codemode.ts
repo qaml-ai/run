@@ -96,16 +96,21 @@ export class CodeGate {
  * confined ("isolated"); without it, this process's own children ("in-process"), which
  * AGENT_SANDBOX_REQUIRED=1 (the image sets it) refuses.
  */
+/** How long each startup check (code, then a file parse) may take on a cold, possibly busy host. */
+const STARTUP_CHECK_MS = 60_000;
 export async function checkSandbox(options: { sandboxes?: CodeSandboxes; required?: boolean } = {}): Promise<Record<string, unknown>> {
   const isolated = sandboxDir() !== undefined;
   const reason = "no agent-launcher: it confines code and file parsing when the image runs as root on Linux";
   if (!isolated && options.required) throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
   const started = performance.now();
-  const ran = await (options.sandboxes ?? (limits => new PiV8Sandbox(limits)))({ timeoutMs: 60_000 }).execute("return 1").catch(error => ({ ok: false as const, error: { message: errorText(error) } }));
+  const ran = await (options.sandboxes ?? (limits => new PiV8Sandbox(limits)))({ timeoutMs: STARTUP_CHECK_MS }).execute("return 1").catch(error => ({ ok: false as const, error: { message: errorText(error) } }));
   if (!ran.ok || ran.value !== 1) throw new Error(`Code does not run: ${ran.ok ? `it returned ${JSON.stringify(ran.value)}` : ran.error.message}`);
   // A 1×1 PNG.
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-  const parsed = await parse(png, false).catch(error => errorText(error));
+  // The same budget as the code check above, not a request's parse deadline: at boot the parser is a cold process
+  // (node, then its modules), and a host busy with a deploy or a neighbour may take far longer than a warm request
+  // would. A parser that is broken still fails at once; one that never answers fails at this deadline.
+  const parsed = await parse(png, false, false, { deadlineMs: STARTUP_CHECK_MS }).catch(error => errorText(error));
   if ((parsed as { media?: { width?: unknown } })?.media?.width !== 1) throw new Error(`Files cannot be parsed: ${typeof parsed === "string" ? parsed : JSON.stringify(parsed)}`);
   return { mode: isolated ? "isolated" : "in-process", ...(isolated ? {} : { reason }), ms: Math.round(performance.now() - started) };
 }

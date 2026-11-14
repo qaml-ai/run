@@ -7,10 +7,10 @@ import type { RepoRow } from './tenant-repos.ts';
 /** Apply validates repo identities without creating Durable Objects during its rolled-back preview. */
 export const repoProvision = new AsyncLocalStorage<Map<string,{key:string;name:string;row:RepoRow}>>();
 export async function planRepo(env:RepoEnv,tenant:string,key:string,name='repo') {
-  check(typeof name==='string'&&name.length>=1&&name.length<=120,'bad-name');
+  check(typeof name==='string'&&name.length>=1&&name.length<=120,'bad_name');
   const id=keyedRepoId(tenant,key);
   const prior=await prepareApply(`repo-row:${tenant}:${id}`,()=>env.TENANTS.getByName(tenant).repoRow(id));
-  if(prior?.deletedAt!==null&&prior?.deletedAt!==undefined)throw new RepoError('deleted-key',409,'deleted-key');
+  if(prior?.deletedAt!==null&&prior?.deletedAt!==undefined)throw new RepoError('deleted_key',409,'deleted_key');
   const row=prior??{id,key,name,lineage:`${tenant}:${id}`,createdAt:Date.now(),deletedAt:null,bytes:0,files:0};
   repoProvision.getStore()!.set(id,{key,name,row});
   return {row,existing:!!prior};

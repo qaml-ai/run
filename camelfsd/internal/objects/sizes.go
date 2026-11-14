@@ -18,6 +18,10 @@ import (
 // SizedTree supplies the same entries as ReadTree, including stored sizes.
 // Its sidecar is required: reads never recover sizes from blob metadata or data.
 func (r *Repository) SizedTree(ctx context.Context, id string) ([]Entry, error) {
+	return r.sizedTree(ctx, id, nil)
+}
+
+func (r *Repository) sizedTree(ctx context.Context, id string, observeCache func(hit bool)) ([]Entry, error) {
 	if !root.Hex(id, 40) {
 		return nil, apierr.Invalid("invalid tree id")
 	}
@@ -34,14 +38,18 @@ func (r *Repository) SizedTree(ctx context.Context, id string) ([]Entry, error) 
 	r.observe("tree")
 	var tree []byte
 	var treeErr error
+	var treeCold bool
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		tree, treeErr = r.objectBytes(ctx, id, "tree")
+		tree, treeErr = r.objectBytes(ctx, id, "tree", &treeCold)
 	}()
 	b, cold, err := r.treeSizesBytes(ctx, id)
 	wg.Wait()
+	if observeCache != nil {
+		observeCache(!treeCold && !cold)
+	}
 	if treeErr != nil {
 		return nil, treeErr
 	}
@@ -77,7 +85,7 @@ func (r *Repository) treeSizesBytes(ctx context.Context, id string) ([]byte, boo
 	if cold {
 		b, e = r.Store.Get(ctx, "ts/"+id)
 		if errors.Is(e, os.ErrNotExist) {
-			return nil, false, &MissingTreeSizes{Tree: id}
+			return nil, true, &MissingTreeSizes{Tree: id}
 		}
 	}
 	return b, cold, e

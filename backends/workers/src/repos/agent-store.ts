@@ -1,26 +1,37 @@
-import { FileError } from '../volume.ts';
+import type { AgentInvocation } from "../agent-invocation.ts";
+import { FileError } from '../file-errors.ts';
 import { sniffContentType } from '../file-policy.ts';
 import { repoContext, type RepoEnv } from './registry.ts';
-import { commitChanges, type WriteInput } from './write.ts';
+import { listFiles, statPaths, versionEntries } from './reads.ts';
+import { commitChanges, type CommitOp, type WriteInput } from './write.ts';
 import { repoErrorFrom, type Entry } from './repo-policy.ts';
+import { agentRepoId } from './identity.ts';
+import { workspaceRefKey, type RepoTreeScope } from './tree-cache.ts';
+
+export const TOOL_READ_BYTES = 1024 * 1024;
 export const insideRepo = (path: string) => path.replace(/^\/+/, '');
-export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref = 'main', agent = '', identity: Record<string,string> = {}) {
-  const ctx = await repoContext(env, tenant, repo);
+export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref = 'main', agent = '', identity: Record<string,string> = {}, scope?: RepoTreeScope, invocation?: AgentInvocation) {
+  const ctx = await repoContext(env, tenant, repo, agent ? `agent:${agent}` : undefined);
+  const cache = scope?.cache;
+  const workspaceRef = cache && repo === agentRepoId(tenant, agent)
+    ? workspaceRefKey(ctx.lineage, ctx.repo.tierRefName(ref))
+    : undefined;
+  const resolve = async (version?: string) => {
+    const current = workspaceRef ? cache!.head(workspaceRef) : undefined;
+    const head = version === undefined ? await ctx.repo.ref(ref)
+      : current && current.version === version && cache!.complete(current.tree) ? current
+      : await ctx.repo.resolve(version);
+    if (head) scope?.pin(head.tree);
+    if (version === undefined && workspaceRef && cache!.head(workspaceRef)?.version === current?.version)
+      cache!.observe(workspaceRef, head);
+    return head;
+  };
   const decorate = (entry: {path: string; blob: string; size: number}, version: string) => ({ ...entry, path: '/' + entry.path, version, contentType: sniffContentType(new Uint8Array(), entry.path) });
-  // The head entry from the object's cache (one RPC); `sniff` reads the first 512 bytes for the content type.
-  // With `version` (e.g. the commit an attachment landed in), a version the ref has moved past lists its directory.
   const entryAt = async (path: string, version?: string) => {
     const p = insideRepo(path);
     if (!p) throw new FileError(`File not found: ${path}`, 404);
-    let head: { version: string; tree: string; entries: Record<string, Entry | null> };
-    try { head = await ctx.stub.stat(ref, [p]); }
-    catch (e) { if (repoErrorFrom(e)?.code === 'no-ref') throw new FileError(`File not found: ${path}`, 404); throw e; }
-    if (version !== undefined && head.version !== version) {
-      const v = await ctx.stub.resolve(version), dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : undefined;
-      const found = (await ctx.storage.listAll(ctx.lineage, v.tree, dir)).find((e): e is Entry => 'blob' in e && e.path === p);
-      head = { version: v.version, tree: v.tree, entries: { [p]: found ?? null } };
-    }
-    const entry = head.entries[p];
+    const head = await resolve(version);
+    const entry = head && (await statPaths(ctx, head.tree, [p], cache))[p];
     if (!entry) throw new FileError(`File not found: ${path}`, 404);
     return { p, entry, head };
   };
@@ -29,25 +40,39 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
     const bytes = entry.size ? await ctx.storage.readBlob(ctx.lineage, entry.blob, head.tree, p, `bytes=0-${Math.min(512, entry.size) - 1}`) : new Uint8Array();
     return { ...decorate(entry, head.version), contentType: sniffContentType(bytes, p) };
   };
-  const commit = async (changes: WriteInput['changes'], pathExpect: WriteInput['pathExpect'] = {}, message = 'files changed', trailers: Record<string,string> = {}) => {
-    try { return await commitChanges(ctx, { ref, changes, pathExpect, message, author: `agent:${agent}`, who: `agent:${agent}`, why: 'agent', trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } }); }
-    catch (error) { if (repoErrorFrom(error)?.code === 'stale-path') throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
+  const commit = async (changes: WriteInput['changes'], pathExpect: WriteInput['pathExpect'] = {}, message = 'files changed', trailers: Record<string,string> = {}, op: CommitOp = 'turn') => {
+    try {
+      const write = () => commitChanges(ctx, { ref, op, changes, pathExpect, message, author: `agent:${agent}`, trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } }, invocation);
+      return await (workspaceRef ? cache!.write(workspaceRef, write) : write());
+    }
+    catch (error) { const repo = repoErrorFrom(error); if (repo?.code === 'stale' && typeof repo.detail?.path === 'string') throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
   };
   return { ctx, ref, stat, commit,
-    async list(path = '/', _version?: string, pattern?: string) {
-      // Only the subtree under `path`, paged from the object's head cache.
-      const prefix = insideRepo(path), entries: Entry[] = [];
-      let after: string | undefined, version: string | undefined;
-      do {
-        let page;
-        try { page = await ctx.stub.list({ ref, prefix: prefix || undefined, after, limit: 10000 }); }
-        catch (e) { if (repoErrorFrom(e)?.code === 'no-ref') return []; throw e; }
-        if (version !== undefined && page.version !== version) { entries.length = 0; after = undefined; version = undefined; continue; }
-        version = page.version; entries.push(...page.entries); after = page.next ?? undefined;
-      } while (after);
-      return entries.filter(e => !pattern || globMatch(e.path.slice(prefix ? prefix.length + 1 : 0), pattern)).map(e => decorate(e, version!));
+    moved(result: { previous: string | null; version: string; tree: string }) {
+      if (workspaceRef) cache!.notify(workspaceRef, result.previous, result);
     },
-    async read(path: string, _version?: string, maxBytes = 1024 * 1024) {
+    async list(path = '/', _version?: string, pattern?: string, includeFile = false) {
+      const head = await resolve();
+      if (!head) return [];
+      const prefix = insideRepo(path).replace(/\/$/, ''), entries: Entry[] = [];
+      if (includeFile && prefix) {
+        const entry = (await statPaths(ctx, head.tree, [prefix], cache))[prefix];
+        if (entry) return [decorate(entry, head.version)];
+      }
+      if (cache && !cache.complete(head.tree) && !cache.oversize(head.tree)) {
+        const all = await versionEntries(ctx, head.tree, cache);
+        return all.filter(e => (!prefix || e.path.startsWith(prefix + '/')) &&
+          (!pattern || globMatch(e.path.slice(prefix ? prefix.length + 1 : 0), pattern))).map(e => decorate(e, head.version));
+      }
+      let after: string | undefined;
+      do {
+        const page = await listFiles(ctx, head.tree, { path: prefix || undefined, after, limit: 10000 }, cache);
+        entries.push(...page.entries);
+        after = page.next ?? undefined;
+      } while (after);
+      return entries.filter(e => !pattern || globMatch(e.path.slice(prefix ? prefix.length + 1 : 0), pattern)).map(e => decorate(e, head.version));
+    },
+    async read(path: string, _version?: string, maxBytes = TOOL_READ_BYTES) {
       const { p, entry, head } = await entryAt(path);
       if (entry.size > maxBytes) throw new FileError('Tool file exceeds 1 MiB', 413);
       const bytes = await ctx.storage.readBlob(ctx.lineage, entry.blob, head.tree, p);
@@ -56,7 +81,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
     async write(path: string, bytes: Uint8Array, contentType: string, expected?: string) {
       const p = insideRepo(path); const result = await commit({[p]: { bytes }}, expected === undefined ? {} : {[p]: expected}, `write ${p}`);
       // An unchanged write moves nothing: answer with the current entry.
-      const entry = result.files[p] ?? (await entryAt(path)).entry;
+      const entry = result.files[p] ?? (await entryAt(path, result.version!)).entry;
       return { ...decorate(entry, result.version!), version: result.version!, contentType };
     },
   };

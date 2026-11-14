@@ -86,16 +86,13 @@ func (s *Store) watch(ctx context.Context, lineage, name, agent, action string) 
 	if err := validate(lineage, name); err != nil {
 		return err
 	}
-	if agent == "" {
+	if !ValidOwner(agent) {
 		return failure("invalid", 400)
 	}
 	_, err := s.update(ctx, lineage, name, live, action+" #watchers :agents",
 		attributes{":now": num(s.now().UnixMilli()), ":agents": &types.AttributeValueMemberSS{Value: []string{agent}}},
 		types.ReturnValueNone)
 	if ddb.IsConditionFailed(err) {
-		if action == "DELETE" {
-			return nil
-		}
 		return failure("no_ref", 404)
 	}
 	return err

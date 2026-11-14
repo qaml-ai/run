@@ -170,7 +170,7 @@ export type ItemResult =
 /**
  * A request's outcome: each item's, and its usage record for the caller to record (none when nothing was answered).
  * `costUsd` is what the provider charged; `chargedUsd` what the tenant pays for it (on the platform's key, what its
- * OpenRouter credits cost: `creditMultiplier` times), which an end user's hold settles at.
+ * OpenRouter credits cost: `creditMultiplier` times), which is the end user's cost.
  */
 export type Decided = { model: string; results: ItemResult[]; usage?: UsageRecord; costUsd: number; chargedUsd: number; inputTokens: number; outputTokens: number; ms: number };
 
@@ -428,8 +428,8 @@ export type DecisionsRequest = DecisionRequest & {
   dataCollection?: "deny";
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
   identity?: AgentIdentity; actor?: string; bucket?: string;
-  /** When its end user pays for it: holds the estimate (USD) of their credit before anything is sent. */
-  hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+  /** Check the end user at admission and return a callback for the actual cost. */
+  admitCredit?: () => Promise<((usd: number) => Promise<void>) | undefined> | undefined;
 };
 
 export interface DecisionService {
@@ -443,12 +443,10 @@ export interface DecisionService {
 /** Decisions asked for alone (`POST /v1/decisions`): nothing is kept of the state or the answers. */
 export async function decisionsRequest(service: DecisionService, tenant: string, request: DecisionsRequest, signal: AbortSignal) {
   await service.admit(tenant);
-  const held = await request.hold?.(service.decider.estimate(request.items, request.model));
-  let decided: Decided;
-  try { decided = await service.decider.decide({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}), ...(request.dataCollection ? { dataCollection: request.dataCollection } : {}) }, request, signal); }
-  catch (error) { await held?.release(); throw error; }
+  const debit = await request.admitCredit?.();
+  const decided = await service.decider.decide({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}), ...(request.dataCollection ? { dataCollection: request.dataCollection } : {}) }, request, signal);
   if (decided.usage) service.record(tenant, { ...decided.usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.bucket === undefined ? {} : { bucket: request.bucket }), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
-  await held?.settle(decided.chargedUsd);
+  await debit?.(decided.chargedUsd);
   return decisionsAnswer(decided, request.batch);
 }
 
@@ -489,16 +487,14 @@ export const DECIDE: ToolDefinition = {
 
 /**
  * A decide call: its arguments checked, answered within `budget` (USD, when the run or agent has a limit). `record` takes
- * its usage as soon as it is answered. `hold`, when its end user pays for it, holds the estimate of their credit first.
+ * its usage as soon as it is answered. `admitCredit` checks and debits the end user's credit.
  */
-export async function decideTool(decider: Decider, context: { tenant: string; keyScope?: string; budget?: number; dataCollection?: "deny" | null; record(usage: UsageRecord): void; hold?: DecisionsRequest["hold"] }, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
+export async function decideTool(decider: Decider, context: { tenant: string; keyScope?: string; budget?: number; dataCollection?: "deny" | null; record(usage: UsageRecord): void; admitCredit?: DecisionsRequest["admitCredit"] }, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   const request = decisionRequest(args ?? {});
-  const held = await context.hold?.(decider.estimate(request.items, request.model));
-  let decided: Decided;
-  try { decided = await decider.decide({ tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}), ...(context.budget !== undefined ? { budget: context.budget } : {}), ...(context.dataCollection ? { dataCollection: context.dataCollection } : {}) }, request, signal); }
-  catch (error) { await held?.release(); throw error; }
+  const debit = await context.admitCredit?.();
+  const decided = await decider.decide({ tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}), ...(context.budget !== undefined ? { budget: context.budget } : {}), ...(context.dataCollection ? { dataCollection: context.dataCollection } : {}) }, request, signal);
   if (decided.usage) context.record(decided.usage);
-  await held?.settle(decided.chargedUsd);
+  await debit?.(decided.chargedUsd);
   const value = decisionsAnswer(decided, request.batch);
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }

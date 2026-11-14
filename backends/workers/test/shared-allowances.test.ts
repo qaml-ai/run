@@ -4,8 +4,6 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { randomUUID } from "node:crypto";
-
 import { EndUserCredits, utcDay, settleUsage } from "../src/end-user-credits.ts";
 
 import { transaction } from "../src/postgres.ts";
@@ -19,62 +17,51 @@ async function fixture(settings: Record<string, unknown> = {}) {
   return { db, credits };
 }
 
-test("parallel bots reserve one pool, keep per-bucket spend, and settle idempotently", async () => {
+test("concurrent debits share one pool and preserve per-bucket spend", async () => {
   const { credits } = await fixture({ allowances: { builder: 80, "bot:*": 1000 } });
-  const results = await Promise.all(["bot:1", "bot:2"].map(bucket => credits.reserve("t", "u", bucket, { id: randomUUID(), want: 70, min: 1 })));
-  assert.deepEqual(results.map(result => result!.hold!.allowance).sort((a,b) => a-b), [30, 70]);
-  const held = await credits.get("t", "u");
-  assert.deepEqual(held.today.pools, [{ key: "bot:*", allowance: 100, allowanceSpent: 0, held: 100, allowanceLeft: 0 }]);
-  assert.equal((await credits.reserve("t", "u", "bot:3", { id: randomUUID(), want: 1, min: 1 }))?.refused?.reason, "balance");
-  for (const [i, result] of results.entries()) {
-    const hold = result!.hold!;
-    await credits.settleHold("t", "u", `bot:${i + 1}`, hold.id, hold.raw, `settle:${i}`);
-    await credits.settleHold("t", "u", `bot:${i + 1}`, hold.id, hold.raw, `settle:${i}`);
-  }
+  const buckets = ["bot:1", "bot:2"];
+  for (const bucket of buckets) assert.equal(await credits.refusal("t", "u", bucket), undefined);
+  const debits = buckets.map(bucket => () => credits.debit("t", "u", bucket, 0.000070, bucket));
+  await Promise.all([...debits, ...debits].map(debit => debit()));
   const after = await credits.get("t", "u", ["bot:3"]);
-  assert.equal(after.today.pools[0].allowanceSpent, 100);
-  assert.equal(after.today.pools[0].held, 0);
+  assert.deepEqual([after.balance, after.today.pools[0].allowanceSpent, after.today.pools[0].held], [-40, 100, 0]);
   assert.equal(after.today.buckets.filter(row => row.bucket.startsWith("bot:")).reduce((sum, row) => sum + row.allowanceSpent, 0), 100);
-  assert.equal(after.today.buckets.find(row => row.bucket === "bot:3")!.pool!.allowanceLeft, 0);
-  assert.equal((await credits.reserve("t", "u", "builder", { id: randomUUID(), want: 80, min: 80 }))?.hold?.allowance, 80);
+  assert.equal((await credits.refusal("t", "u", "bot:3"))?.reason, "balance");
+  assert.equal(await credits.refusal("t", "u", "builder"), undefined);
   assert.equal((await credits.get("t", "other")).today.pools[0].allowanceLeft, 100);
 });
 
 test("exact, prefix, and fallback pools have separate membership, including zero overrides", async () => {
   const { credits } = await fixture({ sharedAllowances: { "*": 100, "bot:*": 200, "bot:exact": 300 } });
-  await credits.charge("t", "u", "bot:exact", 30, "exact");
-  await credits.charge("t", "u", "bot:other", 20, "prefix");
-  await credits.charge("t", "u", "other", 10, "fallback");
+  await credits.debit("t", "u", "bot:exact", (30) / 1_000_000, "exact");
+  await credits.debit("t", "u", "bot:other", (20) / 1_000_000, "prefix");
+  await credits.debit("t", "u", "other", (10) / 1_000_000, "fallback");
   const user = await credits.get("t", "u");
   assert.deepEqual(user.today.pools.map(pool => [pool.key, pool.allowanceSpent]), [["*", 10], ["bot:*", 20], ["bot:exact", 30]]);
   assert.ok(user.today.buckets.some(bucket => bucket.bucket === "bot:exact"));
   await credits.update("t", "u", { sharedAllowances: { "bot:*": 0 } });
-  assert.ok((await credits.reserve("t", "u", "bot:new", { id: randomUUID(), want: 1, min: 1 }))?.refused);
+  assert.ok(await credits.refusal("t", "u", "bot:new"));
   assert.equal((await credits.get("t", "someone", ["bot:exact"])).today.buckets[0].pool!.allowanceLeft, 300);
 });
 
-test("pool extensions, refunds, and paid bucket limits share the same budget", async () => {
-  const { credits } = await fixture({ bucketLimits: { "bot:*": 0 } });
-  const first = (await credits.reserve("t", "u", "bot:1", { id: randomUUID(), want: 60, min: 1 }))!.hold!;
-  const second = (await credits.reserve("t", "u", "bot:2", { id: randomUUID(), want: 30, min: 1 }))!.hold!;
-  assert.equal((await credits.extend("t", "u", "bot:1", first.id, 30))?.hold?.allowance, 10);
-  assert.equal((await credits.extend("t", "u", "bot:2", second.id, 1))?.refused?.reason, "bucket_limit");
-  await credits.settleHold("t", "u", "bot:1", first.id, 40, "first");
-  assert.equal((await credits.get("t", "u")).today.pools[0].allowanceLeft, 30);
-  await credits.release(second.id);
-  await credits.post("t", "u", { kind: "grant", amount: 100, key: "paid" });
-  await credits.setSettings("t", { bucketLimits: { "bot:*": 50 }, markupBps: 2500 });
-  const paid = (await credits.reserve("t", "u", "bot:3", { id: randomUUID(), want: 100, min: 1 }))!.hold!;
-  assert.deepEqual([paid.allowance, paid.paid], [60, 50]);
-  await credits.release(paid.id);
+test("a shared allowance pays first and a paid bucket limit gates the next call", async () => {
+  const { credits } = await fixture({ bucketLimits: { "bot:*": 50 }, markupBps: 2500 });
+  await credits.post("t", "u", { kind: "grant", amount: 1000, key: "paid" });
+  await credits.debit("t", "u", "bot:1", 0.000040, "first");
+  await credits.debit("t", "u", "bot:2", 0.000120, "second");
+  const state = await credits.get("t", "u");
+  assert.equal(state.today.pools[0].allowanceLeft, 0);
+  assert.deepEqual(state.today.buckets.map(row => [row.bucket, row.allowanceSpent, row.paidSpent]), [["bot:1", 40, 0], ["bot:2", 60, 75]]);
+  assert.equal((await credits.refusal("t", "u", "bot:2"))?.reason, "bucket_limit");
+  assert.equal(await credits.refusal("t", "u", "bot:3"), undefined);
 });
 
 test("policy changes regroup existing spend, most-specific pools win, and overrides merge safely", async () => {
   const { credits } = await fixture({ sharedAllowances: {}, allowances: { "bot:*": 100 } });
-  await credits.charge("t", "u", "bot:1", 60, "old-spend");
+  await credits.debit("t", "u", "bot:1", (60) / 1_000_000, "old-spend");
   await credits.setSettings("t", { sharedAllowances: { "bot:*": 100, "bot:vip-*": 200 } });
   assert.equal((await credits.get("t", "u")).today.pools.find(row => row.key === "bot:*")!.allowanceLeft, 40);
-  await credits.charge("t", "u", "bot:vip-1", 150, "vip-spend");
+  await credits.debit("t", "u", "bot:vip-1", (150) / 1_000_000, "vip-spend");
   const state = await credits.update("t", "u", { sharedAllowances: { "bot:*": 500 } });
   assert.deepEqual(state.today.pools.map(row => [row.key, row.allowanceLeft]), [["bot:*", 440], ["bot:vip-*", 50]]);
   assert.equal((await credits.update("t", "u", { sharedAllowances: { "bot:*": null } })).today.pools[0].allowance, 100);
@@ -104,16 +91,11 @@ test("pool warnings and exhaustion fire once per day even after a correction", a
   assert.equal(events.find(row => row.type === "end_user.allowance.low")!.data.pool, "bot:*");
 });
 
-test("a hold begun yesterday extends from yesterday's pool and leaves today's pool free", async () => {
+test("a debit uses the original UTC day and leaves the new day's pool available", async () => {
   const { credits } = await fixture();
-  const now = Date.parse(`${utcDay(Date.now())}T00:00:00Z`), yesterday = now - 1000;
-  const old = (await credits.reserve("t", "u", "bot:1", { id: randomUUID(), want: 60, min: 1 }, yesterday))!.hold!;
-  assert.equal((await credits.extend("t", "u", "bot:1", old.id, 100, now))!.hold!.allowance, 40);
-  await credits.post("t", "u", { kind: "grant", amount: 50, key: "paid" });
-  await credits.reserve("t", "u", "bot:3", { id: randomUUID(), want: 40, min: 40 }, yesterday);
-  const today = await credits.get("t", "u", ["bot:1"], now);
-  assert.equal(today.today.pools[0].held, 0);
-  assert.equal(today.today.buckets.find(row => row.bucket === "bot:3")!.held, 40);
-  assert.equal(today.available, 10);
-  assert.equal((await credits.reserve("t", "u", "bot:2", { id: randomUUID(), want: 100, min: 1 }, now))!.hold!.allowance, 100);
+  const now = Date.parse(`${utcDay(Date.now())}T00:00:00Z`), yesterday = now - 1_000;
+  await credits.debit("t", "u", "bot:1", 0.000100, "yesterday", {}, { now: yesterday });
+  const [entry] = (await credits.ledger("t", "u")).entries;
+  assert.equal(entry.metadata.day, utcDay(yesterday));
+  assert.equal((await credits.get("t", "u", ["bot:1"], now)).today.pools[0].allowanceLeft, 100);
 });

@@ -17,8 +17,6 @@ const (
 	DefaultMaxTTL   = 15 * time.Minute
 	RuntimeType     = "camelfs+jwt"
 	RuntimeAudience = "camelrun:camelfs"
-	HostType        = "camelfs-host+jwt"
-	HostMaxTTL      = 60 * time.Second
 )
 
 type Options struct {

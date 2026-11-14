@@ -1,18 +1,16 @@
 import worker from "../src/index.ts";
 import type { Env } from "../src/agent.ts";
-import type { JobHostsEnv } from "../src/jobs/hosts.ts";
-import type { JobSpec } from "../src/jobs/job.ts";
 export * from "../src/index.ts";
 
-export { CamelfsStub } from "./camelfs-stub.ts";
-
-/** Test-only RPC bridge: run two distinct jobs against the exact same immutable snapshot. */
+/** Test-only RPC bridges for Worker integration fixtures. */
 export default {
+  ...worker,
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    if (new URL(request.url).pathname === "/__test/camelfs-job" && env.TEST_MODE === "1") {
+    if (new URL(request.url).pathname === "/__test/r2" && env.TEST_MODE === "1") {
       if (request.headers.get("authorization") !== `Bearer ${env.API_TOKEN}`) return new Response(null, { status: 401 });
-      const spec = await request.json() as JobSpec;
-      return Response.json(await (env as Env & JobHostsEnv).HOST_JOBS!.getByName(spec.id).run(spec));
+      const bucket = (env as unknown as { BUCKET: R2Bucket }).BUCKET, key = new URL(request.url).searchParams.get("key")!;
+      if (request.method === "PUT") { await bucket.put(key, await request.arrayBuffer()); return new Response(null, { status: 201 }); }
+      return Response.json({ keys: (await bucket.list({ prefix: key })).objects.map(object => object.key) });
     }
     if(new URL(request.url).pathname==='/__test/stored-legacy-mount'&&env.TEST_MODE==='1') {
       if(request.headers.get('authorization')!==`Bearer ${env.API_TOKEN}`)return new Response(null,{status:401});
@@ -23,11 +21,7 @@ export default {
       const {canonical}=await import('../../../shared/durable-json.ts');
       const entry=await new Directory(env,'camelrun-proto-local').get(agent);
       if(!entry)return new Response(null,{status:404});
-      const volume=givenVolume??await (await import('../src/file-mounts.ts')).workspaceId(agent);
-      if(!givenVolume) {
-        await withSql(env,sql=>sql.query('insert into volumes(id,tenant,name,created_at) values($1,$2,$3,$4)',[volume,entry.tenantId,'Stored pilot workspace',Date.now()]));
-        await env.VOLUMES.getByName(`${entry.tenantId}:${volume}`).initialize(entry.tenantId,volume,'Stored pilot workspace');
-      }
+      const volume=givenVolume??`vol_${(await digest(`workspace:${agent}`)).slice(0,24)}`;
       entry.config.mounts=[{volumeId:volume,path:'/workspace',mode:'rw'}];
       entry.revision++;entry.configHash=await digest(canonical(entry.config));
       await withSql(env,sql=>sql.query('update agents set header=$2,revision=$3 where id=$1',[agent,JSON.stringify(entry),entry.revision]));

@@ -182,8 +182,8 @@ export type TranscriptionRequest = TranscriptionOptions & {
   keyScope?: string;
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
   identity?: AgentIdentity; actor?: string; bucket?: string;
-  /** When its end user pays for it: holds the transcription's estimate (USD) of their credit before the audio is sent. */
-  hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+  /** Check the end user at admission and return a callback for the actual cost. */
+  admitCredit?: () => Promise<((usd: number) => Promise<void>) | undefined> | undefined;
 };
 
 export interface TranscriptionService {
@@ -202,13 +202,11 @@ export async function transcribeRequest(service: TranscriptionService, tenant: s
   await service.admit(tenant);
   const bytes = "bytes" in request.audio ? request.audio.bytes : await fetchAudio(service.outbound, request.audio.url, signal);
   const header = checkedAudio(bytes);
-  const held = await request.hold?.(service.transcriber.cost(header.seconds));
-  let done: Transcribed;
-  try { done = await service.transcriber.transcribe({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { bytes, header }, options, signal); }
-  catch (error) { await held?.release(); throw error; }
+  const debit = await request.admitCredit?.();
+  const done = await service.transcriber.transcribe({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { bytes, header }, options, signal);
   const { transcript, usage } = done;
   service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.bucket === undefined ? {} : { bucket: request.bucket }), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
-  await held?.settle(usage.usage.cost.total as number);
+  await debit?.(usage.usage.cost.total as number);
   return {
     text: transcript.text, language: transcript.language ?? null, durationSeconds: transcript.seconds, model: `${service.transcriber.provider}/${transcript.model}`,
     costUsd: usage.usage.cost.total as number,

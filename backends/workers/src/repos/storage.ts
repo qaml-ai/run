@@ -1,6 +1,5 @@
 import { gitBlobSha1, sha256Hex } from "./git.ts";
-export type CamelfsEnv = { CAMELFS?: { fetch(input: Request | string, init?: RequestInit): Promise<Response> }; CAMELFS_API_TOKEN?: string };
-export const camelfsConfigured = (env: CamelfsEnv): boolean => !!env.CAMELFS && !!env.CAMELFS_API_TOKEN;
+export type TierTransport = (request: { method: string; path: string; claims: { sub: string; lin: string; acc: "r" | "w" } }, init: RequestInit) => Promise<Response>;
 export type FileEntry = { path: string; blob: string; mode: string; size: number };
 export type TreeEntry = FileEntry | { path: string; mode: "040000"; tree: string };
 export type Change = { path: string; blob?: string; mode?: string; delete?: boolean };
@@ -37,8 +36,8 @@ export class StorageError extends Error {
   /** The daemon's own message (redacted, bounded), and the StoragePlane call that failed: what makes a 4xx diagnosable. */
   readonly reason: string;
   op?: string;
-  constructor(status: number, code: string, message = code, details?: unknown) {
-    super(`camelFS status ${status}: ${message}`); this.name = "StorageError";
+  constructor(status: number, code: string, message = code, details?: unknown, cause?: unknown) {
+    super(`camelFS status ${status}: ${message}`, { cause }); this.name = "StorageError";
     this.status = status; this.code = code; this.details = details; this.reason = message;
   }
 }
@@ -106,16 +105,13 @@ function multipart(bytes: Uint8Array, contentType: string): BatchEntry[] {
   }
   return result;
 }
-export function camelfsStorage(env: CamelfsEnv): StoragePlane {
-  if (!camelfsConfigured(env)) throw new StorageError(0, "not_configured");
-  const token = env.CAMELFS_API_TOKEN!;
-  const redact = (s: string) => s.split(token).join("***");
-  const scrub = (v: unknown): unknown => typeof v === "string" ? redact(v) : Array.isArray(v) ? v.map(scrub) :
-    v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [redact(k), scrub(x)])) : v;
+export function camelfsStorage(sub: string, transport: TierTransport): StoragePlane {
   const root = (lineage: string) => `/v1/lineages/${encodeURIComponent(lineage)}`;
-  async function request(path: string, init: RequestInit = {}) {
-    try { return await env.CAMELFS!.fetch(`http://camelfs${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(60_000), headers: { authorization: `Bearer ${token}`, ...init.headers } }); }
-    catch { throw new StorageError(0, "transport_error"); }
+  function request(path: string, init: RequestInit = {}) {
+    const [, encoded, route] = /^\/v1\/lineages\/([^/]+)\/([^/?]+)/.exec(path)!;
+    const method = init.method ?? "GET";
+    const acc = method !== "GET" && route !== "read" ? "w" : "r";
+    return transport({ method, path, claims: { sub, lin: decodeURIComponent(encoded), acc } }, init);
   }
   async function value(response: Response, limit = 1024 * 1024): Promise<any> {
     try { return JSON.parse(new TextDecoder().decode(await body(response, limit))); }
@@ -123,9 +119,9 @@ export function camelfsStorage(env: CamelfsEnv): StoragePlane {
   }
   async function failure(response: Response, parsed?: any): Promise<never> {
     const v = parsed ?? await value(response), e = v?.error;
-    const code = typeof e?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(e.code) ? redact(e.code) : "invalid_response";
-    const message = typeof e?.message === "string" ? redact(e.message).replace(/[^\x20-\x7e]/g, "").slice(0, 160) : code;
-    throw new StorageError(response.status, code, message, scrub(e?.details));
+    const code = typeof e?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(e.code) ? e.code : "invalid_response";
+    const message = typeof e?.message === "string" ? e.message.replace(/[^\x20-\x7e]/g, "").slice(0, 160) : code;
+    throw new StorageError(response.status, code, message, e?.details);
   }
   async function json(path: string, init?: RequestInit, limit?: number, conflict = false) {
     const response = await request(path, init), v = await value(response, limit);

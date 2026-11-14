@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { pendingInputMirrors, upsertInputMirrors } from "./input-mirror.ts";
 import { outcomeEnding, type Outcome } from "../../../shared/client-protocol.ts";
@@ -75,19 +76,19 @@ export class AgentWebhooks {
   constructor(storage: DurableObjectStorage, env: WebhookEnv) { this.storage = storage; this.env = env; }
   settled(): Promise<void> { return this.pending; }
   flush(): Promise<void> {
-    const next = this.pending.then(async () => {
-      // Leave intents durable on write or acknowledgement failure.
-      if (await this.writeBatch().catch(() => false)) this.needsPublish = true;
+    const next = this.pending.then(() => AgentInvocation.run(async invocation => {
+      // Leave intents durable on write or acknowledgement failure; a replayed batch is deduped by the outbox ids.
+      if (await this.writeBatch(invocation).catch(() => false)) this.needsPublish = true;
       // A later queued flush inherits the wake-up, even if its own batch is empty.
       if (this.pending !== next || !this.needsPublish) return;
       this.needsPublish = false;
-      await publishPending(this.env);
-    }).catch(() => {});
+      await publishPending(this.env, invocation);
+    })).catch(() => {});
     this.pending = next;
     return next;
   }
 
-  private async writeBatch(): Promise<boolean> {
+  private async writeBatch(invocation: AgentInvocation): Promise<boolean> {
     const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
     const mirrors = await pendingInputMirrors(this.storage);
     if (!entries.size && !mirrors.size) return false;
@@ -96,9 +97,9 @@ export class AgentWebhooks {
       await transaction(this.env, async sql => {
         await upsertInputMirrors(sql, [...mirrors.values()]);
         await enqueueEvents(sql, events);
-      });
+      }, {}, invocation);
     } else {
-      await withSql(this.env, sql => enqueueEventsWithoutMirrors(sql, events));
+      await withSql(this.env, sql => enqueueEventsWithoutMirrors(sql, events), invocation);
     }
     await this.storage.transaction(async tx => {
       for (const [key, row] of mirrors) {

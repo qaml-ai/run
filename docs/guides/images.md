@@ -70,9 +70,14 @@ internet (three redirects at most). As multipart, each is a file part named `ima
 (`context` as JSON). A `mask` (a part, or `{data}`/`{url}`) says where the first image may change: transparent there,
 an image with an alpha channel in that image's format and size.
 
-## Saving to a volume
+## Saving images to files
 
-With `volumeId` (one of your [volumes](files.md)), the images are saved there, under `path` (a directory, default
+On Workers, send a `repo` ID and optional directory `path` (default `images`).
+The response includes `repo`, `path`, `size`, and the repo commit `version`.
+Read the file with `GET /v1/repos/{id}/files/{path}` or sign a link with
+`POST /v1/repos/{id}/links`. Workers returns 400 for `volumeId`.
+
+On the Node runtime, with `volumeId` (one of your [volumes](files.md)), the images are saved there, under `path` (a directory, default
 `/images`), and the answer gives their paths instead of their bytes:
 
 ```json

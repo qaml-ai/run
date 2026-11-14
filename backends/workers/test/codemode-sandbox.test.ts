@@ -22,7 +22,7 @@ async function host(code: string, answer: (call: CodemodeHostCall) => Promise<Co
   let seq = 0;
   const seed = options.seed ?? Math.floor(Math.random() * 1e9);
   const run = sandbox.start(code, {
-    startedAt: 1_000, seed, tools: ["read", "approve", "delegate", "slow"].map(name => ({ name })),
+    startedAt: 1_000, seed, tools: ["read", "approve", "delegate", "bash", "slow"].map(name => ({ name })),
     ...(options.deadlineMs ? { timeoutMs: options.deadlineMs } : {}),
     onCall: call => {
       calls.push(call);
@@ -59,13 +59,19 @@ test("a script waiting only on a person stops its VM, and the next VM replays to
   } finally { await h.close(); }
 });
 
-test("a sub-agent's or a person's wait is off the script's clock; any other call's is on it", { timeout: 20_000 }, async () => {
+test("a sub-agent's, a bash command's or a person's wait is off the script's clock; any other call's is on it", { timeout: 20_000 }, async () => {
   const later = (ms: number, value: unknown) => new Promise<CodemodeOutcome>(resolve => setTimeout(() => resolve({ ok: true, value }), ms));
   const waited = await host("return await tools.delegate({})", () => later(800, "child done"), { timeoutMs: 300 });
   try {
     const result = await waited.run.result;
     assert.deepEqual(result.ok && result.value, "child done");
   } finally { await waited.close(); }
+  // A bash command has its own bound (timeoutSeconds): its wait is off the script's clock too.
+  const bash = await host("return await tools.bash({ command: 'sleep 60' })", () => later(800, "slept"), { timeoutMs: 300 });
+  try {
+    const result = await bash.run.result;
+    assert.deepEqual(result.ok && result.value, "slept");
+  } finally { await bash.close(); }
   const slow = await host("return await tools.slow({})", () => later(800, "late"), { timeoutMs: 300 });
   try {
     const result = await slow.run.result;

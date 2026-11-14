@@ -1,3 +1,4 @@
+import { safeError } from "./observability.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 export type DbPhase = "admission" | "hold" | "renew" | "settle" | "usage" | "webhooks" | "history" | "other" | "edge";
@@ -9,7 +10,7 @@ const fresh = (): Measures => ({ statements: {}, queries: 0, queryMs: 0, errors:
 
 // Static schema names only: neither input text, parameters nor identifiers from
 // requests become diagnostic labels. Unknown statements share one bucket.
-const PROFILE_TABLES = new Set(["account_deletions", "account_email_links", "actor_owners", "admin_github_bindings", "agent_children", "agent_history_chunks", "agent_history_index", "agent_inputs", "agent_spend_limits", "agent_wakes", "agents", "api_tokens", "billing_alert_settings", "billing_auto_attempts", "billing_auto_quotes", "billing_auto_settings", "billing_checkout_cutover", "billing_checkouts", "billing_confirmation_limits", "billing_disputes", "billing_email_outbox", "billing_email_suppressions", "billing_events", "billing_jobs", "billing_recipients", "billing_stripe_customers", "billing_stripe_refunds", "busy_agents", "card_checks", "channel_agents", "channel_conversations", "channel_counts", "channel_items", "channel_seen", "channels", "chunk_pins", "chunk_touches", "computer_blocks", "computer_commands", "computer_connections", "computer_leases", "computer_operations", "computer_transfers", "console_sessions", "credit_accounts", "credit_holds", "credit_ledger", "credit_spend_minutes", "definitions", "discord_account_links", "discord_installations", "discord_server_bindings", "discord_setup_attempts", "discord_setup_cooldowns", "elevenlabs_voices", "email_messages", "email_threads", "end_user_days", "end_user_holds", "end_user_ledger", "end_user_lots", "end_user_settings", "end_users", "gc_candidates", "help_requests", "idempotency_keys", "journey_accounts", "journey_lost_signups", "journey_milestones", "journey_outbox", "journey_state", "key_scope_providers", "log_records", "managed_computers", "memory_retirement_guard", "model_attempts", "model_providers", "oauth_grants", "oauth_tokens", "pi_durable_conversations", "pi_durable_document_revisions", "pi_durable_documents", "pi_durable_entries", "pi_durable_metadata", "pi_durable_record_ids", "pi_durable_submissions", "pi_durable_tasks", "pi_sweep", "pi_usage_receipts", "provider_keys", "rate_limits", "runtime_nodes", "schedule_runs", "schedule_deliveries", "schedules", "signing_keys", "starting_credit_decisions", "storage_gc", "storage_usage", "telemetry_exporters", "tenant_cors_origins", "tenant_passwords", "tenants", "usage", "usage_flushes", "usage_webhook_outbox", "usage_webhooks", "voice_recordings", "voice_sessions", "volume_snapshots", "volume_watchers", "volumes", "webhook_deliveries", "webhook_endpoints", "workspace_assignments", "workspace_usage", "workspaces"]);
+const PROFILE_TABLES = new Set(["account_deletions", "account_email_links", "actor_owners", "admin_github_bindings", "agent_children", "agent_history_chunks", "agent_history_index", "agent_inputs", "agent_spend_limits", "agent_wakes", "agents", "api_tokens", "billing_alert_settings", "billing_auto_attempts", "billing_auto_quotes", "billing_auto_settings", "billing_checkout_cutover", "billing_checkouts", "billing_confirmation_limits", "billing_disputes", "billing_email_outbox", "billing_email_suppressions", "billing_events", "billing_jobs", "billing_recipients", "billing_stripe_customers", "billing_stripe_refunds", "busy_agents", "card_checks", "channel_agents", "channel_conversations", "channel_counts", "channel_items", "channel_seen", "channels", "chunk_pins", "chunk_touches", "computer_blocks", "computer_commands", "computer_connections", "computer_leases", "computer_operations", "computer_transfers", "console_sessions", "credit_accounts", "credit_ledger", "credit_spend_minutes", "definitions", "discord_account_links", "discord_installations", "discord_server_bindings", "discord_setup_attempts", "discord_setup_cooldowns", "elevenlabs_voices", "email_messages", "email_threads", "end_user_days", "end_user_ledger", "end_user_lots", "end_user_settings", "end_users", "gc_candidates", "help_requests", "idempotency_keys", "journey_accounts", "journey_lost_signups", "journey_milestones", "journey_outbox", "journey_state", "key_scope_providers", "log_records", "managed_computers", "memory_retirement_guard", "model_attempts", "model_providers", "oauth_grants", "oauth_tokens", "pi_durable_conversations", "pi_durable_document_revisions", "pi_durable_documents", "pi_durable_entries", "pi_durable_metadata", "pi_durable_record_ids", "pi_durable_submissions", "pi_durable_tasks", "pi_sweep", "pi_usage_receipts", "provider_keys", "rate_limits", "runtime_nodes", "schedule_runs", "schedule_deliveries", "schedules", "signing_keys", "starting_credit_decisions", "storage_gc", "storage_usage", "telemetry_exporters", "tenant_cors_origins", "tenant_passwords", "tenants", "usage", "usage_flushes", "usage_webhook_outbox", "usage_webhooks", "voice_recordings", "voice_sessions", "volume_snapshots", "volume_watchers", "volumes", "webhook_deliveries", "webhook_endpoints", "workspace_assignments", "workspace_usage", "workspaces"]);
 export function statementCategory(text: string): string {
   const action = /^\s*(select|insert|update|delete|with|begin|commit|rollback|set)\b/i.exec(text)?.[1]?.toLowerCase() ?? "other";
   const tables = [...new Set((text.match(/\b[a-z_][a-z_0-9]*\b/gi) ?? []).map(word => word.toLowerCase()).filter(word => PROFILE_TABLES.has(word)))].sort();
@@ -39,6 +40,21 @@ export function dbPhase<T>(phase: DbPhase, action: () => T): T {
   return active ? active.profile.run(phase, action) : action();
 }
 
+// Opt-in fixture diagnostics. Use static statement categories and sanitized errors.
+export async function traceDatabaseFailure<T>(enabled: boolean, operation: string, action: () => Promise<T>): Promise<T> {
+  if (!enabled) return action();
+  const started = Date.now();
+  try {
+    return await action();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const timeout = message === "Query read timeout" ? "query" :
+      /^(timeout expired|timeout exceeded when trying to connect|Connection terminated due to connection timeout)$/.test(message) ? "connect" : undefined;
+    console.error(JSON.stringify({ type: "agent_create_db_failed", operation, ms: Date.now() - started, timeout, error: safeError(error) }));
+    throw error;
+  }
+}
+
 export async function profileConnect<T>(action: () => Promise<T>): Promise<T> {
   const active = context.getStore();
   if (!active) return action();
@@ -49,14 +65,16 @@ export async function profileConnect<T>(action: () => Promise<T>): Promise<T> {
 
 /** One invocation is one pg query round trip, including BEGIN/COMMIT/ROLLBACK.
  * Hold time is measured from BEGIN acknowledgement through COMMIT/ROLLBACK
- * acknowledgement; connect/pool wait is recorded separately. */
-export function profileSql<T extends { query: (...args: any[]) => Promise<any> }>(client: T): T {
+ * acknowledgement. profileConnect counts physical connection attempts separately from statements. */
+export function profileSql<T extends { query: (...args: any[]) => Promise<any> }>(client: T, traceFailures = false): T {
   let transaction: { profile: DbProfile; phase: DbPhase; started: number } | undefined;
   const query = client.query.bind(client);
   client.query = async (...args: any[]) => {
     const active = context.getStore();
-    if (!active) return query(...args);
+    if (!active && !traceFailures) return query(...args);
     const text = typeof args[0] === "string" ? args[0] : "";
+    const execute = () => traceDatabaseFailure(traceFailures, statementCategory(text), () => query(...args));
+    if (!active) return execute();
     // Table classification partitions accounting's nested transaction SQL without
     // retaining the statement. Control statements remain in their parent phase.
     const phase: DbPhase = /\b(?:webhook_events|webhook_deliveries|webhooks)\b/i.test(text) ? "webhooks"
@@ -66,7 +84,7 @@ export function profileSql<T extends { query: (...args: any[]) => Promise<any> }
     const statement = m.statements[statementCategory(text)] ??= { queries: 0, queryMs: 0, errors: 0 };
     statement.queries++;
     try {
-      const result = await query(...args);
+      const result = await execute();
       if (/^\s*begin\b/i.test(text)) transaction = { ...active, started: performance.now() };
       return result;
     } catch (error) { m.errors++; statement.errors++; throw error; }

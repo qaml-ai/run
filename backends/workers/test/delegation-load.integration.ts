@@ -53,6 +53,8 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
   const samples = (async () => { while (sampling) { const heap = await sampler.read(); if (footprint(heap) > peakHeap) { peakHeap = footprint(heap); peakBreakdown = heap; } await new Promise(resolve => setTimeout(resolve, 250)); } })();
   const began = Date.now();
   void samples.catch(() => {});
+  const creates = async () => Number((await fixture.db.query("select coalesce(sum(count), 0)::int n from rate_limits where key like 'agent_creates:%'")).rows[0].n);
+  const createsBefore = await creates();
   const run = await call(`/v1/agents/${parent.id}/prompt`, { text: 'Start all children' });
   try {
     // Ceilings, not expectations: 64 child objects start one after another on a local workerd, and a loaded CI runner
@@ -71,6 +73,7 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
     assert.equal(record.outcome?.result?.reply, 'all-64-complete', JSON.stringify(record));
     const profile = await call(`/__test/delegation/${parent.id}`);
     assert.equal(profile.children.length, CHILDREN);
+    assert.equal(await creates(), createsBefore, 'delegated children are not counted against the tenant create limit');
     assert.ok(profile.childStateBytes < 128 * 1024, JSON.stringify(profile));
     const memoryLogs = fixture.worker.logs().split('\n').filter(line => line.startsWith('{"type":"delegation_memory"')).map(line => JSON.parse(line));
     assert.ok(memoryLogs.some(row => row.childCount === CHILDREN && row.heapEstimateBytes > 0), JSON.stringify(memoryLogs));

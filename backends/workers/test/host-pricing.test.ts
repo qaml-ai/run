@@ -3,7 +3,6 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { chargedSpan, DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostSessionCost, hostShare, parseHostInstance, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
 import { hostRoles, hostShape } from "../src/jobs/host-pricing.ts";
-import { jobSpec } from "../src/jobs/job.ts";
 import { ComputerMeter, CONTAINER_RATES, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 
 const close = (a: number, b: number, what: string) => assert.ok(Math.abs(a - b) <= Math.abs(b) * 1e-9, `${what}: ${a} vs ${b}`);
@@ -37,13 +36,12 @@ test("the pools' sandbox memory is what the image reserves (versions.env)", () =
   assert.equal(gib("BUILD"), HOST_POOL_PRICES.build.memoryGiB);
 });
 
-test("a job's VM: its limits, else its instance type's resources, in whole vCPUs; its pool by size", () => {
-  const spec = (limits?: object) => jobSpec({ id: "j", command: "true", timeoutSeconds: 5, payer: { tenant: "t", agent: "a" }, ...(limits ? { limits } : {}) }, { beyondContainers: true });
+test("VM shape uses resource overrides and falls back to the instance defaults", () => {
+  const spec = (limits?: { cpus?: number; memoryMiB?: number }, instance: "standard-1" | "standard-3" = "standard-1") => ({ limits, instance });
   assert.deepEqual(hostShape(spec()), { vcpus: 1, memoryMiB: 4096, diskMiB: Math.ceil(8e9 / 2 ** 20) }, "standard-1");
-  assert.deepEqual(hostShape(spec({ cpus: 1.5 })), { vcpus: 2, memoryMiB: 8192, diskMiB: Math.ceil(16e9 / 2 ** 20) }, "fractional cpus round up; the instance that fits them (standard-3)");
+  assert.deepEqual(hostShape(spec({ cpus: 1.5 }, "standard-3")), { vcpus: 2, memoryMiB: 8192, diskMiB: Math.ceil(16e9 / 2 ** 20) }, "fractional vCPUs round up; memory and disk use the instance defaults");
   assert.equal(hostShape(spec({ memoryMiB: 2048 })).memoryMiB, 2048);
   assert.equal(hostPool(hostShape(spec({ cpus: 4, memoryMiB: 12288 }))), "test");
-  // Past a container (routing: JOB_PROVIDER), on hosts: memory past a test shard, or many vCPUs, is the build pool's.
   assert.equal(hostPool(hostShape(spec({ cpus: 2, memoryMiB: 32768 }))), "build");
   assert.equal(hostPool(hostShape(spec({ cpus: 16 }))), "build");
 });

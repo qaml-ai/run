@@ -4,7 +4,10 @@ This branch adds Workers-native platform services. It is a draft integration
 candidate, not full parity or a production deployment. Channels and voice
 sessions are excluded. Standalone speech and transcription are included.
 
-## Implemented and exercised
+## Implemented and exercised in the prototype
+
+Workers now use [repos](../../docs/guides/files.md) for persistent files and
+image output. This table records the original prototype and its checks.
 
 | Surface | Implementation and evidence |
 | --- | --- |
@@ -229,7 +232,7 @@ node scripts/reuse-media.mjs --check
 node scripts/reuse-schedules.mjs --check
 node scripts/reuse-computers.mjs --check
 node scripts/reuse-admin.mjs --check
-node scripts/reuse-volume-policy.mjs --check
+node scripts/reuse-file-policy.mjs --check
 node scripts/reuse-money.mjs --check
 npm run build
 ```

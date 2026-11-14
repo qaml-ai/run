@@ -142,18 +142,21 @@ func (r *Repository) Object(ctx context.Context, id, kind string) ([]byte, error
 			return nil, os.ErrNotExist
 		}
 	}
-	return r.objectBytes(ctx, id, kind)
+	return r.objectBytes(ctx, id, kind, nil)
 }
 
 // objectBytes reads and verifies immutable content after lineage authorization.
-func (r *Repository) objectBytes(ctx context.Context, id, kind string) ([]byte, error) {
+func (r *Repository) objectBytes(ctx context.Context, id, kind string, cold *bool) ([]byte, error) {
 	var b []byte
 	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind=?", id, kind).Scan(&b)
 	if e != nil && e != sql.ErrNoRows {
 		return nil, e
 	}
-	cold := e == sql.ErrNoRows
-	if cold {
+	miss := e == sql.ErrNoRows
+	if cold != nil {
+		*cold = miss
+	}
+	if miss {
 		key := "t/"
 		if kind == "commit" {
 			key = "k/"
@@ -166,7 +169,7 @@ func (r *Repository) objectBytes(ctx context.Context, id, kind string) ([]byte, 
 	if store.GitHash(kind, b) != id {
 		return nil, fmt.Errorf("corrupt %s", kind)
 	}
-	if cold {
+	if miss {
 		_, e = r.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO objects VALUES(?,?,?,?,?)", id, kind, b, len(b), time.Now().UnixMilli())
 	}
 	return b, e

@@ -1,5 +1,12 @@
 # camelFS: the file system for agents, on our own AWS machines
 
+The Workers job-host plane was removed.
+
+> **Superseded in part (Miguel, 2026-11-14): there are no jobs.** Agents compute through one `bash` tool backed by
+> one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
+> child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2
+> and §6. What this document says about jobs is the record of the replaced design.
+
 Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions; merged in #874; §6 records the v0 defaults he approved (questions 8, 9, 10, 12). Docs
 only; nothing here creates AWS resources (Miguel applies every AWS change himself). It supersedes the file half of
 [swarm-workflows.md](swarm-workflows.md) Part 2 (the repository object, layers, search, git without a VM,
@@ -147,7 +154,7 @@ touch (§1.9).
 
 **Decided (Miguel, 2026-11-13 ~17:00; option C, detailed in [camel-fs-files.md](camel-fs-files.md) §6 and §9):**
 camelFS is one AWS service. Refs, leases, fences and watchers are **DynamoDB items written with conditional
-writes** by the stateless `camelfsd --role api` tier; trees and commits live in DynamoDB, with cold generations
+writes** by the stateless `camelfsd api` tier; trees and commits live in DynamoDB, with cold generations
 packed to S3; blobs and chunks live in S3. Earlier the same day the refs had moved into a per-lineage Durable Object
 (`RepoDO`); option C moves them back, because each move is one conditional write on
 `version = :expect` after the approved ref-move rules are checked against immutable commits, because the growing writer is a VM whose CAS is then in-region instead of host → Worker →
@@ -238,8 +245,8 @@ and dm-clone both take.
 
 **Cold host (the image file is absent): prehydrate and swap, under dm-snapshot** (decided 2026-11-13 as unit 7b,
 replacing dm-clone). The VM's device is a **dm-snapshot** (copy-on-write into a sparse file on the NVMe) over a
-**dm-linear** origin. At mount, the origin maps to `camelfsd`'s **lazy device** for the root (NBD over a Unix
-socket today; ublk later): a read miss fetches the chunk from the host cache, else from S3, so the guest's first
+**dm-linear** origin. At mount, the origin maps to `camelfsd`'s **lazy device** for the root (NBD served over TCP loopback, `127.0.0.1:10809` by
+default (`camelfsd host --nbd-listen`), today; ublk later): a read miss fetches the chunk from the host cache, else from S3, so the guest's first
 reads are served at once. Meanwhile the daemon **prehydrates** the root into a sparse local image file at the NIC
 ceiling, 64 chunks in flight, writing only the chunks the root names (holes cost nothing, so the work is the root's
 bytes, not the virtual size), and when the file is complete it **reloads the linear layer onto the local file**:
@@ -444,6 +451,9 @@ radius: a metal host holds tens of tenants' VMs; the design already assumes any 
 so the cost is a bigger simultaneous re-place, bounded by the warm pool.
 
 ### 1.5 VMs: jobs and computers on one substrate
+
+**Superseded (2026-11-14):** one VM shape remains, the `bash` session on an agent's branch (camel-fs-compute.md §6).
+The job column below is the replaced design.
 
 Both run as Firecracker microVMs on the fleet, with the job-hosts plan's image, netns pool, egress proxy and
 isolation suite. The difference is the lease:

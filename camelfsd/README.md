@@ -276,8 +276,13 @@ holder sends explicit null for a read-only mount. Image import returns a root an
 without creating a ref. Import paths must resolve under --data, /nvme, or
 a repeatable --import-allow directory.
 
-Tree mounts still resolve the newest lineage/tree root, then up to 64
-tree_parents ancestors, then the blank image (--virtual-size, default 1 GiB).
+Tree mounts resolve the newest local lineage/tree root, then the exact shared
+root, then up to 64 local tree_parents ancestors, then the blank image
+(--virtual-size, default 1 GiB). A session that applies a nonempty file delta
+captures a baseline before first exec. One publisher per host processes these
+snapshots after thaw, including after the VM stops. --baseline-disk-max caps
+the total logical size of pending workspace snapshots and defaults to twice
+--virtual-size. A full queue skips the capture.
 Apply uses the guest Unix endpoints <vsock>_5201 and checkpoint <vsock>_5200,
 mode 0600. Frames have a four-byte big-endian length, at most 64 KiB of JSON
 or 1 MiB of data. Header baseTree/fromTree/toTree are always present,
@@ -288,8 +293,11 @@ metadata, sends ready, validates the stream, then sends ack before uploading.
 The guest thaws on ack, nack, EOF or deadline. After ack the daemon writes
 blobs, trees, the commit and the image root; records lineage_objects and
 tree_roots; and returns {tree,root,commit,timings}. Flat timing fields remain
-for one release. jobhost/RepoDO must perform CAS before telling the guest to
-commit its pending index. Publication failure leaves tree_roots unchanged.
+for one release. The [camel-fs compute design](../docs/design/camel-fs-compute.md)
+describes the replacement for the Workers job-host plane. For `bash` VMs, the
+host calls the tier's `cas` in-VPC first and sends `checkpointed{tree}` (or
+`{error}`) only after the ref moved. Publication failure leaves tree_roots
+unchanged.
 
 Stream defaults: --stream-idle 30s, --apply-max 30m, checkpoint timeoutMs
 120000 (maximum 600000), --max-files 200000, --max-bytes 8589934592,
@@ -410,6 +418,25 @@ camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfsd \
   --jwks-file /etc/camelfsd/jwks.json --token-issuer https://runtime.example
 ```
 
+When compute is enabled, set `--listen-hosts 0.0.0.0:8794` for host
+registration, heartbeats, and VM lifecycle callbacks. Route these calls
+through an internal NLB with a TCP listener on 443 and a TCP target group
+on 8794. Use a **TCP health check**. The host listener has no unauthenticated
+HTTP route, and the NLB passes TLS through to camelfsd. The public storage
+ALB continues to target port 8790. Tier pushes go directly to the host's
+compute listener on port 8792.
+
+The tier verifies host client certificates against `--hosts-ca-pem`.
+The verified leaf must carry the clientAuth EKU and exactly one URI SAN
+of the form `spiffe://camelfs/host/<id>` matching the request path.
+The tier certificate and key (`--tier-cert` and `--tier-key`) serve both the
+host listener and outbound pushes. The certificate requires serverAuth and
+clientAuth EKUs, the `spiffe://camelfs/tier` URI for pushes, and a DNS SAN
+matching the private host-channel endpoint for clients that verify its name.
+After rotating the files, send SIGHUP to load the CA bundle and tier key
+pair together for new connections. A failed reload keeps the previous
+credentials.
+
 Each API node keeps its own SQLite caches, including its idempotency response
 cache. Nodes can share the same object store, which is the durable source of
 storage objects. `--fetch-depth` bounds concurrent store operations.
@@ -432,3 +459,23 @@ public key `x`. To rotate file-backed keys, add the new key, send SIGHUP,
 then remove the old key after its tokens expire and send SIGHUP again. A
 failed reload keeps the previous keys. Restart env-backed nodes to rotate
 their keys.
+
+### Lineages and refs
+
+Configure both `--refs-table` (partition key `lineage`, sort key `name`) and
+`--lineages-table` (partition key `lineage`) on `camelfsd api` to enable the
+lineage and ref routes. Both use `--region`. For DynamoDB Local, also set
+`--ddb-endpoint` to its URL. The host role has no ref routes.
+
+A ref glob matches the whole name. `*` matches zero or more characters in a
+single path segment. `**` also matches slashes. Listing and owner cleanup
+include only refs covered by the token. Use `**` for lineage-wide owner cleanup.
+URL-encode the ref name as one path parameter, especially when a ref name ends
+in a route suffix such as `/lease`. A fence token must name one exact ref.
+
+Lineage deletion freezes ref mutations across API instances while it checks for
+held leases. A held lineage is reopened and returns `409 held`. A retry can
+resume an interrupted sweep. The final conditional write records `deletedAt`.
+Subsequent requests return `410 lineage_deleted`. An exact replay of a successful
+keyed lineage deletion returns its original `204` while the idempotency entry
+is available.

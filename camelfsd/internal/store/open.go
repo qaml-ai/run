@@ -20,7 +20,7 @@ func OpenReader(ctx context.Context, s Store, key string) (io.ReadCloser, error)
 	return nil, fmt.Errorf("store %T does not support streaming reads", s)
 }
 func (l Local) Open(ctx context.Context, key string) (io.ReadCloser, error) {
-	if !valid(key) {
+	if !validReadKey(key) {
 		return nil, fmt.Errorf("invalid key")
 	}
 	if e := ctx.Err(); e != nil {

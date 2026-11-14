@@ -661,6 +661,11 @@ Python's `AgentRuntime.create_agent` and `Agents.upsert` accept `metadata`;
 
 # Projects
 
+On Workers, create a keyed repo with `POST /v1/repos` and mount it with
+`{ repo, path, mode }`. Publish a version by advancing a ref such as
+`published` via `PUT /v1/repos/{id}/refs/published` with `{ version, expect }`.
+Serve the tree at that ref. The project SDK below uses the Node volume API.
+
 A project is something an agent builds for your users, a bot, a site, a report,
 that your application then runs or serves. The agent works on the files with its
 file tools; your application checks them and publishes versions. The pattern:
@@ -2986,7 +2991,7 @@ chunk as it arrives. A browser that goes away cancels the read upstream.
 
 The cost: every open chat holds a request on your server for as long as it is open. Serverless
 functions cut a request at their time limit (on Vercel, the function's maximum duration); the chat
-then reconnects from where it was, and after two streams that deliver nothing it switches to long
+then reconnects from where it was, and after a stream that delivers nothing for 8 s it switches to long
 polls of at most 25 seconds, which fit any limit. Direct reads keep that load off your servers, so
 they stay the default: use the proxy when policy requires a single origin.
 
@@ -3645,7 +3650,7 @@ filtered by `q` without a provider key; library categories match none of these.
 
 ElevenLabs search uses the same credential resolution as speech: your saved
 ElevenLabs key, the tenant file's key, else `platformKeys.elevenlabs` where your
-account can use platform keys. Existing platform credit checks apply. There is
+account can use platform keys. The call ends at a metering checkpoint if platform usage leaves no spendable credit. Admitted usage is charged in full and can take the account balance below zero. There is
 no new configuration. Keys and upstream error bodies are never returned or logged.
 A missing key returns `400 VOICE_SEARCH_UNAVAILABLE`; an upstream failure returns
 `502 VOICE_SEARCH_FAILED`.
@@ -3790,6 +3795,108 @@ Discord allows one voice connection per user and server: a second `POST` for the
 
 The bot speaks, so your app joins un-muted (OP 4 with `self_mute: false`): the answer's `join` says so.
 
+## Calls your app holds
+
+To connect your app straight to OpenAI or ElevenLabs, pass `agent` to `agents.voice.create` without a Discord grant.
+Your app holds the provider connection and handles audio, speaker notes, barge-in and playback. The provider handles
+turn-taking (`semantic_vad` on OpenAI and ElevenLabs' turn settings). camelRun creates the provider session, runs
+`ask_agent` as a billed agent turn, meters the call and sends transcripts and `voice.agent.*` events to your webhooks.
+
+For OpenAI, add your outgoing audio tracks to the peer connection before creating the offer. The browser sends the
+offer to your backend, which makes the camelRun SDK call with its API key and returns the call's ID and SDP answer.
+The example uses `agents.voice` to show the backend calls inline.
+
+```ts
+const pc = new RTCPeerConnection();
+for (const track of micStream.getAudioTracks()) pc.addTrack(track, micStream);
+pc.ontrack = ({ streams }) => { audioElement.srcObject = streams[0]; };
+const channel = pc.createDataChannel("oai-events");
+const offer = await pc.createOffer();
+await pc.setLocalDescription(offer);
+const speakers = { ana: "Ana" };
+const call = await agents.voice.create({ agent, provider: "openai", sdp: offer.sdp, subject, speakers });
+if (!("sdpAnswer" in call.connect)) throw new Error("Expected an OpenAI SDP answer");
+await pc.setRemoteDescription({ type: "answer", sdp: call.connect.sdpAnswer });
+
+// When the channel is open, send a note before the active speaker's audio.
+function noteSpeaker(name: string) {
+  channel.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: { type: "message", role: "user", content: [{ type: "input_text", text: `[${name}]` }] },
+  }));
+}
+
+// Later, after everyone leaves.
+await agents.voice.end(call.id, { reason: "channel_empty" });
+pc.close();
+```
+
+For ElevenLabs, open the signed URL, send audio over the socket and relay each `user_transcript` to camelRun
+with the speaker ID from your app. Forward late replies for the same call from your verified webhook handler
+to the app holding the socket, where they become `contextual_update` messages.
+
+```ts
+import type { WebhookEvent } from "@camelai/run";
+
+const call = await agents.voice.create({ agent, provider: "elevenlabs", subject, maxMinutes: 30 });
+if (!("signedUrl" in call.connect)) throw new Error("Expected an ElevenLabs signed URL");
+const socket = new WebSocket(call.connect.signedUrl);
+
+// From the socket's user_transcript event and your app's speaker tracking.
+async function reportTranscript(speaker: string, text: string) {
+  await agents.voice.transcript(call.id, { speaker, text });
+}
+
+function relayLateReply(event: WebhookEvent) {
+  if (event.type === "voice.agent.replied" && event.data.session === call.id && event.data.late && event.data.reply) {
+    socket.send(JSON.stringify({ type: "contextual_update", text: event.data.reply }));
+  }
+}
+```
+
+| Field | |
+| --- | --- |
+| `agent` | Required. The `client_…` ID of the agent that handles `ask_agent` |
+| `provider` | Required. `openai` or `elevenlabs` |
+| `model` | The provider's realtime model. Defaults to the provider's configured model |
+| `voice` | The provider voice or a mapped voice name |
+| `instructions` | How the voice should act, up to 8,000 characters |
+| `language` | Language hint such as `en` or `pt-BR` |
+| `subject` | Required. The end user whose usage and credit the call uses |
+| `bucket` | The subject's credit bucket |
+| `context` | Your claims in the `usage.recorded` context |
+| `keyScope` | The key scope used to look up the provider key |
+| `maxMinutes` | Time before the call expires. OpenAI defaults to 240 minutes, up to 720. ElevenLabs defaults to 30 and caps at 30: its agent always ends a conversation at 30 minutes, and a smaller `maxMinutes` only sets when camelRun ends its own record of the call |
+| `metadata` | Up to 4 KB of JSON, returned with the call and included in its webhooks |
+| `speakers` | A map of speaker IDs to display names. Update it with `voice.update`. For OpenAI, send the speaker notes over the data channel |
+| `sdp` | The WebRTC offer SDP, required for OpenAI, up to 64 KB |
+
+Use `voice.get(id)` for the state of a call and `voice.list({ state: "live" })` to find it under `calls`.
+When a request is refused, check the HTTP status and error code.
+
+- 400 `REALTIME_UNAVAILABLE`, `REALTIME_UNPRICED`, `REALTIME_MODEL`, `REALTIME_VOICE` for unavailable or unsupported provider settings.
+- 402 `SPEND_LIMIT` or `END_USER_CREDIT` when spending or credit limits refuse the call.
+- 404 `AGENT_NOT_FOUND`, `VOICE_CALL_NOT_FOUND` or `VOICE_CALL_NO_AUDIO` for a missing agent or call, or for audio operations on a client-held call.
+- 409 `VOICE_TRANSCRIPT_SIDEBAND` when you report a transcript for an OpenAI call.
+- 429 `VOICE_SESSION_LIMIT` when the account has reached its live call and session limit.
+- 502 `REALTIME_FAILED` when the provider operation fails.
+- 503 `NODE_RETIRING` when the node is retiring. Retry on a peer.
+
+### Billing
+
+- OpenAI bills per-response tokens at `REALTIME_PRICES`; with end-user credits on, each response is charged to the subject in full after it finishes (nothing is held), and when the payer has nothing left the call ends after the current response (`voice.session.ended` with `reason: "budget"`).
+- ElevenLabs bills by the minute, after the call: nothing is held up front. A call starts when the payer has something
+  left (the subject with end-user credits on, else the account), and its minutes are charged from the post-call report
+  (or, when ElevenLabs sends none within 15 minutes of the end, from the conversation's duration as ElevenLabs reports
+  it, else the elapsed time). The charge may take a balance below zero; the next call is then refused.
+- `ask_agent` is billed like any agent run under the call's subject and bucket.
+
+### Limitations
+
+- OpenAI's sideband lives on one node. A retiring node ends the call with reason `restarted`. Create a new call to reconnect.
+- ElevenLabs calls use the platform's ElevenLabs key.
+- During an ElevenLabs call your app reports transcripts. OpenAI transcribes over its sideband.
+
 ## Listening only
 
 A bot that only needs to hear the call (notes, captions, commands it acts on in text) takes `brain: "listen"`. Nothing
@@ -3802,8 +3909,8 @@ does not say it may speak.
 A listening session takes `language`, `prompt` (words to expect), `endOfTurn`, `silenceMs` and the session's limits; it
 ignores `speak`, `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` and `deliver.agent` if sent, and needs
 `deliver.webhooks` on (a browser session's page gets every utterance itself). Each utterance is billed as a
-transcription (`usage.recorded` `kind: "transcription"`), held against the subject's credit first with end-user credits
-on. `DELETE …/speak` is a 409 `VOICE_SPEAK_DISABLED`.
+transcription (`usage.recorded` `kind: "transcription"`), debited from the subject's credit after transcription when end-user credits are
+enabled. `DELETE …/speak` is a 409 `VOICE_SPEAK_DISABLED`.
 
 ## Keep it connected, and end it
 
@@ -3965,7 +4072,7 @@ Only `gemini-2.5-flash-lite` and `gemini-3.1-flash-lite` receive `thinking_budge
 
 The runtime lazily creates or reuses one private agent per credential and model, with per-session overrides and signed URLs
 (see [configuration](https://run.camelai.com/docs/operations/configuration.md)). Conversation token counts are unavailable. Connection duration is billed through the normal speech usage records
-and end-user credit holds, including silent time and interrupted responses. Configure both
+and end-user debits, including silent time and interrupted responses. Configure both
 `AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD`: the former from the
 [Agents pricing page](https://elevenlabs.io/pricing/agents), the latter from Gemini Flash Lite's Detailed costs estimate
 in the agent settings. `claude-haiku-5-5` and `gemini-3.1-flash-lite` take their own LLM rates, `AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD`. LLM usage is billed separately by ElevenLabs; this runtime uses the configured per-minute
@@ -4135,6 +4242,25 @@ The socket carries:
 
 The socket may reach any node: one that does not hold the session relays it to the one that does.
 
+## Calls your app holds
+
+For an OpenAI WebRTC call, send your app's SDP offer to `POST /v1/voice/sessions`:
+
+```json
+{
+  "provider": "openai",
+  "agent": "client_…",
+  "subject": "user-1",
+  "sdp": "<WebRTC SDP offer>"
+}
+```
+
+Apply the returned `connect.sdpAnswer` as the remote description. Set `interruptResponse: false` when your app's echo guard decides barge-in.
+
+| Field | Meaning |
+|---|---|
+| `interruptResponse` | Defaults to `true`. When `false`, OpenAI still detects turns and starts responses, and your app controls interruptions. ElevenLabs ignores this field. |
+
 ## Latency
 
 Each answer's first audio is timed: `voice_turn_latency` with `Path=realtime`, in ms from the end of speech
@@ -4155,9 +4281,12 @@ at the [transcription price](https://run.camelai.com/docs/pricing.md), as `kind:
 your own key the provider bills you directly; the usage record still carries the cost. Holding the call itself costs
 nothing.
 
-A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise). An account that runs out during a call
-ends it: `reason: "budget"`, `limit: "tenant"`. With end-user credits on, a subject with nothing left is refused at the start (402 `END_USER_CREDIT`), each answer holds $0.05 of the subject's credit, or what is left if that is less, before it is asked for and settles at
-what it cost, and running out ends the session (`limit: "end_user"`).
+A session starts only when the account may spend: otherwise 402 `SPEND_LIMIT`, 402 `INSUFFICIENT_CREDIT`, or 429 `FREE_HOURLY_LIMIT` past the free hourly allowance. With end-user credits enabled,
+a subject out of credit is refused at the start (402 `END_USER_CREDIT`). Each response, metering interval, `say`
+request and listen-only transcription is charged in full. The next budget checkpoint ends the session with
+`reason: "budget"` and `limit: "tenant"` or `"end_user"`, according to which payer ran out. A response already
+in progress finishes. For OpenAI calls held by the client, the provider starts the response before camelRun
+receives the checkpoint event. If credit is exhausted, camelRun charges that response on completion and hangs up.
 
 ## Privacy and your duties
 
@@ -4309,9 +4438,14 @@ internet (three redirects at most). As multipart, each is a file part named `ima
 (`context` as JSON). A `mask` (a part, or `{data}`/`{url}`) says where the first image may change: transparent there,
 an image with an alpha channel in that image's format and size.
 
-## Saving to a volume
+## Saving images to files
 
-With `volumeId` (one of your [volumes](https://run.camelai.com/docs/guides/files.md)), the images are saved there, under `path` (a directory, default
+On Workers, send a `repo` ID and optional directory `path` (default `images`).
+The response includes `repo`, `path`, `size`, and the repo commit `version`.
+Read the file with `GET /v1/repos/{id}/files/{path}` or sign a link with
+`POST /v1/repos/{id}/links`. Workers returns 400 for `volumeId`.
+
+On the Node runtime, with `volumeId` (one of your [volumes](https://run.camelai.com/docs/guides/files.md)), the images are saved there, under `path` (a directory, default
 `/images`), and the answer gives their paths instead of their bytes:
 
 ```json
@@ -4580,6 +4714,11 @@ request is a `usage.recorded` event with `decisions`.
 <!-- https://run.camelai.com/docs/guides/files.md -->
 
 # Files
+
+On Workers, use `POST /v1/repos` to create a repo and mount it with
+`{ repo, path, mode }`. Reads can name a ref or an immutable version.
+`/v1/volumes` and its subpaths return 410 on Workers. The volume API and SDK
+examples below apply to the Node runtime.
 
 Every agent has files: its own workspace at `/workspace` by default, or the
 **volumes** you mount. Files you attach to a message land there, the model works
@@ -5119,20 +5258,21 @@ replaces that bucket's ordinary free allowance. Removing a person's override wit
 keys and removes keys set to `null`.
 
 `endUsers.get(id)` returns configured pools in `today.pools`, including unused
-pools. Each has `key`, `allowance`, `allowanceSpent`, `held`, and `allowanceLeft`.
+pools. Each has `key`, `allowance`, `allowanceSpent`, `held` (always 0 now that nothing is held; it will be
+removed), and `allowanceLeft`.
 Each member in `today.buckets` also has its `pool` snapshot. The member's
 `allowanceSpent`, `paidSpent`, and `held` still describe that bucket alone. Its
 `allowance` and `allowanceLeft` describe the shared allowance. Unpooled buckets
 have `pool: null`. Pass `buckets` to include named bots that have not spent today.
 
-Calls in flight reserve from the shared pool. Paid credit and per-bucket paid
+A call is checked against the shared pool before it starts; nothing is reserved. Paid credit and per-bucket paid
 limits apply after the pool runs out. A call crossing midnight uses the day it
 began for its allowance. `end_user.allowance.low` and allowance exhaustion fire
 once per person, pool, and UTC day, with the pool key in `data.pool` and the
 triggering member in `data.bucket`.
 
 Changing pool membership or its amount keeps recorded spend. Current membership
-groups that day's existing per-bucket allowance spend and holds. Moving to a
+groups that day's existing per-bucket allowance spend. Moving to a
 shared pool partway through a day therefore includes the members' earlier free
 spend.
 
@@ -5214,7 +5354,7 @@ A credit page reads no usage rows: the ledger's `kind` filter leaves them out, a
 `days` gives each UTC day's totals by bucket in one request.
 
 A refund you make in Stripe: `endUsers.refund(id, { amount, key })` takes the credit
-back: at most the balance that calls in flight do not hold, else a 409
+back: at most the balance, else a 409
 `INSUFFICIENT_BALANCE` (with `refundable`). Credit a person spends on something you sell other than metered usage
 (a month of a feature, an item): `endUsers.spend(id, { amount, key })`, held to the same line as a refund (a 409
 `INSUFFICIENT_BALANCE` with `available` when short), fires `end_user.credit.spent`, and is a debit for the balance
@@ -5229,7 +5369,7 @@ A grant with `expiresAt` (epoch ms, within 400 days) is a **lot**: a subscriptio
 still has one balance, spent by every bucket once its allowance is used, but paid spend takes the soonest-expiring lot
 first, splitting across lots, and credit without `expiresAt` (packs) last; it never expires. At a lot's time its
 unspent part leaves the balance as an `expiry` entry (`metadata.lot`: the grant's key) and `end_user.credit.expired`
-fires. A call that held some of the lot before its time settles against it; what it leaves expires next.
+fires. A call that started before the lot's time settles against it; what it leaves expires next.
 
 ```ts
 await agents.endUsers.grant(user.id, { amount: 12_500_000, key: `plan:${sub.id}:${periodStart}`, expiresAt: periodEnd });
@@ -5245,26 +5385,23 @@ amount, expiresAt })` turns that much of what never expires into a lot, moving n
 
 ## When a person runs out
 
-camelRun holds credit for each model call before it is made: its input, and up to
-2,048 tokens of output (a longer reply holds more as it streams), from the bucket's allowance first, then the balance. While
-the reply streams, it asks for more ahead of the end of what it holds. Holds are
-taken one at a time per person, on any node, so calls in parallel (sub-agents, several
-of their agents at once) never each see the whole balance.
+camelRun checks a person's credit before each model call and each run: the call starts when the bucket has
+allowance left today, or the person's balance is above zero, and the daily and bucket limits are not reached.
+Nothing is held or reserved, so calls in parallel (sub-agents, several of their agents at once) each see the
+balance as it is, and a call's whole cost is charged when it settles, **even when that takes the balance below
+zero**. A balance below zero refuses the next call until a grant brings it back above zero (a grant repays the debt
+first, as above).
 
-A call with too little left for all of that still starts, holding what is left, as long as its estimate is within
-$0.25 of it. It stops at the end of what it holds, with at least a short reply, and what it costs past that is written
-off: you bear it, as `writtenOff` in the ledger, and the person's balance and limits are never passed.
-
-When nothing more can be held:
+When the check fails:
 
 - **A new run** is refused with `402` and code `END_USER_CREDIT`, with `endUser`,
   `bucket` and `reason` in the body. The SDKs throw `AgentError` with the same fields
   (`reason`, `bucket`, `endUser`; Python `end_user`).
 - **A run waiting in the queue** that is refused as it comes to start fails with code
   `end_user_credit`, `reason`, `bucket` and `endUser`, as below.
-- **A run already going** stops where the credit ends, even in the middle of a reply:
-  what streamed is kept, and the run fails with code `end_user_credit`, `stopped:
-  "spend_limit"`, `limit: "end_user"`, a `reason`, the `bucket` and the `endUser`. It is never retried.
+- **A run already going** finishes the model call it is in (what it costs is charged), and its next call is refused:
+  the run fails with code `end_user_credit`, `stopped: "spend_limit"`, `limit: "end_user"`, a `reason`, the `bucket`
+  and the `endUser`. It is never retried.
 - `run.failed` carries `code`, `limit`, `reason`, `bucket` and `endUser` too, and
   `voice.session.ended` its `endUserReason` and `bucket`.
 - Transcriptions, speech and images are refused before they are made, with the same 402.
@@ -5299,31 +5436,16 @@ function notify(user: string, reason?: string) {
 
 Branch on `code` and `reason`, never on the message: its words are for people and may change.
 
-### Costs past a call's hold: written off
+### Costs land in full
 
-Usage never takes a balance below zero, and never takes paid spend past the daily
-limit or a bucket's limit. A call can still cost more than it held:
+Every call is charged what it cost, from the bucket's allowance first, then the balance, and a balance may go below
+zero. That includes output a provider bills without streaming it (hidden reasoning tokens), the gap between the
+input estimate and the real input, and a call whose node died, settled when the provider reports its cost. There is
+no write-off: what a person's calls cost is what they are charged. The debit that takes the balance to zero or below
+fires `end_user.credit.exhausted` (`reason: "balance"`), and the person's next call is refused for it.
 
-- output a provider bills without streaming it (hidden reasoning tokens);
-- what streams while the last credit check is answered (milliseconds of output);
-- the gap between the input estimate and the real input (a provider cache that
-  expired, a provider's own price at the time);
-- a call whose node died: its hold lapses after 10 minutes, and if the provider
-  reports its cost later, it is settled then.
-
-When it settles, the person is charged at most what is left for it: the balance, the
-daily limit and the bucket's limit, less what their other calls in flight hold. The
-rest is **written off**: you bear it (your camelRun usage is the call's full cost, as
-always), and it is never charged to the person later, even after they buy credit.
-Each usage entry shows it as `writtenOff`, `GET /v1/end-users/{id}` totals it per
-bucket for today (`today.buckets[].writtenOff`), and `GET /v1/end-users/{id}/days` per
-bucket and day, all in raw micro-USD. The limit
-that capped the charge fires `end_user.credit.exhausted` as a refused call would, and
-the person's next call is refused for it.
-
-A cost corrected down later takes back the write-off first, then refunds what the
-balance paid, then the allowance. One corrected up is capped the same way, by the
-limits of the day it posts to (the day the call began) and the balance as it is then.
+A cost corrected down later refunds what the balance paid, then the allowance. One corrected up is charged in full
+to the day it posts to (the day the call began).
 
 ## Webhooks
 
@@ -5395,7 +5517,7 @@ Every movement of a person's money is an entry, newest first:
 | `kind` | `amount` | Also |
 | --- | --- | --- |
 | `grant`, `refund`, `adjustment`, `spend` | what you posted (a refund's and a spend's negative) | your `key`, `reference`, `description` and `metadata` |
-| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (the cost past what was left for it, not charged), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
+| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (kept for history: entries from before charges landed in full may carry it; new ones are 0), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
 
 A call whose cost is corrected later (a provider's final figure) has another usage
 entry for the difference. `balanceAfter` is the balance after each entry.
@@ -5465,8 +5587,9 @@ charged, in the balance's units (raw cost with your markup).
 | a day's `freeRaw` (what allowances paid) | raw |
 | a day's `paidCharged` (what the balance paid), `granted`, `refunded`, `adjusted`, `spent` | charged |
 
-A bucket's `held` today adds the allowance's part of holds (raw) to the balance's
-(charged): read `available` and `allowanceLeft` for what is left.
+`held` (a person's, a bucket's or a pool's) is always 0: nothing is held, and the field will be removed.
+`available` is what the person can spend, signed: it is negative when the balance is below zero. Read `available`
+and `allowanceLeft` for what is left. `writtenOff` stays readable for history, and no new write-offs are made.
 
 ## API
 
@@ -5920,7 +6043,7 @@ Every event is an envelope:
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, `code` where the error has a name (`cancelled`: a stop cancelled it before it began; `aborted`; `model_stream_stalled`; `turn_limit`…), and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
-| `usage.recorded` | A model response's usage was counted, a transcription's, images', or a computer's time | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`, `decision` or `computer`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `seconds` (a computer's, with no tokens), `cost: {usd, source}`, `at`. Computer time (an agent's computer, or a workflow's job) comes once per charged session, a long one every few minutes, with `model` its instance type; for a job of a workflow started with an API key, which no agent owns, `agentId` is `null` and `workflowId` names the workflow. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added. `superseded: "content_filter"` marks a response that is not the answer: its provider's content filter blocked it and the same request went to the same model elsewhere ([models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#azure-openai)), whose own event follows. Its tokens and cost are what the blocked call took; it is not charged to your account, so do not charge your users for it. `serviceTier` (`flex` or `default`) is the OpenRouter service tier that served a response, when OpenRouter said one: `camelrun/strong` asks for flex, which costs half |
+| `usage.recorded` | A model response's usage was counted, a transcription's, images', or a computer's time | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`, `decision` or `computer`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `seconds` (a computer's, with no tokens), `cost: {usd, source}`, `at`. Computer time comes once per charged session, with additional charges every few minutes for long sessions. The `model` names the instance type. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added. `superseded: "content_filter"` marks a response that is not the answer: its provider's content filter blocked it and the same request went to the same model elsewhere ([models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#azure-openai)), whose own event follows. Its tokens and cost are what the blocked call took; it is not charged to your account, so do not charge your users for it. `serviceTier` (`flex` or `default`) is the OpenRouter service tier that served a response, when OpenRouter said one: `camelrun/strong` asks for flex, which costs half |
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `detail?` (failure classification, e.g. `realtime_failed`), `error?` (privacy-safe provider error classification and message length; no raw message), `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
@@ -7449,8 +7572,8 @@ Write a workflow when a task covers more than about 10 files, tables,
 documents or sources, or is a port, migration, audit or research sweep: list
 its units, give each to its own `agent()`, and keep the agent that owns the
 workflow to planning, checking and reporting. When the units edit files, give
-each `repo` (the volume) and `commit()` its fork. Run a single command with
-`job_run`, not a workflow, and use [`delegate`](https://run.camelai.com/docs/guides/multi-agent.md) for a few
+each `repo` and `commit()` its fork. To run commands from a workflow, ask a
+child agent to use its `bash` tool. Use [`delegate`](https://run.camelai.com/docs/guides/multi-agent.md) for a few
 sub-agents whose answers you need in this turn. The `workflows` builtin tells
 agents the same. An agent need not poll a workflow it started: a
 `<workflow_notification>` tells it when the workflow finishes or stops.
@@ -7470,16 +7593,14 @@ Its globals:
 | --- | --- |
 | `agent(prompt, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, type?, class?, output?, instructions?, label?, definition?, model? }`. With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted sub-agent returns `null` (the item records why), so `.filter(Boolean)` is the idiom |
 | `parallel(fns)`, `parallel(items, fn)` | Runs the functions (or `fn` over each item) at once, up to the workflow's `concurrency`, and waits for all of them, even after one fails. **Every `agent()` inside it needs an explicit `key`** (the workflow faults with `key_required` otherwise): branches finish in any order, and keys are how results are matched to calls on replay |
-| `agent(prompt, { repo })` | With `repo` (a volume id), the sub-agent gets its own copy of that volume at `/repo` (a fork: no bytes copied) and edits it with its file tools; it answers `{ text, fork }` (or the validated object with `fork` in it) |
-| `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
-| `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, commit?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow; a workflow started with an API key is paid by its account, and its usage shows under the workflow's id. A job the account's credit or monthly spend limit refuses pauses the workflow (`payer_exhausted`) until it is raised. Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere). `commit: true` (camelFS job hosts only) checkpoints `/repo` when the command ends, even if it failed, and answers its `tree`, `root` and `commit`, or `checkpointError`. |
-| `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
+| `agent(prompt, { repo })` | `repo` is a repo id, or `{ repo, ref }` or `{ repo, version }` (default: the `main` branch). The child works on a branch of its own, at `/repo`. Its answer includes `fork: { repo, ref, base }`. |
+| `commit(fork, opts)` | Merges the child's branch (`result.fork`) into the branch it started from. Answers `{ committed: true, version, changed, files? }`, or `{ committed: false, conflicts }` when both sides changed the same files. Committing the same fork again answers `changed: false`. A fork started from a `version` has no branch to merge into: `commit()` answers `null`, and its item records why. |
 | `log(...parts)` | A line in the workflow's log |
 | `args` | What it was started with (`args` in the start), frozen |
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
 | `toBase64(value)`, `fromBase64(text, opts?)` | Base64 of any text (as UTF-8) or bytes, and back: text, or a `Uint8Array` with `{ as: "bytes" }`. `btoa`/`atob` take Latin-1 only. `TextEncoder` and `TextDecoder` (UTF-8) are there too |
 
-A workflow's forks are deleted when it ends, once its commits have landed. One whose result is cached (below) is kept by the cache instead, for as long as the result is.
+A workflow's branches are deleted when it ends, after its commits have landed. A cached result keeps its version for 3 days.
 
 A script is compiled before it starts: a syntax error is refused as `script_error`, with
 its line and column, and nothing runs.
@@ -7557,9 +7678,9 @@ When the script itself goes wrong (`key_required`, `key_conflict`,
 ## Changing a workflow: start a new one
 
 A workflow's script is not edited. To change one, abort it (or let it end) and
-start a new one with the fixed script. Its `agent()` and `job()` calls whose
+start a new one with the fixed script. Its `agent()` calls whose
 arguments match a result an earlier workflow of the same owner finished are
-answered from that result, at no cost: no sub-agent or container runs. Such an
+answered from that result without starting a sub-agent or charging for the call. Such an
 item has `origin: "cache"` and `cachedFrom` (`workflowId:key:attempt`), and the
 summary's `counts.cached` counts them.
 
@@ -7567,19 +7688,18 @@ summary's `counts.cached` counts them.
   account for a workflow started with an API key; workflows of other owners
   never share results.
 - Only results that finished (`done`) are reused: never a failed, refused or
-  aborted one, and never a `commit()` or `push()` (they change a volume or a
-  branch).
-- `agent(prompt, { repo })` and `job({ at })` are reused only while that
-  volume is unchanged since the earlier call started. A reused agent's answer
-  has a fork of its own: a copy of the earlier one, which `commit()` lands as
-  before. A result with a fork is reused for at most 3 days.
+  aborted one. Each `commit()` runs because it changes a branch.
+- `agent(prompt, { repo })` results are reused only while the base tree matches
+  the one the earlier call started from. A reused agent answer gets a
+  fresh branch at the cached version, which `commit()` lands as before. A
+  result with a fork is reused for at most 3 days.
 - An `agent()` is also keyed by the model it resolves to (its `class` or
   `model`, or the workflow's `classes` pin) and by the named `definition`'s
   revision: a restart with a stronger class, or an edited definition, runs
   again.
 - Two identical calls (same arguments, different keys) in one workflow share a
   result too: the second is answered from the first once it finished. Pass
-  `nocache: true` to an `agent()` or `job()` to run it regardless.
+  `nocache: true` to an `agent()` to run it regardless.
 - A result is kept for 7 days from the last time it was reused; an owner keeps
   at most 2,000 results and 64 MiB (the least recently used go first), and a
   result over 1 MiB is not kept.
@@ -7609,8 +7729,7 @@ curl -X POST $CAMELRUN_URL/v1/workflows \
 curl $CAMELRUN_URL/v1/workflows/wf_…/items?status=failed -H "Authorization: Bearer $CAMELAI_API_KEY"
 ```
 
-`items` is the journal: one row per effect (`kind` `agent`, `job`,
-`commit` or `push`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
+`items` is the journal: one row per effect (`kind` `agent` or `commit`) with its `key`, `attempt`, `status` (`pending`, `running`, `done`,
 `failed`, `refused`, `aborted`), `args`, `result`, `reason`, `costUsd` and
 `model`, its `origin` (`script`, `reissue`, or `cache` with `cachedFrom`), in
 the order they were issued; pass `next` back as `after`. `counts` on the
@@ -7710,25 +7829,6 @@ const lead = await agents.upsert("port-lead", {
 `workflows: false` turns the builtin off for an agent that may delegate but
 should not start workflows. Both settings go on the agent's configuration
 (`upsert`, `createAgent`), set by whoever configures it, never by the agent.
-
-## Running one command: `job_run`
-
-When an agent only needs to run a command (a build, a test, a script), it does not need a workflow. On a runtime with
-workflows and jobs (the Cloudflare pilot today), every agent has the `job_run` tool. It runs one shell command in a
-fresh container and waits for it to finish, up to 15 minutes:
-
-```
-job_run({ command, timeoutSeconds? (300), at?: volumeId, files?: { path: text }, outputs?: [path], internet?: false })
--> { ok, exitCode, timedOut, stdout, stderr, outputs?, missing?, seconds }
-```
-
-- `at` starts the command with that volume's files in its working directory (a copy: changes are not saved back).
-- `outputs` names files the command writes under `$JOB_OUT`, and returns them inline.
-- `stdout` and `stderr` are each cut to their last 4,000 characters, and each output to its first 4,000.
-
-The container time is metered as the agent's own computer time, against its spend limit. The tool's call id names the
-job, so a replayed call runs nothing again and answers the same way. `workflow_start` tells an agent with `job_run` to
-use it for a single command.
 
 ---
 
@@ -9001,6 +9101,10 @@ memory. Keep transcripts private: they can contain user content and tool output.
 
 # Exporting your data
 
+On Workers, the archive holds `repos/<id>/repo.json` with the name, key, refs
+and creation time, and `repos/<id>/main/…` with the files from one immutable
+version of `main`. The volume entries below apply to the Node runtime.
+
 `GET /v1/account/export` (the console's **Account → Export data**) answers with a
 zip of everything camelRun stores for your account. Any API token of the account
 can call it; a browser token cannot.
@@ -9145,6 +9249,10 @@ Before you ship an application on the runtime, check each of these.
 <!-- https://run.camelai.com/docs/reference/apply.md -->
 
 # Provision an application
+
+On Workers, create repos with `POST /v1/repos` and set agent mounts to
+`{ repo, path, mode }`. Apply returns 400 for a `volumes` declaration,
+including in dry runs. The manifest below applies to the Node runtime.
 
 `POST /v1/apply` accepts objects keyed by resource key. Volumes are processed first, then definitions, then agents. Each group follows JSON property order. References must point to an earlier resource in the same manifest. All resources belong to the authenticated tenant.
 
@@ -11223,7 +11331,7 @@ retry.
 | 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio, or an image, would cost more than the run's or agent's spend limit has left |
-| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent (or a payment for it is disputed): no runs start and no files are stored |
+| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent (or a payment for it is disputed). An admitted model call can settle below zero. New runs are refused and file storage requires positive credit |
 | 402 | `END_USER_CREDIT` | With [end-user credits](https://run.camelai.com/docs/guides/end-user-credits.md) on: the run's or call's payer (`endUser`, else its subject) may not spend more in its bucket. The body names whose (`endUser`), which `bucket`, and why (`reason`, one of the [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)). Grant them credit, raise the limit, or wait for tomorrow's allowance |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |

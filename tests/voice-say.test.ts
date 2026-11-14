@@ -104,6 +104,7 @@ test("say without text to speech, or when it fails before any audio, has the mod
   const plain = testBrain();
   await until(() => plain.connection(), "the connection");
   plain.brain.say("Hello everyone.");
+  await until(() => plain.connection().of("respond").length === 1, "the model asked");
   assert.deepEqual(plain.connection().of("respond"), [{ type: "respond", instructions: sayVerbatim("Hello everyone.") }]);
   plain.brain.close();
 

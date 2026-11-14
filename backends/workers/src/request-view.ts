@@ -19,6 +19,7 @@ export async function requestView<
     task: _task,
     piId: _piId,
     agentSpendAt: _agentSpendAt,
+    limitsSnapshot: _limitsSnapshot,
     accepted: _accepted,
     admitted: _admitted,
     batchHeld: _batchHeld,
