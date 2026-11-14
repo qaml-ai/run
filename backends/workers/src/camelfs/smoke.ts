@@ -4,69 +4,102 @@ import { StorageError } from "../repos/storage.ts";
 import { repoStorage } from "./repo-storage.ts";
 
 const SMOKE_SUB = "runtime:camelfs-smoke";
-const ROUTES = ["putBlob", "commit", "readBatch", "getCommit"] as const;
+const SMOKE_REF = "main";
+const ROUTES = ["putBlob", "commit", "write", "readBatch", "getCommit"] as const;
 const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
 
-/** One round on a throwaway lineage: PUT blob, POST commit (1 file), batch read, GET commit. `wall` collects each
- * fetch's duration by route (ledger L89 measures Worker -> tier wall time against the tier's server-side ms). */
-async function smokeRound(env: TierEnv, lineage: string, round: number, wall: Record<string, number[]>, statuses: Record<string, Record<string, number>>) {
-  const path = "probe.txt", sub = SMOKE_SUB;
-  const bytes = new TextEncoder().encode(`${lineage}:${round}`);
-  const storage = repoStorage(env, sub);
-  async function measure<T>(op: (typeof ROUTES)[number], run: () => Promise<T>) {
-    const start = performance.now(), count = (status: string) => { statuses[op][status] = (statuses[op][status] ?? 0) + 1; };
-    try { const value = await run(); count("ok"); return value; }
-    catch (e) {
-      count(e instanceof StorageError ? String(e.status || 0) : "error");
-      if (e instanceof StorageError) throw new TierError(e.status || 502, e.code, e.reason, e.details, op, e);
-      throw e;
-    } finally { wall[op].push(performance.now() - start); }
-  }
-  const blob = await measure("putBlob", () => storage.putBlob(lineage, bytes));
-  const commit = await measure("commit", () => storage.commit(lineage, {
-    parents: [], changes: [{ path, blob: blob.blob }], author: sub, message: "camelFS smoke",
-    trailers: { "Camel-Op": "api" },
-  }));
-  const [entry] = await measure("readBatch", () => storage.readBatch(lineage, commit.tree, [path]));
-  if (!entry || !("bytes" in entry) || !Buffer.from(bytes).equals(entry.bytes))
-    throw new TierError(502, "read_mismatch", "camelFS smoke read did not match", undefined, "readBatch");
-  const metadata = await measure("getCommit", () => storage.getCommit(lineage, commit.commit));
-  if (metadata.tree !== commit.tree)
-    throw new TierError(502, "commit_mismatch", "camelFS smoke commit did not match", undefined, "getCommit");
-  return commit.commit;
+function timing(samples: number[]) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return { count: sorted.length, p50: quantile(sorted, 0.5), p95: quantile(sorted, 0.95), p99: quantile(sorted, 0.99) };
 }
 
-/** `iterations` rounds (1..500) on one fresh lineage; the reply has per-route count and p50/p95/p99 ms, never ids
- * beyond the throwaway lineage itself. */
-/** The throwaway lineage is registered like a real repo's (HttpRepoClient.prepareLineage): the tier refuses blob
- * uploads to an unregistered lineage (404 not_found). */
-const lineageCall = (env: TierEnv, lineage: string, method: "PUT" | "DELETE", body?: unknown) => tierRequest(env, {
-  method, path: "/v1/lineages/" + encodeURIComponent(lineage), body,
-  claims: { sub: SMOKE_SUB, lin: lineage, acc: "w" }, idempotencyKey: method === "DELETE" ? `delete:${lineage}` : undefined,
-});
-
 export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0, tenant = "camelfs-smoke") {
-  const lineage = "smoke:" + randomUUID(), wall = Object.fromEntries(ROUTES.map(r => [r, [] as number[]])) as Record<string, number[]>;
-  const statuses = Object.fromEntries(ROUTES.map(r => [r, {} as Record<string, number>]));
-  const startedAt = new Date().toISOString(), began = Date.now();
-  let completed = 0, failure: TierError | undefined;
-  await lineageCall(env, lineage, "PUT", { tenant, kind: "workspace", defaultBranch: "main" });
-  // At least `iterations` rounds, continuing until `minSeconds` have passed (a clean edge for the server-side query).
-  for (let round = 0; round < iterations || Date.now() - began < minSeconds * 1000; round++) {
-    try { await smokeRound(env, lineage, round, wall, statuses); completed++; }
-    catch (e) { if (!(e instanceof TierError)) throw e; failure = e; break; }
+  const lineage = "smoke:" + randomUUID();
+  const path = "/v1/lineages/" + encodeURIComponent(lineage);
+  const claims = { sub: SMOKE_SUB, lin: lineage, acc: "w" as const };
+  const refClaims = { ...claims, refs: [SMOKE_REF] };
+  const refPath = path + "/refs/" + SMOKE_REF;
+  const meta = { author: SMOKE_SUB, message: "camelFS smoke", trailers: { "Camel-Op": "api" } };
+  const storage = repoStorage(env, SMOKE_SUB);
+  const wall = Object.fromEntries(ROUTES.map(route => [route, [] as number[]])) as Record<string, number[]>;
+  const statuses = Object.fromEntries(ROUTES.map(route => [route, {} as Record<string, number>]));
+  const twoCall: number[] = [];
+  let completed = 0, failure: TierError | undefined, refCreated = false, tierRegion: string | undefined;
+  let op: string = "seed";
+  async function measure<T>(route: (typeof ROUTES)[number], run: () => Promise<T>) {
+    op = route;
+    const start = performance.now();
+    const count = (status: string) => { statuses[route][status] = (statuses[route][status] ?? 0) + 1; };
+    try { const value = await run(); count("ok"); return value; }
+    catch (e) {
+      count(e instanceof StorageError || e instanceof TierError ? String(e.status || 0) : "error");
+      throw e;
+    } finally { wall[route].push(performance.now() - start); }
   }
-  const routes = Object.fromEntries(ROUTES.map(route => {
-    const sorted = [...wall[route]].sort((a, b) => a - b);
-    return [route, { count: sorted.length, p50: quantile(sorted, 0.5), p95: quantile(sorted, 0.95), p99: quantile(sorted, 0.99) }];
-  }));
-  const window = { startedAt, endedAt: new Date().toISOString() };
-  // The lineage is deleted after the window; a failed delete is reported, not hidden (the reply stays 502).
-  let cleanup: { deleted: true } | { deleted: false; status: number; code: string } = { deleted: true };
-  try { await lineageCall(env, lineage, "DELETE"); }
-  catch (e) { if (!(e instanceof TierError)) throw e; cleanup = { deleted: false, status: e.status, code: e.code }; }
+
+  await tierRequest(env, { method: "PUT", path, claims, body: { tenant, kind: "workspace", defaultBranch: SMOKE_REF } });
+  let cleanup: { deleted: true } | { deleted: false; status: number; code: string; op: string } = { deleted: true };
+  let window = { startedAt: "", endedAt: "" };
+  try {
+    const seed = await storage.commit(lineage, { ...meta, parents: [], changes: [] });
+    op = "createRef";
+    await tierRequest(env, {
+      method: "POST", path: path + "/refs", claims: refClaims,
+      body: { name: SMOKE_REF, version: seed.commit, owner: "api:camelfs-smoke" },
+    });
+    refCreated = true;
+    let head = seed.commit;
+    const began = Date.now();
+    window.startedAt = new Date(began).toISOString();
+    for (let round = 0; round < iterations || Date.now() - began < minSeconds * 1000; round++) {
+      const file = "probe.txt";
+      const bytes = Buffer.from(`${lineage}:${round}`);
+      // Keep the two payloads the same size without warming the inline blob through the legacy route.
+      const inline = `${lineage};${round}`;
+      const blob = await measure("putBlob", () => storage.putBlob(lineage, bytes));
+      await measure("commit", () => storage.commit(lineage, {
+        ...meta, parents: [], changes: [{ path: file, blob: blob.blob }],
+      }));
+      twoCall.push(wall.putBlob[round] + wall.commit[round]);
+      const result = await measure("write", () => tierRequest<{ version: string; tree: string; region?: string }>(env, {
+        method: "POST", path: refPath + "/write", claims: refClaims,
+        body: { ...meta, time: Math.floor(Date.now() / 1000), expect: head, changes: [{ path: file, text: inline }] },
+      }));
+      head = result.version;
+      if (typeof result.region === "string" && /^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(result.region)) tierRegion = result.region;
+      const [entry] = await measure("readBatch", () => storage.readBatch(lineage, result.tree, [file]));
+      if (!entry || !("bytes" in entry) || !Buffer.from(inline).equals(entry.bytes))
+        throw new TierError(502, "read_mismatch", "camelFS smoke read did not match", undefined, op);
+      const metadata = await measure("getCommit", () => storage.getCommit(lineage, result.version));
+      if (metadata.tree !== result.tree)
+        throw new TierError(502, "commit_mismatch", "camelFS smoke commit did not match", undefined, op);
+      completed++;
+    }
+  } catch (e) {
+    if (!(e instanceof TierError || e instanceof StorageError)) throw e;
+    failure = new TierError(e.status || 502, e.code, "camelFS smoke failed", undefined, op, e);
+  } finally {
+    window.endedAt = new Date().toISOString();
+    window.startedAt ||= window.endedAt;
+    try {
+      if (refCreated) await tierRequest(env, { method: "DELETE", path: refPath, claims: refClaims });
+    } catch (e) {
+      if (!(e instanceof TierError)) throw e;
+      cleanup = { deleted: false, status: e.status, code: e.code, op: "deleteRef" };
+    } finally {
+      try { await tierRequest(env, { method: "DELETE", path, claims, idempotencyKey: `delete:${lineage}` }); }
+      catch (e) {
+        if (!(e instanceof TierError)) throw e;
+        cleanup = { deleted: false, status: e.status, code: e.code, op: "deleteLineage" };
+      }
+    }
+  }
+  const routes = Object.fromEntries(ROUTES.map(route => [route, timing(wall[route])]));
   const error = failure && { status: failure.status, code: failure.code, op: failure.op };
-  return { ok: !failure && cleanup.deleted, lineage, iterations, completed, window, routes, statuses, cleanup, ...(error ? { error } : {}) };
+  return {
+    ok: !failure && cleanup.deleted, lineage, iterations, completed, window, routes, twoCall: timing(twoCall), statuses, cleanup,
+    ...(tierRegion ? { tierRegion } : {}), ...(error ? { error } : {}),
+  };
 }
 
 export async function handleCamelfsSmoke(request: Request, env: TierEnv & { ADMIN_TENANTS?: string }, auth: { tenantId: string; scopes: string[] }) {
@@ -78,17 +111,18 @@ export async function handleCamelfsSmoke(request: Request, env: TierEnv & { ADMI
   if (site && site !== "same-origin" && site !== "none") return new Response(null, { status: 403 });
   const params = new URL(request.url).searchParams;
   const iterations = Number(params.get("iterations") ?? "1"), minSeconds = Number(params.get("minSeconds") ?? "0");
-  if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 500)
-    return Response.json({ error: "iterations must be 1..500", code: "INVALID_REQUEST" }, { status: 400 });
+  if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 600)
+    return Response.json({ error: "iterations must be 1..600", code: "INVALID_REQUEST" }, { status: 400 });
   if (!Number.isSafeInteger(minSeconds) || minSeconds < 0 || minSeconds > 600)
     return Response.json({ error: "minSeconds must be 0..600", code: "INVALID_REQUEST" }, { status: 400 });
+  const colo = typeof request.cf?.colo === "string" ? request.cf.colo : null;
   try {
     const result = await camelfsSmoke(env, iterations, minSeconds, auth.tenantId);
-    return Response.json(result, { status: result.ok ? 200 : 502, headers: { "cache-control": "no-store" } });
+    return Response.json({ ...result, colo }, { status: result.ok ? 200 : 502, headers: { "cache-control": "no-store" } });
   }
   catch (e) {
     if (!(e instanceof TierError)) throw e;
-    const { status, code, message, details, op } = e;
-    return Response.json({ error: { status, code, message, details, op } }, { status, headers: { "cache-control": "no-store" } });
+    const { status, code } = e;
+    return Response.json({ error: { status, code, op: "createLineage" }, colo }, { status, headers: { "cache-control": "no-store" } });
   }
 }

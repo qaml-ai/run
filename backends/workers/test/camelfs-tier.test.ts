@@ -53,44 +53,79 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   await assert.rejects(jwtVerify(token, keys, { ...options, typ: "file+jwt" }));
   await assert.rejects(jwtVerify(token, keys, { ...options, audience: "camelrun:file" }));
 
-  const calls: { path: string; method: string; claims: ReturnType<typeof decodeJwt>; token: string }[] = [];
+  const calls: { path: string; method: string; claims: ReturnType<typeof decodeJwt>; token: string; body?: unknown }[] = [];
   const fetchReal = globalThis.fetch;
+  let failSmokeWrite = false;
   globalThis.fetch = async (url, init) => {
     const authorization = new Headers(init?.headers).get("authorization")!;
     assert.match(authorization, /^Bearer ey/);
     const jwt = authorization.slice(7);
-    calls.push({ path: new URL(url as URL).pathname, method: init?.method ?? "GET", claims: decodeJwt(jwt), token: jwt });
-    return fetchReal(url, init);
+    const path = new URL(url as URL).pathname;
+    calls.push({ path, method: init?.method ?? "GET", claims: decodeJwt(jwt), token: jwt,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined });
+    const smokeWrite = path.includes("/smoke%3A") && path.endsWith("/write");
+    if (smokeWrite && failSmokeWrite)
+      return Response.json({ error: { code: "stale", details: { current: "a".repeat(40) } } }, { status: 412 });
+    const response = await fetchReal(url, init);
+    if (smokeWrite && response.ok)
+      return Response.json({ ...await response.json(), region: "us-west-2" }, { status: response.status });
+    return response;
   };
   t.after(() => { globalThis.fetch = fetchReal; });
-  const request = () => new Request("https://runtime/v1/internal/camelfs/smoke", { method: "POST" });
+  const request = () => Object.assign(
+    new Request("https://runtime/v1/internal/camelfs/smoke?iterations=2", { method: "POST" }),
+    { cf: { colo: "SIN" } },
+  );
   const auth = { tenantId: "t", scopes: ["*"] };
   assert.equal((await handleCamelfsSmoke(request(), { ...env, CAMELFS_URL: undefined }, auth)).status, 404);
   assert.equal((await handleCamelfsSmoke(request(), env, { ...auth, scopes: [] })).status, 403);
-  assert.equal((await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?iterations=501", { method: "POST" }), env, auth)).status, 400);
+  assert.equal((await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?iterations=601", { method: "POST" }), env, auth)).status, 400);
   assert.equal((await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?minSeconds=601", { method: "POST" }), env, auth)).status, 400);
   const response = await handleCamelfsSmoke(request(), env, auth);
-  const smoke = await response.json() as { lineage: string; ok: boolean; routes: Record<string, { count: number; p50: number; p95: number; p99: number }> };
+  const smoke = await response.json();
   assert.equal(response.status, 200, JSON.stringify(smoke));
   assert.equal(smoke.ok, true);
   assert.match(smoke.lineage, /^smoke:/);
-  assert.deepEqual(Object.keys(smoke.routes), ["putBlob", "commit", "readBatch", "getCommit"]);
-  assert.ok(Object.values(smoke.routes).every(r => r.count === 1 && r.p50 >= 0 && r.p99 >= r.p50));
-  const full = smoke as unknown as { completed: number; statuses: Record<string, Record<string, number>>; window: { startedAt: string; endedAt: string } };
-  assert.equal(full.completed, 1);
-  assert.deepEqual(full.statuses, { putBlob: { ok: 1 }, commit: { ok: 1 }, readBatch: { ok: 1 }, getCommit: { ok: 1 } });
-  assert.ok(Date.parse(full.window.endedAt) >= Date.parse(full.window.startedAt));
-  assert.deepEqual((smoke as unknown as { cleanup: unknown }).cleanup, { deleted: true });
-  // The lineage is registered first (the tier 404s a blob PUT to an unregistered lineage) and deleted last.
+  assert.equal(smoke.colo, "SIN");
+  assert.equal(smoke.tierRegion, "us-west-2");
+  assert.deepEqual(Object.keys(smoke).sort(),
+    ["cleanup", "colo", "completed", "iterations", "lineage", "ok", "routes", "statuses", "tierRegion", "twoCall", "window"]);
+  assert.deepEqual(Object.keys(smoke.routes), ["putBlob", "commit", "write", "readBatch", "getCommit"]);
+  for (const timing of [...Object.values(smoke.routes), smoke.twoCall] as { count: number; p50: number; p95: number; p99: number }[]) {
+    assert.equal(timing.count, 2);
+    assert.ok(timing.p99 >= timing.p95 && timing.p95 >= timing.p50 && timing.p50 >= 0);
+  }
+  assert.equal(smoke.completed, 2);
+  assert.deepEqual(smoke.statuses, { putBlob: { ok: 2 }, commit: { ok: 2 }, write: { ok: 2 }, readBatch: { ok: 2 }, getCommit: { ok: 2 } });
+  assert.ok(Date.parse(smoke.window.endedAt) >= Date.parse(smoke.window.startedAt));
+  assert.deepEqual(smoke.cleanup, { deleted: true });
   const lineagePath = "/v1/lineages/" + encodeURIComponent(smoke.lineage);
-  assert.deepEqual(calls.map(c => [c.method, c.path === lineagePath ? "lineage" : c.path.slice(lineagePath.length + 1).split("/")[0], c.claims.lin, c.claims.acc, c.claims.sub]), [
-    ["PUT", "lineage", smoke.lineage, "w", "runtime:camelfs-smoke"],
-    ["PUT", "blobs", smoke.lineage, "w", "runtime:camelfs-smoke"],
-    ["POST", "commits", smoke.lineage, "w", "runtime:camelfs-smoke"],
-    ["POST", "read", smoke.lineage, "r", "runtime:camelfs-smoke"],
-    ["GET", "commits", smoke.lineage, "r", "runtime:camelfs-smoke"],
-    ["DELETE", "lineage", smoke.lineage, "w", "runtime:camelfs-smoke"],
-  ]);
+  const round = ["PUT /blobs", "POST /commits", "POST /refs/main/write", "POST /read", "GET /commits/:version"];
+  assert.deepEqual(calls.map(c => {
+    assert.equal(c.claims.lin, smoke.lineage);
+    assert.equal(c.claims.sub, "runtime:camelfs-smoke");
+    const route = c.path.slice(lineagePath.length) || "/";
+    assert.equal(c.claims.acc, c.method === "GET" || route === "/read" ? "r" : "w");
+    return c.method + " " + route.replace(/^\/commits\/[a-f0-9]{40}$/, "/commits/:version");
+  }), ["PUT /", "POST /commits", "POST /refs", ...round, ...round, "DELETE /refs/main", "DELETE /"]);
+  const writes = calls.filter(c => c.path.endsWith("/write"));
+  assert.deepEqual(writes.map(c => (c.body as { changes: unknown }).changes),
+    [0, 1].map(round => [{ path: "probe.txt", text: `${smoke.lineage};${round}` }]));
+  assert.ok(writes.every(c => c.claims.refs?.[0] === "main"));
+
+  const beforeFailure = calls.length;
+  failSmokeWrite = true;
+  const failed = await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?iterations=600", { method: "POST" }), env, auth);
+  assert.equal(failed.status, 502);
+  const failedSmoke = await failed.json();
+  assert.equal(failedSmoke.colo, null);
+  assert.equal(failedSmoke.tierRegion, undefined);
+  assert.equal(failedSmoke.completed, 0);
+  assert.deepEqual(failedSmoke.error, { status: 412, code: "stale", op: "write" });
+  assert.deepEqual(failedSmoke.cleanup, { deleted: true });
+  const failedPath = "/v1/lineages/" + encodeURIComponent(failedSmoke.lineage);
+  assert.deepEqual(calls.slice(beforeFailure).map(c => c.method + " " + (c.path.slice(failedPath.length) || "/")),
+    ["PUT /", "POST /commits", "POST /refs", ...round.slice(0, 3), "DELETE /refs/main", "DELETE /"]);
 
   const { repoStorage } = await import("../src/camelfs/repo-storage.ts");
   const row = { id: "repo_r3", name: "r3", key: null, createdAt: 1, deletedAt: null, lineage: "t:repo_r3", files: 0, bytes: 0 };
