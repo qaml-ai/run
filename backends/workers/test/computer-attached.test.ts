@@ -190,21 +190,17 @@ test("connection writers commit before clearing the affected agent", async () =>
         calls.push("write");
         return { rows: writer === "account delete" ? [row, { agent: "removed:already" }] : [row], rowCount: 1 };
       }
-      if (query.startsWith("insert into computer_attachment_clears")) calls.push("pending");
-      if (query.startsWith("delete from computer_attachment_clears")) calls.push("ack");
       return { rows: [row], rowCount: 1 };
     } };
     const withSql = (_env: unknown, run: Function) => run(sql);
     const writeComputerConnections = method("computers/attachment-hint", "writeComputerConnections", {
-      crypto, applyScope: { getStore: () => undefined },
+      applyScope: { getStore: () => undefined },
       transaction: async (_env: unknown, write: Function) => {
         const result = await write(sql);
         calls.push("commit");
         return result;
       },
-      clear: (env: unknown, agent: string, token: string, local: unknown) => clear(env, agent, token, local),
     });
-    const clear = method("computers/attachment-hint", "clear", { withSql });
     const clearComputerAttached = async () => { calls.push("local"); return true; };
     const env = { AGENTS: { getByName(agent: string) {
       assert.equal(agent, 'target');
@@ -228,38 +224,30 @@ test("connection writers commit before clearing the affected agent", async () =>
     else if (writer === "account delete") await method("computers/service", "deleteTenantComputerConnections", methods)(env, "tenant");
     else if (writer.startsWith("detach")) await method("computers/service", "detach", methods).call(runtime, row);
     else await method("computers/service", "create", methods).call(runtime, {});
-    assert.deepEqual(calls, ["write", "pending", "commit", writer === "detach local" ? "local" : "rpc", "ack"], writer);
+    assert.deepEqual(calls, ["write", "commit", writer === "detach local" ? "local" : "rpc"], writer);
   }
 });
 
-test("a failed post-commit clear stays pending and maintenance retries it", async () => {
+test("a failed post-commit clear throws after attempting every affected agent", async () => {
   const calls: string[] = [];
-  const row = { agent: "target", token: crypto.randomUUID() };
-  const sql = { async query(query: string) {
-    if (query.includes("set due_at")) { calls.push("claim"); return { rows: [row] }; }
-    if (query.startsWith("insert")) calls.push("pending");
-    if (query.startsWith("delete")) calls.push("ack");
-    return { rows: [] };
-  } };
-  const withSql = (_env: unknown, run: Function) => run(sql);
-  const clear = method("computers/attachment-hint", "clear", { withSql });
-  const clearError = class extends Error {};
+  const unavailable = new Error("unavailable");
+  const clearError = class extends Error {
+    constructor(cause: unknown) { super("clear failed", { cause }); }
+  };
   const write = method("computers/attachment-hint", "writeComputerConnections", {
-    clear, crypto, applyScope: { getStore: () => undefined }, ComputerHintClearError: clearError,
+    applyScope: { getStore: () => undefined }, ComputerHintClearError: clearError,
     transaction: async (_env: unknown, run: Function) => {
-      const result = await run(sql);
+      const result = await run({});
       calls.push("commit");
       return result;
     },
   });
-  let unavailable = true;
-  const env = { AGENTS: { getByName: () => ({ async clearComputerAttached() {
-    calls.push("rpc");
-    if (unavailable) throw new Error("unavailable");
+  const env = { AGENTS: { getByName: (agent: string) => ({ async clearComputerAttached() {
+    calls.push(agent);
+    if (agent === "first") throw unavailable;
+    return true;
   } }) } };
-  await assert.rejects(write(env, async () => ({ value: null, agents: [row.agent] })), clearError);
-  assert.deepEqual(calls, ["pending", "commit", "rpc"]);
-  unavailable = false;
-  await method("computers/attachment-hint", "sweepComputerAttachmentClears", { withSql, clear })(env);
-  assert.deepEqual(calls, ["pending", "commit", "rpc", "claim", "rpc", "ack"]);
+  await assert.rejects(write(env, async () => ({ value: null, agents: ["first", "second"] })), error =>
+    error instanceof clearError && error.cause === unavailable);
+  assert.deepEqual(calls, ["commit", "first", "second"]);
 });
