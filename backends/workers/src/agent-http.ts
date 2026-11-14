@@ -46,6 +46,7 @@ import { modelSettingsRefusal } from "./model-policy.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { resetContext } from "./context-reset.ts";
 import { setAgentSpendLimit } from "./agent-spend.ts";
+import { flushCompletedSettlement } from "./agent-turn-loop.ts";
 import { Config, RequestRecord, Env, json, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -55,11 +56,19 @@ export function replayedRequestImpl(this: AgentRuntime,
     return record;
   }
 
-export function requestResponseImpl(this: AgentRuntime,
+export async function requestResponseImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   record: RequestRecord) {
     const headers = admissionHeaders(this.runRates.get(record.id));
     this.runRates.delete(record.id);
-    return requestView(record).then(value => Response.json(value, { status: this.replayedRequests.has(record) ? 200 : 202, headers }));
+    const replayed = this.replayedRequests.has(record);
+    if (replayed && record.state === "completed" && await this.ctx.storage.get(`billing:${record.id}`)) {
+      await flushCompletedSettlement(propagate => this.flushBilling(invocation, propagate));
+      const latest = await this.ctx.storage.get<RequestRecord>(reqKey(record.id));
+      if (!latest) throw new HttpError(404, "Unknown request");
+      record = latest;
+    }
+    return requestView(record).then(value => Response.json(value, { status: replayed ? 200 : 202, headers }));
   }
 
 export async function activityImpl(this: AgentRuntime) {
@@ -441,6 +450,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           crashReached: !!(await this.testStorage.get("test:crash-reached")),
           inputEmitReached: !!(await this.testStorage.get("test:input-emit-owner")),
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
+          settleFailing: (await this.ctx.storage.list({ prefix: "settle-failing:", limit: 1 })).size > 0,
           hostFinishedAt: await this.testStorage.get<number>("test:host-finished-at"),
           unacceptedFinishedAt: unaccepted === undefined ? undefined : (await waitHostExecution(await this.harness.pi(), unaccepted as never)).endedAt,
         });
@@ -456,7 +466,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
       ) {
         await this.testStorage.delete("test:crash-reached");
         await this.testStorage.delete("test:crash-owner");
-        const input = (await body(request)) as { events?: boolean; beforeReceipt?: boolean; beforeAcceptance?: boolean };
+        const input = (await body(request)) as { events?: boolean; beforeReceipt?: boolean; beforeAcceptance?: boolean; stuckFailures?: number; stuckMs?: number };
         if (input.beforeAcceptance === true) {
           await this.testStorage.delete("test:host-unaccepted-task");
           await this.testStorage.put("test:crash-host-acceptance", true);
@@ -472,6 +482,11 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           "test:crash-events",
           input.events === true,
         );
+        if (typeof input.stuckFailures === "number" || typeof input.stuckMs === "number") {
+          await this.testStorage.put("test:settle-stuck", { failures: input.stuckFailures, ms: input.stuckMs });
+        } else {
+          await this.testStorage.delete("test:settle-stuck");
+        }
         await this.testStorage.put("test:crash-settlement", true);
         return json({ armed: true });
       }
@@ -529,7 +544,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           "files",
         ]);
         const { idempotencyKey, requestId, ...params } = input;
-        return this.requestResponse(
+        return await this.requestResponse(invocation,
             await this.submit(invocation, {
               id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
               method: "prompt",
@@ -580,7 +595,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
       if (path === "/state" && request.method === "GET")
         return json(await this.state(invocation));
       if (path === "/requests" && request.method === "POST")
-        return this.requestResponse(await this.submit(invocation, await body(request, 6 * 1024 * 1024)));
+        return await this.requestResponse(invocation, await this.submit(invocation, await body(request, 6 * 1024 * 1024)));
       if (path.startsWith("/requests/") && request.method === "GET") {
         const seconds = Number(url.searchParams.get("wait") ?? 0);
         if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
@@ -828,15 +843,17 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           ? 400
           : ((error as { status?: number }).status ??
             ((error as { code?: string }).code === "ENOENT" ? 404 : errorStatus(error, 500)));
+      const code = errorCode(error, status);
+      const settlementPending = code === "SETTLEMENT_PENDING";
       // The Worker logs only errors thrown to it (http_failed); this answer it passes on was logged nowhere.
-      if (status >= 500) failure(this.env, "agent_http_failed", error);
+      if (status >= 500 && !settlementPending) failure(this.env, "agent_http_failed", error);
       return json(
         {
           ...errorFields(error),
-          code: errorCode(error, status),
+          code,
           ...("input" in Object(error) ? { input: (error as { input: unknown }).input } : {}),
           error:
-            status >= 500
+            status >= 500 && !settlementPending
               ? "Backend operation failed"
               : error instanceof Error
                 ? error.message

@@ -1717,6 +1717,55 @@ class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
             await runtime.close()
 
 
+class SettlementPendingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_waits_after_settlement_pending_submit(self):
+        session = {"id": "client_" + "a" * 40, "token": "agent-test"}
+        posts, reads = {}, {}
+
+        def answer(request):
+            pending = httpx.Response(503, json={"code": "SETTLEMENT_PENDING"}, headers={"Retry-After": "0"})
+            if request.method == "POST":
+                self.assertEqual(request.url.path, f"/clients/{session['id']}/requests")
+                request_id = json.loads(request.content)["id"]
+                posts[request_id] = posts.get(request_id, 0) + 1
+                return pending
+            request_id = request.url.path.rsplit("/", 1)[1]
+            self.assertEqual(request.url.path, f"/clients/{session['id']}/requests/{request_id}")
+            self.assertEqual(posts[request_id], 4)
+            reads[request_id] = reads.get(request_id, 0) + 1
+            if reads[request_id] == 1 or request_id == "timeout":
+                return pending
+            return httpx.Response(200, json={"id": request_id, "state": "completed", "outcome": {"result": {"reply": "settled"}}})
+
+        client = AgentClient("http://localhost", session, [], attach=False, connection="lazy")
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        try:
+            self.assertEqual(await client.request("prompt", {"text": "hi"}, idempotency_key="request"), {"reply": "settled"})
+            self.assertEqual(await client.prompt("hi", idempotency_key="prompt"), {"reply": "settled"})
+            self.assertEqual(await client.submit("hi", idempotency_key="submit"), {"id": "submit", "state": "completed"})
+            self.assertEqual(await client.steer_message("hi", idempotency_key="steer"), {"id": "steer", "status": "accepted"})
+            with self.assertRaisesRegex(AgentError, "Stopped waiting") as timed_out:
+                await client.prompt("hi", idempotency_key="timeout", timeout=0.05)
+            self.assertEqual(timed_out.exception.status, 0)
+            self.assertIsInstance(timed_out.exception.__cause__, TimeoutError)
+            self.assertGreater(reads.get("timeout", 0), 0)
+        finally:
+            await client.close()
+
+        def check_sync():
+            client = sync.AgentClient("http://localhost", session)
+            client.http.close()
+            client.http = httpx.Client(transport=httpx.MockTransport(answer))
+            try:
+                self.assertEqual(client.prompt("hi", idempotency_key="sync-prompt"), {"reply": "settled"})
+                self.assertEqual(client.steer_message("hi", idempotency_key="sync-steer"), {"id": "sync-steer", "status": "accepted"})
+            finally:
+                client.close()
+
+        await asyncio.to_thread(check_sync)
+
+
 class PromptPayerTest(unittest.IsolatedAsyncioTestCase):
     async def test_async_payer_uses_tenant_key(self):
         calls = []

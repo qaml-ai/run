@@ -139,9 +139,10 @@ test(
       "crash after Postgres commit before DO acknowledgement never charges twice",
       async () => {
         const before = await request("/v1/credits");
+        const settlementState = `/experimental/agents/${alpha.id}/__test/settlement-state`;
         await request(
           `/experimental/agents/${alpha.id}/__test/crash-next-settlement`,
-          {},
+          { stuckFailures: 3, stuckMs: 0 },
         );
         // The injected crash leaves this workerd unable to acknowledge the settlement: until it is
         // restarted, reading the completed request fails (its settlement is retried and fails again),
@@ -154,9 +155,7 @@ test(
         first.catch(() => {});
         let checkpoint: any;
         for (let i = 0; i < 1000; i++) {
-          checkpoint = await request(
-            `/experimental/agents/${alpha.id}/__test/settlement-state`,
-          );
+          checkpoint = await request(settlementState);
           if (checkpoint.crashReached) break;
           await delay(10);
         }
@@ -166,8 +165,68 @@ test(
           "PG commit checkpoint reached before killing workerd",
         );
         assert.equal(checkpoint.pending, 1);
+        const pollPending = async () => {
+          const response = await fetch(`${fixture.url}/clients/${alpha.session.id}/requests/charge-once?wait=1`, {
+            headers: { Authorization: `Bearer ${alpha.session.token}` },
+          });
+          assert.equal(response.status, 503);
+          assert.equal((await response.json() as { code: string }).code, "SETTLEMENT_PENDING");
+          assert.equal(response.headers.get("Retry-After"), "1");
+        };
+        await pollPending();
+        const replay = () => fetch(`${fixture.url}/clients/${alpha.session.id}/requests`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${alpha.session.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ id: "charge-once", method: "prompt", params: { text: "charge once" } }),
+        });
+        const pending = await replay();
+        assert.equal(pending.status, 503);
+        assert.equal(pending.headers.get("Retry-After"), "1");
+        const pendingBody = await pending.json() as { code: string; state?: string; outcome?: unknown };
+        assert.equal(pendingBody.code, "SETTLEMENT_PENDING");
+        assert.ok(!("outcome" in pendingBody));
+        assert.notEqual(pendingBody.state, "running");
+
+        await assert.rejects(
+          alpha.run("charge once", { idempotencyKey: "charge-once", timeoutMs: 3000 }),
+          { name: "TimeoutError" },
+        );
+        for (let i = 0; i < 4; i++) await pollPending();
+        assert.equal((await request(settlementState)).settleFailing, true);
+        const stuckLogs = fixture.worker.logs().split("\n").filter(line =>
+          line.includes('"type":"run_settle_stuck"') && line.includes('"requestId":"charge-once"'));
+        assert.equal(stuckLogs.length, 1);
+
+        const polling = Promise.withResolvers<void>();
+        const replayAgents = new Agents({
+          url: fixture.url,
+          connection: "lazy",
+          fetch: async (input, init) => {
+            const response = await fetch(input, init);
+            if (init?.method === "GET" && new URL(String(input)).pathname.endsWith("/requests/charge-once") && response.status === 503)
+              polling.resolve();
+            return response;
+          },
+        });
+        t.after(() => replayAgents.close());
+        const replayAlpha = await replayAgents.agent(alpha.session);
+        const waiting = replayAlpha.run("charge once", { idempotencyKey: "charge-once", timeoutMs: 60000 });
+        waiting.catch(polling.reject);
+        await polling.promise;
         await fixture.worker.stop(true);
         await fixture.worker.start();
+
+        let recovered = await replay();
+        for (let attempt = 1; attempt < 30 && recovered.status === 503; attempt++) {
+          assert.equal((await recovered.json() as { code: string }).code, "SETTLEMENT_PENDING");
+          await delay(Number(recovered.headers.get("Retry-After") ?? "1") * 1000);
+          recovered = await replay();
+        }
+        assert.equal(recovered.status, 200);
+        const completed = await recovered.json() as { state: string; outcome: { result: { reply: string } } };
+        assert.equal(completed.state, "completed");
+        assert.equal(completed.outcome.result.reply, "Echo: charge once");
+        assert.equal((await waiting).text, "Echo: charge once");
         assert.equal((await first).text, "Echo: charge once");
         await request(
           `/experimental/agents/${alpha.id}/__test/flush-billing`,
@@ -185,6 +244,7 @@ test(
           Number((await request("/v1/credits")).balance),
           Number(after.balance),
         );
+        assert.equal((await request(settlementState)).settleFailing, false);
       },
     );
   },
