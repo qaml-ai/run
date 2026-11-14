@@ -294,6 +294,13 @@ run "roles_and_policies" {
   }
   assert {
     condition = (
+      [for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Resource if statement.Sid == "ScanMarks"] == [["arn:aws:dynamodb:us-west-2:904534089871:table/mocked"]]
+      && !anytrue([for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Sid != "ScanMarks" && contains(flatten([statement.Action]), "dynamodb:Scan")])
+    )
+    error_message = "Scan is granted on the marks table alone (the mock gives every table one ARN), never in the all-tables statement."
+  }
+  assert {
+    condition = (
       [for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Condition.StringEquals["acm-pca:TemplateArn"] if statement.Sid == "IssueHostCertificates"] == [["arn:aws:acm-pca:::template/EndEntityCertificate/V1"]]
       && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : anytrue([for action in flatten([statement.Action]) : startswith(action, "acm-pca:")])])
       && toset(flatten([for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Action if statement.Sid == "FetchIssuedCertificates"])) == toset(["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate", "acm-pca:DescribeCertificateAuthority"])

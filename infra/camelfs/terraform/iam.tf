@@ -106,9 +106,8 @@ locals {
     },
   ]
 
-  # Scan: the GC mark pass walks the marks table (C3b); nothing else scans.
   dynamodb_item_actions = [
-    "dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query", "dynamodb:Scan",
+    "dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query",
     "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem",
     "dynamodb:ConditionCheckItem", "dynamodb:TransactGetItems", "dynamodb:TransactWriteItems",
   ]
@@ -121,6 +120,14 @@ locals {
         Effect   = "Allow"
         Action   = local.dynamodb_item_actions
         Resource = values(local.table_arns)
+      },
+      # The GC mark pass walks the marks table (C3b); no other table is ever scanned (a full scan of refs or usage
+      # is a capability the tier does not get).
+      {
+        Sid      = "ScanMarks"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Scan"]
+        Resource = [local.table_arns["marks"]]
       },
       # Registration authority for the hosts' CA (mtls.tf): issue a host's or its own end-entity certificate from a
       # CSR, and fetch it. IssueCertificate is restricted to the one end-entity template with server + client EKU
