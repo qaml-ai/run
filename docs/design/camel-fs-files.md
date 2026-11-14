@@ -745,7 +745,7 @@ Over the host's Unix socket (unchanged transport):
   computer and `bash` VMs checkpoint many times without ending.
   - **Identity:** from the verified TLS handshake only. `{host}` must equal the client certificate's
     `spiffe://camelfs/host/<id>`, else `403 forbidden`.
-  - **Body:** `{ "commit", "expect", "holder": "<host>:<bootEpoch>:<mount>", "epoch", "root"? }`.
+  - **Body:** `{ "commit", "expect", "holder": { "host", "boot", "mount" }, "epoch", "root"? }`.
   - **Checks, in order:**
     1. `hostwire.ParseHolder`;
     2. `checkHolder(certHostID, holder)`: holder.host is the certificate's host and holder.boot is the host's
@@ -951,10 +951,12 @@ claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_12
   `kid`, never the token.
 
 **For runtime callers, a fence lives only inside the signed token.**
-- **The holder's two spellings.** Inside the JWT `fence` claim, `holder` is the canonical string
-  `"<host>:<boot>:<mount>"` (`hostwire.Holder.String()`), with `epoch` a number. In JSON request bodies (the
-  lease routes of §9.9) it is the object `{ "host", "boot", "mount" }`. Both name the same holder, and the tier
-  compares the canonical string.
+- **The holder's two spellings, one rule everywhere:**
+  - Every JSON request or reply body uses the object `{ "host", "boot", "mount" }`: the lease routes of §9.9, and
+    the host CAS route of §9.7.
+  - The JWT `fence` claim and the value stored on the DynamoDB ref item use the canonical string
+    `"<host>:<boot>:<mount>"` (`hostwire.Holder.String()`), with `epoch` a number.
+  - The tier decodes the object, then compares canonical strings. On the host route it runs `checkHolder` first.
 - A token with `fence` writes exactly the one ref in its `refs`. Its `cas`, lease renew and release are conditioned
   on that holder and epoch. No route on the API listener takes a fence in a request body.
 - **Hosts use no token** (decided 2026-11-14). Their CAS is the host route of §9.7, on `--listen-hosts`.

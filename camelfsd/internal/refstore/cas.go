@@ -20,7 +20,10 @@ type Move struct {
 	ExpiresAt                 *int64
 	Expect                    *string
 	ExpectAbsent              bool
-	Fence                     *Fence
+	RequireExisting           bool
+	// Prepare computes the response after validation but before the conditional write.
+	Prepare func(previous Ref) error
+	Fence   *Fence
 }
 
 type Result struct {
@@ -61,6 +64,9 @@ func (s *Store) Cas(ctx context.Context, lineage, name string, m Move) (Result, 
 
 func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, now int64) (Result, error) {
 	prev := current(r, now)
+	if prev == nil && m.RequireExisting {
+		return Result{}, failure("no_ref", 404)
+	}
 	if (m.Expect != nil && (prev == nil || *prev != *m.Expect)) || (m.ExpectAbsent && prev != nil) {
 		return Result{}, stale(r, now)
 	}
@@ -74,6 +80,11 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 	}
 	result := Result{Version: m.Version, Previous: prev}
 	if prev != nil && *prev == m.Version {
+		if m.Prepare != nil {
+			if err := m.Prepare(r); err != nil {
+				return Result{}, err
+			}
+		}
 		result.NoOp = true
 		result.Watchers = r.Watchers
 		return result, nil
@@ -86,6 +97,11 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 				}}
 			}
 		} else if err := s.fastForward(ctx, lineage, *prev, m.Version); err != nil {
+			return Result{}, err
+		}
+	}
+	if m.Prepare != nil {
+		if err := m.Prepare(r); err != nil {
 			return Result{}, err
 		}
 	}
@@ -111,6 +127,7 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 		return Result{}, err
 	}
 	if prev != nil {
+		result.Watchers = r.Watchers
 		if watchers, ok := old.Attributes["watchers"].(*types.AttributeValueMemberSS); ok {
 			result.Watchers = watchers.Value
 		}
