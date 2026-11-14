@@ -21,7 +21,8 @@ export function voiceCredits(env: Env & { VOICE_CREDITS?: VoiceCredits }): Voice
   return {
     enabled: tenant => credits.enabled(tenant),
     refusal: (tenant, endUser, bucket) => credits.refusal(tenant, endUser, bucket),
-    // TODO(files-model <- main #997): wire EndUserCredits.debit after regenerating the shared policy.
+    // TODO(main <- #997 or #1080, then files-model): EndUserCredits.debit does not exist on main yet (main's credit
+    // module still holds); the uncapped debit is wired once it does. Until then a subject-paid settlement fails loudly.
     async debit() { throw new Error("voice calls need EndUserCredits.debit from main"); },
   };
 }
