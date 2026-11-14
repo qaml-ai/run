@@ -17,17 +17,9 @@ elif [ "$GITHUB_EVENT_NAME" = push ]; then
 fi
 range="${base:-}...${head:-}"
 if [ "$GITHUB_EVENT_NAME" = push ]; then range="$base..$head"; fi
-if [ -n "${base:-}" ] && guest_paths=$(git diff --no-renames --name-only "$range"); then
-  # camelfsd/scripts/guest-inputs.txt is the one list of guest image inputs (exact paths; a trailing / is a directory).
-  inputs=$(grep -Ev '^(#|$)' camelfsd/scripts/guest-inputs.txt)
-  if ! python3 -c '
-import sys
-inputs = sys.argv[1].split()
-paths = [p for p in sys.argv[2].split("\n") if p]
-sys.exit(0 if any(p == i or (i.endswith("/") and p.startswith(i)) for p in paths for i in inputs) else 1)
-' "$inputs" "$guest_paths"; then
-    guest_image=false
-  fi
+if [ -n "${base:-}" ]; then
+  op=...; if [ "$GITHUB_EVENT_NAME" = push ]; then op=..; fi
+  if ! "$(dirname "$0")/guest-image-changed.sh" "$base" "$head" "$op"; then guest_image=false; fi
 fi
 if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
   if git diff --no-renames --name-only -z "$base...$head" | python3 -c '
