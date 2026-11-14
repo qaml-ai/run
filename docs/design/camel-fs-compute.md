@@ -70,7 +70,7 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
 | route | semantics |
 |---|---|
 | `POST /v1/vms` `{ id, lineage, ref, version?, mode: "job" \| "session", image, shape: { vcpus, memoryMiB, diskGiB }, pool, job?: { command, timeoutS, env, outputs, commit }, session?: { idleStopS }, network, usage: { payer }, deadline }` | idempotent by `id` (the runtime's job id or computer id). It takes the lease on `ref` (§9.9; `job/<id>` branches are created by the caller first), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/repo` or `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase. `deadline` is the credit lease of §4 |
-| `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied |
+| `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied. **A lapsed lease is final**: a call made at or after the current deadline (`now ≥ deadline`) answers `409 lease_expired` and never revives it (§4) |
 | `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, exit?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended`. Ended codes: `exit`, `stopped`, `timeout`, `host_lost`, `start_failed`, `lease_expired` (§4) (admission is the runtime's, before `POST /v1/vms`, so it is never an ended code) |
 | `GET /v1/vms/{id}/result` | the full result body (`acc: r` on the VM's lineage): `{ exit, timedOut, stdout, stderr, outputs, version?, checkpointError?, timings }`, capped as `WireResult` today (up to 1 MiB). The host sends the body (≤ 1 MiB) in its in-VPC `POST /v1/hosts/{host}/vms/{id}/ended`. The **tier** first PUTs it to the bucket at `<lineage>/results/<vm id>` (tagged `kind=result`, expired by a 7-day lifecycle rule on that tag; the runtime lands it within seconds of `vm.ended`, and a read after expiry is a loud `404`). Only then does it commit `ended`, the host's `free`/`vms`, the `vm.ended` delivery and the final `usage.vm` in one `TransactWriteItems`. Write-then-commit stays in one process, hosts get no S3 write on result paths, and a replayed `ended` overwrites the same key with the same bytes. The `vms` row and `vm.ended` never carry the body (DynamoDB's 400 KB item limit, L93) |
 | `POST /v1/vms/{id}/exec` `{ command, shell?, timeoutS, env?, stdin? }` | runs a command. Output streams as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`); a client that drops the stream can re-read the tail with `GET …/exec/{execId}`. `shell` names a persistent shell from `POST /v1/vms/{id}/shells` (cwd, env and shell state survive between calls: the `bash` tool's semantics). A `job`-mode VM runs its `job.command` once by itself and refuses `exec` |
@@ -193,6 +193,12 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
   - A VM whose deadline lapses is stopped by camel-fs with code `lease_expired`, as `stop { checkpoint: true }`
     does, so the work up to that point is kept.
   - camel-fs knows only the time, never why it was not extended.
+  - **A lapsed lease is final** (wf-durable, K4b). An extension that arrives when `now ≥ deadline` answers
+    `lease_expired` and does not revive the lease, even if the VM has not stopped yet. Reviving it would bill the
+    lapsed gap retroactively, against credit the runtime did not hold during it. The runtime's renewer treats
+    `lease_expired` as "the VM is stopping" and lands it through `vm.ended` and the usage poll like any other end.
+    It extends well before the deadline (at a fraction of the lease), so a slow round trip does not lapse a VM that
+    still has credit.
 - **Money-path review:** this section is the design; the implementation's money hunks (the event schema, the poller's
   insert and cursor, the settlement, the deadline extension) go to the lead line by line before any of them merges.
 
