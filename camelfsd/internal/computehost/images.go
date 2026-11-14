@@ -119,7 +119,9 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 		compressed.Close()
 		return err
 	}
-	verify := checkHash(response, compressed, m.ZstdSHA256)
+	// zstd never expands incompressible input by more than a few bytes per block; bound the
+	// download by the image size so a bad object cannot fill the cache disk.
+	verify := checkHash(io.LimitReader(response, m.Bytes+m.Bytes/64+1<<20), compressed, m.ZstdSHA256)
 	response.Close()
 	if err := errors.Join(verify, compressed.Close()); err != nil {
 		return fmt.Errorf("compressed guest image: %w", err)
