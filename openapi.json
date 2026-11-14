@@ -15595,7 +15595,8 @@
           "maxMinutes": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 720
+            "maximum": 720,
+            "description": "For ElevenLabs, defaults to 30 and is capped at 30. Sets the call's expiry in camelRun. The provider enforces a fixed 30-minute limit."
           },
           "metadata": {
             "type": "object",

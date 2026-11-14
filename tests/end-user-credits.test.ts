@@ -118,6 +118,24 @@ test("a spend takes credit for what the tenant sells, at most the balance calls 
   assert.deepEqual([day.granted, day.spent, day.refunded, day.entries], [2 * USD, 1_400_000, 0, 3]);
 });
 
+test("a completed usage debit can overdraw a balance and posts once per key", async () => {
+  const { db } = await testDatabase();
+  const credits = new EndUserCredits(db);
+  await credits.setSettings("a", { enabled: true });
+  await db.query(`insert into webhook_endpoints (id, tenant, url, events, secret, created_at)
+    values ('we_1', 'a', 'https://example.test/hook', ARRAY['end_user.credit.exhausted'], '{}', 0)`);
+  await credits.post("a", "u", { kind: "grant", amount: USD, key: "initial-credit" });
+  const debit = () => credits.debit("a", "u", "bot:1", 3.60, "completed-work");
+  await Promise.all([debit(), debit()]);
+  const { entries } = await credits.ledger("a", "u", { kinds: ["usage"] });
+  assert.deepEqual(entries.map(({ raw, amount, writtenOff }) => ({ raw, amount, writtenOff })),
+    [{ raw: 3_600_000, amount: -3_600_000, writtenOff: 0 }]);
+  assert.equal((await credits.get("a", "u")).balance, -2_600_000);
+  const { rows } = await db.query("select body from webhook_deliveries");
+  assert.deepEqual(rows.map(({ body }) => [body.type, body.data.reason, body.data.balance]),
+    [["end_user.credit.exhausted", "balance", -2_600_000]]);
+});
+
 test("a user's overrides merge key by key and never touch what they spent", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);

@@ -1,13 +1,14 @@
+alter table voice_calls drop column hold;
+
 create table elevenlabs_call_agents (
   key_hash text not null,
   model text not null,
   persona_hash text not null,
-  max_minutes int not null,
   agent_id text not null,
   tool_secret text not null,
   created_at timestamptz not null default now(),
   last_used_at timestamptz not null default now(),
-  primary key (key_hash, model, persona_hash, max_minutes)
+  primary key (key_hash, model, persona_hash)
 );
 create unique index elevenlabs_call_agents_agent on elevenlabs_call_agents (agent_id);
 
