@@ -118,6 +118,14 @@ func (m *Manager) SessionBaseline(ctx context.Context, id string, freeze func(co
 		logBaseline(id, v.Tree, start, 0, Checkpoint{}, err)
 		return nil, nil
 	}
+	// The guest's syncfs reaches Firecracker, not the host file: its writes sit in this host's page cache, and the
+	// reflink below would have to write them back inside the freeze. Flush them first, outside the freeze budget.
+	if err = syncImage(v.Dest); err != nil {
+		m.discardBaseline(snap)
+		logBaseline(id, v.Tree, start, 0, Checkpoint{}, fmt.Errorf("flushing workspace image: %w", err))
+		return nil, nil
+	}
+	start = time.Now()
 	ctx, cancel := context.WithTimeout(ctx, SessionBaselineTimeout)
 	defer cancel()
 	stop := context.AfterFunc(m.baselineCtx, cancel)
@@ -329,4 +337,16 @@ func (m *Manager) recoverBaselineIntent(dir, legacyLineage string, share bool) e
 		return err
 	}
 	return os.Remove(intent)
+}
+
+func syncImage(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

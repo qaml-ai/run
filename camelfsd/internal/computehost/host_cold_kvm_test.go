@@ -244,6 +244,10 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 				if all {
 					return line
 				}
+				// A failed baseline for the same VM ends the wait: it will not be retried by this harness.
+				if strings.Contains(line, "compute_baseline") && strings.Contains(line, needles[1]) && !strings.Contains(line, "error=<nil>") {
+					t.Fatalf("baseline failed: %s", line)
+				}
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -299,7 +303,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	base := strings.Repeat("a", 40)
 	a := startHost()
 	first, _, _ := session(a, "first-1", tree.Tree, base, false)
-	baseline := waitLog(a, "compute_baseline", "vm=first-1")
+	baseline := waitLog(a, "compute_baseline", "vm=first-1", "error=<nil>")
 	again, edited, editedVersion := session(a, "again-2", tree.Tree, base, true)
 	resumed, _, _ := session(a, "resume-3", edited, editedVersion, false)
 	a.stop()
