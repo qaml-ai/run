@@ -79,8 +79,12 @@ under load), rerun just that gate with `--gates=<gate>`: the new status combines
 results. The same rerun posts a status GitHub could not take earlier. A rerun marks its gates failed until they
 finish, so a rerun cut short never leaves an earlier pass standing.
 
-Known flake: the Workers unit suite sometimes loses a test file to a `SIGSEGV` in Node (the file shows as `not ok`
-with `signal: 'SIGSEGV'`; `pilot-migrate.test.ts` and `security-policy.test.ts` have done it). Rerun the gate.
+When Node dies with `SIGSEGV`, the Workers sprite harness records core classifications in `sigsegv.txt`.
+`segv-triage.py` uses GDB to identify a platform startup kill from a self-directed `SI_TKILL` and V8 startup
+frames on the stack. It flags positive signal codes and frames that indicate a re-raised signal as faults.
+A Workers unit or integration gate reruns the failed files once if all failures are `SIGSEGV`, there is at
+least one new Node core per failed file by count, and all new Node cores classify as platform startup kills.
+The gate logs `SEGV_RETRY` and uses the retry result to decide whether it passes.
 
 A failure on one sprite that does not reproduce elsewhere is usually load on that sprite, often in the Docker tests.
 Before calling it noise, rerun that gate pinned to one sprite (`SPRITE_NAME=rt-pool-30 scripts/sprite-test ...`)
