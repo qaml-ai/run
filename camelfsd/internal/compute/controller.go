@@ -194,11 +194,19 @@ func (c *Controller) ExtendDeadline(ctx context.Context, id string, until time.T
 	if err != nil || v.Phase == Ended || v.LeaseDeadline >= until.UnixMilli() {
 		return v, err
 	}
-	updated, err := c.updateVM(ctx, id, "attribute_exists(#phase) AND #phase <> :ended AND #leaseDeadline < :until",
-		"SET #leaseDeadline = :until", attrs{":ended": s(string(Ended)), ":until": n(until.UnixMilli())})
+	// MONEY: a lapsed lease is final. Reviving it would bill the lapsed gap retroactively (usage is clamped to the
+	// deadline only while it stands), and ExpireLease may already have stopped the VM at the old deadline.
+	now := c.now().UnixMilli()
+	if now >= v.LeaseDeadline {
+		return v, ErrLeaseExpired
+	}
+	updated, err := c.updateVM(ctx, id, "attribute_exists(#phase) AND #phase <> :ended AND #leaseDeadline < :until AND #leaseDeadline > :now",
+		"SET #leaseDeadline = :until", attrs{":ended": s(string(Ended)), ":until": n(until.UnixMilli()), ":now": n(now)})
 	if errors.Is(err, ErrCondition) {
 		if current, readErr := c.Get(ctx, id); readErr == nil && (current.Phase == Ended || current.LeaseDeadline >= until.UnixMilli()) {
 			return current, nil
+		} else if readErr == nil && now >= current.LeaseDeadline {
+			return current, ErrLeaseExpired
 		}
 	}
 	return updated, err

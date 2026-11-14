@@ -58,6 +58,8 @@ var (
 	ErrPhase     = errors.New("invalid VM phase for operation")
 	ErrHost      = errors.New("host or boot epoch does not match")
 	ErrInvalid   = errors.New("invalid compute request")
+	// ErrLeaseExpired: a lapsed lease is final. A renewal that arrives after the deadline never revives it.
+	ErrLeaseExpired = errors.New("VM lease has expired")
 )
 
 type Shape struct {

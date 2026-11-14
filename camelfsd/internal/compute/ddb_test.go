@@ -530,3 +530,39 @@ func TestDDBRandomCrashes(t *testing.T) {
 		f.assertOutcome(v, cutoff)
 	}
 }
+
+func TestDDBLapsedLeaseIsFinalAndEndsClampToNow(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	run := func(id string, deadline time.Duration) CreateRequest {
+		f.now = epoch
+		f.register(id, "boot", 1)
+		req := f.request(id, id)
+		req.Deadline = epoch.Add(deadline)
+		for _, step := range f.startSteps(req) {
+			f.now = epoch.Add(step.offset)
+			must[VM](t)(step.call(f.fresh()))
+		}
+		return req
+	}
+
+	// A renewal after the deadline never revives the lease, even before the sweep stopped the VM.
+	lapsed := run("lapsed", 90*time.Second)
+	f.now = lapsed.Deadline.Add(time.Second)
+	if _, err := f.fresh().ExtendDeadline(ctx, lapsed.ID, f.now.Add(time.Hour)); !errors.Is(err, ErrLeaseExpired) {
+		t.Fatalf("lapsed renewal: %v", err)
+	}
+	v := must[VM](t)(f.fresh().ExpireLease(ctx, lapsed.ID))
+	v = must[VM](t)(f.fresh().End(ctx, lapsed.ID, EndRequest{At: f.now.Add(time.Minute), Code: Stopped}))
+	if v.Code != LeaseExpired {
+		t.Fatalf("lapsed end: %+v", v)
+	}
+	f.assertOutcome(v, lapsed.Deadline.UnixMilli())
+
+	// A host-reported end (or heartbeat) in the future is billed to the tier's clock, never beyond it.
+	future := run("future", time.Hour)
+	f.now = epoch.Add(3 * time.Minute)
+	must[VM](t)(f.fresh().ExtendUsage(ctx, future.ID, f.now.Add(time.Hour)))
+	v = must[VM](t)(f.fresh().End(ctx, future.ID, EndRequest{At: f.now.Add(time.Hour), Code: Exit}))
+	f.assertOutcome(v, f.now.UnixMilli())
+}

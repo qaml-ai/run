@@ -66,6 +66,8 @@ func (c *Controller) end(ctx context.Context, v VM, end EndRequest, now time.Tim
 	default:
 		return v, ErrInvalid
 	}
+	// MONEY: a host-reported end is never later than the tier's own clock.
+	at = min(at, now.UnixMilli())
 	values[":at"], values[":code"] = n(at), s(string(end.Code))
 	if stop != nil {
 		expr += ", #stopRequestedAt = :stop, #stopCheckpoint = :checkpoint, #stopReason = :reason"

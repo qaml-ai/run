@@ -76,7 +76,8 @@ func (c *Controller) ExtendUsage(ctx context.Context, id string, upTo time.Time)
 	if err != nil || (v.Phase != Running && v.Phase != Stopping) {
 		return v, err
 	}
-	event := usageInterval(v, upTo.UnixMilli(), false)
+	// MONEY: never bill past the tier's own clock, whatever time a heartbeat reports.
+	event := usageInterval(v, min(upTo.UnixMilli(), c.now().UnixMilli()), false)
 	if event == nil {
 		return v, nil
 	}
