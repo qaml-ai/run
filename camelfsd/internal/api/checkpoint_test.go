@@ -53,7 +53,7 @@ func TestStreamErrorRoutes(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			v, e := m.Mount(context.Background(), image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+			v, e := m.Mount(context.Background(), image.Request{Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -118,7 +118,7 @@ func TestCheckpointTimingNesting(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v, e := m.Mount(context.Background(), image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+	v, e := m.Mount(context.Background(), image.Request{Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "j", Lineage: "l", Tree: tr.Tree, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 	if e != nil {
 		t.Fatal(e)
 	}

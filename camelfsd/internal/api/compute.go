@@ -3,11 +3,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -31,7 +34,20 @@ type commitRequest struct {
 }
 
 func safeLine(s string) bool { return !strings.ContainsAny(s, "\r\n\x00") }
+
+type commitTiming struct {
+	prechecks, read, build time.Duration
+	readWaves              int
+	objects.FlushTiming
+}
+
+type commitTimingKey struct{}
+
 func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRequest) (any, error) {
+	timing, ok := ctx.Value(commitTimingKey{}).(*commitTiming)
+	if !ok {
+		timing = &commitTiming{}
+	}
 	r = r.ForLineage(l)
 	if q.Parents == nil {
 		return nil, invalid("missing field parents")
@@ -49,95 +65,74 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if strings.ContainsRune(q.Message, 0) {
 		return nil, invalid("message: NUL is forbidden")
 	}
-	base := ""
-	for i, parent := range parents {
-		if !root.Hex(parent, 40) {
-			return nil, bad("unknown_commit")
-		}
-		if e := require(ctx, r, l, parent, "commit", true); e != nil {
-			return nil, e
-		}
-		if i == 0 {
-			c, e := readCommit(ctx, r, parent)
-			if e != nil {
-				return nil, e
-			}
-			base = c["tree"].(string)
-		}
+	start := time.Now()
+	base, blobs, err := commitPrechecks(ctx, r, l, q)
+	timing.prechecks = time.Since(start)
+	if err != nil {
+		return nil, err
 	}
-	if q.BaseTree != nil {
-		base = *q.BaseTree
+	start = time.Now()
+	tree, paths := commitPaths(q.Changes, base)
+	timing.build = time.Since(start)
+	start = time.Now()
+	if len(q.Changes) > 0 {
+		err = tree.read(ctx, r, timing)
 	}
-	if base != "" {
-		if e := require(ctx, r, l, base, "tree", true, "baseTree"); e != nil {
-			return nil, e
-		}
+	timing.read = time.Since(start)
+	if err != nil {
+		return nil, err
 	}
-	files := map[string]objects.File{}
 
-	if base != "" {
-		es, e := r.TreeEntries(ctx, base)
-		if e != nil {
-			return nil, e
-		}
-		ids := make([]string, len(es))
-		for i, f := range es {
-			ids[i] = f.SHA1
-		}
-		blobs, e := r.BlobInfos(ctx, l, ids)
-		if e != nil {
-			return nil, e
-		}
-		for _, f := range es {
-			b := blobs[f.SHA1]
-			files[f.Path] = objects.File{SHA256: b.SHA256, Mode: f.Mode}
-
-		}
-	}
+	start = time.Now()
 	changed := 0
 	var bytes int64
-	for _, c := range q.Changes {
-		if objects.Path(c.Path) != nil {
+	for i, c := range q.Changes {
+		if paths[i].dir == nil {
 			return nil, invalid("invalid path %s", c.Path)
 		}
 		if c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
 			return nil, invalid("invalid mode %s", c.Mode)
 		}
-		prev, exists := files[c.Path]
+		dir, name := paths[i].dir, paths[i].name
+		prev, exists := dir.files[name]
 		if c.Delete {
 			if c.Blob != "" || c.Mode != "" {
 				return nil, invalid("delete: blob and mode must be absent")
 			}
 			if exists {
-				delete(files, c.Path)
+				delete(dir.files, name)
 				changed++
 			}
 			continue
 		}
 		next := prev
 		if c.Blob != "" {
-			if e := require(ctx, r, l, c.Blob, "blob", true); e != nil {
-				return nil, e
+			if !root.Hex(c.Blob, 40) {
+				return nil, invalid("blob: expected a 40-character Git id")
 			}
-			b, e := r.BlobInfo(ctx, l, c.Blob)
-			if e != nil {
-				return nil, e
+			found := blobs[c.Blob]
+			if errors.Is(found.Err, sql.ErrNoRows) {
+				return nil, bad("unknown_blob")
 			}
-			next.SHA256 = b.SHA256
-			bytes += b.Size
+			if found.Err != nil {
+				return nil, found.Err
+			}
+			next.SHA1, next.Size = found.Blob.SHA1, found.Blob.Size
+			bytes += found.Blob.Size
 		} else if !exists {
 			return nil, invalid("blob: required for new path %q", c.Path)
 		}
+		next.Path = name
 		if c.Mode != "" {
 			next.Mode = c.Mode
 		}
 		if next.Mode == "" {
 			next.Mode = "100644"
 		}
-		if next != prev {
+		if next.SHA1 != prev.SHA1 || next.Mode != prev.Mode {
 			changed++
 		}
-		files[c.Path] = next
+		dir.files[name] = next
 	}
 	for k, v := range q.Trailers {
 		if k == "" || !safeLine(k) || strings.Contains(k, ":") {
@@ -148,7 +143,10 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		}
 	}
 	r = r.BeginPublication()
-	tr, e := r.Import(ctx, objects.Request{Lineage: l, ParentTree: base, Files: files})
+	treeID, e := tree.build(ctx, r, true)
+	if e == nil && base != "" && treeID != base {
+		r.StageTreeParent(treeID, base)
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -156,7 +154,7 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if q.Time != nil {
 		now = *q.Time
 	}
-	body := "tree " + tr.Tree + "\n"
+	body := "tree " + treeID + "\n"
 	for _, parent := range parents {
 		body += "parent " + parent + "\n"
 	}
@@ -173,11 +171,79 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if e != nil {
 		return nil, e
 	}
-	if e = r.Flush(ctx); e != nil {
+	timing.build += time.Since(start)
+	if e = r.FlushTimed(ctx, &timing.FlushTiming); e != nil {
 		return nil, e
 	}
-	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
+	return map[string]any{"tree": treeID, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
 }
+func commitPrechecks(ctx context.Context, r *objects.Repository, l string, q commitRequest) (string, map[string]objects.BlobLookup, error) {
+	var base string
+	var parentErrors [2]error
+	var baseErr, blobErr error
+	var blobs map[string]objects.BlobLookup
+	checkBase := func(id string) {
+		base = id
+		if id != "" {
+			baseErr = require(ctx, r, l, id, "tree", true, "baseTree")
+		}
+	}
+
+	var wg sync.WaitGroup
+	run := func(check func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			check()
+		}()
+	}
+	for i, parent := range q.Parents {
+		run(func() {
+			if !root.Hex(parent, 40) {
+				parentErrors[i] = bad("unknown_commit")
+				return
+			}
+			parentErrors[i] = require(ctx, r, l, parent, "commit", true)
+			if i != 0 || parentErrors[i] != nil {
+				return
+			}
+			c, err := readCommit(ctx, r, parent)
+			if err != nil {
+				parentErrors[i] = err
+				return
+			}
+			if q.BaseTree == nil {
+				// Only an inferred base depends on reading the first parent.
+				checkBase(c["tree"].(string))
+			}
+		})
+	}
+	if q.BaseTree != nil {
+		run(func() { checkBase(*q.BaseTree) })
+	}
+	var ids []string
+	for _, c := range q.Changes {
+		if !c.Delete && root.Hex(c.Blob, 40) {
+			ids = append(ids, c.Blob)
+		}
+	}
+	if len(ids) > 0 {
+		run(func() { blobs, blobErr = r.BlobInfos(ctx, l, ids) })
+	}
+	wg.Wait()
+	// Report parent failures in parent order, then the baseTree failure.
+	// The caller reports per-blob failures in change request order.
+	for _, err := range parentErrors {
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if baseErr != nil {
+		return "", nil, baseErr
+	}
+	return base, blobs, blobErr
+}
+
 func readCommit(ctx context.Context, r *objects.Repository, id string) (map[string]any, error) {
 	b, e := r.Object(ctx, id, "commit")
 	if e != nil {

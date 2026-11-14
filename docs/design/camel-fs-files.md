@@ -45,7 +45,7 @@ term. A repo need not contain code: a shared docs folder is a repo with one bran
 | `GET /v1/repos`, `GET /v1/repos/:id`, `DELETE /v1/repos/:id` | list, inspect (`{ id, name, key, refs, bytes, files, createdAt }`), delete (every ref goes; objects follow by reachability) |
 | `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` (§9.9's `cas`) under the ref-move rules (§6): a new commit's first parent is the current version, a move to a recorded commit is a fast-forward, and a rewind is a `restore`, a new commit |
 | `POST /v1/repos/:id/branches { name, from?: ref \| version, owner?, ttl? }` | an O(1) branch inside the repo (shares chunks on hosts); `owner` ties its life to a workflow, job or agent |
-| `GET /v1/repos/:id/history?ref=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts |
+| `GET /v1/repos/:id/history?ref=&after=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts; the repo's only log (§6: there is no separate `log` route or event store) |
 | `GET /v1/repos/:id/diff?from=&to=&path=` | changed paths between any two versions, O(changed) |
 | `GET /v1/repos/:id/blame?version=&path=` | per line: version, agent, run, call |
 | `POST /v1/repos/:id/restore { ref, version, message? }` | a new commit on `ref` whose tree is `version`'s tree; history is never rewritten |
@@ -202,7 +202,8 @@ regional storage tier). The state is now:
 | refs, leases, fences, watchers | DynamoDB `refs`, one item per ref | partition `lineage`, sort `name` |
 | lineages: tenant, kind, default branch | DynamoDB `lineages` | `lineage` |
 | trees and commits (git's bytes, git's ids; ≤ 400 KB items, an S3 stub past that; cold generations packed to S3 `g/`) | DynamoDB `objects` (S3 `t/`, `k/` until the table exists, ledger L74) | `lineage`, `id` |
-| pending deliveries (`notify`; compute's `vm.*` and `usage.*`) | DynamoDB `deliveries` | `shard`, `id` |
+| pending deliveries (`notify`; compute's `vm.*` hints) | DynamoDB `deliveries` | `shard`, `id` |
+| usage events (`usage.vm`, `usage.storage`), pulled by the runtime (§9.13) | DynamoDB `usage`, TTL 35 days | `shard`, `ulid` |
 | blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
 | the NVMe cache of chunks, images, trees and shards | each host's `camelfsd --role host` | content hash |
 | each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
@@ -224,14 +225,15 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - `camelfs-prod-deliveries` (`shard` + `id`);
   - `camelfs-prod-hosts` (`pool` + `host`);
   - `camelfs-prod-vms` (`id`).
+  - `camelfs-prod-usage` (`shard` + `ulid`), the one table with DynamoDB TTL (on `expiresAt`, 35 days), for §9.13;
+    created and applied (fs-infra, #985).
 - **Tier:** ECS Fargate (Graviton) service `camelfs-prod-api` behind two ALBs, both with HTTP/2 off: public
   `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts'
   security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
 - **Keys** (Secrets Manager):
   - `camelfs/prod/token-verify-keys`: the runtime's Ed25519 JWKS, injected as `CAMELFS_JWKS`.
-  - `camelfs/prod/service-signing-key`: the service's own key for the tier → host family, injected as
-    `CAMELFS_SERVICE_SIGNING_KEY`.
-  - `camelfs/prod/service-verify-keys`: its public JWKS, read by hosts.
+  - `camelfs/prod/service-signing-key` and `camelfs/prod/service-verify-keys`: the tier → host token family's keys,
+    retired by §9.12's mTLS (fs-infra removes them with the CA work).
 
   The api task role reads no secret.
 - **IAM:** the host policy `camelfs-prod-host` allows the bucket and `objects` only. It explicitly denies every
@@ -290,11 +292,35 @@ parents from the head (with `merges: true` to descend). Who and why travel in ea
 multi-step fast-forward (rule 2) adds the target's whole ancestry to the walk, as git's does. Only a ref's create
 and delete are outside history: `createdAt` and `createdBy` sit on the item, and a delete is final.
 
+**The repo log is history; there is no second event store** (fs-architect, 2026-11-14, for wf-repos' R1/R2).
+`RepoDO`'s `ref_log` and `events` tables go with `RepoDO`, and nothing replaces them.
+
+- **`GET /v1/repos/:id/log` is deleted.** `history` (§1) is the one route:
+  - it walks first parents from the ref's head through 9.4's commit reads;
+  - each entry is `{ version, parents, author, message, trailers, time }`;
+  - the cursor is a commit id;
+  - `ref` is required, so there is no lineage-wide log.
+- **Who and why** come from the commit: `author`, the message, and the `Camel-*` trailers. The operation is the
+  `Camel-Checkpoint` / `Camel-Op` trailer (`api`, `turn`, `job`, `merge`, `restore`), written by whoever makes the
+  commit.
+- **A console's "recent activity across branches"** is `GET …/refs` ordered by `updatedAt`, plus each ref's
+  `history`. That is a read, not a feed.
+- **Live changes** are the notify webhook (§9.11) into the watcher's outbox, not a pollable events table.
+- **Not in the log, on purpose:**
+  - Ref creates and deletes. A ref's creation is its item's `createdAt`/`createdBy`. A delete is final, and the
+    deleted ref's commits stay readable by id from any ref that reaches them.
+  - Lease and fence events (take, renew, release, takeover). These are operational facts, not history. They go to
+    the tier's structured logs and metrics (camel-fs.md §1.12), keyed by lineage, ref, holder and epoch.
+
+  If a product need for either appears (an audit trail of branch deletions, say), it becomes a `deliveries`-style
+  item written in the same transaction as the delete, decided then; it is not built speculatively now.
+
 **Leases and fences** sit on the ref item. A host's CAS is conditioned on
 `version = :expect AND holder = :holder AND leaseEpoch = :epoch`, where holder and epoch come **only from the
 verified token's `fence` claim**, never from a request body (§9.10). An API writer's CAS is conditioned on
 `attribute_not_exists(holder)`.
-A lease is taken with `attribute_not_exists(holder) OR leaseDeadline < :now`, and the new epoch is the old one + 1.
+A lease is live while `now < leaseDeadline`: it expires **at** its deadline. So a lease is taken with
+`attribute_not_exists(holder) OR leaseDeadline <= :now`, and the new epoch is the old one + 1.
 `:now` is the tier node's clock (AWS Time Sync, sub-millisecond skew between nodes) against a 10-minute lease
 renewed every TTL/3, so skew is noise. A node whose clock disagrees with DynamoDB's own write time by more than a
 second refuses lease operations loudly. The rules of camel-fs.md §1.2 hold unchanged: one writer per branch,
@@ -311,7 +337,8 @@ contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` wi
   repos.
 - The tier refuses `507 storage_limit` with `{ limit }`, with **no** ref change, when
   `otherBytes + repoBytesAfter > limitBytes`.
-- `files` is the entry count of `main`. `bytes` and `files` come back in every write's result.
+- Every write's result carries `bytes` (the lineage's usage, `markedBytes + writtenSince`, below) and `files` (the
+  recursive file count of the moved-to tree).
 
 **How repo bytes are kept: decided (Miguel, 2026-11-13 ~17:40), the mark count plus bytes written since.**
 `repoBytes` is the exact distinct-blob bytes reachable from all of the repo's heads, as measured by the last GC mark
@@ -752,16 +779,25 @@ The runtime calls it at repo creation, before the first commit. `GET` returns th
 the partition (`refs?prefix=published/` lists a repo's publishes).
 
 **Create.** `POST /v1/lineages/{lineage}/refs` `{ "name", "version", "owner", "expiresAt"? }` → `201` with the
-item. Condition: `attribute_not_exists(name)`, else `409 ref_exists`. `version` must be a commit of the lineage
+item. Condition: `attribute_not_exists(name)`, or an expired unheld ref (`expiresAt <= :now`, no live lease), else
+`409 ref_exists`. `version` must be a commit of the lineage
 (`400 unknown_commit`). A branch copies nothing, whatever the tree's size, and may be created at any commit (rule 4). The owner prefix set and the name
 alphabet of §1 are enforced here.
 
-**Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. Condition: `version = :expect`
-and no live lease (`held` otherwise). Final: the ref's history stays reachable only from other refs.
+**Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. `expect` is optional: with it the
+condition includes `version = :expect` (`412 stale`); without it, only that no lease is live (`409 held`). Final:
+the ref's history stays reachable only from other refs.
+
+**Expiry and epochs, everywhere in this section:**
+- An unheld ref whose `expiresAt <= now` reads as **absent** on every route (`404 ref_not_found`, missing from
+  listings) and may be re-created.
+- `leaseEpoch` **never decreases** for a ref name, across delete and re-create, so a fence from a ref's earlier life
+  can never match a later one. C2 carries the epoch across the delete.
 
 **CAS (hosts, and any caller that wrote its own commit or moves to a recorded one).**
 `POST /v1/lineages/{lineage}/refs/{name}/cas` `{ "commit", "expect", "root"?, "quota"? }` →
 `200 { "version", "tree", "parents", "diff": [ …9.4's change shape… ], "bytes", "files" }`.
+- `expect` is required: `cas` never creates a ref (`400 invalid_request`; creation is `POST refs`).
 - The commit must be the lineage's (`400 unknown_commit`).
 - `expect` must be current (`412 stale`). `commit == expect` is a no-op (rule 3).
 - A commit made for this move must pass rule 1 (`409 bad_parent`); any other recorded commit must pass rule 2
@@ -806,9 +842,10 @@ never rewritten.
 
 **Leases.** `POST /v1/lineages/{lineage}/refs/{name}/lease` `{ "holder": { "host", "boot", "mount" }, "ttlMs" }`
 (`ttlMs` ≤ 600,000) → `200 { "epoch", "deadline", "version", "tree" }`. Condition:
-`attribute_not_exists(holder) OR leaseDeadline < :now`, else `409 held`; the epoch is the previous epoch + 1.
+`attribute_not_exists(holder) OR leaseDeadline <= :now` (a lease is live while `now < leaseDeadline`), else `409 held`;
+the epoch is the previous epoch + 1.
 `POST …/lease/renew` `{ "ttlMs" }` → `200 { "deadline" }`, with the condition `holder = :holder
-AND leaseEpoch = :epoch AND leaseDeadline >= :now`, where holder and epoch come from the token's `fence` claim
+AND leaseEpoch = :epoch AND leaseDeadline > :now`, where holder and epoch come from the token's `fence` claim
 (`409 fenced`). `DELETE …/lease` → `204`, under the same condition. The lease's `POST` needs a runtime token (§9.10); the
 runtime then mints the fence-scoped token from its answer. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
 `leaseEpoch`.
@@ -873,26 +910,17 @@ namespace (`runtime:*`), a rule the refs PR (C2) enforces.
 are only the ALB's health check. The host role keeps its shared bearer on its socket and 8790 listener until L30
 closes.
 
-**The tier → host family** (approved by the lead, 2026-11-13, for compute: camel-fs-compute.md §3). When the tier
-calls a host (dispatch, stop, exec), it presents a second, narrow token that **it** mints:
-- **Header and audience:** `typ: camelfs-host+jwt`, `aud: camelfs:host:<hostId>`.
-- **Key:** the camel-fs service's own Ed25519 key, never the runtime's. It is a secret of the api role (fs-infra
-  provisions it), and hosts verify against its public JWKS by the same static-file rules as above.
-- **Lifetime:** at most 60 s.
-- **Claims:** scoped to `{ host, vm }`.
-- **Where it is accepted:** a host accepts **only** this audience, and only for its own host id, on its
-  `--listen-compute` listener. The tier never accepts this family on its client API.
-
-So "the tier only verifies" stays true for every client token: the runtime's tokens are minted by the runtime, and
-the tier mints only tokens addressed to its own hosts. The other direction, host → tier, uses the host's attested
-identity (K2 ports `shared/job-host-attest.ts`), not a token of either family.
+**Tier ↔ host calls use no token.** They are authenticated by mutual TLS (§9.12). The `camelfs-host+jwt` family
+that #971 added here is replaced by it, so "the tier only verifies" holds for every token: the runtime mints
+them all.
 
 ### 9.11 Notify webhook
 
 When a watched ref moves, the tier writes a `deliveries` item (`{ id, lineage, ref, from, to, tree, by, at,
 watchers }`) in the same `TransactWriteItems` as the move. The table's key is `shard` + `id`: `shard` is a fixed
 small range (`hash(id) mod 16`), so the tier nodes find pending deliveries with one `Query` per shard instead of a
-`Scan`; compute's events (camel-fs-compute.md §4) share the table. Any tier node then claims it (a conditional
+`Scan`; compute's `vm.*` events (camel-fs-compute.md §2) share the table. Usage events never use it: they are pulled
+(§9.13). Any tier node then claims it (a conditional
 `claimedUntil`), POSTs it to the runtime's notify endpoint, and deletes it on a `2xx`.
 
 ```
@@ -909,5 +937,121 @@ Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
 - The tier retries with backoff (1 s doubling to 5 min) for 24 h, then deletes the item and logs
   `notify_dropped`, loud, never silent.
 - `notifyKey` is separate from the token key, and both sides hold it.
+- Nothing on this webhook carries money: usage is pulled (§9.13).
 - Delivery is at least once and unordered across refs. A receiver orders by the chain: `from` is the version it
   should have, so a gap means it reads the ref.
+
+### 9.12 Transport identity: mutual TLS
+
+**Decided (Miguel, 2026-11-13 ~18:10): mTLS, "probably safer and simpler".** A connection's certificate proves
+*which machine* is calling. The token of §9.10 still decides *what* a runtime caller may do, per lineage. Owners:
+- **fs-infra:** the ALB trust stores, Authenticated Origin Pulls, the CAs.
+- **proto-block:** the host side (K2).
+- **wf-durable:** the tier side (K4c).
+
+**1. Cloudflare → the public ALB (`fs.camelai.dev`): Authenticated Origin Pulls with a zone-specific certificate.**
+Cloudflare's *default* origin-pull certificate is the same for every Cloudflare customer. An ALB that trusts it
+proves only "this came through Cloudflare", and anyone can proxy their own zone to our address. So we use a
+**zone-level AOP certificate of our own**, uploaded to the `camelai.dev` zone. (A per-hostname certificate on
+`fs.camelai.dev` would be narrower still, and is the option if other hostnames in the zone ever share the origin.)
+- The certificate is issued by a small dedicated AOP CA (below).
+- The public ALB's HTTPS listener runs **mTLS in verify mode**, with a trust store holding only that CA. A
+  handshake without our zone's certificate fails at the ALB, before any HTTP.
+- The Cloudflare-ranges-only security group stays as a second lock.
+- Rotating the AOP certificate: upload the new one to Cloudflare, add its CA to the trust store if it changed,
+  then remove the old.
+
+**2. Tier ↔ host, both directions: mutual TLS with a private CA.**
+- **Host → tier.** Hosts call `fs-internal.camelai.dev` (the internal ALB). Its listener runs mTLS in verify
+  mode against the private CA.
+  - A host certificate carries the host id as a URI SAN, `spiffe://camelfs/host/<hostId>`. **That certificate is
+    the host's identity.** It replaces the attested identity for every host → tier call.
+  - The ALB strips any client-supplied `X-Amzn-Mtls-Clientcert-*` headers and sets its own from the verified leaf.
+    The tier reads the host id from them, and only the ALBs' security groups reach the tasks.
+  - A call from host A about host B's VM is refused: the host id in the path must equal the certificate's.
+- **Tier → host** (port 8792, `--listen-compute`).
+  - The tier presents its own client certificate (URI SAN `spiffe://camelfs/tier`).
+  - The host serves a certificate with its own id, which the tier checks against the host it meant to call
+    (verification by SAN, not by IP hostname).
+  - The host accepts only a peer whose certificate chains to the private CA and names the tier.
+- **This replaces the `camelfs-host+jwt` family** of §9.10 (#971): one mechanism and no service signing key.
+- **The per-call `{ host, vm }` scoping goes too.** The tier is the only caller the host accepts, and it is
+  trusted with every VM on the host anyway. A token scoped to one VM would bound nothing a compromised tier could
+  not mint for itself. The host still checks that a named VM is one of its own, as state, not as authorization.
+
+**3. The CA: AWS Private CA in short-lived certificate mode, with the tier as the registration authority
+(recommended).** Either option needs something that decides *which host id* a certificate may carry, because IAM
+cannot constrain a certificate's subject. That something is the tier's enrollment call.
+- **Enrollment.** A new host presents its STS attestation (`shared/job-host-attest.ts`: a signed
+  `GetCallerIdentity`) once at boot. It does so on a separate internal listener without client certificates,
+  which serves only `POST /v1/hosts/enroll`.
+- **Issuance.** The tier checks the attestation's instance against the pool and issues a 24-hour certificate for
+  that host id. Renewal every 8 h is the same call over the host's current mTLS certificate.
+
+| | AWS Private CA, short-lived mode | self-run CA (key in Secrets Manager, Go `crypto/x509` in the tier) |
+|---|---|---|
+| CA key | in AWS's HSM, never exportable; a compromised tier can issue only while compromised and loses that when its IAM role is cut | a file the tier reads; a compromised tier can copy it, and every certificate it ever signs stays valid until the CA is replaced |
+| cost | ≈ $50/month per CA plus ≈ $0.06 per certificate: tens of hosts × 3 renewals a day ≈ 1–3 k certificates ≈ $60–180/month, plus the tier's own | ≈ $0.40/month (one secret) |
+| rotation | AWS rotates nothing for you either, but a new CA is an API call; the trust stores hold old + new during the overlap; leaf certificates expire within a day, so revocation is expiry plus removing the host from `hosts` | the same procedure, plus generating and protecting the key ourselves |
+| code | `IssueCertificate` / `GetCertificate` from the tier | ≈ 150 lines of issuance, serials and CSR checks we own |
+
+**Recommendation: AWS Private CA (short-lived mode).** The difference that matters is the key: with Private CA, a
+tier compromise cannot outlive itself by stealing the CA. For ≈ $100–200 a month, that is the safer of the two and
+not the more complex one. Certificate validity is capped at 7 days in this mode, so the **AOP certificate**, which
+must live in Cloudflare for months, comes from a separate small offline CA. fs-infra keeps its key in Secrets
+Manager, used only to sign the yearly AOP certificate, and trusted only by the public ALB.
+
+**4. Runtime → tier stays on tokens.** Per-lineage authorization needs the token whatever the transport proves.
+Should Workers also present a client certificate (the `mtls_certificates` binding)? **Not now.** AOP already
+limits the public ALB to traffic through our zone, the token already identifies and scopes the caller, and a
+Worker certificate would add a second credential that authorizes nothing new. Revisit if the tier ever serves a
+route without a token, or if anything other than the runtime gets a proxied hostname in front of the same ALB.
+
+### 9.13 Usage: pulled, never pushed
+
+**Decided (Miguel, 2026-11-13 ~18:50).** camel-fs never pushes money data. It records usage durably next to the
+state that produced it, and the runtime pulls it. Owners:
+- **wf-durable** (K4b): the `usage` table and the deadline lease (camel-fs-compute.md §4).
+- **wf-durable** (K4d): this route.
+- **wf-durable** (K5): the runtime's poller.
+
+**The table.** `usage`, key `shard` (S, `"0"`..`"15"`, a hash mod 16, as for `deliveries`) + `ulid` (S), DynamoDB TTL
+on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable for 35–37 days.
+- **Two ids per event.** The `ulid` is the read-ordering key. Each event also carries a deterministic `eventId`
+  (`<vm>:<seq>` for a VM, `<lineage>:<markedAt>` for storage), which the runtime dedupes on. Gaps in a VM's `seq`
+  are visible to the runtime and to tests.
+- Each event is written in the **same** `TransactWriteItems` as the state change it accounts for. For a VM that
+  is the `vms` row's `billedTo` and `usageSeq` advancing under the condition `billedTo = :prev AND usageSeq = :n`,
+  so an interval can be neither lost nor written twice.
+- There is no `deliveries` item for usage.
+- **The ULID's time is the write's time.** The tier mints the ULID immediately before the `TransactWriteItems`,
+  runs that write under a 5 s deadline (SDK retries included), and re-mints on any retry. A DynamoDB transaction
+  commits within its request, so a ULID's time is within ≈ 5 s of its commit, against a watermark 2 heartbeats
+  (≈ 20 s) back; tier clock skew is milliseconds. That is what lets the watermark below be safe.
+- **Clock assumption:** the watermark assumes the skew between tier tasks' clocks is well under 15 s (Fargate
+  NTP keeps it at milliseconds). A task whose clock drifts past that could write below a watermark another task's
+  reader has passed. The tier checks its clock against the `Date` header of DynamoDB's responses (second granularity) and refuses a
+  usage write when they differ by more than ≈ 5 s, with an alarm on the refusal (ledger L98; decided by the lead,
+  2026-11-14, ships with K4d). Refusing is safe: `billedTo` does not advance, and the intervals are re-derived from
+  the `vms` row once the clock is fixed, so billing is only delayed, never lost or doubled.
+
+**The route.** `GET /v1/usage?after=<cursor>&limit=1000` →
+`{ "events": [ … ], "cursor": "<opaque>", "watermark": "<ulid-time>" }`.
+- It returns events in ULID order across the 16 shards, only those **below the watermark**
+  (`now − 2 × heartbeat`), so a writer still committing cannot be skipped by a reader that has already passed it.
+- The cursor encodes the 16 shard positions. An empty page with an advanced watermark is normal.
+- **Runtime tokens only** (`sub` in `runtime:*`, §9.10). Customers reconcile their own bill from the same events
+  through the runtime's API, filtered to their payer.
+
+**The poller.** The runtime runs one leased poller per camel-fs deployment, every ≈ 20 s.
+- One Postgres transaction per page: `INSERT … ON CONFLICT (id) DO NOTHING` for every event (on `eventId`), plus the
+  cursor advance. A crash replays the page, and the insert absorbs the replay.
+- Pricing and charging then run from those rows exactly as the meter does today.
+- The inbound usage webhook is deleted. A poller that falls behind by more than the 35-day TTL loses events, so its
+  lag is an alarm (`usage_poll_lag`) long before that.
+
+**The credit deadline is a lease, and a lapsed one is final** (camel-fs-compute.md §4): no extension revives a
+VM's lease once `now ≥ deadline`, so the usage events never cover time the runtime did not extend credit for.
+
+**Notifications stay pushed.** `vm.ended` and ref moves remain on §9.11's webhook outbox. `vm.ended` is a hint:
+if one is lost, the next poll's final `usage.vm` event and `GET /v1/vms/{id}` reconcile the job.

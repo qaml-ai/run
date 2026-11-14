@@ -1,3 +1,4 @@
+import { RE2JS } from "re2js";
 import { createServer } from "node:http";
 import { EMPTY_TREE, gitHash, gitBlobSha1, sha256Hex, commitObject, parseCommit } from "../src/repos/git.ts";
 import type { FileEntry, TreeEntry, Change, CommitInfo, CommitResult, DiffChange, Conflict, GrepResult } from "../src/repos/storage.ts";
@@ -298,8 +299,8 @@ export function fakeCamelfsd(token: string) {
       const t = tree(l, s.get("tree") ?? ""), q = s.get("q"); if (q === null) bad();
       const limit = Number(s.get("limit") ?? 2000), context = Number(s.get("context") ?? 0);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 2000 || !Number.isSafeInteger(context) || context < 0) bad();
-      let re: RegExp | undefined;
-      try { if (s.get("regex") === "1") re = new RegExp(q!, s.get("ignoreCase") === "1" ? "i" : ""); } catch { bad(); }
+      let re: RE2JS | undefined;
+      try { if (s.get("regex") === "1") re = RE2JS.compile(q!, s.get("ignoreCase") === "1" ? RE2JS.CASE_INSENSITIVE : 0); } catch { bad(); }
       const filter = s.has("path") ? glob(s.get("path")!) : undefined, matches: GrepResult["matches"] = []; let files = 0, truncated = false;
       for (const f of [...t.files.values()].sort((a, b) => compare(a.path, b.path))) {
         if (filter && !filter.test(f.path)) continue; files++;
@@ -319,9 +320,18 @@ export function fakeCamelfsd(token: string) {
     try { return await handle(request); }
     catch (e) { if (e instanceof Fault) return json({ error: { code: e.code, message: e.message, ...(e.details === undefined ? {} : { details: e.details }) } }, e.status); throw e; }
   }
-  return { fetch, blobs, trees, commits, calls };
+  async function checkpoint(mount: { lineage: string; tree: string; parent?: string }, jobId: string) {
+    tree(mount.lineage, mount.tree, true);
+    const parents = mount.parent ? [mount.parent] : [];
+    const author = `job:${jobId}`, at = Date.now(), message = "job checkpoint";
+    const object = await commitObject({ tree: mount.tree, parents, author, at, message, trailers: {} });
+    commits.set(object.id, object.bytes);
+    scope(mount.lineage).commits.add(object.id);
+    return { commit: object.id, tree: mount.tree, root: "a".repeat(64), warm: true, mountMs: 0, applyMs: 0 };
+  }
+  return { fetch, blobs, trees, commits, calls, checkpoint };
 }
-export async function serveFakeCamelfsd(token: string): Promise<{ url: string; close: () => Promise<void> }> {
+export async function serveFakeCamelfsd(token: string) {
   const fake = fakeCamelfsd(token);
   const server = createServer(async (req, res) => {
     try {
@@ -333,5 +343,5 @@ export async function serveFakeCamelfsd(token: string): Promise<{ url: string; c
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("missing server address");
-  return { url: `http://127.0.0.1:${address.port}`, close: () => new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve())) };
+  return { url: `http://127.0.0.1:${address.port}`, checkpoint: fake.checkpoint, close: () => new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve())) };
 }

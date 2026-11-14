@@ -43,7 +43,6 @@ import { modelSettingsRefusal } from "./model-policy.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { resetContext } from "./context-reset.ts";
 import { setAgentSpendLimit } from "./agent-spend.ts";
-import { releasePresentedFiles } from "./file-output.ts";
 import { Config, RequestRecord, Env, json, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -318,13 +317,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           await this.flushBilling(true);
           await this.ctx.storage.put("deleted", true);
           if (conf) await this.closeWatchers(conf.tenantId, conf.id);
-          if (conf)
-            await releasePresentedFiles(
-              this.ctx.storage,
-              this.env,
-              conf.tenantId,
-              conf.id,
-            );
+          // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
+          if(conf) await (await import('./file-output.ts')).releaseLegacyPresentedFiles(this.ctx.storage,this.env,conf.tenantId,conf.id);
           for (const listener of this.listeners) listener(0, null);
           // Planned as a deleted agent now: it wakes only for what it still owes, or goes quiet (settleDeleted).
           await this.arm();
@@ -597,11 +591,12 @@ export async function fetchRequestImpl(this: AgentRuntime,
         return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
       }
       if (path === "/context/import" && request.method === "POST") {
-        const input = object(await body(request, 17 * 1024 * 1024), ["model", "pinnedVolumes"]);
+        const input = object(await body(request, 17 * 1024 * 1024), ["model", "legacyPinnedVolumes"]);
         if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
-        if (Array.isArray(input.pinnedVolumes)) {
-          const pinned = await this.ctx.storage.get<string[]>("file-pin-volumes") ?? [];
-          await this.ctx.storage.put("file-pin-volumes", [...new Set([...pinned, ...input.pinnedVolumes])]);
+        // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
+        if(Array.isArray(input.legacyPinnedVolumes)&&input.legacyPinnedVolumes.length) {
+          const pinned=await this.ctx.storage.get<string[]>('file-pin-volumes')??[];
+          await this.ctx.storage.put('file-pin-volumes',[...new Set([...pinned,...input.legacyPinnedVolumes])]);
         }
         if (!await this.ctx.storage.get("fork-context-imported")) {
           await writeModelContext(await (await this.harness.pi()).root(BACKGROUND_CONTEXT), input.model as Message[]);

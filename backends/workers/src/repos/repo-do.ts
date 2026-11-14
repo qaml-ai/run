@@ -126,8 +126,15 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
     }
     if (r && this.held(r)) { if (input.fence?.holder !== r.holder || input.fence?.epoch !== r.leaseEpoch) throw new RepoError("fenced", 409, "fenced"); }
     else if (input.fence) throw new RepoError("fenced", 409, "fenced");
-    // A ref being created may name parents this repo never saw (a fork's seed): history just stops there.
-    if (r) for (const parent of input.commit.parents) if (parent !== previous && !this.rows("SELECT version FROM commits WHERE version=?", parent).length) throw new RepoError("unknown-parent", 400, "unknown-parent");
+    const existing = this.rows<CommitRow>("SELECT * FROM commits WHERE version=?", input.commit.version)[0];
+    if (r && !existing) {
+      const { parents } = input.commit, current = r.version;
+      if (parents[0] !== current || parents.length > 2)
+        throw new RepoError("bad_parent", 409, "bad_parent", { parents, current });
+      if (parents[1] && !this.rows("SELECT version FROM commits WHERE version=?", parents[1]).length)
+        throw new RepoError("unknown-parent", 400, "unknown-parent");
+    }
+    if (r && existing && r.version !== existing.version) this.requireFastForward(r.version, existing.version);
     const next = input.entries !== undefined ? new Map<string, Entry>() : new Map(old);
     const changed = new Set<string>();
     if (input.entries !== undefined) {
@@ -138,7 +145,6 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
       const path = normalizeRepoPath(rawPath); check(!changed.has(path), "bad-path"); changed.add(path);
       if (raw === null) next.delete(path); else { const e = entry(raw); check(e.path === path, "bad-path"); next.set(path, e); }
     }
-    const existing = this.rows<CommitRow>("SELECT * FROM commits WHERE version=?", input.commit.version)[0];
     if (existing && existing.tree !== input.commit.tree) throw new RepoError("conflict", 409, "conflict");
     if (previous === input.commit.version) return {version: previous, previous, watchers: this.agents(input.ref)};
     this.record(input.commit, [...changed]);
@@ -200,6 +206,23 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
       return {deleted, held};
     }); await this.arm(); return result;
   }
+  private requireFastForward(current: string, target: string) {
+    const queue = [target], queued = new Set(queue);
+    for (let i = 0; i < queue.length; i++) {
+      if (i === 50_000) throw new RepoError("not-fast-forward", 409, "not-fast-forward", { current, reason: "too_deep" });
+      const id = queue[i];
+      if (id === current) return;
+      const row = this.rows<Pick<CommitRow, "parents">>("SELECT parents FROM commits WHERE version=?", id)[0];
+      if (!row) continue;
+      for (const parent of JSON.parse(row.parents) as string[]) {
+        if (queued.has(parent)) continue;
+        queued.add(parent);
+        queue.push(parent);
+      }
+    }
+    throw new RepoError("not-fast-forward", 409, "not-fast-forward", { current });
+  }
+
   mergeBase(a: string, b: string): string | null {
     sha1(a); sha1(b);
     const queues = [[a], [b]], distances = [new Map([[a, 0]]), new Map([[b, 0]])];
@@ -277,7 +300,7 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
   async release(fence: Fence & {ref: string}) {
     this.ctx.storage.transactionSync(() => { this.alive(); const r = this.fenced(fence); this.sql.exec("UPDATE refs SET holder=NULL,leaseDeadline=NULL WHERE name=?", r.name); }); await this.arm();
   }
-  watch(ref: string, agent: string) { this.ctx.storage.transactionSync(() => { this.alive(); this.needRef(ref); check(typeof agent === "string" && agent.length > 0); this.sql.exec("INSERT OR IGNORE INTO watchers VALUES(?,?)", ref, agent); }); }
+  watch(ref: string, agent: string) { this.ctx.storage.transactionSync(() => { this.alive(); refName(ref); check(typeof agent === "string" && agent.length > 0); this.sql.exec("INSERT OR IGNORE INTO watchers VALUES(?,?)", ref, agent); }); }
   unwatch(ref: string, agent: string) { this.ctx.storage.transactionSync(() => { this.alive(); refName(ref); check(typeof agent === "string"); this.sql.exec("DELETE FROM watchers WHERE ref=? AND agent=?", ref, agent); }); }
   events(input: {after?: number; limit?: number} = {}) {
     check(input.after === undefined || (Number.isSafeInteger(input.after) && input.after >= 0));

@@ -354,13 +354,28 @@ jobs:
     timeout-minutes: 15
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     defaults: { run: { working-directory: camelfsd } }
+    # DynamoDB Local for the refs, delivery and compute stores (internal/ddb/ddbtest): with CAMELFS_DDB_LOCAL set their
+    # tests run instead of skipping. It starts beside checkout and Go setup, so it adds seconds, not a stage.
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local@sha256:1856c05cc66a0e49dc1099e483ad2851477eeebe2135250ac11a1d1227db54b1
+        ports: ["8000:8000"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: camelfsd/go.mod, cache-dependency-path: camelfsd/go.sum }
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
+      - name: Wait for DynamoDB Local
+        # An unsigned request gets an HTTP error once DynamoDB Local serves; fail loudly rather than skip its tests.
+        run: for i in $(seq 60); do curl -s --max-time 1 -o /dev/null http://127.0.0.1:8000 && exit 0; sleep 1; done; exit 1
       - run: go test ./...
+        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
+      - name: DynamoDB tests ran (not skipped)
+        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
+        run: |
+          out=$(go test -count=1 -v ./internal/refstore/... 2>&1)
+          if grep -q -- "--- SKIP" <<<"$out" || ! grep -q -- "--- PASS: TestCasRace" <<<"$out"; then echo "$out" | tail -40; exit 1; fi
       - run: go build -o "$RUNNER_TEMP/camelfsd" ./cmd/camelfsd
       - uses: ./.github/actions/node-dependencies
       - name: Real camelfsd contract

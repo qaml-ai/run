@@ -63,7 +63,7 @@ export interface AgentConfiguration {
   workspaceId?: string | null;
   humanInput?: HumanInputSettings;
   subagents?: Record<string, unknown>;
-  mounts?: { volumeId?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
+  mounts?: { volumeId?: string; repo?: string; ref?: string; instructions?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
 }
 export class ApiError extends Error {
   readonly status: number;
@@ -210,10 +210,11 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (fields.mounts !== undefined) {
     if (!Array.isArray(fields.mounts) || fields.mounts.length > VOLUME_LIMITS.mounts) throw new BadRequest(`At most ${VOLUME_LIMITS.mounts} mounts`);
     config.mounts = fields.mounts.map(raw => {
-      const mount = object(raw, ["volumeId", "path", "mode", "subpath", "workspace", "notify", "instructions"]);
+      if (raw && typeof raw === "object" && "volumeId" in raw) throw new BadRequest("Volumes are replaced by repos: mount { repo }");
+      const mount = object(raw, ["repo", "ref", "path", "mode", "subpath", "workspace", "notify", "instructions"]);
       if ("workspace" in mount) {
         if (typeof mount.workspace !== "boolean" || Object.keys(mount).some(key => key !== "workspace" && (mount.workspace !== true || !["path", "instructions"].includes(key)))) throw new BadRequest("Invalid workspace mount");
-      } else if (typeof mount.volumeId !== "string" || !["rw", "ro"].includes(String(mount.mode))) throw new BadRequest("Invalid mount");
+      } else if (typeof mount.repo !== "string" || !["rw", "ro"].includes(String(mount.mode))) throw new BadRequest("Invalid mount");
       if (mount.instructions !== undefined && (typeof mount.instructions !== "string" || mount.instructions.length > 4096)) throw new BadRequest("Mount instructions must be at most 4096 characters");
       if (mount.notify !== undefined && typeof mount.notify !== "boolean") throw new BadRequest("notify must be a boolean");
       if (mount.path !== undefined && (typeof mount.path !== "string" || !mount.path.startsWith("/") || mount.path.split("/").some(x => x === ".." || x === "."))) throw new BadRequest("Invalid mount path");
@@ -228,4 +229,13 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (ttlSeconds != null && idleTtlSeconds != null) throw new BadRequest("Give ttlSeconds or idleTtlSeconds, not both");
   if (idleTtlSeconds !== undefined) config.idleTtlSeconds = idleTtlSeconds as number | null;
   return { config, ttlSeconds: (ttlSeconds ?? idleTtlSeconds ?? ttlSeconds) as number | null | undefined };
+}
+
+/** Validate the other fields of a config loaded by the runtime, retaining its legacy mounts. */
+// TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
+export function storedConfiguration(input: AgentConfiguration, model: string, mode: "create" | "patch" = "create") {
+  if(!input.mounts?.some(m=>m.volumeId))return configuration(input,model,mode);
+  const checked=configuration({...input,mounts:undefined},model,mode);
+  checked.config.mounts=input.mounts;
+  return checked;
 }

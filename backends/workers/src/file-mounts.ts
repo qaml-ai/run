@@ -7,7 +7,7 @@ import {
   VOLUME_LIMITS,
 } from "./volume-policy.ts";
 import { withSql } from "./postgres.ts";
-import type { FileBindings, Mount } from "./files.ts";
+import type { FileBindings, LegacyVolumeMount as Mount } from "./files.ts";
 export const workspaceId = async (id: string) =>
   `vol_${(await digest(new TextEncoder().encode(`workspace:${id}`))).slice(0, 24)}`;
 /** The id of the volume `createVolume` makes for `key`: the same key, the same volume. */

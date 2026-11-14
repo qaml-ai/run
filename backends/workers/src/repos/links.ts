@@ -15,6 +15,9 @@ type Grant = {
   expiresAt: number;
   maxBytes?: number;
   contentType?: string;
+  agent?: string;
+  run?: string;
+  call?: string;
 };
 function signer(env: RepoEnv, base: string) {
   if (!env.FILE_SIGNING_SECRET || env.FILE_SIGNING_SECRET.length < 32)
@@ -29,6 +32,7 @@ export async function signRepoLink(ctx: RepoContext, base: string, input: {
   expiresIn?: number;
   maxBytes?: number;
   contentType?: string;
+  agent?: string; run?: string; call?: string;
 }) {
   const method = input.method ?? 'GET', seconds = input.expiresIn ?? 900;
   check(method === 'GET' || method === 'PUT');
@@ -41,7 +45,7 @@ export async function signRepoLink(ctx: RepoContext, base: string, input: {
     const v = await ctx.stub.resolve(input.version ?? ref);
     await fileEntry(ctx, v, path);
   }
-  const grant = { kind: 'repo' as const, tenant: ctx.tenant, repo: ctx.repoId, ref, version: input.version, path, method, maxBytes: input.maxBytes, contentType: input.contentType };
+  const grant = { kind: 'repo' as const, tenant: ctx.tenant, repo: ctx.repoId, ref, version: input.version, path, method, maxBytes: input.maxBytes, contentType: input.contentType, agent: input.agent, run: input.run, call: input.call };
   // A separate HMAC domain prevents either link family accepting the other's token.
   const signed = signer(ctx.env, base).sign({ ...grant, expiresIn: seconds } as unknown as Parameters<FileLinks['sign']>[0]);
   return { url: signed.url.replace('/v1/links/', '/v1/repo-links/'), expiresAt: signed.expiresAt };
@@ -65,7 +69,7 @@ export async function handleSignedRepoRequest(request: Request, env: RepoEnv): P
     }
     if (grant.contentType && declaredType(request.headers.get('content-type')) !== grant.contentType)
       throw new RepoError('content-type', 415, 'content-type');
-    const result = await commitChanges(ctx, { ref: grant.ref, changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: `link:${grant.repo}`, who: `link:${grant.repo}`, why: 'link', trailers: { 'Camel-Checkpoint': 'api' } });
+    const result = await commitChanges(ctx, { ref: grant.ref, changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, who: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, why: 'link', trailers: grant.agent ? { 'Camel-Agent': grant.agent, 'Camel-Checkpoint': 'automatic', ...(grant.run ? { 'Camel-Run': grant.run } : {}), ...(grant.call ? { 'Camel-Call': grant.call } : {}) } : { 'Camel-Checkpoint': 'api' } });
     return json({ version: result.version, path: grant.path, ...result.files[grant.path] }, 201);
   }
   catch (e) {
