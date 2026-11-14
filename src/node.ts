@@ -120,7 +120,7 @@ import { DEFAULT_VOICES, speechProvider } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
 import { VoiceCalls, type VoiceCallsOptions } from "./voice-calls.ts";
 import { openaiCalls } from "./voice/calls/openai.ts";
-import { VOICE_CHANNEL, VoiceSessions, type VoiceTransport } from "./voice-sessions.ts";
+import { VOICE_CHANNEL, VoiceSessions, voiceAdmission, type VoiceTransport } from "./voice-sessions.ts";
 import { openaiRealtime } from "./voice/realtime/openai.ts";
 import { grokRealtime } from "./voice/realtime/grok.ts";
 import { elevenlabsAgents } from "./voice/realtime/elevenlabs.ts";
@@ -978,21 +978,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return [id, openaiRealtime(config.voice.realtimeUrl ? { baseUrl: config.voice.realtimeUrl } : {})];
   })) : undefined;
   // A voice session spends while the account may (its answers are not runs: no rate limit).
-  const admitVoice = async (tenant: string) => {
-    const refused = await accounts.runLimit(tenant);
-    if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
-  };
+  const admitVoice = voiceAdmission(accounts);
   const voiceCreditExhausted = async (tenant: string) =>
     await accounts.billing.mode(tenant) === "prepaid" && await accounts.billing.spendable(tenant, db) <= 0;
   const voice = voiceTransports && new VoiceSessions({
     // Recordings are kept in the node's object storage, under recordings/.
     db, storage, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted,
-    admitRealtime: async tenant => {
-      const capped = await accounts.spendLimit(tenant);
-      if (capped) throw new HttpError(402, capped, "SPEND_LIMIT");
-      if (await voiceCreditExhausted(tenant)) throw new HttpError(402, "This account is out of spendable credit", "INSUFFICIENT_CREDIT");
-    },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
     transcriber,

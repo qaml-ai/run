@@ -436,7 +436,6 @@ export interface VoiceSessionsOptions {
   /** Refuses a tenant that may not start paid work now (spent credit, monthly cap); throws an HttpError. */
   admit(tenant: string): Promise<void>;
   tenantCreditExhausted?(tenant: string): Promise<boolean>;
-  admitRealtime?(tenant: string): Promise<void>;
   /** Whether an agent is the tenant's (and not deleted), for `deliver.agent`. */
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   /** Speech to text for listening sessions, as `POST /v1/transcriptions` makes it; without it, brain listen is refused. */
@@ -537,6 +536,16 @@ type Held = {
   /** Audio the bot plays into the call (POST …/audio), once it has played any. */
   jukebox?: Jukebox;
 };
+/**
+ * The one admission for every voice path (calls, realtime and listening sessions, each response or metering
+ * checkpoint): the account's spend limit (402 SPEND_LIMIT), then its credit (Billing.creditLimit: 402 out of credit or
+ * disputed, 429 FREE_HOURLY_LIMIT past the free hourly allowance), all spend refusals that end a call as budget.
+ */
+export const voiceAdmission = (accounts: { runLimit(tenant: string): Promise<string | HttpError | undefined> }) => async (tenant: string) => {
+  const refused = await accounts.runLimit(tenant);
+  if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+};
+
 export class VoiceSessions {
   readonly db: Db;
   private readonly options: VoiceSessionsOptions;
@@ -1780,7 +1789,7 @@ export class VoiceSessions {
           return text;
         },
       } : {}),
-      admit: () => (this.options.admitRealtime ?? this.options.admit)(held.tenant),
+      admit: () => this.options.admit(held.tenant),
       ...(credentials.platform && this.options.tenantCreditExhausted ? { tenantCreditExhausted: () => this.options.tenantCreditExhausted!(held.tenant) } : {}),
       hold: async usd => {
         const { subject, bucket } = options();
