@@ -1,4 +1,4 @@
-import type { Entry, Fence, Mode } from "./repo-policy.ts";
+import type { Entry, Mode } from "./repo-policy.ts";
 
 export type RepoQuota = { limitBytes: number; otherBytes: number };
 export type WriteChange = {
@@ -16,22 +16,11 @@ export type RepoWrite = {
   trailers: Record<string, string>;
   quota?: RepoQuota;
   idempotencyKey?: string;
-  legacy?: {
-    who: string;
-    why: string;
-    fence?: Fence;
-    allowEmpty?: boolean;
-    sizes?: Record<string, number>;
-    pathExpect?: Record<string, string>;
-  };
 };
-export type WriteResult = Omit<MoveResult, "version" | "tree"> & {
-  version: string | null;
-  tree: string | null;
+export type WriteResult = MoveResult & {
   parents: string[];
   time: number;
   changed: Record<string, Entry | null>;
   previous: string | null;
-  watchers: string[];
   moved: boolean;
 };

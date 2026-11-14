@@ -44,13 +44,15 @@ cp "$tfvars" "$tfvars.orig"
 for setting in "$@"; do
   [[ $setting =~ ^([a-z][a-z0-9_]*)=(.*)$ ]] || { echo "Arguments are <variable>=<value>, not '$setting'." >&2; exit 2; }
   key=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
-  [[ $value =~ ^[0-9]+$|^true$|^false$|^\".*\"$|^\[.*\]$ ]] || value="\"$value\""
+  # Numbers, booleans, strings, lists and maps (e.g. enroll_roles={...}) pass as HCL; anything else is quoted.
+  [[ $value =~ ^[0-9]+$|^true$|^false$|^\".*\"$|^\[.*\]$|^\{.*\}$ ]] || value="\"$value\""
   grep -Ev "^[[:space:]]*${key}[[:space:]]*=" "$tfvars" > "$tfvars.new" || true
   mv "$tfvars.new" "$tfvars"
   echo "$key = $value" >> "$tfvars"
 done
 if ! diff -q "$tfvars.orig" "$tfvars" >/dev/null; then echo "    prod.tfvars change:"; diff "$tfvars.orig" "$tfvars" | sed 's/^/      /' || true; fi
 
+"$(dirname "$0")/check-sg-descriptions.sh"
 echo "==> tofu init"; tofu init -input=false >/dev/null
 plan=$work/plan
 echo "==> tofu plan"

@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	"os"
+	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -42,7 +44,7 @@ func stageExecInput(ctx context.Context, objects store.Store, dir, lineage strin
 		return nil, err
 	}
 	if n != *blob.Size || hex.EncodeToString(hash.Sum(nil)) != blob.SHA256 {
-		return nil, &httpError{502, "blob_mismatch"}
+		return nil, &httpError{502, "blob_mismatch", ""}
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
@@ -54,7 +56,14 @@ func (h *Host) execInput(ctx context.Context, s *session, blob hostwire.ExecBlob
 	h.mu.Lock()
 	spec := s.row.Spec
 	h.mu.Unlock()
+	start := time.Now()
 	f, err := stageExecInput(ctx, h.Mounts.Store, h.Mounts.Data, spec.Lineage, blob)
+	// One line per staged stdin blob: the store fetch to the host temp file, hash-verified. Ids and sizes only.
+	var size int64
+	if blob.Size != nil {
+		size = *blob.Size
+	}
+	slog.Info("compute_exec_input", "vm", spec.ID, "blob", blob.Blob, "bytes", size, "ms", ms(time.Since(start)), "error", err)
 	if err != nil {
 		return "", nil, err
 	}

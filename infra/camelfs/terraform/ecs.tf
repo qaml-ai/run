@@ -188,7 +188,7 @@ resource "aws_vpc_security_group_egress_rule" "api_to_hosts_compute" {
   ip_protocol                  = "tcp"
   from_port                    = var.host_compute_port
   to_port                      = var.host_compute_port
-  description                  = "Hosts' compute listener (boot/stop)"
+  description                  = "Hosts compute listener (boot/stop)"
 }
 
 # --- Task definition and service ---

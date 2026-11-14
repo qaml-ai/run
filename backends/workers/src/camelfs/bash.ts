@@ -9,7 +9,6 @@ import { computerSpec } from "../computers/provider.ts";
 import { HttpError } from "../errors.ts";
 import { HOSTS_PROVIDER, hostPool, hostSecondRate, hostShape, type HostPriceEnv, type HostShape } from "../jobs/host-pricing.ts";
 import { workspaceMount, type Mount } from "../repos/mounts.ts";
-import { HttpRepoClient } from "../repos/http-client.ts";
 import { repoContext, type RepoEnv } from "../repos/registry.ts";
 import { bashStream, type BashResult } from "./bash-stream.ts";
 import type { TierClaims } from "./claims.ts";
@@ -522,7 +521,6 @@ export function bashTool(runtime: AgentRuntime) {
         const mount = workspaceMount(conf.tenantId, conf.id, (conf.config.mounts ?? []) as Mount[]);
         if (mount.mode !== "rw" || (mount.subpath && mount.subpath !== "/")) throw new Error("Bash requires a writable workspace root");
         const { lineage, repo } = await repoContext(runtime.env as RepoEnv, conf.tenantId, mount.repo, `agent:${conf.id}`);
-        if (!(repo instanceof HttpRepoClient)) throw new Error("Bash requires a camel-fs workspace");
         const ref = repo.tierRefName(mount.ref ?? "main");
         try {
           result = await runtime.bashSessions.execute(conf, { branch: JSON.stringify([lineage, ref]), lineage, ref }, key, api.callId, run.id, args);
