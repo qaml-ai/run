@@ -56,6 +56,7 @@ import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, hist
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
+import { RepoTreeCache } from "./repos/tree-cache.ts";
 import { DbProfile } from "./db-profile.ts";
 
 class AgentContext {
@@ -76,6 +77,8 @@ export class AgentRuntime extends AgentContext {
     super(ctx, env, host);
     if (env.TEST_MODE === "1") testAgentRuntimes.set(host, this);
   }
+
+  readonly repoTrees = new RepoTreeCache(this.ctx.storage);
 
   readonly sharedAgents = new SharedAgents(database(this.env));
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");

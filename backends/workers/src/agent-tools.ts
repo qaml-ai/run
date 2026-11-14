@@ -323,36 +323,42 @@ export function createHarness(this: AgentRuntime): PiHarness {
             ...tool,
             execute: async (args, api, context) => {
               const config = await this.config();
-              const impl = repoTools(
-                this.env,
-                config.tenantId,
-                config.id,
-                async () => (config.config.mounts as never) ?? [],
-                async (file, volumePath) => {
-                  await presentedFile(
-                    this.ctx.storage,
-                    this.env,
-                    {
-                      requestId: await this.fileRequestId(api.conversationId),
-                      callId: api.callId,
-                      tenant: config.tenantId,
-                      origin: await this.ctx.storage.get<string>("file-origin"),
-                    },
-                    file,
-                    volumePath,
-                    (event) => this.emit(event),
-                  );
-                },
-                async (file) =>
-                  writtenFile(
-                    this.ctx.storage,
-                    await this.fileRequestId(api.conversationId),
-                    file,
-                  ),
-                this.fileVersions,
-                { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
-              )[index];
-              return impl.execute(args as never, api, context);
+              const scope = this.repoTrees.scope();
+              try {
+                const impl = repoTools(
+                  this.env,
+                  config.tenantId,
+                  config.id,
+                  async () => (config.config.mounts as never) ?? [],
+                  async (file, volumePath) => {
+                    await presentedFile(
+                      this.ctx.storage,
+                      this.env,
+                      {
+                        requestId: await this.fileRequestId(api.conversationId),
+                        callId: api.callId,
+                        tenant: config.tenantId,
+                        origin: await this.ctx.storage.get<string>("file-origin"),
+                      },
+                      file,
+                      volumePath,
+                      (event) => this.emit(event),
+                    );
+                  },
+                  async (file) =>
+                    writtenFile(
+                      this.ctx.storage,
+                      await this.fileRequestId(api.conversationId),
+                      file,
+                    ),
+                  this.fileVersions,
+                  { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
+                  scope,
+                )[index];
+                return await impl.execute(args as never, api, context);
+              } finally {
+                scope.close();
+              }
             },
           })),
         );

@@ -1,3 +1,4 @@
+import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import { DurableObject } from "cloudflare:workers";
 import { guardAlarms } from "./alarm-guard.ts";
@@ -20,7 +21,10 @@ export class CamelAgent extends DurableObject<Env> {
     guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
   }
 
-  stageRepoMove(move: RefMove) { return stageRepoMove(this.ctx.storage, move); }
+  async stageRepoMove(move: RefMove) {
+    await stageRepoMove(this.ctx.storage, move);
+    this.#runtime.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
+  }
 
   removeMember(member: string) { return this.#runtime.removeMember(member); }
 

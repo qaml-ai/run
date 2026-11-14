@@ -191,6 +191,7 @@ export async function startFixture(
     }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
   const camelfs = !options.camelfsTier && (options.camelfsStub ?? true);
+  let camelfsCalls: string[] | undefined;
   let camelfsVars: Record<string, string> = {};
   if (options.camelfsTier) {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -203,11 +204,13 @@ export async function startFixture(
     await db.query("INSERT INTO signing_keys(kid,public_jwk,private_sealed,created_at) VALUES ($1,$2,$3,$4)",
       [kid, jwk, { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }, Date.now()]);
     const daemon = await serveFakeCamelfsd(randomBytes(24).toString("hex"), { issuer, jwks: { keys: [jwk] } });
+    camelfsCalls = daemon.calls;
     cleanups.push(() => daemon.close());
     camelfsVars = { CAMELFS_URL: daemon.url };
   }
   if (camelfs && !options.vars?.TEST_CAMELFS_URL) {
     const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken);
+    camelfsCalls = daemon.calls;
     cleanups.push(() => daemon.close());
     camelfsVars = { TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: camelfsToken };
   }
@@ -266,7 +269,7 @@ export async function startFixture(
       if (failed) throw failed;
     };
   }
-  return { url: worker.url, databaseUrl, db, worker, token, stop,
+  return { url: worker.url, databaseUrl, db, worker, token, stop, camelfsCalls,
     async restart(vars: Record<string, string> = {}, crash = false) {
       await worker.stop(crash);
       Object.assign(config.vars, vars);

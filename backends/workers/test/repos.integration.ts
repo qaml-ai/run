@@ -134,3 +134,31 @@ test(`repo-backed agent tools see a write within the same turn (tier=${camelfsTi
   const run = await runtime.prompt(agent.session.id, 'Write the file, list its directory, and read it back');
   assert.equal(run.outcome.result.reply, 'Read my write');
 });
+
+for (const camelfsTier of [false, true])
+test(`agent workspace reads reuse the derived tree (tier=${camelfsTier})`, { timeout: 90_000 }, async t => {
+  const path = '/workspace/notes/a.txt', content = 'agent cached read-your-write';
+  let afterWrite = 0;
+  const runtime = await compatibilityRuntime(t, (body: unknown, index: number) => {
+    if (index === 0) return toolCall('ls', { path: '/workspace' }, 'warm');
+    if (index === 1) return toolCall('write', { path, content });
+    if (index === 2) {
+      afterWrite = runtime.camelfsCalls!.length;
+      return toolCall('ls', { path: '/workspace/notes' }, 'first-ls');
+    }
+    if (index === 3) return toolCall('read', { path }, 'first-read');
+    if (index === 4) return toolCall('ls', { path: '/workspace/notes' }, 'second-ls');
+    if (index === 5) return toolCall('read', { path }, 'second-read');
+    return { role: 'assistant', content: JSON.stringify(toolResults(body).slice(-4)) };
+  }, {}, undefined, { camelfsTier });
+  const sdk = new AgentRuntime({ url: runtime.base, apiKey: OPERATOR });
+  const agent = await sdk.upsertAgent('repo-cache-read-your-write', { tools: {} });
+  const run = await runtime.prompt(agent.session.id, 'List the workspace, write the file, then list and read it twice');
+  const [firstList, firstRead, secondList, secondRead] = JSON.parse(run.outcome.result.reply);
+  assert.match(firstList, /"name":"a\.txt"/);
+  assert.equal(firstRead, content);
+  assert.equal(secondList, firstList);
+  assert.equal(secondRead, content);
+  assert.ok(afterWrite > 0);
+  assert.deepEqual(runtime.camelfsCalls!.slice(afterWrite).filter(call => /^GET .*\/trees\//.test(call)), []);
+});

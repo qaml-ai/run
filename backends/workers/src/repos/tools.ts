@@ -8,10 +8,11 @@ import { FileError, normalizePath } from "../volume.ts";
 import { declaredType, sniffContentType } from "../file-policy.ts";
 import { editArguments } from "../edit-arguments.ts";
 import type { FileVersions } from "../file-versions.ts";
+import type { RepoTreeScope } from "./tree-cache.ts";
 import type { RepoEnv } from "./registry.ts";
 import { agentRepoId, type Mount, type AgentMount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
-import { commitChanges, setRefToVersion, type WriteInput } from "./write.ts";
+import { setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
 const output = (value: unknown) => ({output: [{type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value)}]});
 function actualRepoTools(
@@ -25,6 +26,7 @@ function actualRepoTools(
   onWrite?: (file: WrittenRepoFile) => Promise<void>,
   seen?: FileVersions,
   identity: Record<string,string> = {},
+  scope?: RepoTreeScope,
 ) {
   const workspace = (mounts: Mount[]) => { const own = mounts.find(m => m.repo === agentRepoId(tenant, agentId)); if (!own) throw new FileError("This agent has no workspace mounted"); return own; };
   const target = async (raw: string, write = false) => {
@@ -42,7 +44,7 @@ function actualRepoTools(
       throw new FileError("Mount is read-only", 403);
     const base = mount.subpath ?? "/";
     return {
-      v: await agentStore(env, tenant, mount.repo, mount.ref ?? "main", agentId, identity),
+      v: await agentStore(env, tenant, mount.repo, mount.ref ?? "main", agentId, identity, scope),
       path: normalizePath(base + "/" + path.slice(mount.path.length)),
       mount,
       show: (p: string) =>
@@ -388,11 +390,13 @@ function versionTools(
       const t = await target(path ?? await workspace(), true), head = await t.v.ctx.repo.ref(t.v.ref), previous = head && await t.v.ctx.repo.commit(head.version);
       // Naming the same point twice is free; a new name for it is a new (empty) commit, never a dropped message.
       if (previous?.trailers['Camel-Checkpoint'] === 'manual' && previous.message === message) return output(previous.version);
-      return output((await commitChanges(t.v.ctx, {ref:t.v.ref, op:'turn', changes:{}, message, allowEmpty:true, author:`agent:${agent}`,who:`agent:${agent}`,why:'checkpoint',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'manual'}})).version);
+      return output((await t.v.commit({}, {}, message, {'Camel-Checkpoint':'manual'}, 'turn', true, 'checkpoint')).version);
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
-      return output((await setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}})).version);
+      const result = await setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}});
+      t.v.moved(result);
+      return output(result.version);
     }}),
     defineTool({name:'history',description:"List a mount's versions, newest first. With a file path, only versions that changed it. Pass next as after to continue.",replay:'safe',parameters:obj({path:opt(str()),limit:opt(int()),after:opt(str())}),async execute({path,limit,after}) {
       const t = await target(path ?? await workspace());
@@ -408,9 +412,9 @@ function versionTools(
   ];
 }
 
-export function repoTools(env: RepoEnv,tenant: string,agent: string,getMounts:()=>Promise<AgentMount[]> = async()=>[{repo:agentRepoId(tenant,agent),path:'/workspace',mode:'rw'}],onPresent?:Parameters<typeof actualRepoTools>[4],onWrite?:Parameters<typeof actualRepoTools>[5],seen?:FileVersions,identity:Record<string,string> = {}) {
+export function repoTools(env: RepoEnv,tenant: string,agent: string,getMounts:()=>Promise<AgentMount[]> = async()=>[{repo:agentRepoId(tenant,agent),path:'/workspace',mode:'rw'}],onPresent?:Parameters<typeof actualRepoTools>[4],onWrite?:Parameters<typeof actualRepoTools>[5],seen?:FileVersions,identity:Record<string,string> = {},scope?:RepoTreeScope) {
   const repos=()=>getMounts().then(ms=>ms.filter((m):m is Mount=>'repo'in m));
-  const tools=actualRepoTools(env,tenant,agent,repos,onPresent,onWrite,seen,identity);
+  const tools=actualRepoTools(env,tenant,agent,repos,onPresent,onWrite,seen,identity,scope);
   return tools.map(tool=>({...tool,async execute(args:any,api:any,context:any) {
     const mounts=await getMounts(), raw=args.path??args.from, path=raw===undefined?undefined:normalizePath(raw.startsWith('/')?raw:`${mounts[0]?.path}/${raw}`);
     // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR

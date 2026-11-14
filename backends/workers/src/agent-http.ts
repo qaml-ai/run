@@ -1,3 +1,5 @@
+import { agentRepoId } from "./repos/identity.ts";
+import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { placementOf, type Placement } from "../../../shared/owner.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { monitorRoutes, monitorToolsHost } from "./agent-monitors.ts";
@@ -197,6 +199,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
               incoming.config.spendLimit ?? null,
             );
           await this.ctx.storage.put("configuration", incoming);
+          const workspace = agentRepoId(incoming.tenantId, incoming.id);
+          this.repoTrees.retainHeads((incoming.config.mounts ?? []).filter(mount => mount.repo === workspace)
+            .map(mount => workspaceRefKey(`${incoming.tenantId}:${workspace}`, mount.ref ?? "main")));
           await this.ctx.storage.put("last-active", Date.now());
           const pi = await this.harness.pi(),
             root = await pi.root(BACKGROUND_CONTEXT);
@@ -316,6 +321,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             throw new Error("Agent shutdown is still settling accepted operations");
           await this.flushBilling(true);
           await this.ctx.storage.put("deleted", true);
+          this.repoTrees.retainHeads([]);
           if (conf) await this.closeWatchers(conf.tenantId, conf.id);
           // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
           if(conf) await (await import('./file-output.ts')).releaseLegacyPresentedFiles(this.ctx.storage,this.env,conf.tenantId,conf.id);
@@ -785,6 +791,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.id,
           (conf.config.mounts ?? []) as never,
           path,
+          this.repoTrees,
         ))!;
       }
       if (path.startsWith("/files/")) {
@@ -796,6 +803,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.id,
           decodeURIComponent(path.slice(7)),
           conf.config.mounts as never,
+          "turn",
+          this.repoTrees,
         );
       }
       return json({ error: "Unsupported backend operation", code: "NOT_FOUND" }, 404);
