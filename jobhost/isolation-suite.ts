@@ -10,6 +10,7 @@
 import { firecrackerLauncher } from "./firecracker.ts";
 import { jobAddress } from "./network.ts";
 import type { Vm, VmLauncher } from "./vm.ts";
+import { lookup } from "node:dns/promises";
 
 export type Check = { name: string; ok: boolean; detail: string };
 const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 8192 };
@@ -66,10 +67,11 @@ export async function isolationSuite(launcher: VmLauncher, options: { allowed?: 
     // on a 403, so the status is what shows the refusal. Without the proxy, port 80 must not connect at all, even to an address.
     await check("port 80 is refused even to an allowlisted host", async () => {
       const proxied = await sh(online, `curl -sS -o /dev/null -m 10 -w '%{http_code}' http://registry.npmjs.org/`);
-      // A literal address: the guest has no DNS, so a name would fail at resolution and prove nothing about the path.
-      // 1.1.1.1 answers on 80 from anywhere on the internet, so only a closed path keeps this from connecting.
-      const direct = await sh(online, tcp("1.1.1.1", 80));
-      return { ok: proxied.stdout.trim() === "403" && direct.exitCode !== 0, detail: `proxied ${proxied.stdout.trim() || `exit ${proxied.exitCode}`}, direct exit ${direct.exitCode}` };
+      // A literal address, resolved here on the host: the guest has no DNS, so a name fails at resolution (curl exit 6)
+      // and proves nothing about the path. Only a refused (7) or timed-out (28) connect shows port 80 is closed.
+      const { address } = await lookup("registry.npmjs.org", { family: 4 });
+      const direct = await sh(online, `curl -sS -o /dev/null -m 10 --noproxy '*' -H 'Host: registry.npmjs.org' http://${address}/`);
+      return { ok: proxied.stdout.trim() === "403" && (direct.exitCode === 7 || direct.exitCode === 28), detail: `proxied ${proxied.stdout.trim() || `exit ${proxied.exitCode}`}, direct to ${address} exit ${direct.exitCode}` };
     });
     await check("a job without internet reaches nothing, not even the allowlist", async () =>
       refusedAll(await sh(offline, `curl -sS -o /dev/null -m 10 -x http://${offlineIp.replace(/\.2$/, ".1")}:3128 ${allowedUrl}`)));
