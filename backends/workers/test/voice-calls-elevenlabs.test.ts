@@ -117,14 +117,20 @@ test("ElevenLabs shares provisioning and settles signed reports and deadline onc
   const unkeyed = await f.create({ provider: "elevenlabs", maxMinutes: 40 });
   assert.equal(unkeyed.status, 201, JSON.stringify(unkeyed.json));
   assert.equal(unkeyed.headers.get("idempotency-secret"), null, "the marker never reaches the client");
-  assert.equal((await f.request(`/v1/voice/sessions/${unkeyed.json.id}`, "DELETE")).status, 200);
+  // A client-held ElevenLabs call ends on its post-call report or at the deadline; the deadline alarm ends these.
+  const endAtDeadline = async (id: string) => {
+    assert.equal((await f.request(`/v1/voice/sessions/${id}`, "DELETE")).status, 200);
+    assert.equal((await f.request(`/__test/voice-alarm?id=${id}&kind=deadline`, "POST")).status, 200);
+    assert.equal((await f.request(`/v1/voice/sessions/${id}`)).json.state, "ended");
+  };
+  await endAtDeadline(unkeyed.json.id);
   const keyed = await f.create({ provider: "elevenlabs", maxMinutes: 40 }, { "Idempotency-Key": "eleven-create-1" });
   assert.equal(keyed.status, 201, JSON.stringify(keyed.json));
   assert.equal(keyed.headers.get("idempotency-secret"), null);
   const replay = await f.create({ provider: "elevenlabs", maxMinutes: 40 }, { "Idempotency-Key": "eleven-create-1" });
   assert.deepEqual([replay.status, replay.json.code], [409, "IDEMPOTENCY_CONFLICT"]);
   assert.equal(signed, 6, "the keyed retry made no provider request");
-  assert.equal((await f.request(`/v1/voice/sessions/${keyed.json.id}`, "DELETE")).status, 200);
+  await endAtDeadline(keyed.json.id);
 
   // With the production ledger (no fake), a subject-paid settle posts once under `voice_elevenlabs:<id>` and may
   // take the balance below zero: 0.05 granted, 72 s at 0.10/min = 0.12 charged.
