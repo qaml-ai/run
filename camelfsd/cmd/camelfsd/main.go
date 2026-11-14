@@ -1,3 +1,5 @@
+//go:build !guest
+
 package main
 
 import (
@@ -37,17 +39,13 @@ func (d *dirs) Set(s string) error {
 	*d = append(*d, s)
 	return nil
 }
-func main() {
-	if e := run(os.Args[1:]); e != nil {
-		log.Print(e)
-		os.Exit(1)
-	}
-}
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: camelfsd host|api|client|version")
+		return fmt.Errorf("usage: camelfsd host|api|cleanup|client|version|guest|init")
 	}
 	switch args[0] {
+	case "guest", "init":
+		return runGuest(args)
 	case "testguest":
 		return testguest.Run(args[1:])
 	case "version":

@@ -12,7 +12,8 @@ import { jobAddress } from "./network.ts";
 import type { Vm, VmLauncher } from "./vm.ts";
 
 export type Check = { name: string; ok: boolean; detail: string };
-const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 4096 };
+// At least the base image (6 GiB): a job disk is the base grown by truncate + resize2fs, never shrunk.
+const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 8192 };
 
 type Ran = { exitCode: number | null; stdout: string; stderr: string };
 async function sh(vm: Vm, command: string, extra: Record<string, unknown> = {}): Promise<Ran> {
