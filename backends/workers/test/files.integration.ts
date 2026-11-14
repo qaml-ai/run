@@ -33,6 +33,8 @@ test(
         const refused=await call(`/v1/agents/${agent.id}/files/workspace/old.txt`);
         assert.equal(refused.status,409,await refused.clone().text());
         assert.match(await refused.text(),new RegExp(`Mount of volume ${mounts[0].volumeId} at /workspace is retired`));
+        // The worker's log line arrives through its output stream after the response: wait for it.
+        for(let i=0;i<100&&!worker.logs().includes('legacy_volume_mount_refused');i++)await new Promise(resolve=>setTimeout(resolve,50));
         assert.ok(worker.logs().includes('legacy_volume_mount_refused'));
         assert.deepEqual(await (await call(`/v1/agents/${agent.id}/mounts`)).json(),mounts);
         const repo=await make('/v1/repos',{name:'replacement'});
