@@ -17,13 +17,19 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
  *
  * `skip` names routes whose own idempotency the key already is (an agent's key, a prompt's request id);
  * `secret` routes answer with a secret shown only once (a token, a signing secret, a signed link): their
- * answer is never kept, and a retry of a key that succeeded is a 409.
+ * answer is never kept, and a retry of a key that succeeded is a 409. A route may also mark one
+ * answer as shown once with `Idempotency-Secret: once` (a signed URL on a call create). This internal
+ * signal is removed before the answer leaves.
  */
-export function idempotency(options: { db: () => Db; tenant: (c: Context) => string; skip: (path: string) => boolean; secret: (path: string, c: Context) => boolean; lockMs?: number }) {
+export function idempotency(options: { db: () => Db; tenant: (c: Context) => string; skip: (path: string) => boolean; secret: (path: string) => boolean; lockMs?: number }) {
   const lockMs = options.lockMs ?? 120_000;
   return async (c: Context, next: Next) => {
     const key = c.req.header("idempotency-key");
-    if (c.req.method !== "POST" || key === undefined || options.skip(c.req.path)) return next();
+    if (c.req.method !== "POST" || key === undefined || options.skip(c.req.path)) {
+      await next();
+      takeSecretMarker(c.res);
+      return;
+    }
     if (!key || key.length > 255) throw new HttpError(400, "Idempotency-Key must be 1–255 characters");
     const tenant = options.tenant(c);
     const db = options.db();
@@ -50,9 +56,11 @@ export function idempotency(options: { db: () => Db; tenant: (c: Context) => str
     try {
       await next();
       const response = c.res;
+      const markedOnce = takeSecretMarker(response);
       if (response.ok) {
         // A secret shown once is never stored: the key only records that its request succeeded.
-        const body = options.secret(c.req.path, c) || !response.body ? null : await response.clone().text();
+        const once = options.secret(c.req.path) || markedOnce;
+        const body = once || !response.body ? null : await response.clone().text();
         await db.query("update idempotency_keys set status = $3, body = $4, content_type = $5 where tenant = $1 and key = $2 and created_at = $6",
           [tenant, key, response.status, body, body === null ? null : response.headers.get("content-type"), now]);
         kept = true;
@@ -62,6 +70,12 @@ export function idempotency(options: { db: () => Db; tenant: (c: Context) => str
       if (!kept) await db.query("delete from idempotency_keys where tenant = $1 and key = $2 and status is null and created_at = $3", [tenant, key, now]).catch(() => {});
     }
   };
+}
+
+function takeSecretMarker(response: Response): boolean {
+  const marker = response.headers.get("idempotency-secret");
+  if (marker !== null) response.headers.delete("idempotency-secret");
+  return marker === "once";
 }
 
 /** The request's method, path and body, hashed as the body streams; a body past MAX_BODY_BYTES is a 413. */
