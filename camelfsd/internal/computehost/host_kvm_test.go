@@ -51,7 +51,7 @@ func TestKVMComputeSessionRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if !t.Failed() {
+		if !t.Failed() && os.Getenv("CAMELFSD_KVM_KEEP") != "1" {
 			os.RemoveAll(data)
 		} else {
 			t.Logf("host files in %s", data)
@@ -244,7 +244,7 @@ func TestKVMComputeSessionRestart(t *testing.T) {
 	read(send("POST", "/v1/vms", spec), 202)
 	waitListed()
 	var shell hostwire.ShellCreated
-	must(json.Unmarshal(read(send("POST", path+"/shells", nil), 201), &shell))
+	must(json.Unmarshal(read(send("POST", path+"/shells", hostwire.ShellRequest{}), 201), &shell))
 	output := read(send("POST", path+"/exec", hostwire.ExecRequest{ExecID: "write", Shell: shell.ShellID, Command: "pwd; echo payload > proof", TimeoutS: 10}), 200)
 	assertOutput(t, output, "/workspace")
 	var changed, unchanged hostwire.CheckpointReply
