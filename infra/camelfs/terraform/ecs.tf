@@ -51,7 +51,7 @@ locals {
       "--region", var.region,
       "--token-issuer", var.token_issuer,
     ],
-    contains(var.api_features, "refs") ? ["--refs-table", local.table_names["refs"]] : [],
+    contains(var.api_features, "refs") ? ["--refs-table", local.table_names["refs"], "--lineages-table", local.table_names["lineages"], "--marks-table", local.table_names["marks"]] : [],
     # K4c (wf-durable's flag set, 2026-11-14): the four compute tables, the pools and their enrollment roles, the
     # enrollment and hosts listeners, the CA, and the notify webhook (its HMAC key is injected as CAMELFS_NOTIFY_KEY).
     contains(var.api_features, "compute") ? [
