@@ -1,7 +1,5 @@
 import worker from "../src/index.ts";
 import type { Env } from "../src/agent.ts";
-import type { JobHostsEnv } from "../src/jobs/hosts.ts";
-import type { JobSpec } from "../src/jobs/job.ts";
 export * from "../src/index.ts";
 
 export { CamelfsStub } from "./camelfs-stub.ts";
@@ -10,11 +8,6 @@ export { CamelfsStub } from "./camelfs-stub.ts";
 export default {
   ...worker,
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    if (new URL(request.url).pathname === "/__test/camelfs-job" && env.TEST_MODE === "1") {
-      if (request.headers.get("authorization") !== `Bearer ${env.API_TOKEN}`) return new Response(null, { status: 401 });
-      const spec = await request.json() as JobSpec;
-      return Response.json(await (env as Env & JobHostsEnv).HOST_JOBS!.getByName(spec.id).run(spec));
-    }
     if (new URL(request.url).pathname === "/__test/r2" && env.TEST_MODE === "1") {
       if (request.headers.get("authorization") !== `Bearer ${env.API_TOKEN}`) return new Response(null, { status: 401 });
       const bucket = (env as unknown as { BUCKET: R2Bucket }).BUCKET, key = new URL(request.url).searchParams.get("key")!;

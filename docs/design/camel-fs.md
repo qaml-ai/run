@@ -1,5 +1,7 @@
 # camelFS: the file system for agents, on our own AWS machines
 
+The Workers job-host plane was removed.
+
 > **Superseded in part (Miguel, 2026-11-14): there are no jobs.** Agents compute through one `bash` tool backed by
 > one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
 > child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2

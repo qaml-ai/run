@@ -6,9 +6,27 @@ cd "$(dirname "$0")/.."
 repo=$(cd ../.. && pwd)
 artifact="$HOME/runs/workers-agents-$mode-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$artifact"
+# A SIGSEGV on a sprite (never seen in CI) is made diagnosable: cores go to ~/cores, and the kernel's lines, memory and
+# load from the run are printed and kept with the artifact when a test process dies of one.
+mkdir -p "$HOME/cores"; ulimit -c unlimited 2>/dev/null || true
+# Keep the two newest cores only: each can be gigabytes.
+{ ls -t "$HOME"/cores/core.* 2>/dev/null || true; } | tail -n +3 | xargs -r rm -f
+sudo -n sysctl -q -w kernel.core_pattern="$HOME/cores/core.%e.%p.%t" 2>/dev/null || true
+dmesg_from=$(dmesg 2>/dev/null | wc -l || echo 0)
+segv_report() {
+  grep -rqs "signal: 'SIGSEGV'" "$artifact" || return 0
+  {
+    echo "== SIGSEGV on $(hostname) ($(nproc) cpus, uptime $(cut -d' ' -f1 /proc/uptime)s): node $(node -v)"
+    grep -rh -B8 "signal: 'SIGSEGV'" "$artifact" | grep -E "^not ok|location:" || true
+    echo "== kernel since the run started"; dmesg 2>/dev/null | tail -n +"$((dmesg_from + 1))" | tail -50 || true
+    echo "== memory"; free -m; echo "== load $(cat /proc/loadavg)"
+    echo "== cores"; ls -la "$HOME/cores" 2>/dev/null | tail -5
+  } | tee "$artifact/sigsegv.txt"
+}
 finish() {
   code=$?
   trap - EXIT
+  segv_report || true
   cp measurements/compat*.tap measurements/compatibility.json measurements/python-compat.json "$artifact/" 2>/dev/null || true
   if [[ $mode == contract ]]; then
     cp "$repo"/backends/workers/measurements/parity-*.json "$repo"/backends/workers/measurements/parity-*.log "$artifact/" 2>/dev/null || true

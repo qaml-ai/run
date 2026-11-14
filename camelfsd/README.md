@@ -288,9 +288,11 @@ metadata, sends ready, validates the stream, then sends ack before uploading.
 The guest thaws on ack, nack, EOF or deadline. After ack the daemon writes
 blobs, trees, the commit and the image root; records lineage_objects and
 tree_roots; and returns {tree,root,commit,timings}. Flat timing fields remain
-for one release. With compute enabled, the host calls the tier's `cas`
-in-VPC first and sends `checkpointed{tree}` (or `{error}`) only after the ref
-moved. Publication failure leaves tree_roots unchanged.
+for one release. The [camel-fs compute design](../docs/design/camel-fs-compute.md)
+describes the replacement for the Workers job-host plane. For `bash` VMs, the
+host calls the tier's `cas` in-VPC first and sends `checkpointed{tree}` (or
+`{error}`) only after the ref moved. Publication failure leaves tree_roots
+unchanged.
 
 Stream defaults: --stream-idle 30s, --apply-max 30m, checkpoint timeoutMs
 120000 (maximum 600000), --max-files 200000, --max-bytes 8589934592,
