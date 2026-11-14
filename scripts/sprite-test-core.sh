@@ -72,6 +72,9 @@ set -euo pipefail
 org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-$sprite_pool}; stale_s=${SPRITE_LEASE_STALE:-300}; coordinator=${SPRITE_COORDINATOR:-rt-coordinator}
 max_age=$(awk -v hours="${SPRITE_RUN_HOURS:-2}" 'BEGIN { print int(hours * 3600 + 600) }')
 wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 )); lost_s=$(( ${SPRITE_LOST_MINUTES:-10} * 60 ))
+# At most this many sprites per invocation (a --warm pass included), so one run cannot hold the whole pool: a --warm of
+# all 42 at once held every sprite on 2026-11-14 and starved the lease renewals of its own workers.
+max_leases=${SPRITE_MAX_LEASES:-8}
 pg_port=55432
 cd "$(git rev-parse --show-toplevel)"
 
@@ -86,14 +89,15 @@ scripts/sprite-test [options] [ref] [command...]: run tests at <ref> (default HE
                             credentials files, .netrc, .npmrc: those changes never leave the laptop (it lists them)
   --shards=N                one command per lease, on N sprites
   --artifacts=DIR --output=LOCAL   collect DIR (relative, in the checkout) from each sprite into LOCAL/shard-N
-  --warm [ref]              prepare every free sprite not yet at <ref>
+  --warm [ref]              prepare free sprites not yet at <ref>, SPRITE_MAX_LEASES at a time (run it again for more)
   --status | --stats        the leases and each sprite's commit | the pool at a glance
   --grow N                  create and warm N more pool sprites
   --reap [days]             sprites nothing has used in that many days (default 14); deletes nothing
   --fetch SPRITE PATH [TO]  bring a result back with rsync (PATH relative to the sprite's home: ~/runs/<id>.log)
   --check-core              the core's version and features, against what this repo requires
 Settings: SPRITE_SHARDS, SPRITE_NAME (pin sprites), SPRITE_POOL (default $sprite_pool), SPRITE_ORG, SPRITE_COORDINATOR,
-SPRITE_LEASE_STALE, SPRITE_WAIT_MINUTES (30), SPRITE_RUN_HOURS (2), SPRITE_LOST_MINUTES (10), SPRITE_RETRIES (1).
+SPRITE_LEASE_STALE, SPRITE_WAIT_MINUTES (30), SPRITE_RUN_HOURS (2), SPRITE_LOST_MINUTES (10), SPRITE_RETRIES (1),
+SPRITE_MAX_LEASES (8: sprites one invocation may hold; --warm takes that many per pass).
 Core: $sprite_core (version $SPRITE_CORE_VERSION).
 USAGE
 }
@@ -451,8 +455,18 @@ prepare() {
 prepare || { echo '== preparing the sprite failed'; finish 1; }
 cd "$checkout"; echo "== $*"
 # timeout runs the command in a process group of its own, so a stop reaches it through the trap above.
+log_start=$(stat -c %s ~/runs/$id.log)
 timeout "${hours}h" "$@" & cmd=$!
-wait "$cmd"; finish $?
+wait "$cmd"; code=$?
+# A test run that ran nothing is not green: when the command's output has node:test summaries (TAP "# pass N", spec
+# "ℹ pass N") and they add up to no passed and no failed test, the run fails. A command without them is left alone.
+if [ "$code" = 0 ]; then
+  ran=$(tail -c +$(( log_start + 1 )) ~/runs/$id.log | awk '
+    /^(\[[0-9]+\/[0-9]+\] )?(# |ℹ )(pass|fail) [0-9]+[[:space:]]*$/ { seen = 1; n += $NF }
+    END { print seen ? n : "-" }')
+  [ "$ran" != 0 ] || { echo "== the command reported test summaries with 0 tests passed or failed: nothing ran, so this run fails"; code=1; }
+fi
+finish $code
 EOF
 
 # limit <seconds> <command...>: the command, ended by SIGALRM after <seconds>.
@@ -462,7 +476,9 @@ remote() { local name=$1 secs=$2; shift 2; limit "$secs" sprite exec -o "$org" -
 ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ProxyCommand=\"sprite proxy -o $org -s %h --ssh\""
 candidates=(${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "$sprite_prefix$i"; done)})
 prefix=$sprite_prefix
-rsync_keep=(); for k in ${sprite_keep:-node_modules/}; do rsync_keep+=("--exclude=$k"); done
+# Perishable (-p): a kept path does not stop rsync --delete from removing a directory the tree no longer has ("cannot
+# delete non-empty directory: backends/image-streaming", a node_modules kept inside a removed workspace).
+rsync_keep=(); for k in ${sprite_keep:-node_modules/}; do rsync_keep+=("--filter=-p $k"); done
 
 case ${1:-} in
 -h|--help) usage; exit 0 ;;
@@ -585,10 +601,12 @@ run=$(date +%Y%m%d-%H%M%S)-$$; owner=$(whoami)@$(hostname -s)/$run
 # One command per slot. The full pass (no command) runs as SPRITE_SHARDS shards at once, each on its own sprite, its
 # output prefixed [i/N] as it comes. --warm takes every free sprite the coordinator does not record at the commit.
 shards=${SPRITE_SHARDS:-$sprite_shards}; [[ $shards =~ ^[0-9]+$ ]] || { echo "SPRITE_SHARDS must be a number" >&2; exit 2; }
-if (( warm )); then slots=${#candidates[@]}
+[[ $max_leases =~ ^[1-9][0-9]*$ ]] || { echo "SPRITE_MAX_LEASES must be a positive number" >&2; exit 2; }
+if (( warm )); then slots=$(( ${#candidates[@]} < max_leases ? ${#candidates[@]} : max_leases ))
 elif [[ -n $command_shards ]]; then slots=$command_shards
 elif [[ $# -eq 0 && $shards -gt 1 ]]; then slots=$shards
 else slots=1; fi
+(( slots <= max_leases )) || { echo "== $slots sprites is more than one invocation may hold (SPRITE_MAX_LEASES=$max_leases)" >&2; exit 2; }
 args=("$@")
 job_for() { # <slot> <lease> <id>: the job script, base64
   local cmd arg expanded=()
@@ -830,5 +848,5 @@ for k in "${!names[@]}"; do
   if (( code == 0 )); then ready=$(( ready + 1 )); elif (( status == 0 || status == 69 )); then status=$code; fi
 done
 sleep 0.2  # the prefixing seds
-if (( warm )); then echo "== $ready of ${#names[@]} sprites ready at $short$( (( ! current )) || echo ", $current were already") (busy ones were left alone)"; exit 0; fi
+if (( warm )); then echo "== $ready of ${#names[@]} sprites ready at $short$( (( ! current )) || echo ", $current were already") (busy ones were left alone; at most $max_leases per pass: run --warm again for the rest)"; exit 0; fi
 exit "$status"
