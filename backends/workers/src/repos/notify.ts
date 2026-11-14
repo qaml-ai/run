@@ -1,5 +1,10 @@
+import { sha256Hex } from './git.ts';
 import { HttpRepoClient } from "./http-client.ts";
 import type { RepoContext } from './registry.ts';
+
+export async function repoMoveRequestId(repo: string, delivery: string, mount: string) {
+  return 'repo-' + await sha256Hex(new TextEncoder().encode(JSON.stringify([repo, delivery, mount])));
+}
 
 /** Use the same disconnected prompt admission as other runtime deliveries. */
 export async function notifyRepoWatchers(
@@ -55,7 +60,7 @@ export async function notifyRepoWatchers(
 export async function deliverRepoMoves(env: RepoContext["env"], config: import("../agent-types.ts").Config, moves: import("../camelfs/notify.ts").RefMove[], admit: (request: Request) => Promise<Response>) {
   const { repoContext } = await import("./registry.ts");
   for (const mount of config.config.mounts ?? []) {
-    if (!mount.repo || !mount.notify) continue;
+    if (!mount.repo || !mount.notify || !mount.path) continue;
     const row = await env.TENANTS.getByName(config.tenantId).repoRow(mount.repo);
     if (!row || row.deletedAt !== null || !moves.some(move => move.lineage === row.lineage)) continue;
     const ctx = await repoContext(env, config.tenantId, mount.repo, `agent:${config.id}`);
@@ -89,7 +94,7 @@ export async function deliverRepoMoves(env: RepoContext["env"], config: import("
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        id: `repo-${ctx.repoId}-${matching.at(-1)!.id}-${mount.path}`,
+        id: await repoMoveRequestId(ctx.repoId, matching.at(-1)!.id, mount.path),
         method: "prompt",
         params: { text: `Files changed in a mounted volume:\n${[...shown.values()].slice(0, 50).join("\n")}`, allowDisconnected: true },
       }),
