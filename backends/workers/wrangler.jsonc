@@ -19,6 +19,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "VOICE_CALLS", "class_name": "VoiceCall" },
       { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
@@ -77,7 +78,8 @@
     { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
     { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
     { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] },
-    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] }
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
+    { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] }
   ],
   "hyperdrive": [
     {
