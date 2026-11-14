@@ -1490,7 +1490,7 @@ class Voices:
 
 
 class Voice:
-    """Voice calls the runtime holds for your bot (runtime.voice, agents.voice). Your app joins the voice channel on its
+    """Voice sessions and client-held calls (runtime.voice, agents.voice). For Discord, your app joins the voice channel on its
     own gateway (OP 4) and forwards what Discord answers; the runtime listens, and a realtime speech-to-speech model
     answers aloud, asking `agent` (ask_agent) for anything beyond talk. What people say goes to your webhooks
     (voice.utterance). Its calls are awaited from AgentRuntime, and plain from
@@ -1505,10 +1505,13 @@ class Voice:
     def __init__(self, runtime):
         self._runtime = runtime
 
-    def create(self, discord, *, subject=None, bucket=None, context=None, key_scope=None, agent=None, webhooks=None, language=None,
+    def create(self, discord=None, *, subject=None, bucket=None, context=None, key_scope=None, agent=None, webhooks=None, language=None,
                prompt=None, silence_ms=None, max_minutes=None, idle_minutes=None, empty_seconds=None, ignore_user_ids=None,
-               metadata=None, notice=None, barge_in=None, voice=None, brain=None, realtime=None, speakers=None, idempotency_key=None):
-        """Start a session from `discord`: {"guildId", "channelId", "userId" (the bot), "sessionId" (its
+               metadata=None, notice=None, barge_in=None, voice=None, brain=None, realtime=None, speakers=None, idempotency_key=None,
+               provider=None, model=None, instructions=None, sdp=None):
+        """Start a client-held call with `agent`, `provider` and `subject`, returning `connect` (OpenAI requires an SDP offer).
+
+        Start a session from `discord`: {"guildId", "channelId", "userId" (the bot), "sessionId" (its
         VOICE_STATE_UPDATE), "endpoint", "token" (VOICE_SERVER_UPDATE)}. `subject` pays (its `bucket` with end-user
         credits on). A realtime speech-to-speech model hears the call and answers aloud, asking `agent` (ask_agent) for
         anything beyond talk; `realtime` ({"provider", "model", "voice", "publicOwnerId", "instructions", "transcribe", "speculative"})
@@ -1521,12 +1524,18 @@ class Voice:
         to your webhooks, nothing answers (agent, barge_in, voice, realtime and speakers are ignored), and your app joins muted.
         Returns the session with "notice": post its "text" in the voice channel's chat now. Raises 409
         VOICE_SESSION_EXISTS when the bot has one in the server."""
-        fields = {"subject": subject, "bucket": bucket, "context": context, "keyScope": key_scope, "language": language, "prompt": prompt,
-                  "silenceMs": silence_ms, "maxMinutes": max_minutes, "idleMinutes": idle_minutes, "emptySeconds": empty_seconds,
-                  "ignoreUserIds": ignore_user_ids, "metadata": metadata, "notice": notice, "bargeIn": barge_in, "voice": voice,
-                  "brain": brain, "realtime": realtime, "speakers": speakers}
-        deliver = {key: value for key, value in {"agent": agent, "webhooks": webhooks}.items() if value is not None}
-        body = {"provider": "discord", "discord": discord, **{key: value for key, value in fields.items() if value is not None}, **({"deliver": deliver} if deliver else {})}
+        fields = {"subject": subject, "bucket": bucket, "context": context, "keyScope": key_scope, "language": language,
+                  "maxMinutes": max_minutes, "metadata": metadata, "voice": voice, "speakers": speakers}
+        if discord is None:
+            if agent is None:
+                raise ValueError("Give discord for a session or agent for a client-held call")
+            fields.update(agent=agent, provider=provider, model=model, instructions=instructions, sdp=sdp)
+        else:
+            deliver = {key: value for key, value in {"agent": agent, "webhooks": webhooks}.items() if value is not None}
+            fields.update(provider="discord", discord=discord, prompt=prompt, silenceMs=silence_ms, idleMinutes=idle_minutes,
+                          emptySeconds=empty_seconds, ignoreUserIds=ignore_user_ids, notice=notice, bargeIn=barge_in,
+                          brain=brain, realtime=realtime, deliver=deliver or None)
+        body = {key: value for key, value in fields.items() if value is not None}
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key is not None else None
         return self._runtime._rest("POST", "/v1/voice/sessions", body, retry=idempotency_key is not None, headers=headers)
 
@@ -1534,7 +1543,7 @@ class Voice:
         return self._runtime._rest("GET", f"/v1/voice/sessions/{quote(session_id, safe='')}")
 
     def list(self, *, state=None, limit=None, after=None):
-        """Newest first: "live" or "ended" ones, a page at a time ({"sessions", "next"}; pass next as `after`)."""
+        """Newest first: "live" or "ended" sessions and calls ({"sessions", "next", "calls"?}; pass next as `after` for sessions)."""
         query = urlencode({key: value for key, value in {"state": state, "limit": limit, "after": after}.items() if value is not None})
         return self._runtime._rest("GET", f"/v1/voice/sessions{'?' + query if query else ''}")
 
@@ -1553,6 +1562,12 @@ class Voice:
         `interrupt`): {"id", "queued"}. Its voice.speech.* events have source "say"."""
         body = {"text": text, **({"interrupt": interrupt} if interrupt is not None else {})}
         return self._runtime._rest("POST", f"/v1/voice/sessions/{quote(session_id, safe='')}/say", body, retry=False)
+
+    def transcript(self, session_id, speaker, text, seconds=None, started_at=None, ended_at=None):
+        """Report an ElevenLabs utterance for the agent's context and your webhooks, returning {"seq"}."""
+        fields = {"speaker": speaker, "text": text, "seconds": seconds, "startedAt": started_at, "endedAt": ended_at}
+        body = {key: value for key, value in fields.items() if value is not None}
+        return self._runtime._rest("POST", f"/v1/voice/sessions/{quote(session_id, safe='')}/transcript", body, retry=False)
 
     def prompt(self, session_id, instructions, *, interrupt=None):
         """Have the bot speak up unprompted: its realtime model says `instructions` in its own words: {"id", "queued"}."""
@@ -1580,9 +1595,12 @@ class Voice:
         body = {key: value for key, value in {"action": action, "volume": volume}.items() if value is not None}
         return self._runtime._rest("PATCH", f"/v1/voice/sessions/{quote(session_id, safe='')}/audio", body)
 
-    def end(self, session_id):
-        """End it. The answer's "leave" is the OP 4 your gateway sends to leave the channel."""
-        return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}")
+    def end(self, session_id, reason=None):
+        """End a call with an optional reason, or end a Discord session and return its "leave" OP 4."""
+        path = f"/v1/voice/sessions/{quote(session_id, safe='')}"
+        if session_id.startswith("vc_"):
+            return self._runtime._rest("POST", f"{path}/end", {"reason": reason} if reason is not None else {})
+        return self._runtime._rest("DELETE", path)
 
 
 def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, definition_revision=None, human_input=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,

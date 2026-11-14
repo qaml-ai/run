@@ -75,6 +75,106 @@ Discord allows one voice connection per user and server: a second `POST` for the
 
 The bot speaks, so your app joins un-muted (OP 4 with `self_mute: false`): the answer's `join` says so.
 
+## Calls your app holds
+
+To connect your app straight to OpenAI or ElevenLabs, pass `agent` to `agents.voice.create` without a Discord grant.
+Your app holds the provider connection and handles audio, speaker notes, barge-in and playback. The provider handles
+turn-taking (`semantic_vad` on OpenAI and ElevenLabs' turn settings). camelRun creates the provider session, runs
+`ask_agent` as a billed agent turn, meters the call and sends transcripts and `voice.agent.*` events to your webhooks.
+
+For OpenAI, add your outgoing audio tracks to the peer connection before creating the offer. The browser sends the
+offer to your backend, which makes the camelRun SDK call with its API key and returns the call's ID and SDP answer.
+The example uses `agents.voice` to show the backend calls inline.
+
+```ts
+const pc = new RTCPeerConnection();
+for (const track of micStream.getAudioTracks()) pc.addTrack(track, micStream);
+pc.ontrack = ({ streams }) => { audioElement.srcObject = streams[0]; };
+const channel = pc.createDataChannel("oai-events");
+const offer = await pc.createOffer();
+await pc.setLocalDescription(offer);
+const speakers = { ana: "Ana" };
+const call = await agents.voice.create({ agent, provider: "openai", sdp: offer.sdp, subject, speakers });
+if (!("sdpAnswer" in call.connect)) throw new Error("Expected an OpenAI SDP answer");
+await pc.setRemoteDescription({ type: "answer", sdp: call.connect.sdpAnswer });
+
+// When the channel is open, send a note before the active speaker's audio.
+function noteSpeaker(name: string) {
+  channel.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: { type: "message", role: "user", content: [{ type: "input_text", text: `[${name}]` }] },
+  }));
+}
+
+// Later, after everyone leaves.
+await agents.voice.end(call.id, { reason: "channel_empty" });
+pc.close();
+```
+
+For ElevenLabs, open the signed URL, send audio over the socket and relay each `user_transcript` to camelRun
+with the speaker ID from your app. Forward late replies for the same call from your verified webhook handler
+to the app holding the socket, where they become `contextual_update` messages.
+
+```ts
+import type { WebhookEvent } from "@camelai/run";
+
+const call = await agents.voice.create({ agent, provider: "elevenlabs", subject, maxMinutes: 30 });
+if (!("signedUrl" in call.connect)) throw new Error("Expected an ElevenLabs signed URL");
+const socket = new WebSocket(call.connect.signedUrl);
+
+// From the socket's user_transcript event and your app's speaker tracking.
+async function reportTranscript(speaker: string, text: string) {
+  await agents.voice.transcript(call.id, { speaker, text });
+}
+
+function relayLateReply(event: WebhookEvent) {
+  if (event.type === "voice.agent.replied" && event.data.session === call.id && event.data.late && event.data.reply) {
+    socket.send(JSON.stringify({ type: "contextual_update", text: event.data.reply }));
+  }
+}
+```
+
+| Field | |
+| --- | --- |
+| `agent` | Required. The `client_…` ID of the agent that handles `ask_agent` |
+| `provider` | Required. `openai` or `elevenlabs` |
+| `model` | The provider's realtime model. Defaults to the provider's configured model |
+| `voice` | The provider voice or a mapped voice name |
+| `instructions` | How the voice should act, up to 8,000 characters |
+| `language` | Language hint such as `en` or `pt-BR` |
+| `subject` | Required. The end user whose usage and credit the call uses |
+| `bucket` | The subject's credit bucket |
+| `context` | Your claims in the `usage.recorded` context |
+| `keyScope` | The key scope used to look up the provider key |
+| `maxMinutes` | Time before the call expires. OpenAI defaults to 240 minutes, up to 720. ElevenLabs defaults to 30 and caps at 30 |
+| `metadata` | Up to 4 KB of JSON, returned with the call and included in its webhooks |
+| `speakers` | A map of speaker IDs to display names. Update it with `voice.update`. For OpenAI, send the speaker notes over the data channel |
+| `sdp` | The WebRTC offer SDP, required for OpenAI, up to 64 KB |
+
+Use `voice.get(id)` for the state of a call and `voice.list({ state: "live" })` to find it under `calls`.
+When a request is refused, check the HTTP status and error code.
+
+- 400 `REALTIME_UNAVAILABLE`, `REALTIME_UNPRICED`, `REALTIME_MODEL`, `REALTIME_VOICE` for unavailable or unsupported provider settings.
+- 402 `SPEND_LIMIT` or `END_USER_CREDIT` when spending or credit limits refuse the call.
+- 404 `AGENT_NOT_FOUND`, `VOICE_CALL_NOT_FOUND` or `VOICE_CALL_NO_AUDIO` for a missing agent or call, or for audio operations on a client-held call.
+- 409 `VOICE_TRANSCRIPT_SIDEBAND` when you report a transcript for an OpenAI call.
+- 429 `VOICE_SESSION_LIMIT` when the account has reached its live call and session limit.
+- 502 `REALTIME_FAILED` when the provider operation fails.
+- 503 `NODE_RETIRING` when the node is retiring. Retry on a peer.
+
+### Billing
+
+- OpenAI bills per-response tokens at `REALTIME_PRICES`, with a $0.05 hold per response when end-user credits are on.
+- ElevenLabs holds minutes up front when end-user credits are on (up to 30 minutes) and settles from the post-call report.
+  If the report has yet to arrive 15 minutes after the call ends, camelRun settles at the deadline.
+- `ask_agent` is billed like any agent run under the call's subject and bucket.
+
+### Limitations
+
+- OpenAI's sideband lives on one node. A retiring node ends the call with reason `restarted`. Create a new call to reconnect.
+- ElevenLabs calls use the platform's ElevenLabs key.
+- During an ElevenLabs call your app reports transcripts. OpenAI transcribes over its sideband.
+
 ## Listening only
 
 A bot that only needs to hear the call (notes, captions, commands it acts on in text) takes `brain: "listen"`. Nothing

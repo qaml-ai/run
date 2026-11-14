@@ -767,10 +767,14 @@ export type WebhookEvent = { id: string; created: number } & (
       startedAt: number | null; endedAt: number; turns: number; asks: number; audioSeconds: number; costUsd: number;
     } }
   | { type: "voice.agent.asked"; data: VoiceCallFacts & { request: string; from?: { id: string; name?: string } } }
-  | { type: "voice.agent.replied"; data: VoiceCallFacts & { outcome: "ok" | "empty" | "error" | "timeout"; ms: number; late: boolean; replyChars: number } }
+  | { type: "voice.agent.replied"; data: VoiceCallFacts & { outcome: "ok" | "empty" | "error" | "timeout"; ms: number; late: boolean; replyChars: number; reply?: string } }
   /** The session's audio failed: it reconnects (`restarting`), or, failing 3 times in 5 minutes, ends (voice.session.ended follows). */
   | { type: "voice.session.error"; data: VoiceFacts & { code: "media_crashed"; detail: string; restarting: boolean; attempt: number } }
-  | { type: "voice.utterance"; data: VoiceUtterance | VoiceCallFacts & { reported: "sideband"; speakerId?: string; text: string; seconds: number; seq: number } }
+  | { type: "voice.utterance"; data: VoiceUtterance | VoiceCallFacts & (
+      { provider: "openai"; reported: "sideband"; text: string; seconds: number; seq: number }
+      | { provider: "elevenlabs"; reported: "client"; speakerId: string; text: string; seq: number; seconds?: number; startedAt?: number; endedAt?: number }
+      | { provider: "elevenlabs"; reported: "provider"; text: string; seq: number; secondsIntoCall?: number }
+    ) }
   | { type: "voice.speech.started"; data: VoiceFacts & {
       speechId: string; latencyMs: number;
       /** When its first audio went out (ms). */
@@ -800,7 +804,7 @@ export type WebhookEvent = { id: string; created: number } & (
       reason: "done" | "skipped" | "stopped" | "error"; seconds: number; error?: string;
     } });
 /** What every voice.* event says of its session. */
-type VoiceCallFacts = { session: string; provider: "openai"; agent: string; subject: string; metadata: Record<string, unknown> };
+type VoiceCallFacts = { session: string; provider: "openai" | "elevenlabs"; agent: string; subject: string; metadata: Record<string, unknown> };
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
  * Why a voice session ended: `requested` (you ended it), `empty` (no one else in the call for `emptySeconds`), `idle` (no
@@ -1592,7 +1596,7 @@ export type VoiceRealtime = { provider: "openai" | "gemini" | "elevenlabs"; mode
 /** How a voice session ends each speaker's turn (`endOfTurn`). */
 export type VoiceEndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 export interface VoiceSession {
-  id: string; provider: "discord";
+  id: `vs_${string}`; provider: "discord";
   discord: { guildId: string; channelId: string; userId: string };
   /** connecting; live (listening); reconnecting (moving between nodes, or waiting for new credentials); ended. */
   state: "connecting" | "live" | "reconnecting" | "ended";
@@ -1624,6 +1628,25 @@ export type VoiceSessionCreated = VoiceSession & {
   /** How your app's OP 4 should have joined: un-muted when the bot speaks (brain realtime), muted for listen. */
   join: { self_mute: boolean; self_deaf: false };
 };
+/** Start a voice call whose audio your app holds. */
+export type VoiceCallInput = {
+  agent: string; provider: "openai" | "elevenlabs"; model?: string; voice?: string; instructions?: string; language?: string;
+  subject: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; maxMinutes?: number;
+  metadata?: Record<string, unknown>; speakers?: Record<string, string>; sdp?: string;
+};
+/** A client-held voice call, with its state and metering. */
+export type VoiceCall = {
+  id: `vc_${string}`; state: "connecting" | "live" | "ending" | "ended"; provider: "openai" | "elevenlabs";
+  model: string; voice: string; agent: string; subject: string;
+  startedAt: number | null; endedAt: number | null; expiresAt: number; reason: string | null;
+  turns: number; asks: number; audioSeconds: number; costUsd: number;
+  metadata: Record<string, unknown>; speakers: Record<string, string>;
+};
+/** A new call and what your app needs to connect to its provider. */
+export type VoiceCallCreated = VoiceCall & { connect: { sdpAnswer: string } | { signedUrl: string; conversationId: string } };
+/** An utterance your app heard on an ElevenLabs call. */
+export type VoiceTranscriptInput = { speaker: string; text: string; seconds?: number; startedAt?: number; endedAt?: number };
+
 /** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
 /** A voice session's recording (`agents.voice.record`): `ready` with its Ogg Opus files once it ended. */
 export type VoiceRecording = {
@@ -1669,8 +1692,10 @@ export class Voices {
   }
 }
 
+type VoiceUpdateInput = { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown>; speakers?: Record<string, string> };
+
 /**
- * Voice calls the runtime holds for your bot (`runtime.voice`, `agents.voice`). Your app joins the voice channel on its
+ * Voice sessions and client-held calls (`runtime.voice`, `agents.voice`). For Discord, your app joins the voice channel on its
  * own gateway (OP 4) and forwards what Discord answers; the runtime listens, and a realtime speech-to-speech model
  * answers aloud, asking your agent (`deliver.agent`) for anything beyond talk. What people say goes to your webhooks
  * (`voice.utterance`).
@@ -1686,18 +1711,27 @@ export class Voice {
   constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
   private path(id: string) { return `/v1/voice/sessions/${encodeURIComponent(id)}`; }
   /** Start a session. Throws 409 VOICE_SESSION_EXISTS when the bot has one in the server (`details.session`). */
-  create(input: VoiceSessionInput): Promise<VoiceSessionCreated> {
+  create(input: VoiceSessionInput): Promise<VoiceSessionCreated>;
+  /** A call your app holds the audio of (`agent` without `discord`): camelRun creates the provider session, keeps ask_agent and the metering, and answers how to connect (OpenAI: `connect.sdpAnswer` for your WebRTC offer in `sdp`; ElevenLabs: `connect.signedUrl` + `conversationId`). */
+  create(input: VoiceCallInput & { idempotencyKey?: string }): Promise<VoiceCallCreated>;
+  create(input: VoiceSessionInput | (VoiceCallInput & { idempotencyKey?: string })): Promise<VoiceSessionCreated | VoiceCallCreated> {
     const { idempotencyKey, ...body } = input;
     return this.transport.json("/v1/voice/sessions", this.key(), "POST", body, idempotencyKey !== undefined, idempotencyKey !== undefined ? { "Idempotency-Key": idempotencyKey } : {});
   }
-  get(id: string): Promise<VoiceSession> { return this.transport.json(this.path(id), this.key()); }
+  get(id: VoiceCall["id"]): Promise<VoiceCall>;
+  get(id: VoiceSession["id"]): Promise<VoiceSession>;
+  get(id: string): Promise<VoiceSession | VoiceCall>;
+  get(id: string): Promise<VoiceSession | VoiceCall> { return this.transport.json(this.path(id), this.key()); }
   /** Newest first: `live` or `ended` ones, a page at a time (`after`: the previous page's `next`). */
-  list(options: { state?: "live" | "ended"; limit?: number; after?: string } = {}): Promise<{ sessions: VoiceSession[]; next: string | null }> {
+  list(options: { state?: "live" | "ended"; limit?: number; after?: string } = {}): Promise<{ sessions: VoiceSession[]; next: string | null; calls?: VoiceCall[] }> {
     const query = new URLSearchParams(Object.entries(options).flatMap(([name, value]) => value === undefined ? [] : [[name, String(value)]]));
     return this.transport.json(`/v1/voice/sessions${query.size ? `?${query}` : ""}`, this.key());
   }
-  /** Discord moved the call (a new VOICE_SERVER_UPDATE, or a move to another channel): the session reconnects with these. */
-  update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown>; speakers?: Record<string, string> }): Promise<VoiceSession> {
+  /** Update speakers or metadata. With new Discord credentials, a session reconnects. */
+  update(id: VoiceCall["id"], input: VoiceUpdateInput): Promise<VoiceCall>;
+  update(id: VoiceSession["id"], input: VoiceUpdateInput): Promise<VoiceSession>;
+  update(id: string, input: VoiceUpdateInput): Promise<VoiceSession | VoiceCall>;
+  update(id: string, input: VoiceUpdateInput): Promise<VoiceSession | VoiceCall> {
     return this.transport.json(this.path(id), this.key(), "PATCH", input);
   }
   /** Stop what the bot is saying, and what it was going to (what waits to be said too). */
@@ -1708,6 +1742,10 @@ export class Voice {
    */
   say(id: string, text: string, options: { interrupt?: boolean } = {}): Promise<{ id: string; queued: number }> {
     return this.transport.json(`${this.path(id)}/say`, this.key(), "POST", { text, ...options }, false);
+  }
+  /** Report an ElevenLabs utterance to camelRun for the agent's context and your webhooks. */
+  transcript(id: string, input: VoiceTranscriptInput): Promise<{ seq: number }> {
+    return this.transport.json(`${this.path(id)}/transcript`, this.key(), "POST", input, false);
   }
   /** Have the bot speak up unprompted: its realtime model says `instructions` in its own words, once the floor is free. */
   prompt(id: string, instructions: string, options: { interrupt?: boolean } = {}): Promise<{ id: string; queued: number }> {
@@ -1730,8 +1768,15 @@ export class Voice {
   controlAudio(id: string, input: { action?: "pause" | "resume" | "skip" | "stop"; volume?: number }): Promise<VoiceAudioState> {
     return this.transport.json(`${this.path(id)}/audio`, this.key(), "PATCH", input);
   }
+  /** End a client-held call and record its reason. */
+  end(id: VoiceCall["id"], options?: { reason?: string }): Promise<VoiceCall>;
   /** End it; send the answer's `leave` on your gateway to leave the channel. Ending an ended session answers it again. */
-  end(id: string): Promise<VoiceSessionEnded> { return this.transport.json(this.path(id), this.key(), "DELETE"); }
+  end(id: VoiceSession["id"], options?: { reason?: string }): Promise<VoiceSessionEnded>;
+  end(id: string, options?: { reason?: string }): Promise<VoiceSessionEnded | VoiceCall>;
+  end(id: string, options: { reason?: string } = {}): Promise<VoiceSessionEnded | VoiceCall> {
+    if (id.startsWith("vc_")) return this.transport.json(`${this.path(id)}/end`, this.key(), "POST", { reason: options.reason });
+    return this.transport.json(this.path(id), this.key(), "DELETE");
+  }
   /**
    * Record the call: post the answer's `notice` in the voice channel's chat. Throws 409 VOICE_RECORDING_EXISTS while it
    * records already.
