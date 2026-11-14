@@ -119,6 +119,7 @@ import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
 import { DEFAULT_VOICES, speechProvider } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
 import { VoiceCalls, type VoiceCallsOptions } from "./voice-calls.ts";
+import { elevenlabsCalls } from "./voice/calls/elevenlabs.ts";
 import { openaiCalls } from "./voice/calls/openai.ts";
 import { VOICE_CHANNEL, VoiceSessions, voiceAdmission, type VoiceTransport } from "./voice-sessions.ts";
 import { openaiRealtime } from "./voice/realtime/openai.ts";
@@ -1020,12 +1021,23 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       },
     } : {}),
   });
-  const calls = config.voice.realtime.includes("openai") ? new VoiceCalls({
+  const calls = config.voice.realtime.some(provider => provider === "openai" || provider === "elevenlabs") ? new VoiceCalls({
     db, node, admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted, agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+    ...(deps.voiceCallOverrides?.record ? {} : {
+      recordIn: (sql, tenant, usage) => accounts.recordUsageIn(sql, tenant, "", usage),
+      usageCommitted: tenant => accounts.usageCommitted(tenant),
+    }),
     submitStreaming: submitStreamingAnywhere, credit: endUsers,
-    creditEnabled: deps.voiceCallOverrides && "credit" in deps.voiceCallOverrides ? undefined : tenant => endUsers.enabled(tenant),
-    providers: { openai: openaiCalls({ baseUrl: config.voice.realtimeUrl }) },
+    creditEnabled: deps.voiceCallOverrides && "credit" in deps.voiceCallOverrides ? undefined : (tenant, sql) => endUsers.enabled(tenant, sql),
+    providers: {
+      openai: config.voice.realtime.includes("openai") ? openaiCalls({ baseUrl: config.voice.realtimeUrl }) : undefined,
+      elevenlabs: config.voice.realtime.includes("elevenlabs") ? elevenlabsCalls({
+        db, publicUrl: links.publicUrl, baseUrl: config.voice.endpoints.elevenlabs,
+        seal: async text => JSON.stringify(accounts.seal("elevenlabs-voice-calls", text)),
+        unseal: async sealed => accounts.unseal("elevenlabs-voice-calls", JSON.parse(sealed)),
+      }) : undefined,
+    },
     key: async (tenant, keyScope, provider) => {
       const key = await providerKey(tenant, keyScope, provider, undefined, false);
       return key?.apiKey && !("baseUrl" in key && key.baseUrl) ? { apiKey: key.apiKey, platform: key.platform } : undefined;
