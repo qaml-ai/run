@@ -2,6 +2,7 @@ package compute
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -17,13 +18,16 @@ func rank(hosts []Host, shape Shape, now int64) []Host {
 	var candidates []Host
 	for _, h := range hosts {
 		if h.Free > 0 && !h.Draining && h.LastSeenAt > now-hostFreshMS &&
-			h.Shape.VCPUs >= shape.VCPUs && h.Shape.MemoryMiB >= shape.MemoryMiB && h.Shape.DiskGiB >= shape.DiskGiB {
+			h.Shape.VCPUs >= shape.VCPUs && h.FreeMiB >= shape.MemoryMiB && h.Shape.DiskGiB >= shape.DiskGiB {
 			candidates = append(candidates, h)
 		}
 	}
 	slices.SortFunc(candidates, func(a, b Host) int {
 		if a.Free != b.Free {
 			return b.Free - a.Free
+		}
+		if a.FreeMiB != b.FreeMiB {
+			return b.FreeMiB - a.FreeMiB
 		}
 		return strings.Compare(a.Host, b.Host)
 	})
@@ -36,13 +40,15 @@ func readHost(i item) Host {
 			Addr: i.text("addr"), Shape: readShape(i.object("shape")), Slots: int(i.number("slots")),
 			Features: i.set("features"), Draining: i.flag("draining")},
 		BootEpoch: i.number("bootEpoch"), LastSeenAt: i.number("lastSeenAt"), Free: int(i.number("free")),
-		VMs: i.set("vms"), Restarting: i.flag("restarting"),
+		MemoryMiB: int(i.number("memoryMiB")), FreeMiB: int(i.number("freeMiB")),
+		VMs: i.set("vms"), Restarting: i.flag("restarting"), lost: i.flag("lost"),
 	}
 }
 
 func hostItem(h HostInfo, epoch, now int64) attrs {
 	i := hostKey(h.Pool, h.Host)
 	i["bootID"], i["bootEpoch"], i["shape"] = s(h.BootID), n(epoch), shapeItem(h.Shape)
+	i["memoryMiB"], i["freeMiB"] = n(int64(h.Shape.MemoryMiB)), n(int64(h.Shape.MemoryMiB))
 	i["slots"], i["free"] = n(int64(h.Slots)), n(int64(h.Slots))
 	i["lastSeenAt"], i["draining"], i["addr"] = n(now), b(h.Draining), s(h.Addr)
 	if len(h.Features) > 0 {
@@ -52,7 +58,7 @@ func hostItem(h HostInfo, epoch, now int64) attrs {
 }
 
 func (c *Controller) Register(ctx context.Context, h HostInfo) (int64, error) {
-	if h.Pool == "" || h.Host == "" || h.BootID == "" || h.Slots < 0 || strings.HasPrefix(h.Host, waitPrefix) {
+	if h.Pool == "" || h.Host == "" || h.BootID == "" || h.Slots < 0 || h.Shape.MemoryMiB < 0 || strings.HasPrefix(h.Host, waitPrefix) {
 		return 0, ErrInvalid
 	}
 	key := hostKey(h.Pool, h.Host)
@@ -66,7 +72,14 @@ func (c *Controller) Register(ctx context.Context, h HostInfo) (int64, error) {
 	}
 	current := readHost(i)
 	if current.BootID == h.BootID && !current.Restarting {
-		return current.BootEpoch, nil
+		if !i.flag("lost") {
+			return current.BootEpoch, nil
+		}
+		epoch := current.BootEpoch + 1
+		replacement := put(c.Tables.Hosts, hostItem(h, epoch, now),
+			"#bootEpoch = :epoch AND #lost = :true AND attribute_not_exists(#vms)")
+		replacement.Put.ExpressionAttributeValues = attrs{":epoch": n(current.BootEpoch), ":true": b(true)}
+		return epoch, c.transact(ctx, replacement)
 	}
 	epoch := current.BootEpoch
 	if current.BootID != h.BootID {
@@ -93,22 +106,28 @@ func (c *Controller) Register(ctx context.Context, h HostInfo) (int64, error) {
 }
 
 func (c *Controller) Heartbeat(ctx context.Context, pool, host string, bootEpoch int64, free int, at time.Time) error {
+	_, _, err := c.heartbeat(ctx, pool, host, bootEpoch, free, at)
+	return err
+}
+
+func (c *Controller) heartbeat(ctx context.Context, pool, host string, bootEpoch int64, free int, at time.Time) (Host, time.Time, error) {
 	key := hostKey(pool, host)
 	i, err := c.read(ctx, c.Tables.Hosts, key)
 	if err != nil {
-		return err
+		return Host{}, time.Time{}, err
 	}
 	h := readHost(i)
-	if h.BootEpoch != bootEpoch || h.Restarting {
-		return ErrHost
+	if h.BootEpoch != bootEpoch || h.Restarting || h.lost {
+		return Host{}, time.Time{}, ErrHost
 	}
-	if at.UnixMilli() <= h.LastSeenAt {
-		return nil
+	at = time.UnixMilli(max(h.LastSeenAt, min(at.UnixMilli(), c.now().UnixMilli())))
+	if at.UnixMilli() == h.LastSeenAt {
+		return h, at, nil
 	}
 	// The report can predate a placement. The durable reservations bound
 	// capacity even when the host has yet to receive those placements.
 	free = max(0, min(free, h.Slots-len(h.VMs)))
-	cond := "#bootEpoch = :epoch AND attribute_not_exists(#restarting) AND #lastSeenAt < :at"
+	cond := "#bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost) AND #lastSeenAt < :at"
 	values := attrs{":epoch": n(bootEpoch), ":at": n(at.UnixMilli()), ":free": n(int64(free))}
 	if len(h.VMs) == 0 {
 		cond += " AND attribute_not_exists(#vms)"
@@ -116,8 +135,21 @@ func (c *Controller) Heartbeat(ctx context.Context, pool, host string, bootEpoch
 		cond += " AND size(#vms) = :count"
 		values[":count"] = n(int64(len(h.VMs)))
 	}
-	_, err = c.update(ctx, change(c.Tables.Hosts, key, cond, "SET #lastSeenAt = :at, #free = :free", values))
-	return err
+	i, err = c.update(ctx, change(c.Tables.Hosts, key, cond, "SET #lastSeenAt = :at, #free = :free", values))
+	if errors.Is(err, ErrCondition) {
+		current, readErr := c.read(ctx, c.Tables.Hosts, key)
+		if readErr != nil {
+			return Host{}, time.Time{}, readErr
+		}
+		h := readHost(current)
+		if h.BootEpoch != bootEpoch || h.Restarting || h.lost {
+			return Host{}, time.Time{}, ErrHost
+		}
+	}
+	if err != nil {
+		return Host{}, time.Time{}, err
+	}
+	return readHost(i), at, nil
 }
 
 func (c *Controller) poolItems(ctx context.Context, pool string, waiting bool) ([]item, error) {

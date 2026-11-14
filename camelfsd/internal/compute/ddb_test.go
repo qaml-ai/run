@@ -92,6 +92,19 @@ func (f *fixture) checkHost(pool string, free int, ids ...string) {
 	if hosts[0].Free != free || !slices.Equal(hosts[0].VMs, ids) {
 		f.t.Fatalf("host free/set = %d/%v, want %d/%v", hosts[0].Free, hosts[0].VMs, free, ids)
 	}
+	f.checkMemory(hosts[0])
+}
+
+func (f *fixture) checkMemory(h Host) {
+	f.t.Helper()
+	want := h.MemoryMiB
+	for _, id := range h.VMs {
+		v := must[VM](f.t)(f.Get(f.t.Context(), id))
+		want -= v.Shape.MemoryMiB
+	}
+	if h.MemoryMiB != h.Shape.MemoryMiB || want < 0 || h.FreeMiB != want {
+		f.t.Fatalf("host %s memory total/free = %d/%d, want %d/%d", h.Host, h.MemoryMiB, h.FreeMiB, h.Shape.MemoryMiB, want)
+	}
 }
 
 func (f *fixture) assertOutcome(v VM, through int64) {
@@ -264,10 +277,12 @@ func TestDDBReplayAndCrashEveryWrite(t *testing.T) {
 func TestDDBPlacementConcurrency(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
-	f.register("many", "boot", 3)
+	f.register("many", "boot", 4)
 	f.register("same", "boot", 3)
 	for i := range 8 {
-		must[VM](t)(f.Create(ctx, f.request(fmt.Sprint(i), "many")))
+		req := f.request(fmt.Sprint(i), "many")
+		req.Shape.MemoryMiB = 3072 + i%2*1024
+		must[VM](t)(f.Create(ctx, req))
 	}
 	must[VM](t)(f.Create(ctx, f.request("same", "same")))
 	for _, same := range []bool{false, true} {
@@ -303,10 +318,10 @@ func TestDDBPlacementConcurrency(t *testing.T) {
 				placed = append(placed, v.ID)
 			}
 		}
-		if len(placed) != 3 {
+		if len(placed) != 2 {
 			t.Fatalf("placed: %v", placed)
 		}
-		f.checkHost("many", 0, placed...)
+		f.checkHost("many", 2, placed...)
 	}
 }
 
