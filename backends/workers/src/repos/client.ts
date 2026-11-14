@@ -1,3 +1,4 @@
+import type { AgentInvocation } from '../agent-invocation.ts';
 import { doWrite } from './do-write.ts';
 import type { RepoWrite, WriteResult } from './write-input.ts';
 import type { StoragePlane } from './storage.ts';
@@ -8,7 +9,7 @@ type RepoRpc<K extends keyof RepoDO> = RepoDO[K] extends (...args: infer A) => i
   ? (...args: A) => Promise<Awaited<R>> : never;
 
 export interface RepoClient {
-  write(input: RepoWrite): Promise<WriteResult>;
+  write(input: RepoWrite, invocation?: AgentInvocation): Promise<WriteResult>;
   info: RepoRpc<'info'>;
   refs: RepoRpc<'refs'>;
   ref: RepoRpc<'ref'>;
@@ -43,9 +44,9 @@ export class DoRepoClient implements RepoClient {
   private readonly tenant: string;
   private readonly repoId: string;
 
-  async write(input: RepoWrite) {
+  async write(input: RepoWrite, invocation?: AgentInvocation) {
     if (!this.context) throw new Error('Repo write context is required');
-    return doWrite({ ...this.context, env: this.env, tenant: this.tenant, repoId: this.repoId, repo: this }, input);
+    return doWrite({ ...this.context, env: this.env, tenant: this.tenant, repoId: this.repoId, repo: this }, input, invocation);
   }
 
   async info(...args: Parameters<RepoClient['info']>) { return this.stub.info(...args); }

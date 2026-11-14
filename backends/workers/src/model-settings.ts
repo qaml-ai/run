@@ -12,7 +12,8 @@ import { gatewayUrl } from "./model-gateway.ts";
 import { FETCH_APIS } from "./model-call-fetch.ts";
 import { streamTimeouts, watchedStream, isStalled, type Stall } from "./model-stream.ts";
 import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-options.ts";
-import { PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
+import type { AgentInvocation } from "./agent-invocation.ts";
+import { MODEL_INVOCATION, PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
 import { modelCallKind } from "./model-call-context.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
@@ -34,7 +35,8 @@ export type ModelHooks = {
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
-  credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
+  invocation?: () => AgentInvocation;
+  credentials?: (provider: string, invocation?: AgentInvocation) => Promise<ModelCredentials | undefined>;
   endpoints?: ModelEndpoints;
   customProviders?: CustomProviders;
 };
@@ -55,7 +57,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
   /** Gemini's refusals of another provider's reasoning, remembered for this agent's later Gemini calls (gemini-reasoning.ts). */
   const reasoning = new ReasoningDrop();
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
-  const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
+  const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}, invocation = hooks.invocation?.()) => {
     const callKind = modelCallKind(context);
     await hooks.beforeRequest?.();
     const config = await hooks.settings?.() ?? {};
@@ -72,7 +74,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       }
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
-    const credential = await hooks.credentials?.(model.provider);
+    const credential = await hooks.credentials?.(model.provider, invocation);
     if (hooks.credentials && !credential && config.keyScope)
       throw new Error(`No ${model.provider} API key is configured for key scope ${config.keyScope} or this tenant; set one with PUT /v1/key-scopes/${config.keyScope}/providers/${model.provider}`);
     if (credential?.baseUrl) {
@@ -85,7 +87,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       if (FETCH_APIS.includes(model.api) && catalog) model = { ...model, baseUrl: catalog.baseUrl };
     }
     let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
-    if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider))?.apiKey)) fallback = undefined;
+    if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider, invocation))?.apiKey)) fallback = undefined;
     const virtualNext = config.model?.startsWith("camelrun/") ? routeModel(resolveModel(config.model), { reason: "retry", failed: model }) : undefined;
     const structured = callKind === "compaction" ? { context, toolChoice: undefined } : outputRequest.prepare(model, context, config);
     const { toolChoice } = structured;
@@ -121,6 +123,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       [PREPARED_MODEL_CREDENTIALS]: credential,
       modelCallKind: callKind,
       ...options,
+      [MODEL_INVOCATION]: invocation,
       ...(model.api === "openai-codex-responses" ? { sessionId: await hooks.agentId?.() ?? options.sessionId } : {}), ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(reasoning ? { reasoning } : {}),
       ...(fallback || virtualNext ? { supersede: (message: AssistantMessage) => fallback && isContentFilterBlock(message) ? "content_filter" as const : virtualNext && !message.content.length && isModelUnavailable(message) ? "unavailable" as const : undefined } : {}),

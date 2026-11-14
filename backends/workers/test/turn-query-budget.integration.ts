@@ -81,6 +81,9 @@ test("a turn's Postgres statements stay under the budget", { timeout: 180_000 },
     breakdowns[name] = statements;
   }
   t.diagnostic(`statements per turn: ${JSON.stringify(counts)}`);
+  for (const [name, statements] of Object.entries(breakdowns))
+    t.diagnostic(`${name} billing reads: ${JSON.stringify(Object.fromEntries(Object.entries(statements)
+      .filter(([category]) => / select:[^ ]*\b(?:tenants|credit_accounts)\b/.test(category))))}`);
   for (const name of Object.keys(CEILINGS) as (keyof typeof CEILINGS)[])
     assert.ok(counts[name] <= CEILINGS[name],
       `${name} turn ran ${counts[name]} statements, over its budget of ${CEILINGS[name]}:\n${JSON.stringify(Object.entries(breakdowns[name]).sort((a, b) => b[1] - a[1]), null, 1)}`);

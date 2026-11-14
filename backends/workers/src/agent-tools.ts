@@ -194,7 +194,8 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
           },
         };
       },
-      credentials: async (provider) => {
+      invocation: () => this.invocation(),
+      credentials: async (provider, invocation = this.invocation()) => {
         const conf = await this.config();
         return resolveModelCredentials(
           this.env,
@@ -202,6 +203,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
           provider,
           await this.sourceIdentity(),
           conf.config.keyScope,
+          invocation,
         );
       },
     },
@@ -353,6 +355,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
                   this.fileVersions,
                   { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
                   scope,
+                  this.invocation(),
                 )[index];
                 return await impl.execute(args as never, api, context);
               } finally {

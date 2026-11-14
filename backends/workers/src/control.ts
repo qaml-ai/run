@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { applying, prepareApply } from "../../../shared/apply-scope.ts";
 import { forgetAgentDreaming } from "../../../shared/dreaming.ts";
 import { disableAgentTriggers } from "../../../src/triggers.ts";
@@ -503,6 +504,7 @@ export async function settleTurn(
     METRICS?: AnalyticsEngineDataset;
   },
   receipt: TurnReceipt,
+  invocation?: AgentInvocation,
 ): Promise<{ duplicate: boolean }> {
   if (
     !Number.isSafeInteger(receipt.costMicros) ||
@@ -529,7 +531,7 @@ export async function settleTurn(
     ),
     key = `workers:receipt:${id}`;
   const { accounts: { billing } } = await keyServices(env);
-  const prepaid = await billing.mode(receipt.tenantId) === "prepaid";
+  const prepaid = await billing.mode(receipt.tenantId, undefined, invocation?.tenant(billing, receipt.tenantId)) === "prepaid";
   const result = await transaction(env, async (sql) => {
     // Admin tenants can run on their own keys without a prepaid account row.
     // Serialize all of their receipts too, without manufacturing a credit balance.

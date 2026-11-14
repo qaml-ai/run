@@ -1,6 +1,8 @@
 import { BashSessions } from "./camelfs/bash.ts";
 import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { AgentInvocation } from "./agent-invocation.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
 import { SharedAgents } from "../../../src/shared-agents.ts";
@@ -82,6 +84,17 @@ export class AgentRuntime extends AgentContext {
   }
 
   readonly repoTrees = new RepoTreeCache(this.ctx.storage);
+  // Pi and Lifecycle invoke long-lived callbacks without an invocation parameter.
+  // Keep their context isolated at the DO boundary, then pass policy reads explicitly.
+  private readonly invocations = new AsyncLocalStorage<AgentInvocation>();
+
+  invoke<T>(action: () => T): T {
+    return this.invocations.run(new AgentInvocation(), action);
+  }
+
+  invocation(): AgentInvocation {
+    return this.invocations.getStore() ?? new AgentInvocation();
+  }
 
   readonly sharedAgents = new SharedAgents(database(this.env));
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");

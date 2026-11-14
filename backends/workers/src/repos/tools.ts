@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import { repoHistory } from './history.ts';
 import { RE2JS } from "re2js";
 import { Buffer } from "node:buffer";
@@ -26,6 +27,7 @@ function actualRepoTools(
   seen?: FileVersions,
   identity: Record<string,string> = {},
   scope?: RepoTreeScope,
+  invocation?: AgentInvocation,
 ) {
   const target = async (raw: string, write = false) => {
     const mounts = await getMounts();
@@ -42,7 +44,7 @@ function actualRepoTools(
       throw new FileError("Mount is read-only", 403);
     const base = mount.subpath ?? "/";
     return {
-      v: await agentStore(env, tenant, mount.repo, mount.ref ?? "main", agentId, identity, scope),
+      v: await agentStore(env, tenant, mount.repo, mount.ref ?? "main", agentId, identity, scope, invocation),
       path: normalizePath(base + "/" + path.slice(mount.path.length)),
       mount,
       show: (p: string) =>
@@ -360,7 +362,7 @@ function actualRepoTools(
         },
       }),
     ),
-    ...versionTools(target, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity),
+    ...versionTools(target, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity, invocation),
   ];
 }
 function versionTools(
@@ -369,6 +371,7 @@ function versionTools(
   output: (value: unknown) => { output: {type: 'text'; text: string}[] },
   agent: string,
   identity: Record<string,string>,
+  invocation?: AgentInvocation,
 ) {
   const resolve = async (t: Awaited<ReturnType<typeof target>>, value: string) => {
     if (!/^[a-f0-9]{7,40}$/.test(value)) throw new FileError('Version must be an id or unique prefix of at least 7 hex characters');
@@ -392,7 +395,7 @@ function versionTools(
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
-      const result = await setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}});
+      const result = await setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}, invocation);
       t.v.moved(result);
       return output(result.version);
     }}),

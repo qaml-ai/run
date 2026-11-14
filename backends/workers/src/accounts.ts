@@ -7,7 +7,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { transaction, type Db, type Sql } from "./postgres.ts";
 import type { Tenants } from "./tenants.ts";
 import type { UsageRecord } from "./money-host.ts";
-import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
+import { accrueUsage, Billing, type BillingReads, type UsageCharge } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "../../../src/pricing.ts";
 import type { Stripe } from "./stripe.ts";
 import type { AzureOpenAI } from "./security-host.ts";
@@ -269,23 +269,23 @@ export class Accounts {
   }
 
   /** Whether the tenant's agents may fall back to the platform's keys: an admin tenant's entry says (Tenants.usesPlatformKeys), a self-serve tenant if prepaid. */
-  private async usesPlatformKeys(tenant: string) {
-    return this.tenants.usesPlatformKeys(tenant) ?? (await this.billing.mode(tenant) === "prepaid");
+  private async usesPlatformKeys(tenant: string, reads?: BillingReads) {
+    return this.tenants.usesPlatformKeys(tenant) ?? (await this.billing.mode(tenant, undefined, reads) === "prepaid");
   }
 
   /**
    * The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid or an
    * admin tenant (`usesPlatformKeys`), the platform's. The tenant's own amazon-bedrock key comes with its `region`.
    */
-  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource; region?: string; bearer?: true } | undefined> {
+  async providerKey(tenant: string, provider: string, reads?: BillingReads): Promise<{ key: string; source: KeySource; region?: string; bearer?: true } | undefined> {
     // Azure's models are the platform's only: a key alone would not reach a deployment.
-    if (provider === AZURE) { const key = this.platformKey(provider); return key && await this.usesPlatformKeys(tenant) ? { key, source: "platform" } : undefined; }
+    if (provider === AZURE) { const key = this.platformKey(provider); return key && await this.usesPlatformKeys(tenant, reads) ? { key, source: "platform" } : undefined; }
     const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed, region from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
     if (stored) return { key: this.unseal(`${tenant}:${provider}`, stored.sealed), source: "tenant", ...(stored.region ? { region: stored.region } : {}) };
     const admin = this.tenants.apiKey(tenant, provider);
     if (admin) return { key: admin, source: "admin" };
     const platform = this.platformKey(provider);
-    if ((platform || (provider === "anthropic" && this.anthropicFederation)) && await this.usesPlatformKeys(tenant)) {
+    if ((platform || (provider === "anthropic" && this.anthropicFederation)) && await this.usesPlatformKeys(tenant, reads)) {
       if (provider === "anthropic" && this.anthropicFederation) {
         const { apiKey, ...auth } = await this.anthropicFederation.credentials(platform);
         return { key: apiKey, source: "platform", ...auth };
@@ -665,11 +665,11 @@ export class Accounts {
   }
 
   /** Why the tenant may not start or continue model work: a reached monthly cap (a message, for 402), or spent or rate-limited prepaid credit. */
-  async runLimit(tenant: string): Promise<string | HttpError | undefined> {
+  async runLimit(tenant: string, reads?: BillingReads): Promise<string | HttpError | undefined> {
     // A response already paid from durable storage counts before admitting
     // another model step, even if the periodic accounting flush has not run.
     if (this.flushedDurableUsageVersion !== this.durableUsageVersion) await this.flushUsage();
-    return await this.spendLimit(tenant) ?? await this.billing.creditLimit(tenant);
+    return await this.spendLimit(tenant) ?? await this.billing.creditLimit(tenant, reads);
   }
 
   /** Usage since `since`, summed per UTC day and model. */

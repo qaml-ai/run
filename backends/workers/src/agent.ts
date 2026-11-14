@@ -17,10 +17,12 @@ export class CamelAgent extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // After the runtime's lifecycle installed its alarm handler on this instance (field initializers run first).
+    const alarm = (this as unknown as { alarm: (...args: unknown[]) => Promise<void> }).alarm.bind(this);
+    Object.defineProperty(this, "alarm", { configurable: true, value: (...args: unknown[]) => this.#runtime.invoke(() => alarm(...args)) });
     guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
   }
 
-  removeMember(member: string) { return this.#runtime.removeMember(member); }
+  removeMember(member: string) { return this.#runtime.invoke(() => this.#runtime.removeMember(member)); }
 
   /** Binding-only pilot counters; no runtime state, SQL or values are exposed. */
   databaseProfile(reset = false) {
@@ -38,7 +40,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   purgeAccountData(tenant: string, id: string) {
-    return this.#runtime.purgeAccountData(tenant, id);
+    return this.#runtime.invoke(() => this.#runtime.purgeAccountData(tenant, id));
   }
 
   admitDelegateWake(id: string): Promise<WakeDecision> {
@@ -49,7 +51,7 @@ export class CamelAgent extends DurableObject<Env> {
     request: NoticeRequest,
     notice: RuntimeNotice,
   ): Promise<unknown> {
-    return this.#runtime.receiveAgentMessage(request, notice);
+    return this.#runtime.invoke(() => this.#runtime.receiveAgentMessage(request, notice));
   }
 
   /** A child's progress report, delivered by the child's outbox (binding-only). */
@@ -59,12 +61,12 @@ export class CamelAgent extends DurableObject<Env> {
 
   /** A child's ending, delivered by the child's outbox until this answers (binding-only). */
   receiveEnding(ending: ChildEnding): Promise<Receipt> {
-    return this.#runtime.receiveEnding(ending);
+    return this.#runtime.invoke(() => this.#runtime.receiveEnding(ending));
   }
 
   /** A child run its owner starts, with its placement in the chain (binding-only). */
   admitDelegated(request: unknown, placement: Placement) {
-    return this.#runtime.admitDelegated(request, placement);
+    return this.#runtime.invoke(() => this.#runtime.admitDelegated(request, placement));
   }
 
   hasChild(id: string): Promise<boolean> {
@@ -72,11 +74,11 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   cancelRequest(id: string) {
-    return this.#runtime.cancelRequest(id);
+    return this.#runtime.invoke(() => this.#runtime.cancelRequest(id));
   }
 
   fetch(request: Request): Promise<Response> {
-    return this.#runtime.fetch(request);
+    return this.#runtime.invoke(() => this.#runtime.fetch(request));
   }
 
   onStart() {
@@ -88,7 +90,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) {
-    return this.#runtime.webSocketMessage(socket, _data);
+    return this.#runtime.invoke(() => this.#runtime.webSocketMessage(socket, _data));
   }
 
   webSocketClose(socket: WebSocket, code: number) {

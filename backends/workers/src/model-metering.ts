@@ -10,7 +10,9 @@ import { modelSpendLimit } from './agent-spend.ts';
 import { billingRunStop, creditRunStop, type BillingRunStop } from './billing-run-stop.ts';
 import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
-import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
+import type { Account } from './billing.ts';
+import type { AgentInvocation } from './agent-invocation.ts';
+import { MODEL_INVOCATION, PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 import { accountingModel, modelCallKind } from './model-call-context.ts';
 import { logUntrustedModelUsage } from './model-usage-log.ts';
 
@@ -49,9 +51,13 @@ export function meterProvider<P extends Provider<any>>(
     void profile(async () => {
       const identity = await context();
       const service = await modelAttempts(env);
+      const invocation: AgentInvocation | undefined = options[MODEL_INVOCATION];
+      const billing = service.accounts.billing;
+      let balance: Promise<Account> | undefined;
+      const reads = { ...invocation?.tenant(billing, identity.tenant), account: () => balance ??= billing.readAccount(identity.tenant) };
       const credentials = Object.hasOwn(options, PREPARED_MODEL_CREDENTIALS)
         ? options[PREPARED_MODEL_CREDENTIALS]
-        : await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope);
+        : await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope, reads);
       // withSettings has already prepared provider-specific request auth. Its
       // sentinels keep anonymous endpoints valid and bearer keys out of Pi's
       // API-key/OAuth heuristics; accounting still fingerprints the real key.
@@ -66,7 +72,7 @@ export function meterProvider<P extends Provider<any>>(
         // Keep its source URL intact: changing it here would rebase twice.
         if ('baseUrl' in credentials && credentials.baseUrl && !FETCH_APIS.includes(model.api)) model = { ...model, baseUrl: credentials.baseUrl };
       }
-      let limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
+      let limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant, reads);
       if (!limit && identity.subject && model.api !== "openai-codex-responses") {
         const refused = await new EndUserCredits(service.db).refusal(identity.tenant, identity.subject, identity.bucket ?? 'default');
         if (refused) limit = creditError(refused);
@@ -79,7 +85,7 @@ export function meterProvider<P extends Provider<any>>(
         throw typeof limit === 'string' ? new Error(limit) : limit;
       }
       const platform = options.endpointIdentity ? false : credentials ? credentials.platform : identity.platform !== false;
-      const catalogPriced = await service.accounts.billing.mode(identity.tenant) === "prepaid";
+      const catalogPriced = await billing.mode(identity.tenant, undefined, reads) === "prepaid";
       // Provider generation observations, renewal and settlement share the same
       // mutable holds. Finish must follow every preceding accounting write.
       let pending: Promise<unknown> = Promise.resolve();
@@ -98,7 +104,7 @@ export function meterProvider<P extends Provider<any>>(
               } } : {}) },
             ...(identity.subject ? { endUser: { id: identity.subject, bucket: identity.bucket ?? 'default' } } : {}),
           } : event;
-          const answer = await dbPhase(event.type === "begin" ? "hold" : event.type === "progress" ? "renew" : "other", () => service.event(identity.tenant, identity.agent, platform, catalogPriced, attributed));
+          const answer = await dbPhase(event.type === "begin" ? "hold" : event.type === "progress" ? "renew" : "other", () => service.event(identity.tenant, identity.agent, platform, catalogPriced, attributed, catalogPriced));
           return answer;
         });
         pending = next.catch(() => {});

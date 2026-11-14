@@ -1,4 +1,5 @@
 import { notifyRepoWatchers } from './notify.ts';
+import type { AgentInvocation } from '../agent-invocation.ts';
 import { keyServices } from '../security-services.ts';
 import { RepoError, check, normalizeRepoPath, repoErrorFrom, type Entry, type Mode, type Fence, type Version } from './repo-policy.ts';
 import { repoContext, type RepoContext } from './registry.ts';
@@ -43,22 +44,23 @@ export async function reportUsage(ctx: RepoContext, info?: { bytes: number; file
   await Promise.resolve(ctx.env.TENANTS.getByName(ctx.tenant).repoUsage(ctx.repoId, info.bytes, info.files, ctx.repo instanceof HttpRepoClient))
     .catch(error => console.error('repo usage update failed', String(error)));
 }
-export async function tierQuota(ctx: RepoContext): Promise<RepoQuota | undefined> {
+export async function tierQuota(ctx: RepoContext, invocation?: AgentInvocation): Promise<RepoQuota | undefined> {
   const [limitBytes, otherBytes] = await Promise.all([
-    keyServices(ctx.env).then(({ accounts }) => accounts.billing.storageLimit(ctx.tenant)),
+    keyServices(ctx.env).then(({ accounts }) => accounts.billing.storageLimit(ctx.tenant, invocation?.tenant(accounts.billing, ctx.tenant))),
     ctx.env.TENANTS.getByName(ctx.tenant).reposUsed(ctx.lineage),
   ]);
   return limitBytes === undefined ? undefined : { limitBytes, otherBytes };
 }
-export async function quota(ctx: RepoContext, bytes: number) {
+export async function quota(ctx: RepoContext, bytes: number, invocation?: AgentInvocation) {
   const { accounts } = await keyServices(ctx.env);
-  const limit = await accounts.billing.storageLimit(ctx.tenant);
+  const reads = invocation?.tenant(accounts.billing, ctx.tenant);
+  const limit = await accounts.billing.storageLimit(ctx.tenant, reads);
   if (limit !== undefined && await ctx.env.TENANTS.getByName(ctx.tenant).reposUsed() + bytes > limit)
     throw new RepoError('storage_limit', 507, 'storage_limit', { limit });
 }
 /** RepoDO accounts for each blob once across all heads. */
 export const addedBytes = (ctx: RepoContext, incoming: Entry[]) => ctx.repo.unseenBytes(incoming.map(({ blob, size }) => ({ blob, size })));
-export async function commitChanges(ctx: RepoContext, input: WriteInput) {
+export async function commitChanges(ctx: RepoContext, input: WriteInput, invocation?: AgentInvocation) {
   check(input.changes && typeof input.changes === 'object' && !Array.isArray(input.changes));
   const changes = Object.entries(input.changes);
   check(changes.length <= 1000, 'too_many_paths');
@@ -124,10 +126,10 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
   const result = await ctx.repo.write({
     ref: input.ref, expect: input.expect, changes: edits, author: input.author, message: input.message,
     time: Math.floor(Date.now() / 1000), trailers: { ...input.trailers, 'Camel-Op': input.op },
-    quota: ctx.repo instanceof HttpRepoClient ? await tierQuota(ctx) : undefined,
+    quota: ctx.repo instanceof HttpRepoClient ? await tierQuota(ctx, invocation) : undefined,
     idempotencyKey: input.idempotencyKey,
     legacy: { who: input.who, why: input.why, fence: input.fence, allowEmpty: input.allowEmpty, pathExpect: expectations, sizes },
-  });
+  }, invocation);
   if (result.moved) {
     await reportUsage(ctx, result);
     await notifyRepoWatchers(ctx, input.ref, result, result.changed, input.author);
@@ -146,7 +148,7 @@ export async function setRefToVersion(ctx: RepoContext, input: {
   newCommit: boolean;
   op?: 'restore' | 'turn';
   trailers?: Record<string, string>;
-}) {
+}, invocation?: AgentInvocation) {
   for (let attempt = 0;; attempt++) {
     const head = await ctx.repo.ref(input.ref), current = head?.version ?? null;
     if (input.expect !== undefined && input.expect !== current)
@@ -159,7 +161,7 @@ export async function setRefToVersion(ctx: RepoContext, input: {
         await ctx.repo.createRef({ name: input.ref, from: { version: target.version }, who: input.who, why: input.why });
         return { version: target.version, tree: target.tree, previous: null, watchers: [] as string[], changed: true };
       }
-      const quota = await tierQuota(ctx);
+      const quota = await tierQuota(ctx, invocation);
       const restored = input.newCommit
         ? await ctx.repo.restore(input.ref, {
           version: input.version, quota, author: input.author, time: Math.floor(Date.now() / 1000),
@@ -171,7 +173,7 @@ export async function setRefToVersion(ctx: RepoContext, input: {
       return { version: restored.version, tree: restored.tree, previous: current, watchers: [] as string[], changed: current !== restored.version };
     }
     const entries = await versionEntries(ctx, target.tree);
-    await quota(ctx, await addedBytes(ctx, entries));
+    await quota(ctx, await addedBytes(ctx, entries), invocation);
     let commit: Version = target;
     if (input.newCommit) {
       const parents = input.parents ?? (current ? [current] : []), message = input.message ?? `restore ${input.version.slice(0, 12)}`, trailers = { ...(input.trailers ?? { 'Camel-User': input.author, 'Camel-Checkpoint': 'api' }), 'Camel-Op': input.op ?? 'restore' };
