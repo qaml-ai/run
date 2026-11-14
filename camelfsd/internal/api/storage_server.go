@@ -53,7 +53,8 @@ func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineag
 
 func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/v0/health":
+	// /v1/health is the target-group probe; /v0/health stays until the probes move (expand/contract).
+	case r.Method == http.MethodGet && (r.URL.Path == "/v1/health" || r.URL.Path == "/v0/health"):
 		jsonReply(w, http.StatusOK, map[string]string{"version": s.version})
 	case r.Method == http.MethodGet && r.URL.Path == "/v0/stats":
 		r = s.authorize(w, r)
