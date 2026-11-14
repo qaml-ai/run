@@ -166,7 +166,7 @@ export class HostAgent {
         if (!this.options.launcher.mountsRepo) throw new Error("This host cannot attach a camelFS repo disk yet");
         // A failed request may still have created a lease in the daemon.
         mountAttempted = true;
-        mounted = await this.options.camelfsd.mount({ jobId: id, lineage: spec.camelfs.lineage, tree: spec.camelfs.tree, ...(spec.camelfs.fence ? { fence: spec.camelfs.fence } : {}), vsock: this.options.launcher.vsockPath?.(id) ?? "" });
+        mounted = await this.options.camelfsd.mount({ jobId: id, lineage: spec.camelfs.lineage, tree: spec.camelfs.tree, parent: spec.camelfs.parent, ...(spec.camelfs.fence ? { fence: spec.camelfs.fence } : {}), vsock: this.options.launcher.vsockPath?.(id) ?? "" });
         heartbeatTimer = setInterval(() => {
           if (heartbeat) return;
           heartbeat = Promise.resolve().then(() => this.options.camelfsd!.heartbeat?.(id))

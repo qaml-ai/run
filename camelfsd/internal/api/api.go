@@ -64,6 +64,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.DisallowUnknownFields()
 		if e := d.Decode(v); e != nil {
+			var typed *apierr.Error
+			if errors.As(e, &typed) {
+				return e
+			}
 			return apierr.Invalid("invalid JSON: %w", e)
 		}
 		var extra any

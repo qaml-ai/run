@@ -253,15 +253,15 @@ Examples use S=/run/camelfsd/api.sock.
 
 ```sh
 curl --unix-socket "$S" http://localhost/v0/health
-curl --unix-socket "$S" -d "{\"jobId\":\"j1\",\"lineage\":\"test\",\"tree\":\"$T\",\"fence\":{\"holder\":\"runtime\",\"epoch\":1},\"vsock\":\"/run/job.vsock\"}" http://localhost/v0/mounts
+curl --unix-socket "$S" -d "{\"jobId\":\"j1\",\"lineage\":\"test\",\"tree\":\"$T\",\"parent\":\"$P\",\"fence\":{\"holder\":\"runtime\",\"epoch\":1},\"vsock\":\"/run/job.vsock\"}" http://localhost/v0/mounts
 curl --unix-socket "$S" http://localhost/v0/mounts/j1
 curl --unix-socket "$S" -d '{"timeoutMs":120000,"message":"checkpoint","trailers":{"kind":"manual"}}' http://localhost/v0/mounts/j1/checkpoint
 curl --unix-socket "$S" -X DELETE http://localhost/v0/mounts/j1
 curl --unix-socket "$S" -d "{\"lineage\":\"test\",\"path\":\"/nvme/base.img\",\"tree\":\"$T\"}" http://localhost/v0/images
 ```
 
-Mount accepts exactly one of tree or root. fence is stored and echoed in
-status. Explicit null makes the image read-only and checkpoint returns
+Mount accepts exactly one of tree or root. An explicit fence requires parent, the 40-hex base commit ID. The CLI flag is `--parent`.
+The fence is stored and echoed in status. Explicit null makes the image read-only and checkpoint returns
 409 no_fence. A missing fence enables phase-1 compatibility, removed with
 jobhost phase 2: the daemon synthesizes {holder: "<hostId>/<jobId>", epoch: 0},
 logs op=mount legacy-fence jobId=... count=N, and permits checkpoints. The

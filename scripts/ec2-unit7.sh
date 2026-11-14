@@ -39,7 +39,7 @@ try:
         (pathlib.Path(data)/'images'/f'{root}.img').unlink()
         job=f'unit7-{label}-{gib}'
         start=time.perf_counter()
-        v=api('POST','mounts',{'jobId':job,'lineage':'unit7','root':root,'hydrate':False,'fence':{'holder':'reviewer','epoch':1}})
+        v=api('POST','mounts',{'jobId':job,'lineage':'unit7','root':root,'hydrate':False,'parent':'a'*40,'fence':{'holder':'reviewer','epoch':1}})
         mounted=False
         try:
             first_ms=None

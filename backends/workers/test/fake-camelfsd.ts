@@ -319,9 +319,18 @@ export function fakeCamelfsd(token: string) {
     try { return await handle(request); }
     catch (e) { if (e instanceof Fault) return json({ error: { code: e.code, message: e.message, ...(e.details === undefined ? {} : { details: e.details }) } }, e.status); throw e; }
   }
-  return { fetch, blobs, trees, commits, calls };
+  async function checkpoint(mount: { lineage: string; tree: string; parent?: string }, jobId: string) {
+    tree(mount.lineage, mount.tree, true);
+    const parents = mount.parent ? [mount.parent] : [];
+    const author = `job:${jobId}`, at = Date.now(), message = "job checkpoint";
+    const object = await commitObject({ tree: mount.tree, parents, author, at, message, trailers: {} });
+    commits.set(object.id, object.bytes);
+    scope(mount.lineage).commits.add(object.id);
+    return { commit: object.id, tree: mount.tree, root: "a".repeat(64), warm: true, mountMs: 0, applyMs: 0 };
+  }
+  return { fetch, blobs, trees, commits, calls, checkpoint };
 }
-export async function serveFakeCamelfsd(token: string): Promise<{ url: string; close: () => Promise<void> }> {
+export async function serveFakeCamelfsd(token: string) {
   const fake = fakeCamelfsd(token);
   const server = createServer(async (req, res) => {
     try {
@@ -333,5 +342,5 @@ export async function serveFakeCamelfsd(token: string): Promise<{ url: string; c
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("missing server address");
-  return { url: `http://127.0.0.1:${address.port}`, close: () => new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve())) };
+  return { url: `http://127.0.0.1:${address.port}`, checkpoint: fake.checkpoint, close: () => new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve())) };
 }
