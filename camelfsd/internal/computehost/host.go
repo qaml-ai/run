@@ -615,7 +615,7 @@ func (h *Host) lookup(id string) (*session, *vmhost.VM, error) {
 	defer h.mu.Unlock()
 	s := h.vms[id]
 	if s == nil || s.row.Ended != nil {
-		return nil, nil, &httpError{404, "vm_unknown"}
+		return nil, nil, &httpError{404, "vm_unknown", ""}
 	}
 	if s.vm == nil || s.row.StartedAt == nil || s.row.Stop != nil || s.row.Spec.Lease.Holder.Boot != h.epoch {
 		return nil, nil, conflict("vm_not_running")

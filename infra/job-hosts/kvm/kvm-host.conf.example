@@ -9,12 +9,13 @@ RUNTIME_URL=
 ATTESTOR=aws
 # Scheduling pool for the TypeScript jobhost and the Go compute host: test or build.
 POOL=test
-# Maximum concurrent jobs or sessions per host process.
-SLOTS=1
-# Advertised total host CPU capacity, not a per-guest allocation.
-JOB_VCPUS=2
-# Advertised total host memory capacity in MiB, not a per-guest allocation.
-JOB_MEMORY_MIB=2048
+# Maximum concurrent session VMs on this host.
+SLOTS=2
+# The host's advertised capacity for session VMs: the tier places a VM only on a host whose total shape fits it,
+# and the runtime asks for up to 4096 MiB per session. Size these from the instance, leaving ~4 GiB of memory for the
+# host itself (camelfsd, Firecracker, page cache). m8id.xlarge (4 vCPU, 16 GiB): 4 / 12288 / 2 slots.
+JOB_VCPUS=4
+JOB_MEMORY_MIB=12288
 # camelfsd's runtime API (bearer from /etc/camel/camelfs-api.env), on host loopback; the tunnel points here.
 CAMELFS_API_PORT=8790
 # Daemon object store URL (required; replace both placeholders).

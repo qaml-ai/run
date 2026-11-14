@@ -396,9 +396,10 @@ jobs:
           tests=(tests/jobhost.test.ts tests/jobhost-camelfs*.test.ts tests/jobhost-host.test.ts)
           env -u CAMEL_GUEST_BIN node --experimental-strip-types --disable-warning=ExperimentalWarning --test "${tests[@]}"
           CAMEL_GUEST_BIN="$RUNNER_TEMP/camelfsd-guest" node --experimental-strip-types --disable-warning=ExperimentalWarning --test "${tests[@]}"
+  # Pull requests only: camelfs/files-model pushes build and publish in guest-image.yml, which is never cancelled.
   guest-image:
     needs: changes
-    if: needs.changes.outputs.guest_image == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.guest_image == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -422,32 +423,12 @@ jobs:
           path: ${{ runner.temp }}/guest-image/guest-*
           if-no-files-found: error
           compression-level: 0
-  publish-guest-image:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/camelfs/files-model'
-    needs: guest-image
-    environment: production
-    permissions:
-      contents: read
-      id-token: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: guest-image
-          path: ${{ runner.temp }}/guest-image
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: arn:aws:iam::904534089871:role/camelfs-prod-guest-image-publisher
-          aws-region: us-west-2
-      - run: camelfsd/scripts/publish-guest-image.sh "$RUNNER_TEMP/guest-image" s3://camelfs-prod-904534089871
   ci:
     name: CI success
     timeout-minutes: 5
     # Always report a result on ready PRs, including when a dependency failed or was cancelled.
     if: always() && needs.changes.outputs.draft != 'true'
-    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs, camelfsd, guest-image, publish-guest-image]
+    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs, camelfsd, guest-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read

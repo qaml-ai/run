@@ -4,14 +4,17 @@ package hostcert
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
 	"errors"
+	"net/url"
 	"slices"
 	"time"
 )
@@ -23,6 +26,20 @@ type Issuer interface {
 	Issue(ctx context.Context, csrDER []byte, sanURI string, validity time.Duration, serverAndClient bool) (certPEM, chainPEM string, notAfter time.Time, err error)
 	CACertificate(ctx context.Context) (caPEM string, err error)
 }
+
+// NewCSR is the one way a tier or host certificate request is made: the URI SAN, and a subject (CN = the URI).
+// AWS Private CA refuses a CSR with an empty subject unless its SAN extension is critical (RFC 5280 §4.2.1.6), and
+// Go's x509.CreateCertificateRequest never marks the SAN critical, so a subject is required. Peers check only the SAN.
+func NewCSR(key crypto.Signer, uri string) ([]byte, error) {
+	u, err := url.Parse(uri)
+	if err != nil || len(uri) > 64 {
+		return nil, errors.New("CSR URI must parse and fit a 64-character common name")
+	}
+	return x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: uri}, URIs: []*url.URL{u}}, key)
+}
+
+// emptySubject is the DER of an empty Name (an empty SEQUENCE).
+var emptySubject = []byte{0x30, 0x00}
 
 func DecodeCSR(raw, uri string) ([]byte, error) {
 	data := bytes.TrimSpace([]byte(raw))
@@ -82,6 +99,10 @@ func CheckCSR(der []byte, uri string) error {
 	}
 	if requests != 1 || len(csr.Extensions) != 1 {
 		return errors.New("CSR must request only the SAN extension")
+	}
+	// Private CA's rule (MalformedCSRException): an empty subject needs a critical SAN.
+	if bytes.Equal(csr.RawSubject, emptySubject) && !csr.Extensions[0].Critical {
+		return errors.New("CSR must mark the SAN extension critical when it has an empty subject")
 	}
 	return checkSAN(csr.Extensions, uri)
 }

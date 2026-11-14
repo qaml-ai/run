@@ -1,0 +1,73 @@
+name: Guest image
+# Builds and publishes the guest image for every camelfs/files-model push that touches a guest input
+# (camelfsd/scripts/guest-inputs.txt). Its own workflow, one run per commit and never cancelled: in ci.yml a newer
+# push cancels the running CI, and a cancelled publish was lost for good (the next push's range had no guest inputs).
+on:
+  push: { branches: [camelfs/files-model] }
+permissions:
+  contents: read
+concurrency:
+  group: guest-image-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      guest_image: ${{ steps.changed.outputs.guest_image }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: changed
+        run: |
+          if scripts/guest-image-changed.sh "${{ github.event.before }}" "$GITHUB_SHA"; then
+            echo guest_image=true >> "$GITHUB_OUTPUT"
+          else
+            echo guest_image=false >> "$GITHUB_OUTPUT"
+          fi
+  build:
+    needs: changed
+    if: needs.changed.outputs.guest_image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: camelfsd/go.mod, cache: false }
+      - name: Build the AL2023 guest rootfs
+        run: |
+          mkdir -p "$RUNNER_TEMP/guest-image"
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/src:ro" -v "$(go env GOROOT):/opt/go:ro" \
+            -v "$RUNNER_TEMP/guest-image:/out" -w /src amazonlinux:2023@sha256:3ccfbe800f864982b0a4e124a614b2382518cbd04b3c1cd35202bd46f392675b bash -euc '
+              dnf -y -q install git gcc e2fsprogs jq zstd findutils
+              git config --global --add safe.directory /src
+              export PATH="/opt/go/bin:$PATH"
+              camelfsd/scripts/build-guest-image.sh /out
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-image
+          path: ${{ runner.temp }}/guest-image/guest-*
+          if-no-files-found: error
+          compression-level: 0
+  publish:
+    needs: build
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest-image
+          path: ${{ runner.temp }}/guest-image
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::904534089871:role/camelfs-prod-guest-image-publisher
+          aws-region: us-west-2
+      - run: camelfsd/scripts/publish-guest-image.sh "$RUNNER_TEMP/guest-image" s3://camelfs-prod-904534089871
