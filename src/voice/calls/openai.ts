@@ -1,4 +1,5 @@
 import { closeDetail, messageJson, openSocket, redactDetail, wsBase, type SocketFactory } from "../../voice-providers/socket.ts";
+import { fetchWithoutRedirects } from "../../core/no-redirect.ts";
 import { NO_USAGE, type RealtimeTool, type RealtimeUsage } from "../realtime/provider.ts";
 
 export type OpenAICallsOptions = { baseUrl?: string; socket?: SocketFactory; fetch?: typeof fetch };
@@ -35,8 +36,8 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
   const send = options.fetch ?? fetch;
   const dial = options.socket ?? openSocket;
   const hangup = async (id: string, apiKey: string) => {
-    const response = await send(`${base}/realtime/calls/${encodeURIComponent(id)}/hangup`, {
-      method: "POST", headers: auth(apiKey), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error",
+    const response = await fetchWithoutRedirects(send, `${base}/realtime/calls/${encodeURIComponent(id)}/hangup`, {
+      method: "POST", headers: auth(apiKey), signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!response.ok && response.status !== 404) throw await responseError(response, apiKey);
     await response.body?.cancel();
@@ -62,8 +63,8 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
       const body = new FormData();
       body.set("sdp", new Blob([input.sdp], { type: "application/sdp" }), "offer.sdp");
       body.set("session", JSON.stringify(session));
-      const response = await send(`${base}/realtime/calls`, {
-        method: "POST", headers: auth(input.apiKey), body, signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error",
+      const response = await fetchWithoutRedirects(send, `${base}/realtime/calls`, {
+        method: "POST", headers: auth(input.apiKey), body, signal: AbortSignal.timeout(TIMEOUT_MS),
       });
       if (!response.ok) throw await responseError(response, input.apiKey);
       const callId = /\/realtime\/calls\/([\w-]+)$/.exec(response.headers.get("location") ?? "")?.[1];
