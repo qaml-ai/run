@@ -97,11 +97,12 @@ async function computeLedger() {
   return { seconds, micros };
 }
 
-// The agent's compute usage: rows whose model is a host pool's VM name (`test-2vcpu-4096mib`).
+// The agent's compute usage: rows whose model is a host pool's VM name, as settled usage records it
+// (`computer:camelrun-hosts/test-1vcpu-4096mib`: the computer prefix, the hosts provider, then the pool and shape).
 async function agentCompute(agent: string) {
   const r = await call(`/v1/agents/${agent}/usage?groupBy=model&days=1`);
   assert.equal(r.status, 200, `agent usage: ${r.status} ${r.text}`);
-  const rows = (r.json.groups ?? []).filter((g: any) => /(?:^|:)(?:build|test)-\d+vcpu-\d+mib$/.test(String(g.model)));
+  const rows = (r.json.groups ?? []).filter((g: any) => /^computer:camelrun-hosts\/(?:build|test)-\d+vcpu-\d+mib$/.test(String(g.model)));
   return { rows, cost: rows.reduce((sum: number, g: any) => sum + Number(g.cost ?? 0), 0) };
 }
 
