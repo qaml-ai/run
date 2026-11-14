@@ -19,11 +19,13 @@ type sessionChannel struct {
 }
 
 type sessionState struct {
-	mu     sync.Mutex
-	shells map[string]*shell
-	execs  map[string]*execution
-	tails  []*execution
-	exits  []*execution
+	mu            sync.Mutex
+	shells        map[string]*shell
+	shellIDsByKey map[string]string
+	shellKeys     []string
+	execs         map[string]*execution
+	tails         []*execution
+	exits         []*execution
 }
 
 type execution struct {
@@ -56,6 +58,10 @@ func (g *guest) sessionRequest(c *sessionChannel, req request) bool {
 	defer s.mu.Unlock()
 	switch req.Op {
 	case "shell_open":
+		if id := s.shellIDsByKey[req.ShellKey]; id != "" {
+			c.send(message{"ok": true, "shellId": id})
+			break
+		}
 		sh, err := g.openShell()
 		if err != nil {
 			c.send(message{"ok": false, "error": errorText(err)})
@@ -65,6 +71,18 @@ func (g *guest) sessionRequest(c *sessionChannel, req request) bool {
 			s.shells = make(map[string]*shell)
 		}
 		s.shells[sh.id] = sh
+		if req.ShellKey != "" {
+			if s.shellIDsByKey == nil {
+				s.shellIDsByKey = make(map[string]string)
+			}
+			s.shellIDsByKey[req.ShellKey] = sh.id
+			s.shellKeys = append(s.shellKeys, req.ShellKey)
+			if len(s.shellKeys) > execExits {
+				delete(s.shellIDsByKey, s.shellKeys[0])
+				s.shellKeys[0] = ""
+				s.shellKeys = s.shellKeys[1:]
+			}
+		}
 		go func() {
 			<-sh.done
 			s.mu.Lock()
@@ -88,7 +106,12 @@ func (g *guest) sessionRequest(c *sessionChannel, req request) bool {
 			}
 			execs = append(execs, m)
 		}
-		c.send(message{"ok": true, "shells": shells, "execs": execs})
+		reply := message{"ok": true, "shells": shells, "execs": execs}
+		if g.session && g.index != nil {
+			reply["tree"] = g.index.Tree
+			reply["checkpointPending"] = g.pending != nil
+		}
+		c.send(reply)
 	case "exec_tail":
 		e := s.execs[req.ExecID]
 		switch {
@@ -116,7 +139,7 @@ func (g *guest) acceptExec(c *sessionChannel, req request) {
 	if len(req.Env) == 0 {
 		req.Env = nil
 	}
-	args, _ := json.Marshal([]any{req.Command, req.Shell, req.Env, req.Stdin})
+	args, _ := json.Marshal([]any{req.Command, req.Shell, req.Env, req.Stdin, req.Cwd})
 	digest := sha256.Sum256(args)
 	ack := message{"ok": true, "execId": req.ExecID, "accepted": true}
 	if e := s.execs[req.ExecID]; e != nil {
@@ -159,12 +182,13 @@ func (g *guest) acceptExec(c *sessionChannel, req request) {
 }
 
 func (e *execution) attach(c *sessionChannel, ack message, offset int64) {
-	if err := c.send(ack); err != nil {
-		return
-	}
 	first := e.next
 	if len(e.chunks) > 0 {
 		first = e.chunks[0].offset
+	}
+	ack["firstOffset"] = first
+	if err := c.send(ack); err != nil {
+		return
 	}
 	if offset < first {
 		c.send(message{"event": "tail_truncated", "execId": e.id, "firstOffset": first})

@@ -19,11 +19,8 @@ finish() {
   exit "$code"
 }
 trap finish EXIT
-lock=$(sha256sum package-lock.json | cut -d' ' -f1)
-if [[ ! -x node_modules/.bin/wrangler || $(cat "$HOME/.workers-lock" 2>/dev/null || true) != "$lock" ]]; then
-  npm ci --no-audit --no-fund
-  printf '%s' "$lock" > "$HOME/.workers-lock"
-fi
+# scripts/sprite-test-core.sh installs every package-lock.json in the tree (this one included) before the command.
+[[ -x node_modules/.bin/wrangler ]] || { echo "backends/workers/node_modules is not installed; run this through scripts/sprite-test" >&2; exit 1; }
 if [[ $mode == integration || $mode == compat ]]; then
   # scripts/sprite-test sets Docker up on every pool sprite (docker_up in scripts/sprite-test-core.sh; README.md, "Docker on a sprite"), so the
   # native computer tests run here as on CI, which allows them no skip.
