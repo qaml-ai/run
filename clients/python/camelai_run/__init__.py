@@ -2515,7 +2515,9 @@ class AgentClient(_AgentCalls):
         waiting for the turn: {"id", "status", "steeredInto"?}. status "accepted": the running turn reads it after its current
         step; "taken": it has read it already (steeredInto names the turn, whose request has the turn's outcome); "queued": no
         turn with the same payer selection could take it, so it starts one. A steer_taken event on the agent's stream says when the model has it. A taken
-        steer no longer counts against the agent's open requests, however long its turn goes on."""
+        steer no longer counts against the agent's open requests, however long its turn goes on.
+        `timeout` (seconds, default None: no limit, as request()) bounds only the wait when the same message was sent
+        before and its run's outcome waits for its charge (503 SETTLEMENT_PENDING); otherwise it returns at once."""
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
@@ -2532,7 +2534,9 @@ class AgentClient(_AgentCalls):
     async def submit(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False,
                      spend_limit=None, output=None, history=None, run_limits=None, end_user=None, timeout=None):
         """Send a message and return as soon as the runtime has it (202), without waiting for its run: {"id", "state"},
-        the request's id and whether it runs or is queued. Follow it with wait_for_request(id), the stream or a webhook."""
+        the request's id and whether it runs or is queued. Follow it with wait_for_request(id), the stream or a webhook.
+        `timeout` (seconds, default None: no limit, as request()) bounds only the wait when the same message was sent
+        before and its run's outcome waits for its charge (503 SETTLEMENT_PENDING); otherwise it returns at once."""
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())

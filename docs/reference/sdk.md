@@ -372,7 +372,9 @@ with Agents() as agents:  # CAMELAI_API_KEY
   `run.served_model`) is the model that made its last response.
 
 The SDKs retry 429 and 503 (honouring `Retry-After`) and transient failures of
-idempotent requests. See [Errors](../reference/errors.md).
+idempotent requests. A `503 SETTLEMENT_PENDING` when a message is sent again under its idempotency key means the
+run has ended and its outcome waits for its charge to be recorded: the SDKs treat the message as accepted and keep
+waiting for the outcome, within `timeoutMs` (Python `timeout`). See [Errors](../reference/errors.md).
 
 ## The lower-level API
 

@@ -318,7 +318,9 @@ class AgentClient(_AgentCalls):
 
     def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, timeout=None):
         """Hand a message to the running turn and return as soon as the runtime has it: {"id", "status", "steeredInto"?},
-        as camelai_run.AgentClient.steer_message."""
+        as camelai_run.AgentClient.steer_message.
+        `timeout` (seconds, default None: no limit, as request()) bounds only the wait when the same message was sent
+        before and its run's outcome waits for its charge (503 SETTLEMENT_PENDING); otherwise it returns at once."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running="steer", allow_disconnected=allow_disconnected)
         record = self._submit_or_pending("prompt", params, request_id)
