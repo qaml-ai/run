@@ -515,7 +515,14 @@ func TestDDBRandomCrashes(t *testing.T) {
 			}
 			v, err := calls[selected](c)
 			if errors.Is(err, lostResponse) {
-				v = must[VM](t)(calls[selected](f.fresh()))
+				v, err = calls[selected](f.fresh())
+			}
+			// A renewal after the deadline is refused: a lapsed lease is final.
+			if errors.Is(err, ErrLeaseExpired) && selected == 3 {
+				v = must[VM](t)(f.fresh().Get(ctx, id))
+				if f.now.UnixMilli() < v.LeaseDeadline {
+					t.Fatalf("refused a renewal of a live lease: %+v", v)
+				}
 			} else if err != nil {
 				t.Fatal(err)
 			}
