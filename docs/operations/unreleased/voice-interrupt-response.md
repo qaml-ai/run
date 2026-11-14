@@ -1,1 +1,3 @@
-OpenAI WebRTC calls accept `interruptResponse: false` so an app's echo guard can control barge-in while OpenAI continues to detect turns and start responses.
+### Runtime
+
+- OpenAI client-held voice calls take `interruptResponse: false`, so an app that runs its own echo guard owns barge-in while OpenAI keeps detecting turns and starting responses.
