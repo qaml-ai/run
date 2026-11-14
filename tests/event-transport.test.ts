@@ -131,6 +131,41 @@ test("browser watcher preserves capability headers and selects a WebSocket", asy
   } finally { watcher.close(); globalThis.WebSocket = original; }
 });
 
+test("a browser watcher cuts a WebSocket that never sends ready and retries the socket", async () => {
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  let streams = 0, polls = 0;
+  let first: Socket | undefined;
+  const watcher = watchAgent({
+    url: "https://runtime.test", agentId: "client_x", token: "fixture", transport: "auto", firstFrameMs: 200,
+    fetch: async (url, init) => {
+      const request = new Request(url, init);
+      if (request.url.includes("/events")) {
+        if (new URL(request.url).searchParams.has("poll")) {
+          polls++;
+          return new Response(null, { status: 404 });
+        }
+        streams++;
+        return negotiateEvents(request)!;
+      }
+      if (request.url.includes("/history")) return Response.json({ entries: [], next: null });
+      if (request.url.includes("/state")) return Response.json({ requests: [] });
+      return Response.json([]);
+    },
+  });
+  try {
+    const deadline = Date.now() + 2_000;
+    while (streams < 2 && !polls && Date.now() < deadline) {
+      if (streams === 1 && Socket.last.url.includes("/client_x/")) first ??= Socket.last;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(first?.readyState, 3);
+    assert.equal(streams, 2);
+    assert.equal(polls, 0);
+    assert.equal(watcher.state.transport, null);
+  } finally { watcher.close(); globalThis.WebSocket = original; }
+});
+
 test("with the application's own fetch, watchers and clients ask for SSE alone, which goes through it", async () => {
   const original = globalThis.WebSocket;
   globalThis.WebSocket = Socket as unknown as typeof WebSocket;
