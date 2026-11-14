@@ -59,10 +59,10 @@ test('first and delta commits use daemon ids, blob authorization, path expectati
   const b = await write(ctx, { b: { bytes: bytes('world') }, a: { mode: '100755' } });
   assert.deepEqual((await ctx.stub.commit(b.version!))!.parents, [a.version]);
   assert.equal((await write(ctx, { a: { mode: '100755' } })).changed, false);
-  await assert.rejects(write(ctx, { a: { bytes: bytes('no') } }, { pathExpect: { a: 'none' } }), err('stale-path'));
-  await assert.rejects(write(ctx, { a: { blob: 'a'.repeat(40) } }), err('unknown-blob'));
+  await assert.rejects(write(ctx, { a: { bytes: bytes('no') } }, { pathExpect: { a: 'none' } }), err('stale_path'));
+  await assert.rejects(write(ctx, { a: { blob: 'a'.repeat(40) } }), err('unknown_blob'));
   env.limit = 0;
-  await assert.rejects(write(ctx, { c: { bytes: bytes('quota') } }), err('storage-limit'));
+  await assert.rejects(write(ctx, { c: { bytes: bytes('quota') } }), err('storage_limit'));
 });
 test('fork shares lineage; cross-lineage copies PUT bytes; keyed lifecycle and tenant index', async (t) => {
   const { create, write, env, fake, index } = fixture(t), src = await create({ key: 'src' } as any), a = await write(src, { a: { bytes: bytes('source') } });
@@ -78,7 +78,7 @@ test('fork shares lineage; cross-lineage copies PUT bytes; keyed lifecycle and t
   assert.equal((await createRepo(env, 't', { key: 'src' })).existing, true);
   assert.equal(index.list().repos.length, 3);
   await deleteRepo(env, 't', src.repoId);
-  await assert.rejects(createRepo(env, 't', { key: 'src' }), err('deleted-key'));
+  await assert.rejects(createRepo(env, 't', { key: 'src' }), err('deleted_key'));
   assert.equal(index.list().repos.length, 2);
 });
 test('openBlob streams response, preserves ranges and maps fake authorization errors', async (t) => {
@@ -119,14 +119,14 @@ test('merge clean, conflicts, ff, squash and already merged', async (t) => {
   assert.equal(ff.version, theirs.version);
   assert.equal((await mergeRefs(ctx, { into: 'main', from: 'topic' })).changed, false);
   const ours = await write(ctx, { c: { bytes: bytes('ours') } });
-  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not-fast-forward'));
+  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not_fast_forward'));
   const topic = await write(ctx, { d: { bytes: bytes('theirs') } }, { ref: 'topic' });
   const merged = await mergeRefs(ctx, { into: 'main', from: 'topic' });
   assert.deepEqual((await ctx.stub.commit(merged.version!))!.parents, [ours.version, topic.version]);
   await write(ctx, { a: { bytes: bytes('ours\n') } });
   await write(ctx, { a: { bytes: bytes('theirs\n') } }, { ref: 'topic' });
   await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic' }), err('conflicts'));
-  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not-fast-forward'));
+  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not_fast_forward'));
   const clean = await create();
   await write(clean, { a: { bytes: bytes('base') } });
   await branch(clean, { name: 'topic', from: 'main', who: 'api:t' });
@@ -280,7 +280,7 @@ test('PUT refs rejects backwards and sideways moves without changing the ref, he
       assert.equal((await response!.json() as { changed: boolean }).changed, false);
     } else {
       assert.equal(response?.status, 409);
-      assert.deepEqual(await response!.json(), { error: 'not-fast-forward', code: 'not-fast-forward', current: main.version });
+      assert.deepEqual(await response!.json(), { error: 'not_fast_forward', code: 'not_fast_forward', current: main.version });
     }
     assert.deepEqual(await state(), before);
   }

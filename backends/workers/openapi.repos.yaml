@@ -38,7 +38,7 @@ paths:
           description: Ref created, fast-forwarded, or already at the requested version.
         "409":
           description: >-
-            not-fast-forward if the target does not descend from the current version or the
+            not_fast_forward if the target does not descend from the current version or the
             ancestry check exceeds 50,000 versions. Ref-moving writes that publish a new
             commit return bad_parent if it has an invalid first parent or parent count.
         "412":

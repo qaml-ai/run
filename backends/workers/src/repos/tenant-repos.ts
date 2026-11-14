@@ -29,7 +29,7 @@ export class TenantRepos {
   } = {}) {
     const limit = page(input.limit, 100, 1000);
     const cursor = input.after ? this.row(input.after) : null;
-    check(!input.after || cursor, 'bad-cursor');
+    check(!input.after || cursor, 'bad_cursor');
     const rows = this.storage.sql.exec<RepoRow>('SELECT * FROM repos WHERE deletedAt IS NULL AND (createdAt>? OR (createdAt=? AND id>?)) ORDER BY createdAt,id LIMIT ?', cursor?.createdAt ?? -1, cursor?.createdAt ?? -1, cursor?.id ?? '', limit + 1).toArray();
     return { repos: rows.slice(0, limit), next: rows.length > limit ? rows[limit - 1].id : null };
   }
