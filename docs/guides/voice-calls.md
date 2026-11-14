@@ -420,6 +420,25 @@ The socket carries:
 
 The socket may reach any node: one that does not hold the session relays it to the one that does.
 
+## Calls your app holds
+
+For an OpenAI WebRTC call, send your app's SDP offer to `POST /v1/voice/sessions`:
+
+```json
+{
+  "provider": "openai",
+  "agent": "client_…",
+  "subject": "user-1",
+  "sdp": "<WebRTC SDP offer>"
+}
+```
+
+Apply the returned `connect.sdpAnswer` as the remote description. Set `interruptResponse: false` when your app's echo guard decides barge-in.
+
+| Field | Meaning |
+|---|---|
+| `interruptResponse` | Defaults to `true`. When `false`, OpenAI still detects turns and starts responses, and your app controls interruptions. ElevenLabs ignores this field. |
+
 ## Latency
 
 Each answer's first audio is timed: `voice_turn_latency` with `Path=realtime`, in ms from the end of speech

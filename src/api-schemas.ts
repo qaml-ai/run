@@ -1971,6 +1971,9 @@ export const VoiceCallInput = z.strictObject({
   maxMinutes: z.number().int().min(VOICE_LIMITS.maxMinutes.min).max(VOICE_LIMITS.maxMinutes.max).default(VOICE_LIMITS.maxMinutes.default),
   metadata: callMetadata.optional(),
   speakers: callSpeakers.optional(),
+  interruptResponse: z.boolean().default(true).openapi({
+    description: "OpenAI only: whether the model stops its own answer when someone speaks (semantic_vad interrupt_response). Set false when your app handles barge-in itself (an echo guard); the model still takes turns. ElevenLabs ignores this field because interruptions are client events.",
+  }),
   sdp: z.string().min(1).max(64 * 1024).refine(value => Buffer.byteLength(value) <= 64 * 1024, "sdp must be at most 64 KB").optional()
     .openapi({ description: "The client's WebRTC offer. Required for OpenAI." }),
 }).refine(value => value.provider !== "openai" || value.sdp !== undefined, { path: ["sdp"], message: "sdp is required for OpenAI calls" }).openapi("VoiceCallInput");
@@ -1979,6 +1982,7 @@ export type VoiceCallInput = z.output<typeof VoiceCallInput>;
 export const VoiceCall = z.object({
   id: z.string(), state: z.enum(["connecting", "live", "ending", "ended"]), provider: z.enum(["openai", "elevenlabs"]),
   model: z.string(), voice: z.string(), agent: z.string(), subject: z.string(),
+  interruptResponse: z.boolean(),
   startedAt: z.number().nullable(), endedAt: z.number().nullable(), expiresAt: z.number(), reason: z.string().nullable(),
   turns: z.number(), asks: z.number(), audioSeconds: z.number(), costUsd: z.number(),
   metadata: z.record(z.string(), z.unknown()), speakers: z.record(z.string(), z.string()),
