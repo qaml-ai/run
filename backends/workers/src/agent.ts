@@ -1,5 +1,4 @@
-import { workspaceRefKey } from "./repos/tree-cache.ts";
-import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
+import type { RefMove } from "./camelfs/notify.ts";
 import { DurableObject } from "cloudflare:workers";
 import { guardAlarms } from "./alarm-guard.ts";
 import type { Placement } from "../../../shared/owner.ts";
@@ -19,11 +18,6 @@ export class CamelAgent extends DurableObject<Env> {
     super(ctx, env);
     // After the runtime's lifecycle installed its alarm handler on this instance (field initializers run first).
     guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
-  }
-
-  async stageRepoMove(move: RefMove) {
-    await stageRepoMove(this.ctx.storage, move);
-    this.#runtime.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
   }
 
   removeMember(member: string) { return this.#runtime.removeMember(member); }
@@ -105,4 +99,6 @@ export class CamelAgent extends DurableObject<Env> {
     return this.#runtime.webSocketError(socket);
   }
 
+  /** A camel-fs notify delivery for a watched repo (an idempotent outbox row). */
+  stageRepoMove(move: RefMove) { return this.#runtime.stageRepoMove(move); }
 }

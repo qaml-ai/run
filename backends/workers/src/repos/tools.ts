@@ -3,7 +3,7 @@ import { RE2JS } from "re2js";
 import { Buffer } from "node:buffer";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str, arr, bool, int } from "@earendil-works/pi-schema";
-import { FileError, normalizePath } from "../volume.ts";
+import { FileError, normalizePath } from "../file-errors.ts";
 import { declaredType, sniffContentType } from "../file-policy.ts";
 import { editArguments } from "../edit-arguments.ts";
 import type { FileVersions } from "../file-versions.ts";
@@ -21,7 +21,7 @@ function actualRepoTools(
   getMounts: () => Promise<Mount[]> = async () => [
     { repo: agentRepoId(tenant, agentId), path: "/workspace", mode: "rw" },
   ],
-  onPresent?: (file: PresentedRepoFile, volumePath: string) => Promise<void>,
+  onPresent?: (file: PresentedRepoFile, path: string) => Promise<void>,
   onWrite?: (file: WrittenRepoFile) => Promise<void>,
   seen?: FileVersions,
   identity: Record<string,string> = {},

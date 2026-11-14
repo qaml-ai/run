@@ -1,7 +1,6 @@
 import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import { TenantWatchers } from "./tenant-watchers.ts";
-import { TenantStorage } from "./tenant-storage.ts";
 import { TenantRepos, type RepoRow } from "./repos/tenant-repos.ts";
 const agentOf = "CASE WHEN instr(id, ':') > 0 THEN substr(id, 1, instr(id, ':') - 1) ELSE id END";
 
@@ -9,13 +8,11 @@ const agentOf = "CASE WHEN instr(id, ':') > 0 THEN substr(id, 1, instr(id, ':') 
 export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   private readonly watchers: TenantWatchers;
   private readonly repos: TenantRepos;
-  private readonly files: TenantStorage;
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     guardAlarms(this, ctx, "TenantAdmission", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
     this.watchers = new TenantWatchers(ctx.storage.sql, write => ctx.storage.transactionSync(write));
     this.repos = new TenantRepos(ctx.storage);
-    this.files = new TenantStorage(ctx.storage, env.BUCKET as R2Bucket);
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)",
     );
@@ -98,10 +95,8 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
   repoUsage(id: string, bytes: number, files: number, lineage?: boolean) { return this.repos.usage(id,bytes,files); }
   reposUsed(exclude?: string) { return this.repos.used(exclude); }
-  nativeStorageUsed(tenant: string) { return this.files.used(tenant); }
-  recordNativeFile(tenant: string, key: string, bytes: number) { return this.files.record(tenant, key, bytes); }
-  deleteNativeFile(tenant: string, key: string) { return this.files.deleted(tenant, key); }
-  alarm() { return this.files.alarm(); }
+  // Consume any alarm persisted by the old accounting implementation (ledger L90).
+  async alarm() {}
   /** Called after account deletion has stopped and purged every owned agent. */
   async purgeAccountData() {
     await this.ctx.storage.deleteAlarm();

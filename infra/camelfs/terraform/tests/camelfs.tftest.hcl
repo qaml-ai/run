@@ -133,8 +133,8 @@ run "first_apply_before_the_certificate" {
     error_message = "The bucket is camelfs-<env>-<account id>: globally unique, and not the prototype's."
   }
   assert {
-    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages", deliveries = "camelfs-prod-deliveries", hosts = "camelfs-prod-hosts", vms = "camelfs-prod-vms", usage = "camelfs-prod-usage" }
-    error_message = "Seven tables: objects, refs, lineages, deliveries, hosts, vms, usage."
+    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages", deliveries = "camelfs-prod-deliveries", hosts = "camelfs-prod-hosts", vms = "camelfs-prod-vms", usage = "camelfs-prod-usage", marks = "camelfs-prod-marks" }
+    error_message = "Eight tables: objects, refs, lineages, deliveries, hosts, vms, usage, marks."
   }
 }
 
@@ -152,6 +152,7 @@ run "tables_keys_and_protection" {
       && aws_dynamodb_table.camelfs["hosts"].hash_key == "pool" && aws_dynamodb_table.camelfs["hosts"].range_key == "host"
       && aws_dynamodb_table.camelfs["vms"].hash_key == "id" && aws_dynamodb_table.camelfs["vms"].range_key == null
       && aws_dynamodb_table.camelfs["usage"].hash_key == "shard" && aws_dynamodb_table.camelfs["usage"].range_key == "ulid"
+      && aws_dynamodb_table.camelfs["marks"].hash_key == "lineage" && aws_dynamodb_table.camelfs["marks"].range_key == null
     )
     error_message = "Key schemas: objects (lineage, id), refs (lineage, name), lineages (lineage), deliveries (shard, id), hosts (pool, host), vms (id), usage (shard, ulid)."
   }
@@ -262,9 +263,9 @@ run "roles_and_policies" {
   assert {
     condition = (
       length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Effect == "Allow" && contains(flatten([statement.Action]), "dynamodb:PutItem")]) == 1
-      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 6]) == 1
+      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 7]) == 1
     )
-    error_message = "The host policy writes the objects table only and explicitly denies the six other tables."
+    error_message = "The host policy writes the objects table only and explicitly denies the seven other tables."
   }
   assert {
     condition = (
@@ -290,6 +291,13 @@ run "roles_and_policies" {
       && length(jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement[0].Resource) == 2
     )
     error_message = "Neither the api task role nor the host policy reads a secret; the execution role reads the two secrets it injects (JWKS, notify key)."
+  }
+  assert {
+    condition = (
+      [for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Resource if statement.Sid == "ScanMarks"] == [["arn:aws:dynamodb:us-west-2:904534089871:table/mocked"]]
+      && !anytrue([for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Sid != "ScanMarks" && contains(flatten([statement.Action]), "dynamodb:Scan")])
+    )
+    error_message = "Scan is granted on the marks table alone (the mock gives every table one ARN), never in the all-tables statement."
   }
   assert {
     condition = (
@@ -379,8 +387,8 @@ run "service_with_an_image" {
   # The mock gives every target group one ARN, so the service's load_balancer set collapses here; the registrations
   # are the public api group, the enrollment group and the hosts NLB group, each naming the api container on its port.
   assert {
-    condition     = length(aws_lb_target_group.api) == 1 && alltrue([for registration in aws_ecs_service.api[0].load_balancer : registration.container_name == "camelfsd" && contains([8790, 8793, 8794], registration.container_port)])
-    error_message = "The service registers the api container with the public api group, the enrollment group and the hosts NLB group."
+    condition     = length(aws_lb_target_group.api) == 1 && [for registration in aws_ecs_service.api[0].load_balancer : registration.container_port] == [8790]
+    error_message = "Without \"compute\" the service registers the api port alone: the enrollment and hosts groups wait for a daemon that listens on their ports."
   }
   assert {
     condition     = aws_ecs_task_definition.api.runtime_platform[0].cpu_architecture == "ARM64" && contains(aws_ecs_task_definition.api.requires_compatibilities, "FARGATE")
@@ -406,7 +414,15 @@ run "service_with_every_feature" {
   }
 
   assert {
-    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]
+    condition     = toset([for registration in aws_ecs_service.api[0].load_balancer : registration.container_port]) == toset([8790, 8793, 8794])
+    error_message = "With \"compute\" the service registers the enrollment and hosts groups too."
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.api_health_from_internal) == 2 && alltrue([for rule in aws_vpc_security_group_ingress_rule.api_health_from_internal : rule.from_port == 8790]) && length(aws_vpc_security_group_egress_rule.internal_health_to_api) == 2
+    error_message = "The internal ALB and the NLB reach the tasks on the api port for health checks, both directions."
+  }
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--lineages-table", "camelfs-prod-lineages", "--marks-table", "camelfs-prod-marks", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]
     error_message = "With refs and compute on, the command carries C2's and K4c's full flag set (wf-durable, 2026-11-14; no file flags: the tier keeps its key in memory) and then api_extra_args."
   }
   assert {

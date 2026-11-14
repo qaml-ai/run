@@ -7,10 +7,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"io"
 	"net/http"
 	"os"
@@ -18,6 +14,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 )
 
 type Store interface {
@@ -27,6 +30,15 @@ type Store interface {
 	Has(context.Context, string) (bool, error)
 }
 type Local struct{ Dir string }
+
+func guestManifest(key string) bool {
+	sha, ok := strings.CutPrefix(key, "guest/")
+	if !ok {
+		return false
+	}
+	sha, ok = strings.CutSuffix(sha, ".json")
+	return ok && root.Hex(sha, 64)
+}
 
 func valid(k string) bool {
 	_, p, h, ok := splitKey(k)
@@ -81,28 +93,36 @@ func BlobKey(b []byte) string { return "o/" + GitHash("blob", b) }
 
 // PutBlobFile publishes an already verified blob without buffering it in memory.
 func PutBlobFile(ctx context.Context, s Store, key string, f *os.File, metadata ...string) error {
+	_, err := PutBlobFileIfAbsent(ctx, s, key, f, metadata...)
+	return err
+}
+
+var blobPutMu sync.Mutex
+
+// PutBlobFileIfAbsent reports whether this call created the durable object.
+func PutBlobFileIfAbsent(ctx context.Context, s Store, key string, f *os.File, metadata ...string) (bool, error) {
 	switch v := s.(type) {
 	case *scoped:
 		k, e := v.key(key)
 		if e != nil {
-			return e
+			return false, e
 		}
-		return PutBlobFile(ctx, v.Store, k, f, metadata...)
+		return PutBlobFileIfAbsent(ctx, v.Store, k, f, metadata...)
 	case *Uploaded:
 		return v.putFile(ctx, key, f, metadata...)
 	case *limited:
 		if e := v.acquire(ctx); e != nil {
-			return e
+			return false, e
 		}
 		defer v.release(ctx)
-		return PutBlobFile(ctx, v.Store, key, f, metadata...)
+		return PutBlobFileIfAbsent(ctx, v.Store, key, f, metadata...)
 	}
 	_, kind, _, _ := splitKey(key)
 	if !valid(key) || kind != "o" {
-		return fmt.Errorf("invalid blob key")
+		return false, fmt.Errorf("invalid blob key")
 	}
 	if _, e := f.Seek(0, 0); e != nil {
-		return e
+		return false, e
 	}
 	sha := ""
 	if len(metadata) > 0 {
@@ -111,29 +131,33 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File, metadata 
 	if sha == "" {
 		h := sha256.New()
 		if _, e := io.Copy(h, f); e != nil {
-			return e
+			return false, e
 		}
 		sha = fmt.Sprintf("%x", h.Sum(nil))
 		if _, e := f.Seek(0, 0); e != nil {
-			return e
+			return false, e
 		}
 	}
 	st, e := f.Stat()
 	if e != nil {
-		return e
+		return false, e
 	}
 	switch v := s.(type) {
 	case Local:
+		exists, e := v.Has(ctx, key)
+		if e != nil || exists {
+			return false, e
+		}
 		if e := writeMetadata(filepath.Join(v.Dir, key), Info{Size: st.Size(), SHA256: sha}); e != nil {
-			return ioFailure(e)
+			return false, ioFailure(e)
 		}
 		dst := filepath.Join(v.Dir, key)
 		if e := os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
-			return ioFailure(e)
+			return false, ioFailure(e)
 		}
 		tmp, e := os.CreateTemp(filepath.Dir(dst), ".tmp-")
 		if e != nil {
-			return ioFailure(e)
+			return false, ioFailure(e)
 		}
 		defer os.Remove(tmp.Name())
 		_, e = io.Copy(tmp, f)
@@ -145,23 +169,56 @@ func PutBlobFile(ctx context.Context, s Store, key string, f *os.File, metadata 
 			e = ce
 		}
 		if e != nil {
-			return ioFailure(e)
+			return false, ioFailure(e)
 		}
-		return ioFailure(os.Rename(tmp.Name(), dst))
+		e = os.Link(tmp.Name(), dst)
+		if errors.Is(e, os.ErrExist) {
+			return false, nil
+		}
+		return e == nil, ioFailure(e)
 	case *S3:
 		k := v.key(key)
-		_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f, Metadata: map[string]string{"x-camel-sha256": sha}})
-		return ioFailure(e)
+		for {
+			_, e := v.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &v.Bucket, Key: &k, Body: f,
+				IfNoneMatch: aws.String("*"), Metadata: map[string]string{"x-camel-sha256": sha}})
+			var apiErr smithy.APIError
+			if errors.As(e, &apiErr) {
+				switch apiErr.ErrorCode() {
+				case "PreconditionFailed":
+					return false, nil
+				case "ConditionalRequestConflict":
+					if _, e := f.Seek(0, 0); e != nil {
+						return false, e
+					}
+					continue
+				}
+			}
+			return e == nil, ioFailure(e)
+		}
 	default:
+		// Custom stores can implement the same atomic operation.
+		if dest, ok := s.(interface {
+			PutBlobFileIfAbsent(context.Context, string, *os.File, string) (bool, error)
+		}); ok {
+			return dest.PutBlobFileIfAbsent(ctx, key, f, sha)
+		}
+		// Test and embedded stores use the Store interface.
+		blobPutMu.Lock()
+		defer blobPutMu.Unlock()
+		exists, e := s.Has(ctx, key)
+		if e != nil || exists {
+			return false, e
+		}
 		b, e := io.ReadAll(f)
 		if e != nil {
-			return e
+			return false, e
 		}
-		return s.Put(ctx, key, b)
+		e = s.Put(ctx, key, b)
+		return e == nil, e
 	}
 }
 func (l Local) Get(c context.Context, k string) ([]byte, error) {
-	if !valid(k) {
+	if !valid(k) && !guestManifest(k) {
 		return nil, fmt.Errorf("invalid key")
 	}
 	b, e := os.ReadFile(filepath.Join(l.Dir, k))
@@ -253,7 +310,7 @@ func (s *S3) key(k string) string {
 	return s.Prefix + "/" + k
 }
 func (s *S3) Get(c context.Context, k string) ([]byte, error) {
-	if !valid(k) {
+	if !valid(k) && !guestManifest(k) {
 		return nil, fmt.Errorf("invalid key")
 	}
 	key := s.key(k)

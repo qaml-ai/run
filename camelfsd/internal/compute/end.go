@@ -15,11 +15,6 @@ type endedEvent struct {
 	Type            string  `json:"type"`
 	VM              string  `json:"vm"`
 	Code            EndCode `json:"code"`
-	Exit            int     `json:"exit"`
-	TimedOut        bool    `json:"timedOut"`
-	ResultSha256    string  `json:"resultSha256"`
-	ResultBytes     int64   `json:"resultBytes"`
-	ResultRef       string  `json:"resultRef"`
 	Version         string  `json:"version,omitempty"`
 	CheckpointError string  `json:"checkpointError,omitempty"`
 }
@@ -64,11 +59,9 @@ func (c *Controller) end(ctx context.Context, v VM, end EndRequest, now time.Tim
 // A sweep or a heartbeat can end a missing VM only while its host snapshot still holds.
 func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndRequest, now time.Time, stop *stopIntent, snapshot *Host) (VM, error) {
 	cond := "#phase = :phase AND #leaseDeadline = :lease"
-	expr := "SET #phase = :ended, #endedAt = :at, #code = :code, #exit = :exit, #timedOut = :timedOut, " +
-		"#resultRef = :resultRef, #resultSha256 = :resultSha256, #resultBytes = :resultBytes, #endVersion = :version, #checkpointError = :checkpointError"
+	expr := "SET #phase = :ended, #endedAt = :at, #code = :code, #endVersion = :version, #checkpointError = :checkpointError"
 	values := attrs{":phase": s(string(v.Phase)), ":ended": s(string(Ended)), ":lease": n(v.LeaseDeadline),
-		":exit": n(int64(end.Exit)), ":timedOut": b(end.TimedOut), ":resultRef": s(end.ResultRef),
-		":resultSha256": s(end.ResultSha256), ":resultBytes": n(end.ResultBytes), ":version": s(end.EndVersion), ":checkpointError": s(end.CheckpointError)}
+		":version": s(end.EndVersion), ":checkpointError": s(end.CheckpointError)}
 	at := end.At.UnixMilli()
 	switch end.Code {
 	case HostLost:
@@ -85,10 +78,10 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 			cond += " AND attribute_not_exists(#lastListedAt)"
 		}
 	case Stopped:
-		if v.StopReason == LeaseExpired || v.StopReason == Timeout {
+		if v.StopReason == LeaseExpired || v.StopReason == Idle {
 			end.Code = v.StopReason
 		}
-	case Exit, Timeout, StartFailed, LeaseExpired:
+	case StartFailed, LeaseExpired:
 	default:
 		return v, ErrInvalid
 	}
@@ -112,6 +105,8 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 		values[":to"], values[":next"] = n(event.To), n(v.UsageSeq+1)
 	}
 
+	expr += " REMOVE #execs, #seenExecs"
+
 	writes := []types.TransactWriteItem{{Update: change(c.Tables.VMs, vmKey(v.ID), cond, expr, values)}}
 	switch {
 	case v.Phase == Requested:
@@ -122,7 +117,7 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 		if snapshot != nil {
 			hostCond += " AND #bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost)"
 			hostValues[":epoch"] = n(snapshot.BootEpoch)
-			if end.Code == HostLost || end.Code == StartFailed && end.ResultRef == "" {
+			if end.Code == HostLost || end.Code == StartFailed {
 				hostCond += " AND #lastSeenAt = :seen"
 				hostValues[":seen"] = n(snapshot.LastSeenAt)
 			}
@@ -134,7 +129,7 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 
 	id := "vm.ended:" + v.ID
 	body, err := json.Marshal(endedEvent{ID: id, Type: "vm.ended", VM: v.ID, Code: end.Code,
-		Exit: end.Exit, TimedOut: end.TimedOut, ResultRef: end.ResultRef, ResultSha256: end.ResultSha256, ResultBytes: end.ResultBytes, Version: end.EndVersion,
+		Version:         end.EndVersion,
 		CheckpointError: end.CheckpointError})
 	if err != nil {
 		return VM{}, err

@@ -2,7 +2,7 @@ import { agentStore, insideRepo, globMatch } from './agent-store.ts';
 import { agentRepoId, type Mount } from './mounts.ts';
 import type { FileBindings } from '../files.ts';
 import type { RepoEnv } from './registry.ts';
-import { FileError, normalizePath } from '../volume.ts';
+import { FileError, normalizePath } from '../file-errors.ts';
 import { safeName } from '../file-policy.ts';
 import { boundedBytes } from '../images.ts';
 import { streamFile, repoFailure } from './routes.ts';

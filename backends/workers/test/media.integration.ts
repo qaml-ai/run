@@ -3,10 +3,12 @@ import test from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { serveFakeCamelfsd } from './fake-camelfsd.ts';
 import { startFixture } from './fixture.ts';
 import { pngBytes } from '../../../tests/file-fixtures.ts';
 
-test('standalone media uses source providers, R2 volumes and durable usage; rejects bad edits before fetching', {timeout:90000}, async t=>{
+test('standalone media uses source providers, repos and durable usage; rejects bad edits before fetching', {timeout:90000}, async t=>{
  const calls:any[]=[];
  const fake=createServer(async(req,res)=>{
   const chunks:Buffer[]=[];for await(const c of req)chunks.push(c);
@@ -20,10 +22,19 @@ test('standalone media uses source providers, R2 volumes and durable usage; reje
   res.writeHead(404).end();
  }).listen(0,'127.0.0.1');await once(fake,'listening');t.after(()=>new Promise<void>(r=>fake.close(()=>r())));
  const token='local-integration-only-token-with-at-least-32-characters', cappedToken='local-capped-media-token-with-at-least-32-characters';
- const f=await startFixture({tenants:[{id:'camelrun-proto-local',token},{id:'capped-media',token:cappedToken}],vars:{AGENT_TENANTS_JSON:JSON.stringify({tenants:{'capped-media':{tokenSha256:createHash('sha256').update(cappedToken).digest('hex'),maxMonthlyCost:0}}}),PLATFORM_OPENAI_KEY:'fake-only-key',MEDIA_BASE_URL:`http://127.0.0.1:${(fake.address() as any).port}`}});t.after(()=>f.stop());
+ const daemon=await serveFakeCamelfsd('media-repos');t.after(()=>daemon.close());
+ const f=await startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),tenants:[{id:'camelrun-proto-local',token},{id:'capped-media',token:cappedToken}],vars:{TEST_CAMELFS_URL:daemon.url,CAMELFS_API_TOKEN:'media-repos',AGENT_TENANTS_JSON:JSON.stringify({tenants:{'capped-media':{tokenSha256:createHash('sha256').update(cappedToken).digest('hex'),maxMonthlyCost:0}}}),PLATFORM_OPENAI_KEY:'fake-only-key',MEDIA_BASE_URL:`http://127.0.0.1:${(fake.address() as any).port}`}});t.after(()=>f.stop());
  const call=async(path:string,value:any)=>{const response=await fetch(f.url+path,{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify(value)});const body=await response.json() as any;assert.equal(response.status,200,JSON.stringify(body));return body;};
  const image=await call('/v1/images',{prompt:'synthetic image'});assert.equal(image.images[0].width,1024);assert.equal(image.model,'openai/gpt-image-2.5-flare');
  await call('/v1/images',{prompt:'synthetic edit',images:[{data:pngBytes(10,10).toString('base64')}]});assert.equal(calls[1].path,'/images/edits');
+ const created=await fetch(f.url+'/v1/repos',{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify({name:'Images'})});
+ assert.equal(created.status,201);const repo=await created.json() as any;
+ const saved=await call('/v1/images',{prompt:'saved image',repo:repo.id,path:'art'});
+ assert.equal(saved.images[0].repo,repo.id);assert.match(saved.images[0].version,/^[a-f0-9]{40}$/);assert.match(saved.images[0].path,/^art\/image-/);
+ const content=await fetch(f.url+`/v1/repos/${repo.id}/files/${saved.images[0].path}`,{headers:{Authorization:`Bearer ${f.token}`}});
+ assert.equal(content.status,200);assert.deepEqual(Buffer.from(await content.arrayBuffer()),pngBytes(1024,1024));
+ const legacy=await fetch(f.url+'/v1/images',{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify({prompt:'old',volumeId:'vol_old'})});
+ assert.equal(legacy.status,400);assert.match((await legacy.json() as any).error,/Volumes are replaced by repos/);
  const before=calls.length;const invalid=await fetch(f.url+'/v1/images',{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify({prompt:'x',mask:{data:pngBytes(10,10).toString('base64')}})});assert.equal(invalid.status,400);assert.equal(calls.length,before);
  for (const [path,value] of [['/v1/speech',{}],['/v1/speech',{text:12}],['/v1/transcriptions',{data:'',prompt:12}],['/v1/images',{prompt:'x',volumeId:12}],['/v1/images',{prompt:'x',images:[{data:'',extra:true}]}],['/v1/images',{prompt:'x',context:{tooLarge:'x'.repeat(4096)}}]] as const) {
   const rejected=await fetch(f.url+path,{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify(value)});assert.equal(rejected.status,400,await rejected.text());

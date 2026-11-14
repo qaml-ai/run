@@ -8,7 +8,7 @@ import { Dreaming, DreamError } from './dreaming-policy.ts';
 import { DREAM_ANALYZER_PROMPT, DREAM_ORGANIZER_PROMPT } from '../../../shared/dreaming-workflow.ts';
 import { Directory, type ControlEnv } from './control.ts';
 import { database } from './postgres.ts';
-import { handleFileRequest, type FileBindings } from './files.ts';
+import type { FileBindings } from './files.ts';
 import { definitionRoutes } from './definitions.ts';
 
 export function workerDreaming(env: ControlEnv & FileBindings) {

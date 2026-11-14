@@ -1,3 +1,5 @@
+import { workspaceRefKey } from "./repos/tree-cache.ts";
+import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
 import { SharedAgents } from "../../../src/shared-agents.ts";
@@ -423,6 +425,13 @@ export class AgentRuntime extends AgentContext {
 
   resumeKeptQueue() {
     return resumeKeptQueueImpl.call(this);
+  }
+
+  /** A notify delivery for a repo this agent watches: an idempotent outbox row, drained by the alarm. */
+  async stageRepoMove(move: RefMove) {
+    await stageRepoMove(this.ctx.storage, move);
+    // A foreign move updates reachability only; it never derives a tree (R4).
+    this.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
   }
 
   removeMember(member: string) {

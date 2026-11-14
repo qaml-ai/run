@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"golang.org/x/sys/unix"
 )
 
@@ -168,21 +170,27 @@ func TestKVMBootRunExit(t *testing.T) {
 	}
 }
 
-// The guest serves one connection and reboots on EOF. Keep that connection in
-// the parent so this test isolates scope lifetime from guest reconnect behavior.
 func TestKVMDaemonDeath(t *testing.T) {
 	l, shape := kvmLauncher(t)
 	id := kvmID(t, l, "orphan")
+	repo, names := kvmCheckpointRepo(t, l)
 	cfg, err := json.Marshal(struct {
 		Launcher *Launcher
 		Shape    Shape
-		ID       string
-	}{l, shape, id})
+		ID, Repo string
+	}{l, shape, id, repo})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestKVMLaunchHelper$")
 	cmd.Env = append(os.Environ(), "CAMELFSD_KVM_HELPER="+string(cfg))
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readyR.Close()
+	defer readyW.Close()
+	cmd.ExtraFiles = []*os.File{readyW}
 	log, err := os.Create(filepath.Join(l.Work, "launcher.log"))
 	if err != nil {
 		t.Fatal(err)
@@ -192,39 +200,172 @@ func TestKVMDaemonDeath(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	waited := false
+	readyW.Close()
 	defer func() {
-		if !waited {
+		if cmd.ProcessState == nil {
 			cmd.Process.Kill()
 			cmd.Wait()
 		}
 	}()
-	r := VMRecord{ID: id, Jail: l.jailPath(id)}
-	c, err := connectGuest(t.Context(), filepath.Join(r.Jail, "firecracker", id, "root", "guest.vsock"), 90*time.Second)
-	if err != nil {
-		t.Fatalf("launcher helper: %v", err)
-	}
-	defer c.conn.Close()
-	kvmRequest(t, c, map[string]any{"op": "free"})
-	r, err = l.readRecord(id)
-	if err != nil {
-		t.Fatal(err)
+	readyR.SetReadDeadline(time.Now().Add(90 * time.Second))
+	var marker struct{ BootMS, StartedUnixNano int64 }
+	if err := json.NewDecoder(readyR).Decode(&marker); err != nil {
+		t.Fatalf("launcher helper: %v (see %s)", err, log.Name())
 	}
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
-	waited = true
-	if out, err := exec.Command("systemctl", "is-active", r.Scope).CombinedOutput(); err != nil {
-		t.Fatalf("scope after launcher SIGKILL: %s: %v", out, err)
-	}
-	if code, out := kvmRun(t, c, "printf survived", 0); code != 0 || out != "survived" {
-		t.Fatalf("run: %d %q", code, out)
-	}
-	if err := l.Destroy(t.Context(), id); err != nil {
+	v, err := l.Adopt(id)
+	if err != nil {
 		t.Fatal(err)
 	}
-	checkClean(t, l, r)
+	sessions, err := v.Reconnect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	execs, ok := sessions["execs"].([]any)
+	if !ok || len(execs) != 1 {
+		t.Fatal(sessions)
+	}
+	active := execs[0].(map[string]any)
+	if active["execId"] != "survives" || active["running"] != true {
+		t.Fatal(sessions)
+	}
+	events := make(chan Reply, 10)
+	reply, err := v.Request(t.Context(), Reply{"op": "exec_tail", "execId": "survives", "offset": 0}, nil, func(m Reply) { events <- m })
+	if err != nil || reply["ok"] != true {
+		t.Fatal(reply, err)
+	}
+	var output strings.Builder
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+collect:
+	for {
+		select {
+		case m := <-events:
+			switch m["event"] {
+			case "exec_output":
+				b, err := base64.StdEncoding.DecodeString(m["data"].(string))
+				if err != nil {
+					t.Fatal(err)
+				}
+				output.Write(b)
+			case "exec_exit":
+				if m["code"] != float64(0) || m["timedOut"] != false || output.String() != "done\n" {
+					t.Fatal(m, output.String())
+				}
+				t.Logf("boot_to_first_exec_ms=%d exec_round_trip_ms=%d guest_exec_ms=%v", marker.BootMS, time.Since(time.Unix(0, marker.StartedUnixNano)).Milliseconds(), m["ms"])
+				break collect
+			}
+		case <-timer.C:
+			t.Fatal("exec did not finish")
+		}
+	}
+	kvmSeedIndex(t, v, names)
+	wall := time.Now()
+	checkpoint := kvmRequest(t, v.channel, Reply{"op": "camelfs_checkpoint", "jobId": id, "timeoutMs": 10_000})
+	if checkpoint["changed"] != false || checkpoint["files"] != float64(0) || checkpoint["bytes"] != float64(0) {
+		t.Fatal(checkpoint)
+	}
+	t.Logf("checkpoint_noop_ms=%d freeze_ms=%v walk_ms=%v files=10000", time.Since(wall).Milliseconds(), checkpoint["freezeMs"], checkpoint["walkMs"])
+	kvmRequest(t, v.channel, Reply{"op": "exit"})
+	until := time.Now().Add(5 * time.Second)
+	for exec.Command("systemctl", "is-active", "--quiet", v.record.Scope).Run() == nil {
+		if time.Now().After(until) {
+			t.Fatal("guest exit did not stop Firecracker")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := v.Destroy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	checkClean(t, l, v.record)
+}
+
+func kvmCheckpointRepo(t *testing.T, l *Launcher) (string, []string) {
+	t.Helper()
+	dir := filepath.Join(l.Work, "seed")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for i := range 10_000 {
+		name := fmt.Sprintf("file-%05d", i)
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	repo := filepath.Join(l.Work, "repo.ext4")
+	out, err := exec.Command("mkfs.ext4", "-q", "-F", "-d", dir, repo, "96M").CombinedOutput()
+	if err != nil {
+		t.Fatalf("mkfs.ext4: %v: %s", err, out)
+	}
+	return repo, names
+}
+
+func kvmSeedIndex(t *testing.T, v *VM, names []string) {
+	t.Helper()
+	path := filepath.Join(v.root, "guest.vsock_5201")
+	// The Firecracker backend connects to this sibling socket from inside its jail.
+	dir, err := os.Open(v.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	addr := &net.UnixAddr{Name: fmt.Sprintf("/proc/self/fd/%d/%s", dir.Fd(), filepath.Base(path)), Net: "unix"}
+	listener, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := os.Chmod(path, 0666); err != nil {
+		t.Fatal(err)
+	}
+	peer := make(chan error, 1)
+	go func() {
+		peer <- func() error {
+			listener.SetDeadline(time.Now().Add(10 * time.Second))
+			c, err := listener.AcceptUnix()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			c.SetDeadline(time.Now().Add(10 * time.Second))
+			tree := strings.Repeat("a", 40)
+			if err := wire.Send(c, Reply{"v": 1, "kind": "apply", "jobId": v.ID(), "fromTree": "", "toTree": tree}); err != nil {
+				return err
+			}
+			for i := 0; i < len(names); i += 200 {
+				entries := []Reply{}
+				for _, name := range names[i:min(i+200, len(names))] {
+					entries = append(entries, Reply{"path": name, "mode": "100644", "size": 0, "sha1": tree})
+				}
+				if err := wire.Send(c, Reply{"index": entries}); err != nil {
+					return err
+				}
+			}
+			if err := wire.Send(c, Reply{"indexEnd": true, "count": len(names)}); err != nil {
+				return err
+			}
+			if err := wire.Send(c, Reply{"end": true}); err != nil {
+				return err
+			}
+			var reply Reply
+			if err := wire.JSON(c, &reply); err != nil {
+				return err
+			}
+			if reply["applied"] != true {
+				return fmt.Errorf("apply: %v", reply)
+			}
+			return nil
+		}()
+	}()
+	kvmRequest(t, v.channel, Reply{"op": "camelfs_apply", "jobId": v.ID(), "timeoutMs": 10_000})
+	if err := <-peer; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestKVMLaunchHelper(t *testing.T) {
@@ -233,18 +374,34 @@ func TestKVMLaunchHelper(t *testing.T) {
 		t.Skip("launcher subprocess only")
 	}
 	kvmEnv(t)
+	start := time.Now()
 	var cfg struct {
 		Launcher *Launcher
 		Shape    Shape
-		ID       string
+		ID, Repo string
 	}
 	if err := json.Unmarshal([]byte(input), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	v, err := cfg.Launcher.start(t.Context(), cfg.ID, cfg.Shape, Boot{})
+	// Make the regular repo fixture writable to every reserved guest UID.
+	if err := os.Chmod(cfg.Repo, 0666); err != nil {
+		t.Fatal(err)
+	}
+	v, err := cfg.Launcher.Boot(t.Context(), cfg.ID, cfg.Shape, Boot{Repo: cfg.Repo})
 	if err != nil {
 		t.Fatal(err)
 	}
+	sh := kvmRequest(t, v.channel, Reply{"op": "shell_open"})["shellId"]
+	started := time.Now()
+	reply := kvmRequest(t, v.channel, Reply{"op": "exec", "execId": "survives", "shell": sh, "command": "sleep 3; echo done", "timeoutS": 10})
+	if reply["accepted"] != true {
+		t.Fatal(reply)
+	}
+	ready := os.NewFile(3, "parent-ready")
+	if err := json.NewEncoder(ready).Encode(Reply{"bootMS": time.Since(start).Milliseconds(), "startedUnixNano": started.UnixNano()}); err != nil {
+		t.Fatal(err)
+	}
+	ready.Close()
 	select {
 	case <-v.exited:
 		t.Fatalf("Firecracker exited: %v", v.exitErr)

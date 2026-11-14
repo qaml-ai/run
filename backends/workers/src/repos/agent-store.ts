@@ -1,4 +1,4 @@
-import { FileError } from '../volume.ts';
+import { FileError } from '../file-errors.ts';
 import { sniffContentType } from '../file-policy.ts';
 import { repoContext, type RepoEnv } from './registry.ts';
 import { listFiles, statPaths, versionEntries } from './reads.ts';

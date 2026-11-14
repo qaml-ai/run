@@ -330,7 +330,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
                   config.tenantId,
                   config.id,
                   async () => (config.config.mounts as never) ?? [],
-                  async (file, volumePath) => {
+                  async (file, resolvedPath) => {
                     await presentedFile(
                       this.ctx.storage,
                       this.env,
@@ -341,7 +341,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
                         origin: await this.ctx.storage.get<string>("file-origin"),
                       },
                       file,
-                      volumePath,
+                      resolvedPath,
                       (event) => this.emit(event),
                     );
                   },

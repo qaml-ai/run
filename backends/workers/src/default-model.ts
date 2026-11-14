@@ -39,7 +39,7 @@ export async function configurationModelError(env: DefaultModelEnv, tenant: stri
     : `No ${model.provider} API key is configured for this tenant; set one with PUT /v1/providers/${model.provider}/key`;
 }
 
-/** Refuse invalid declarations before creating agent rows or private volumes. */
+/** Refuse invalid declarations before creating agent rows or workspace repos. */
 export async function validateAgentModel(env: DefaultModelEnv, tenant: string, config: AgentConfiguration, previous?: { reference?: string; model?: Model<Api>; defaultModel?: boolean }): Promise<Model<Api> | undefined> {
   const reference = config.model ?? env.MODEL;
   if (reference.startsWith("test/") || reference.startsWith("camel-test/") || reference.startsWith("cloudflare/") || reference.startsWith("@cf/")) return;

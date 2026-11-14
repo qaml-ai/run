@@ -52,12 +52,13 @@ func newFixture(t *testing.T) *fixture {
 	_, usage := table(t, "shard", "ulid")
 	f := &fixture{Controller: Controller{DB: db, Tables: Tables{vms, hosts, deliveries, usage},
 		RuntimeURL: "https://runtime.example/ended"}, t: t, now: epoch}
+	f.EnableClockCheck()
 	f.Now = func() time.Time { return f.now }
 	return f
 }
 
 func (f *fixture) fresh() *Controller {
-	return &Controller{DB: f.DB, Tables: f.Tables, Now: f.Now, RuntimeURL: f.RuntimeURL}
+	return &Controller{DB: f.DB, Tables: f.Tables, Now: f.Now, RuntimeURL: f.RuntimeURL, clock: f.clock}
 }
 
 func must[T any](t *testing.T) func(T, error) T {
@@ -77,8 +78,7 @@ func (f *fixture) register(pool, boot string, slots int) int64 {
 }
 
 func (f *fixture) request(id, pool string) CreateRequest {
-	return CreateRequest{ID: id, Pool: pool, Lineage: "lineage", Ref: "main", Payer: "payer", Mode: JobMode,
-		Job: &Job{Command: "true", TimeoutS: 300}, Shape: Shape{VCPUs: 2, MemoryMiB: 1024, DiskGiB: 25}, Deadline: f.now.Add(4 * time.Minute)}
+	return CreateRequest{ID: id, Pool: pool, Lineage: "lineage", Ref: "main", Payer: "payer", Session: &Session{IdleStopS: DefaultIdleStopS}, Shape: Shape{VCPUs: 2, MemoryMiB: 1024, DiskGiB: 25}, Deadline: f.now.Add(4 * time.Minute)}
 }
 
 func (f *fixture) checkHost(pool string, free int, ids ...string) {
@@ -213,7 +213,7 @@ func TestDDBReplayAndCrashEveryWrite(t *testing.T) {
 			}
 			if crashAt == 0 {
 				steps = append(steps, step{190 * time.Second, func(c *Controller) (VM, error) {
-					return c.End(ctx, id, EndRequest{Code: Exit, At: f.now, ResultRef: "lineage/results/" + id})
+					return c.End(ctx, id, EndRequest{Code: Stopped, At: f.now})
 				}})
 			} else {
 				steps = append(steps,
@@ -473,7 +473,11 @@ func TestDDBUsagePagination(t *testing.T) {
 			}
 			break
 		}
-		for _, event := range events {
+		for _, raw := range events {
+			var event UsageEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Fatal(err)
+			}
 			if seen[event.ID] {
 				t.Fatalf("duplicate: %s", event.ID)
 			}
@@ -490,7 +494,11 @@ func TestDDBUsagePagination(t *testing.T) {
 	if err != nil || len(late) != 16 {
 		t.Fatalf("later watermark: %d events (%v)", len(late), err)
 	}
-	for _, event := range late {
+	for _, raw := range late {
+		var event UsageEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
 		if seen[event.ID] {
 			t.Fatalf("cursor re-read %s", event.ID)
 		}
@@ -585,6 +593,6 @@ func TestDDBLapsedLeaseIsFinalAndEndsClampToNow(t *testing.T) {
 	future := run("future", time.Hour)
 	f.now = epoch.Add(3 * time.Minute)
 	must[VM](t)(f.fresh().ExtendUsage(ctx, future.ID, f.now.Add(time.Hour)))
-	v = must[VM](t)(f.fresh().End(ctx, future.ID, EndRequest{At: f.now.Add(time.Hour), Code: Exit}))
+	v = must[VM](t)(f.fresh().End(ctx, future.ID, EndRequest{At: f.now.Add(time.Hour), Code: Stopped}))
 	f.assertOutcome(v, f.now.UnixMilli())
 }

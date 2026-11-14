@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"slices"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 type HostServer struct {
@@ -23,13 +21,12 @@ type HostServer struct {
 	pools      []string
 	grace      time.Duration
 	routes     *http.ServeMux
-	headResult func(context.Context, string) (store.Info, error)
 	findHost   func(context.Context, []string, string) (compute.Host, error)
 }
 
 func NewHostServer(c *compute.Controller, pools []string, grace time.Duration) *HostServer {
 	s := &HostServer{controller: c, pools: slices.Clone(pools), grace: grace, routes: http.NewServeMux(),
-		headResult: c.Objects.Head, findHost: c.FindHost}
+		findHost: c.FindHost}
 	s.routes.HandleFunc("POST /v1/hosts/{host}/register", s.authenticated(s.register))
 	s.routes.HandleFunc("POST /v1/hosts/{host}/heartbeat", s.authenticated(s.heartbeat))
 	s.routes.HandleFunc("POST /v1/hosts/{host}/vms/{id}/started", s.authenticated(s.started))
@@ -225,36 +222,17 @@ func (s *HostServer) ended(w http.ResponseWriter, r *http.Request, hostID string
 		return nil
 	}
 	switch compute.EndCode(q.Code) {
-	case compute.Exit, compute.Stopped, compute.Timeout, compute.StartFailed:
+	case compute.Stopped, compute.StartFailed:
 	default:
 		return compute.ErrInvalid
 	}
 	if v.BootingAt == nil {
 		return compute.ErrPhase
 	}
-	if err := s.checkResult(ctx, v, q); err != nil {
-		return err
-	}
 	_, err = s.controller.EndFromHost(ctx, id, h, compute.EndRequest{At: time.UnixMilli(q.At), Code: compute.EndCode(q.Code),
-		Exit: q.Exit, TimedOut: q.TimedOut, ResultRef: q.ResultKey, ResultSha256: q.ResultSha256, ResultBytes: q.ResultBytes,
 		EndVersion: q.Version, CheckpointError: q.CheckpointError})
 	if err == nil {
 		w.WriteHeader(http.StatusNoContent)
-	}
-	return err
-}
-
-func (s *HostServer) checkResult(ctx context.Context, v compute.VM, q hostwire.Ended) error {
-	key, ok := store.ResultKey(v.Lineage, v.ID)
-	if !ok || q.ResultKey != key || q.ResultBytes < 0 || !root.Hex(q.ResultSha256, 64) {
-		return compute.ErrInvalid
-	}
-	info, err := s.headResult(ctx, key)
-	if errors.Is(err, os.ErrNotExist) {
-		return hostError{409, "result not found"}
-	}
-	if err == nil && info.Size != q.ResultBytes {
-		return hostError{409, "result size mismatch"}
 	}
 	return err
 }

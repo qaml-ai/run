@@ -138,8 +138,17 @@ func Init(ctx context.Context) error {
 	if cfg.repo != "" {
 		os.Setenv("CAMEL_VSOCK_CONNECT", "1")
 	}
+	if cfg.proxy != "" {
+		for _, key := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"} {
+			os.Setenv(key, cfg.proxy)
+		}
+		os.Setenv("no_proxy", "localhost,127.0.0.1")
+	}
 	if err := ServeVM(ctx, cfg.repo != "" || os.Getenv("CAMEL_VSOCK_CONNECT") == "1", r); err != nil {
 		console(err)
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 	unix.Sync()
 	// x86 Firecracker exits on the emulated i8042 reset triggered by reboot=k.

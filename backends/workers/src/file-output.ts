@@ -1,4 +1,3 @@
-import { signVolumeLink } from "./file-links.ts";
 import { FILE_LIMITS } from "../../../src/limits.ts";
 import type { FileBindings } from "./files.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./repos/agent-files.ts";
@@ -27,7 +26,7 @@ export async function presentedFile(
   env: FileBindings,
   identity: { requestId: string; callId: string; tenant: string; origin?: string },
   file: PresentedRepoFile,
-  volumePath: string,
+  path: string,
   emit: (event: unknown) => Promise<void>,
 ) {
   const added = await storage.transaction(async tx => {
@@ -42,7 +41,7 @@ export async function presentedFile(
   if (!added) return;
   const origin = env.PUBLIC_BASE_URL ?? identity.origin;
   const link = origin && env.FILE_SIGNING_SECRET
-    ? await signRepoLink(await repoContext(env as RepoEnv, identity.tenant, file.repo), origin, { path: file.repoPath ?? volumePath.replace(/^\/+/, ""), version: file.version as string })
+    ? await signRepoLink(await repoContext(env as RepoEnv, identity.tenant, file.repo), origin, { path: file.repoPath ?? path.replace(/^\/+/, ""), version: file.version as string })
     : undefined;
   await emit({
     type: "event", requestId: identity.requestId,
