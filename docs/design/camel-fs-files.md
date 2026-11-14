@@ -45,7 +45,7 @@ term. A repo need not contain code: a shared docs folder is a repo with one bran
 | `GET /v1/repos`, `GET /v1/repos/:id`, `DELETE /v1/repos/:id` | list, inspect (`{ id, name, key, refs, bytes, files, createdAt }`), delete (every ref goes; objects follow by reachability) |
 | `GET /v1/repos/:id/refs`, `PUT /v1/repos/:id/refs/:name { version, expect? }`, `DELETE …/refs/:name?expect=` | the refs; `PUT` is the one mutation primitive underneath everything else, a CAS on `expect` (§9.9's `cas`) under the ref-move rules (§6): a new commit's first parent is the current version, a move to a recorded commit is a fast-forward, and a rewind is a `restore`, a new commit |
 | `POST /v1/repos/:id/branches { name, from?: ref \| version, owner?, ttl? }` | an O(1) branch inside the repo (shares chunks on hosts); `owner` ties its life to a workflow, job or agent |
-| `GET /v1/repos/:id/history?ref=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts |
+| `GET /v1/repos/:id/history?ref=&after=&limit=&path=` | first-parent history, with `merges: true` to descend into attempts; the repo's only log (§6: there is no separate `log` route or event store) |
 | `GET /v1/repos/:id/diff?from=&to=&path=` | changed paths between any two versions, O(changed) |
 | `GET /v1/repos/:id/blame?version=&path=` | per line: version, agent, run, call |
 | `POST /v1/repos/:id/restore { ref, version, message? }` | a new commit on `ref` whose tree is `version`'s tree; history is never rewritten |
@@ -291,6 +291,29 @@ fails the condition instead of landing.
 parents from the head (with `merges: true` to descend). Who and why travel in each commit's author and trailers. A
 multi-step fast-forward (rule 2) adds the target's whole ancestry to the walk, as git's does. Only a ref's create
 and delete are outside history: `createdAt` and `createdBy` sit on the item, and a delete is final.
+
+**The repo log is history; there is no second event store** (fs-architect, 2026-11-14, for wf-repos' R1/R2).
+`RepoDO`'s `ref_log` and `events` tables go with `RepoDO`, and nothing replaces them.
+
+- **`GET /v1/repos/:id/log` is deleted.** `history` (§1) is the one route:
+  - it walks first parents from the ref's head through 9.4's commit reads;
+  - each entry is `{ version, parents, author, message, trailers, time }`;
+  - the cursor is a commit id;
+  - `ref` is required, so there is no lineage-wide log.
+- **Who and why** come from the commit: `author`, the message, and the `Camel-*` trailers. The operation is the
+  `Camel-Checkpoint` / `Camel-Op` trailer (`api`, `turn`, `job`, `merge`, `restore`), written by whoever makes the
+  commit.
+- **A console's "recent activity across branches"** is `GET …/refs` ordered by `updatedAt`, plus each ref's
+  `history`. That is a read, not a feed.
+- **Live changes** are the notify webhook (§9.11) into the watcher's outbox, not a pollable events table.
+- **Not in the log, on purpose:**
+  - Ref creates and deletes. A ref's creation is its item's `createdAt`/`createdBy`. A delete is final, and the
+    deleted ref's commits stay readable by id from any ref that reaches them.
+  - Lease and fence events (take, renew, release, takeover). These are operational facts, not history. They go to
+    the tier's structured logs and metrics (camel-fs.md §1.12), keyed by lineage, ref, holder and epoch.
+
+  If a product need for either appears (an audit trail of branch deletions, say), it becomes a `deliveries`-style
+  item written in the same transaction as the delete, decided then; it is not built speculatively now.
 
 **Leases and fences** sit on the ref item. A host's CAS is conditioned on
 `version = :expect AND holder = :holder AND leaseEpoch = :epoch`, where holder and epoch come **only from the
