@@ -80,7 +80,11 @@ func apiRole(args []string) error {
 	if err != nil {
 		return err
 	}
-	storage := &http.Server{Handler: api.NewStorageServer(repo, version, keys), ReadHeaderTimeout: 5 * time.Second}
+	storageHandler := api.NewStorageServer(repo, version, keys)
+	if computeAPI != nil {
+		storageHandler.EnableCompute(computeAPI.loop.C, computeAPI.images, computeAPI.pools, computeAPI.idle, computeFlags.heartbeat)
+	}
+	storage := &http.Server{Handler: storageHandler, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err

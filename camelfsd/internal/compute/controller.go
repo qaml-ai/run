@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,7 +17,10 @@ import (
 )
 
 func matches(v VM, req CreateRequest) bool {
-	return v.Lineage == req.Lineage && v.Ref == req.Ref && v.Mode == req.Mode && v.Payer == req.Payer
+	return v.Lineage == req.Lineage && v.Ref == req.Ref && v.Payer == req.Payer &&
+		v.Pool == req.Pool && v.Image == req.Image && v.Shape == req.Shape && v.Internet == req.Internet &&
+		v.RequestedVersion == req.Version && v.RequestedDeadline == req.Deadline.UnixMilli() &&
+		v.Session != nil && req.Session != nil && *v.Session == *req.Session
 }
 
 func (c *Controller) Create(ctx context.Context, req CreateRequest) (VM, error) {
@@ -31,7 +36,7 @@ func (c *Controller) Create(ctx context.Context, req CreateRequest) (VM, error) 
 	if !errors.Is(err, ErrNotFound) {
 		return VM{}, err
 	}
-	if req.Pool == "" || req.Shape.MemoryMiB < 0 || req.Deadline.IsZero() || req.Deadline.UnixMilli() <= now {
+	if req.Session == nil || !ValidIdleStop(req.Session.IdleStopS) || req.Pool == "" || req.Shape.MemoryMiB < 0 || req.Deadline.IsZero() || req.Deadline.UnixMilli() <= now || req.Deadline.UnixMilli() > now+int64(24*time.Hour/time.Millisecond) {
 		return VM{}, ErrInvalid
 	}
 	if c.Refs != nil && (!hostwire.MountID.MatchString(req.ID) || req.ID == "." || req.ID == ".." || !root.Hex(req.Image, 64)) {
@@ -212,12 +217,11 @@ func (c *Controller) started(ctx context.Context, v VM, at time.Time, checkHost 
 		phase = Stopping
 	}
 	expr := "SET #phase = :next, #startedAt = :started, #billedTo = :started, #usageSeq = :zero"
+	if phase == Running {
+		expr += ", #lastActivityAt = :started"
+	}
 	values := attrs{":phase": s(string(v.Phase)), ":next": s(string(phase)), ":host": s(v.Host),
 		":epoch": n(v.HostEpoch), ":started": n(started), ":zero": n(0)}
-	if v.Mode == JobMode && v.Job != nil {
-		expr += ", #deadlineAt = :deadline"
-		values[":deadline"] = n(started + v.Job.TimeoutS*1000 + JobDeadlineGrace.Milliseconds())
-	}
 	const condition = "#phase = :phase AND " + vmHost + " AND attribute_not_exists(#startedAt)"
 	if !checkHost {
 		return c.updateVM(ctx, v.ID, condition, expr, values)
@@ -227,6 +231,23 @@ func (c *Controller) started(ctx context.Context, v VM, at time.Time, checkHost 
 		return VM{}, err
 	}
 	return c.Get(ctx, v.ID)
+}
+
+// Touch advances activity only while the session is running. An old touch is a no-op.
+func (c *Controller) Touch(ctx context.Context, id string, at time.Time) error {
+	_, err := c.updateVM(ctx, id, "#phase = :running AND (attribute_not_exists(#lastActivityAt) OR #lastActivityAt < :at)",
+		"SET #lastActivityAt = :at", attrs{":running": s(string(Running)), ":at": n(at.UnixMilli())})
+	if !errors.Is(err, ErrCondition) {
+		return err
+	}
+	v, err := c.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if v.Phase != Running {
+		return ErrPhase
+	}
+	return nil
 }
 
 func (c *Controller) Listed(ctx context.Context, id, host string, hostEpoch int64, at time.Time) (VM, error) {
@@ -259,13 +280,22 @@ func (c *Controller) RequestStop(ctx context.Context, id string, checkpoint bool
 	if err != nil {
 		return v, err
 	}
-	now := c.now()
-	return c.stop(ctx, v, now, now.UnixMilli(), Stopped, checkpoint)
+	for {
+		now := c.now()
+		stopped, err := c.stop(ctx, v, now, now.UnixMilli(), Stopped, checkpoint)
+		if !errors.Is(err, ErrCondition) {
+			return stopped, err
+		}
+		v, err = c.Get(ctx, id)
+		if err != nil {
+			return v, err
+		}
+	}
 }
 
 func (c *Controller) ExtendDeadline(ctx context.Context, id string, until time.Time) (VM, error) {
 	v, err := c.Get(ctx, id)
-	if err != nil || v.Phase == Ended || v.LeaseDeadline >= until.UnixMilli() {
+	if err != nil || v.Phase == Ended {
 		return v, err
 	}
 	// MONEY: a lapsed lease is final. Reviving it would bill the lapsed gap retroactively (usage is clamped to the
@@ -274,13 +304,18 @@ func (c *Controller) ExtendDeadline(ctx context.Context, id string, until time.T
 	if now >= v.LeaseDeadline {
 		return v, ErrLeaseExpired
 	}
+	if v.LeaseDeadline >= until.UnixMilli() {
+		return v, nil
+	}
 	updated, err := c.updateVM(ctx, id, "attribute_exists(#phase) AND #phase <> :ended AND #leaseDeadline < :until AND #leaseDeadline > :now",
 		"SET #leaseDeadline = :until", attrs{":ended": s(string(Ended)), ":until": n(until.UnixMilli()), ":now": n(now)})
 	if errors.Is(err, ErrCondition) {
-		if current, readErr := c.Get(ctx, id); readErr == nil && (current.Phase == Ended || current.LeaseDeadline >= until.UnixMilli()) {
+		if current, readErr := c.Get(ctx, id); readErr == nil && current.Phase == Ended {
 			return current, nil
 		} else if readErr == nil && now >= current.LeaseDeadline {
 			return current, ErrLeaseExpired
+		} else if readErr == nil && current.LeaseDeadline >= until.UnixMilli() {
+			return current, nil
 		}
 	}
 	return updated, err
@@ -317,10 +352,16 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 	case Requested, Placed:
 		return c.end(ctx, v, EndRequest{At: time.UnixMilli(at), Code: reason}, now, &stopIntent{at, reason, checkpoint})
 	case Booting, Running:
-		updated, err := c.updateVM(ctx, v.ID, "#phase = :phase AND #leaseDeadline = :lease AND attribute_not_exists(#stopRequestedAt)",
+		cond := "#phase = :phase AND #leaseDeadline = :lease AND attribute_not_exists(#stopRequestedAt)"
+		values := attrs{":phase": s(string(v.Phase)), ":stopping": s(string(Stopping)), ":at": n(at),
+			":checkpoint": b(checkpoint), ":reason": s(string(reason)), ":lease": n(v.LeaseDeadline)}
+		if reason == Idle {
+			cond += " AND #lastActivityAt = :activity AND attribute_not_exists(#execs)"
+			values[":activity"] = n(*v.LastActivityAt)
+		}
+		updated, err := c.updateVM(ctx, v.ID, cond,
 			"SET #phase = :stopping, #stopRequestedAt = :at, #stopCheckpoint = :checkpoint, #stopReason = :reason",
-			attrs{":phase": s(string(v.Phase)), ":stopping": s(string(Stopping)), ":at": n(at),
-				":checkpoint": b(checkpoint), ":reason": s(string(reason)), ":lease": n(v.LeaseDeadline)})
+			values)
 		if err == nil {
 			c.pushStop(ctx, updated)
 		}
@@ -328,4 +369,83 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 	default:
 		return v, ErrPhase
 	}
+}
+
+// ExecStarted records an exec once, including after a replay of its end.
+func (c *Controller) ExecStarted(ctx context.Context, id, execID string, at time.Time) error {
+	return c.execActivity(ctx, id, execID, at, true)
+}
+
+func (c *Controller) ExecEnded(ctx context.Context, id, execID string, at time.Time) error {
+	return c.execActivity(ctx, id, execID, at, false)
+}
+
+func (c *Controller) execActivity(ctx context.Context, id, execID string, at time.Time, start bool) error {
+	if !hostwire.MountID.MatchString(execID) {
+		return ErrInvalid
+	}
+	for {
+		v, err := c.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		if v.Phase != Running {
+			if !start && (v.Phase == Stopping || v.Phase == Ended) {
+				return nil
+			}
+			return ErrPhase
+		}
+		cond := "#phase = :running"
+		values := attrs{":running": s(string(Running)), ":id": s(execID), ":set": ss(execID)}
+		expr := "DELETE #execs :set"
+		if start {
+			cond += " AND NOT contains(#seenExecs, :id)"
+			expr = "ADD #execs :set, #seenExecs :set"
+		} else {
+			cond += " AND contains(#execs, :id)"
+		}
+		if (start && slices.Contains(v.seenExecs, execID)) || (!start && !slices.Contains(v.execs, execID)) {
+			return nil
+		}
+		activity := at.UnixMilli()
+		if v.LastActivityAt == nil {
+			cond += " AND attribute_not_exists(#lastActivityAt)"
+		} else {
+			cond += " AND #lastActivityAt = :previous"
+			values[":previous"] = n(*v.LastActivityAt)
+			activity = max(activity, *v.LastActivityAt)
+		}
+		values[":at"] = n(activity)
+		set := "SET #lastActivityAt = :at "
+		first := start && v.FirstExecAt == nil
+		if first {
+			cond += " AND attribute_not_exists(#firstExecAt)"
+			set = "SET #lastActivityAt = :at, #firstExecAt = :first "
+			values[":first"] = n(at.UnixMilli())
+		}
+		_, err = c.updateVM(ctx, id, cond, set+expr, values)
+		if errors.Is(err, ErrCondition) {
+			continue
+		}
+		if err == nil && first {
+			c.firstExecLog(map[string]any{
+				"vm": id, "exec": execID, "createdAt": v.CreatedAt, "placedAt": v.PlacedAt,
+				"bootingAt": v.BootingAt, "runningAt": v.StartedAt, "latencyMs": max(0, at.UnixMilli()-v.CreatedAt),
+			})
+		}
+		return err
+	}
+}
+
+func (c *Controller) firstExecLog(fields map[string]any) {
+	const event = "vm_first_exec"
+	if c.Log != nil {
+		c.Log(event, fields)
+		return
+	}
+	var attrs []slog.Attr
+	for key, value := range fields {
+		attrs = append(attrs, slog.Any(key, value))
+	}
+	slog.LogAttrs(context.Background(), slog.LevelInfo, event, attrs...)
 }

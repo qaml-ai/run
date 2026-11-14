@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -26,6 +25,7 @@ type Controller struct {
 	CommitTree func(ctx context.Context, lineage, version string) (string, error)
 	Log        func(event string, fields map[string]any)
 	HostFresh  time.Duration
+	clock      clockObservation
 
 	// afterWrite is used by tests to lose a successful write's response.
 	afterWrite func() error
@@ -50,19 +50,11 @@ const (
 type EndCode string
 
 const (
-	Exit         EndCode = "exit"
 	Stopped      EndCode = "stopped"
-	Timeout      EndCode = "timeout"
+	Idle         EndCode = "idle"
 	HostLost     EndCode = "host_lost"
 	StartFailed  EndCode = "start_failed"
 	LeaseExpired EndCode = "lease_expired"
-)
-
-const (
-	JobMode     = "job"
-	SessionMode = "session"
-	// JobDeadlineGrace allows the host time to report the result after the job timeout.
-	JobDeadlineGrace = 30 * time.Second
 )
 
 var (
@@ -84,61 +76,52 @@ type Shape struct {
 	DiskMiB   int `json:"diskMiB,omitempty"`
 }
 
-type Job struct {
-	Command  string
-	TimeoutS int64
-	Env      map[string]string
-	Outputs  []string
-	Commit   bool
-	Pids     int
-}
+const DefaultIdleStopS = 10
+
+func ValidIdleStop(seconds int64) bool { return seconds >= 5 && seconds <= 86400 }
 
 type Session struct{ IdleStopS int64 }
 
 type CreateRequest struct {
 	ID, Lineage, Ref, Version string
-	Mode, Image, Pool, Payer  string
+	Image, Pool, Payer        string
 	Shape                     Shape
-	Job                       *Job
 	Session                   *Session
 	Internet                  bool
-	Network                   map[string]types.AttributeValue
 	Deadline                  time.Time
 }
 
 // VM timestamps are Unix milliseconds. Pointers distinguish unset timestamps from zero.
 type VM struct {
 	CreateRequest
-	Phase                           Phase
-	CreatedAt, LeaseDeadline        int64
-	Host                            string
-	HostEpoch                       int64
-	PlacedAt, BootingAt, DeadlineAt *int64
-	StartedAt, LastListedAt         *int64
-	StopRequestedAt, EndedAt        *int64
-	StopCheckpoint                  bool
-	StopReason, Code                EndCode
-	Exit                            int
-	TimedOut                        bool
-	ResultRef, EndVersion           string
-	CheckpointError                 string
-	Tree, RefLeaseHolder            string
-	RefLeaseEpoch, RefLeaseDeadline int64
-	RefLeaseReleased                bool
-	ResultSha256                    string
-	ResultBytes                     int64
-	BilledTo, UsageSeq              int64
+	Phase                                   Phase
+	CreatedAt, LeaseDeadline                int64
+	Host                                    string
+	HostEpoch                               int64
+	PlacedAt, BootingAt                     *int64
+	StartedAt, LastListedAt, LastActivityAt *int64
+	StopRequestedAt, EndedAt                *int64
+	StopCheckpoint                          bool
+	StopReason, Code                        EndCode
+	FirstExecAt                             *int64
+	execs, seenExecs                        []string
+	RequestedVersion                        string
+	RequestedDeadline                       int64
+	ResultRef, EndVersion                   string
+	CheckpointError                         string
+	Tree, RefLeaseHolder                    string
+	RefLeaseEpoch, RefLeaseDeadline         int64
+	RefLeaseReleased                        bool
+	ResultSha256                            string
+	ResultBytes                             int64
+	BilledTo, UsageSeq                      int64
 }
 
 type EndRequest struct {
-	At                    time.Time
-	Code                  EndCode
-	Exit                  int
-	TimedOut              bool
-	ResultRef, EndVersion string
-	CheckpointError       string
-	ResultSha256          string
-	ResultBytes           int64
+	At              time.Time
+	Code            EndCode
+	EndVersion      string
+	CheckpointError string
 }
 
 type HostInfo struct {
@@ -165,3 +148,6 @@ type Waiter struct {
 	CreatedAt        int64
 	MemoryMiB, VCPUs int
 }
+
+// Time is the tier clock used for VM deadlines and the usage watermark.
+func (c *Controller) Time() time.Time { return c.now() }

@@ -68,7 +68,6 @@ type BootSpec struct {
 	Lease    Lease    `json:"lease"`
 	Shape    Shape    `json:"shape"`
 	Internet bool     `json:"internet"`
-	Job      *Job     `json:"job,omitempty"`
 	Session  *Session `json:"session,omitempty"`
 	Deadline int64    `json:"deadline"`
 }
@@ -77,15 +76,6 @@ type Lease struct {
 	Holder   Holder `json:"holder"`
 	Epoch    int64  `json:"epoch"`
 	Deadline int64  `json:"deadline"`
-}
-
-type Job struct {
-	Command  string            `json:"command"`
-	TimeoutS int64             `json:"timeoutS"`
-	Env      map[string]string `json:"env"`
-	Outputs  []string          `json:"outputs"`
-	Commit   bool              `json:"commit"`
-	Pids     int               `json:"pids"`
 }
 
 type Session struct {
@@ -97,20 +87,13 @@ type Started struct {
 	At        int64 `json:"at"`
 }
 
-// Ended reports the result after the host PUTs its full JSON at
-// results/<lineage>/<vmId>. The result bytes and metadata must stay the same
-// across retries. Code is exit, stopped, timeout, or start_failed.
+// Ended reports a stopped session or a failed boot.
 type Ended struct {
 	BootEpoch       int64  `json:"bootEpoch"`
 	At              int64  `json:"at"`
 	Code            string `json:"code"`
-	Exit            int    `json:"exit"`
-	TimedOut        bool   `json:"timedOut"`
 	Version         string `json:"version"`
 	CheckpointError string `json:"checkpointError"`
-	ResultKey       string `json:"resultKey"`
-	ResultSha256    string `json:"resultSha256"`
-	ResultBytes     int64  `json:"resultBytes"`
 }
 
 // Stop is the body of POST https://<addr>/v1/vms/{id}/stop.

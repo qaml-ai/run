@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -26,6 +27,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/hostcert"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 )
 
 type apiComputeFlags struct {
@@ -33,6 +35,7 @@ type apiComputeFlags struct {
 	endpoint, refs, pools, listenHosts, hostsCAPEM, tierCert, tierKey, notifyURL, notifyKey string
 	listenEnroll, enrollAudience, enrollRoles, hostsCA                                      string
 	heartbeat                                                                               time.Duration
+	guestImages, idleStop                                                                   string
 }
 
 func (c *apiComputeFlags) bind(f *flag.FlagSet) {
@@ -53,16 +56,20 @@ func (c *apiComputeFlags) bind(f *flag.FlagSet) {
 	f.StringVar(&c.tierKey, "tier-key", "", "tier TLS private key PEM")
 	f.StringVar(&c.notifyURL, "runtime-notify-url", "", "runtime webhook URL")
 	f.StringVar(&c.notifyKey, "notify-key-file", "", "raw runtime webhook HMAC key file (alternative to CAMELFS_NOTIFY_KEY)")
+	f.StringVar(&c.guestImages, "guest-images", os.Getenv("GUEST_IMAGE_SHA256"), "comma-separated allowed guest image SHA-256s")
+	f.StringVar(&c.idleStop, "idle-stop", "", "comma-separated pool=seconds session idle overrides")
 	f.DurationVar(&c.heartbeat, "heartbeat-interval", 10*time.Second, "host heartbeat interval")
 }
 
 type apiCompute struct {
-	hostServer   *api.HostServer
-	enrollServer http.Handler
-	issuer       hostcert.Issuer
-	loop         compute.Loop
-	sender       delivery.Sender
-	credentials  *api.HostTLS
+	images, pools []string
+	idle          map[string]int64
+	hostServer    *api.HostServer
+	enrollServer  http.Handler
+	issuer        hostcert.Issuer
+	loop          compute.Loop
+	sender        delivery.Sender
+	credentials   *api.HostTLS
 }
 
 func (c *apiCompute) reload() error {
@@ -106,6 +113,20 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 			return nil, errors.New("pools must contain distinct nonempty pool names")
 		}
 	}
+	var images []string
+	if f.guestImages != "" {
+		images = strings.Split(f.guestImages, ",")
+	}
+	for i := range images {
+		images[i] = strings.TrimSpace(images[i])
+		if !root.Hex(images[i], 64) {
+			return nil, errors.New("--guest-images requires 64-character SHA-256 values")
+		}
+	}
+	idle, err := parseIdleStop(f.idleStop, pools)
+	if err != nil {
+		return nil, err
+	}
 	var roles api.EnrollmentRoles
 	if f.listenEnroll != "" {
 		var err error
@@ -130,7 +151,7 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 	if err != nil {
 		return nil, err
 	}
-	c := &apiCompute{credentials: credentials, issuer: issuer}
+	c := &apiCompute{credentials: credentials, issuer: issuer, images: images, pools: pools, idle: idle}
 	db, err := ddb.Open(ctx, ddb.Config{Region: region, Endpoint: f.endpoint})
 	if err != nil {
 		return nil, err
@@ -139,6 +160,7 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 	controller := &compute.Controller{DB: db, Tables: f.tables, RuntimeURL: f.notifyURL, Objects: repo.Store,
 		Refs: refstore.New(db, f.refs, nil, repo), CommitTree: api.CommitTreeResolver(repo),
 		Pusher: api.HostPusher{TLS: credentials}, HostFresh: grace}
+	controller.EnableClockCheck()
 	c.hostServer = api.NewHostServer(controller, pools, grace)
 	if issuer != nil {
 		certificates := api.HostCertificates{Issuer: issuer, TLS: credentials}
@@ -224,4 +246,20 @@ func (c *apiCompute) start(ctx context.Context) func() {
 		cancel()
 		wg.Wait()
 	}
+}
+
+func parseIdleStop(value string, pools []string) (map[string]int64, error) {
+	overrides := make(map[string]int64)
+	if value == "" {
+		return overrides, nil
+	}
+	for entry := range strings.SplitSeq(value, ",") {
+		pool, seconds, _ := strings.Cut(strings.TrimSpace(entry), "=")
+		idle, err := strconv.ParseInt(seconds, 10, 64)
+		if !slices.Contains(pools, pool) || err != nil || !compute.ValidIdleStop(idle) || overrides[pool] != 0 {
+			return nil, fmt.Errorf("--idle-stop: invalid or repeated pool=seconds entry %q", entry)
+		}
+		overrides[pool] = idle
+	}
+	return overrides, nil
 }

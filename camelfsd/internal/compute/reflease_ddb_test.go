@@ -50,7 +50,7 @@ func TestDDBRefLeaseRecovery(t *testing.T) {
 
 	// End committed and removed the VM from its host before Release ran.
 	c.afterWrite = func() error { return lostResponse }
-	if _, err := c.End(ctx, v.ID, EndRequest{At: f.now, Code: Exit}); !errors.Is(err, lostResponse) {
+	if _, err := c.End(ctx, v.ID, EndRequest{At: f.now, Code: Stopped}); !errors.Is(err, lostResponse) {
 		t.Fatal(err)
 	}
 	c.afterWrite = nil
