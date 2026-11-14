@@ -167,5 +167,5 @@ test("a parse's deadline is its caller's: a request's is inspectMs + 2 s, the st
   // A parser slower than the deadline it was given fails it; given a longer one, the same parser answers.
   answerAfterMs = 400;
   await assert.rejects(parse(PNG, false, false, { deadlineMs: 100 }), /the parser took too long/);
-  assert.equal(inspection(await parse(PNG, false, false, { deadlineMs: 2_000 })).media.width, 1);
+  assert.equal((inspection(await parse(PNG, false, false, { deadlineMs: 2_000 })).media as { width?: number }).width, 1);
 });
