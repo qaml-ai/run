@@ -1578,16 +1578,16 @@ export const EndUserSettingsPatch = z.object({
 }).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowance maps and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes" });
 export const EndUserAllowancePool = z.object({
   key: z.string(), allowance: micros("The shared daily allowance in raw micro-USD"),
-  allowanceSpent: micros("Total allowance spent by all members today"), held: micros("Allowance reserved by pool members today"),
-  allowanceLeft: micros("Pool allowance remaining after spend and holds"),
+  allowanceSpent: micros("Total allowance spent by all members today"), held: micros("Always zero"),
+  allowanceLeft: micros("Pool allowance remaining after posted spend"),
 }).openapi("EndUserAllowancePool");
 export const EndUserBucketDay = z.object({
   pool: EndUserAllowancePool.nullable().openapi({ description: "The shared pool this bucket spends from; null for a per-bucket allowance" }),
   bucket: z.string(), allowance: micros("The bucket or pool's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
   paidSpent: micros("Charged to the balance today for this bucket"),
-  writtenOff: micros("Cost past what was left for this bucket today (the balance, the daily limit, the bucket's limit), raw: not charged to the user; the tenant bears it"),
-  held: micros("Held for calls in flight (allowance and balance)"),
-  allowanceLeft: micros("Left of the allowance today, after holds"),
+  writtenOff: micros("Historical cost written off for this bucket today (raw cost)"),
+  held: micros("Always zero"),
+  allowanceLeft: micros("Allowance remaining after posted spend today"),
   paidLimit: micros("The bucket's own daily limit on paid spend (charged); null: none").nullable(),
 });
 export const EndUserLot = z.object({
@@ -1605,10 +1605,10 @@ export const EndUserMarkedLot = z.object({ lot: EndUserLot, replayed: z.boolean(
 export const EndUser = z.object({
   id: z.string().openapi({ description: "The end user: the subject of the agents and calls that spend for them" }),
   enabled: z.boolean().openapi({ description: "Whether the tenant meters its end users" }),
-  balance: micros("Paid credit left (charged units); usage never takes it below zero (a negative adjustment of yours may)"),
-  held: micros("Of the balance, what calls in flight hold"),
+  balance: micros("Signed paid balance in charged units, which can go below zero when usage posts"),
+  held: micros("Always zero"),
   lots: z.array(EndUserLot).openapi({ description: "The balance by when it expires, in the order paid spend takes it: lots that expire, the soonest first, then the rest (key null, never expires). Their remaining sum to the balance when it is above zero" }),
-  available: micros("What paid spend may still take today: the balance less holds, within the daily limit"),
+  available: micros("Signed paid spendable credit within the daily limit"),
   dailyLimit: micros("The daily limit on paid spend that applies (the user's own, else the tenant's); null: none").nullable(),
   lowBalance: micros("The low-balance threshold that applies (the user's own, else the tenant's); null: none").nullable(),
   markupBps: z.number().int(),
@@ -1626,7 +1626,7 @@ export const EndUserUpdate = z.object({
   lowBalance: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own low-balance threshold (end_user.balance.low); null: the tenant's. Set above their balance, it fires once with cause threshold_changed" }),
 }).openapi("EndUserUpdate");
 export const EndUserEntryInput = z.object({
-  kind: z.enum(["grant", "refund", "adjustment", "spend"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); spend: takes amount for something you sell other than metered usage (a month of a feature, an item); a refund or a spend takes at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount" }),
+  kind: z.enum(["grant", "refund", "adjustment", "spend"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); spend: takes amount for something you sell other than metered usage (a month of a feature, an item); a refund or a spend takes at most the current balance (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount" }),
   amount: z.number().int().openapi({ description: "micro-USD: positive for a grant, refund or spend, signed for an adjustment" }),
   key: z.string().min(1).max(255).openapi({ description: "Idempotency key, e.g. the payment's id: the same key and entry again returns the first; with another entry it is a 409" }),
   reference: z.string().max(500).optional().openapi({ description: "Your reference, shown in the ledger" }),

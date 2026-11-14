@@ -179,37 +179,19 @@ test("a known transcript survives failed billing and resumes settlement without 
   );
 });
 
-test("end-user settlement replays its durable reservation before a cached transcript returns", async () => {
+test("end-user settlement replays its durable debit before a cached transcript returns", async () => {
   const h = setup();
   let fail = true,
     charged = 0;
-  const reserved: string[] = [],
-    settled = new Set<string>();
+  let admissions = 0;
+  const settled = new Set<string>();
   const credits = {
-    async reserve(
-      _tenant: string,
-      _person: string,
-      _bucket: string,
-      call: { id: string },
-    ) {
-      reserved.push(call.id);
-      return { hold: { id: call.id, raw: 50_000, allowance: 0, paid: 50_000 } };
-    },
-    async settleHold(
-      _tenant: string,
-      _person: string,
-      _bucket: string,
-      id: string,
-      raw: number,
-    ) {
+    async refusal() { admissions++; return undefined; },
+    async debit(_tenant: string, _person: string, _bucket: string, usd: number, key: string) {
       if (fail) throw new Error("credit store unavailable");
-      if (!settled.has(id)) {
-        settled.add(id);
-        charged += raw;
-      }
-    },
-    async release() {
-      throw new Error("a completed transcription reservation must be settled");
+      if (settled.has(key)) return;
+      settled.add(key);
+      charged += usd;
     },
   };
   const subject = {
@@ -240,6 +222,6 @@ test("end-user settlement replays its durable reservation before a cached transc
   );
   assert.equal(retried[0].transcript?.text, "A transcript");
   assert.equal(h.calls(), 1);
-  assert.equal(reserved.length, 1);
-  assert.equal(charged, 50_000);
+  assert.equal(admissions, 1);
+  assert.equal(charged, 0.05);
 });

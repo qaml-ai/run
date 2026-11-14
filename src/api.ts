@@ -52,7 +52,7 @@ import type { Webhooks } from "./webhooks.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
 import { endUserRoutes } from "./end-users-api.ts";
-import { bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-credits.ts";
+import { admitEndUser, bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-credits.ts";
 import { getVoice, VoiceLookupInput, VoiceLookupResult, searchVoices, VoiceSearchInput, VoiceSearchResult } from "./voice-library.ts";
 import { voiceRoutes } from "./voice-api.ts";
 import type { VoiceCalls } from "./voice-calls.ts";
@@ -64,7 +64,7 @@ import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { speechChoiceInput, speechInput, speechRequest, type SpeechService } from "./speech-api.ts";
 import { DEFAULT_VOICE } from "./speech.ts";
-import { imageOptions, imageRequest, type Hold, type ImageService, type ImageSource } from "./images.ts";
+import { imageOptions, imageRequest, type ImageService, type ImageSource } from "./images.ts";
 import { decisionRequest, decisionsRequest, type DecisionService } from "./decisions.ts";
 import { AUDIO_LIMITS, DECISION_LIMITS, IMAGE_LIMITS } from "./limits.ts";
 import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
@@ -248,12 +248,12 @@ export function api(context: ApiContext) {
   /** The routes a browser token may read, besides the tenant's own tokens. */
   const readers = [...DOCUMENT.security, { browser: [] }];
 
-  /** A standalone call's hold on its end user's credit (its subject's, in `bucket`), where the tenant meters end users. */
-  const endUserHold = (tenant: string, subject: string | undefined, bucket: string | undefined, call: string): Hold | undefined => {
+  /** Admission and debit for a standalone call's end user. */
+  const endUserAdmission = (tenant: string, subject: string | undefined, bucket: string | undefined, call: string) => {
     const endUsers = context.endUsers;
     if (subject === undefined || !endUsers) return undefined;
     const named = bucket === undefined ? DEFAULT_BUCKET : bucketInput(bucket);
-    return usd => endUsers.hold(tenant, subject, named, usd, call);
+    return () => admitEndUser(endUsers, tenant, subject, named, call);
   };
   const volumes = () => {
     if (!context.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
@@ -1082,10 +1082,10 @@ export function api(context: ApiContext) {
     const identity = identityInput({ subject: input.subject, context: input.context });
     const actor = actorInput(input.actor);
     const language = languageInput(input.language);
-    const hold = endUserHold(c.var.principal.tenant, identity?.subject, input.bucket, "transcription");
+    const admitCredit = endUserAdmission(c.var.principal.tenant, identity?.subject, input.bucket, "transcription");
     return json(c, 200, await transcribeRequest(service, c.var.principal.tenant, {
       audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}),
-      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(admitCredit ? { admitCredit } : {}),
     }, c.req.raw.signal));
   });
 
@@ -1122,9 +1122,9 @@ export function api(context: ApiContext) {
     if (bucket !== undefined && typeof bucket !== "string") throw new HttpError(400, "bucket is a bucket's name");
     const identity = identityInput({ subject, context: claims });
     const actor = actorInput(asked);
-    const hold = endUserHold(c.var.principal.tenant, identity?.subject, bucket as string | undefined, "decision");
+    const admitCredit = endUserAdmission(c.var.principal.tenant, identity?.subject, bucket as string | undefined, "decision");
     return json(c, 200, await decisionsRequest(service, c.var.principal.tenant, {
-      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(dataCollection === "deny" ? { dataCollection } : {}), ...(bucket === undefined ? {} : { bucket: bucket as string }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(dataCollection === "deny" ? { dataCollection } : {}), ...(bucket === undefined ? {} : { bucket: bucket as string }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(admitCredit ? { admitCredit } : {}),
     }, c.req.raw.signal));
   });
 
@@ -1139,11 +1139,11 @@ export function api(context: ApiContext) {
     const checked = speechInput(input, DEFAULT_VOICE);
     const identity = identityInput({ subject: input.subject, context: input.context });
     const actor = actorInput(input.actor);
-    const hold = endUserHold(c.var.principal.tenant, identity?.subject, input.bucket, "speech");
+    const admitCredit = endUserAdmission(c.var.principal.tenant, identity?.subject, input.bucket, "speech");
     const language = languageInput(input.language);
     const choice = input.speech === undefined ? undefined : speechChoiceInput(input.speech);
     const made = await speechRequest(service, c.var.principal.tenant, {
-      ...checked, ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(language ? { language } : {}), ...(choice ? { choice } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...checked, ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(language ? { language } : {}), ...(choice ? { choice } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(admitCredit ? { admitCredit } : {}),
     }, c.req.raw.signal);
     return new Response(made.body, { status: 200, headers: { "Content-Type": made.contentType, "Cache-Control": "no-store", "X-Speech-Model": made.model } });
   });
@@ -1192,11 +1192,11 @@ export function api(context: ApiContext) {
     try { path = input.volumeId === undefined ? undefined : normalizePath(input.path ?? "/images"); } catch { throw new HttpError(400, "Invalid path"); }
     const identity = identityInput({ subject: input.subject, context: input.context });
     const actor = actorInput(input.actor);
-    const hold = endUserHold(c.var.principal.tenant, identity?.subject, input.bucket, "image");
+    const admitCredit = endUserAdmission(c.var.principal.tenant, identity?.subject, input.bucket, "image");
     return json(c, 200, await imageRequest(service, c.var.principal.tenant, {
       prompt: input.prompt, images, ...(mask ? { mask } : {}), options: imageOptions(input),
       ...(input.volumeId !== undefined ? { volume: { id: input.volumeId, path: path! } } : {}),
-      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(admitCredit ? { admitCredit } : {}),
     }, c.req.raw.signal));
   });
 

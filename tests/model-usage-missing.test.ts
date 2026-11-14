@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
-import { EndUserCredits, unmarked } from "../src/end-user-credits.ts";
+import { EndUserCredits } from "../src/end-user-credits.ts";
 import { ModelAttempts } from "../src/model-attempts.ts";
 import { attemptAck } from "../src/model-attempt.ts";
 import { catalogRates, platformUsage } from "../src/platform-pricing.ts";
@@ -50,11 +50,8 @@ async function fixture() {
     return { state: row.state, charge: Number(row.charge), endUserRaw: Number(row.end_user_raw), estimatedInputTokens: row.estimated_input_tokens, totals: row.totals };
   };
   const entry = async (tenant: string, id: string) => (await service.ledger(tenant, "person", { limit: 200 })).entries.filter(entry => entry.metadata.attempt === id);
-  const held = async (id: string) => {
-    const row = (await db.query("select allowance, paid from end_user_holds where id = $1", [id])).rows[0];
-    return Number(row.allowance) + unmarked(Number(row.paid), 2_000);
-  };
-  return { db, service, attempts, call, attempt, entry, held };
+
+  return { db, service, attempts, call, attempt, entry };
 }
 /** Run `work` with console.log captured: the JSON lines it logged of `type`. */
 async function logged(type: string, work: () => Promise<unknown>) {
@@ -113,37 +110,16 @@ test("prepaid, platform key: a completed call with no usage charges the tenant a
   assert.equal(entries.reduce((sum, item) => sum + item.amount, 0), -60_000);
 });
 
-test("an estimated call is never charged to its end user past what it held; with no hold left, the estimate itself", async () => {
-  const { db, call, attempt, entry, held } = await fixture();
-  // A reply that streamed far past its hold (its characters run high: JSON, signatures).
-  const big = await call();
-  const hold = await held(big.id);
-  await logged("model_usage_missing", () => big.finish(NONE, 400_000));
-  const capped = await attempt(big.id);
-  assert.equal(capped.endUserRaw, hold, "capped at the hold");
-  assert.ok(capped.charge > hold, "the tenant (no hold) is charged the estimate");
-  assert.equal((await entry("payg", big.id))[0].raw, hold);
-  // The same end delivered again posts nothing more.
-  await big.finish(NONE, 400_000);
-  assert.equal((await entry("payg", big.id)).length, 1);
-  assert.equal((await attempt(big.id)).endUserRaw, hold);
-
-  // A cut call (aborted) too.
-  const cut = await call();
-  const cutHold = await held(cut.id);
-  await cut.finish({ ...NONE, estimatedInputTokens: 20_000 }, 400_000, false);
-  assert.equal((await attempt(cut.id)).endUserRaw, cutHold);
-
-  // Its hold lapsed: the estimate, uncapped, and still not the window.
-  const lapsed = await call();
-  const lapsedHold = await held(lapsed.id);
-  await db.query("delete from end_user_holds where id = $1", [lapsed.id]);
-  await logged("model_usage_missing", () => lapsed.finish(NONE, 40_000));
-  const estimate = at("openrouter", MODEL, 20_000, 20_000);
-  assert.ok(estimate > lapsedHold);
-  assert.ok(Math.abs((await attempt(lapsed.id)).endUserRaw - estimate) <= 1);
-  const model = getModel("openrouter", MODEL)!;
-  assert.ok(estimate < at("openrouter", MODEL, model.contextWindow, model.maxTokens));
+test("a large estimated call posts the full estimate once", async () => {
+  const { call, attempt, entry } = await fixture();
+  const { id, finish } = await call();
+  await logged("model_usage_missing", () => finish(NONE, 400_000));
+  const posted = await attempt(id);
+  assert.ok(posted.charge > 0);
+  assert.equal(posted.endUserRaw, posted.charge);
+  await finish(NONE, 400_000);
+  assert.equal((await entry("payg", id)).length, 1);
+  assert.equal((await entry("payg", id))[0].raw, posted.charge);
 });
 
 test("an unbilled tenant and a tenant's own key: the end user pays the estimate, not nothing; OpenRouter still reconciles it", async () => {

@@ -43,7 +43,7 @@ test("a failed attempt without usage evidence costs nothing, including after rec
   assert.equal(Number((await db.query("select charge from model_attempts where id = $1", [failed.id])).rows[0].charge), 0);
 });
 
-test("a failed platform call releases the end-user hold and costs neither payer", async () => {
+test("a failed platform call costs neither payer", async () => {
   const { db } = await testDatabase();
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: keyHash, billing: "prepaid" } }, platformKeys: { openrouter: KEY } }) });
   await tenants.reload();
@@ -54,16 +54,13 @@ test("a failed platform call releases the end-user hold and costs neither payer"
   const attempts = new ModelAttempts(db, new Accounts({ tenants, db }), undefined, 0, undefined, service);
   const event = (body: object) => attempts.event("payg", "agent", true, true, body as never);
   const begin = (id: string, model: string) => event({ type: "begin", id, provider: "openrouter", model, kind: "response", at: Date.now(), keyHash, estimate: SMALL, endUser: { id: "person", bucket: "b" } });
-  const endUserHeld = async () => Number((await db.query("select coalesce(sum(paid + allowance), 0)::bigint as n from end_user_holds")).rows[0].n);
   const balance = async () => Number((await db.query("select balance from credit_accounts where tenant = 'payg'")).rows[0].balance);
   const person = async () => Number((await db.query("select balance from end_users where tenant = 'payg' and id = 'person'")).rows[0].balance);
 
   const failed = randomUUID(), answered = randomUUID();
   await begin(failed, "particle-ai/particle-1");
-  assert.ok(await endUserHeld() > 0);
   await event({ type: "finish", id: failed, usage: { input: 0, output: 0 }, chars: 0, completed: false });
 
-  assert.equal(await endUserHeld(), 0);
   await begin(answered, "deepseek/deepseek-v4.1-flash-1017");
   await event({ type: "finish", id: answered, usage: { input: 100, output: 10, providerCost: 0.01, providerCreditCost: 0 }, chars: 40, completed: true });
   const tenantPaid = 10 * USD - await balance(), personPaid = 5 * USD - await person();

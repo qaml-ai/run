@@ -62,24 +62,23 @@ export async function fakeOpenAICalls(t: TestContext) {
   };
 }
 
-export function fakeCredit() {
+export function fakeCredit(balance = Infinity) {
   const log: unknown[][] = [];
-  const refuse = { create: false, hold: false };
+  const refuse = { create: false };
+  const keys = new Set<string>();
   const credit: VoiceCredit = {
-    async refusal(_tenant, subject, bucket) {
-      log.push(["refusal", subject, bucket]);
-      if (refuse.create) return { reason: "balance", message: "No credit left" };
+    async refusal(_tenant, endUser, bucket) {
+      log.push(["refusal", endUser, bucket]);
+      if (refuse.create || balance <= 0) return { endUser, bucket, reason: "balance", message: "No credit left" };
     },
-    async hold(_tenant, subject, bucket, usd, kind, metadata) {
-      log.push(["hold", subject, bucket, usd, kind, metadata]);
-      if (refuse.hold) throw new HttpError(402, "No credit left", "END_USER_CREDIT", { reason: "balance" });
-      return {
-        settle: async actual => { log.push(["settle", actual]); },
-        release: async () => { log.push(["release"]); },
-      };
+    async debit(_tenant, subject, bucket, usd, key, metadata) {
+      if (keys.has(key)) return;
+      keys.add(key);
+      balance -= usd;
+      log.push(["debit", subject, bucket, usd, key, metadata]);
     },
   };
-  return { credit, log, refuse };
+  return { credit, log, refuse, balance: () => balance };
 }
 
 type Request = Parameters<VoiceCallsOptions["submitStreaming"]>[2];

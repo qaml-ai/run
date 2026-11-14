@@ -11,7 +11,7 @@ import { volume, type FileBindings } from './files.ts';
 import { normalizePath } from './volume.ts';
 import { HttpError } from './errors.ts';
 import { withSql, transaction, database } from './postgres.ts';
-import { EndUserCredits } from './end-user-credits.ts';
+import { admitEndUser, EndUserCredits } from './end-user-credits.ts';
 import { publishPending, type WebhookEnv } from './webhooks.ts';
 import { keyServices, type KeyServices } from './security-services.ts';
 import { runAdmission, type AdmissionEnv } from './admission.ts';
@@ -195,23 +195,23 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
   const azure=mediaAzure(env);
   const identity=input.subject!==undefined || input.context!==undefined ? {subject:input.subject,context:input.context}:undefined;
   const facts={...(input.bucket!==undefined?{bucket:input.bucket}:{}),...(input.keyScope?{keyScope:input.keyScope}:{}),...(input.actor?{actor:input.actor}:{}),...(identity?{identity}:{})};
-  const hold=input.subject ? (usd:number)=>new EndUserCredits(database(env)).hold(tenant,input.subject,input.bucket??'default',usd,kind==='images'?'image':kind==='transcriptions'?'transcription':'speech') : undefined;
+  const admitCredit=input.subject ? ()=>admitEndUser(new EndUserCredits(database(env)),tenant,input.subject,input.bucket??'default',kind==='images'?'image':kind==='transcriptions'?'transcription':'speech') : undefined;
   if (kind==='images') {
     if (typeof input.prompt!=='string' || !input.prompt.trim() || input.prompt.length>32000) throw new HttpError(400,'prompt must contain 1–32000 characters');
     if (!multipart) { if(input.images!==undefined && !Array.isArray(input.images)) throw new HttpError(400,'images must be an array'); const checked=(value:any)=>{if (value && Object.keys(value).some(k=>k!=='data' && k!=='url')) throw new HttpError(400,'Unknown image source field');return source(value);}; images=(input.images??[]).map(checked); mask=input.mask!==undefined?checked(input.mask):undefined; }
     if (input.path!==undefined && input.volumeId===undefined) throw new HttpError(400,'path requires volumeId');
-    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.imageDeployment),price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(hold?{hold}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
+    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.imageDeployment),price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(admitCredit?{admitCredit}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
     return json(made);
   }
   if(kind==='transcriptions') {
     audio??=source(input);
-    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.transcriptionDeployment),price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(hold?{hold}:{})},request.signal));
+    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.transcriptionDeployment),price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(admitCredit?{admitCredit}:{})},request.signal));
     return json(made);
   }
   const tts = speechPrices({AGENT_SPEECH_PRICES:env.AGENT_SPEECH_PRICES});
   const synthesizer=new Synthesizer({provider:openaiSpeech({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key,price:()=>prices.speech,chain:{provider:reference=>speechProvider(reference,common.outbound),defaultVoice:provider=>DEFAULT_VOICES[provider],price:(reference,made)=>ttsCost(tts,reference,made)}});
   let made: Awaited<ReturnType<typeof speechRequest>>;
-  try { made=await speechRequest({...common,synthesizer},tenant,{...speechInput(input,DEFAULT_VOICE),...facts,language:languageInput(input.language),choice:speechChoiceInput(input.speech),...(hold?{hold}:{})},request.signal); }
+  try { made=await speechRequest({...common,synthesizer},tenant,{...speechInput(input,DEFAULT_VOICE),...facts,language:languageInput(input.language),choice:speechChoiceInput(input.speech),...(admitCredit?{admitCredit}:{})},request.signal); }
   catch(error) { await Promise.all(pending); throw error; }
   const reader=made.body.getReader();
   const stream=new ReadableStream<Uint8Array>({async pull(c){try{const next=await reader.read();if(next.done){await Promise.all(pending);c.close();}else c.enqueue(next.value);}catch(e){await Promise.all(pending);c.error(e);}},async cancel(reason){try{await reader.cancel(reason);}finally{await Promise.all(pending);}}});
