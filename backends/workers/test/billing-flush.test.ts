@@ -4,6 +4,7 @@ import test from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { AgentInvocation } from "../src/agent-invocation.ts";
 
 const source = readFileSync(new URL("../src/agent-billing.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source.slice(source.indexOf("export async function flushBillingImpl")), {
@@ -11,7 +12,7 @@ const { outputText } = ts.transpileModule(source.slice(source.indexOf("export as
 });
 
 function fixture(settleTurn: () => Promise<void>) {
-  const exports = {} as { flushBillingImpl: (propagate?: boolean) => Promise<void> };
+  const exports = {} as { flushBillingImpl: (invocation: AgentInvocation, propagate?: boolean) => Promise<void> };
   runInNewContext(outputText, {
     exports,
     flushAttachmentTranscriptions: async () => {},
@@ -38,7 +39,8 @@ function fixture(settleTurn: () => Promise<void>) {
     testStorage: { get: async () => undefined },
     arm: async (at: number) => { retries.push(at); },
   };
-  return { flush: exports.flushBillingImpl.bind(runtime), runtime, lists, releases, retries };
+  const flush = (propagate?: boolean) => exports.flushBillingImpl.call(runtime, new AgentInvocation(), propagate);
+  return { flush, runtime, lists, releases, retries };
 }
 
 test("queued flushes list storage after the active pass acknowledges the receipt", async () => {

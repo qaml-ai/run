@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { afterEach, beforeEach, mock, test } from "node:test";
+import { AgentInvocation } from "../src/agent-invocation.ts";
 import type { RequestRecord } from "../src/agent-types.ts";
 
 registerHooks({ resolve(specifier, context, next) {
@@ -29,7 +30,7 @@ function fixture() {
     config: async () => ({ tenantId: "tenant", id: "agent" }),
     env: { TENANTS: { getByName: () => ({ release: async (id: string) => { released.push(id); } }) } },
     track: (id: string) => { tracked.push(id); },
-    admit: async ({ id }: { id: string }) => {
+    admit: async (_invocation: AgentInvocation, { id }: { id: string }) => {
       calls.push(id);
       const error = failure(id);
       if (error) throw error;
@@ -54,7 +55,7 @@ function fixture() {
   }
   return { runtime, hold, read, values, calls, released, tracked, events, deadlines,
     fail: (run: typeof failure) => { failure = run; },
-    run: () => releaseInputPrompts(runtime as any),
+    run: () => releaseInputPrompts(runtime as any, new AgentInvocation()),
   };
 }
 
