@@ -115,6 +115,10 @@ func vmLogRoute(pattern string) string {
 	return "/v1/vms"
 }
 
+// usageCount carries how many events a GET /v1/usage page returned into its access log line.
+type usageCount struct{ events int }
+type usageCountKey struct{}
+
 func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string, serve http.HandlerFunc) {
 	start := time.Now()
 	rw := &statusWriter{ResponseWriter: w}
@@ -128,6 +132,11 @@ func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string,
 	case "/v1/lineages/:lineage/refs/:name/write", "/v1/lineages/:lineage/refs/:name/merge", "/v1/lineages/:lineage/refs/:name/restore":
 		moves = &refTiming{}
 		r = r.WithContext(context.WithValue(r.Context(), refTimingKey{}, moves))
+	}
+	var usage *usageCount
+	if route == "/v1/usage" {
+		usage = &usageCount{}
+		r = r.WithContext(context.WithValue(r.Context(), usageCountKey{}, usage))
 	}
 	defer func() {
 		status := rw.status
@@ -143,6 +152,9 @@ func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string,
 		if moves != nil {
 			phases = fmt.Sprintf(" objectsMs=%.3f putKeys=%d buildMs=%.3f ddbMs=%.3f ddbRetries=%d",
 				ms(moves.objects.Put), moves.objects.PutKeys, ms(moves.build), ms(moves.ddb), moves.retries)
+		}
+		if usage != nil {
+			phases = fmt.Sprintf(" events=%d", usage.events)
 		}
 		if lineage != "" {
 			route += " lineage=" + lineage
