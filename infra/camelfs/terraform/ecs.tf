@@ -196,9 +196,8 @@ resource "aws_ecs_task_definition" "api" {
       { name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn },
       { name = "CAMELFS_NOTIFY_KEY", valueFrom = aws_secretsmanager_secret.notify_key.arn },
     ]
-    mountPoints = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
-    # The image runs as a non-root user; everything but the data volume is read-only.
-    readonlyRootFilesystem = true
+    # The image runs as a non-root user that owns /var/lib/camelfs (the Dockerfile); see the volume note above.
+    readonlyRootFilesystem = false
     # SIGTERM: finish in-flight requests (seconds); SIGKILL after this.
     stopTimeout     = 30
     linuxParameters = { initProcessEnabled = true }
