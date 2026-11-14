@@ -135,7 +135,7 @@ func referenceCommit(ctx context.Context, r *objects.Repository, l string, q com
 }
 
 func TestPathCommitMatchesImport(t *testing.T) {
-	repo := storageServer(t, store.Local{Dir: t.TempDir()}).repository().ForLineage("l")
+	repo := storageServer(t, store.Local{Dir: t.TempDir()}).repo.ForLineage("l")
 	ctx := t.Context()
 	var blobs []objects.Blob
 	for _, data := range []string{"", "a", "other", "some content"} {
@@ -296,7 +296,7 @@ func waitForWave(ctx context.Context, key string, started chan<- string, release
 
 func TestCommitReadAndWriteWaves(t *testing.T) {
 	st := store.Local{Dir: t.TempDir()}
-	r := storageServer(t, st).repository().ForLineage("l")
+	r := storageServer(t, st).repo.ForLineage("l")
 	ctx := t.Context()
 	b, err := r.Upload(ctx, "l", "", 1, strings.NewReader("a"))
 	if err != nil {
@@ -434,7 +434,7 @@ func TestCommitPrecheckErrorOrder(t *testing.T) {
 	missingID := strings.Repeat("1", 40)
 	failedBlob := strings.Repeat("2", 40)
 	st := commitPrecheckStore{Store: store.Local{Dir: t.TempDir()}, failedBlob: failedBlob}
-	r := storageServer(t, st).repository()
+	r := storageServer(t, st).repo
 	q := commitRequest{
 		Parents: []string{missingID}, BaseTree: &missingID, Author: "a",
 		Changes: []change{{Path: "a", Blob: missingID}, {Path: "b", Blob: failedBlob}},

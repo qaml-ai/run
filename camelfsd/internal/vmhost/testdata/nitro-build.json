@@ -2,7 +2,7 @@
   "boot-source": {
     "kernel_image_path": "/assets/kernel",
     "initrd_path": "/assets/initrd",
-    "boot_args": "console=ttyS0 panic=1 initcall_blacklist=i8042_init quiet reboot=k root=/dev/vda rw init=/sbin/camel-init camel.ip=10.200.10.2/30 camel.gw=10.200.10.1 camel.proxy=http://10.200.10.1:3128 camel.repo=/dev/vdb"
+    "boot_args": "console=ttyS0 panic=1 initcall_blacklist=i8042_init quiet reboot=k root=/dev/vda rw init=/sbin/camel-init camel.ip=10.200.10.2/30 camel.gw=10.200.10.1 camel.proxy=http://10.200.10.1:3128 camel.workspace=/dev/vdb"
   },
   "drives": [
     {

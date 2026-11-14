@@ -104,7 +104,7 @@ func (v *vmAPI) exec(w http.ResponseWriter, r *http.Request, claims auth.Claims)
 		if q.Stdin != nil || !q.StdinBlob.Valid() {
 			return invalid("stdinBlob: expected blob, size and sha256, without stdin")
 		}
-		if err := require(r.Context(), v.storage.repo(), vm.Lineage, q.StdinBlob.Blob, "blob", false, "stdinBlob.blob"); err != nil {
+		if err := require(r.Context(), v.storage.repo, vm.Lineage, q.StdinBlob.Blob, "blob", false, "stdinBlob.blob"); err != nil {
 			return err
 		}
 	}

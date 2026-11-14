@@ -45,7 +45,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	repoServer := storageServer(t, store.Local{Dir: t.TempDir()})
 	blob := put(t, repoServer, "tenant", "verified input")
 	foreign := put(t, repoServer, "other", "foreign input")
-	info, err := repoServer.repository().BlobInfo(ctx, "tenant", blob)
+	info, err := repoServer.repo.BlobInfo(ctx, "tenant", blob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	// Cancel host test gates before httptest cleanup waits for active handlers.
 	t.Cleanup(cancel)
 	s := vmTestServer(c, nil, nil)
-	s.repo = repoServer.repository
+	s.repo = repoServer.repo
 	request := func(method, suffix, body, access, subject string) *http.Request {
 		r := vmRequest(method, vmPath+suffix, body).WithContext(ctx)
 		r.Header.Set("X-Access", access)

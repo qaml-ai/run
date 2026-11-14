@@ -11,10 +11,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/refs"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/wire"
 )
@@ -22,7 +25,7 @@ import (
 func TestPreparedReceiveNeedsNoDatabaseOrStore(t *testing.T) {
 	m, tree := unit3(t)
 	b := []byte("base")
-	sha := fmtHash(b)
+	sha := root.Hash(b)
 	if _, e := m.objects("l").Upload(context.Background(), "l", sha, int64(len(b)), bytes.NewReader(b)); e != nil {
 		t.Fatal(e)
 	}
@@ -30,7 +33,10 @@ func TestPreparedReceiveNeedsNoDatabaseOrStore(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v := mount3(t, m, tr.Tree, "prepared")
+	v, e := m.Mount(t.Context(), Request{JobID: "prepared", Lineage: "l", Tree: tr.Tree, Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}})
+	if e != nil {
+		t.Fatal(e)
+	}
 	base, e := m.prepareReceive(context.Background(), v)
 	if e != nil {
 		t.Fatal(e)
@@ -148,7 +154,7 @@ func TestApplyStreamsBeforeBatchCompletes(t *testing.T) {
 	client.SetDeadline(time.Now().Add(time.Second))
 	done := make(chan error, 1)
 	go func() {
-		done <- m.sendApply(server, "l", "j", Apply{Files: 2, Bytes: 8}, []objects.Entry{{Path: "a", SHA1: ha, Size: 4}, {Path: "b", SHA1: hb, Size: 4}}, []wire.Op{{Path: "a", Op: "put", Size: 4}, {Path: "b", Op: "put", Size: 4}})
+		done <- m.sendApply(server, "l", "j", applyTrees{Files: 2, Bytes: 8}, []objects.Entry{{Path: "a", SHA1: ha, Size: 4}, {Path: "b", SHA1: hb, Size: 4}}, []wire.Op{{Path: "a", Op: "put", Size: 4}, {Path: "b", Op: "put", Size: 4}})
 		server.Close()
 	}()
 	for i := 0; i < 3; i++ {
@@ -186,7 +192,7 @@ func TestApplySendsSymlinkAsLinkOp(t *testing.T) {
 	client.SetDeadline(time.Now().Add(time.Second))
 	done := make(chan error, 1)
 	go func() {
-		done <- m.sendApply(server, "l", "j", Apply{Files: 1, Bytes: int64(len(target))},
+		done <- m.sendApply(server, "l", "j", applyTrees{Files: 1, Bytes: int64(len(target))},
 			[]objects.Entry{{Path: "link", Mode: "120000", SHA1: h, Size: int64(len(target))}},
 			[]wire.Op{{Path: "link", Op: "put", Mode: "120000", Size: int64(len(target))}})
 		server.Close()

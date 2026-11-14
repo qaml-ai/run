@@ -217,9 +217,12 @@ func (m *Manager) publishBaseline(ctx context.Context, v *Mount, snap *baselineS
 	if err != nil {
 		return err
 	}
-	captured := Request{Lineage: v.Lineage, Root: snap.base}
-	r, err := m.uploadSnapshot(ctx, captured, base, snap.path(), snap.tree, []chunk.Range{{Length: base.VirtualSize}}, point)
+	f, err := os.Open(snap.path())
 	if err != nil {
+		return err
+	}
+	r, err := m.uploadSnapshot(ctx, v.Lineage, snap.base, base, f, snap.tree, []chunk.Range{{Length: base.VirtualSize}}, point)
+	if err := errors.Join(err, f.Close()); err != nil {
 		return err
 	}
 	if err := m.objects(v.Lineage).Record(ctx, v.Lineage, point.Root, "root", nil); err != nil {
@@ -230,7 +233,7 @@ func (m *Manager) publishBaseline(ctx context.Context, v *Mount, snap *baselineS
 	}
 
 	// Sync the snapshot before writing an intent that recovery can promote.
-	f, err := os.Open(snap.path())
+	f, err = os.Open(snap.path())
 	if err != nil {
 		return err
 	}

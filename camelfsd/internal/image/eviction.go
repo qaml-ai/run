@@ -41,21 +41,21 @@ func (m *Manager) maintain() {
 		case <-m.stop:
 			return
 		case <-t.C:
-			e := m.sweep(0)
+			e := m.sweep()
 			if e != nil {
 				log.Printf("op=evict error=%v", e)
 			}
 		}
 	}
 }
-func (m *Manager) sweep(incoming int64) error {
+func (m *Manager) sweep() error {
 	var st unix.Statfs_t
 	if e := unix.Statfs(m.Data, &st); e != nil {
 		return e
 	}
 	capacity := int64(st.Blocks) * int64(st.Bsize)
 	used := int64(st.Blocks-st.Bavail) * int64(st.Bsize)
-	if used+incoming <= capacity*80/100 {
+	if used <= capacity*80/100 {
 		return nil
 	}
 	_, e := m.evict(used, capacity*60/100, func() (int64, error) {
@@ -68,8 +68,7 @@ func (m *Manager) sweep(incoming int64) error {
 	return e
 }
 
-// evict is shared by the minute sweep and cold-mount admission. Live root
-// chunks, mount files and their promoted snapshots are never candidates.
+// The sweep protects live root chunks, mount files and their promoted snapshots.
 func (m *Manager) evict(used, low int64, usage ...func() (int64, error)) (freed int64, err error) {
 	m.sweepMu.Lock()
 	defer m.sweepMu.Unlock()

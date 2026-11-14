@@ -46,7 +46,6 @@ func TestMountsShareHostPoolAndReserve(t *testing.T) {
 	// Separate cache clients simulate mounts; the daemon also shares one cache.
 	for i := 0; i < 3; i++ {
 		c := New(t.TempDir(), store.ForLineage(host, fmt.Sprint("l", i)), 64)
-		defer c.Close()
 		for j := 0; j < 8; j++ {
 			wg.Add(1)
 			go func(j int) { defer wg.Done(); _, _ = c.EnsureContext(store.Background(ctx), fmt.Sprintf("%064x", j+1)) }(j)

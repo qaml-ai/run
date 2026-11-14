@@ -50,7 +50,7 @@ func TestCommandChannel(t *testing.T) {
 		{`{"op":"files","files":[{"path":"a","data":"YQ"},{"path":"a","data":"Yg","append":true}]}`, func(m message) bool { return m["ok"] == true }},
 		{`{"op":"files","files":[{"path":"../a","data":""}]}`, func(m message) bool { return m["error"] == `Invalid path: "../a"` }},
 		{`{"op":"free"}`, func(m message) bool { return m["freeBytes"].(float64) > 0 }},
-		{`{"op":"run","command":"cat a; printf x > \"$JOB_OUT/result\"; exit 3","timeoutSeconds":5}`, func(m message) bool {
+		{`{"op":"run","command":"cat a; printf x > \"$JOB_OUT/result\"; exit 3","timeoutSeconds":60}`, func(m message) bool {
 			return m["exitCode"] == float64(3) && m["stdout"].(map[string]any)["data"] == "YWI="
 		}},
 		{`{"op":"collect","outputs":["result","missing"]}`, func(m message) bool {

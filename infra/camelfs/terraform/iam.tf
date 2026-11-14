@@ -12,8 +12,8 @@
 #              publishes), nothing else — every other prefix is denied by omission: a host moves no ref (it asks the tier, which checks
 #              its fence), reads no lineage registry and touches no control table; no secret at all: its identity
 #              is the certificate the tier issues it at enrollment (§9.12). Delivered as a customer-managed
-#              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
-#              host_managed_policies) and to the proto host's role, and as a role + instance profile of its own
+#              policy (host_policy_arn), attachable to any compute host's instance role (the proto host's
+#              camel-fs-proto role for the first host), and as a role + instance profile of its own
 #              for hosts outside those pools. The role trusts ec2.amazonaws.com only, with the job-hosts
 #              invariant's guards (its session name is an instance id the tier may one day attest; nothing else
 #              may ever assume it).

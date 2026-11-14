@@ -2,19 +2,13 @@ package image
 
 import (
 	"context"
-
-	"fmt"
-	"github.com/qaml-ai/run/camelfsd/internal/apierr"
-	"github.com/qaml-ai/run/camelfsd/internal/chunk"
-	"github.com/qaml-ai/run/camelfsd/internal/objects"
-
-	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
-	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/qaml-ai/run/camelfsd/internal/chunk"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 type Checkpoint struct {
@@ -42,119 +36,27 @@ type Checkpoint struct {
 	CheckpointMs   float64            `json:"checkpointMs"`
 }
 
-func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, err error) {
-	v := m.lookup(id)
-	if v == nil {
-		return out, os.ErrNotExist
-	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return m.checkpoint(ctx, v, v.Tree)
-}
-func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadata ...CheckpointRequest) (out Checkpoint, err error) {
-	return m.checkpointWithPublish(ctx, v, tree, nil, metadata...)
-}
-
-func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree string, publish func(context.Context, Checkpoint) error, metadata ...CheckpointRequest) (out Checkpoint, err error) {
+func (m *Manager) publishCheckpoint(ctx context.Context, v *Mount, tree string, sf *os.File, ranges []chunk.Range, q CheckpointRequest, publish func(context.Context, Checkpoint) error) (out Checkpoint, err error) {
 	t := time.Now()
-	defer func() { out.Timings = out.timingFields() }()
-	if v.Fence == nil {
-		return out, &apierr.Error{Status: 409, Code: "no_fence", Cause: fmt.Errorf("mount has no fence")}
-	}
-	if tree == "" {
-		tr, e := m.objects(v.Lineage).Import(ctx, objects.Request{Lineage: v.Lineage, Files: map[string]objects.File{}})
-		if e != nil {
-			return out, e
-		}
-		tree = tr.Tree
-	}
 	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
 	if e != nil {
 		return out, e
 	}
-	if e = m.awaitHydration(ctx, v); e != nil {
-		return out, e
-	}
-	var ranges []chunk.Range
-	snap := v.preparedSnapshot
-	if snap != "" {
-		ranges = v.preparedRanges
-		v.preparedSnapshot = ""
-		v.preparedRanges = nil
-	} else {
-		suspended := false
-		if v.DM != "" {
-			if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
-				return out, e
-			}
-			suspended = true
-		}
-		defer func() {
-			if suspended {
-				_, re := resumeDM(v.DM)
-				if err == nil {
-					err = re
-				}
-			}
-		}()
-
-		v.Snapshot++
-		snap = filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
-		rt := time.Now()
-		if v.DM != "" {
-			ranges, e = snapshotCopy(ctx, v.Dest, filepath.Join(filepath.Dir(v.Dest), "cow.img"), snap, r.VirtualSize)
-		} else {
-			f, err := os.OpenFile(v.Dest, os.O_RDWR, 0)
-			if err != nil {
-				return out, err
-			}
-			e = f.Sync()
-			if e == nil {
-				ranges, e = changedRanges(f, r.VirtualSize, r.Chunks)
-			}
-			f.Close()
-			if e == nil {
-				e = clone(v.Dest, snap)
-			}
-		}
-		if e != nil {
-			os.Remove(snap)
-			return out, e
-		}
-		v.pendingRanges = append(v.pendingRanges, ranges...)
-		ranges = v.pendingRanges
-		out.ReflinkMs = ms(rt)
-		if suspended {
-			_, e = resumeDM(v.DM)
-			if e != nil {
-				return out, e
-			}
-			suspended = false
-		}
-	}
-	r, e = m.uploadSnapshot(ctx, v.Request, r, snap, tree, ranges, &out)
+	r, e = m.uploadSnapshot(ctx, v.Lineage, v.Root, r, sf, tree, ranges, &out)
 	if e != nil {
 		return out, e
 	}
 	set := v.Parent
 	set.Root = out.Root
 	set.Tree = tree
-	if tree != "" && len(metadata) == 0 {
-		metadata = []CheckpointRequest{{}}
+	commitStart := time.Now()
+	out.Commit, e = m.writeCommit(ctx, v, tree, q)
+	if e != nil {
+		return out, e
 	}
-	if len(metadata) > 0 {
-		commitStart := time.Now()
-		out.Commit, e = m.writeCommit(ctx, v, tree, metadata[0])
-		if e != nil {
-			return out, e
-		}
-		set.Commit = out.Commit
-		out.CommitMs = ms(commitStart)
-	}
-	if publish == nil {
-		m.protect(v.JobID, r, out.Root)
-	}
-	if e = m.promote(snap, out.Root); e != nil {
+	set.Commit = out.Commit
+	out.CommitMs = ms(commitStart)
+	if e = m.promote(sf.Name(), out.Root); e != nil {
 		return out, e
 	}
 	if e = ctx.Err(); e != nil {
@@ -170,57 +72,43 @@ func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree stri
 	if r.Tree != "" && (out.ChangedChunks != 0 || out.ParentRoot != out.Root) {
 		m.shareTreeRoot(ctx, v.Lineage, tree, out.Root)
 	}
-	if publish != nil {
-		if e = publish(ctx, out); e != nil {
-			return out, e
-		}
-		m.protect(v.JobID, r, out.Root)
+	if e = publish(ctx, out); e != nil {
+		return out, e
 	}
-	v.pendingRanges = nil
+	m.protect(v.JobID, r, out.Root)
 	v.Parent = set
 	v.Root = out.Root
 	v.Tree = tree
 	v.Promoted = true
 	if e = m.save(v); e != nil {
-		if publish != nil {
-			return out, e
-		}
-		log.Printf("op=checkpoint-state jobId=%s error=%v", v.JobID, e)
-	}
-	if v.Snapshot > 1 {
-		_ = os.Remove(filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot-1)))
+		return out, e
 	}
 	out.ImageMs = ms(t)
 	return out, nil
 }
 
 // uploadSnapshot records immutable chunks and the root shared by checkpoints and baselines.
-func (m *Manager) uploadSnapshot(ctx context.Context, v Request, r root.Root, snap, tree string, ranges []chunk.Range, out *Checkpoint) (root.Root, error) {
-	sf, e := os.Open(snap)
-	if e != nil {
-		return r, e
-	}
-	defer sf.Close()
+func (m *Manager) uploadSnapshot(ctx context.Context, lineage, parentRoot string, r root.Root, sf *os.File, tree string, ranges []chunk.Range, out *Checkpoint) (root.Root, error) {
 	for _, rg := range ranges {
 		out.ChangedBytes += rg.Length
 	}
 	pending := map[string][]byte{}
-	out.ParentRoot = v.Root
+	out.ParentRoot = parentRoot
 	out.Tree = tree
 	baseTree := r.Tree
 	r.Tree = tree
-	r.ParentRoot = v.Root
+	r.ParentRoot = parentRoot
 	var hashTime, uploadTime time.Duration
 	flush := func() error {
 		start := time.Now()
-		n, err := store.PutChunks(ctx, store.ForLineage(m.Store, v.Lineage), pending)
+		n, err := store.PutChunks(ctx, store.ForLineage(m.Store, lineage), pending)
 		out.UploadedChunks += n
 		uploadTime += time.Since(start)
 		clear(pending)
 		return err
 	}
 	ht := time.Now()
-	e = (chunk.Chunker{}).Ranges(sf, r.VirtualSize, ranges, func(o int64, h string, b []byte) error {
+	e := (chunk.Chunker{}).Ranges(sf, r.VirtualSize, ranges, func(o int64, h string, b []byte) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -252,15 +140,15 @@ func (m *Manager) uploadSnapshot(ctx context.Context, v Request, r root.Root, sn
 		return r, e
 	}
 	ut := time.Now()
-	if out.ChangedChunks == 0 && tree == baseTree && v.Root != "" {
-		out.Root = v.Root
+	if out.ChangedChunks == 0 && tree == baseTree && parentRoot != "" {
+		out.Root = parentRoot
 	} else {
 		b, e := root.Encode(r)
 		if e != nil {
 			return r, e
 		}
 		out.Root = root.Hash(b)
-		if e = store.ForLineage(m.Store, v.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
+		if e = store.ForLineage(m.Store, lineage).Put(ctx, "r/"+out.Root, b); e != nil {
 			return r, e
 		}
 	}
@@ -269,105 +157,6 @@ func (m *Manager) uploadSnapshot(ctx context.Context, v Request, r root.Root, sn
 	return r, nil
 }
 
-type ImportRequest struct {
-	Lineage string `json:"lineage"`
-	Name    string `json:"name"`
-	Path    string `json:"path"`
-	Tree    string `json:"tree"`
-}
-type ImportResult struct {
-	Root           string  `json:"root"`
-	Tree           string  `json:"tree"`
-	Chunks         int     `json:"chunks"`
-	UploadedChunks int     `json:"uploadedChunks"`
-	ImportMs       float64 `json:"importMs"`
-}
-
-func (m *Manager) Import(ctx context.Context, q ImportRequest) (out ImportResult, err error) {
-	t := time.Now()
-	if !store.Lineage(q.Lineage) || q.Tree != "" && !root.Hex(q.Tree, 40) || !filepath.IsAbs(q.Path) {
-		return out, apierr.Invalid("invalid import request")
-	}
-	p, e := filepath.EvalSymlinks(q.Path)
-	if e != nil {
-		return out, e
-	}
-	// v0-limitation: L22
-	allowed := append([]string{m.Data, "/nvme"}, m.ImportAllow...)
-	ok := false
-	for _, dir := range allowed {
-		d, e := filepath.EvalSymlinks(dir)
-		if e != nil {
-			continue
-		}
-		rel, e := filepath.Rel(d, p)
-		if e == nil && rel != ".." && !filepath.IsAbs(rel) && !(len(rel) > 3 && rel[:3] == "../") {
-			ok = true
-		}
-	}
-	if !ok {
-		return out, apierr.Invalid("import path not allowed")
-	}
-	f, e := os.Open(p)
-	if e != nil {
-		return out, e
-	}
-	defer f.Close()
-	st, e := f.Stat()
-	if e != nil {
-		return out, e
-	}
-	if !st.Mode().IsRegular() || st.Size() == 0 || st.Size()%512 != 0 {
-		return out, apierr.Invalid("invalid image size or type")
-	}
-	r := root.Root{V: 1, Tree: q.Tree, FSType: "ext4", VirtualSize: st.Size(), Chunks: map[string]string{}}
-	pending := map[string][]byte{}
-	flush := func() error {
-		n, e := store.PutChunks(ctx, store.ForLineage(m.Store, q.Lineage), pending)
-		out.UploadedChunks += n
-		pending = map[string][]byte{}
-		return e
-	}
-	e = (chunk.Chunker{}).Data(f, st.Size(), func(o int64, h string, b []byte) error {
-		if h != "" {
-			r.Chunks[strconv.FormatInt(o, 10)] = h
-			pending[h] = append([]byte(nil), b...)
-		}
-		if len(pending) >= 64 {
-			return flush()
-		}
-		return nil
-	})
-	if e != nil {
-		return out, e
-	}
-	if e = flush(); e != nil {
-		return out, e
-	}
-	b, e := root.Encode(r)
-	if e != nil {
-		return out, e
-	}
-	out.Root = root.Hash(b)
-	out.Tree = q.Tree
-	out.Chunks = len(r.Chunks)
-	if e = store.ForLineage(m.Store, q.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
-		return out, e
-	}
-	if e = m.promote(p, out.Root); e != nil {
-		return out, e
-	}
-	if e = m.objects(q.Lineage).Record(ctx, q.Lineage, out.Root, "root", nil); e != nil {
-		return out, e
-	}
-	if e = m.Refs.RecordTree(q.Lineage, q.Tree, out.Root); e != nil {
-		return out, e
-	}
-	out.ImportMs = ms(t)
-	return out, nil
-}
-
 func (v Checkpoint) timingFields() map[string]float64 {
 	return map[string]float64{"walkMs": v.WalkMs, "streamMs": v.StreamMs, "freezeMs": v.FreezeMs, "reflinkMs": v.ReflinkMs, "fiemapMs": v.FiemapMs, "hashMs": v.HashMs, "uploadMs": v.UploadMs, "imageMs": v.ImageMs, "wallMs": v.WallMs, "publishMs": v.PublishMs}
 }
-func (v *Checkpoint) RefreshTimings() { v.Timings = v.timingFields() }

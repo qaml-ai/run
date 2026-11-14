@@ -31,16 +31,11 @@ CAMELFSD_REF=main
 # shellcheck source=/dev/null
 source /etc/camel/kvm-host.conf
 [[ -n ${CAMELFSD_STORE:-} ]] || fail 'Set CAMELFSD_STORE'
-compute=0
-if [[ -n ${TIER_ENROLL_URL:-}${TIER_HOSTS_ENDPOINT:-} ]]; then
-  compute=1
-  [[ -n ${TIER_ENROLL_URL:-} && -n ${TIER_HOSTS_ENDPOINT:-} ]] || fail 'Set both tier endpoints for compute'
-  [[ ${CAMELFSD_IMAGES_STORE:-} == s3://?* ]] || fail 'Set CAMELFSD_IMAGES_STORE to s3://bucket[/prefix]'
-  [[ ${TIER_CA_S3:-} =~ ^s3://[^/]+/.+ && ${TIER_CA_S3:-} != */ ]] || fail 'Set TIER_CA_S3 to an S3 object'
-  [[ ${TIER_CA_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || fail 'Set TIER_CA_SHA256 to a lowercase SHA-256'
-elif [[ -n ${CAMELFSD_COMPUTE_FLAGS:-} ]]; then
-  fail 'Replace CAMELFSD_COMPUTE_FLAGS with the tier settings in kvm-host.conf.example'
-fi
+# camelfsd host is the compute host only (unit 11 removed the /v0 socket API and storage-only mode).
+[[ -n ${TIER_ENROLL_URL:-} && -n ${TIER_HOSTS_ENDPOINT:-} ]] || fail "Set TIER_ENROLL_URL and TIER_HOSTS_ENDPOINT"
+[[ ${CAMELFSD_IMAGES_STORE:-} == s3://?* ]] || fail "Set CAMELFSD_IMAGES_STORE to s3://bucket[/prefix]"
+[[ ${TIER_CA_S3:-} =~ ^s3://[^/]+/.+ && ${TIER_CA_S3:-} != */ ]] || fail "Set TIER_CA_S3 to an S3 object"
+[[ ${TIER_CA_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || fail "Set TIER_CA_SHA256 to a lowercase SHA-256"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # Compare before installing, so an unchanged run does not restart services.
@@ -68,14 +63,14 @@ if ((${#missing[@]})); then apt-get update -qq; apt-get install -y -qq "${missin
 # Ubuntu 24.04 has no awscli package: the host uses AWS CLI v2 from AWS's installer (aws.amazon.com/cli).
 aws --version 2>/dev/null | grep -q '^aws-cli/2\.' || fail 'Install AWS CLI v2 (https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)'
 ca_changed=0
-if (( compute )); then
+{
   echo '== Tier CA'
   aws s3 cp --region "${AWS_REGION:-us-west-2}" --only-show-errors "$TIER_CA_S3" "$work/tier-ca.pem"
   verify TIER_CA_SHA256 "$TIER_CA_SHA256" "$work/tier-ca.pem"
   changed=0
   put "$work/tier-ca.pem" "${TIER_CA:-/etc/camel/tier-ca.pem}"
   ca_changed=$changed
-fi
+}
 if [[ ! -x /usr/local/go/bin/go ]] || [[ $(/usr/local/go/bin/go version) != "go version go$GO_VERSION linux/amd64" ]]; then
   curl -fsSL "https://go.dev/dl/go$GO_VERSION.linux-amd64.tar.gz" -o "$work/go.tgz"
   # Check against go.dev's published digest as well as HTTPS.
@@ -138,13 +133,6 @@ if [[ ! -f $kernel || $(cat "$kernel.url" 2>/dev/null || true) != "$GUEST_KERNEL
 else
   verify GUEST_KERNEL_SHA256 "$GUEST_KERNEL_SHA256" "$kernel"
 fi
-echo '== Secrets'
-if [[ ! -f /etc/camel/camelfs-api.env ]]; then
-  (umask 077; printf 'CAMELFS_API_TOKEN=%s\n' "$(openssl rand -hex 32)" > /etc/camel/camelfs-api.env)
-fi
-if [[ $(stat -c %u:%g /etc/camel/camelfs-api.env) != 0:0 ]]; then chown root:root /etc/camel/camelfs-api.env; fi
-if [[ $(stat -c %a /etc/camel/camelfs-api.env) != 600 ]]; then chmod 0600 /etc/camel/camelfs-api.env; fi
-
 echo '== Units'
 if ! getent passwd camel-proxy >/dev/null; then
   useradd --system --uid 940 --user-group --no-create-home --shell /usr/sbin/nologin camel-proxy

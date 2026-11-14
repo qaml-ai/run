@@ -101,7 +101,7 @@ func TestReadAccessLogPhases(t *testing.T) {
 	s := storageServer(t, store.Local{Dir: t.TempDir()})
 	blob := put(t, s, "l", "abc")
 	tree := commit(t, s, "l", "", []change{{Path: "nested/file", Blob: blob}})["tree"].(string)
-	if _, err := s.repository().DB.DB.Exec("DELETE FROM objects; DELETE FROM tree_sizes"); err != nil {
+	if _, err := s.repo.DB.DB.Exec("DELETE FROM objects; DELETE FROM tree_sizes"); err != nil {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer

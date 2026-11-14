@@ -200,7 +200,7 @@ func (s *StorageServer) lineageRoute(w http.ResponseWriter, r *http.Request, l s
 		s.endDeletedVMs(r.Context(), l, "", "lineage_deleted")
 		w.WriteHeader(204)
 	default:
-		http.NotFound(w, r)
+		authFail(w, http.StatusNotFound, "not_found", "route not found")
 	}
 	return nil
 }

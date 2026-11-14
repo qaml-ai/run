@@ -10,8 +10,6 @@ SLOTS=2
 # host itself (camelfsd, Firecracker, page cache). m8id.xlarge (4 vCPU, 16 GiB): 4 / 12288 / 2 slots.
 JOB_VCPUS=4
 JOB_MEMORY_MIB=12288
-# camelfsd's runtime API (bearer from /etc/camel/camelfs-api.env), on host loopback; the tunnel points here.
-CAMELFS_API_PORT=8790
 # Daemon object store URL (required; replace both placeholders).
 CAMELFSD_STORE='s3://<bucket>/camelfsd/<prefix>'
 # A new lineage's blank image size in bytes: sparse, so a high default costs nothing up front (no proactive caps). 64 GiB:
@@ -23,7 +21,7 @@ AWS_REGION=us-west-2
 # Empty discovers instance store by model; an override still requires safety checks.
 NVME_DEVICE=
 
-# Set both endpoints to enable the Go compute host. Leave both empty for storage-only mode.
+# The Go compute host (required): the tier's enrollment URL and hosts endpoint.
 TIER_ENROLL_URL=
 TIER_HOSTS_ENDPOINT=
 TIER_CA=/etc/camel/tier-ca.pem
