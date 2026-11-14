@@ -435,13 +435,13 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 			return err
 		}
 		start = time.Now()
-		m, err := h.Mounts.Mount(ctx, image.Request{JobID: q.ID, Lineage: q.Lineage, Tree: q.Tree, Parent: q.Parent, Session: true, Fence: &refs.Fence{Holder: q.Lease.Holder.String(), Epoch: q.Lease.Epoch}})
+		m, err := h.Mounts.Mount(ctx, image.Request{JobID: q.ID, Lineage: q.Lineage, Tree: q.Tree, Parent: q.Parent, Fence: &refs.Fence{Holder: q.Lease.Holder.String(), Epoch: q.Lease.Epoch}})
 		mountTime = time.Since(start)
 		if err != nil {
 			return err
 		}
 		start = time.Now()
-		vm, err := h.Launcher.Boot(ctx, q.ID, vmhost.Shape{VCPUs: q.Shape.VCPUs, MemoryMiB: q.Shape.MemoryMiB, DiskMiB: int64(q.Shape.DiskMiB)}, vmhost.Boot{Repo: m.Image, Image: path, Session: true, Internet: q.Internet})
+		vm, err := h.Launcher.Boot(ctx, q.ID, vmhost.Shape{VCPUs: q.Shape.VCPUs, MemoryMiB: q.Shape.MemoryMiB, DiskMiB: int64(q.Shape.DiskMiB)}, vmhost.Boot{Repo: m.Image, Image: path, Internet: q.Internet})
 		if err != nil {
 			return err
 		}

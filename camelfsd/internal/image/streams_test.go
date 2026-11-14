@@ -31,7 +31,7 @@ func unit3(t *testing.T) (*Manager, string) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	m, e := New(Config{Data: data, HostID: "test", VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
+	m, e := New(Config{Data: data, VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -44,17 +44,20 @@ func unit3(t *testing.T) (*Manager, string) {
 }
 func mount3(t *testing.T, m *Manager, tree, job string) *Mount {
 	t.Helper()
-	v, e := m.Mount(context.Background(), Request{Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+	v, e := m.Mount(context.Background(), Request{Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job})
 	if e != nil {
 		t.Fatal(e)
 	}
-	return v
+	if e := m.SessionStreams(t.Context(), job, filepath.Join(testutil.SocketDir(t), "v"), os.Getuid(), true); e != nil {
+		t.Fatal(e)
+	}
+	return m.lookup(v.JobID)
 }
 func armed3(t *testing.T, v *Mount) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		c, e := net.Dial("unix", v.Vsock+"_5200")
+		c, e := net.Dial("unix", v.streams.paths[0])
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -84,7 +87,10 @@ func TestHostileStreams(t *testing.T) {
 			v := mount3(t, m, tree, "evil")
 
 			done := make(chan error, 1)
-			go func() { _, e := m.StreamCheckpoint(context.Background(), "evil", 250, CheckpointRequest{}); done <- e }()
+			go func() {
+				_, e := m.SessionCheckpoint(t.Context(), "evil", CheckpointRequest{TimeoutMs: 250}, acceptCheckpoint)
+				done <- e
+			}()
 			for {
 				v.streams.mu.Lock()
 				armed := v.streams.armed != nil
@@ -94,7 +100,7 @@ func TestHostileStreams(t *testing.T) {
 				}
 				time.Sleep(time.Millisecond)
 			}
-			c, e := net.Dial("unix", v.Vsock+"_5200")
+			c, e := net.Dial("unix", v.streams.paths[0])
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -126,7 +132,7 @@ func TestArmingAndMountIsolation(t *testing.T) {
 	m, tree := unit3(t)
 	v := mount3(t, m, tree, "a")
 	other := mount3(t, m, tree, "b")
-	c, e := net.Dial("unix", v.Vsock+"_5200")
+	c, e := net.Dial("unix", v.streams.paths[0])
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -137,10 +143,13 @@ func TestArmingAndMountIsolation(t *testing.T) {
 	}
 	c.Close()
 	done := make(chan error, 1)
-	go func() { _, e := m.StreamCheckpoint(context.Background(), "a", 500); done <- e }()
+	go func() {
+		_, e := m.SessionCheckpoint(t.Context(), "a", CheckpointRequest{TimeoutMs: 500}, acceptCheckpoint)
+		done <- e
+	}()
 	active := armed3(t, v)
 	defer active.Close()
-	second, e := net.Dial("unix", v.Vsock+"_5200")
+	second, e := net.Dial("unix", v.streams.paths[0])
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -149,9 +158,6 @@ func TestArmingAndMountIsolation(t *testing.T) {
 		t.Fatal("second accepted")
 	}
 	second.Close()
-	if _, e = m.Status(context.Background(), "b"); e != nil {
-		t.Fatal(e)
-	}
 	go func() {
 		c := armed3(t, other)
 		defer c.Close()
@@ -160,7 +166,7 @@ func TestArmingAndMountIsolation(t *testing.T) {
 		var ack any
 		wire.JSON(c, &ack)
 	}()
-	if _, e = m.StreamCheckpoint(context.Background(), "b", 10000, CheckpointRequest{}); e != nil {
+	if _, e = m.SessionCheckpoint(t.Context(), "b", CheckpointRequest{TimeoutMs: 10000}, acceptCheckpoint); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = m.Release(context.Background(), "b"); e != nil {
@@ -176,17 +182,10 @@ func TestApplyCheckpointCommit(t *testing.T) {
 	v := mount3(t, m, tree, "j")
 	dir := t.TempDir()
 	index := filepath.Join(t.TempDir(), "idx.json")
-	if e := testguest.Apply(v.Vsock, "j", dir, index); e != nil {
+	if e := testguest.Apply(strings.TrimSuffix(v.streams.paths[0], "_5200"), "j", dir, index); e != nil {
 		t.Fatal(e)
 	}
-	for i := 0; i < 100; i++ {
-		s, _ := m.Status(context.Background(), "j")
-		if s.Applied {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	c, e := net.Dial("unix", v.Vsock+"_5201")
+	c, e := net.Dial("unix", v.streams.paths[1])
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -214,7 +213,7 @@ func TestApplyCheckpointCommit(t *testing.T) {
 		done <- e
 	}()
 	msg := "save"
-	out, e := m.StreamCheckpoint(context.Background(), "j", 10000, CheckpointRequest{Message: &msg, Trailers: &Trailers{Agent: "bot", Kind: "manual"}})
+	out, e := m.SessionCheckpoint(t.Context(), "j", CheckpointRequest{TimeoutMs: 10000, Message: &msg, Trailers: &Trailers{Agent: "bot", Kind: "manual"}}, acceptCheckpoint)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -223,10 +222,6 @@ func TestApplyCheckpointCommit(t *testing.T) {
 	}
 	if out.Tree == tree || out.Commit == "" || out.FilesChanged != 1 || out.BytesReceived != 5 {
 		t.Fatal(out)
-	}
-	commit, e := m.Commit(context.Background(), out.Commit, "l")
-	if e != nil || commit["tree"] != out.Tree {
-		t.Fatal(commit, e)
 	}
 	var raw []byte
 	m.objects("l").DB.DB.QueryRow("SELECT bytes FROM objects WHERE id=?", out.Commit).Scan(&raw)
@@ -250,36 +245,11 @@ func TestApplyCheckpointCommit(t *testing.T) {
 	}
 	m.Release(context.Background(), "j")
 	warm := mount3(t, m, out.Tree, "warm")
-	if warm.Apply != nil || !warm.Warm {
+	if warm.Root != out.Root || !warm.Warm {
 		t.Fatal(warm)
 	}
 }
-func TestNearestAncestor(t *testing.T) {
-	m, tree := unit3(t)
-	v := mount3(t, m, tree, "base")
-	cp, e := m.Checkpoint(context.Background(), v.JobID)
-	if e != nil {
-		t.Fatal(e)
-	}
-	repo := m.objects("l")
-	b := []byte("x")
-	sha := fmtHash(b)
-	if _, e = repo.Upload(context.Background(), "l", sha, 1, bytes.NewReader(b)); e != nil {
-		t.Fatal(e)
-	}
-	child, e := repo.Import(context.Background(), objects.Request{Lineage: "l", ParentTree: tree, Files: map[string]objects.File{"x": {SHA256: sha}}})
-	if e != nil {
-		t.Fatal(e)
-	}
-	v2 := mount3(t, m, child.Tree, "child")
-	if v2.Root != cp.Root || v2.Apply == nil || v2.Apply.FromTree != tree || v2.Apply.Files != 1 {
-		t.Fatal(v2)
-	}
-	if _, e = os.Stat(filepath.Join(m.Data, "images", "blank-16777216.img")); e != nil {
-		t.Fatal(e)
-	}
-}
-func fmtHash(b []byte) string { return root.Hash(b) }
+func acceptCheckpoint(context.Context, Checkpoint) error { return nil }
 
 type brokenStore struct{ store.Store }
 
@@ -305,7 +275,7 @@ func TestAckThenPublishFailure(t *testing.T) {
 		wire.JSON(c, &ack)
 		acked <- ack.Ack
 	}()
-	if _, e := m.StreamCheckpoint(context.Background(), v.JobID, 2000); e == nil {
+	if _, e := m.SessionCheckpoint(t.Context(), v.JobID, CheckpointRequest{TimeoutMs: 2000}, acceptCheckpoint); e == nil {
 		t.Fatal("publish succeeded")
 	}
 	if !<-acked {
@@ -346,7 +316,10 @@ func TestCheckpointIdleTimeoutNack(t *testing.T) {
 	m.StreamIdle = 25 * time.Millisecond
 	v := mount3(t, m, tr, "idle")
 	done := make(chan error, 1)
-	go func() { _, e := m.StreamCheckpoint(context.Background(), v.JobID, 1000); done <- e }()
+	go func() {
+		_, e := m.SessionCheckpoint(t.Context(), v.JobID, CheckpointRequest{TimeoutMs: 1000}, acceptCheckpoint)
+		done <- e
+	}()
 	c := armed3(t, v)
 	defer c.Close()
 	var nack struct {
@@ -375,7 +348,7 @@ func TestApplyProgressOutlivesIdleBudget(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		stream := &wire.DeadlineConn{Conn: a, Idle: m.StreamIdle, Overall: time.Now().Add(m.ApplyMax)}
-		if e := m.sendApply(stream, "l", "slow", Apply{}, nil, nil); e != nil {
+		if e := m.sendApply(stream, "l", "slow", applyTrees{}, nil, nil); e != nil {
 			done <- e
 			return
 		}

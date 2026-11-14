@@ -1,12 +1,12 @@
 package image
 
 import (
-	"context"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/testguest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,15 +26,17 @@ func TestLoopGuestCycle(t *testing.T) {
 		}
 	}()
 	idx := filepath.Join(t.TempDir(), "idx.json")
-	if e := testguest.Apply(v.Vsock, v.JobID, dir, idx); e != nil {
+	if e := testguest.Apply(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, dir, idx); e != nil {
 		t.Fatal(e)
 	}
 	if e := os.WriteFile(filepath.Join(dir, "hello"), []byte("loop world"), 0644); e != nil {
 		t.Fatal(e)
 	}
 	guest := make(chan error, 1)
-	go func() { guest <- testguest.Checkpoint(v.Vsock, v.JobID, dir, idx) }()
-	cp, e := m.StreamCheckpoint(context.Background(), v.JobID, 5000, CheckpointRequest{})
+	go func() {
+		guest <- testguest.Checkpoint(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, dir, idx)
+	}()
+	cp, e := m.SessionCheckpoint(t.Context(), v.JobID, CheckpointRequest{TimeoutMs: 5000}, acceptCheckpoint)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -67,7 +69,7 @@ func TestLoopFreeze5000(t *testing.T) {
 	}
 	defer exec.Command("umount", dir).Run()
 	idx := filepath.Join(t.TempDir(), "idx.json")
-	if e := testguest.Apply(v.Vsock, v.JobID, dir, idx); e != nil {
+	if e := testguest.Apply(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, dir, idx); e != nil {
 		t.Fatal(e)
 	}
 	for i := 0; i < 5000; i++ {
@@ -82,8 +84,10 @@ func TestLoopFreeze5000(t *testing.T) {
 			}
 		}
 		done := make(chan error, 1)
-		go func() { done <- testguest.Checkpoint(v.Vsock, v.JobID, dir, idx) }()
-		cp, e := m.StreamCheckpoint(context.Background(), v.JobID, 30000)
+		go func() {
+			done <- testguest.Checkpoint(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, dir, idx)
+		}()
+		cp, e := m.SessionCheckpoint(t.Context(), v.JobID, CheckpointRequest{TimeoutMs: 30000}, acceptCheckpoint)
 		if e != nil {
 			t.Fatal(e)
 		}

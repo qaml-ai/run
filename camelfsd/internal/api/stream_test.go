@@ -37,7 +37,7 @@ func TestLargeBlobStreamsToFileWithRangeAndCleanup(t *testing.T) {
 	blob := put(t, s, "l", string(raw))
 	tree := commit(t, s, "l", "", []change{{Path: "large", Blob: blob}})["tree"].(string)
 	st := &streamingStore{Store: local, local: local}
-	s.Manager.Store = st
+	s.repo.Store = st
 	r := httptest.NewRequest("GET", "/v1/lineages/l/blobs/"+blob+"?tree="+tree+"&path=large", nil)
 	r.Header.Set("Authorization", "Bearer test")
 	r.Header.Set("Range", "bytes=3-14")
@@ -47,11 +47,11 @@ func TestLargeBlobStreamsToFileWithRangeAndCleanup(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String(), st.opens)
 	}
 	var count int
-	s.repository().ForLineage("l").DB.DB.QueryRow("SELECT count(*) FROM objects WHERE id=? AND kind='blob'", blob).Scan(&count)
+	s.repo.ForLineage("l").DB.DB.QueryRow("SELECT count(*) FROM objects WHERE id=? AND kind='blob'", blob).Scan(&count)
 	if count != 0 {
 		t.Fatal("large blob cached inline")
 	}
-	files, _ := filepath.Glob(filepath.Join(s.Manager.Data, "camelfsd-read-*"))
+	files, _ := filepath.Glob(filepath.Join(s.repo.TempDir, "camelfsd-read-*"))
 	if len(files) != 0 {
 		t.Fatal(files)
 	}
@@ -64,7 +64,7 @@ func TestLargeBlobStreamsToFileWithRangeAndCleanup(t *testing.T) {
 	if w.Code < 500 {
 		t.Fatal(w.Code)
 	}
-	files, _ = filepath.Glob(filepath.Join(s.Manager.Data, "camelfsd-read-*"))
+	files, _ = filepath.Glob(filepath.Join(s.repo.TempDir, "camelfsd-read-*"))
 	if len(files) != 0 {
 		t.Fatal(files)
 	}

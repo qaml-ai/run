@@ -2,8 +2,10 @@ package image
 
 import (
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
+	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -22,5 +24,15 @@ func TestSparseHolesOnlyReadParentChunks(t *testing.T) {
 	want = []chunk.Range{{Offset: 4096, Length: root.ChunkSize - 4096}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatal(got)
+	}
+}
+
+func TestMountRequiresFence(t *testing.T) {
+	m := &Manager{}
+	for _, fence := range []*refs.Fence{nil, {Epoch: 1}, {Holder: "host/vm"}} {
+		q := Request{JobID: "vm", Lineage: "l", Tree: strings.Repeat("a", 40), Parent: strings.Repeat("b", 40), Fence: fence}
+		if _, err := m.Mount(t.Context(), q); err == nil || !strings.Contains(err.Error(), "mount requires a valid fence") {
+			t.Fatalf("mount with fence %+v: %v", fence, err)
+		}
 	}
 }

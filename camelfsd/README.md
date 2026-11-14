@@ -1,12 +1,9 @@
 # camelfsd
 
-camelfsd is the storage plane behind the runtime's RepoDO. It stores immutable
-Git blobs, trees and commits, sparse ext4 roots and 256 KiB chunks. RepoDO owns
-refs, leases, fences and every CAS. The daemon never creates or advances a ref,
-renews a lease, mounts an ext4 filesystem or walks guest files.
-
-This branch contains units 1–6, the unit 7b cold path and the unit 9 storage API.
-Packs and ublk remain v1 work (L19). Unit 7b fixes L76 and L2.
+camelfsd is the camelFS storage and compute plane. The API tier serves Git
+objects, refs, leases and VM operations. Compute hosts run Firecracker
+sessions with fenced ext4 mounts. The Go guest handles apply and checkpoint
+streams.
 
 Build on Linux with Go 1.24+, a C compiler (SQLite), and Linux headers:
 
@@ -18,37 +15,9 @@ go vet ./...
 gofmt -l .
 ```
 
-Host image operations require FICLONE under --data (normally XFS with reflink).
-Image import hashes only chunks intersecting SEEK_DATA/SEEK_HOLE extents.
-Unsupported filesystems fall back to scanning the image.
-Cold mounts require NBD and dm-snapshot modules, nbd-client, losetup, dmsetup
-and root. Hydration always runs in the background.
-CAMELFSD_TEST_NO_REFLINK=1 is for unprivileged tests: it uses copies and hashes
-whole images. Privileged loop/reflink tests skip when unsupported.
-
-```sh
-/tmp/camelfsd host --socket /run/camelfsd/api.sock --data /nvme/camelfs \
-  --store s3://bucket/prefix --region us-west-2 \
-  --listen-api 127.0.0.1:8790 --api-token-file /run/camelfsd/token
-```
-
-An absolute directory in --store substitutes the local store. S3 uses the SDK
-credential chain. No runtime TCP listener starts without --api-token-file.
---api-token-file accepts either a raw token (outer whitespace trimmed) or an
-env-format file containing CAMELFS_API_TOKEN=<hex>, such as jobhost's
-/etc/camel/camelfs-api.env (root-owned, mode 0600). Blank tokens are refused;
-env values must be hex. Other env lines and comments are ignored when that key
-is present.
-The runtime listener serves /v1 plus exactly POST /v0/trees and
-PUT /v0/blobs/:sha256?lineage=... using the Unix socket handlers. Both import
-routes require the same bearer as /v1. Other /v0 paths return 404 on TCP;
-host operations stay on the mode-0600 Unix socket. This replaces jobhost's
-phase-1 import proxy on 127.0.0.1:8790: stop the proxy before enabling the
-daemon listener, leaving the pilot VPC service address unchanged. Protect the loopback listener behind the runtime's private tunnel.
-Never log the bearer. Every /v1 request, including a 401, logs one access line:
-op=<METHOD>:/v1/<route> lineage=<l> status=<code> ms=<n>. Routes are templates;
-object ids, file paths, query values and bodies are omitted. Lineages are
-escaped to keep each request on one line. Health reports api: "127.0.0.1:8790".
+Compute hosts require FICLONE under `--data` (normally XFS with reflink).
+`CAMELFSD_TEST_NO_REFLINK=1` uses copies and hashes whole images for unprivileged
+tests. Privileged loop and reflink tests skip when unsupported.
 
 ## Durability and lineage scope
 
@@ -81,7 +50,6 @@ Lineages are printable path segments of at most 128 bytes, without slash,
 backslash or dot segments; colons are allowed. Cross-lineage store deduplication
 is intentionally gone. Identical bytes are published separately in each lineage.
 The host chunk cache remains keyed by verified content hash for local reuse.
-NBD export names are <lineage>/<root>, so origin fetches use the correct prefix.
 Old global objects require re-import; this change does not fall back to the
 global namespace. On first startup with this layout, legacy lineage cache rows
 and idempotency responses are cleared; subsequent restarts preserve them.
@@ -247,168 +215,34 @@ unknown_blob/unknown_tree/unknown_commit (400 on writes), blob_mismatch (400),
 not_in_tree (404 on reads), too_large (413), conflict (409), no_fence (409),
 unavailable (503). Conflict lists are in error.details.conflicts.
 
-## Host API and guest streams
+## Session mounts and guest streams
 
-Examples use S=/run/camelfsd/api.sock.
+Every session mount names a tree, its parent commit and the tier's lease fence.
+The compute host selects the lineage's tree root, looks up to 64 tree ancestors,
+or starts from a blank ext4 image (`--virtual-size`, default 1 GiB). A cached
+image is reflinked. A cold image is fully hydrated before Firecracker starts.
+The host retains session mount state for recovery after a daemon restart.
 
-```sh
-curl --unix-socket "$S" http://localhost/v0/health
-curl --unix-socket "$S" -d "{\"jobId\":\"j1\",\"lineage\":\"test\",\"tree\":\"$T\",\"parent\":\"$P\",\"fence\":{\"holder\":\"runtime\",\"epoch\":1},\"vsock\":\"/run/job.vsock\"}" http://localhost/v0/mounts
-curl --unix-socket "$S" http://localhost/v0/mounts/j1
-curl --unix-socket "$S" -d '{"timeoutMs":120000,"message":"checkpoint","trailers":{"kind":"manual"}}' http://localhost/v0/mounts/j1/checkpoint
-curl --unix-socket "$S" -X DELETE http://localhost/v0/mounts/j1
-curl --unix-socket "$S" -d "{\"lineage\":\"test\",\"path\":\"/nvme/base.img\",\"tree\":\"$T\"}" http://localhost/v0/images
-```
+Apply uses the guest Unix endpoint `<vsock>_5201` and checkpoint uses
+`<vsock>_5200`. Frames have a four-byte big-endian length and carry up to
+64 KiB of JSON or 1 MiB of data. The apply header's tree fields can be empty
+on the first mount.
 
-Mount accepts exactly one of tree or root. An explicit fence requires parent, the 40-hex base commit ID. The CLI flag is `--parent`.
-The fence is stored and echoed in status. Explicit null makes the image read-only and checkpoint returns
-409 no_fence. A missing fence enables phase-1 compatibility, removed with
-jobhost phase 2: the daemon synthesizes {holder: "<hostId>/<jobId>", epoch: 0},
-logs op=mount legacy-fence jobId=... count=N, and permits checkpoints. The
-process counter counts successful legacy mounts and is exposed as legacyMounts
-in /v0/health; it resets when the daemon restarts. Every shim site is tagged
-// TEMPORARY: removed with jobhost phase 2.
-POST /v0/mounts/:id/heartbeat returns 200 {"ok":true,"deprecated":true} as
-a no-op for one release: phase-1 compatibility, removed with jobhost phase 2.
-No job ref is created. There is no forks route, lease TTL, or renewal goroutine.
-The development CLI accepts --holder and --epoch for fenced mounts; an empty
-holder sends explicit null for a read-only mount. Image import returns a root and records tree_roots
-without creating a ref. Import paths must resolve under --data, /nvme, or
-a repeatable --import-allow directory.
-
-Tree mounts still resolve the newest lineage/tree root, then up to 64
-tree_parents ancestors, then the blank image (--virtual-size, default 1 GiB).
-Apply uses the guest Unix endpoints <vsock>_5201 and checkpoint <vsock>_5200,
-mode 0600. Frames have a four-byte big-endian length, at most 64 KiB of JSON
-or 1 MiB of data. Header baseTree/fromTree/toTree are always present,
-including empty strings for a lineage's first mount. Op fields stay optional.
-
-Only a pending checkpoint POST arms a guest connection. The host prepares
-metadata, sends ready, validates the stream, then sends ack before uploading.
-The guest thaws on ack, nack, EOF or deadline. After ack the daemon writes
-blobs, trees, the commit and the image root; records lineage_objects and
-tree_roots; and returns {tree,root,commit,timings}. Flat timing fields remain
-for one release. Today's order, for jobs: jobhost sends `checkpointed{tree}` to
-the guest as soon as the daemon answers (`jobhost/agent.ts`), and the runtime
-(`HostJob` → `RepoDO`) performs the CAS after the result arrives
-(`backends/workers/src/jobs/hosts.ts`, `finishJobRepo`); that is safe only
-because a job's VM is destroyed right after. Option C's order (camel-fs-files.md
-§9.7), required for computers and `bash` VMs: the host calls the tier's `cas`
-in-VPC first and sends `checkpointed{tree}` (or `{error}`) only after the ref
-moved. Publication failure leaves tree_roots unchanged.
-
-Stream defaults: --stream-idle 30s, --apply-max 30m, checkpoint timeoutMs
-120000 (maximum 600000), --max-files 200000, --max-bytes 8589934592,
---max-paths-bytes 67108864. Guest paths and modes are validated before ack.
-Bad streams return 422 bad-stream, timeouts 504 stream-timeout. Host errors
-retain {error,detail}. Checkpoint messages/trailers retain their existing
-validation and Camel-* mapping.
-
-## Cold path
-
-A warm mount is a writable reflink of `images/<root>.img`. A cold mount returns
-`/dev/mapper/<prefix>-<jobId>` with `warm: false` and
-`hydrating: true`. The accepted `hydrate` request field is ignored.
-Before returning a cold mount, the daemon prefetches ext4 chunk 0, group
-descriptors, group 0's inode table and bitmaps, and the root directory's first
-block. Locations come from the superblock, descriptor and inode block mapping;
-the journal superblock is included for the usual internal journal. The
-verified cache serves these reads to NBD and later hydration without another
-fetch. Unsupported layouts such as meta_bg keep lazy reads.
-There is one cold path; `--hydration-pack-size` is removed.
-
-The guest device is a persistent dm-snapshot with 512 KiB chunks. Its COW
-store is a loop over sparse `mounts/<jobId>/cow.img`. `--cow-max` caps the
-COW file's logical size, defaulting to the root's virtual size. Metadata
-uses some capacity; filling the store invalidates the snapshot. Its origin
-is a separate dm-linear device named `<prefix>-<jobId>-o`, initially over
-the read-only NBD root export.
-
-The daemon writes every non-hole 256 KiB root chunk into sparse `image.img`
-with up to 64 workers. Fetched chunks are hash verified before one image write.
-FICLONERANGE records the image range in the host cache without copying bytes.
-Unsupported range cloning and partial final chunks use a second cache write.
-Cached chunks are reused. Holes require no reads or writes. After fsync, the daemon suspends
-the linear origin, reloads it over a loop of `image.img`, resumes it, and
-detaches NBD. The snapshot and guest retain the same bytes. Subsequent reads
-use only the kernel, loops and local disk. There is no post-hydration scan.
-Status progresses from `cold` through `hydrating` to `hydrated` after the
-swap, with `hydratedBytes`, `totalBytes`, `hydrationMBps`, and `swapMs`. Throughput is
-non-hole bytes divided by elapsed hydration seconds in decimal MB/s, frozen
-at completion. The caller measures `firstFileMs`. `GET /v0/stats` reports
-process-lifetime `prehydrateBytes` (successful image writes during hydration)
-and `reflinkedChunks` (successful chunk-cache range clones). Byte counts describe
-non-hole data, independent of the virtual size. Hydration errors are exposed
-as `hydrationError`; checkpoint fails rather than publishing partial data.
-
-Cold checkpoint waits for hydration (normally seconds). The guest stream
-waits before sending ready. While the guest is frozen, the daemon suspends
-the snapshot and parses the persistent exception store: little-endian v1
-header and old/new chunk pairs in metadata areas. It reflinks `image.img`
-and applies COW exceptions to that copy before resuming and acknowledging
-the guest. Reads submitted to a suspended snapshot queue, so capture reads
-the COW offsets directly; this gives identical bytes without deadlock.
-Hashing the candidate 256 KiB chunks and upload happen after resume. Equal
-hashes are excluded from the delta, including on repeated checkpoints.
-Promotion preserves holes by punching all-zero chunks in the reflink copy.
-The format is documented in Linux `drivers/md/dm-snap-persistent.c`:
-https://github.com/torvalds/linux/blob/master/drivers/md/dm-snap-persistent.c
-
-Release removes the snapshot, then its linear origin, detaches loops and any
-remaining NBD attachment, and deletes the mount directory. Completed hydration
-promotes the immutable base `image.img` under its original root id without
-hashing. Checkpoint images are promoted under their new root ids separately.
-`camelfsd cleanup` removes both devices after a crash; stop guests first.
-
-Discards do not pass from dm-snapshot to its origin. Guest `fstrim` on a
-cold-started mount is a no-op. Space is reclaimed in promoted reflink plus
-delta images, with holes preserved. Warm reflink mounts keep punch-hole
-reclamation.
-
-The shared store budget defaults to 64 operations (`--fetch-depth`). All
-speculative fetches share a smaller budget, reserving eight slots for demand
-at the default depth. The same host pool and demand reserve cover every mount; the cache has no
-separate fetch pool. At depth one operations
-serialize. Prefetch lookahead is separately 64. A reserved slot cannot remove
-NIC or disk contention; demand latency targets need measurement on the host.
-A per-root bounded prefetch pool records first-touch patterns at release.
-The cache verifies fetched chunks and keeps a 256-entry open-file LRU.
-Eviction runs every minute and before cold mounts cross 80% disk usage,
-aiming for 60%, protecting live mounts, blank images and snapshots.
-
-State lives in images/, mounts/<jobId>/state.json, cache/ and refs.db.
-A data-directory lock excludes concurrent daemons. Startup refuses leftover
-mount state: after stopping guests, use camelfsd cleanup --data DIR.
-Automatic mount recovery remains a later unit. Privileged smoke scripts
-require the host availability gate and must only be run with human approval.
-The unit-3 smoke uses explicit fences and tree mounts instead of forks.
-
-Reviewer validation: `scripts/ec2-unit7.sh SOCKET DATA SOURCE_IMAGE [FIRST_FILE]`
-runs against a disposable, already running daemon. It removes only imported
-benchmark images to force cold mounts. Use a fresh daemon/data directory for
-cold-cache trials. It reports the same 65 MiB of data at 1 and 16 GiB and the
-large source root at 4, 16 and 64 GiB, swap time, hydration bytes, sampled
-demand latency, and optional first-file time including filesystem mount.
-Whole-device SHA-256 is compared after swap. Three raw chunk edits check the
-checkpoint delta; a second checkpoint checks that unchanged exceptions do
-not upload again. This harness does not measure a three-file guest stream
-checkpoint. Use the loop guest-cycle tests for guest protocol coverage.
-No real-host performance or COW integrity result is claimed until a reviewer
-runs the root tests and harness. The demand samples include NBD misses and
-cache hits; they are not an isolated cache-hit microbenchmark.
-Host /v0 tree, blob and commit GETs now require ?lineage=NAME. The development
-CLI tree and cat commands take --lineage NAME before the tree id.
+A pending session checkpoint arms the guest connection. The host sends ready,
+validates the stream and captures a disk snapshot before ack. The guest thaws
+on ack, nack, EOF or deadline. The host publishes blobs, trees, the commit and
+the image root, then performs the fenced CAS at the tier before sending
+`checkpointed{tree}` to the guest.
 
 ## Host and API roles
 
-`camelfsd host` runs the block layer, cache, NBD and mounts. It serves
-the Unix socket and can expose the runtime and import routes over TCP with
-the existing shared bearer.
+`camelfsd host --compute` runs the session VM host and accepts tier pushes
+on its mTLS compute listener. An absolute `--store` path selects a local
+store. S3 uses the SDK credential chain.
 
 `camelfsd api` serves `/v1/lineages/{lineage}/*` over TCP for the ALB.
-`GET /v0/health` needs no credentials and returns a JSON object containing
-only `version`. `GET /v0/stats` reports local SQLite connection counts and
-accepts a valid read or write token for any lineage.
+`GET /v1/health` needs no credentials and returns a JSON object containing
+only `version`.
 
 ```sh
 camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfsd \

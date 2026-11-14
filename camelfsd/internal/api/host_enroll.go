@@ -25,7 +25,7 @@ type EnrollmentServer struct {
 
 func (s EnrollmentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || r.URL.EscapedPath() != "/v1/hosts/enroll" {
-		http.NotFound(w, r)
+		authFail(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	}
 	if refusal := s.enroll(w, r); refusal != nil {

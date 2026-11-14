@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 
 	"regexp"
 	"strings"
@@ -87,42 +86,6 @@ func (m *Manager) writeCommit(ctx context.Context, v *Mount, tree string, q Chec
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n%s", who, who, now, now, msg, trailers.String())
 	return m.objects(v.Lineage).PutObject(ctx, v.Lineage, "commit", []byte(body))
 }
-func (m *Manager) Commit(ctx context.Context, id string, lineages ...string) (map[string]any, error) {
-	if len(lineages) != 1 || !store.Lineage(lineages[0]) {
-		return nil, apierr.Invalid("lineage required")
-	}
-	b, e := m.objects(lineages...).Object(ctx, id, "commit")
-	if e != nil {
-		return nil, e
-	}
-	headers, body, _ := strings.Cut(string(b), "\n\n")
-	out := map[string]any{"commit": id}
-	parents := []string{}
-	for _, line := range strings.Split(headers, "\n") {
-		k, v, _ := strings.Cut(line, " ")
-		if k == "parent" {
-			parents = append(parents, v)
-		} else {
-			out[k] = v
-		}
-	}
-	out["parents"] = parents
-	msg, tr := body, ""
-	if split := strings.LastIndex(body, "\n\n"); split >= 0 {
-		msg = body[:split]
-		tr = body[split+2:]
-	}
-	out["message"] = msg
-	trailers := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSuffix(tr, "\n"), "\n") {
-		k, v, ok := strings.Cut(line, ": ")
-		if ok {
-			trailers[k] = v
-		}
-	}
-	out["trailers"] = trailers
-	return out, nil
-}
 
 func (t *Trailers) UnmarshalJSON(b []byte) error {
 	type plain Trailers
@@ -149,26 +112,5 @@ func (t *Trailers) UnmarshalJSON(b []byte) error {
 		}
 	}
 	*t = Trailers(v)
-	return nil
-}
-
-func (q *CheckpointRequest) UnmarshalJSON(b []byte) error {
-	type plain CheckpointRequest
-	var v plain
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if e := d.Decode(&v); e != nil {
-		return e
-	}
-	var fields map[string]json.RawMessage
-	if e := json.Unmarshal(b, &fields); e != nil {
-		return e
-	}
-	for k, raw := range fields {
-		if string(raw) == "null" {
-			return apierr.Invalid("invalid null %s", k)
-		}
-	}
-	*q = CheckpointRequest(v)
 	return nil
 }

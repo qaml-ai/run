@@ -4,55 +4,32 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"github.com/qaml-ai/run/camelfsd/internal/api"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
-	"github.com/qaml-ai/run/camelfsd/internal/client"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
-	"github.com/qaml-ai/run/camelfsd/internal/nbd"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
-	"github.com/qaml-ai/run/camelfsd/internal/testguest"
 	"golang.org/x/sys/unix"
-	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 )
 
 const version = "0.1.0"
 
-type dirs []string
-
-func (d *dirs) String() string { return strings.Join(*d, ",") }
-func (d *dirs) Set(s string) error {
-	if !filepath.IsAbs(s) {
-		return fmt.Errorf("import-allow must be absolute")
-	}
-	*d = append(*d, s)
-	return nil
-}
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: camelfsd host|api|cleanup|client|version|guest|init|egress")
+		return fmt.Errorf("usage: camelfsd host|api|cleanup|version|guest|init|egress")
 	}
 	switch args[0] {
 	case "guest", "init":
 		return runGuest(args)
-	case "testguest":
-		return testguest.Run(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
-	case "client":
-		return client.Run(args[1:], os.Stdout)
 	case "cleanup":
 		f := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 		data := f.String("data", "", "data directory")
@@ -75,15 +52,9 @@ func run(args []string) error {
 }
 func host(args []string) error {
 	f := flag.NewFlagSet("host", flag.ContinueOnError)
-	apiListen := f.String("listen-api", "127.0.0.1:8790", "runtime API address (requires api-token-file)")
-	apiTokenFile := f.String("api-token-file", "", "raw bearer or CAMELFS_API_TOKEN env file; enables runtime API")
-	socket := f.String("socket", "/run/camelfsd/api.sock", "Unix socket")
 	data := f.String("data", "/nvme/camelfs", "data directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
 	region := f.String("region", "us-west-2", "AWS region")
-	cowMax := f.Int64("cow-max", 0, "sparse COW maximum bytes (default virtual size)")
-	listen := f.String("nbd-listen", "127.0.0.1:10809", "NBD address")
-	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	virtualSize := f.Int64("virtual-size", 1<<30, "blank image size")
 	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
@@ -92,12 +63,10 @@ func host(args []string) error {
 	streamIdle := f.Duration("stream-idle", 30*time.Second, "guest stream idle timeout")
 	applyMax := f.Duration("apply-max", 30*time.Minute, "apply overall cap")
 	compute := addHostComputeFlags(f)
-	var allow dirs
-	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
 		return e
 	}
-	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 || *fetchDepth < 1 {
+	if !filepath.IsAbs(*data) || *url == "" || *fetchDepth < 1 {
 		return fmt.Errorf("invalid host flags")
 	}
 	if e := compute.validate(); e != nil {
@@ -125,96 +94,17 @@ func host(args []string) error {
 		return e
 	}
 	defer r.Close()
-	machine, e := os.ReadFile("/etc/machine-id")
-	if e != nil {
-		return e
-	}
-	// v0-limitation: L16
-	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
-	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
-	// Fail at start, not at the first cold mount, when the host lacks a device-mapper target.
-	if e = image.ProbeDeviceMapper(ctx); e != nil {
-		return e
-	}
-	m, e := image.New(image.Config{RecoverSessions: compute.enabled, StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data}, s, c, r)
 	if e != nil {
 		return e
 	}
 	defer m.Close()
-	nl, e := net.Listen("tcp", *listen)
-	if e != nil {
-		return e
+	stop, err := compute.start(ctx, *data, *region, m, cancel)
+	if err != nil {
+		return err
 	}
-	defer nl.Close()
-	go func() { _ = origin.Serve(nl) }()
-	if e = os.MkdirAll(filepath.Dir(*socket), 0700); e != nil {
-		return e
-	}
-	if st, e := os.Lstat(*socket); e == nil {
-		if st.Mode()&os.ModeSocket == 0 {
-			return fmt.Errorf("socket path exists and is not a socket")
-		}
-		conn, e := net.DialTimeout("unix", *socket, time.Second)
-		if e == nil {
-			conn.Close()
-			return fmt.Errorf("socket in use")
-		}
-		if e = os.Remove(*socket); e != nil {
-			return e
-		}
-	}
-	ul, e := net.Listen("unix", *socket)
-	if e != nil {
-		return e
-	}
-	defer os.Remove(*socket)
-	defer ul.Close()
-	if e = os.Chmod(*socket, 0600); e != nil {
-		return e
-	}
-	token := ""
-	if *apiTokenFile != "" {
-		token, e = readAPIToken(*apiTokenFile)
-		if e != nil {
-			return e
-		}
-	}
-	handler := &api.Server{Manager: m, Version: version, Store: *url, APIToken: token}
-	if token != "" {
-		al, err := net.Listen("tcp", *apiListen)
-		if err != nil {
-			return err
-		}
-		defer al.Close()
-		runtimeAPI := &http.Server{Handler: handler.RuntimeHandler(), ReadHeaderTimeout: 5 * time.Second}
-		defer runtimeAPI.Close()
-		go func() {
-			if err := runtimeAPI.Serve(al); err != nil && err != http.ErrServerClosed {
-				log.Printf("runtime API stopped: %v", err)
-				cancel()
-			}
-		}()
-	}
-	if compute.enabled {
-		stop, err := compute.start(ctx, *data, *region, m, cancel)
-		if err != nil {
-			return err
-		}
-		defer stop()
-	}
-	server := http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdown)
-	}()
-	log.Printf("op=host hostId=%s data=%s socket=%s", hostID, *data, *socket)
-	e = server.Serve(ul)
-	if errors.Is(e, http.ErrServerClosed) {
-		return nil
-	}
-	return e
+	defer stop()
+	<-ctx.Done()
+	return nil
 }

@@ -17,13 +17,13 @@ func (f *fakeDevices) Run(_ context.Context, n string, a ...string) error {
 }
 func TestCleanupScoped(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
-	if DMPrefix(a) == DMPrefix(b) || len(DMPrefix(a)) != 17 {
+	if dmPrefix(a) == dmPrefix(b) || len(dmPrefix(a)) != 17 {
 		t.Fatal("prefix")
 	}
 	for i, d := range []string{a, b} {
 		p := filepath.Join(d, "mounts", "j")
 		os.MkdirAll(p, 0700)
-		v := Mount{DM: DMPrefix(d) + "j", OriginDM: DMPrefix(d) + "j-o", CowLoop: "/dev/loop2", NBD: "/dev/nbd" + string(rune('0'+i)), DestLoop: "/dev/loop" + string(rune('0'+i))}
+		v := struct{ DM, OriginDM, CowLoop, NBD, DestLoop string }{DM: dmPrefix(d) + "j", OriginDM: dmPrefix(d) + "j-o", CowLoop: "/dev/loop2", NBD: "/dev/nbd" + string(rune('0'+i)), DestLoop: "/dev/loop" + string(rune('0'+i))}
 		bytes, _ := json.Marshal(v)
 		os.WriteFile(filepath.Join(p, "state.json"), bytes, 0600)
 	}
@@ -34,11 +34,11 @@ func TestCleanupScoped(t *testing.T) {
 	if len(f.calls) != 5 {
 		t.Fatal(f.calls)
 	}
-	if f.calls[0] != "dmsetup remove "+DMPrefix(a)+"j" || f.calls[1] != "dmsetup remove "+DMPrefix(a)+"j-o" {
+	if f.calls[0] != "dmsetup remove "+dmPrefix(a)+"j" || f.calls[1] != "dmsetup remove "+dmPrefix(a)+"j-o" {
 		t.Fatal(f.calls)
 	}
 	for _, c := range f.calls {
-		if strings.Contains(c, DMPrefix(b)) || strings.Contains(c, "/dev/nbd1") || strings.Contains(c, "/dev/loop1") {
+		if strings.Contains(c, dmPrefix(b)) || strings.Contains(c, "/dev/nbd1") || strings.Contains(c, "/dev/loop1") {
 			t.Fatal(c)
 		}
 	}

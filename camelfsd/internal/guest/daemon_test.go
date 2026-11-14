@@ -26,7 +26,7 @@ func TestDaemonStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	m, err := image.New(image.Config{Data: data, HostID: "test", VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
+	m, err := image.New(image.Config{Data: data, VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +56,11 @@ func TestDaemonStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A fenced mount names the commit its checkpoint commits on top of (#980).
-	_, err = m.Mount(ctx, image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Parent: strings.Repeat("a", 40), Lineage: "l", Tree: imported.Tree, JobID: "j", Vsock: g.uds})
+	_, err = m.Mount(ctx, image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Parent: strings.Repeat("a", 40), Lineage: "l", Tree: imported.Tree, JobID: "j"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SessionStreams(ctx, "j", g.uds, os.Getuid(), true); err != nil {
 		t.Fatal(err)
 	}
 	req := request{JobID: "j", TimeoutMs: 5000}
@@ -79,24 +82,10 @@ func TestDaemonStreams(t *testing.T) {
 		}
 	}
 
-	until := time.Now().Add(time.Second)
-	for {
-		status, err := m.Status(ctx, "j")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if status.Applied {
-			break
-		}
-		if time.Now().After(until) {
-			t.Fatal("daemon never accepted apply")
-		}
-		time.Sleep(time.Millisecond)
-	}
 	checkpoint := make(chan error, 1)
 	var tree string
 	go func() {
-		result, err := m.StreamCheckpoint(ctx, "j", 5000)
+		result, err := m.SessionCheckpoint(ctx, "j", image.CheckpointRequest{TimeoutMs: 5000}, func(context.Context, image.Checkpoint) error { return nil })
 		tree = result.Tree
 		checkpoint <- err
 	}()

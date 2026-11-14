@@ -23,7 +23,6 @@ import (
 
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -132,9 +131,6 @@ func decodeStorage(r *http.Request, v any) error {
 	}
 	return nil
 }
-func (s *Server) repository() *objects.Repository {
-	return &objects.Repository{DB: s.Manager.Refs.(*refs.DB), Store: s.Manager.Store, TempDir: s.Manager.Data}
-}
 func require(ctx context.Context, repo *objects.Repository, l, id, kind string, write bool, field ...string) error {
 	if !root.Hex(id, 40) {
 		name := kind
@@ -179,7 +175,7 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	repo := s.repo().ForLineage(l)
+	repo := s.repo.ForLineage(l)
 	handler := func(w http.ResponseWriter) { s.storageRoute(w, r, l, route, repo) }
 	idemRoute := route
 	var replayRefMatches func(string) bool

@@ -166,7 +166,7 @@ func TestUnitHostIdentity(t *testing.T) {
 		{name: "mismatch", path: "/v1/hosts/a/stub", certs: []tls.Certificate{certB}, status: 403},
 		{name: "forged header", path: "/v1/hosts/a/stub", certs: []tls.Certificate{certB}, forged: true, status: 403},
 		{name: "storage", path: "/v1/lineages/a/trees/x", certs: []tls.Certificate{certA}, status: 404},
-		{name: "health", path: "/v0/health", certs: []tls.Certificate{certA}, status: 404},
+		{name: "health", path: "/v1/health", certs: []tls.Certificate{certA}, status: 404},
 		{name: "v1 health", path: "/v1/health", certs: []tls.Certificate{certA}, status: 404},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -357,7 +357,7 @@ func TestUnitStorageListener(t *testing.T) {
 		method, path string
 		status       int
 	}{
-		{"GET", "/v0/health", 200}, {"GET", "/v1/health", 200}, {"GET", "/v1/lineages/a/trees/x", 401},
+		{"GET", "/v1/health", 200}, {"GET", "/v1/lineages/a/trees/x", 401},
 	} {
 		w := httptest.NewRecorder()
 		storage.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
