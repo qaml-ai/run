@@ -1028,6 +1028,10 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
   runs that write under a 5 s deadline (SDK retries included), and re-mints on any retry. A DynamoDB transaction
   commits within its request, so a ULID's time is within ≈ 5 s of its commit, against a watermark 2 heartbeats
   (≈ 20 s) back; tier clock skew is milliseconds. That is what lets the watermark below be safe.
+- **Clock assumption:** the watermark assumes the skew between tier tasks' clocks is well under 15 s (Fargate
+  NTP keeps it at milliseconds). A task whose clock drifts past that could write below a watermark another task's
+  reader has passed. The tier checks its clock against DynamoDB's response time and refuses usage writes beyond
+  that bound, loudly (ledger L98).
 
 **The route.** `GET /v1/usage?after=<cursor>&limit=1000` →
 `{ "events": [ … ], "cursor": "<opaque>", "watermark": "<ulid-time>" }`.

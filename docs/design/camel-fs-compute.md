@@ -168,7 +168,7 @@ camel-fs records usage, and the runtime pulls it and bills. Money stays in Postg
 balance, a price or a credit. **Decided (Miguel, 2026-11-13 ~18:50): pull, not push** (camel-fs-files.md §9.13).
 Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the poller).
 
-- **`usage.vm`** is written for each VM per 60 s of host-reported run time, closed on the heartbeat that crosses
+- **`usage.vm`** is written for each VM per 60 s of host-reported run time (never past `stopRequestedAt`, below), closed on the heartbeat that crosses
   the boundary, plus a final event at `ended`: `{ ulid, eventId, vm, payer, pool, shape: { vcpus, memoryMiB }, host,
   from, to, seconds, final }`, with `eventId = <vm>:<seq>`.
   - Each is written into the `usage` table (key `shard` + `ulid`) in the same `TransactWriteItems` that advances
@@ -192,6 +192,10 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
     payer's credit lasts.
   - A VM whose deadline lapses is stopped by camel-fs with code `lease_expired`, as `stop { checkpoint: true }`
     does, so the work up to that point is kept.
+  - **Billing ends at the lease deadline, not when the stop finishes.** The lease is the credit the runtime has
+    held, so the checkpoint and teardown after the deadline are not billed. In K4b, `stopRequestedAt` is set to
+    `leaseDeadline`, which caps the final `usage.vm`'s `to`. The same rule applies to every requested stop: a user
+    or runtime `stop` ends billing at the stop request (`stopRequestedAt`), not at the VM's exit.
   - camel-fs knows only the time, never why it was not extended.
   - **A lapsed lease is final** (wf-durable, K4b). An extension that arrives when `now ≥ deadline` answers
     `lease_expired` and does not revive the lease, even if the VM has not stopped yet. Reviving it would bill the
