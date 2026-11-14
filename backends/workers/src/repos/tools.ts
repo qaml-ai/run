@@ -13,7 +13,7 @@ import { agentRepoId, workspaceMount, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
 import { setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
-import { heldFileError, lastSaved, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, vmHeld, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
+import { heldFileError, lastSaved, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, vmHeld, vmStat, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
 
 const TOOL_READ_BYTES = 1024 * 1024;
 export function repoTools(
@@ -232,7 +232,7 @@ export function repoTools(
         // checkpoint, through the VM backend), then present the ref's version, so the link survives the machine's sleep.
         const file = t.vm
           ? await (async (vm) => {
-            const { file } = await readVmToolFile(vm, t.ref, t.path);
+            const stat = await vmStat(vm, t.ref, t.path), file = vmEntry(t.path, stat);
             const saved = await vmOperation(t.ref, () => vm.checkpoint());
             return { ...file, version: saved.version };
           })(t.vm)

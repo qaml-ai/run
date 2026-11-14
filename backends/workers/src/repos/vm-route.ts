@@ -15,6 +15,7 @@ export async function resolveVmFiles(_env: RepoEnv, scope: VmFilesScope, vmFiles
 // Model-facing text (reviewed by the lead, 2026-11-14): the model knows the VM as "your machine" (the bash tool).
 export const vmHeld = (branch = "This branch") =>
   `${branch} is in use by your running machine, so this can't run now. Retry after the machine goes to sleep (about 10 seconds with no command running).`;
+export const VM_TOO_LARGE = "File is too large to read or write on your running machine through file tools; use a command in the machine instead.";
 export const STALE_FILE = "File changed since you last read it; read it again, then retry against its current content";
 export const lastSaved = (branch: string) => `Showing ${branch} as last saved; a command still running on your machine may change it.`;
 
@@ -40,6 +41,10 @@ export async function vmOperation<T>(ref: string, run: () => Promise<T>): Promis
     const code = error && typeof error === "object" && "code" in error && typeof error.code === "string"
       ? error.code : undefined;
     if (code === "stale_path") throw new FileError(STALE_FILE, 412);
+    // The machine answered: these are about the file, not a stopped machine (K5b2's codes).
+    if (code === "no_file") throw new FileError("File not found", 404);
+    if (code === "too_large") throw new FileError(VM_TOO_LARGE, 413);
+    if (code === "bad_path") throw new FileError("Invalid path", 400);
     throw new VmRouteError(409, `The machine for ${ref} stopped during this operation, so it may not have completed. Check the file, then retry.`, code, error);
   }
 }
