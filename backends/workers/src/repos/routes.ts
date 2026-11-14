@@ -1,4 +1,4 @@
-import { tierConfigured } from "../camelfs/tier.ts";
+import { tierConfigured, TierError } from "../camelfs/tier.ts";
 import { Buffer } from 'node:buffer';
 import { tar } from '../../../../src/tar.ts';
 import { sniffContentType, declaredType, downloadHeaders } from '../file-policy.ts';
@@ -15,7 +15,7 @@ export const json = (value: unknown, status = 200) => Response.json(value, { sta
 export function repoFailure(e: unknown): Response {
   const r = repoErrorFrom(e);
   if (r)
-    return json({ error: r.code, code: r.code, ...r.detail }, r.status);
+    return json({ error: r.code === 'transport_error' ? r.reason : r.code, code: r.code, ...r.detail }, r.status);
   if (e instanceof StorageError)
     return json({ error: `storage ${e.op ?? 'call'}: ${e.reason}`, code: e.code, storage: e.op ?? null, ...(e.details ? { detail: e.details } : {}) }, e.status >= 400 ? e.status : e.status === 0 ? 503 : 502);
   if (e instanceof SyntaxError || e instanceof URIError)
@@ -23,6 +23,12 @@ export function repoFailure(e: unknown): Response {
   if (e && typeof e === 'object' && 'status' in e && typeof e.status === 'number')
     return json({ error: String(e), code: 'bad_input' }, e.status);
   throw e;
+}
+export function repoTransportFailure(e: unknown): Response | undefined {
+  if (e instanceof TierError && e.code === 'transport_error')
+    return json({ error: e.message, code: e.code }, e.status);
+  if ((e instanceof RepoError || e instanceof StorageError) && e.code === 'transport_error' && e.cause instanceof TierError)
+    return repoFailure(e);
 }
 export async function boundedBody(request: Request, limit: number): Promise<Uint8Array> {
   const reader = request.body?.getReader();

@@ -51,7 +51,7 @@ export class HttpRepoClient implements RepoClient {
         idempotencyKey: options.key,
       });
     } catch (e) {
-      if (e instanceof TierError) throw new RepoError(e.message, e.status, e.code, e.details as Record<string, unknown>);
+      if (e instanceof TierError) throw new RepoError(e.message, e.status, e.code, e.details as Record<string, unknown>, e);
       throw e;
     }
   }

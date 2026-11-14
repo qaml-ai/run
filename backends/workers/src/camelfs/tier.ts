@@ -11,8 +11,8 @@ export class TierError extends Error {
   readonly code: string;
   readonly details: unknown;
   readonly op: string;
-  constructor(status: number, code: string, message: string, details: unknown, op: string) {
-    super(message);
+  constructor(status: number, code: string, message: string, details: unknown, op: string, cause?: unknown) {
+    super(message, { cause });
     this.name = "TierError";
     this.status = status;
     this.code = code;
@@ -34,13 +34,16 @@ type TierRequest = {
 export async function tierFetch(env: TierEnv, request: TierRequest, raw?: RequestInit): Promise<Response> {
   const { method, path, claims, body, idempotencyKey, timeoutMs = 30_000 } = request;
   const op = `${method} ${path}`;
-  const signal = raw?.signal ?? AbortSignal.timeout(timeoutMs);
+  let stage = "url";
+  let response: Response;
   try {
+    const signal = raw?.signal ?? AbortSignal.timeout(timeoutMs);
     const origin = new URL(env.CAMELFS_URL!);
     const url = new URL(path, origin);
     if (origin.origin !== url.origin || !path.startsWith("/")) throw new Error("Invalid camelFS path");
     for (const [key, value] of Object.entries(request.query ?? {}))
       if (value !== undefined) url.searchParams.set(key, String(value));
+    stage = "sign";
     const issuer = env.AGENT_PUBLIC_URL;
     if (!issuer) throw new Error("AGENT_PUBLIC_URL is required for camelFS");
     const token = await (await runtimeSigner(env, issuer, issuer)).camelfsToken(claims);
@@ -48,10 +51,18 @@ export async function tierFetch(env: TierEnv, request: TierRequest, raw?: Reques
     headers.set("authorization", `Bearer ${token}`);
     if (body !== undefined) headers.set("content-type", "application/json");
     if (idempotencyKey !== undefined) headers.set("Idempotency-Key", idempotencyKey);
-    return await fetch(url, { method, headers, signal, redirect: "error", body: raw?.body ?? JSON.stringify(body) });
-  } catch {
-    throw new TierError(502, "transport_error", "camelFS request failed", undefined, op);
+    stage = "fetch";
+    response = await fetch(url, { method, headers, signal, redirect: "manual", body: raw?.body ?? JSON.stringify(body) });
+  } catch (cause) {
+    const message = stage === "fetch" ? "camel-fs tier unreachable" : `camel-fs tier request failed at ${stage}`;
+    throw new TierError(502, "transport_error", message, { stage }, op, cause);
   }
+  // workerd only supports manual and follow. Keep the token on the configured origin.
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    void response.body?.cancel().catch(() => {});
+    throw new TierError(502, "transport_error", "camel-fs tier returned a redirect", { stage: "fetch", status: response.status }, op);
+  }
+  return response;
 }
 
 export async function tierRequest<T>(env: TierEnv, request: TierRequest): Promise<T> {
