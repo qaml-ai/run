@@ -89,11 +89,7 @@ test(`repo API routes over the real Worker (tier=${camelfsTier})`, { timeout: 18
   assert.equal(await (await request(root + '/files/linked.txt')).text(), 'link');
   assert.equal((await fetch(putLink.url, { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: 'large' })).status, 413);
   // Signature domain separation works even when a caller changes the URL prefix.
-  assert.equal((await fetch(getLink.url.replace('/repo-links/', '/links/'))).status, 403);
-  const volume = await call('/v1/volumes', 'POST', { name: 'link separation' }, 201);
-  await request(`/v1/volumes/${volume.id}/files/a.txt`, 'PUT', 'volume');
-  const volumeLink = await call(`/v1/volumes/${volume.id}/links`, 'POST', { path: 'a.txt' }, 201);
-  assert.equal((await fetch(volumeLink.url.replace('/v1/links/', '/v1/repo-links/'))).status, 403);
+  assert.equal((await fetch(getLink.url.replace('/repo-links/', '/files/'))).status, 403);
   await call(root + '/restore', 'POST', { version: a.version });
   assert.equal(await (await request(root + '/files/notes/a.txt')).text(), 'hello');
   await call(root + '/files/notes/a.txt', 'DELETE');

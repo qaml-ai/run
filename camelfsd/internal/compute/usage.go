@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,7 +31,8 @@ type UsageShape struct {
 // MONEY: ID is the runtime's dedupe key. ULID is only the ledger's ordering key. Settlement prices the integer
 // milliseconds To - From; Seconds is informational (a float) and must never be summed for billing.
 type UsageEvent struct {
-	ID      string     `json:"id"`
+	ID      string     `json:"eventId"`
+	ULID    string     `json:"ulid"`
 	Type    string     `json:"type"`
 	VM      string     `json:"vm"`
 	Payer   string     `json:"payer"`
@@ -102,8 +105,8 @@ func (c *Controller) writeWithUsage(ctx context.Context, event *UsageEvent, seq 
 	if event == nil {
 		return c.transact(ctx, writes...)
 	}
-	body, err := json.Marshal(event)
-	if err != nil {
+	// MONEY: A refusal leaves both the usage event and its billing CAS untouched.
+	if err := c.requireClock(ctx, event.VM); err != nil {
 		return err
 	}
 
@@ -117,6 +120,11 @@ func (c *Controller) writeWithUsage(ctx context.Context, event *UsageEvent, seq 
 	defer cancel()
 	now := c.now()
 	id, err := mintULID(now)
+	if err != nil {
+		return err
+	}
+	event.ULID = id
+	body, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
@@ -217,12 +225,11 @@ func decodeCursor(cursor string) (usageCursor, error) {
 	return result, nil
 }
 
-// ListUsage reads shards in numeric order and each shard in ULID order. A
-// cursor advances only for rows returned, so it can also be used on the next
-// poll with a newer watermark. The caller supplies a settled watermark (see writeWithUsage).
-func (c *Controller) ListUsage(ctx context.Context, cursor string, limit int, watermark time.Time) ([]UsageEvent, string, error) {
+// ListUsage merges the first limit rows of each shard in ULID order. Only
+// emitted rows advance the cursor, so a later poll can use a newer watermark.
+func (c *Controller) ListUsage(ctx context.Context, cursor string, limit int, watermark time.Time) ([]json.RawMessage, string, error) {
 	keys, err := decodeCursor(cursor)
-	if err != nil || limit <= 0 {
+	if err != nil || limit < 1 || limit > 1000 {
 		return nil, "", ErrInvalid
 	}
 	lastMS := watermark.Add(-time.Nanosecond).UnixMilli()
@@ -230,9 +237,14 @@ func (c *Controller) ListUsage(ctx context.Context, cursor string, limit int, wa
 		return nil, cursor, nil
 	}
 	upper := ulidPrefix(min(lastMS, maxULIDTime)) + "ZZZZZZZZZZZZZZZZ"
-	var events []UsageEvent
+	type entry struct {
+		shard int
+		id    string
+		body  json.RawMessage
+	}
+	var rows []entry
 	for shard, key := range keys {
-		lower := key + "0" // Lexicographically after key, before any greater fixed-length ULID.
+		lower := key + "0" // After key and before any greater fixed-length ULID.
 		if lower > upper {
 			continue
 		}
@@ -241,32 +253,33 @@ func (c *Controller) ListUsage(ctx context.Context, cursor string, limit int, wa
 			TableName: aws.String(c.Tables.Usage), ConsistentRead: aws.Bool(true),
 			KeyConditionExpression: aws.String(cond), ExpressionAttributeNames: aliases(cond),
 			ExpressionAttributeValues: attrs{":shard": s(strconv.Itoa(shard)), ":lower": s(lower), ":upper": s(upper)},
-			Limit:                     aws.Int32(int32(min(limit-len(events), 1<<31-1))),
+			Limit:                     aws.Int32(int32(limit)),
 		})
-		for pages.HasMorePages() && len(events) < limit {
+		count := 0
+		for pages.HasMorePages() && count < limit {
 			page, err := pages.NextPage(ctx)
 			if err != nil {
 				return nil, "", err
 			}
-			for _, i := range page.Items {
+			for _, i := range page.Items[:min(len(page.Items), limit-count)] {
 				row := item(i)
-				var event UsageEvent
-				if err := json.Unmarshal([]byte(row.text("body")), &event); err != nil {
-					return nil, "", err
-				}
-				events = append(events, event)
-				keys[shard] = row.text("ulid")
-				if len(events) == limit {
-					break
-				}
+				rows = append(rows, entry{shard, row.text("ulid"), json.RawMessage(row.text("body"))})
+				count++
 			}
 		}
-		if len(events) == limit {
-			break
-		}
 	}
-	if len(events) == 0 {
-		return events, cursor, nil
+	if len(rows) == 0 {
+		return nil, cursor, nil
+	}
+	slices.SortStableFunc(rows, func(a, b entry) int { return strings.Compare(a.id, b.id) })
+	rows = rows[:min(limit, len(rows))]
+	events := make([]json.RawMessage, 0, len(rows))
+	for _, row := range rows {
+		if !json.Valid(row.body) {
+			return nil, "", fmt.Errorf("invalid stored usage JSON at shard %d, ULID %s", row.shard, row.id)
+		}
+		events = append(events, row.body)
+		keys[row.shard] = row.id
 	}
 	body, err := json.Marshal(keys)
 	if err != nil {

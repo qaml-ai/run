@@ -121,6 +121,14 @@ locals {
         Action   = local.dynamodb_item_actions
         Resource = values(local.table_arns)
       },
+      # The GC mark pass walks the marks table (C3b); no other table is ever scanned (a full scan of refs or usage
+      # is a capability the tier does not get).
+      {
+        Sid      = "ScanMarks"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Scan"]
+        Resource = [local.table_arns["marks"]]
+      },
       # Registration authority for the hosts' CA (mtls.tf): issue a host's or its own end-entity certificate from a
       # CSR, and fetch it. IssueCertificate is restricted to the one end-entity template with server + client EKU
       # (hosts serve --listen-compute and call the tier; the tier serves --listen-hosts and calls hosts; never a CA

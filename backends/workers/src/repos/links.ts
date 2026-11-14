@@ -47,7 +47,7 @@ export async function signRepoLink(ctx: RepoContext, base: string, input: {
   }
   const grant = { kind: 'repo' as const, tenant: ctx.tenant, repo: ctx.repoId, ref, version: input.version, path, method, maxBytes: input.maxBytes, contentType: input.contentType, agent: input.agent, run: input.run, call: input.call };
   // A separate HMAC domain prevents either link family accepting the other's token.
-  const signed = signer(ctx.env, base).sign({ ...grant, expiresIn: seconds } as unknown as Parameters<FileLinks['sign']>[0]);
+  const signed = signer(ctx.env, base).sign({ ...grant, expiresIn: seconds });
   return { url: signed.url.replace('/v1/links/', '/v1/repo-links/'), expiresAt: signed.expiresAt };
 }
 export async function handleSignedRepoRequest(request: Request, env: RepoEnv): Promise<Response | null> {

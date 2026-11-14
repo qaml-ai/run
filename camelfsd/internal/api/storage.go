@@ -24,6 +24,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
+	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
@@ -53,6 +54,7 @@ func jsonReply(w http.ResponseWriter, status int, v any) {
 func storageFail(w http.ResponseWriter, e error) {
 	status, code, details := 500, "internal", any(nil)
 	var se *storageError
+	var re *refstore.Error
 	var ae *apierr.Error
 	var validation invalidRequest
 	var missingSizes *objects.MissingTreeSizes
@@ -61,6 +63,19 @@ func storageFail(w http.ResponseWriter, e error) {
 		message = missingSizes.Error()
 	} else if errors.As(e, &validation) {
 		status, code, message = 400, "invalid_request", validation.Error()
+	} else if errors.As(e, &re) {
+		status, code, details = re.Status, re.Code, re.Details
+		switch code {
+		case "exists":
+			code = "ref_exists"
+		case "no_ref":
+			code = "ref_not_found"
+		case "invalid", "bad_ttl":
+			code = "invalid_request"
+		}
+		if re.Details == nil {
+			details = nil
+		}
 	} else if errors.As(e, &se) {
 		status, code, details = se.status, se.code, se.details
 		if se.code == "not_found" {
@@ -139,7 +154,7 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/lineages/"), "/")
-	if len(parts) < 2 || !store.Lineage(parts[0]) {
+	if (len(parts) < 2 && s.lineages == nil) || !store.Lineage(parts[0]) {
 		storageFail(w, invalid("lineage: expected /v1/lineages/{lineage}/{route} with a valid lineage"))
 		return
 	}
@@ -158,6 +173,67 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	repo := s.repo().ForLineage(l)
+	handler := func(w http.ResponseWriter) { s.storageRoute(w, r, l, route, repo) }
+	idemRoute := route
+	var replayRefMatches func(string) bool
+	var replayOwnerMatches func(string) bool
+	if s.lineages != nil {
+		claims, _ := ClaimsFromContext(r.Context())
+		item, err := s.lineages.get(r.Context(), l)
+		if err != nil {
+			storageFail(w, ddbUnavailable(err))
+			return
+		}
+		isDelete := route == "" && r.Method == "DELETE"
+		if item.DeletedAt != nil && !isDelete {
+			storageFail(w, lineageDeleted())
+			return
+		}
+		if route == "" || route == "refs" || strings.HasPrefix(route, "refs/") {
+			idemRoute = r.Method + " " + route
+			var request refRequest
+			if route == "" {
+				if (isDelete && !runtimeSubject(claims)) || (write && claims.Fence != nil) {
+					storageFail(w, &storageError{403, "forbidden", nil})
+					return
+				}
+			} else {
+				if item.Lineage == "" {
+					storageFail(w, lineageMissing())
+					return
+				}
+				request, err = parseRefRequest(r, route, claims)
+				if request.action == "create" {
+					replayRefMatches = request.matches
+				}
+				if request.action == "deleteOwned" {
+					replayOwnerMatches = request.matches
+				}
+				if request.name != "" && request.action != "create" {
+					idemRoute = r.Method + " " + request.action + " " + request.name + " " + request.watcher
+				}
+				if err != nil {
+					storageFail(w, err)
+					return
+				}
+			}
+			if write && item.Deletion != "" && !isDelete {
+				storageFail(w, &storageError{503, "unavailable", nil})
+				return
+			}
+			handler = func(w http.ResponseWriter) {
+				var err error
+				if route == "" {
+					err = s.lineageRoute(w, r, l, item)
+				} else {
+					err = s.refRoute(w, r, l, request, item, repo)
+				}
+				if err != nil {
+					s.refRouteError(w, r, l, err)
+				}
+			}
+		}
+	}
 	// Serialize keyed mutations through response publication. A failed request is
 	// retryable; only successful results enter the 24-hour response cache.
 	if write && r.Header.Get("Idempotency-Key") != "" {
@@ -170,9 +246,35 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 		defer unlock()
 		var status int
 		var body []byte
-		e := repo.DB.DB.QueryRowContext(r.Context(), "SELECT status,body FROM idempotency WHERE key=? AND lineage=? AND route=? AND created_at>?", key, l, route, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&status, &body)
+		e := repo.DB.DB.QueryRowContext(r.Context(), "SELECT status,body FROM idempotency WHERE key=? AND lineage=? AND route=? AND created_at>?", key, l, idemRoute, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&status, &body)
 		if e == nil {
-			w.Header().Set("Content-Type", "application/json")
+			if replayRefMatches != nil {
+				var original struct{ Name string }
+				if err := json.Unmarshal(body, &original); err != nil {
+					storageFail(w, err)
+					return
+				}
+				if !replayRefMatches(original.Name) {
+					storageFail(w, &storageError{403, "forbidden", nil})
+					return
+				}
+			}
+			if replayOwnerMatches != nil {
+				var original struct{ Deleted, Held []string }
+				if err := json.Unmarshal(body, &original); err != nil {
+					storageFail(w, err)
+					return
+				}
+				for _, name := range append(original.Deleted, original.Held...) {
+					if !replayOwnerMatches(name) {
+						storageFail(w, &storageError{403, "forbidden", nil})
+						return
+					}
+				}
+			}
+			if status != http.StatusNoContent {
+				w.Header().Set("Content-Type", "application/json")
+			}
 			w.WriteHeader(status)
 			_, _ = w.Write(body)
 			return
@@ -182,9 +284,9 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rec := httptest.NewRecorder()
-		s.storageRoute(rec, r, l, route, repo)
+		handler(rec)
 		if rec.Code >= 200 && rec.Code < 300 {
-			_, e = repo.DB.DB.ExecContext(r.Context(), "INSERT OR REPLACE INTO idempotency VALUES(?,?,?,?,?,?)", key, l, route, rec.Code, rec.Body.Bytes(), time.Now().UnixMilli())
+			_, e = repo.DB.DB.ExecContext(r.Context(), "INSERT OR REPLACE INTO idempotency VALUES(?,?,?,?,?,?)", key, l, idemRoute, rec.Code, rec.Body.Bytes(), time.Now().UnixMilli())
 			if e != nil {
 				storageFail(w, e)
 				return
@@ -197,7 +299,7 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(rec.Body.Bytes())
 		return
 	}
-	s.storageRoute(w, r, l, route, repo)
+	handler(w)
 }
 func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, route string, repo *objects.Repository) {
 	ctx := r.Context()

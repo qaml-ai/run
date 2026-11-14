@@ -250,6 +250,8 @@ func TestAcquireRace(t *testing.T) {
 	if same.Epoch != fence.Epoch || same.Deadline != now.UnixMilli()+2000 {
 		t.Fatalf("same-holder acquisition = %+v", same)
 	}
+	_, err = s.Acquire(ctx, lineage, "main", "other", 1000)
+	wantError(t, err, "held", 409)
 	*now = time.UnixMilli(same.Deadline)
 	next, err := s.Acquire(ctx, lineage, "main", "takeover", 1000)
 	must(t, err)
@@ -291,7 +293,7 @@ func TestExpiryAndCleanup(t *testing.T) {
 	_, err := s.Get(ctx, lineage, "job/expired")
 	wantError(t, err, "no_ref", 404)
 	wantError(t, s.Watch(ctx, lineage, "job/expired", "agent:a"), "no_ref", 404)
-	must(t, s.Unwatch(ctx, lineage, "job/expired", "agent:old"))
+	wantError(t, s.Unwatch(ctx, lineage, "job/expired", "agent:old"), "no_ref", 404)
 	wantError(t, s.Delete(ctx, lineage, "job/held", nil), "held", 409)
 	wantError(t, s.Create(ctx, lineage, "job/held", target, nil, nil), "exists", 409)
 
