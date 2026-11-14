@@ -37,7 +37,7 @@ export async function claimAgentWorkspace(env: FileBindings, tenant: string, sou
   const saved=await readForkClaim(env,tenant,targetId);
   if(saved?.workspace) return saved.workspace;
   const source = await agentRepo(env as RepoEnv,tenant,sourceId);
-  const ctx=await repoContext(env as RepoEnv,tenant,source.info.id);
+  const ctx=await repoContext(env as RepoEnv,tenant,source.info.id,`agent:${sourceId}`);
   const head=await ctx.repo.ref('main');
   return {repo:source.info.id,version:head?.version};
 }
@@ -77,5 +77,5 @@ export async function copyAgentWorkspace(env: FileBindings, tenant: string, sour
   captured?: WorkspaceSeed, _failAfter?: number) {
   const seed=captured ?? await claimAgentWorkspace(env,tenant,sourceId,targetId,0);
   if (!seed.version) { await agentRepo(env as RepoEnv,tenant,targetId); return; }
-  await createRepo(env as RepoEnv,tenant,{key:`agent:${targetId}`,name:`agent ${targetId}`,from:{repo:seed.repo,version:seed.version}});
+  await createRepo(env as RepoEnv,tenant,{key:`agent:${targetId}`,name:`agent ${targetId}`,author:`agent:${targetId}`,from:{repo:seed.repo,version:seed.version}});
 }
