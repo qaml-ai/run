@@ -5,10 +5,8 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +20,6 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/delivery"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
-	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
@@ -52,6 +49,7 @@ func TestDDBHostChannel(t *testing.T) {
 	pusher := HostPusher{TLS: credentials}
 	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries, Usage: usage},
 		Now: clock, Refs: refstore.New(db, refs, clock, nil), Pusher: pusher, RuntimeURL: "https://runtime.example/ended", Objects: objects}
+	c.EnableClockCheck()
 	pools := []string{"pool"}
 	loop := compute.Loop{C: c, Pools: func(context.Context) ([]string, error) { return pools, nil }}
 	server := NewHostServer(c, pools, 30*time.Second)
@@ -133,7 +131,7 @@ func TestDDBHostChannel(t *testing.T) {
 	create := func(id string) {
 		t.Helper()
 		_, err := c.Create(ctx, compute.CreateRequest{ID: id, Lineage: lin, Ref: "main", Pool: "pool", Payer: "payer", Image: image,
-			Mode: compute.JobMode, Job: &compute.Job{Command: "true", TimeoutS: 600, Pids: 32}, Internet: true,
+			Session: &compute.Session{IdleStopS: 600}, Internet: true,
 			Shape: compute.Shape{VCPUs: 1, MemoryMiB: 1024, DiskMiB: 256}, Deadline: now.Add(20 * time.Minute)})
 		if err != nil {
 			t.Fatal(err)
@@ -160,7 +158,7 @@ func TestDDBHostChannel(t *testing.T) {
 	gotBoots := append([]hostwire.BootSpec(nil), boots...)
 	mu.Unlock()
 	if len(gotBoots) != 1 || gotBoots[0].ID != "life" || gotBoots[0].Image != image || gotBoots[0].Parent != commit ||
-		gotBoots[0].Version != commit || gotBoots[0].Tree != tree || gotBoots[0].Job.Pids != 32 || !gotBoots[0].Internet {
+		gotBoots[0].Version != commit || gotBoots[0].Tree != tree || gotBoots[0].Session == nil || gotBoots[0].Session.IdleStopS != 600 || !gotBoots[0].Internet {
 		t.Fatalf("boot specs: %+v", gotBoots)
 	}
 	start := hostwire.Started{BootEpoch: 1, At: now.UnixMilli()}
@@ -188,41 +186,14 @@ func TestDDBHostChannel(t *testing.T) {
 	if reply := heartbeat(1, 0, hostwire.Running{ID: "life"}); len(reply.Stop) != 1 || reply.Stop[0] != "life" {
 		t.Fatal(reply)
 	}
-	body := []byte(`{"exit":0}`)
-	key, _ := store.ResultKey(lin, "life")
-	end := hostwire.Ended{BootEpoch: 1, At: now.UnixMilli(), Code: "stopped", ResultKey: key, ResultBytes: int64(len(body)), ResultSha256: root.Hash(body)}
+	end := hostwire.Ended{BootEpoch: 1, At: now.UnixMilli(), Code: "stopped"}
 	path := "a/vms/life/ended"
 	post(clientB, "b/vms/life/ended", end, 409, nil)
-	q := end
-	q.ResultKey = lin + "/results/life"
-	post(clientA, path, q, 400, nil)
-	if resp := post(clientA, path, end, 409, nil); !strings.Contains(resp, "result not found") {
-		t.Fatal(resp)
-	}
-	if err := store.Atomic(filepath.Join(objects.Dir, key), body); err != nil {
-		t.Fatal(err)
-	}
-	q = end
-	q.ResultBytes++
-	post(clientA, path, q, 409, nil)
-
-	// Fail after HEAD succeeds and before End is attempted.
-	server.headResult = func(ctx context.Context, key string) (store.Info, error) {
-		info, err := objects.Head(ctx, key)
-		if err != nil {
-			return info, err
-		}
-		return info, errors.New("injected interruption after HEAD")
-	}
-	post(clientA, path, end, 500, nil)
-	if v := get("life"); v.Phase != compute.Stopping {
-		t.Fatal(v)
-	}
-	server.headResult = objects.Head
+	post(clientA, path, map[string]any{"bootEpoch": 1, "code": "stopped", "resultKey": "removed"}, 400, nil)
 	post(clientA, path, end, 204, nil)
 	post(clientA, path, end, 204, nil)
 	v = get("life")
-	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.ResultRef != key || v.ResultSha256 != end.ResultSha256 || v.ResultBytes != end.ResultBytes || v.UsageSeq != 5 {
+	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.ResultRef != "" || v.UsageSeq != 5 {
 		t.Fatalf("ended: %+v", v)
 	}
 	h, err := c.Host(ctx, "pool", "a")
@@ -237,27 +208,9 @@ func TestDDBHostChannel(t *testing.T) {
 		t.Fatalf("delivery: %+v, %v", row, err)
 	}
 	event := row.Item["body"].(*types.AttributeValueMemberB).Value
-	if !bytes.Contains(event, []byte(end.ResultSha256)) || !bytes.Contains(event, []byte(key)) {
+	if !bytes.Contains(event, []byte(`"code":"stopped"`)) || bytes.Contains(event, []byte("resultRef")) {
 		t.Fatal(string(event))
 	}
-
-	read := func(want error) {
-		t.Helper()
-		stream, size, err := c.ReadResult(ctx, "life")
-		if err != nil || size != int64(len(body)) {
-			t.Fatalf("read: %d, %v", size, err)
-		}
-		defer stream.Close()
-		got, err := io.ReadAll(stream)
-		if !errors.Is(err, want) || want == nil && !bytes.Equal(got, body) {
-			t.Fatalf("result: %q, %v", got, err)
-		}
-	}
-	read(nil)
-	if err := store.Atomic(filepath.Join(objects.Dir, key), []byte(`{"exit":1}`)); err != nil {
-		t.Fatal(err)
-	}
-	read(compute.ErrResultCorrupt)
 
 	host.Close()
 	create("fallback")

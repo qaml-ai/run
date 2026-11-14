@@ -1,5 +1,9 @@
 # Exporting your data
 
+On Workers, the archive holds `repos/<id>/repo.json` with the name, key, refs
+and creation time, and `repos/<id>/main/…` with the files from one immutable
+version of `main`. The volume entries below apply to the Node runtime.
+
 `GET /v1/account/export` (the console's **Account → Export data**) answers with a
 zip of everything camelRun stores for your account. Any API token of the account
 can call it; a browser token cannot.

@@ -16,6 +16,7 @@ import (
 )
 
 type StorageServer struct {
+	compute     http.Handler
 	refs        *refstore.Store
 	marksTable  string
 	lineages    *lineageStore
@@ -61,6 +62,10 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		stats := s.repo().DB.DB.Stats()
 		jsonReply(w, http.StatusOK, map[string]int{"cacheConnections": stats.OpenConnections, "cacheInUse": stats.InUse})
+	case s.compute != nil && (r.URL.Path == "/v1/usage" || r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/")):
+		if r = s.authorize(w, r); r != nil {
+			s.compute.ServeHTTP(w, r)
+		}
 	case strings.HasPrefix(r.URL.Path, "/v1/lineages/"):
 		s.loggedStorage(w, r)
 	default:

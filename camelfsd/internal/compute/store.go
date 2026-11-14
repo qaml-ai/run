@@ -92,26 +92,9 @@ func readShape(i item) Shape {
 func vmItem(v VM) attrs {
 	i := attrs{
 		"id": s(v.ID), "phase": s(string(v.Phase)), "lineage": s(v.Lineage), "ref": s(v.Ref), "version": s(v.Version),
-		"mode": s(v.Mode), "image": s(v.Image), "shape": shapeItem(v.Shape), "pool": s(v.Pool), "payer": s(v.Payer),
+		"image": s(v.Image), "shape": shapeItem(v.Shape), "pool": s(v.Pool), "payer": s(v.Payer),
 		"createdAt": n(v.CreatedAt), "leaseDeadline": n(v.LeaseDeadline),
-	}
-	network := v.Network
-	if network == nil {
-		network = attrs{}
-	}
-	i["network"] = m(network)
-	i["internet"] = b(v.Internet)
-	if v.Job != nil {
-		env := attrs{}
-		for key, value := range v.Job.Env {
-			env[key] = s(value)
-		}
-		outputs := make([]types.AttributeValue, 0, len(v.Job.Outputs))
-		for _, path := range v.Job.Outputs {
-			outputs = append(outputs, s(path))
-		}
-		i["job"] = m(attrs{"command": s(v.Job.Command), "timeoutS": n(v.Job.TimeoutS), "env": m(env),
-			"outputs": &types.AttributeValueMemberL{Value: outputs}, "commit": b(v.Job.Commit), "pids": n(int64(v.Job.Pids))})
+		"requestedVersion": s(v.Version), "requestedDeadline": n(v.LeaseDeadline), "internet": b(v.Internet),
 	}
 	if v.Session != nil {
 		i["session"] = m(attrs{"idleStopS": n(v.Session.IdleStopS)})
@@ -123,28 +106,26 @@ func readVM(i item) VM {
 	deadline := i.number("leaseDeadline")
 	req := CreateRequest{
 		ID: i.text("id"), Lineage: i.text("lineage"), Ref: i.text("ref"), Version: i.text("version"),
-		Mode: i.text("mode"), Image: i.text("image"), Shape: readShape(i.object("shape")), Pool: i.text("pool"),
-		Payer: i.text("payer"), Internet: i.flag("internet"), Network: attrs(i.object("network")), Deadline: time.UnixMilli(deadline).UTC(),
-	}
-	if job := i.object("job"); job != nil {
-		env := map[string]string{}
-		for key := range job.object("env") {
-			env[key] = job.object("env").text(key)
-		}
-		req.Job = &Job{Command: job.text("command"), TimeoutS: job.number("timeoutS"), Env: env,
-			Outputs: job.list("outputs"), Commit: job.flag("commit"), Pids: int(job.number("pids"))}
+		Image: i.text("image"), Shape: readShape(i.object("shape")), Pool: i.text("pool"),
+		Payer: i.text("payer"), Internet: i.flag("internet"), Deadline: time.UnixMilli(deadline).UTC(),
 	}
 	if session := i.object("session"); session != nil {
 		req.Session = &Session{IdleStopS: session.number("idleStopS")}
 	}
+	var checkpoint *Checkpoint
+	if saved := i.object("lastCheckpoint"); saved != nil {
+		checkpoint = &Checkpoint{Version: saved.text("version"), Tree: saved.text("tree"), At: saved.number("at")}
+	}
 	return VM{
 		CreateRequest: req, Phase: Phase(i.text("phase")), CreatedAt: i.number("createdAt"), LeaseDeadline: deadline,
 		Host: i.text("host"), HostEpoch: i.number("hostEpoch"), PlacedAt: i.timestamp("placedAt"),
-		BootingAt: i.timestamp("bootingAt"), DeadlineAt: i.timestamp("deadlineAt"), StartedAt: i.timestamp("startedAt"),
-		LastListedAt: i.timestamp("lastListedAt"), StopRequestedAt: i.timestamp("stopRequestedAt"), EndedAt: i.timestamp("endedAt"),
+		BootingAt: i.timestamp("bootingAt"), StartedAt: i.timestamp("startedAt"),
+		LastListedAt: i.timestamp("lastListedAt"), LastActivityAt: i.timestamp("lastActivityAt"), StopRequestedAt: i.timestamp("stopRequestedAt"), EndedAt: i.timestamp("endedAt"),
 		StopCheckpoint: i.flag("stopCheckpoint"), StopReason: EndCode(i.text("stopReason")), Code: EndCode(i.text("code")),
-		Exit: int(i.number("exit")), TimedOut: i.flag("timedOut"), ResultRef: i.text("resultRef"), EndVersion: i.text("endVersion"),
+		ResultRef: i.text("resultRef"), EndVersion: i.text("endVersion"),
 		CheckpointError: i.text("checkpointError"), ResultSha256: i.text("resultSha256"), ResultBytes: i.number("resultBytes"),
+		FirstExecAt: i.timestamp("firstExecAt"), execs: i.set("execs"), LastCheckpoint: checkpoint,
+		RequestedVersion: i.text("requestedVersion"), RequestedDeadline: i.number("requestedDeadline"),
 		Tree: i.text("tree"), RefLeaseHolder: i.text("refLeaseHolder"), RefLeaseEpoch: i.number("refLeaseEpoch"),
 		RefLeaseDeadline: i.number("refLeaseDeadline"), RefLeaseReleased: i.flag("refLeaseReleased"), BilledTo: i.number("billedTo"), UsageSeq: i.number("usageSeq"),
 	}

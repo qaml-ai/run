@@ -70,7 +70,7 @@ export function modelRuntime(
     TEST_MODEL_BASE_URL?: string;
     TEST_MODEL_API?: Api;
     TEST_MODE?: string;
-  } & ImageBindings & ModelTimeoutEnv & { VOLUMES?: FileBindings["VOLUMES"] },
+  } & ImageBindings & ModelTimeoutEnv,
   getTenant: () => Promise<string>,
   hooks: ModelHooks = {},
 ) {

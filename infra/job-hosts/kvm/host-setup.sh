@@ -27,7 +27,7 @@ source /etc/os-release
 [[ $(uname -m) == x86_64 ]] || fail 'x86_64 is required'
 [[ -c /dev/kvm ]] || fail '/dev/kvm is missing; enable nested KVM'
 [[ -f /etc/camel/kvm-host.conf ]] || fail 'Copy kvm-host.conf.example to /etc/camel/kvm-host.conf and fill it in'
-RUN_REF=main CAMELFSD_REF=camelfs/daemon-v0
+RUN_REF=main CAMELFSD_REF=main
 # No xtrace: configuration and secret files must never be echoed.
 # shellcheck source=/dev/null
 source /etc/camel/kvm-host.conf
@@ -191,12 +191,9 @@ changed=0
 put "$here/systemd/camel-jobhost.service" /etc/systemd/system/camel-jobhost.service
 restart[camel-jobhost]=$((changed | agent_changed | vm_changed))
 changed=0
-# The AL2023 unit depends on camel-host-prep (Nitro): install it with that dependency renamed to camel-kvm-prep. A drop-in
-# cannot do this: systemd does not reset dependency lists (After=, Requires=) from a drop-in.
-sed 's/camel-host-prep\.service/camel-kvm-prep.service/g' /opt/camel/src/infra/job-hosts/image/files/camel-egress-proxy.service > "$work/camel-egress-proxy.service"
-put "$work/camel-egress-proxy.service" /etc/systemd/system/camel-egress-proxy.service
+put "$here/systemd/camel-egress-proxy.service" /etc/systemd/system/camel-egress-proxy.service
 if [[ -e /etc/systemd/system/camel-egress-proxy.service.d/kvm.conf ]]; then rm -f /etc/systemd/system/camel-egress-proxy.service.d/kvm.conf; changed=1; fi
-restart[camel-egress-proxy]=$((changed | agent_changed))
+restart[camel-egress-proxy]=$((changed | daemon_changed))
 changed=0
 put /opt/camel/src/infra/job-hosts/image/files/camel-host.nft /etc/nftables.d/camel-host.nft
 if ! grep -qF 'include "/etc/nftables.d/camel-host.nft"' /etc/nftables.conf; then

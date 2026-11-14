@@ -31,6 +31,15 @@ type Store interface {
 }
 type Local struct{ Dir string }
 
+func guestManifest(key string) bool {
+	sha, ok := strings.CutPrefix(key, "guest/")
+	if !ok {
+		return false
+	}
+	sha, ok = strings.CutSuffix(sha, ".json")
+	return ok && root.Hex(sha, 64)
+}
+
 func valid(k string) bool {
 	_, p, h, ok := splitKey(k)
 	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts") && root.Hex(h, 40))
@@ -209,7 +218,7 @@ func PutBlobFileIfAbsent(ctx context.Context, s Store, key string, f *os.File, m
 	}
 }
 func (l Local) Get(c context.Context, k string) ([]byte, error) {
-	if !valid(k) {
+	if !valid(k) && !guestManifest(k) {
 		return nil, fmt.Errorf("invalid key")
 	}
 	b, e := os.ReadFile(filepath.Join(l.Dir, k))
@@ -301,7 +310,7 @@ func (s *S3) key(k string) string {
 	return s.Prefix + "/" + k
 }
 func (s *S3) Get(c context.Context, k string) ([]byte, error) {
-	if !valid(k) {
+	if !valid(k) && !guestManifest(k) {
 		return nil, fmt.Errorf("invalid key")
 	}
 	key := s.key(k)
