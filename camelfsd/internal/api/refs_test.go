@@ -435,7 +435,7 @@ func TestRefsRoutes(t *testing.T) {
 	controller.Pusher = push
 	createVM("cleanup-fails", lineage, "main")
 	// A duplicate outbox ID makes this VM's end transaction fail atomically.
-	work, err := delivery.Stage(deliveries, delivery.Delivery{ID: "vm.ended:cleanup-fails"}, now)
+	work, err := delivery.Stage(deliveries, delivery.Delivery{ID: "vm.ended:cleanup-fails", URL: "https://runtime.example/ended", Body: []byte("{}")}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
