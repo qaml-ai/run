@@ -256,3 +256,42 @@ func TestDDBHostLossSweepYieldsToHeartbeat(t *testing.T) {
 	}
 	f.checkMemory(h)
 }
+
+func TestDDBBootTimeout(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	f.register("boot", "boot", 1)
+	req := f.request("stuck", "boot")
+	req.Deadline = epoch.Add(time.Hour)
+	for _, step := range f.startSteps(req)[:3] { // create, place, booting: no start report
+		f.now = epoch.Add(step.offset)
+		must[VM](t)(step.call(f.fresh()))
+	}
+	var events []string
+	l := &Loop{C: f.fresh(), Pools: func(context.Context) ([]string, error) { return []string{"boot"}, nil },
+		Log: func(event string, _ map[string]any) { events = append(events, event) }}
+	// Keep the host alive; before the boot timeout nothing happens.
+	f.now = epoch.Add(4 * time.Minute)
+	if err := f.Heartbeat(ctx, "boot", "host", 1, 0, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Pass(ctx); err != nil || len(events) != 0 {
+		t.Fatalf("early: %v %v", err, events)
+	}
+	f.now = epoch.Add(6 * time.Minute)
+	if err := f.Heartbeat(ctx, "boot", "host", 1, 0, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Pass(ctx); err != nil || !slices.Equal(events, []string{"vm_boot_timed_out"}) {
+		t.Fatalf("timeout: %v %v", err, events)
+	}
+	v := must[VM](t)(f.Get(ctx, "stuck"))
+	if v.Phase != Ended || v.Code != StartFailed {
+		t.Fatalf("stuck boot: %+v", v)
+	}
+	f.assertOutcome(v, 0) // no usage: it never started
+	reply := must[Reconcile](t)(f.Reconcile(ctx, "boot", "host", 1, 0, f.now.Add(time.Second), []Listed{{ID: "stuck"}}, time.Minute))
+	if !slices.Equal(reply.Stop, []string{"stuck"}) {
+		t.Fatalf("a late boot is stopped: %+v", reply)
+	}
+}

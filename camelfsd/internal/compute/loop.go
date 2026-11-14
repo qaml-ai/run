@@ -15,7 +15,10 @@ type Loop struct {
 	Period   time.Duration
 	HostLost time.Duration
 	Wait     time.Duration
-	Log      func(event string, fields map[string]any)
+	// BootTimeout ends a VM that stayed booting (no start report) this long as start_failed (default 5 min). It is
+	// never billed: usage needs startedAt. A host that later lists it gets it in Stop.
+	BootTimeout time.Duration
+	Log         func(event string, fields map[string]any)
 }
 
 func (l *Loop) Run(ctx context.Context) error {
@@ -157,7 +160,14 @@ func (l *Loop) sweepVMs(ctx context.Context, h Host, now time.Time) error {
 		if !v.onHost(h) || v.Phase == Ended || v.Phase == Stopping {
 			continue
 		}
+		boot := l.BootTimeout
+		if boot <= 0 {
+			boot = 5 * time.Minute
+		}
 		switch {
+		case v.Phase == Booting && v.StartedAt == nil && v.BootingAt != nil && *v.BootingAt < now.Add(-boot).UnixMilli():
+			_, err = l.C.endWithHostSnapshot(ctx, v, EndRequest{At: now, Code: StartFailed}, now, nil, &h)
+			result = errors.Join(result, l.record("vm_boot_timed_out", id, err))
 		case v.LeaseDeadline <= now.UnixMilli():
 			_, err = l.C.stop(ctx, v, now, v.LeaseDeadline, LeaseExpired, true)
 			result = errors.Join(result, l.record("vm_lease_expired", id, err))
