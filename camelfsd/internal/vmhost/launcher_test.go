@@ -72,7 +72,7 @@ func TestFirecrackerConfig(t *testing.T) {
 		{"nitro", "", "", false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Fixture generated with jobhost/vm.ts and jobhost/network.ts.
+			// Fixture originally generated with jobhost/vm.ts and jobhost/network.ts; the branch disk is camel.workspace.
 			want, err := os.ReadFile(filepath.Join("testdata", tc.name+".json"))
 			if err != nil {
 				t.Fatal(err)
@@ -106,12 +106,16 @@ func TestBootRejectsInvalidIDAndSmallDiskBeforeAllocating(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := Launcher{Image: base, Work: filepath.Join(dir, "work"), PolicyDir: filepath.Join(dir, "policies")}
+	if _, err := l.Boot(t.Context(), "a", Shape{1, 128, 3}, Boot{}); err == nil || err.Error() != "session requires a branch disk" {
+		t.Fatalf("boot without a branch disk: %v", err)
+	}
+	branch := Boot{Repo: filepath.Join(dir, "branch.ext4")}
 	for _, id := range []string{"", "a/b", "😀", strings.Repeat("x", 97), "x\n"} {
-		if _, err := l.Boot(t.Context(), id, Shape{1, 128, 3}, Boot{}); err == nil || err.Error() != "invalid job id" {
+		if _, err := l.Boot(t.Context(), id, Shape{1, 128, 3}, branch); err == nil || err.Error() != "invalid job id" {
 			t.Fatalf("boot for %q: %v", id, err)
 		}
 	}
-	if _, err := l.Boot(t.Context(), "a-B_1.2", Shape{1, 128, 2}, Boot{}); err == nil ||
+	if _, err := l.Boot(t.Context(), "a-B_1.2", Shape{1, 128, 2}, branch); err == nil ||
 		err.Error() != "invalid_request: job disk 2 MiB is smaller than the base image 3 MiB" {
 		t.Fatalf("boot: %v", err)
 	}
