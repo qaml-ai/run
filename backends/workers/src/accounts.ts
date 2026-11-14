@@ -81,16 +81,18 @@ export class Accounts {
   private usageTimer?: ReturnType<typeof setTimeout>;
   private durableUsageVersion = 0;
   private flushedDurableUsageVersion = 0;
+  private readonly flushUsageReceipts: boolean;
   readonly billing: Billing;
   /** This UTC month's spend per tenant, as last read plus what this node recorded since. */
   private readonly spend = new Map<string, { month: string; cost: number; until: number }>();
   private readonly spendReads = new Map<string, Promise<number>>();
 
-  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string; pricing?: Pricing; publicUrl?: string; stripe?: Stripe; maxAgentsPerTenant?: number; azureOpenAI?: AzureOpenAI; anthropicFederation?: AnthropicFederation }) {
+  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string; pricing?: Pricing; publicUrl?: string; stripe?: Stripe; maxAgentsPerTenant?: number; azureOpenAI?: AzureOpenAI; anthropicFederation?: AnthropicFederation; flushReceipts?: boolean }) {
     this.tenants = options.tenants;
     this.anthropicFederation = options.anthropicFederation;
     this.azure = options.azureOpenAI;
     this.db = options.db;
+    this.flushUsageReceipts = options.flushReceipts ?? true;
     this.billing = new Billing({ db: this.db, tenants: this.tenants, pricing: options.pricing, publicUrl: options.publicUrl, stripe: options.stripe, maxAgentsPerTenant: options.maxAgentsPerTenant, pending: tenant => this.pendingCharges(tenant), flush: () => this.flushUsage() });
     if (options.secretsKey !== undefined) {
       if (!/^[a-f0-9]{64}$/.test(options.secretsKey)) throw new Error("AGENT_SECRETS_KEY must be 64 hex characters (32 bytes)");
@@ -566,7 +568,7 @@ export class Accounts {
         await this.apply(this.unflushed[0]);
         this.unflushed.shift();
       }
-      await this.flushReceipts();
+      if (this.flushUsageReceipts) await this.flushReceipts();
       this.flushedDurableUsageVersion = durableVersion;
     } catch (error) {
       // Retry later even if nothing new is recorded.

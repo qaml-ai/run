@@ -7,8 +7,10 @@
 #        DEPLOY_PUSH_ONLY=1 infra/camelfs/deploy.sh   build and push, print the tag, deploy nothing
 #
 # The first image: the service exists at 0 tasks with a placeholder tag, so this script registers the real image
-# (a deployment at 0 tasks completes at once), then `infra/camelfs/apply.sh api_min_count=2` starts the tasks and
-# the autoscaling. Every later deploy is this script alone.
+# and pins it at once (ECS never marks a 0-task deployment COMPLETED: with the circuit breaker on it stays
+# IN_PROGRESS until a task runs, and with no task there is nothing that could fail), then
+# `infra/camelfs/apply.sh api_min_count=2` starts the tasks and the autoscaling. Every later deploy is this script
+# alone, and it waits for COMPLETED.
 #
 # After a COMPLETED deployment the revision's ARN is saved as service_task_definition_arn in camelfs/prod.tfvars
 # (the state bucket), so the next Terraform plan pins the revision this script chose instead of rolling the
@@ -73,6 +75,10 @@ log "Registered $revision"
 deployment=$(aws ecs update-service --cluster "$cluster" --service "$service" --task-definition "$revision" \
   --query 'service.deployments[?status==`PRIMARY`].id | [0]' --output text)
 log "Rolling $service (deployment $deployment)"
+desired=$(aws ecs describe-services --cluster "$cluster" --services "$service" --query 'services[0].desiredCount' --output text)
+if [[ "$desired" == 0 ]]; then
+  log "The service runs 0 tasks: nothing to roll, and ECS would never report this deployment COMPLETED; pinning the revision now."
+else
 while :; do
   state=$(aws ecs describe-services --cluster "$cluster" --services "$service" --output json \
     | jq -r --arg id "$deployment" '.services[0].deployments[] | select(.id == $id) | "\(.rolloutState) running=\(.runningCount) desired=\(.desiredCount) \(.rolloutStateReason // "")"')
@@ -84,6 +90,7 @@ while :; do
   esac
   sleep "$poll"
 done
+fi
 
 # Pin the revision for Terraform (see the header). Same file and format apply.sh uses.
 tfvars_s3=s3://camelai-terraform-state-$ACCOUNT_ID/agent-runtime/camelfs/prod.tfvars
@@ -95,8 +102,9 @@ aws s3 cp --only-show-errors "$tfvars.new" "$tfvars_s3"; rm -f "$tfvars" "$tfvar
 log "Saved service_task_definition_arn = $revision to prod.tfvars"
 
 # Every running task runs exactly this image (none at all while api_min_count is 0).
+if [[ "$desired" == 0 ]]; then log "Registered and pinned $image; the service runs no task yet (api_min_count 0): raise it with infra/camelfs/apply.sh api_min_count=2"; exit 0; fi
 mapfile -t running < <(aws ecs list-tasks --cluster "$cluster" --service-name "$service" --desired-status RUNNING --query 'taskArns[]' --output text | tr '\t' '\n' | sed '/^$/d')
-if [[ ${#running[@]} -eq 0 ]]; then log "Registered $image; the service runs no task yet (api_min_count 0): raise it with infra/camelfs/apply.sh api_min_count=2"; exit 0; fi
+[[ ${#running[@]} -gt 0 ]] || die "No running task after the deployment completed."
 mismatched=$(aws ecs describe-tasks --cluster "$cluster" --tasks "${running[@]}" --output json \
   | jq -r --arg image "$image" --arg c "$container" '[.tasks[] | select(any(.containers[]; .name == $c and .image != $image))] | length')
 [[ "$mismatched" == 0 ]] || die "$mismatched running task(s) run another image."
