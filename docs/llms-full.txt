@@ -4155,7 +4155,7 @@ at the [transcription price](https://run.camelai.com/docs/pricing.md), as `kind:
 your own key the provider bills you directly; the usage record still carries the cost. Holding the call itself costs
 nothing.
 
-A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise). With end-user credits enabled,
+A session starts only when the account may spend: otherwise 402 `SPEND_LIMIT`, 402 `INSUFFICIENT_CREDIT`, or 429 `FREE_HOURLY_LIMIT` past the free hourly allowance. With end-user credits enabled,
 a subject out of credit is refused at the start (402 `END_USER_CREDIT`). Each response, metering interval, `say`
 request and listen-only transcription is charged in full. The next budget checkpoint ends the session with
 `reason: "budget"` and `limit: "tenant"` or `"end_user"`, according to which payer ran out. A response already
