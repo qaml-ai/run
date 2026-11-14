@@ -383,7 +383,16 @@ func TestRefsRoutes(t *testing.T) {
 
 type beforeRefUpdate struct {
 	*dynamodb.Client
-	before func()
+	before   func()
+	refTable string
+	refReads int
+}
+
+func (c *beforeRefUpdate) GetItem(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	if aws.ToString(input.TableName) == c.refTable {
+		c.refReads++
+	}
+	return c.Client.GetItem(ctx, input, opts...)
 }
 
 func (c *beforeRefUpdate) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
@@ -418,7 +427,7 @@ func TestRefMutationRoutes(t *testing.T) {
 	s := NewStorageServer(repo, "test", nil)
 	s.ConfigureRefs(client, refTable, lineages, nil, marks)
 	normal := s.refs
-	raced := &beforeRefUpdate{Client: client}
+	raced := &beforeRefUpdate{Client: client, refTable: refTable}
 	s.refs = refstore.New(raced, refTable, nil, commitParents{repo})
 	s.refs.GuardLineages(lineages)
 	const l = "test:mutations"
@@ -554,7 +563,9 @@ func TestRefMutationRoutes(t *testing.T) {
 		}
 	}
 	moveDuringCAS(unrelated)
+	raced.refReads = 0
 	retried := write("race", []map[string]any{{"path": "edit", "text": "win", "expectBlob": "none"}}, nil, 201, "")
+	check(raced.refReads, 3) // Initial head, transaction conflict reread, retry head.
 	check(retried["parents"], []any{version(unrelated)})
 	check(retried["files"], float64(2))
 	conflicting := write("race", []map[string]any{{"path": "x", "text": "rival"}}, nil, 201, "")
@@ -567,6 +578,22 @@ func TestRefMutationRoutes(t *testing.T) {
 	check(details["path"], "x")
 	check(details["blob"], conflicting["changed"].([]any)[0].(map[string]any)["newBlob"])
 	check(version(get("race")), version(conflicting))
+
+	create("explicit-race", baseID)
+	raced.before = func() {
+		_, err := normal.Cas(t.Context(), l, "explicit-race", refstore.Move{
+			Kind: "move", Version: version(unrelated), Tree: unrelated["tree"].(string),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	raced.refReads = 0
+	details = write("explicit-race", []map[string]any{{"path": "edit", "text": "lose"}},
+		map[string]any{"expect": baseID}, 412, "stale")
+	check(raced.refReads, 2) // Initial head and transaction conflict reread.
+	check(details["current"], version(unrelated))
+	check(version(get("explicit-race")), version(unrelated))
 
 	mergeRef := func(name, theirs, mode string, status int, code string) map[string]any {
 		t.Helper()

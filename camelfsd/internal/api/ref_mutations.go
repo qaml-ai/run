@@ -94,7 +94,7 @@ func (s *StorageServer) moveHead(ctx context.Context, head refstore.Ref, kind, v
 	start := time.Now()
 	defer func() { timing.ddb += time.Since(start) }()
 	_, err := s.refs.Cas(ctx, head.Lineage, head.Name, refstore.Move{
-		Kind: kind, Version: version, Tree: tree, Parents: parents, Expect: &head.Version, RequireExisting: true, APIWrite: true,
+		Kind: kind, Version: version, Tree: tree, Parents: parents, Expect: &head.Version, RequireExisting: true, APIWrite: true, Known: &head,
 		Prepare: func(refstore.Ref) error {
 			var err error
 			bytes, err = s.checkQuota(ctx, head.Lineage, q)

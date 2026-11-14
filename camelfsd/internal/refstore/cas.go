@@ -22,6 +22,8 @@ type Move struct {
 	ExpectAbsent              bool
 	RequireExisting           bool
 	APIWrite                  bool // Unfenced tier mutation; a live lease is reported as held.
+	// Known may supply the API write's head for a conditional move.
+	Known *Ref
 	// Prepare computes the response after validation but before the conditional write.
 	Prepare func(previous Ref) error
 	Fence   *Fence
@@ -51,11 +53,22 @@ func (s *Store) Cas(ctx context.Context, lineage, name string, m Move) (Result, 
 		attempts = 1 // The API rebuilds a write once, against the newly read head.
 	}
 	for range attempts {
-		r, err := s.read(ctx, lineage, name)
-		if err != nil {
-			return Result{}, err
+		var r Ref
+		now := s.now().UnixMilli()
+		if known := m.Known; m.APIWrite && known != nil &&
+			known.Lineage == lineage && known.Name == name && known.live(now) && !known.held(now) &&
+			m.Fence == nil && m.Version != known.Version {
+			r = *known
+		} else {
+			// No-ops and an expired or held snapshot need a fresh read.
+			var err error
+			r, err = s.read(ctx, lineage, name)
+			if err != nil {
+				return Result{}, err
+			}
+			now = s.now().UnixMilli()
 		}
-		result, err := s.cas(ctx, lineage, name, r, m, s.now().UnixMilli())
+		result, err := s.cas(ctx, lineage, name, r, m, now)
 		if err != casConflict {
 			return result, err
 		}
@@ -139,7 +152,11 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 		return Result{}, err
 	}
 	if prev != nil {
-		result.Watchers = r.Watchers
+		// A guarded transaction returns no old attributes. Its callers
+		// receive the same advisory snapshot as before.
+		if s.guard != nil {
+			result.Watchers = r.Watchers
+		}
 		if watchers, ok := old.Attributes["watchers"].(*types.AttributeValueMemberSS); ok {
 			result.Watchers = watchers.Value
 		}
