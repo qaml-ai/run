@@ -140,6 +140,10 @@ func readTimingFrom(ctx context.Context) *readTiming {
 	return t
 }
 
+// usageCount carries how many events a GET /v1/usage page returned into its access log line.
+type usageCount struct{ events int }
+type usageCountKey struct{}
+
 func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string, serve http.HandlerFunc) {
 	start := time.Now()
 	rw := &statusWriter{ResponseWriter: w}
@@ -158,6 +162,11 @@ func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string,
 	case "/v1/lineages/:lineage/refs/:name/write", "/v1/lineages/:lineage/refs/:name/merge", "/v1/lineages/:lineage/refs/:name/restore":
 		moves = &refTiming{}
 		r = r.WithContext(context.WithValue(r.Context(), refTimingKey{}, moves))
+	}
+	var usage *usageCount
+	if route == "/v1/usage" {
+		usage = &usageCount{}
+		r = r.WithContext(context.WithValue(r.Context(), usageCountKey{}, usage))
 	}
 	defer func() {
 		status := rw.status
@@ -181,6 +190,9 @@ func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string,
 			phases = fmt.Sprintf(" lineageMs=%.3f treeMembershipMs=%.3f treeMs=%.3f treeReads=%d treeCacheHits=%d treeCacheMisses=%d blobMs=%.3f blobReads=%d blobCacheHits=%d blobCacheMisses=%d",
 				ms(reads.lineage), ms(reads.membership), ms(reads.tree), treeHits+treeMisses, treeHits, treeMisses,
 				ms(reads.blob), blobHits+blobMisses, blobHits, blobMisses)
+		}
+		if usage != nil {
+			phases = fmt.Sprintf(" events=%d", usage.events)
 		}
 		if lineage != "" {
 			route += " lineage=" + lineage

@@ -345,6 +345,9 @@ func (v *vmAPI) usage(w http.ResponseWriter, r *http.Request, claims auth.Claims
 	if err != nil {
 		return err
 	}
+	if count, ok := r.Context().Value(usageCountKey{}).(*usageCount); ok {
+		count.events = len(events)
+	}
 	// Encode the envelope separately so the stored event JSON bytes pass through intact.
 	tail, err := json.Marshal(struct {
 		Cursor    string `json:"cursor"`

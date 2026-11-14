@@ -72,9 +72,7 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		loggedAccess(w, r, route, "", s.serveCompute)
 	case s.compute != nil && r.URL.Path == "/v1/usage":
-		if r = s.authorize(w, r); r != nil {
-			s.compute.ServeHTTP(w, r)
-		}
+		loggedAccess(w, r, "/v1/usage", "", s.serveCompute)
 	case strings.HasPrefix(r.URL.Path, "/v1/lineages/"):
 		s.loggedStorage(w, r)
 	default:

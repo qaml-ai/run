@@ -122,3 +122,26 @@ func TestReadAccessLogPhases(t *testing.T) {
 		}
 	}
 }
+
+// GET /v1/usage is access-logged with its status, time and how many events the page returned (and nothing else from
+// the request: no cursor, no token).
+func TestUsageAccessLog(t *testing.T) {
+	var out bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&out)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	r := httptest.NewRequest("GET", "/v1/usage?after=secret-cursor&limit=1000", nil)
+	w := httptest.NewRecorder()
+	loggedAccess(w, r, "/v1/usage", "", func(w http.ResponseWriter, r *http.Request) {
+		count, ok := r.Context().Value(usageCountKey{}).(*usageCount)
+		if !ok {
+			t.Fatal("no usage counter in the request context")
+		}
+		count.events = 3
+		w.WriteHeader(200)
+	})
+	line := out.String()
+	if !strings.Contains(line, "op=GET:/v1/usage status=200 ms=") || !strings.Contains(line, " events=3") || strings.Contains(line, "secret-cursor") {
+		t.Fatalf("access line: %q", line)
+	}
+}

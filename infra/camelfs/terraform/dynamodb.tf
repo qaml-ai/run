@@ -67,6 +67,10 @@ locals {
       range_key = null
       ttl       = null
       purpose   = "VM phase rows - compute control K4"
+      # L127: a lineage or ref delete ends that lineage's VMs. Keys plus the two fields the delete filters on.
+      indexes = {
+        lineage = { hash_key = "lineage", include = ["phase", "ref"] }
+      }
     }
     usage = {
       hash_key  = "shard"
@@ -103,6 +107,27 @@ resource "aws_dynamodb_table" "camelfs" {
     content {
       name = attribute.value
       type = "S"
+    }
+  }
+
+  # Index key attributes (a table's own keys are declared above).
+  dynamic "attribute" {
+    for_each = setsubtract(toset([for index in values(lookup(each.value, "indexes", {})) : index.hash_key]), toset(compact([each.value.hash_key, each.value.range_key])))
+    content {
+      name = attribute.value
+      type = "S"
+    }
+  }
+
+  # PAY_PER_REQUEST: an index needs no capacity. Adding one is an in-place UpdateTable; DynamoDB backfills it from
+  # the existing items (status CREATING, then ACTIVE) without blocking writes.
+  dynamic "global_secondary_index" {
+    for_each = lookup(each.value, "indexes", {})
+    content {
+      name               = global_secondary_index.key
+      hash_key           = global_secondary_index.value.hash_key
+      projection_type    = "INCLUDE"
+      non_key_attributes = global_secondary_index.value.include
     }
   }
 
