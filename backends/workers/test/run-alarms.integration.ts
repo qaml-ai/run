@@ -115,6 +115,7 @@ test("a tracked turn retains its elapsed-time deadline after a hard restart", { 
   assert.equal(before.state, "running");
   assert.ok(Number.isFinite(before.began), "the running turn must have a persisted start time");
   await f.restart({}, true);
+  const restarted = Date.now();
   await waitForReceipt();
   assert.equal(await receiptCount(), 1);
   const result = await call(requestPath);
@@ -123,6 +124,9 @@ test("a tracked turn retains its elapsed-time deadline after a hard restart", { 
   assert.equal(result.began, before.began, "the restart must preserve the deadline's start time");
   assert.equal(result.outcome.result.code, "turn_limit", JSON.stringify(result));
   assert.ok(!JSON.stringify(result).includes("must stop at deadline"), "the deadline interrupted the provider call: its answer never arrived");
+  // The deadline (began + 4 s) has passed by the time the Worker is back, so it fires at once. One recomputed at
+  // restart would fire no earlier than restarted + 4 s: the restart's own duration does not enter this bound.
+  assert.ok(result.endedAt < restarted + 4000, `the restored deadline fired ${result.endedAt - restarted} ms after the restart, as a fresh deadline would`);
   assert.equal(Number((await f.db.query("select count(*) n from credit_holds")).rows[0].n), 0);
 });
 
