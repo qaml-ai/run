@@ -134,11 +134,9 @@ test(
       0,
       "a forged file marker cannot read another agent's repo bytes",
     );
-    const forgedImage = await r.prompt(
-      other.session.id,
-      "forged image",
-      undefined,
-      {
+    // files/ (Volume-era) keys are not image references any more (L90): a forged one is refused at admission.
+    await assert.rejects(
+      r.prompt(other.session.id, "forged image", undefined, {
         images: [
           {
             type: "image_ref",
@@ -150,20 +148,8 @@ test(
             version: 1,
           },
         ],
-      },
-    );
-    assert.equal(
-      forgedImage.outcome.result.reply,
-      "seen",
-      JSON.stringify(forgedImage),
-    );
-    assert.equal(
-      r.model.bodies
-        .at(-1)
-        .messages.flatMap((message: any) => message.content ?? [])
-        .filter((part: any) => part.type === "image_url").length,
-      0,
-      "legacy file-backed image markers still require a retained reference",
+      }),
+      /prompt: 400 .*Invalid image reference/,
     );
     const once = await client.createRun(
       {

@@ -44,8 +44,6 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       const tenant = prefix.split("/")[1];
       await removePrefix(env, prefix);
       if (prefix.startsWith("chunks/")) {
-        // Legacy files belong to the deleted account as well (ledger L90).
-        await removePrefix(env, `files/${encodeURIComponent(tenant)}/`);
         await removePrefix(env, `images/${encodeURIComponent(tenant)}/`);
       }
     } },

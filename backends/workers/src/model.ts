@@ -76,7 +76,7 @@ export function modelRuntime(
 ) {
   const models = createModels();
   const decorate = (provider: Provider) => {
-    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant), env as FileBindings & import("./repos/registry.ts").RepoEnv, getTenant, undefined,hooks.authorizeRepoFile);
+    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant), env as FileBindings & import("./repos/registry.ts").RepoEnv, getTenant, hooks.authorizeRepoFile);
     return withSettings(hooks.wrapProvider ? hooks.wrapProvider(images) : images, hooks, env);
   };
   const contextModels = new Map<string, Model<Api>>();
