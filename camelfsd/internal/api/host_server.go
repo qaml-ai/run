@@ -48,11 +48,18 @@ func (s *HostServer) hostCAS(w http.ResponseWriter, r *http.Request, hostID stri
 	if err := readHostRequest(w, r, &q); err != nil {
 		return err
 	}
-	// The holder must be this authenticated host on its current boot; the lease epoch fences the move itself.
-	if err := s.checkHolder(r.Context(), hostID, q.Holder); err != nil {
+	if _, err := hostwire.ParseHolder(q.Holder.String()); err != nil || q.Holder.Host != hostID {
+		return errHostForbidden
+	}
+	host, err := s.findHost(r.Context(), s.pools, hostID)
+	if errors.Is(err, compute.ErrHost) || (err == nil && (host.Restarting || host.Lost)) {
+		return errHostForbidden
+	}
+	if err != nil {
 		return err
 	}
-	reply, err := s.cas(r.Context(), r.PathValue("lineage"), r.PathValue("name"), q.Commit, q.Expect, q.Root, q.Holder.String(), q.Epoch)
+	holder := hostwire.Holder{Host: hostID, Boot: host.BootEpoch, Mount: q.Holder.Mount}
+	reply, err := s.cas(r.Context(), r.PathValue("lineage"), r.PathValue("name"), q.Commit, q.Expect, q.Root, holder.String(), q.Epoch)
 	if err != nil {
 		storageFail(w, err)
 		return nil
@@ -208,19 +215,6 @@ func (s *HostServer) currentHost(ctx context.Context, id string, epoch int64) (c
 		err = compute.ErrHost
 	}
 	return h, err
-}
-
-// checkHolder binds the body of a host CAS to the authenticated host and its current boot.
-// C4 must call it before performing a host CAS.
-func (s *HostServer) checkHolder(ctx context.Context, hostID string, holder hostwire.Holder) error {
-	if _, err := hostwire.ParseHolder(holder.String()); err != nil || holder.Host != hostID {
-		return errHostForbidden
-	}
-	_, err := s.currentHost(ctx, hostID, holder.Boot)
-	if errors.Is(err, compute.ErrHost) {
-		return errHostForbidden
-	}
-	return err
 }
 
 func (s *HostServer) started(w http.ResponseWriter, r *http.Request, id string) error {

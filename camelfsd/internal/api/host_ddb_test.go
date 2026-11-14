@@ -117,8 +117,7 @@ func TestDDBHostChannel(t *testing.T) {
 	var registered hostwire.Registered
 	post(clientA, "a/register", register, 200, &registered)
 
-	// Host checkpoint CAS: the route binds the holder to the authenticated host and its current boot, then hands
-	// the fenced move to the storage CAS (stubbed here; casRef is the runtime cas route's code).
+	// Host checkpoint CAS passes the authenticated host's current boot to storage, regardless of the body's boot.
 	type casCall struct {
 		lineage, name, commit, expect, root, holder string
 		epoch                                       int64
@@ -141,13 +140,16 @@ func TestDDBHostChannel(t *testing.T) {
 	}
 	foreign := map[string]any{"commit": commit, "expect": strings.Repeat("e", 40), "holder": hostwire.Holder{Host: "b", Boot: registered.BootEpoch, Mount: "m1"}, "epoch": 3}
 	post(clientA, "a/lineages/lin/refs/main/cas", foreign, 403, nil)
-	oldBoot := map[string]any{"commit": commit, "expect": strings.Repeat("e", 40), "holder": hostwire.Holder{Host: "a", Boot: registered.BootEpoch + 1, Mount: "m1"}, "epoch": 3}
-	post(clientA, "a/lineages/lin/refs/main/cas", oldBoot, 403, nil)
+	otherBoot := map[string]any{"commit": commit, "expect": strings.Repeat("e", 40), "holder": hostwire.Holder{Host: "a", Boot: registered.BootEpoch + 1, Mount: "m1"}, "epoch": 3}
+	post(clientA, "a/lineages/lin/refs/main/cas", otherBoot, 200, nil)
+	if len(cas) != 2 || cas[1].holder != holder.String() {
+		t.Fatalf("host CAS must use the current boot: %+v", cas)
+	}
 	stale := map[string]any{"commit": commit, "expect": strings.Repeat("9", 40), "holder": holder, "epoch": 3}
 	if got := post(clientA, "a/lineages/lin/refs/main/cas", stale, 412, nil); !strings.Contains(got, `"current":"`+strings.Repeat("8", 40)+`"`) {
 		t.Fatalf("stale cas reply: %s", got)
 	}
-	if len(cas) != 2 {
+	if len(cas) != 3 {
 		t.Fatalf("forbidden holders must not reach the CAS: %+v", cas)
 	}
 	if len(registered.Images) != 1 || registered.Images[0] != strings.Repeat("d", 64) {
