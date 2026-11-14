@@ -38,6 +38,14 @@ export async function handleVoiceCalls(request: Request, env: Env, auth: AuthCon
       const response = await env.VOICE_CALLS.getByName(id).fetch(new Request("https://voice/create", {
         method: "POST", body: JSON.stringify({ id, tenant, options, origin: url.origin }),
       }));
+      // The once-shown marker (`Idempotency-Secret: once`, set on an ElevenLabs create whose signed URL must never be
+      // replayed) is internal: the idempotency middleware consumes it, and on this runtime that middleware wraps a
+      // request only when it carries an Idempotency-Key, so an unkeyed create drops the marker here.
+      if (!request.headers.has("idempotency-key") && response.headers.has("idempotency-secret")) {
+        const stripped = new Response(response.body, response);
+        stripped.headers.delete("idempotency-secret");
+        return stripped;
+      }
       return response;
     }
     if (method === "GET") {
