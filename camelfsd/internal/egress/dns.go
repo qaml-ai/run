@@ -53,7 +53,7 @@ func lookupFamily(ctx context.Context, name dnsmessage.Name, family dnsmessage.T
 	var reply dnsmessage.Message
 	for range 2 {
 		attempt, cancel := context.WithTimeout(ctx, 3*time.Second)
-		reply, err = exchangeDNS(attempt, query, packet)
+		reply, err = exchange(attempt, query, packet)
 		cancel()
 		if err == nil {
 			break
@@ -61,6 +61,12 @@ func lookupFamily(ctx context.Context, name dnsmessage.Name, family dnsmessage.T
 	}
 	if err != nil {
 		return nil, err
+	}
+	// NXDOMAIN and NODATA (success with no answers) are answers: this family has no addresses, as for an IPv4-only
+	// host's AAAA query. Only a failed query (SERVFAIL, REFUSED, a timeout) is an error, because it could hide a
+	// private address in that family.
+	if reply.RCode == dnsmessage.RCodeNameError {
+		return nil, nil
 	}
 	if reply.RCode != dnsmessage.RCodeSuccess {
 		return nil, fmt.Errorf("DNS response code %v", reply.RCode)
@@ -79,6 +85,9 @@ func lookupFamily(ctx context.Context, name dnsmessage.Name, family dnsmessage.T
 	}
 	return addresses, nil
 }
+
+// exchange is replaced by tests.
+var exchange = exchangeDNS
 
 func exchangeDNS(ctx context.Context, query dnsmessage.Message, packet []byte) (dnsmessage.Message, error) {
 	var reply dnsmessage.Message

@@ -154,10 +154,16 @@ func (p *proxy) readPolicy(source netip.Addr) (vmhost.EgressPolicy, bool) {
 func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	source, _, _ := net.SplitHostPort(r.RemoteAddr)
 	var target *string
+	// 403 is a policy refusal only; a name that does not resolve or an upstream that cannot be reached is 502, so an
+	// agent debugging a failure is not told its policy denied it.
 	refuse := func(reason string) {
 		p.log(event{Type: "egress_refused", Source: source, Target: target, Reason: reason})
 		w.Header().Set("Connection", "close")
-		w.WriteHeader(http.StatusForbidden)
+		status := http.StatusForbidden
+		if reason == "unresolved" || reason == "dial_failed" {
+			status = http.StatusBadGateway
+		}
+		w.WriteHeader(status)
 	}
 	if r.Method != http.MethodConnect {
 		refuse("not_connect")

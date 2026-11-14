@@ -3,6 +3,7 @@ package egress
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -80,9 +81,9 @@ func TestConnect(t *testing.T) {
 			switch host {
 			case "allowed.test":
 				allowedLookups++
-				return []netip.Addr{netip.MustParseAddr("203.0.113.10")}, nil
+				return []netip.Addr{netip.MustParseAddr("140.82.112.3")}, nil
 			case "rebind.test":
-				return []netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("169.254.169.254")}, nil
+				return []netip.Addr{netip.MustParseAddr("140.82.112.3"), netip.MustParseAddr("169.254.169.254")}, nil
 			default:
 				t.Fatalf("unexpected lookup of %q", host)
 				return nil, nil
@@ -127,7 +128,7 @@ func TestConnect(t *testing.T) {
 	r := proxyRequest(t, "CONNECT", "ALLOWED.test:443", "[::ffff:10.200.1.2]:1234")
 	// The recorder cannot hijack. The attempted dial is still observable.
 	p.ServeHTTP(httptest.NewRecorder(), r)
-	if allowedLookups != 1 || len(dialled) != 1 || dialled[0] != "tcp 203.0.113.10:443" {
+	if allowedLookups != 1 || len(dialled) != 1 || dialled[0] != "tcp 140.82.112.3:443" {
 		t.Fatalf("allowed lookups %d, dialled %v", allowedLookups, dialled)
 	}
 	if p.total != 0 || len(p.open) != 0 {
@@ -215,3 +216,35 @@ func (c *halfCloseRecorder) Read(b []byte) (int, error) {
 }
 func (c *halfCloseRecorder) CloseWrite() error { c.data <- c.String(); return nil }
 func (c *halfCloseRecorder) Close() error      { return nil }
+
+// A policy refusal is 403; a name that does not resolve or an upstream that cannot be reached is 502.
+func TestUpstreamFailuresAre502(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "10.200.1.2.json"), []byte(`{"job":"job-1","allow":["noname.test","down.test"]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var events []event
+	p := &proxy{
+		policyDir: dir, open: make(map[string]int),
+		log: func(e event) { events = append(events, e) },
+		lookup: func(_ context.Context, host string) ([]netip.Addr, error) {
+			if host == "noname.test" {
+				return nil, errors.New("SERVFAIL")
+			}
+			return []netip.Addr{netip.MustParseAddr("140.82.112.3")}, nil
+		},
+		dial: func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("connection refused") },
+	}
+	for target, reason := range map[string]string{"noname.test:443": "unresolved", "down.test:443": "dial_failed"} {
+		response := httptest.NewRecorder()
+		p.ServeHTTP(response, proxyRequest(t, "CONNECT", target, "10.200.1.2:1234"))
+		if response.Code != http.StatusBadGateway || events[len(events)-1].Reason != reason {
+			t.Errorf("%s: status %d, event %+v, want 502 %s", target, response.Code, events[len(events)-1], reason)
+		}
+	}
+	response := httptest.NewRecorder()
+	p.ServeHTTP(response, proxyRequest(t, "CONNECT", "other.test:443", "10.200.1.2:1234"))
+	if response.Code != http.StatusForbidden {
+		t.Errorf("policy refusal: status %d, want 403", response.Code)
+	}
+}
