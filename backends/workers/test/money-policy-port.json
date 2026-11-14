@@ -1,7 +1,7 @@
 [
   {
     "file": "tests/shared-allowances.test.ts",
-    "test": "parallel bots reserve one pool, keep per-bucket spend, and settle idempotently",
+    "test": "concurrent debits share one pool and preserve per-bucket spend",
     "included": true
   },
   {
@@ -11,7 +11,7 @@
   },
   {
     "file": "tests/shared-allowances.test.ts",
-    "test": "pool extensions, refunds, and paid bucket limits share the same budget",
+    "test": "a shared allowance pays first and a paid bucket limit gates the next call",
     "included": true
   },
   {
@@ -26,7 +26,7 @@
   },
   {
     "file": "tests/shared-allowances.test.ts",
-    "test": "a hold begun yesterday extends from yesterday's pool and leaves today's pool free",
+    "test": "a debit uses the original UTC day and leaves the new day's pool available",
     "included": true
   },
   {
@@ -42,7 +42,7 @@
   },
   {
     "file": "tests/model-credit.test.ts",
-    "test": "a failed platform call releases the end-user hold and costs neither payer",
+    "test": "a failed platform call costs neither payer",
     "included": true
   },
   {
@@ -71,118 +71,43 @@
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "reusing the settlement lock still expires credit released by the hold in that transaction",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a hold takes the bucket's allowance first, then the balance at the markup; settling posts what the call cost",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a call is refused when it cannot hold its minimum: for the balance, or for the daily limit",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a fixed hold takes what is left when it is near enough, and is refused with nothing left or far too little",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a bucket's own daily limit caps what it charges the balance, whatever the balance: a bot cannot spend past it",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "changing an allowance mid-day keeps what was spent: only the cap moves",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "parallel calls never hold more than the user has: each sees the others' holds",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a concurrent workload of holds, extensions and settlements keeps every invariant",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
+    "file": "tests/end-user-debits.test.ts",
     "test": "a lowered cost refunds at the rate it was paid at, never more than was paid, whatever the markup is now",
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a refund returns at most the balance not held by calls in flight; an adjustment still corrects it",
+    "file": "tests/end-user-debits.test.ts",
+    "test": "a corrected cost refunds the balance first, then the allowance",
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a corrected cost refunds the balance first, then the allowance; holds of a dead call expire",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a model call holds its estimate, holds more as it streams, is cut at the line, and posts its cost marked up",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
+    "file": "tests/end-user-debits.test.ts",
     "test": "a model call its end user cannot pay for is refused before it is made, and leaves no attempt",
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a begin delivered again holds once, and a request for more that lands after the call settled holds nothing",
+    "file": "tests/end-user-debits.test.ts",
+    "test": "ChatGPT subscription attempts charge no end-user credit, including through an endpoint",
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a call whose input alone is past what is left still starts: a short reply on what is left, the rest written off, then refused",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a failed call with no output releases its hold; one without an end user is the tenant's alone",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "ChatGPT subscription attempts hold and charge no end-user credit, including through an endpoint",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a subscription attempt begun before the exemption releases its hold and settles at zero",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a model with no price is never free to its end user, nor refused for it: it holds and settles at the catalog's or a mid-range price, and is said",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-holds.test.ts",
+    "file": "tests/end-user-debits.test.ts",
     "test": "what a call costs its end user is what it costs the tenant: usage.recorded's cost (cache reads and writes, reasoning, the provider's own) and funding it",
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply is not refused",
+    "file": "tests/end-user-debits.test.ts",
+    "test": "one paid model call can go negative and the next is refused",
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a slow call that needs no more of its hold yet keeps it from lapsing as it reports",
+    "file": "tests/end-user-debits.test.ts",
+    "test": "a debit crosses the daily limit in full and is idempotent across concurrent delivery",
     "included": true
   },
   {
-    "file": "tests/end-user-holds.test.ts",
-    "test": "a call begun before midnight holds more from its own day's allowance, never the next day's",
+    "file": "tests/end-user-debits.test.ts",
+    "test": "a correction reverses historical write-off before refunding balance",
     "included": true
   },
   {
@@ -197,7 +122,12 @@
   },
   {
     "file": "tests/end-user-lots.test.ts",
-    "test": "a hold open at expiry settles against the lot it reserved; what it leaves expires at the next lock",
+    "test": "an expiring lot stops funding admission at its expiry",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "a debit after expiry uses the original usage day and leaves the expired lot untouched",
     "included": true
   },
   {
@@ -243,7 +173,7 @@
   },
   {
     "file": "tests/end-user-credits.test.ts",
-    "test": "a spend takes credit for what the tenant sells, at most the balance calls in flight don't hold; descriptions are kept",
+    "test": "a spend takes credit for what the tenant sells, at most the balance; descriptions are kept",
     "included": true
   },
   {
@@ -256,71 +186,6 @@
     "test": "the end-user API: settings, entries, an end user and their ledger, for the tenant only",
     "included": false,
     "reason": "ECS HTTP fixture"
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "a bot at a bucket limit of 0: a call past its allowance never charges a balance of 0; the rest is written off, said once",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "a bucket limit with some room: an overflow charges what is left of it, and writes off the rest",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "the daily limit: paid spend ends at exactly the limit, at the markup, and the rest is written off",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "the balance: an overflow takes it to zero, never below; the next call is refused; zero balance and no allowance charge nothing",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "an overflow never takes credit another call in flight holds, however many settle at once",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "corrections: an upward one with no hold is capped as a first settlement is; a downward one reduces the write-off first, then refunds",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "other spend obeys the same cap: a transcription's hold and a web search at a bucket limit of 0 with no allowance left",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "a person spends down to nothing: the last call starts on what is left, overdraws nothing, is written off, and the next is refused",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "calls at once never overdraw: the first to ask holds what is left, the others are refused",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "the last call stays within the daily limit and the bucket's own: its overshoot is written off, not charged",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "a normal model call with enough balance runs and settles exactly: no write-off, nothing logged",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "a model call that costs more than its hold: capped at settlement, kept on the attempt, and corrected by the difference",
-    "included": true
-  },
-  {
-    "file": "tests/end-user-written-off.test.ts",
-    "test": "midnight: a call begun at 23:59:59 is capped by the day it posts to, and so is a correction made later",
-    "included": true
   },
   {
     "file": "tests/end-user-settings-concurrency.test.ts",
@@ -349,7 +214,7 @@
   },
   {
     "file": "tests/end-user-settings-concurrency.test.ts",
-    "test": "holds and charges go through while a writer holds the settings row",
+    "test": "admission and debits go through while a writer holds the settings row",
     "included": true
   },
   {
@@ -364,7 +229,7 @@
   },
   {
     "file": "tests/end-user-balance-events.test.ts",
-    "test": "cause says what moved the balance: a negative adjustment, a corrected cost, a refused call; a refund stays silent",
+    "test": "cause says what moved the balance: a negative adjustment, a corrected cost, a re-armed debit; a refund stays silent",
     "included": true
   },
   {
@@ -452,7 +317,7 @@
   },
   {
     "file": "tests/model-attempts.test.ts",
-    "test": "end-user settlement preserves holds on rollback and charges once after a lost commit acknowledgement",
+    "test": "end-user settlement rolls back and charges once after a lost commit acknowledgement",
     "included": true
   },
   {

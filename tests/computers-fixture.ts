@@ -102,12 +102,11 @@ export async function fixture(options: { billing?: "prepaid" | "none"; flag?: bo
   const rows = async () => (await db.query("select * from managed_computers")).rows;
   const balance = async (tenant = "payg") => Number((await db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0]?.balance ?? 0);
   const spent = async (tenant = "payg") => (tenant === "payg" ? balanceAtStart : micros(10)) - await balance(tenant);
-  const holds = async () => (await db.query("select * from end_user_holds")).rows;
   const connect = (tenant = "payg", agent = "a", input: Record<string, number> = {}, on = service) => on.create(tenant, { agent, provider: "boat", ...input });
   const start = (tenant = "payg", agent = "a", key = "start", on = service) => on.call(tenant, agent, "computer_start", {}, key);
   const stop = (tenant = "payg", agent = "a", key = "stop") => service.call(tenant, agent, "computer_stop", {}, key);
   const exec = (key: string, args: Record<string, unknown> = {}) => service.call("payg", "a", "computer_exec", { command: "make", ...args }, key);
-  return { db, accounts, endUsers, service, make, state, machines, rollover, keys, waits, logged, row, rows, balance, spent, holds, connect, start, stop, exec, advance: (ms: number) => { now += ms; }, now: () => now, done: () => { console.error = error; } };
+  return { db, accounts, endUsers, service, make, state, machines, rollover, keys, waits, logged, row, rows, balance, spent, connect, start, stop, exec, advance: (ms: number) => { now += ms; }, now: () => now, done: () => { console.error = error; } };
 }
 
 export const pass = (f: { service: Computers }) => f.service.managed.pass();

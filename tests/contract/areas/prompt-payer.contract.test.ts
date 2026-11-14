@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { contractTest, until, OPERATOR, OTHER_OPERATOR, listen, toolCall, toolResults } from '../support.ts';
 
-contractTest('credits', 'tests/prompt-payer.test.ts', 'prompt payer owns holds and settlement; defaults and refusal remain run-local', async (t, r) => {
+contractTest('credits', 'tests/prompt-payer.test.ts', 'prompt payer owns settlement; defaults and refusal remain run-local', async (t, r) => {
   const events: any[] = [];
   const receiver = await listen(t, async (req, res) => { let raw = ''; for await (const chunk of req) raw += chunk; events.push(JSON.parse(raw)); res.writeHead(200).end(); });
   assert.equal((await r.call('/v1/webhooks', { body: { url: receiver, events: ['usage.recorded', 'run.completed'] } })).status, 201);
@@ -66,16 +66,18 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'a newly spawned child inh
   assert.equal((await r.call('/v1/end-users/owner/ledger')).json.entries.length, 0);
 }, { env: { AGENT_MODEL: 'openai/gpt-4.1', AGENT_OPENROUTER_CREDIT_MULTIPLIER: '1' } });
 
-contractTest('credits', 'tests/prompt-payer.test.ts', 'an in-flight model hold belongs to the prompt payer and is released on settlement', async (_t, r) => {
+contractTest('credits', 'tests/prompt-payer.test.ts', 'an in-flight model call debits the prompt payer at settlement', async (_t, r) => {
   let release!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; });
-  r.setModel(() => ({ content: 'done', wait, usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }));
+  const began = deferred();
+  r.setModel(() => { began.resolve(); return { content: 'done', wait, usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }; });
   await r.call('/v1/end-user-settings', { method: 'PUT', body: { enabled: true } });
   await r.call('/v1/end-users/guest/entries', { body: { kind: 'grant', amount: 1_000_000, key: 'guest' } });
   const { id } = (await r.call('/v1/agents', { body: { subject: 'owner' } })).json;
   try {
     assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: 'work', requestId: 'held', endUser: 'guest' } })).status, 202);
-    await until(async () => (await r.call('/v1/end-users/guest')).json.held > 0, 'guest credit to be held');
+    await began.promise;
+    assert.deepEqual(((await r.call('/v1/end-users/guest')).json).balance, 1_000_000);
     assert.equal((await r.call('/v1/end-users/owner')).json.held, 0);
   } finally { release(); }
   await until(async () => (await r.call(`/v1/agents/${id}/requests/held`)).json.state === 'completed', 'held run to finish');

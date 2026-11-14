@@ -100,8 +100,6 @@ export default function pilotOperator(options: Options) {
             (select count(*) from end_users where tenant=any($1::text[]))::int as end_users,
             0::int as holds,
             0::bigint as held_micros,
-            (select count(*) from end_user_holds where tenant=any($1::text[]))::int as end_user_holds,
-            (select coalesce(sum(paid+allowance),0)::bigint from end_user_holds where tenant=any($1::text[])) as end_user_held_micros,
             (select coalesce(sum(balance),0)::bigint from credit_accounts where tenant=any($1::text[])) as balance_micros,
             (select count(*) from credit_ledger where tenant=any($1::text[]) and kind='usage')::int as usage_debits,
             (select coalesce(sum(amount),0)::bigint from credit_ledger where tenant=any($1::text[]) and kind='usage') as usage_micros,

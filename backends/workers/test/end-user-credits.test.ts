@@ -96,7 +96,7 @@ test("grants, refunds and adjustments move the balance once per key, and the led
   assert.equal((await credits.ledger("b", "user-1")).entries.length, 0, "another tenant's user is another user");
 });
 
-test("a spend takes credit for what the tenant sells, at most the balance calls in flight don't hold; descriptions are kept", async () => {
+test("a spend takes credit for what the tenant sells, at most the balance; descriptions are kept", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);
   await credits.setSettings("a", { enabled: true, allowances: { "*": 0 } });
@@ -104,11 +104,8 @@ test("a spend takes credit for what the tenant sells, at most the balance calls 
   const spent = await credits.post("a", "u", { kind: "spend", amount: USD, key: "footer:b1:2026-11", reference: "b1", description: "A month without the footer" });
   assert.deepEqual([spent.entry.kind, spent.entry.amount, spent.entry.balanceAfter, spent.entry.description], ["spend", -USD, USD, "A month without the footer"]);
   assert.equal((await credits.post("a", "u", { kind: "spend", amount: USD, key: "footer:b1:2026-11", reference: "b1", description: "A month without the footer" })).replayed, true);
-  // A call in flight holds $0.60 of the $1 left: a spend may take $0.40, no more; nothing is taken when it is short.
-  const call = await credits.reserve("a", "u", "bot:b1", { id: "00000000-0000-4000-8000-000000000001", want: 600_000, min: 1 });
-  assert.equal(call?.hold?.paid, 600_000);
-  await assert.rejects(credits.post("a", "u", { kind: "spend", amount: 500_000, key: "item-1" }),
-    (error: any) => error.status === 409 && error.code === "INSUFFICIENT_BALANCE" && error.details?.available === 400_000);
+  await assert.rejects(credits.post("a", "u", { kind: "spend", amount: USD + 1, key: "item-1" }),
+    (error: any) => error.status === 409 && error.code === "INSUFFICIENT_BALANCE" && error.details?.available === USD);
   assert.equal((await credits.get("a", "u")).balance, USD);
   await credits.post("a", "u", { kind: "spend", amount: 400_000, key: "item-2" });
   assert.equal((await credits.get("a", "u")).balance, 600_000);

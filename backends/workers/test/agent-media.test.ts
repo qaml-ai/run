@@ -7,17 +7,17 @@ import { pngBytes } from "../../../tests/file-fixtures.ts";
 const scope: AgentMediaScope = { tenant: "tenant", agent: "agent", requestId: "run", builtins: ["generate_image"], mounts: [], budget: 1, identity: { subject: "person", context: { project: "fixture" } }, actor: "operator", keyScope: "keys" };
 const execute = (tool: any, args: unknown) => tool.execute(args, { conversationId: "conversation", taskId: "task", callId: "call" }, { abortSignal: new AbortController().signal });
 function setup(extra: any = {}, context: AgentMediaScope = scope) {
-  const calls: any[] = [], saved: any[] = [], recorded: any[] = [], holds: string[] = [];
+  const calls: any[] = [], saved: any[] = [], recorded: any[] = [], checks: string[] = [];
   const provider: ImageProvider = { id: "openai", model: "fixture", generate: async request => { calls.push(request); return { images: [{ bytes: pngBytes(32, 16), contentType: "image/png" }], tokens: { textInput: 4, imageInput: 0, output: 5 }, model: "fixture" }; } };
   const imager = new Imager({ provider, key: async () => ({ apiKey: "fake-only", platform: false }), price: () => ({ textInput: 1e6, imageInput: 1e6, output: 1e6 }) });
   const host = {
     imager: async () => imager, admit: async () => {},
     files: async () => ({ read: async () => pngBytes(4, 4), save: async (name: string, bytes: Uint8Array, contentType: string) => { saved.push({ name, bytes }); return { type: "file", path: "/workspace/" + name, size: bytes.length, contentType }; } }),
     record: async (context: any, usage: any) => { recorded.push({ context, usage }); },
-    hold: () => async () => { holds.push("hold"); return { settle: async () => { holds.push("settle"); }, release: async () => { holds.push("release"); } }; },
+    refusal: async () => { checks.push("admitted"); },
     ...extra,
   };
-  return { tools: agentMediaTools({} as never, async () => context, host), calls, saved, recorded, holds, imager };
+  return { tools: agentMediaTools({} as never, async () => context, host), calls, saved, recorded, checks, imager };
 }
 
 test("image tool uses the source definition and is explicitly enabled", async () => {
@@ -36,7 +36,7 @@ test("image tool applies source options, reads edits, saves a file and settles u
   assert.equal(h.calls[0].options.background, "transparent");
   assert.deepEqual(value.structuredOutput, { path: "/workspace/image.png", contentType: "image/png", width: 32, height: 16, size: h.saved[0].bytes.length, costUsd: 0.000009 });
   assert.equal(JSON.parse(value.output[1].text).type, "file");
-  assert.deepEqual(h.holds, ["hold", "settle"]);
+  assert.deepEqual(h.checks, ["admitted"]);
   assert.equal(h.recorded.length, 1);
   assert.equal(h.recorded[0].context.identity.subject, "person");
   assert.equal(h.recorded[0].context.callId, "conversation:task:call");
@@ -49,14 +49,14 @@ test("invalid image arguments and exhausted budgets never reach a provider", asy
   await assert.rejects(execute(limited, { prompt: "x" }), /more than.*spend limit/);
   assert.equal(h.calls.length + capped.calls.length, 0);
   assert.equal(h.recorded.length + capped.recorded.length, 0);
-  assert.deepEqual(capped.holds, ["hold", "release"]);
+  assert.deepEqual(capped.checks, ["admitted"]);
 });
 
 test("made images remain billed if saving fails", async () => {
   const h = setup({ files: async () => ({ save: async () => { throw new Error("disk full"); } }) }), [tool] = await h.tools;
   await assert.rejects(execute(tool, { prompt: "x" }), /image was made but could not be saved/);
   assert.equal(h.recorded.length, 1);
-  assert.deepEqual(h.holds, ["hold", "settle"]);
+  assert.deepEqual(h.checks, ["admitted"]);
 });
 
 test("known image usage survives settlement failure and resumes without provider replay", async () => {

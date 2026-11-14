@@ -152,8 +152,8 @@ export type JudgeContext<Usage> = {
   budget?: () => Promise<number | undefined>;
   /** Records what the judge cost, as a decision's usage is recorded (billing, `usage.recorded`). */
   record?: (usage: Usage) => void;
-  /** When an end user pays: holds the estimate of their credit before the call, then settles or releases it. */
-  hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+  /** When an end user pays, check admission and return a callback for the actual cost. */
+  admitCredit?: () => Promise<((usd: number) => Promise<void>) | undefined>;
   /** A judge that could not answer, for a log line: the error only, never the state it was asked about. */
   onError?: (error: unknown) => void;
   /** What a judge decided, for a log line: the decision and its risk, never the request, the arguments or the answer. */
@@ -175,11 +175,10 @@ export function createToolJudge<Usage>(decider: JudgeDecider<Usage>, context: Ju
   return async (input, signal) => {
     // What it cannot see whole, it does not judge: the person decides instead (see judgeable).
     if (!judgeable(input)) return unanswered(input, "unjudgeable");
-    let held: Awaited<ReturnType<NonNullable<JudgeContext<Usage>["hold"]>>>;
     try {
       const budget = await context.budget?.();
       if (budget !== undefined && budget <= 0) return unanswered(input, "budget");
-      held = await context.hold?.(decider.estimate([judgeItem(input)], host.model));
+      const debit = await context.admitCredit?.();
       const decided = await decider.decide({
         tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}),
         ...(budget !== undefined ? { budget } : {}), ...(context.dataCollection ? { dataCollection: context.dataCollection } : {}),
@@ -187,8 +186,7 @@ export function createToolJudge<Usage>(decider: JudgeDecider<Usage>, context: Ju
       const first = decided.results[0]!;
       // Recorded whether it answered or failed: a failed item is not billed, and the usage record says which answered.
       if (decided.usage) context.record?.(decided.usage);
-      await held?.settle(decided.chargedUsd);
-      held = undefined;
+      await debit?.(decided.chargedUsd);
       if ("error" in first) {
         context.onError?.(host.failure(first.error));
         return unanswered(input, "failed");
@@ -197,7 +195,6 @@ export function createToolJudge<Usage>(decider: JudgeDecider<Usage>, context: Ju
       context.onJudged?.(input, judged);
       return judged;
     } catch (error) {
-      await held?.release();
       // A call that was aborted is not a judge that could not answer: the abort goes where it was going.
       if (signal.aborted) throw signal.reason;
       // Nothing left of what the person may spend is a refusal to spend, not a judge that broke: no failure line.

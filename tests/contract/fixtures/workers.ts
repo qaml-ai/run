@@ -251,7 +251,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       return `ar_session=${raw}`;
     },
     async seedEndUserUsage({ tenant, endUser, bucket, amount, key, metadata, at }) {
-      await new EndUserCredits(server.db).charge(tenant, endUser, bucket, amount, key, metadata, at);
+      await new EndUserCredits(server.db).debit(tenant, endUser, bucket, (amount) / 1_000_000, key, metadata, { now: at });
     },
     async seedStripeCustomer(tenant, { customer, legacyCustomer }) {
       await server.db.query("insert into billing_stripe_customers(tenant,livemode,request_id,customer,created_at) values($1,false,$2,$3,$4)", [tenant, randomUUID(), customer, Date.now()]);

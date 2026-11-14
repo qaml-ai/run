@@ -1,3 +1,4 @@
+import { HttpError } from "../src/http.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setMetricSink } from "../src/metrics.ts";
@@ -379,7 +380,7 @@ test("speculative: the answer begins at likely_end, held; a resume takes it back
   await utter(brain, "1", 300, { open: true });
   const c = connection();
   brain.turnEvent({ type: "likely_end", speaker: "1", at: Date.now(), probability: 0.9, silenceMs: 200 });
-  assert.equal(c.responses, 1, "asked at likely_end");
+  await until(() => c.responses === 1, "asked at likely_end");
   void c.answer("r1", { ms: 200, status: "completed" });
   await sleep(30);
   assert.equal(playback.plays.length, 0, "held until the turn ends");
@@ -389,7 +390,7 @@ test("speculative: the answer begins at likely_end, held; a resume takes it back
   assert.equal(brain.stats.speculativeDiscarded, 1);
   brain.pcm("1", tone(300));
   brain.turnEvent({ type: "likely_end", speaker: "1", at: Date.now(), probability: 0.9, silenceMs: 200 });
-  assert.equal(c.responses, 2);
+  await until(() => c.responses === 2, "asked again at likely_end");
   void c.answer("r2", { ms: 200 });
   await sleep(30);
   assert.equal(playback.plays.length, 0);
@@ -428,12 +429,12 @@ test("a cough: too short to keep, its audio is dropped and nothing is answered",
   brain.close();
 });
 
-test("the money: a refused admission cancels the response and ends the session (budget)", async () => {
+test("the money: a refused admission skips the response and ends the session (budget)", async () => {
   const { brain, connection, budget } = testBrain({ refuse: true });
   await utter(brain, "1", 300);
   await until(() => budget.length === 1, "budget");
   assert.deepEqual(budget, ["tenant"]);
-  assert.ok(connection().of("cancel").length >= 1);
+  assert.equal(connection().responses, 0);
   brain.close();
 });
 
@@ -442,7 +443,7 @@ test("the money: the free hourly allowance (429 FREE_HOURLY_LIMIT) ends the sess
   await utter(brain, "1", 300);
   await until(() => budget.length === 1, "budget");
   assert.deepEqual(budget, ["tenant"]);
-  assert.ok(connection().of("cancel").length >= 1);
+  assert.equal(connection().responses, 0, "the refused response is never sent");
   brain.close();
 });
 
@@ -451,7 +452,7 @@ test("the money: any other 429 (a rate or concurrency limit) refuses only that r
   await utter(brain, "1", 300);
   await until(() => logs.some(log => log.type === "voice_realtime_response_refused"), "the refused response");
   assert.deepEqual(budget, [], "no budget ending for a rate or concurrency refusal");
-  assert.ok(connection().of("cancel").length >= 1, "only that response is cancelled");
+  assert.equal(connection().responses, 0, "only that response is refused (never sent)");
   brain.close();
 });
 
@@ -466,7 +467,7 @@ test("two people at once: one turn ends while the other talks; one answer, to bo
   assert.equal(c.responses, 0, "Ben is still talking");
   brain.pcm("2", tone(200));
   brain.cut({ speaker: "2", packets: [], seconds: 0.4, startedAt: Date.now() - 400, endedAt: Date.now(), ended: "silence", live: true });
-  assert.equal(c.responses, 1);
+  await until(() => c.responses === 1, "answered after both turns ended");
   await c.answer("r1", { ms: 60 });
   await until(() => !brain.speakingNow, "played");
   await sleep(30);
@@ -483,15 +484,12 @@ test("Grok prices audio minutes and text items independently of token counts", (
   }
 });
 
-test("Grok holds before connecting, settles wire audio and notes, and flushes unanswered input at close", async () => {
+test("Grok checks credit before connecting, settles wire audio and notes, and flushes unanswered input at close", async () => {
   const settlements: number[] = [];
-  let holds = 0, releases = 0;
-  const { brain, connection, usage, logs, heard } = testBrain({ reference: "grok/grok-voice-latest", hold: async () => {
-    holds++;
-    return { settle: async usd => { settlements.push(usd); }, release: async () => { releases++; } };
-  } });
-  assert.equal(holds, 0);
-  await until(() => holds === 1 && connection(), "initial hold and connection");
+  let checks = 0;
+  const { brain, connection, usage, logs, heard } = testBrain({ reference: "grok/grok-voice-latest", refusal: async () => { checks++; }, debit: async usd => { settlements.push(usd); } });
+  assert.equal(checks, 0);
+  await until(() => checks === 1 && connection(), "initial credit check and connection");
   await utter(brain, "1", 600);
   await until(() => connection().responses === 1, "response");
   await connection().answer("grok_1", { ms: 400, usage: { inputAudio: 900_000 } });
@@ -507,15 +505,12 @@ test("Grok holds before connecting, settles wire audio and notes, and flushes un
   assert.equal(usage.reduce((sum, record) => sum + record.costUsd, 0), total);
   assert.equal(brain.stats.costUsd, total);
   assert.equal(logs.find(log => log.type === "voice_realtime_stats")?.fields?.costUsd, Math.round(total * 1e6) / 1e6);
-  assert.ok(holds >= 2);
-  assert.equal(releases, 0);
+  assert.ok(checks >= 2);
 });
 
-test("Grok renews credit during input without a response and charges cancelled output", async () => {
+test("Grok checks credit during input without a response and charges cancelled output", async () => {
   const settlements: number[] = [];
-  const { brain, connection, usage } = testBrain({ reference: "grok/grok-voice-3.0", hold: async () => ({
-    settle: async usd => { settlements.push(usd); }, release: async () => {},
-  }) });
+  const { brain, connection, usage } = testBrain({ reference: "grok/grok-voice-3.0", debit: async usd => { settlements.push(usd); } });
   await until(connection, "connection");
   await utter(brain, "1", 20_000, { open: true });
   await until(() => settlements.length > 0, "rolling settlement");
@@ -528,85 +523,72 @@ test("Grok renews credit during input without a response and charges cancelled o
 });
 
 
-test("Grok refuses to connect without credit and releases a hold acquired after close", async () => {
+test("Grok refuses to connect without credit and an admission finishing after close cannot connect", async () => {
   const refused = testBrain({ reference: "grok/grok-voice-latest", refuse: true });
   await until(() => refused.budget.length === 1, "budget refusal");
   assert.equal(refused.realtime.connections.length, 0);
   refused.brain.close();
-  let held = false, released = false;
-  let resolve!: (hold: { settle(usd: number): Promise<void>; release(): Promise<void> }) => void;
-  const closing = testBrain({ reference: "grok/grok-voice-latest", hold: () => {
-    held = true;
-    return new Promise(done => { resolve = done; });
-  } });
-  await until(() => held, "hold requested");
+  const check = Promise.withResolvers<void>();
+  const closing = testBrain({ reference: "grok/grok-voice-latest", refusal: () => check.promise });
   closing.brain.close();
-  resolve({ settle: async () => { assert.fail("nothing was sent"); }, release: async () => { released = true; } });
-  await until(() => released, "pending hold released");
+  check.resolve();
+  await sleep(0);
   assert.equal(closing.realtime.connections.length, 0);
 });
 
-test("Grok flushes a lost connection once and keeps the replacement behind a renewed hold", async () => {
+test("Grok flushes a lost connection once and keeps the replacement behind a new credit check", async () => {
   const settlements: number[] = [];
-  let holds = 0, releases = 0;
-  const { brain, realtime, connection, usage } = testBrain({ reference: "grok/grok-voice-latest", hold: async () => {
-    holds++;
-    return { settle: async usd => { settlements.push(usd); }, release: async () => { releases++; } };
-  } });
+  let checks = 0;
+  const { brain, realtime, connection, usage } = testBrain({ reference: "grok/grok-voice-latest", refusal: async () => { checks++; }, debit: async usd => { settlements.push(usd); } });
   await until(connection, "first connection");
   await utter(brain, "1", 200, { open: true });
   const first = connection();
   first.events.closed("error", "disconnected");
   first.events.meter?.(60, 1);
   await until(() => realtime.connections.length === 2, "reconnected after settlement");
-  assert.equal(holds, 2);
+  assert.equal(checks, 2);
   assert.equal(settlements.length, 1);
   assert.ok(Math.abs(settlements[0] - (0.2 / 60 * 0.08 + 0.004)) < 1e-12);
   assert.equal(usage.length, 1, "stale events ignored");
   brain.close();
-  await until(() => releases === 1, "unused replacement hold released");
 });
 
 
-test("Grok renews idle holds and periodically settles small amounts of unanswered audio", async () => {
+test("Grok checks idle connections and periodically settles small amounts of unanswered audio", async () => {
   let tick!: () => void;
-  let holds = 0, releases = 0;
+  let checks = 0;
   const settlements: number[] = [];
   const { brain, connection, usage } = testBrain({ reference: "grok/grok-voice-latest", clock: {
     ...REAL_CLOCK, setInterval: (callback, ms) => { tick = callback; return REAL_CLOCK.setInterval(callback, ms); },
-  }, hold: async () => {
-    holds++;
-    return { settle: async usd => { settlements.push(usd); }, release: async () => { releases++; } };
-  } });
+  }, refusal: async () => { checks++; }, debit: async usd => { settlements.push(usd); } });
   await until(connection, "connection");
   tick();
-  await until(() => holds === 2, "idle hold renewed");
-  assert.equal(releases, 1);
+  await until(() => checks === 2, "idle credit checked");
   assert.equal(usage.length, 0, "idle time is not billed with manual turns");
   await utter(brain, "1", 200, { open: true });
   tick();
-  await until(() => holds === 3, "partial input settled and held again");
+  await until(() => checks === 3, "partial input settled and credit checked");
   assert.ok(Math.abs(settlements[0] - (0.2 / 60 * 0.08 + 0.004)) < 1e-12);
   brain.close();
-  await until(() => releases === 2, "final hold released");
   assert.equal(settlements.length, 1);
 });
 
 
-test("Grok stops on an end-user credit refusal when renewing its hold", async () => {
-  let holds = 0;
-  const { brain, connection, budget } = testBrain({ reference: "grok/grok-voice-latest", hold: async () => {
-    if (holds++) throw Object.assign(new Error("No credit"), { status: 402, code: "END_USER_CREDIT", details: { reason: "balance", bucket: "default" } });
-    return { settle: async () => {}, release: async () => {} };
-  } });
+test("Grok posts the interval in full before refusing the next checkpoint", async () => {
+  let balance = 0.000001;
+  const { brain, connection, budget } = testBrain({ reference: "grok/grok-voice-latest",
+    refusal: async () => { if (balance <= 0) throw new HttpError(402, "No credit", "END_USER_CREDIT", { reason: "balance", bucket: "default" }); },
+    debit: async usd => { balance -= usd; },
+  });
   await until(connection, "connection");
   await utter(brain, "1", 20_000, { open: true });
-  await until(() => budget.length === 1, "renewal refusal");
+  await until(() => budget.length === 1, "checkpoint refusal");
+  assert.ok(balance < 0);
   assert.deepEqual(budget, ["end_user"]);
   brain.close();
 });
 
-test("a token-metered voice response reports its usage before ending on tenant credit", async () => {
+test("a token-metered response records usage before the next tenant checkpoint", async () => {
   let reportedCost = 0;
   const { brain, connection, budget, usage } = testBrain({
     tenantCreditExhausted: async () => {
@@ -617,6 +599,7 @@ test("a token-metered voice response reports its usage before ending on tenant c
   try {
     await until(connection, "connection");
     await connection()!.answer("paid", { usage: { outputAudio: 100 } });
+    await utter(brain, "1", 600);
     await until(() => budget.length === 1, "tenant budget stop");
     assert.ok(reportedCost > 0);
     assert.deepEqual(budget, ["tenant"]);

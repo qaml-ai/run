@@ -2,10 +2,11 @@ import { recordUsageDetails } from '../../../shared/usage-details.ts';
 import { applyWorkspaceUsage } from './workspaces.ts';
 import { DecisionRuntime, type DecisionContext } from './decision-runtime.ts';
 import { resolveProviderKey, type ProviderKeyEnv } from './model-credentials.ts';
-import { transaction, withSql } from './postgres.ts';
+import { database, transaction, withSql } from './postgres.ts';
 import { accrueUsage, BillingSpendable } from './billing-sql.ts';
 import { enqueueEvents, webhookEvent, type WebhookEnv } from './webhooks.ts';
 import { HttpError } from './errors.ts';
+import { utcDay, creditError, EndUserCredits } from './end-user-credits.ts';
 import type { UsageRecord } from './policy-host.ts';
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from './auxiliary-usage.ts';
 import type { ToolExecutionApi } from '@earendil-works/pi-durable';
@@ -40,6 +41,11 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
       if (!context.callId || context.startedAt === undefined) throw new HttpError(503, 'Decision call identity is unavailable');
       if (!await recordAuxiliaryUsage(sql, { tenant: context.tenant, agent: agentId, requestId, callId: context.callId, startedAt: context.startedAt, kind: 'decision' }, { costUsd: usage.usage.cost.total, provider: usage.provider, model: usage.model })) return;
     }
+    if (context.identity?.subject && context.callId && context.startedAt !== undefined) {
+      await new EndUserCredits(database(env)).debit(context.tenant, context.identity.subject, context.bucket ?? 'default',
+        usage.usage.cost.total, `decision:${JSON.stringify([agentId, requestId ?? null, context.callId])}`,
+        { call: 'decision', agent: agentId, requestId, usageDay: utcDay(context.startedAt) }, { sql });
+    }
     await sql.query('select tenant from credit_accounts where tenant=$1 for update', [context.tenant]);
     if (charge > 0) {
       await accrueUsage(sql, [{ tenant: context.tenant, amount: charge, metadata: { decision: charge, decisions: usage.decisions ?? 0 } }], now);
@@ -62,5 +68,9 @@ export function decisionService(env: DecisionEnv, context: (api?: ToolExecutionA
     if (credentials?.platform && !(env.TEST_MODEL === '1' && env.TEST_MODE === '1')) throw new HttpError(503, 'Platform decision billing is not configured');
     if (context.agent) await admitAuxiliaryUsage(env, { tenant: context.tenant, agent: context.agent, requestId: context.requestId, spendLimit: context.spendLimit });
     if (credentials?.platform && await withSql(env, sql => new BillingSpendable().spendable(context.tenant, sql)) <= 0) throw new HttpError(402, 'Insufficient credit', 'INSUFFICIENT_CREDIT');
+    if (context.identity?.subject) {
+      const refused = await new EndUserCredits(database(env)).refusal(context.tenant, context.identity.subject, context.bucket ?? 'default');
+      if (refused) throw creditError(refused);
+    }
   } });
 }

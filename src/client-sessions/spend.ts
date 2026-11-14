@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { safeError } from "../metrics.ts";
 import { END_USER_CREDIT } from "../model-attempt.ts";
-import { creditError, DEFAULT_BUCKET, MICROS, type CreditHold } from "../end-user-credits.ts";
+import { utcDay, admitEndUser, creditError, DEFAULT_BUCKET, MICROS } from "../end-user-credits.ts";
 import { limitRefused } from "../limit-hits.ts";
 import { durableEntryMessages } from "../pi-durable/agent.ts";
 import type { RunLimits, RunStop } from "../protocol.ts";
@@ -109,7 +109,7 @@ export function imageServer(ctx: SpendContext, session: Session, sources: Source
       const identity = billingIdentity(session, run);
       return generateImage(imager, {
         tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), files,
-        hold: usd => endUserHold(ctx, session, run, usd, "image"),
+        admitCredit: () => endUserAdmission(ctx, session, run, "image"),
         record: usage => {
           const cost = usage.usage.cost.total as number;
           ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
@@ -145,7 +145,7 @@ export function decisionServer(ctx: SpendContext, session: Session, sources: Sou
       const identity = billingIdentity(session, run);
       return decideTool(decider, {
         tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
-        hold: usd => endUserHold(ctx, session, run, usd, "decision"),
+        admitCredit: () => endUserAdmission(ctx, session, run, "decision"),
         record: usage => {
           const cost = usage.usage.cost.total as number;
           ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
@@ -173,13 +173,13 @@ export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined
     const { keyScope } = header;
     const identity = billingIdentity(session, runningRun(session));
     // An agent that denies data collection, where the provider cannot pass that on: nothing is sent, and its judged calls
-    // ask the person. `decide` refuses this too (decisions.ts), but only after a budget read and a credit hold.
+    // ask the person. `decide` refuses this too (decisions.ts), but only after a budget and credit check.
     if (header.config.dataCollection === "deny" && !decider.options.provider.dataPolicy) return Promise.resolve({ ...UNJUDGED, reason: "unjudgeable" });
     return toolJudge(decider, {
       tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
       budget: async () => { const run = runningRun(session); return run ? budgetLeft(ctx, session, run.id) : undefined; },
-      // As a decide call: when an end user pays, their credit holds the judge's estimate and settles what it cost.
-      hold: usd => endUserHold(ctx, session, runningRun(session), usd, "decision"),
+      // As a decide call: an end user's credit is checked before asking, then debited the cost.
+      admitCredit: () => endUserAdmission(ctx, session, runningRun(session), "decision"),
       record: usage => {
         const run = runningRun(session);
         const cost = usage.usage.cost.total as number;
@@ -242,8 +242,8 @@ export async function transcribeAttached(ctx: SpendContext, session: Session, re
   const { keyScope } = session.header;
   const identity = billingIdentity(session, run);
   const facts = { requestId, ...(run.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
-  // Its end user's credit holds the estimate before any audio is sent, and pays what the transcripts cost.
-  const held = audio.length ? await endUserHold(ctx, session, { id: requestId, endUser: run.endUser, ...(run.bucket ? { bucket: run.bucket } : {}) } as RequestRecord, estimate, "transcription") : undefined;
+  // Admit the batch before dispatch and debit the actual cost of its transcripts.
+  const debit = audio.length ? await endUserAdmission(ctx, session, { id: requestId, endUser: run.endUser, ...(run.bucket ? { bucket: run.bucket } : {}) } as RequestRecord, "transcription") : undefined;
   let total = 0;
   const done = await Promise.allSettled(audio.map(async ({ index, bytes, header }) => {
     try {
@@ -255,7 +255,7 @@ export async function transcribeAttached(ctx: SpendContext, session: Session, re
       plain[index] = { ...plain[index], transcript, cost };
     } catch (error) { failed(index, error); }
   }));
-  await held?.settle(total);
+  await debit?.(total);
   const refused = done.find(result => result.status === "rejected");
   if (refused) throw (refused as PromiseRejectedResult).reason;
   return plain;
@@ -305,14 +305,10 @@ export function bucketOf(ctx: SpendContext, session: Session, run: Pick<RequestR
   return DEFAULT_BUCKET;
 }
 
-/**
- * Hold `usd` of its end user's credit for work of the agent's that is not a model call (audio to transcribe, an image),
- * before it is sent: a refusal is a 402 END_USER_CREDIT. Settle it with what the work cost, or release it if none was
- * done. Undefined when nobody's credit is metered.
- */
-export async function endUserHold(ctx: SpendContext, session: Session, run: RequestRecord | undefined, usd: number, call: string): Promise<CreditHold | undefined> {
-  const user = payer(ctx, session, run);
-  return user && ctx.options.endUsers?.hold(session.header.tenant, user.id, user.bucket, usd, call, { agent: session.header.id, ...(run ? { requestId: run.id } : {}) });
+async function endUserAdmission(ctx: SpendContext, session: Session, run: RequestRecord | undefined, call: string) {
+  const user = payer(ctx, session, run), credits = ctx.options.endUsers;
+  if (!user || !credits) return undefined;
+  return admitEndUser(credits, session.header.tenant, user.id, user.bucket, call, { agent: session.header.id, ...(run ? { requestId: run.id } : {}) });
 }
 
 export async function refreshSpend(ctx: SpendContext, session: Session) {
@@ -380,7 +376,7 @@ export function nativeUsageEffect(ctx: SpendContext, session: Session, entry: im
     ...(request ? { requestId: request.id, ...(request.actor ? { actor: request.actor } : {}) } : {}),
     ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
   const spend = ctx.spendWrite(session, responseCost(usage));
-  // The current runtime already charges tracked attempts durably, including end-user holds.
+  // The current runtime already charges tracked attempts durably, including end-user charges.
   if (usage.billingAttemptId) return spend;
   return async sql => {
     if (!sql) { await spend?.(); return; }
@@ -537,8 +533,7 @@ export function endpoint(ctx: SpendContext, session: Session) {
 }
 
 /**
- * Charge the agent's end user for a call it made that held nothing beforehand (a web search or a page
- * rendered), as the call is recorded. Never throws. A charge the database refuses (a failover) is retried
+ * Charge the agent's end user as a web search or rendered page is recorded. Never throws. A charge the database refuses (a failover) is retried
  * under the same key, which posts it once, for up to END_USER_CHARGE_RETRY_MS; one that still fails is logged.
  */
 export function endUserCharge(ctx: SpendContext, agent: string, usage: UsageRecord) {
@@ -548,11 +543,11 @@ export function endUserCharge(ctx: SpendContext, agent: string, usage: UsageReco
   const usd = Number(usage.usage?.cost?.total ?? 0);
   if (!session || !user || !endUsers || !(usd > 0)) return;
   const call = usage.searches ? "web_search" : usage.renders ? "web_fetch" : "tool";
-  const tenant = session.header.tenant, raw = Math.round(usd * MICROS), key = `charge:${randomUUID()}`;
-  const metadata = { call, agent, ...(run ? { requestId: run.id } : {}), ...(usage.provider ? { provider: usage.provider } : {}) };
+  const tenant = session.header.tenant, raw = Math.round(usd * MICROS), key = `charge:${randomUUID()}`, now = usage.timestamp ?? Date.now();
+  const metadata = { call, agent, ...(run ? { requestId: run.id } : {}), ...(usage.provider ? { provider: usage.provider } : {}), usageDay: utcDay(now) };
   void (async () => {
     for (let delay = 1000, until = Date.now() + END_USER_CHARGE_RETRY_MS; ; delay = Math.min(delay * 2, 30_000)) {
-      try { return await endUsers.charge(tenant, user.id, user.bucket, raw, key, metadata); }
+      try { return await endUsers.debit(tenant, user.id, user.bucket, usd, key, metadata); }
       catch (error) {
         if (Date.now() + delay > until) { console.error(JSON.stringify({ type: "end_user_charge_failed", tenant, agent, raw, error: safeError(error) })); return; }
         await new Promise(resolve => setTimeout(resolve, delay).unref?.());

@@ -90,7 +90,7 @@ test("model accounting serializes stream progress, heartbeat and terminal receip
   await credits.post("meter-test", "person", { kind: "grant", amount: 100_000_000, key: "fund-person" });
   let heartbeat: (() => void) | undefined;
   t.mock.method(globalThis, "setInterval", (fn: () => void, delay: number) => {
-    assert.equal(delay, RENEW_MS / 4);
+    assert.equal(delay, RENEW_MS);
     heartbeat = fn;
     return 0 as any;
   });
@@ -138,7 +138,6 @@ test("model accounting serializes stream progress, heartbeat and terminal receip
   await done;
   assert.equal(maximum, 1);
   assert.equal(observed.at(-1), "finish");
-  assert.equal(progress, 1, "source coalesces heartbeat and chunk renewal");
+  assert.equal(progress, 1, "source coalesces overlapping heartbeat writes");
   assert.ok(observed.includes("generation"));
-  assert.equal(Number((await db.query("select count(*) from end_user_holds")).rows[0].count), 0);
 });

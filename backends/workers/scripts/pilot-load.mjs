@@ -172,7 +172,6 @@ export async function runPilotLoad(options) {
       const originSamples = originSampleMs > 0 ? [{ at: new Date().toISOString(), phase: 'before', ...await admin('/pilot/database-status') }] : undefined;
       edgeProfiles = [];
       const begunAt = performance.now();
-      const stage = { concurrency, startedAt: new Date().toISOString(), completed: 0, failed: 0, accepted: 0, maxClientInFlight: 0, maxEndUserHolds: 0, maxEndUserHeldMicros: 0, samples: [], errors: {} };
       if (originSamples) stage.originSamples = originSamples;
       // Opt-in safety stop for later capacity ramps. Admissions remain observable:
       // aborting their HTTP response can hide a request accepted by the runtime.
@@ -211,8 +210,6 @@ export async function runPilotLoad(options) {
         while (watching) {
           try {
             const counts = await inspect();
-            stage.maxEndUserHolds = Math.max(stage.maxEndUserHolds, Number(counts.end_user_holds ?? 0));
-            stage.maxEndUserHeldMicros = Math.max(stage.maxEndUserHeldMicros, Number(counts.end_user_held_micros ?? 0));
             stage.samples.push({ at: new Date().toISOString(), ...counts });
             if (originSamples && Date.now() >= nextOriginSampleAt) {
               originSamples.push({ at: new Date().toISOString(), phase: 'during', ...await admin('/pilot/database-status') });
@@ -270,7 +267,7 @@ export async function runPilotLoad(options) {
       stage.after = await inspect();
       if (stage.censored) {
         const drainUntil = Date.now() + 60_000;
-        const unsettled = () => ['pending_attempts', 'holds', 'held_micros', 'end_user_holds', 'end_user_held_micros'].some(key => stage.after[key] > 0);
+        const unsettled = () => ['pending_attempts', 'holds', 'held_micros'].some(key => stage.after[key] > 0);
         while (Date.now() < drainUntil && unsettled()) {
           await pause(2000);
           stage.after = await inspect();

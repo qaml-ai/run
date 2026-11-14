@@ -5,8 +5,8 @@ import { fileReceipts } from "./providers.ts";
 import { randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
 import { chargesPlatform } from "../core/key-source.ts";
-import { transaction, type Db } from "../db.ts";
-import { creditError, type EndUserCredits } from "../end-user-credits.ts";
+import { transaction, type Db, type Sql } from "../db.ts";
+import { utcDay, creditError, type EndUserCredits } from "../end-user-credits.ts";
 import { HttpError } from "../http.ts";
 import type { Outbound } from "../outbound.ts";
 import { MICROS, micros as toMicros } from "../pricing.ts";
@@ -18,7 +18,7 @@ import { machineSetup, signatures } from "./abuse.ts";
 import { BOAT_API, boatSnapshots, bounded, output, quote } from "./providers.ts";
 import { connectionForkable, forkUnsupported, noSession, snapshotFailed, type ForkDriver, type SnapshotRef } from "../core/computer-fork.ts";
 
-/** Managed computers share durable ownership, holds, metering and operator controls.
+/** Managed computers share durable ownership, metering and operator controls.
  * Boat reports cumulative cost; Lambda records observed state intervals in the same row.
  * The provider is fixed per session, so changing the default preserves cleanup and billing.
  */
@@ -171,7 +171,7 @@ export class ManagedComputers {
     enabled: boolean;
     /** What names this runtime on its machines: its public URL. */
     runtime: string;
-    endUsers?(): Pick<EndUserCredits, "reserve" | "extend" | "settleHold" | "release" | "renew"> | undefined;
+    endUsers?(): Pick<EndUserCredits, "enabled" | "refusal" | "debit"> | undefined;
     /** Who pays for the agent's current run, where the tenant meters its end users. */
     tenantComputerLimit?: (tenant: string) => number | undefined;
     payer?(agent: string): { id: string; bucket: string } | undefined;
@@ -305,7 +305,7 @@ export class ManagedComputers {
   }
 
   /**
-   * What a new computer needs: that it may start, on which key, and its end user's hold. The account must be under its
+   * What a new computer needs: that it may start, on which key, and its end user's credit. The account must be under its
    * monthly spend limit, on any key, as a run must (the same check as a fresh run, and as Workers computers make). On the
    * platform's key a prepaid account must have purchased credit and positive spendable credit. Internal accounts
    * use their configured billing mode. End-user limits apply to either mode.
@@ -317,7 +317,7 @@ export class ManagedComputers {
     if (capped) throw new HttpError(402, `${capped}. Nothing was created or charged. Do not retry in this turn; tell the user.`, "SPEND_LIMIT");
     const credential = this.provider === "lambda" ? undefined : await accounts.providerKey(tenant, NAME);
     if (this.provider !== "lambda" && !credential) throw new HttpError(503, "Computers are unavailable on this runtime. Do not retry in this turn; tell the user.");
-    let held: { id: string; endUser: string; bucket: string } | undefined;
+    let billedUser: { id: string; bucket: string } | undefined;
     const platform = !credential || chargesPlatform(credential.source);
     if (platform) {
       if (await accounts.billing.mode(tenant) === "prepaid") {
@@ -325,19 +325,17 @@ export class ManagedComputers {
         if (await accounts.billing.spendable(tenant, this.db) <= 0) throw new HttpError(402, "This account is out of credit, so a computer can't start. Nothing was created or charged. Do not retry in this turn; tell the user.", "INSUFFICIENT_CREDIT");
       }
       const user = payer?.(agent), users = endUsers?.();
-      if (user && users) {
-        const hold = randomUUID(), want = Math.ceil(Math.min(connection.lease_seconds, this.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds) * this.hour() / 3600);
-        const reserved = await users.reserve(tenant, user.id, user.bucket, { id: hold, want, min: want }, now());
-        if (reserved?.refused) throw creditError(reserved.refused);
-        if (reserved) held = { id: hold, endUser: user.id, bucket: user.bucket };
+      if (user && await users?.enabled(tenant)) {
+        const refused = await users!.refusal(tenant, user.id, user.bucket, { now: now() });
+        if (refused) throw creditError(refused);
+        billedUser = user;
       }
     }
     const at = now(), workspace = await new Workspaces(this.db).current(tenant, "agent", agent);
-    const row = (await this.db.query("insert into managed_computers(id,tenant,agent,connection,workspace,platform,hold,end_user,bucket,deadline,created_at,provider) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) on conflict do nothing returning *",
-      [id(), tenant, agent, connection.id, workspace?.workspace ?? null, platform, held?.id ?? null, held?.endUser ?? null, held?.bucket ?? null, at + Math.min(connection.lease_seconds, this.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds) * 1000, at, this.provider])).rows[0];
+    const row = (await this.db.query("insert into managed_computers(id,tenant,agent,connection,workspace,platform,end_user,bucket,deadline,created_at,provider) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict do nothing returning *",
+      [id(), tenant, agent, connection.id, workspace?.workspace ?? null, platform, billedUser?.id ?? null, billedUser?.bucket ?? null, at + Math.min(connection.lease_seconds, this.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds) * 1000, at, this.provider])).rows[0];
     if (row) return row;
     // A start at the same moment made it: this one uses its row, and so its machine.
-    if (held) await endUsers?.()?.release(held.id);
     return this.open(connection.id);
   }
 
@@ -370,7 +368,7 @@ export class ManagedComputers {
     return { ...done, stderr: done.stderr.slice(NO_UNIT.length + 1) };
   }
 
-  /** Keep a computer for its idle time from now, up to its hard stop, when less than half of that is left. A hold or an extension refused leaves it as it is. Answers its deadline. */
+  /** Keep a computer for its idle time from now, up to its hard stop, when less than half of that is left. A refused extension leaves it as it is. Answers its deadline. */
   private async keep(connection: any, row: any, machines: ManagedMachines) {
     if (row.provider === "lambda") return Number(row.deadline);
     const deadline = Number(row.deadline), now = this.options.now(), idle = connection.lease_seconds * 1000;
@@ -378,10 +376,7 @@ export class ManagedComputers {
     if (target - deadline < idle / 2) return deadline;
     try {
       const users = this.options.endUsers?.();
-      if (row.hold && users) {
-        const want = Math.ceil((target - deadline) / 1000 * this.options.accounts.billing.pricing.computerHour / 3600);
-        if ((await users.extend(row.tenant, row.end_user, row.bucket, row.hold, want, now)).refused) { this.log("computer_hold_refused", { tenant: row.tenant, computer: row.id }); return deadline; }
-      }
+      if (row.end_user && await users?.refusal(row.tenant, row.end_user, row.bucket, { now })) return deadline;
       await transaction(this.db, sql => reserveComputer(sql, row.tenant, row.agent, connection.id, target, now, this.options.tenantComputerLimit?.(row.tenant)));
       await machines.extend(row.machine, Math.ceil((target - now) / 1000));
       await this.db.query("update managed_computers set deadline=$2 where id=$1 and deadline<$2", [row.id, target]);
@@ -402,6 +397,10 @@ export class ManagedComputers {
       if (micros <= counted) { if (fresh) await sql.query("update managed_computers set usage_since=$2,usage_micros=0,usage_seconds=0 where id=$1", [row.id, machine.since]); return undefined; }
       const ratio = this.hour(current) / (current.provider === "lambda" ? toMicros(MICROVM_HOUR) : BOAT_SMALL_HOUR);
       const amount = Math.round(micros * ratio) - Math.round(counted * ratio), total = Number(current.charged_micros) + amount;
+      const now = this.options.now();
+      await this.settleLegacyCredit(sql, current);
+      if (current.end_user) await this.options.endUsers?.()?.debit(current.tenant, current.end_user, current.bucket, amount / MICROS,
+        `computer:${row.id}:${total}`, { call: "computer", agent: current.agent, provider: current.provider ?? NAME, computer: row.id }, { now, sql });
       await sql.query("update managed_computers set usage_since=$2,usage_micros=$3,usage_seconds=$4,charged_micros=$5 where id=$1", [row.id, machine.since, micros, machine.seconds, total]);
       await accounts.recordUsageIn(sql, current.tenant, current.agent, { provider: current.provider ?? NAME, model: "computer", kind: "computer", usage: { cost: { total: amount / MICROS } }, platform: true, seconds: Math.max(0, machine.seconds - countedSeconds), timestamp: this.options.now() });
       return current.tenant as string;
@@ -417,13 +416,21 @@ export class ManagedComputers {
     await this.settle(row.id).catch(() => this.log("computer_settle_failed", { computer: row.id }));
   }
 
-  private async settle(computer: string) {
+  /** Drain the pre-M2 accumulated charge once before posting new metered intervals. */
+  private async settleLegacyCredit(sql: Sql, row: any) {
     const users = this.options.endUsers?.();
-    const row = (await this.db.query("select * from managed_computers where id=$1 and hold is not null and ended_at is not null", [computer])).rows[0];
-    if (!row || !users) return;
-    if (Number(row.charged_micros) > 0) await users.settleHold(row.tenant, row.end_user, row.bucket, row.hold, Number(row.charged_micros), `computer:${row.id}`, { call: "computer", agent: row.agent, provider: row.provider ?? NAME, computer: row.id }, this.options.now());
-    else await users.release(row.hold);
-    await this.db.query("update managed_computers set hold=null where id=$1", [computer]);
+    if (!row.hold || !users) return;
+    await users.debit(row.tenant, row.end_user, row.bucket, Number(row.charged_micros) / MICROS,
+      `computer:${row.id}`, { call: "computer", agent: row.agent, provider: row.provider ?? NAME, computer: row.id, usageDay: utcDay(Number(row.created_at)) },
+      { now: this.options.now(), sql });
+    await sql.query("update managed_computers set hold=null where id=$1", [row.id]);
+  }
+
+  private async settle(computer: string) {
+    await transaction(this.db, async sql => {
+      const row = (await sql.query("select * from managed_computers where id=$1 and hold is not null and ended_at is not null for update", [computer])).rows[0];
+      if (row) await this.settleLegacyCredit(sql, row);
+    });
   }
 
   private async stopOpen(connection: string) {
@@ -491,7 +498,7 @@ export class ManagedComputers {
   /**
    * One pass: what Boat lists for this runtime is the truth. A row it lists is charged the difference; a row it no longer
    * lists has ended, once a listing of that row alone agrees; a listed machine with no row is only said, since its own
-   * expiry ends it. Then an agent gone takes its machine with it, holds are kept, credit is checked, and with the flag off
+   * expiry ends it. Then an agent gone takes its machine with it, credit is checked, and with the flag off
    * everything stops. A listing that fails changes nothing.
    */
   async pass() {
@@ -546,16 +553,16 @@ export class ManagedComputers {
     };
     for (const row of rows.filter(row => !row.agent_gone)) {
       try {
-        if (row.platform && row.hold && users) await users.renew(row.tenant, row.end_user, row.hold, now());
         if (!this.options.enabled) continue;
         let limit: { spend: boolean; credit: boolean };
         // Limits that cannot be read stop nothing this pass: said under their own name, and read again at the next.
         try { limit = await limitOf(row.tenant); }
         catch { limits.delete(row.tenant); this.log("computer_limits_read_failed", { tenant: row.tenant, computer: row.id }); continue; }
-        const reason = limit.spend ? "spend_limit" : row.platform && limit.credit ? "credit" : undefined;
+        const endUserRefused = row.platform && row.end_user && await users?.refusal(row.tenant, row.end_user, row.bucket, { now: now() });
+        const reason = limit.spend ? "spend_limit" : row.platform && limit.credit ? "credit" : endUserRefused ? "end_user_credit" : undefined;
         if (!reason) continue;
         // The agent hears of it at its next computer call: the computer is stopped, and a start is refused with why.
-        this.log(reason === "credit" ? "computer_credit_stop" : "computer_spend_limit_stop", { tenant: row.tenant, agent: row.agent, computer: row.id, reason });
+        this.log(reason === "spend_limit" ? "computer_spend_limit_stop" : "computer_credit_stop", { tenant: row.tenant, agent: row.agent, computer: row.id, reason });
         const current = (await this.db.query("select * from managed_computers where id=$1 and ended_at is null", [row.id])).rows[0];
         if (current) await this.stopRow(current);
       } catch { this.log("computer_charge_failed", { computer: row.id }); }

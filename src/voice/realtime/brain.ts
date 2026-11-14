@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { clock as nodeClock, type Clock } from "../../node-context.ts";
 import { HttpError } from "../../http.ts";
 import { FREE_HOURLY_LIMIT } from "../../billing.ts";
@@ -36,7 +37,7 @@ import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type 
  * - **Tools.** `ask_agent(request)` runs the bot's agent (its tools, memory and system prompt), and the model speaks
  *   its answer; the model fills the wait itself ("let me check"). `stay_silent()` answers nothing.
  * - **Money.** Tokens, or audio duration and text items, are priced and recorded (`usage`), with end-user credit
- *   held for responses or renewed as metered audio flows. A refusal ends the session (`budget`).
+ *   checked at response and metering checkpoints. A refusal ends the session (`budget`).
  *
  * Nothing the people or the model say is logged: logs carry counts, timings and lengths.
  */
@@ -50,6 +51,8 @@ const EMPTY_REQUEST = new Error("empty request");
  */
 export const spendRefusal = (error: unknown) =>
   (error as HttpError | undefined)?.status === 402 || (error as HttpError | undefined)?.code === FREE_HOURLY_LIMIT;
+/** A rate or concurrency refusal (any other 429): it refuses one response or slice; the call goes on. */
+export const rateRefusal = (error: unknown) => (error as HttpError | undefined)?.status === 429 && !spendRefusal(error);
 
 export const REALTIME_LIMITS = Object.freeze({
   /** How long ask_agent waits for the agent's reply before the model is told it is still working. */
@@ -60,8 +63,8 @@ export const REALTIME_LIMITS = Object.freeze({
   agentReplyChars: 4_000,
   /** How long an unaddressed turn waits for its transcript (addressing by name) before the model decides. */
   addressWaitMs: 2_500,
-  /** End-user credit held for a response or a slice of metered audio (USD), settled with what it cost. */
-  holdUsd: 0.05,
+  /** Flush metered usage at this cost (USD) or on the timer. */
+  meterUsd: 0.025,
   /** Reconnects to the provider within `reconnectWindowMs` before the session gives up (error, realtime_failed). */
   reconnects: 3, reconnectWindowMs: 5 * 60_000,
   /** Lines of what was said kept in memory, to brief a new connection after a reconnect. */
@@ -118,8 +121,7 @@ export const speakUp = (instructions: string) =>
 /** What a response to a turn that did not clearly address the bot is told. */
 export const NOT_ADDRESSED_HINT = "This turn did not name you, and its speaker is not talking with you. Unless it is clearly meant for you, call stay_silent.";
 
-/** A credit hold (end-user credits): settled with what a response cost, or released. */
-type Hold = { settle(usd: number): Promise<void>; release(): Promise<void> };
+
 
 /** What the brain needs of its session. */
 export interface BrainHooks {
@@ -139,8 +141,8 @@ export interface BrainHooks {
   /** The tenant may spend; throws a 402 HttpError otherwise. */
   admit(): Promise<void>;
   tenantCreditExhausted?(): Promise<boolean>;
-  /** Hold `usd` of the end user's credit (where the tenant meters end users); throws 402 END_USER_CREDIT. */
-  hold(usd: number): Promise<Hold | undefined>;
+  refusal(): Promise<void>;
+  debit(usd: number, key: string, now: number): Promise<void>;
   /** The money ran out: the session ends. */
   budget(limit: "tenant" | "end_user", endUserReason?: string, bucket?: string): void;
   /** Usage: response tokens or metered audio and text items, cost (USD), and seconds of audio made. */
@@ -229,7 +231,8 @@ type Response = {
   playback?: Playback; playedAt?: number; heardMs?: number;
   done: boolean; played: boolean; cancelled?: "barge_in" | "resume" | "superseded" | "budget" | "close" | "requested";
   tool?: boolean; silent?: boolean; costUsd: number;
-  hold?: Promise<Hold | undefined>;
+  budgetCheck?: Promise<void>;
+  dispatched?: boolean;
   askedAt: number;
   /** What it was asked with: instructions for this response alone, and whether this is already the second try. */
   instructions?: string; retried: boolean;
@@ -246,7 +249,13 @@ export class RealtimeBrain {
   private readonly mixer: Mixer;
   private connection?: RealtimeConnection;
   private closed = false;
-  private meteredHold?: Promise<Hold | undefined>;
+  private posting?: Promise<void>;
+  private budgetEnding?: HttpError;
+  private budgetReported = false;
+  private meterCounter = 0;
+  private meterStartedAt = 0;
+  private readonly meterId = randomUUID();
+  private readonly billedResponses = new Set<string>();
   private meteredSeconds = 0;
   private meteredTextInputs = 0;
   private meterTimer?: ReturnType<Clock["setInterval"]>;
@@ -300,7 +309,7 @@ export class RealtimeBrain {
     if (!realtimePrice(options.reference)) throw new Error(`Realtime model ${options.reference} has no price configured`);
     this.open();
     if (this.metered) {
-      // Flush quiet calls too, and replace their holds before the credit service expires them.
+      // Flush quiet calls too.
       this.meterTimer = this.clock.setInterval(() => this.flushMeter(), 60_000);
       this.meterTimer.unref?.();
     }
@@ -465,7 +474,7 @@ export class RealtimeBrain {
 
   /** The first of what the bot's code asked for, if the floor is free: said, or the model asked. */
   private next() {
-    if (this.closed || !this.announcements.length || this.leaving) return;
+    if (this.closed || this.budgetEnding || !this.announcements.length || this.leaving) return;
     // A response being made, held or played goes first, and an answer waiting for the floor.
     if (this.current || (this.playing && !this.playing.cancelled) || this.waitingRespond) return;
     if (!this.announcements[0].urgent && this.speaking.size) return;
@@ -479,7 +488,7 @@ export class RealtimeBrain {
 
   /** Ask the model now (the floor is free), however the provider takes turns. */
   private respondNow(request: { instructions: string }) {
-    if (this.options.ownsTurns) { this.connection?.respond(request); return; }
+    if (this.options.ownsTurns) { void this.respondOnProvider(request); return; }
     this.ask({ ...request, held: false, speculative: false });
   }
 
@@ -493,6 +502,7 @@ export class RealtimeBrain {
     void (async () => {
       let heard = false;
       try {
+        if (!await this.admitResponse(response)) return;
         const pcm = await this.hooks.synthesize!(item.text, abort.signal, costUsd => { response.costUsd = costUsd; this.stats.costUsd += costUsd; });
         for await (const chunk of pcm) {
           if (response.cancelled || this.closed) break;
@@ -501,6 +511,12 @@ export class RealtimeBrain {
           this.play(response);
         }
       } catch (error) {
+        if (spendRefusal(error)) {
+          response.done = true;
+          response.audio.end();
+          this.budget(error);
+          return;
+        }
         if (!response.cancelled && !this.closed) this.hooks.log("voice_realtime_say_failed", { error: safeError(error), audio: heard });
         // Nothing made: the model reads the words out instead.
         if (!heard && !response.cancelled && !this.closed) {
@@ -534,7 +550,6 @@ export class RealtimeBrain {
       response.cancelled ??= "close";
       response.audio.end();
       response.playback?.stop();
-      if (!response.done) void response.hold?.then(hold => hold?.release()).catch(() => {});
       response.turn?.end("interrupted");
     }
     for (const turn of this.turns.values()) for (const wake of turn.waiters) wake();
@@ -559,7 +574,7 @@ export class RealtimeBrain {
 
   private open() {
     const connect = () => {
-      if (this.closed) return;
+      if (this.closed || this.budgetEnding) return;
       this.connection = this.hooks.connect(this.events(), this.offAzure ? { direct: true } : undefined);
       // A new connection after a reconnect: what was said before, as context.
       if (this.history.length) this.connection.note(`[Earlier in this call]\n${this.history.map(line => `${line.who}: ${line.text}`).join("\n")}`);
@@ -570,39 +585,98 @@ export class RealtimeBrain {
       this.providerAnswered = undefined;
     };
     if (this.metered) {
-      this.meteredHold ??= this.holdSlice();
-      void this.meteredHold.then(() => {
-        try { connect(); } catch (error) { this.hooks.failed("realtime_failed", safeError(error)); }
-      }).catch(() => {});
+      void (this.posting ?? this.checkCredit()).then(() => {
+        this.meterStartedAt ||= this.clock.now();
+        connect();
+      }).catch(error => {
+        // A rate or concurrency refusal is not about money: connect, and the debits still follow its usage.
+        if (rateRefusal(error)) { this.hooks.log("voice_realtime_slice_refused", { error: safeError(error) }); this.meterStartedAt ||= this.clock.now(); connect(); return; }
+        if (!this.budget(error)) this.hooks.failed("realtime_failed", safeError(error));
+      });
     } else connect();
   }
 
-  private async holdSlice() {
+  private async checkCredit() {
+    await this.hooks.admit();
+    if (await this.hooks.tenantCreditExhausted?.()) throw new HttpError(402, "This account is out of credit");
+    await this.hooks.refusal();
+  }
+
+  private async respondOnProvider(request: { instructions?: string }) {
+    const connection = this.connection;
     try {
-      try {
-        await this.hooks.admit();
-      } catch (error) {
-        // A rate or concurrency refusal is not about money: the slice's audio is already flowing and must still be
-        // paid, so its end user's hold is still taken below, and the session goes on.
-        if ((error as HttpError)?.status !== 429 || spendRefusal(error)) throw error;
-        this.hooks.log("voice_realtime_slice_refused", { error: safeError(error) });
-      }
-      return await this.hooks.hold(REALTIME_LIMITS.holdUsd);
+      await this.posting;
+      if (this.closed || this.connection !== connection || this.budgetEnding) return;
+      await this.checkCredit();
+      if (!this.closed && this.connection === connection) connection?.respond(request);
     } catch (error) {
-      const refused = error as HttpError;
-      if (spendRefusal(refused)) {
-        const endUser = refused.code === "END_USER_CREDIT";
-        this.hooks.budget(endUser ? "end_user" : "tenant", endUser ? refused.details?.reason as string : undefined, endUser ? refused.details?.bucket as string : undefined);
-      } else this.hooks.failed("realtime_credit_failed");
-      throw error;
+      if (rateRefusal(error)) { this.hooks.log("voice_realtime_response_refused", { error: safeError(error) }); return; }
+      if (!this.budget(error)) this.hooks.failed("realtime_credit_failed", safeError(error));
     }
+  }
+
+  private budget(failure: unknown) {
+    const error = failure as HttpError;
+    if (!spendRefusal(error)) return false;
+    if (this.closed || this.budgetReported) return true;
+    this.budgetEnding = error;
+    if (this.playing || (this.current && !this.current.done)) return true;
+    this.budgetReported = true;
+    const endUser = error.code === "END_USER_CREDIT";
+    this.hooks.budget(endUser ? "end_user" : "tenant", endUser ? error.details?.reason as string : undefined, endUser ? error.details?.bucket as string : undefined);
+    return true;
+  }
+
+  private async admitResponse(response: Response) {
+    try {
+      await this.posting;
+      if (this.closed || response.cancelled || this.current !== response) return false;
+      if (this.budgetEnding) throw this.budgetEnding;
+      await this.checkCredit();
+      return !this.closed && !response.cancelled && this.current === response;
+    } catch (error) {
+      response.done = true;
+      response.audio.end();
+      if (this.current === response) this.current = undefined;
+      if (rateRefusal(error)) {
+        // A rate or concurrency refusal: only this response is refused; the call goes on.
+        this.hooks.log("voice_realtime_response_refused", { error: safeError(error) });
+        response.turn?.end("no_reply");
+      } else if (this.budget(error)) response.turn?.end("no_reply");
+      else {
+        response.turn?.end("error");
+        this.hooks.failed("realtime_credit_failed", safeError(error));
+      }
+      return false;
+    }
+  }
+
+  private postCredit(usd: number, key: string, now: number, checkpoint = false) {
+    const pending = (this.posting ?? Promise.resolve()).then(async () => {
+      if (usd > 0) await this.hooks.debit(usd, key, now);
+      if (checkpoint && !this.closed && !this.budgetEnding) {
+        try { await this.checkCredit(); }
+        catch (error) {
+          const refusal = error as HttpError;
+          if (rateRefusal(refusal)) { this.hooks.log("voice_realtime_slice_refused", { error: safeError(refusal) }); return; }
+          if (!spendRefusal(refusal)) throw error;
+          this.budgetEnding = refusal;
+          if (!this.current || this.current.done) this.budget(error);
+        }
+      }
+    }).catch(error => {
+      this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) });
+      if (!this.closed) this.hooks.failed("realtime_credit_failed");
+    });
+    this.posting = pending;
+    return pending;
   }
 
   /** Manual-turn providers meter all audio on the wire, even discarded input and cancelled output. */
   private meter(seconds: number, textInputs: number) {
     this.meteredSeconds += seconds;
     this.meteredTextInputs += textInputs;
-    if (realtimeCost(this.options.reference, NO_USAGE, this.meteredSeconds, this.meteredTextInputs) >= REALTIME_LIMITS.holdUsd / 2) this.flushMeter();
+    if (realtimeCost(this.options.reference, NO_USAGE, this.meteredSeconds, this.meteredTextInputs) >= REALTIME_LIMITS.meterUsd) this.flushMeter();
   }
 
   private flushMeter(usage: RealtimeUsage = NO_USAGE, audioSeconds = 0) {
@@ -611,19 +685,9 @@ export class RealtimeBrain {
     this.meteredTextInputs = 0;
     this.stats.costUsd += costUsd;
     if (costUsd || usage !== NO_USAGE) this.hooks.usage({ usage, costUsd, audioSeconds });
-    const hold = this.meteredHold;
-    const closing = this.closed;
-    this.meteredHold = (async () => {
-      const credit = await hold;
-      if (costUsd > 0) await credit?.settle(costUsd);
-      else await credit?.release();
-      return closing ? undefined : this.holdSlice();
-    })();
-    void this.meteredHold.catch(error => {
-      if (spendRefusal(error)) return;
-      this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) });
-      if (!this.closed) this.hooks.failed("realtime_credit_failed");
-    });
+    const now = this.clock.now(), began = this.meterStartedAt || now;
+    this.meterStartedAt = now;
+    this.postCredit(costUsd, `meter:${this.meterId}:${++this.meterCounter}`, began, true);
     return costUsd;
   }
 
@@ -664,9 +728,11 @@ export class RealtimeBrain {
           this.providerAnswered = this.segment;
           const response = this.response({ speaker, turn: turn && !turn.ended ? turn : undefined });
           response.id = id;
+          response.dispatched = true;
           this.current = response;
           this.stats.responses++;
-          this.reserve(response);
+          response.budgetCheck = this.posting ? this.posting.then(() => this.checkCredit()) : this.checkCredit();
+          void response.budgetCheck.catch(() => {});
         } else if (this.current && !this.current.id && !this.current.clip) this.current.id = id;
       },
       interrupted: () => {
@@ -724,7 +790,7 @@ export class RealtimeBrain {
       if (!response || response.done) continue;
       response.done = true;
       response.audio.end();
-      if (!response.played) { response.turn?.end("error"); this.settle(response, 0); }
+      if (!response.played) response.turn?.end("error");
     }
     this.current = undefined;
     if (!retrying) {
@@ -903,8 +969,8 @@ export class RealtimeBrain {
 
   /** Answer: now, or once the floor is free and the response before has finished. */
   private respond(request: { speaker?: string; turn?: TurnClock; instructions?: string; retried?: boolean; carry?: string }) {
-    if (this.closed) return;
-    if (this.options.ownsTurns) { this.connection?.respond(request.instructions ? { instructions: request.instructions } : {}); return; }
+    if (this.closed || this.budgetEnding) return;
+    if (this.options.ownsTurns) { void this.respondOnProvider(request.instructions ? { instructions: request.instructions } : {}); return; }
     const busy = (this.current && !this.current.done) || [...this.speaking].length > 0 || !!this.leaving;
     if (busy) {
       // One waits at most: a newer turn's replaces it (the model hears both).
@@ -919,6 +985,7 @@ export class RealtimeBrain {
 
   private ask(request: { speaker?: string; turn?: TurnClock; instructions?: string; held: boolean; speculative: boolean; retried?: boolean; carry?: string }) {
     const connection = this.connection;
+    if (this.budgetEnding) { request.turn?.end("no_reply"); return; }
     if (!connection) { request.turn?.end("error"); return; }
     // Any new answer hears everything so far, what the failed one was to answer too.
     this.dropRetry("no_reply");
@@ -927,31 +994,11 @@ export class RealtimeBrain {
     this.fresh = false;
     this.lastLabel = undefined;
     this.stats.responses++;
-    connection.respond(request.instructions ? { instructions: request.instructions } : {});
-    this.reserve(response);
-  }
-
-  private reserve(response: Response) {
-    if (this.metered) return;
-    // The money is checked alongside, not before: a refusal cancels it (nothing is heard), and ends the session.
-    response.hold = (async () => {
-      await this.hooks.admit();
-      return this.hooks.hold(REALTIME_LIMITS.holdUsd);
-    })();
-    response.hold.catch((refused: HttpError) => {
-      if (refused?.status === 429 && !spendRefusal(refused)) {
-        // A rate or concurrency refusal: only this response is refused; the call goes on.
-        this.hooks.log("voice_realtime_response_refused", { error: safeError(refused) });
-        this.cancel(response, "requested", 0);
-        return;
-      }
-      if (!spendRefusal(refused)) { this.hooks.log("voice_realtime_hold_failed", { error: safeError(refused) }); return; }
-      this.cancel(response, "budget", 0);
-      const endUser = refused.code === "END_USER_CREDIT";
-      const reason = refused.details?.reason;
-      const bucket = refused.details?.bucket;
-      this.hooks.budget(endUser ? "end_user" : "tenant", endUser && typeof reason === "string" ? reason : undefined, endUser && typeof bucket === "string" ? bucket : undefined);
-    });
+    void this.admitResponse(response).then(admitted => {
+      if (!admitted || this.connection !== connection) return;
+      response.dispatched = true;
+      connection.respond(request.instructions ? { instructions: request.instructions } : {});
+    }).catch(error => this.hooks.failed("realtime_failed", safeError(error)));
   }
 
   private response(request: { speaker?: string; turn?: TurnClock; instructions?: string; held?: boolean; speculative?: boolean; retried?: boolean; carry?: string }): Response {
@@ -964,7 +1011,9 @@ export class RealtimeBrain {
 
   /** The floor may be free: a held response plays, or a waiting one is asked for. */
   private release() {
-    if (this.closed || this.speaking.size) return;
+    if (this.closed) return;
+    if (this.budgetEnding) { this.budget(this.budgetEnding); return; }
+    if (this.speaking.size) return;
     const current = this.current;
     if (current && current.held && !current.speculative && !current.cancelled) {
       current.held = false;
@@ -998,7 +1047,8 @@ export class RealtimeBrain {
     if (response.clip) {
       response.clip.abort.abort();
       response.done = true;
-    } else if (!response.done) this.connection?.cancel();
+    } else if (!response.done && response.dispatched) this.connection?.cancel();
+    else if (!response.dispatched) response.done = true;
     if (response.id && (response.audio.bytes || response.played)) this.connection?.truncate(response.id, heardMs);
     if (!response.played) response.turn?.end(why === "resume" || why === "superseded" ? "interrupted" : why === "budget" ? "error" : "interrupted");
     if (this.current === response && response.done) this.current = undefined;
@@ -1042,14 +1092,15 @@ export class RealtimeBrain {
   }
 
   private responseDone(id: string, outcome: { status: string; usage: RealtimeUsage; error?: string; rateLimited?: boolean }) {
+    const key = `${this.generation}:${id}`;
+    if (this.billedResponses.has(key)) return;
+    this.billedResponses.add(key);
     const response = this.byId(id) ?? (this.current && !this.current.id && !this.current.clip ? this.current : undefined);
     const costUsd = this.metered ? this.flushMeter(outcome.usage, (response?.audio.bytes ?? 0) / 48_000) : realtimeCost(this.options.reference, outcome.usage);
     if (!this.metered) {
       this.stats.costUsd += costUsd;
       this.hooks.usage({ usage: outcome.usage, costUsd, audioSeconds: outcome.usage.outputAudio / 20 });
-      if (!this.closed) void this.hooks.tenantCreditExhausted?.().then(exhausted => {
-        if (exhausted && !this.closed) this.hooks.budget("tenant");
-      }).catch(error => this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) }));
+      this.postCredit(costUsd, id, response?.askedAt ?? this.clock.now());
     }
     if (outcome.status === "failed") this.hooks.log("voice_realtime_response_failed", { ...(outcome.error ? { error: outcome.error } : {}) });
     const moved = !!outcome.rateLimited && this.connection?.host === "azure";
@@ -1058,7 +1109,14 @@ export class RealtimeBrain {
     response.done = true;
     response.costUsd = costUsd;
     response.audio.end();
-    this.settle(response, costUsd);
+    if (response.budgetCheck) void response.budgetCheck.catch(async error => {
+      await this.posting;
+      if (!this.budget(error)) this.hooks.failed("realtime_credit_failed", safeError(error));
+    });
+    if (this.budgetEnding) {
+      void this.posting?.then(() => { if (this.budgetEnding) this.budget(this.budgetEnding); });
+      return;
+    }
     if (!response.audio.bytes && outcome.status === "failed" && this.retries(response)) this.retry(response, moved ? 0 : this.options.retryMs ?? REALTIME_LIMITS.retryMs);
     else if (!response.audio.bytes) response.turn?.end(response.silent ? "silent" : response.cancelled ? "interrupted" : outcome.status === "failed" ? "error" : "no_reply");
     // Done making: one with audio left to play stays current until it has played (or is held, until it may).
@@ -1123,11 +1181,6 @@ export class RealtimeBrain {
     this.clock.clearTimeout(this.pendingRetry.timer);
     this.pendingRetry.turn?.end(outcome);
     this.pendingRetry = undefined;
-  }
-
-  private settle(response: Response, usd: number) {
-    void response.hold?.then(hold => hold && (usd > 0 ? hold.settle(usd) : hold.release()))
-      .catch(error => { if ((error as HttpError)?.status !== 402) this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) }); });
   }
 
   // Tools ------------------------------------------------------------------------------

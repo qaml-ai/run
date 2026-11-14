@@ -30,7 +30,7 @@ export type SpeechRequest = {
   /** The providers to try in order, and their voices (voice-providers/); else OpenAI's. */
   choice?: SpeechChoice;
   identity?: AgentIdentity; actor?: string; bucket?: string;
-  hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+  admitCredit?: () => Promise<((usd: number) => Promise<void>) | undefined> | undefined;
   /** What was made and its cost, once billed (a voice session counts it as its own). */
   settled?: (made: { costUsd: number; seconds: number }) => void;
 };
@@ -57,7 +57,7 @@ function wavHeader(rate: number) {
 }
 
 /**
- * Make speech: admitted, its credentials found and the end user's credit held before a byte is made (each refusal is
+ * Make speech: admitted, its credentials found and the end user's credit checked before a byte is made (each refusal is
  * the request's error), then its audio as a stream. The first chunk is waited for, so a provider that refuses the text
  * is an error answer, not an empty stream. What was made is billed once the stream ends, however it ends (the caller
  * hung up: `signal`).
@@ -74,7 +74,7 @@ export async function speechRequest(service: SpeechService, tenant: string, requ
   if (chain) {
     if (!await synthesizer.canSpeak(tenant, request.keyScope, providers)) throw new HttpError(400, `Speaking needs a key for one of ${synthesizer.order(providers).join(", ")}: add one under Models & keys (PUT /v1/providers/<provider>/key)`, "SPEECH_UNAVAILABLE");
   } else credentials = await synthesizer.credentials(tenant, request.keyScope);
-  const held = await request.hold?.(chain ? synthesizer.estimate(request.text, providers) : synthesizer.cost(synthesizer.estimateSeconds(request.text)));
+  const debit = await request.admitCredit?.();
   const abort = new AbortController();
   const stop = () => abort.abort(signal.reason);
   signal.addEventListener("abort", stop, { once: true });
@@ -91,7 +91,7 @@ export async function speechRequest(service: SpeechService, tenant: string, requ
     signal.removeEventListener("abort", stop);
     const seconds = Math.round(samples / SPEECH_RATE * 100) / 100;
     const costUsd = !samples ? 0 : served ? synthesizer.costOf(`${served.provider}/${served.model}`, { characters: request.text.length, seconds }) : synthesizer.cost(seconds);
-    await (samples ? held?.settle(costUsd) : held?.release())?.catch(error => console.error(JSON.stringify({ type: "speech_credit_failed", tenant, error: safeError(error) })));
+    await (samples ? debit?.(costUsd) : undefined)?.catch(error => console.error(JSON.stringify({ type: "speech_credit_failed", tenant, error: safeError(error) })));
     if (samples) service.record(tenant, {
       provider: served?.provider ?? synthesizer.provider, model: served?.model ?? synthesizer.model, usage: { cost: { total: costUsd } }, platform: served?.platform ?? credentials?.platform ?? false, kind: "speech",
       speeches: 1, audioSeconds: seconds, timestamp: Date.now(),

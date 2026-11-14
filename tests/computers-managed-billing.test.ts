@@ -138,7 +138,7 @@ test("an internal account with no purchased credit starts, records usage without
   } finally { f.done(); }
 });
 
-test("internal accounts still reserve and enforce end-user credit", async () => {
+test("internal accounts still enforce end-user credit", async () => {
   const f = await fixture({ billing: "none", purchased: false, balance: 0, payer: USER });
   try {
     await fund(f, 1);
@@ -148,60 +148,48 @@ test("internal accounts still reserve and enforce end-user credit", async () => 
     await f.endUsers.post("payg", "u", { kind: "grant", amount: micros(1), key: "enough" });
     await f.start("payg", "a", "funded-user");
     assert.equal(f.state.creates, 1);
-    assert.equal((await f.holds()).length, 1);
+    assert.equal((await f.row()).end_user, "u");
     await f.stop();
   } finally { f.done(); }
 });
 
-test("an end user has the idle time held at the start, pays once when it ends, and a refused hold refuses the start", async () => {
+test("a computer debits the full interval and stops at the checkpoint when its user goes negative", async () => {
   const f = await fixture({ payer: USER });
-  await fund(f);
-  await f.connect();
-  await f.start();
-  const [hold] = await f.holds();
-  assert.equal(Number(hold.paid), Math.ceil(7200 * micros(0.018) / 3600));
-  assert.equal((await f.row()).hold, hold.id);
-  f.advance(60_000);
-  await pass(f);
-  assert.equal((await f.endUsers.get("payg", "u", ["work"])).balance, micros(1), "the tenant pays as it goes; the user at the end");
-  await f.stop();
-  const user = await f.endUsers.get("payg", "u", ["work"]);
-  assert.deepEqual([user.balance, user.held], [micros(1) - cost(60_000), 0]);
-  assert.equal((await f.row()).hold, null);
-  const usage = (await f.endUsers.ledger("payg", "u", {})).entries.filter(entry => entry.kind === "usage");
-  assert.deepEqual(usage.map(entry => [entry.raw, entry.metadata.call, entry.metadata.provider]), [[cost(60_000), "computer", "boat"]]);
-  await pass(f);
-  assert.equal((await f.endUsers.get("payg", "u", ["work"])).balance, micros(1) - cost(60_000));
-  f.done();
-
-  const poor = await fixture({ payer: USER });
-  await fund(poor, 100);
-  await poor.connect();
-  await assert.rejects(poor.start(), (error: unknown) => error instanceof HttpError && error.status === 402 && error.code === "END_USER_CREDIT");
-  assert.deepEqual([await poor.rows(), await poor.holds()], [[], []]);
-  poor.done();
+  try {
+    await fund(f, 1);
+    await f.connect();
+    await f.start();
+    assert.equal((await f.row()).end_user, "u");
+    f.advance(60_000);
+    await pass(f);
+    assert.ok((await f.row()).ended_at);
+    assert.equal((await f.endUsers.get("payg", "u")).balance, 1 - cost(60_000));
+    await pass(f);
+    const usage = (await f.endUsers.ledger("payg", "u", { kinds: ["usage"] })).entries;
+    assert.deepEqual(usage.map(entry => [entry.raw, entry.metadata.call, entry.metadata.provider]), [[cost(60_000), "computer", "boat"]]);
+    await assert.rejects(f.start("payg", "a", "again"), (error: unknown) => error instanceof HttpError && error.code === "END_USER_CREDIT");
+  } finally { f.done(); }
 });
 
-test("a settlement that fails is retried by the pass, and posts once", async () => {
+test("a metering transaction that fails retries the same cost once", async () => {
   const f = await fixture({ payer: USER });
-  await fund(f);
-  await f.connect();
-  await f.start();
-  f.advance(60_000);
-  const settleHold = f.endUsers.settleHold;
-  f.endUsers.settleHold = async function () { throw new Error("database refused"); };
-  await f.stop();
-  f.endUsers.settleHold = settleHold;
-  assert.ok((await f.row()).hold);
-  await pass(f);
-  assert.equal((await f.row()).hold, null);
-  await f.db.query("update managed_computers set hold=gen_random_uuid()");
-  await pass(f);
-  assert.equal((await f.endUsers.get("payg", "u", ["work"])).balance, micros(1) - cost(60_000));
-  f.done();
+  try {
+    await fund(f);
+    await f.connect();
+    await f.start();
+    f.advance(60_000);
+    const debit = f.endUsers.debit;
+    f.endUsers.debit = async () => { throw new Error("database refused"); };
+    await pass(f);
+    assert.equal(Number((await f.row()).charged_micros), 0);
+    f.endUsers.debit = debit;
+    await pass(f);
+    await pass(f);
+    assert.equal((await f.endUsers.get("payg", "u")).balance, micros(1) - cost(60_000));
+  } finally { f.done(); }
 });
 
-test("a command keeps the computer for its idle time from now, up to 24 hours from its start, moving the machine's own expiry and the end user's hold", async () => {
+test("a command keeps the computer for its idle time from now, up to 24 hours from its start, moving the machine's expiry", async () => {
   const f = await fixture({ payer: USER });
   await fund(f);
   await f.connect();
@@ -216,8 +204,6 @@ test("a command keeps the computer for its idle time from now, up to 24 hours fr
   await f.exec("later");
   assert.equal(Number((await f.row()).deadline), f.now() + 2 * HOUR);
   assert.deepEqual(f.state.extended, [7200]);
-  const held = Number((await f.holds())[0].paid);
-  assert.ok(held > Math.ceil(7200 * micros(0.018) / 3600), "more of the user's credit is held");
   for (let elapsed = 70; elapsed < 22 * 60; elapsed += 90) { f.advance(90 * 60_000); await pass(f); await f.exec(`step-${elapsed}`); }
   f.advance(60 * 60_000);
   await f.exec("near-the-end");
@@ -226,17 +212,19 @@ test("a command keeps the computer for its idle time from now, up to 24 hours fr
   f.done();
 });
 
-test("a hold refused leaves the expiry as it is, says so, and the command still runs", async () => {
+test("a refused user cannot extend the computer's deadline", async () => {
   const f = await fixture({ payer: USER });
-  await fund(f, Math.ceil(7200 * micros(0.018) / 3600));
-  await f.connect();
-  await f.start();
-  const deadline = Number((await f.row()).deadline);
-  for (let minutes = 0; minutes < 61; minutes += 5) { f.advance(5 * 60_000); await pass(f); }
-  assert.deepEqual(await f.exec("refused"), { exitCode: 0, stdout: "done", stderr: "", truncated: false });
-  assert.equal(Number((await f.row()).deadline), deadline);
-  assert.ok(f.logged.some(line => line.type === "computer_hold_refused"));
-  f.done();
+  try {
+    await fund(f);
+    await f.connect();
+    await f.start();
+    const deadline = Number((await f.row()).deadline);
+    await f.endUsers.post("payg", "u", { kind: "spend", amount: micros(1), key: "spend" });
+    f.advance(65 * 60_000);
+    await f.exec("no-extension");
+    assert.equal(Number((await f.row()).deadline), deadline);
+    assert.deepEqual(f.state.extended, []);
+  } finally { f.done(); }
 });
 
 test("pieces add up to the total at any price, and a lower figure never charges or moves anything", async () => {

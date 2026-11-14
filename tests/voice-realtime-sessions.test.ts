@@ -289,11 +289,11 @@ test("a provider's supported but unpriced model is refused before opening a sess
   assert.equal(Number((await cluster.db.query("select count(*) as count from voice_sessions")).rows[0].count), 0);
 });
 
-test("Grok speech usage settles the end user's real credit ledger and releases its connection hold", async t => {
+test("Grok speech usage settles the end user's real credit ledger", async t => {
   const realtime = fakeRealtimeProvider();
   const { grokRealtime } = await import("../src/voice/realtime/grok.ts");
   let credits: EndUserCredits;
-  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), hold: (...args) => credits.hold(...args) };
+  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), debit: (...args) => credits.debit(...args) };
   const cluster = await voiceCluster(t, { credit, realtime: {
     providers: { grok: { ...grokRealtime(), connect: realtime.provider.connect } },
     key: async () => ({ apiKey: "fixture", platform: true }),
@@ -307,8 +307,7 @@ test("Grok speech usage settles the end user's real credit ledger and releases i
   const media = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "media");
   media.others = [ANA];
   media.handlers.ready();
-  const model = await until(() => realtime.connections[0], "model after credit hold");
-  assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 1);
+  const model = await until(() => realtime.connections[0], "model after credit admission");
   speak(media, ANA, 0.6);
   await until(() => model.responses === 1, "response");
   await model.answer("grok_1", { ms: 400, usage: { inputAudio: 500_000 } });
@@ -321,7 +320,6 @@ test("Grok speech usage settles the end user's real credit ledger and releases i
   assert.equal(speech.identity?.subject, "ada");
   assert.equal(Math.round(speech.usage.cost.total * 1e6), expected);
   await a.voice.end("alice", created.id);
-  await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "all holds settled or released");
   const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
   assert.equal(entries.reduce((sum, entry) => sum + entry.raw, 0), expected);
   assert.ok(entries.every(entry => entry.bucket === "bot:7"));
@@ -390,7 +388,7 @@ test("ElevenLabs connection minutes settle speech usage and the end-user ledger 
   }
   const realtime = fakeRealtimeProvider();
   let credits: EndUserCredits;
-  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), hold: (...args) => credits.hold(...args) };
+  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), debit: (...args) => credits.debit(...args) };
   const cluster = await voiceCluster(t, { credit, realtime: {
     providers: { elevenlabs: { ...elevenlabsAgents(), connect: realtime.provider.connect } },
     key: async () => ({ apiKey: "fixture", platform: true }),
@@ -403,8 +401,7 @@ test("ElevenLabs connection minutes settle speech usage and the end-user ledger 
   const created = await a.voice.create("alice", { discord: grant, brain: "realtime", realtime: { provider: "elevenlabs" }, subject: "ada", bucket: "bot:7" });
   const media = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "media");
   media.handlers.ready();
-  const model = await until(() => realtime.connections[0], "model after hold");
-  assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 1);
+  const model = await until(() => realtime.connections[0], "model after admission");
   // Fixed provider durations, independent of playback and machine wall-clock time.
   const beforeResponseSeconds = 0.1, onCloseSeconds = 0.05;
   model.events.meter?.(beforeResponseSeconds, 0);
@@ -412,14 +409,11 @@ test("ElevenLabs connection minutes settle speech usage and the end-user ledger 
   model.events.meter?.(onCloseSeconds, 0);
   await a.voice.end("alice", created.id);
   const expected = Math.round(realtimeCost("elevenlabs/gemini-3.1-flash-lite", NO_USAGE, beforeResponseSeconds + onCloseSeconds) * 1e6);
-  // Response settlement releases its hold before the close settlement creates and
-  // settles the next one. Zero holds can be transient (only 3333 of 5000 posted).
   // Wait for the final durable ledger amount, not that intermediate empty state.
   const entries = await until(async () => {
     const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
     return entries.reduce((sum, entry) => sum + entry.raw, 0) === expected ? entries : undefined;
   }, "response and close usage settled");
-  await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "holds released");
   const speech = cluster.usage.filter(entry => entry.usage.kind === "speech").map(entry => entry.usage);
   assert.ok(speech.length > 0);
   assert.ok(speech.every(entry => entry.provider === "elevenlabs" && entry.model === "gemini-3.1-flash-lite" && entry.platform && entry.identity?.subject === "ada"));

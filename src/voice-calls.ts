@@ -12,6 +12,7 @@ import { ASK_LIMITS, askAgent, TRANSCRIPT_CHARS, TRANSCRIPT_LINES } from "./voic
 import type { OpenAICalls, Sideband, SidebandEvents } from "./voice/calls/openai.ts";
 import { ASK_AGENT, ASK_FAILED, EMPTY_REPLY, EMPTY_REQUEST, lateFailure, lateReply, LATE_FAILURE, LATE_REPLY, PENDING, realtimeInstructions, STAY_SILENT } from "./voice/calls/prompts.ts";
 import { realtimeCost, realtimePrice, realtimeVoice, type RealtimeUsage } from "./voice/realtime/provider.ts";
+import { rateRefusal, spendRefusal } from "./voice/realtime/brain.ts";
 import { webhookEvent, type EventType, type WebhookEvent } from "./webhooks.ts";
 
 export type VoiceCallOptions = {
@@ -44,17 +45,13 @@ type Row = {
   turns: number; asks: number; audio_seconds: string; cost: number;
   started_at: Date | null; ended_at: Date | null; expires_at: Date;
 };
-type Ending = { reason: string; detail?: string; limit?: "end_user"; endUserReason?: string; bucket?: string };
-type Hold = Awaited<ReturnType<VoiceCredit["hold"]>>;
+type Ending = { reason: string; detail?: string; limit?: "end_user" | "tenant"; endUserReason?: string; bucket?: string };
 type ToolCall = Parameters<SidebandEvents["toolCall"]>[0];
 type Live = {
   sideband: Sideband; platform: boolean; credit?: VoiceCredit; abort: AbortController;
-  holds: Map<string, Promise<Hold>>; done: Set<string>; tools: Set<string>; heard: Set<string>;
+  checkpoints: Map<string, Promise<Ending | undefined>>; posting: Promise<void>; done: Set<string>; tools: Set<string>; heard: Set<string>;
   lines: string[]; seq: number; usage: Set<Promise<void>>;
 };
-
-// The per-response realtime credit hold in voice/realtime/brain.ts:56.
-const HOLD_USD = 0.05;
 
 function view(row: Row): VoiceCall {
   const { id, state, provider, model, voice, agent, turns, asks, options } = row;
@@ -155,14 +152,14 @@ export class VoiceCalls {
         sdp, model, voice, instructions: realtimeInstructions(options.instructions ?? "", { agent: true, group: true }),
         language: options.language, tools: [ASK_AGENT, STAY_SILENT], apiKey: key.apiKey,
       }, {
-        responseStarted: response => afterLive("voice_call_hold_failed", live => this.responseStarted(tenant, id, options, live, response)),
+        responseStarted: response => afterLive("voice_call_credit_failed", live => this.responseStarted(tenant, options, live, response)),
         responseDone: (response, outcome) => afterLive("voice_call_usage_failed", live => {
-          const write = this.responseDone(tenant, id, model, options, live, response, outcome.usage);
-          live.usage.add(write);
-          return write.finally(() => { live.usage.delete(write); }).then(async () => {
-            if (live.platform && !live.abort.signal.aborted && await this.options.tenantCreditExhausted?.(tenant)) {
-              await this.end(tenant, id, { reason: "budget" });
-            }
+          const write = live.posting.then(() => this.responseDone(tenant, id, model, options, live, response, outcome.usage));
+          live.posting = write.then(() => {}, () => {});
+          live.usage.add(live.posting);
+          const pending = live.posting;
+          return write.finally(() => { live.usage.delete(pending); }).then(async ending => {
+            if (ending) await this.end(tenant, id, ending).catch(failure => this.finish(id, { ...ending, detail: detailOf(failure) }));
           });
         }),
         heard: (item, text, seconds) => afterLive("voice_call_utterance_failed", live => this.heard(id, live, item, text, seconds)),
@@ -182,7 +179,7 @@ export class VoiceCalls {
         await this.enqueue(rows[0], "voice.session.started", {}, sql);
         return rows[0];
       });
-      const live: Live = { sideband, platform: key.platform, credit, usage: new Set(), abort: new AbortController(), holds: new Map(), done: new Set(), tools: new Set(), heard: new Set(), lines: [], seq: 0 };
+      const live: Live = { sideband, platform: key.platform, credit, usage: new Set(), abort: new AbortController(), checkpoints: new Map(), posting: Promise.resolve(), done: new Set(), tools: new Set(), heard: new Set(), lines: [], seq: 0 };
       this.live.set(id, live);
       ready.resolve(live);
       this.options.kickWebhooks();
@@ -261,7 +258,7 @@ export class VoiceCalls {
     return this.get(current.tenant, current.id);
   }
 
-  /** The row transition owns the ended event. Each node still releases its own sideband and holds. */
+  /** The row transition owns the ended event. Each node still releases its own sideband. */
   private async finish(id: string, by: Ending, providerClosed = false): Promise<void> {
     const live = this.live.get(id);
     if (live) {
@@ -278,11 +275,7 @@ export class VoiceCalls {
       }
       return rows[0];
     });
-    if (live && this.live.delete(id)) {
-      const holds = [...live.holds.values()];
-      live.holds.clear();
-      await Promise.allSettled(holds.map(async pending => (await pending)?.release()));
-    }
+    if (live) this.live.delete(id);
     if (row) this.options.kickWebhooks();
   }
 
@@ -327,29 +320,32 @@ export class VoiceCalls {
     if (!sql) this.options.kickWebhooks();
   }
 
-  private responseStarted(tenant: string, id: string, options: VoiceCallOptions, live: Live, response: string): void {
-    const credit = live.credit;
-    if (!credit || live.holds.has(response) || live.done.has(response)) return;
-    const bucket = options.bucket ?? DEFAULT_BUCKET;
-    const hold = credit.hold(tenant, options.subject, bucket, HOLD_USD, "voice_realtime", { session: id }).catch(error => {
-      if (error instanceof HttpError && error.status === 402) {
-        const endUserReason = error.details?.reason;
-        const by: Ending = { reason: "budget", limit: "end_user", ...(typeof endUserReason === "string" ? { endUserReason } : {}), bucket };
-        this.background("voice_call_budget_failed", id, this.end(tenant, id, by).catch(failure =>
-          this.finish(id, { ...by, detail: detailOf(failure) })));
-        return undefined;
+  private responseStarted(tenant: string, options: VoiceCallOptions, live: Live, response: string) {
+    if (live.checkpoints.has(response) || live.done.has(response)) return;
+    const check = live.posting.then(async (): Promise<Ending | undefined> => {
+      try { await this.options.admit(tenant); }
+      catch (error) {
+        // A rate or concurrency refusal (any other 429) ends nothing: the credit checks below still decide.
+        if (!rateRefusal(error)) {
+          if (!spendRefusal(error)) throw error;
+          return { reason: "budget", limit: "tenant" };
+        }
       }
-      throw error;
+      if (await this.options.tenantCreditExhausted?.(tenant)) return { reason: "budget", limit: "tenant" };
+      const bucket = options.bucket ?? DEFAULT_BUCKET;
+      const refused = await live.credit?.refusal(tenant, options.subject, bucket);
+      if (refused) return { reason: "budget", limit: "end_user", endUserReason: refused.reason, bucket };
     });
-    live.holds.set(response, hold);
-    this.background("voice_call_hold_failed", id, hold);
+    live.checkpoints.set(response, check);
+    return check.then(() => {});
   }
 
   private async responseDone(tenant: string, id: string, model: string, options: VoiceCallOptions, live: Live, response: string, usage: RealtimeUsage) {
     if (live.done.has(response)) return;
     live.done.add(response);
-    const pending = live.holds.get(response);
-    live.holds.delete(response);
+    const checkpoint = live.checkpoints.get(response);
+    live.checkpoints.delete(response);
+    const now = this.now();
     const costUsd = realtimeCost(`openai/${model}`, usage);
     const { bucket, subject, context, keyScope } = options;
     this.options.record(tenant, {
@@ -360,7 +356,9 @@ export class VoiceCalls {
     // Submit the row update before waiting for the credit operation, so a concurrent end sees the turn.
     const update = this.options.db.query("update voice_calls set turns = turns + 1, cost = cost + $2, updated_at = $3 where id = $1",
       [id, Math.round(costUsd * 1_000_000), new Date(this.now())]);
-    await Promise.all([update, pending?.then(hold => costUsd > 0 ? hold?.settle(costUsd) : hold?.release())]);
+    await Promise.all([update, costUsd > 0 ? live.credit?.debit(tenant, subject, bucket ?? DEFAULT_BUCKET, costUsd,
+      `voice_realtime:${id}:${response}`, { call: "voice_realtime", session: id }, { now }) : undefined]);
+    return checkpoint?.catch(() => undefined);
   }
 
   private async heard(id: string, live: Live, item: string, text: string, seconds: number) {

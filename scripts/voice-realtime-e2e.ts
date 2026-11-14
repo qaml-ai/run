@@ -167,7 +167,7 @@ async function run() {
     }, { apiKey: key ?? "fake" }, events),
     player: () => player, resumeMedia: () => {}, humans: () => speakers, name: speaker => speaker,
     ...(flag("agent") ? { askAgent: async () => { await sleep(400); return "Done: it is booked and you will get a confirmation."; } } : {}),
-    admit: async () => {}, hold: async () => undefined, budget: () => {},
+    admit: async () => {}, refusal: async () => {}, debit: async () => {}, budget: () => {},
     usage: record => { costUsd += record.costUsd; botMs += record.audioSeconds * 1_000; },
     turn: () => {}, heard: () => {},
     spoke: event => {

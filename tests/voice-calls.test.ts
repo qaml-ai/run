@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { UsageRecord } from "../src/client-sessions/state.ts";
 import { DEFAULT_BUCKET } from "../src/end-user-credits.ts";
+import { HttpError } from "../src/http.ts";
 import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type NodeDeps, type RuntimeNode } from "../src/node.ts";
 import { REALTIME_PRICES } from "../src/voice/realtime/provider.ts";
@@ -43,7 +44,7 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
-      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
+      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: process.env.AGENT_HOSTING ?? "process",
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-api-session-secret-with-32-chars!!",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_OPENAI_REALTIME_URL: openai.url,
       AGENT_VOICE_SESSIONS_PER_TENANT: discord ? "1" : "5",
@@ -115,21 +116,21 @@ test("client-held call brokers SDP and exposes the live row with AGENT_VOICE uns
   }
 });
 
-test("responses hold, meter, settle or release, then hang up on a credit refusal", async t => {
+test("responses debit in full, replay once, and finish before a refused checkpoint hangs up", async t => {
   const credit = fakeCredit();
   const f = await fixture(t, { credit: credit.credit });
   const call = await f.live({ context: { team: "test" }, bucket: "bot:7" });
   const push = f.openai.script("call_1");
   push({ type: "response.created", response: { id: "r1" } });
-  await until(() => credit.log.length === 2, "the hold");
-  assert.deepEqual(credit.log[1], ["hold", "user-1", "bot:7", 0.05, "voice_realtime", { session: call.id }]);
+  await until(() => credit.log.length === 2, "the checkpoint");
+  assert.deepEqual(credit.log[1], ["refusal", "user-1", "bot:7"]);
   const usage = { input_token_details: { text_tokens: 100, audio_tokens: 50, cached_tokens_details: { text_tokens: 20 } }, output_token_details: { text_tokens: 10, audio_tokens: 80 } };
   push({ type: "response.done", response: { id: "r1", status: "completed", usage } });
   const price = REALTIME_PRICES[`openai/${call.model}`];
   assert.ok("outputAudio" in price);
   const expected = (80 * price.inputText + 20 * price.cachedText + 50 * price.inputAudio + 10 * price.outputText + 80 * price.outputAudio) / 1_000_000 / 1_000_000;
-  await until(() => credit.log.some(entry => entry[0] === "settle"), "settlement");
-  assert.deepEqual(credit.log[2], ["settle", expected]);
+  await until(() => credit.log.some(entry => entry[0] === "debit"), "settlement");
+  assert.deepEqual(credit.log[2], ["debit", "user-1", "bot:7", expected, `voice_realtime:${call.id}:r1`, { call: "voice_realtime", session: call.id }]);
   assert.equal(f.usage[0].kind, "speech");
   assert.equal(f.usage[0].audioSeconds, 4);
   assert.deepEqual(f.usage[0].identity, { subject: "user-1", context: { team: "test", voiceCall: call.id } });
@@ -138,17 +139,48 @@ test("responses hold, meter, settle or release, then hang up on a credit refusal
     return json.turns === 1 && json;
   }, "the metered row");
   assert.equal(row.costUsd, Math.round(expected * 1_000_000) / 1_000_000);
+  push({ type: "response.done", response: { id: "r1", status: "completed", usage } });
   push({ type: "response.created", response: { id: "r2" } }, { type: "response.done", response: { id: "r2", status: "cancelled" } });
-  await until(() => credit.log.some(entry => entry[0] === "release"), "release for zero cost");
-  credit.refuse.hold = true;
+  await until(() => f.usage.length === 2, "cancelled response accounted");
+  assert.equal(credit.log.filter(entry => entry[0] === "debit").length, 1);
+  credit.refuse.create = true;
   push({ type: "response.created", response: { id: "r3" } });
+  await until(() => credit.log.filter(entry => entry[0] === "refusal").length === 4, "refused checkpoint");
+  assert.deepEqual(f.openai.hangups, []);
+  push({ type: "response.done", response: { id: "r3", status: "completed", usage } });
   const ended = await f.event("voice.session.ended", call.id);
   assert.deepEqual(f.openai.hangups, ["call_1"]);
   assert.equal(ended.reason, "budget");
   assert.equal(ended.limit, "end_user");
   assert.equal(ended.endUserReason, "balance");
   assert.equal(ended.bucket, "bot:7");
+  assert.deepEqual(credit.log.filter(entry => entry[0] === "debit").map(entry => [entry[3], entry[4]]),
+    [[expected, `voice_realtime:${call.id}:r1`], [expected, `voice_realtime:${call.id}:r3`]]);
 });
+
+for (const limit of ["end_user", "tenant"] as const) {
+  test(`a client-held response posts in full before the next ${limit} checkpoint ends the call`, async t => {
+    const credit = fakeCredit(0.000001);
+    let tenantSpent = false, tenantRefused = false;
+    const f = await fixture(t, limit === "end_user" ? { credit: credit.credit } : {
+      credit: undefined,
+      admit: async () => { if (tenantSpent) { tenantRefused = true; throw new HttpError(402, "Out of credit", "SPEND_LIMIT"); } },
+    });
+    const call = await f.live();
+    const push = f.openai.script("call_1");
+    const usage = { output_token_details: { audio_tokens: 625 } };
+    push({ type: "response.created", response: { id: "first" } }, { type: "response.done", response: { id: "first", usage } });
+    await until(() => limit === "end_user" ? credit.balance() < 0 : f.usage.length === 1, "the first response posted");
+    if (limit === "end_user") assert.equal(credit.balance(), 0.000001 - Number(f.usage[0].usage.cost.total));
+    tenantSpent = true;
+    push({ type: "response.created", response: { id: "next" } });
+    await until(() => limit === "end_user" ? credit.log.filter(entry => entry[0] === "refusal").length === 3 : tenantRefused, "the next checkpoint");
+    assert.deepEqual(f.openai.hangups, []);
+    push({ type: "response.done", response: { id: "next", status: "cancelled" } });
+    const event = await f.event("voice.session.ended", call.id);
+    assert.deepEqual([event.reason, event.limit], ["budget", limit]);
+  });
+}
 
 test("ask_agent includes only new transcripts and omits the payer without credit", async t => {
   const submit = fakeSubmit();

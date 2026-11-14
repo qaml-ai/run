@@ -34,11 +34,11 @@ test("an end user's allowance pays first, then their balance; out of both, the t
   const allowance = entries.reduce((total: number, entry: any) => total + entry.allowance, 0);
   const paid = entries.reduce((total: number, entry: any) => total - entry.amount, 0);
   assert.equal(allowance, 250_000, "the allowance is spent first, all of it");
-  assert.equal(paid, 100_000, "the rest from the balance, all of it");
+  assert.equal(paid, (entries.length * 100_000 - 250_000) * 1.25, "the full marked-up remainder");
   const writtenOff = entries.reduce((total: number, entry: any) => total + entry.writtenOff, 0);
-  assert.equal(writtenOff, entries.length * 100_000 - 250_000 - 80_000, "the last call's cost past what was left is written off, at the balance's rate");
+  assert.equal(writtenOff, 0);
   const person = (await r.call("/v1/end-users/person?buckets=builder")).json;
-  assert.equal(person.balance, 0, "spent to nothing, never past it");
+  assert.equal(person.balance, 100_000 - paid);
   assert.equal(person.today.buckets[0].allowanceLeft, 0);
 
   // Nothing left at all: the next run is refused before it starts, with why.
@@ -46,7 +46,7 @@ test("an end user's allowance pays first, then their balance; out of both, the t
   assert.deepEqual([refused.status, refused.json.code, refused.json.reason, refused.json.endUser, refused.json.bucket], [402, "END_USER_CREDIT", "balance", "person", "builder"], refused.text);
 
   // Credit added after a payment lets them go on; the agent's own token cannot pick a bucket with more allowance.
-  await grant(r, "person", 50_000, "pay-2");
+  await grant(r, "person", 100_000, "pay-2");
   assert.equal((await r.call(`/clients/${id}/requests`, { token, body: { id: "own", method: "prompt", params: { text: "x", bucket: "rich" } } })).status, 403);
   assert.equal((await r.call(`/clients/${id}/requests`, { token, body: { id: "conf", method: "configure", params: { bucket: "rich" } } })).status, 403);
   const again = await r.prompt(id, "go on");
@@ -78,7 +78,7 @@ test("a run's own bucket, the agent's bucket and a stateless run's each spend th
   assert.equal((await r.call("/v1/runs?wait=30", { body: { input: "six" } })).status, 200);
 });
 
-test("a long reply stops at the end of its end user's credit, mid-stream, and is not retried", async t => {
+test("an admitted long reply finishes after crossing zero and the next run is refused", async t => {
   let requests = 0, closed = false;
   const chunk = "x".repeat(100);
   const url = await listen(t, async (req, res) => {
@@ -99,22 +99,15 @@ test("a long reply stops at the end of its end user's credit, mid-stream, and is
   await grant(r, "reader", 500_000, "pay");
   const { id } = (await r.call("/v1/agents", { body: { subject: "reader" } })).json;
   const run = await r.prompt(id, "write a lot");
-  const result = run.outcome.result;
-  assert.deepEqual([result.stopped, result.code, result.reason], ["spend_limit", "end_user_credit", "balance"], JSON.stringify(result));
-  assert.equal(requests, 1, "a turn its end user's credit stopped is not retried");
-  await until(() => closed, "the provider's stream to be cut");
+  assert.equal(run.outcome.result.reply.length, 50_000);
+  assert.equal(requests, 1);
+  await until(() => closed, "the provider's stream to finish");
   const [entry] = await usage(r, "reader");
-  // $0.50 at 90 micro-USD a character (2 characters a token) is about 5,500 characters, less the input's estimate. What
-  // the provider streams while the line's credit check is answered is billed too (it was generated): a slow machine's
-  // round trip, at this stream's pace, is a few chunks at most.
-  const slack = 3 * 100 * 90;
-  assert.ok(entry.raw > 300_000 && entry.raw <= 500_000 + slack, `charged ${entry.raw} for what streamed before the line`);
+  assert.ok(entry.raw > 500_000);
+  assert.equal(entry.writtenOff, 0);
   const person = (await r.call("/v1/end-users/reader")).json;
-  assert.ok(person.balance >= -slack, `balance ${person.balance}: at most a few chunks past zero`);
-  assert.equal(person.held, 0);
-  const history = (await r.call(`/v1/agents/${id}/history`)).json;
-  const reply = JSON.stringify(history).match(/x{100,}/)?.[0] ?? "";
-  assert.ok(reply.length > 1_000 && reply.length < 10_000, `what streamed before the cut is kept (${reply.length} characters)`);
+  assert.deepEqual([person.balance, person.held], [500_000 + entry.amount, 0]);
+  assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: "again" } })).status, 402);
 });
 
 test("the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit", async t => {

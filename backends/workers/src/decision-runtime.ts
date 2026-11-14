@@ -72,7 +72,7 @@ export class DecisionRuntime {
   }
   async available() { const context = await this.options.context(); return this.decider.available(context.tenant, context.keyScope); }
   async run(input: Record<string, unknown>, signal: AbortSignal, override: Partial<DecisionContext> = {}, api?: ToolExecutionApi) {
-    const context = { ...await this.options.context(api), ...override };
+    const context = { ...await this.options.context(api), callId: crypto.randomUUID(), startedAt: Date.now(), ...override };
     await this.options.admit?.(context);
     const request = decisionRequest(input);
     const decided: Decided = await this.decider.decide(context, request, signal);
@@ -87,7 +87,7 @@ export class DecisionRuntime {
     const judge = toolJudge(this.decider, {
       ...context,
       budget: async () => context.budget,
-      hold: async () => { await this.options.admit?.(context); return undefined; },
+      admitCredit: async () => { await this.options.admit?.(context); return undefined; },
       record: usage => { records.push(usage); },
     });
     const result = await judge(input, signal);

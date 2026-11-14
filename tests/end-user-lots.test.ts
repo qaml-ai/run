@@ -20,16 +20,14 @@ async function fixture() {
   await credits.setSettings("t", { enabled: true, allowances: { "*": 0 } });
   return { db, credits };
 }
-/** Spend `raw` (paid: no allowance) for `bucket`, as a call does: hold, then settle at its cost. */
+/** Spend `raw` (paid: no allowance) for `bucket`, as a call does: admit, then debit its cost. */
 const spend = async (credits: EndUserCredits, bucket: string, raw: number, now = Date.now()) => {
-  const id = randomUUID();
-  const reserved = await credits.reserve("t", "u", bucket, { id, want: raw, min: 1 }, now);
-  assert.ok(reserved?.hold, JSON.stringify(reserved));
-  await credits.settleHold("t", "u", bucket, id, raw, `call:${id}`, {}, now);
+  assert.equal(await credits.refusal("t", "u", bucket, { now }), undefined);
+  await credits.debit("t", "u", bucket, raw / USD, `call:${randomUUID()}`, {}, { now });
 };
 const lots = async (credits: EndUserCredits, now = Date.now()) => (await credits.get("t", "u", [], now)).lots.map(lot => [lot.key, lot.remaining, lot.expiresAt]);
 /** Every lot's remaining never passes the balance (above zero), whatever happened. */
-async function holds(db: Db) {
+async function checkLotBalances(db: Db) {
   const { rows: [row] } = await db.query(`select u.balance, coalesce(sum(l.remaining), 0)::bigint as lots from end_users u
     left join end_user_lots l on l.tenant = u.tenant and l.end_user = u.id and l.remaining > 0 where u.tenant = 't' and u.id = 'u' group by u.balance`);
   assert.ok(Number(row.lots) <= Math.max(0, Number(row.balance)), `lots ${row.lots} past the balance ${row.balance}`);
@@ -47,7 +45,7 @@ test("a month's credit is a lot every bucket spends first, splitting into the cr
   await spend(credits, "bot:1", 2 * USD);
   assert.deepEqual(await lots(credits), [[null, 4 * USD, null]], "the month spent first, the rest from the pack");
   assert.equal((await credits.get("t", "u")).balance, 4 * USD);
-  await holds(db);
+  await checkLotBalances(db);
   for (const bad of [{ expiresAt: Date.now() - 1 }, { expiresAt: Date.now() + 401 * DAY }, { expiresAt: "soon" }]) {
     await assert.rejects(credits.post("t", "u", { kind: "grant", amount: USD, key: `bad:${JSON.stringify(bad)}`, ...bad }), (error: any) => error.status === 400, JSON.stringify(bad));
   }
@@ -74,31 +72,27 @@ test("at its time a lot's unspent part expires: an expiry entry, the balance dow
   assert.equal(days.reduce((total, day) => total + day.expired, 0), 2 * USD);
   const { rows } = await db.query("select body from webhook_deliveries where body->>'type' = 'end_user.credit.expired'");
   assert.deepEqual(rows.map(row => [row.body.data.amount, row.body.data.metadata.lot, row.body.data.balance]), [[-2 * USD, "plan:1", USD]]);
-  await holds(db);
+  await checkLotBalances(db);
 });
 
-test("a hold open at expiry settles against the lot it reserved; what it leaves expires at the next lock", async () => {
-  const { db, credits } = await fixture();
-  const now = Date.now(), end = now + 60_000;
-  await credits.post("t", "u", { kind: "grant", amount: 2 * USD, key: "pack-1" });
-  await credits.post("t", "u", { kind: "grant", amount: USD, key: "plan:1", expiresAt: end });
-  // A call holds $0.80 before the month ends: from the month's lot.
-  const id = randomUUID();
-  const reserved = await credits.reserve("t", "u", "bot:1", { id, want: 800_000, min: 1 }, now);
-  assert.equal(reserved?.hold?.paid, 800_000);
-  // The month ends while it runs: only the $0.20 nobody holds expires.
-  assert.equal((await credits.get("t", "u", [], end + 1)).balance, 2_800_000);
-  // A call after its end can't take what is left of it: only the pack's $2 is there for it.
-  const late = await credits.reserve("t", "u", "bot:2", { id: randomUUID(), want: 5 * USD, min: 1 }, end + 2);
-  assert.equal(late?.hold?.paid, 2 * USD);
-  await credits.release(late!.hold!.id);
-  // The call settles at $0.50, from the month's lot; the $0.30 it held and didn't spend expires at the next lock.
-  await credits.settleHold("t", "u", "bot:1", id, 500_000, `call:${id}`, {}, end + 3);
-  const after = await credits.get("t", "u", [], end + 4);
-  assert.deepEqual([after.balance, after.lots.map(lot => [lot.key, lot.remaining])], [2 * USD, [[null, 2 * USD]]], "the pack untouched");
-  const expired = (await credits.ledger("t", "u", { kinds: ["expiry"] })).entries.map(entry => entry.amount).sort((a, b) => a - b);
-  assert.deepEqual(expired, [-300_000, -200_000]);
-  await holds(db);
+test("an expiring lot stops funding admission at its expiry", async () => {
+  const { credits } = await fixture();
+  const now = Date.now(), expiresAt = now + 1_000;
+  await credits.post("t", "u", { kind: "grant", amount: USD, key: "lot", expiresAt });
+  assert.equal(await credits.refusal("t", "u", "b", { now }), undefined);
+  assert.equal((await credits.refusal("t", "u", "b", { now: expiresAt }))?.reason, "balance");
+  assert.equal((await credits.get("t", "u", [], expiresAt)).balance, 0);
+});
+
+test("a debit after expiry uses the original usage day and leaves the expired lot untouched", async () => {
+  const { credits } = await fixture();
+  const began = Date.now(), expiresAt = began + DAY;
+  await credits.post("t", "u", { kind: "grant", amount: USD, key: "lot", expiresAt });
+  assert.equal(await credits.refusal("t", "u", "b", { now: began }), undefined);
+  await credits.debit("t", "u", "b", 0.5, "call:midnight", { usageDay: utcDay(began) }, { now: expiresAt });
+  const [usage, expiry] = (await credits.ledger("t", "u", { kinds: ["usage", "expiry"] })).entries;
+  assert.deepEqual([usage.amount, usage.balanceAfter, usage.metadata.day], [-500_000, -500_000, utcDay(began)]);
+  assert.equal(expiry.amount, -USD);
 });
 
 test("refunds: a pack's takes credit that never expires first; one naming the month's grant takes its lot", async () => {
@@ -114,14 +108,15 @@ test("refunds: a pack's takes credit that never expires first; one naming the mo
   await credits.post("t", "u", { kind: "grant", amount: USD, key: "plan:2", expiresAt: end });
   await credits.post("t", "u", { kind: "spend", amount: 1_500_000, key: "footer" });
   assert.deepEqual(await lots(credits), [[null, 2_500_000, null]]);
-  await holds(db);
+  await checkLotBalances(db);
 });
 
 test("a debt is repaid before a month's credit counts; usage never takes lots past the balance", async () => {
   const { db, credits } = await fixture();
   const end = Date.now() + 30 * DAY;
-  // Refund debt (a purchase refunded after it was spent): the balance below zero.
-  await credits.post("t", "u", { kind: "adjustment", amount: -USD, key: "debt" });
+  // A metered call can leave a negative balance.
+  await credits.post("t", "u", { kind: "grant", amount: 1, key: "tiny" });
+  await spend(credits, "b", USD + 1);
   await credits.post("t", "u", { kind: "grant", amount: 3 * USD, key: "plan:1", expiresAt: end });
   assert.deepEqual(await lots(credits), [["plan:1", 2 * USD, end]], "$1 of the month repaid the debt");
   // Concurrent calls from many bots: every lot stays within the balance, and the month goes first.
@@ -129,7 +124,7 @@ test("a debt is repaid before a month's credit counts; usage never takes lots pa
   await Promise.all(Array.from({ length: 12 }, (_, i) => spend(credits, `bot:${i}`, 200_000)));
   assert.equal((await credits.get("t", "u")).balance, 600_000);
   assert.deepEqual(await lots(credits), [[null, 600_000, null]]);
-  await holds(db);
+  await checkLotBalances(db);
 });
 
 test("credit granted before lots can be marked to expire, once per key; a sweep expires lots of people who do nothing", async () => {
@@ -149,7 +144,7 @@ test("credit granted before lots can be marked to expire, once per key; a sweep 
   assert.equal(await credits.expireDue(100, end + 1), 1);
   assert.equal(Number((await db.query("select balance from end_users where tenant = 't' and id = 'u'")).rows[0].balance), 5 * USD);
   assert.equal(await credits.expireDue(100, end + 2), 0);
-  await holds(db);
+  await checkLotBalances(db);
   // A marked lot reads, and is refunded by name, by the key it was marked with.
   await credits.post("t", "u", { kind: "grant", amount: USD, key: "plan:2" });
   await credits.markLot("t", "u", { key: "plan:2", amount: USD, expiresAt: end + DAY });

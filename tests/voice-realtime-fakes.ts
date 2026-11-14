@@ -1,3 +1,4 @@
+import { HttpError } from "../src/http.ts";
 import type { Playback, Player } from "../src/voice-speech.ts";
 import { Floor, type AddressingPolicy } from "../src/voice/turns/floor.ts";
 import { RealtimeBrain, type BrainHooks, type BrainOptions } from "../src/voice/realtime/brain.ts";
@@ -120,7 +121,7 @@ export function fakePlayer(everyMs = 2) {
 }
 
 /** A brain over a fake provider and player, with hooks recording what it reports. */
-export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; tenantCreditExhausted?: BrainHooks["tenantCreditExhausted"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean; admitError?: unknown; language?: string; synthesize?: BrainHooks["synthesize"]; failed?: BrainHooks["failed"]; speaking?: BrainHooks["speaking"] } = {}) {
+export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; refusal?: BrainHooks["refusal"]; debit?: BrainHooks["debit"]; tenantCreditExhausted?: BrainHooks["tenantCreditExhausted"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean; admitError?: unknown; language?: string; synthesize?: BrainHooks["synthesize"]; failed?: BrainHooks["failed"]; speaking?: BrainHooks["speaking"] } = {}) {
   const realtime = fakeRealtimeProvider();
   const playback = fakePlayer();
   const usage: Parameters<BrainHooks["usage"]>[0][] = [];
@@ -143,9 +144,10 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
     player: () => playback.player, resumeMedia: () => playback.resume(), humans: () => state.humans, name: speaker => names[speaker] ?? speaker,
     ...(options.askAgent ? { askAgent: options.askAgent } : {}),
     ...(options.synthesize ? { synthesize: options.synthesize } : {}), ...(options.speaking ? { speaking: options.speaking } : {}),
-    admit: async () => { if (options.admitError) throw options.admitError; if (options.refuse) throw Object.assign(new Error("No credit"), { status: 402 }); },
+    admit: async () => { if (options.admitError) throw options.admitError; if (options.refuse) throw new HttpError(402, "No credit"); },
     tenantCreditExhausted: options.tenantCreditExhausted,
-    hold: options.hold ?? (async () => undefined),
+    refusal: options.refusal ?? (async () => {}),
+    debit: options.debit ?? (async () => {}),
     budget: limit => { budget.push(limit); },
     usage: record => { usage.push(record); }, turn: turn => { turns.push(turn); }, heard: entry => { heard.push(entry); }, spoke: event => { spoke.push(event); },
     failed: options.failed ?? (() => {}), log: (type, fields) => { logs.push({ type, ...(fields ? { fields } : {}) }); },
@@ -161,7 +163,10 @@ export async function utter(brain: RealtimeBrain, speaker: string, ms: number, o
     brain.pcm(speaker, tone(20));
     if (options.frameEveryMs) await sleep(options.frameEveryMs);
   }
-  if (!options.open) brain.cut(cut(speaker, startedAt, ms));
+  if (!options.open) {
+    brain.cut(cut(speaker, startedAt, ms));
+    await sleep(0); // Let the in-memory admission and any queued debit finish.
+  }
 }
 export function cut(speaker: string, startedAt: number, ms: number): Cut {
   return { speaker, packets: [], seconds: ms / 1_000, startedAt, endedAt: Date.now(), ended: "silence", live: true };

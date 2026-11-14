@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Outbound } from "../src/outbound.ts";
+import { fakeCredit } from "./voice-calls-fakes.ts";
 import { HttpError } from "../src/http.ts";
 import { Synthesizer, type SpeechProvider } from "../src/speech.ts";
 import { discordGrant, sleep, until, voiceCluster } from "./voice-fakes.ts";
@@ -98,6 +99,21 @@ test("say: the words play in the call's voice by text to speech, billed as speec
   assert.match(cluster.realtime.connections[0].of("respond")[0].instructions!, /Say hi to Ana\.$/);
   await assert.rejects(a.voice.say("alice", created.id, { text: "  " }), (error: HttpError) => error.status === 400);
   await assert.rejects(a.voice.say("alice", created.id, { text: "x".repeat(4_001) }), (error: HttpError) => error.status === 400);
+});
+
+test("say debits the seconds made in full and refuses the next request", async t => {
+  const credit = fakeCredit(0.000001);
+  const { cluster, a, created, speech } = await liveSession(t, { credit: credit.credit });
+  await a.voice.say("alice", created.id, { text: "Welcome to the stream everyone" });
+  const said = await until(async () => (await cluster.events("voice.speech.ended"))[0], "the speech played");
+  assert.equal(said.data.reason, "done");
+  await until(() => credit.balance() < 0, "the cost posted");
+  const debit = credit.log.find(entry => entry[0] === "debit");
+  assert.equal(debit?.[3], speech.synthesizer.cost(0.25));
+  await a.voice.say("alice", created.id, { text: "This will be refused" });
+  const ended = await until(async () => (await cluster.events("voice.session.ended"))[0], "the end");
+  assert.deepEqual([ended.data.reason, ended.data.limit], ["budget", "end_user"]);
+  assert.equal(speech.asked.length, 1);
 });
 
 test("audio: an upload and a URL play in turn as voice.audio.* events; state, controls; the session counts what played", async t => {

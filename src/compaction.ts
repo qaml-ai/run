@@ -300,18 +300,18 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
     const apiKey = options.apiKey;
     // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
-    // What the request's context comes to, as the host estimates it: its end user's hold, and the input billed for a request cut short.
+    // What the request's context comes to, as the host estimates it: the input billed when provider usage is missing.
     const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
       ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
     // The prefix the previous response read from or wrote to the provider's cache is likely read from it now, at its rate.
     const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
     const inputTokens = input(), cachedTokens = Math.min(inputTokens, (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
     const estimate = { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
-    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, (sink, halt, affordable) => {
-      const { signal, cut, done } = gatedSignal(gate, options.signal ? AbortSignal.any([options.signal, halt]) : halt);
+    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, sink => {
+      const { signal, cut, done } = gatedSignal(gate, options.signal);
       let requested = false;
       return watchedStream(model, (watched, activity) => {
-        const [target, callOptions] = authorize(model, affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { ...options, maxTokens: affordable } : options, credentials, sink, modelHeaders?.(), outbound);
+        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
         const observe = callOptions.onProviderStreamEvent;
         requested = true;
         const stream = streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });

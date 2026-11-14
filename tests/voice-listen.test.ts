@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fakeCredit } from "./voice-calls-fakes.ts";
 import { HttpError } from "../src/http.ts";
 import { AGENT, discordGrant, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
 
@@ -128,6 +129,25 @@ test("a listening session refused by a rate or concurrency limit (any other 429)
   const [utterance] = await until(async () => { const found = await events("voice.utterance"); return found.length ? found : undefined; }, "the next utterance");
   assert.equal(utterance.data.brain, "listen");
   assert.equal(transcription.calls.length, 1);
+});
+
+test("listen-only debits the full transcription cost and refuses the next utterance", async t => {
+  const credit = fakeCredit(0.000001);
+  const { node, fake, transcription, events } = await voiceCluster(t, { credit: credit.credit });
+  const a = await node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "listen", subject: "ada", silenceMs: 200 });
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.others = [ANA];
+  connection.handlers.ready();
+  speak(connection, ANA, 0.6);
+  const utterance = await until(async () => (await events("voice.utterance"))[0], "the utterance");
+  assert.equal(credit.balance(), 0.000001 - utterance.data.costUsd);
+  assert.ok(credit.balance() < 0);
+  speak(connection, ANA, 0.6);
+  const ended = await until(async () => (await events("voice.session.ended"))[0], "the end");
+  assert.deepEqual([ended.data.reason, ended.data.limit], ["budget", "end_user"]);
+  assert.equal(transcription.calls.length, 1);
+  assert.equal((await a.voice.get("alice", created.id)).state, "ended");
 });
 
 test("camel-bots' Discord joins as it sends them: a talking bot's realtime session, a listening bot's (and its fallback without brain)", async t => {

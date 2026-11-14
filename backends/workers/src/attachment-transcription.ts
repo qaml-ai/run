@@ -16,9 +16,8 @@ import {
 import { database, transaction, withSql } from "./postgres.ts";
 import {
   EndUserCredits,
-  MICROS,
   creditError,
-  lastCallMin,
+  utcDay,
 } from "./end-user-credits.ts";
 import {
   readAgentSpendLimit,
@@ -46,9 +45,10 @@ export type AttachmentAudioScope = {
 };
 type Env = MediaBindings & KeyEnv;
 type Scope = AttachmentAudioScope & { callId: string; startedAt: number };
-type CreditReservation = { id: string; endUser: string; bucket: string };
-type CreditService = Pick<EndUserCredits, "reserve" | "settleHold" | "release">;
-type Receipt = { scope: Scope; usage: UsageRecord; hold?: CreditReservation };
+// Old receipts keep their original debit key after a deployment.
+type LegacyCreditReceipt = { id: string; endUser: string; bucket: string };
+type CreditService = Pick<EndUserCredits, "refusal" | "debit">;
+type Receipt = { scope: Scope; usage: UsageRecord; debitEndUser?: string; hold?: LegacyCreditReceipt };
 type Cached = {
   fingerprint: string;
   state: "pending" | "complete";
@@ -110,22 +110,13 @@ export async function flushAttachmentTranscriptions(
   for (const [key, receipt] of receipts) {
     if (record) await record(receipt);
     else await recordAudio(env, services!, receipt);
-    if (receipt.hold) {
+    const { scope, usage, hold } = receipt;
+    const endUser = hold?.endUser ?? receipt.debitEndUser;
+    if (endUser) {
       const credit = credits ?? new EndUserCredits(database(env));
-      const { id, endUser, bucket } = receipt.hold;
-      await credit.settleHold(
-        receipt.scope.tenant,
-        endUser,
-        bucket,
-        id,
-        Math.round(receipt.usage.usage.cost.total * MICROS),
-        `transcription:${id}`,
-        {
-          call: "transcription",
-          agent: receipt.scope.agent,
-          requestId: receipt.scope.requestId,
-        },
-      );
+      await credit.debit(scope.tenant, endUser, hold?.bucket ?? scope.bucket ?? "default",
+        usage.usage.cost.total, `transcription:${hold?.id ?? scope.callId}`,
+        { call: "transcription", agent: scope.agent, requestId: scope.requestId, usageDay: utcDay(scope.startedAt) });
     }
     await storage.delete(key);
   }
@@ -306,100 +297,66 @@ export async function transcribeAttachments(
   const credits =
     host.credits ??
     (scope.identity?.subject ? new EndUserCredits(database(env)) : undefined);
-  const holds = new Map<number, CreditReservation>();
-  try {
-    // Reserve every file before sending any. The deterministic IDs survive a
-    // restart; a completed receipt owns its reservation until settleHold succeeds.
-    if (credits && scope.identity?.subject)
-      for (const [position, item] of audio.entries()) {
-        const hash = Array.from(
-          new Uint8Array(
-            await crypto.subtle.digest(
-              "SHA-256",
-              new TextEncoder().encode(
-                JSON.stringify([
-                  scope.tenant,
-                  scope.agent,
-                  scope.requestId,
-                  item.index,
-                ]),
-              ),
-            ),
-          ),
-          (byte) => byte.toString(16).padStart(2, "0"),
-        ).join("");
-        const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
-        const bucket = scope.bucket ?? "default",
-          endUser = scope.identity.subject;
-        const want = Math.ceil(transcriber.cost(item.header.seconds) * MICROS);
-        const reserved = await credits.reserve(scope.tenant, endUser, bucket, {
-          id,
-          want,
-          min: position === audio.length - 1 ? lastCallMin(want) : want,
-        });
-        if (reserved?.refused) throw creditError(reserved.refused);
-        if (reserved?.hold) holds.set(item.index, { id, endUser, bucket });
+  for (const item of audio) {
+    const { index, cacheKey, fingerprint, header } = item;
+    const call = {
+      ...scope,
+      callId: `${scope.requestId}:attachment:${index}`,
+      startedAt: Date.now(),
+    };
+    try {
+      if (host.admit) await host.admit();
+      else {
+        await admitAuxiliaryUsage(env, scope);
       }
-    for (const item of audio) {
-      const { index, cacheKey, fingerprint, header } = item;
-      const call = {
-        ...scope,
-        callId: `${scope.requestId}:attachment:${index}`,
-        startedAt: Date.now(),
-      };
+      if (credits && scope.identity?.subject) {
+        const refused = await credits.refusal(scope.tenant, scope.identity.subject, scope.bucket ?? "default", { now: call.startedAt });
+        if (refused) throw creditError(refused);
+      }
+      const bytes = await read(files[index]);
+      await storage.put(cacheKey, { fingerprint, state: "pending" });
+      let made;
       try {
-        if (host.admit) await host.admit();
-        else {
-          await admitAuxiliaryUsage(env, scope);
-        }
-        const bytes = await read(files[index]);
-        await storage.put(cacheKey, { fingerprint, state: "pending" });
-        let made;
-        try {
-          made = await transcriber.transcribe(
-            scope,
-            { bytes, header },
-            {},
-            AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000),
-          );
-        } catch (error) {
-          const saved = {
-            status: errorStatus(error, 500),
-            message: error instanceof Error ? error.message : String(error),
-            code: (error as { code?: string }).code ?? "TRANSCRIPTION_FAILED",
-          };
-          await storage.put(cacheKey, {
-            fingerprint,
-            state: "complete",
-            ...(files[index].transcribe || saved.status === 402
-              ? { error: saved }
-              : { untranscribed: saved.message.slice(0, 300) }),
-          });
-          throw error;
-        }
-        await storage.transaction(async (tx) => {
-          await tx.put(cacheKey, {
-            fingerprint,
-            state: "complete",
-            transcript: made.transcript,
-          });
-          await tx.put(`transcription-billing:${call.callId}`, {
-            scope: call,
-            usage: made.usage,
-            ...(holds.has(index) ? { hold: holds.get(index) } : {}),
-          });
-        });
-        holds.delete(index);
-        plain[index] = { ...plain[index], transcript: made.transcript };
-        // Leave a receipt in place if settling fails. A retry reuses its transcript.
-        await flushAttachmentTranscriptions(env, storage, host.record, credits);
+        made = await transcriber.transcribe(
+          scope,
+          { bytes, header },
+          {},
+          AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000),
+        );
       } catch (error) {
-        if (plain[index].transcript) throw error;
-        failed(index, error);
+        const saved = {
+          status: errorStatus(error, 500),
+          message: error instanceof Error ? error.message : String(error),
+          code: (error as { code?: string }).code ?? "TRANSCRIPTION_FAILED",
+        };
+        await storage.put(cacheKey, {
+          fingerprint,
+          state: "complete",
+          ...(files[index].transcribe || saved.status === 402
+            ? { error: saved }
+            : { untranscribed: saved.message.slice(0, 300) }),
+        });
+        throw error;
       }
+      await storage.transaction(async (tx) => {
+        await tx.put(cacheKey, {
+          fingerprint,
+          state: "complete",
+          transcript: made.transcript,
+        });
+        await tx.put(`transcription-billing:${call.callId}`, {
+          scope: call,
+          usage: made.usage,
+          debitEndUser: call.identity?.subject,
+        });
+      });
+      plain[index] = { ...plain[index], transcript: made.transcript };
+      // Leave a receipt in place if settling fails. A retry reuses its transcript.
+      await flushAttachmentTranscriptions(env, storage, host.record, credits);
+    } catch (error) {
+      if (plain[index].transcript) throw error;
+      failed(index, error);
     }
-  } finally {
-    for (const hold of holds.values()) await credits!.release(hold.id);
   }
   return plain;
 }
