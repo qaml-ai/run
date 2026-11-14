@@ -29,10 +29,9 @@ import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSp
 import { needsContainer } from "./driver.ts";
 import { JOB_LEASE_MS, prepareRepo, openJobRepo, renewJobRepo, releaseJobRepo, finishJobRepo, type RepoDispatch } from "./repo.ts";
 import { HostSyncStore } from "./host-sync-store.ts";
-import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
+// MONEY: use the shared provider for host job charges.
+import { HOST_POOL_PRICES, HOST_POOLS, HOSTS_PROVIDER, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
-/** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
-export const HOSTS_PROVIDER = "camelrun-hosts";
 /** A host not heard from in this long takes no new job. */
 const HOST_STALE_MS = 30_000;
 /** A waiting job not heard from in this long has stopped waiting (its object was evicted, say). */

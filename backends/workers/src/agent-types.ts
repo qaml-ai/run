@@ -10,6 +10,7 @@ import type { MediaBindings } from "./media-api.ts";
 import type { KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
+import type { UsagePollerBinding } from "./camelfs/usage-poller.ts";
 import type { CamelAgent } from "./agent.ts";
 
 export type Config = {
@@ -77,7 +78,8 @@ export interface Env
     AccountEnv,
     ComputerEnv,
     MediaBindings,
-    AdminEnv {
+    AdminEnv,
+    UsagePollerBinding {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;

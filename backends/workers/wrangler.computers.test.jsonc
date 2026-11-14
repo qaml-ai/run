@@ -16,6 +16,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -85,7 +86,8 @@
         "WorkflowResults"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] }
   ],
   "hyperdrive": [
     {
