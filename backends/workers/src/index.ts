@@ -112,8 +112,6 @@ export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
-export { JobHost, JobHostRegistry, HostJob } from "./jobs/hosts.ts";
-import { HOST_NAME, enrollHost, jobHostRoutes, scalerRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
@@ -216,9 +214,6 @@ function httpFailure(error: unknown, env: Env): Response {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Job hosts (jobs/hosts.ts), where they are configured: elsewhere these paths are unknown. A host enrolls with an
-    // attestation for a credential bound to the host id it proves, then dials out with it (its socket's first message).
-    const hosts = env as unknown as JobHostsEnv;
     const hostPath = new URL(request.url).pathname;
     if (hostPath === "/v1/internal/camelfs/notify") {
       try { return await handleCamelfsNotify(request, env as unknown as NotifyEnv); }
@@ -227,19 +222,6 @@ const worker = {
     if (hostPath === "/v1/internal/camelfs/smoke" && !tierConfigured(env as RepoEnv)) return new Response(null, { status: 404 });
     const retired = retiredVolumes(hostPath);
     if (retired) return publicPageHeaders(request, corsResponse(request, retired));
-    if (hosts.JOB_HOST_ATTESTORS && hosts.JOB_HOSTS && hosts.JOB_HOST_REGISTRY && hostPath.startsWith("/v1/internal/job-hosts/")) {
-      if (hostPath === "/v1/internal/job-hosts/connect") {
-        const name = new URL(request.url).searchParams.get("host") ?? "";
-        if (!HOST_NAME.test(name)) return new Response("Invalid host name", { status: 400 });
-        return hosts.JOB_HOSTS.getByName(name).fetch(request);
-      }
-      if (hostPath === "/v1/internal/job-hosts/enroll" && request.method === "POST") return enrollHost(request, hosts);
-      const scaled = await scalerRoutes(request, hosts);
-      if (scaled) return scaled;
-      return new Response("Not found", { status: 404 });
-    }
-    if (hosts.JOB_HOST_REGISTRY && (env as { TEST_MODE?: string }).TEST_MODE === "1" && new URL(request.url).pathname === "/__test/job-hosts")
-      return Response.json(await hosts.JOB_HOST_REGISTRY.getByName("hosts").list());
     if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
       try {
         const result=await handleHook(request,request.headers.get('cf-connecting-ip')??'unknown',()=>workerTriggers(env));
@@ -412,8 +394,6 @@ const worker = {
         if (path === "/v1/internal/camelfs/pilot-reset") return handlePilotReset(request, env as never, auth);
         const workflows = await workflowRoutes(request, env as unknown as WorkflowEnv & { AGENT_WORKFLOW_TENANTS?: string }, auth.tenantId);
         if (workflows) return workflows;
-        const jobHosts = await jobHostRoutes(request, env as unknown as JobHostsEnv & { ADMIN_TENANTS?: string }, auth);
-        if (jobHosts) return jobHosts;
         const money = await moneyRoutes(request, env, auth, ctx);
         if (money) return money;
         const admin = await handleAdminRequest(request, env, auth);

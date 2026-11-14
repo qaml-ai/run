@@ -1,5 +1,7 @@
 # camelFS v0: the limitations ledger
 
+The Workers job-host plane discussed here was removed. See [camel-fs compute](camel-fs-compute.md).
+
 Miguel, 2026-11-12: "document every limitation or shortcoming or slowness that we encounter for this V0 … on V1 we
 address all of these." This is that list, one entry per limitation, kept current as Prototype v0
 ([camel-fs.md](camel-fs.md) §4) is built and used. Every entry has an id, the area it lives in (`daemon`
