@@ -16,9 +16,7 @@ const { RepoDO } = await import('../src/repos/repo-do.ts');
 const { TenantRepos } = await import('../src/repos/tenant-repos.ts');
 const { commitChanges, setRefToVersion, branch, advanceRef } = await import('../src/repos/write.ts');
 const { prepareRepo, finishJobRepo, renewJobRepo, releaseJobRepo } = await import('../src/jobs/repo.ts');
-const { WorkflowJobs } = await import('../src/workflow-jobs.ts');
 const { jobSpec, JobSpecError } = await import('../src/jobs/job.ts');
-const { jobDriver } = await import('../src/jobs/driver.ts');
 const { mergeRefs } = await import('../src/repos/merge.ts');
 const { createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
 hooks.deregister();
@@ -92,22 +90,11 @@ test('recovery renews the persisted fence; takeover fails visibly and preserves 
   assert.equal(result.exitCode, 9); assert.equal(result.camelfs.checkpointError, `cas: repo:409:fenced:{}`);
   assert.equal((await ctx.repo.ref('job/attempt'))?.version, saved.expect);
 });
-test('workflow repo at records cleanup before dispatch and shares target validation', async t => {
-  const f = fixture(t), ctx = await f.create(), values = new Map();
-  const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { put: async (k: string,v: unknown) => values.set(k,v) } };
-  const jobs: any = new WorkflowJobs(f.env, host);
-  const {spec} = await jobs.jobSpec('repo-at', { at: {repo:ctx.repoId,ref:'main'}, command:'true',timeoutSeconds:30 });
-  assert.deepEqual(spec.repo,{tenant:'t',repo:ctx.repoId,ref:'main',owner:'workflow:wf_one'});
-  assert.equal(values.get(`workflow-repo:${ctx.repoId}`),true);
-  await assert.rejects(jobs.jobSpec('invalid',{at:{repo:ctx.repoId,ref:'main',version:'a'.repeat(40)},command:'true',timeoutSeconds:30}), /not both/);
-});
-test('repo specs validate tenant, owner, ref/version exclusion, and containers refuse repos', async () => {
+test('repo specs validate tenant, owner, ref/version exclusion', async () => {
   const spec = input('repo_1'); assert.equal(jobSpec(spec).repo?.repo, 'repo_1');
   for (const extra of [{ repo: '' }, { owner: 'host:x' }, { version: 'bad' }, { version: 'a'.repeat(40), ref: 'main' }, { tenant: 'other' }]) assert.throws(() => jobSpec({ ...spec, repo: { ...spec.repo, ...extra } }), JobSpecError);
   assert.throws(() => jobSpec({ ...spec, files: {} }), JobSpecError);
   assert.throws(() => jobSpec({ ...spec, volume: { tenant: 't', volume: 'v', snapshot: 's' } }), JobSpecError);
-  const found = jobDriver({ COMPUTER_CONTAINERS: {} } as never); assert.ok(found.ok);
-  await assert.rejects(found.driver.run(spec), /repo needs camelFS/);
 });
 
 test('a stale mounted version becomes a bounded checkpoint error', async t => {
@@ -120,28 +107,4 @@ test('a stale mounted version becomes a bounded checkpoint error', async t => {
   assert.ok(result.camelfs.checkpointError.length <= 300);
   assert.equal(result.camelfs.version, undefined);
   assert.equal((await ctx.repo.ref('job/attempt'))?.version, saved.expect);
-});
-test('inline workflow files are committed on the precreated job branch and reused', async t => {
-  const f = fixture(t), values = new Map(), host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async (k: string) => values.get(k), put: async (k: string,v: any) => values.set(k,v) } };
-  const jobs: any = new WorkflowJobs(f.env, host);
-  const args = { files: { 'hello.txt': 'hello' }, command: 'cat hello.txt', timeoutSeconds: 30, commit: true };
-  const { spec } = await jobs.jobSpec('inline', args);
-  assert.equal(spec.files, undefined); assert.equal(spec.repo.ref, 'job/inline');
-  assert.equal(spec.repo.owner, 'workflow:wf_one');
-  const ctx = await repoContext(f.env, 't', spec.repo.repo), head = await ctx.repo.ref('job/inline');
-  assert.ok(head); assert.equal((await statPaths(ctx, head.tree, ['hello.txt']))['hello.txt']?.size, 5);
-  const saved = await prepareRepo(ctx, spec, 'h', measure);
-  assert.equal(saved.expect, head.version);
-  assert.deepEqual((await jobs.jobSpec('inline', args)).spec.repo, spec.repo);
-});
-
-test('inline workflow files surface a missing main instead of creating it', async t => {
-  const f = fixture(t), ctx = await f.create({ key: 'workflow:wf_one' });
-  const main = await ctx.repo.ref('main'); assert.ok(main);
-  await ctx.repo.deleteRef('main', main.version);
-  const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async () => undefined, put: async (k: string) => { if (!k.startsWith('workflow-repo:')) assert.fail('failed preparation must not be recorded'); } } };
-  const jobs: any = new WorkflowJobs(f.env, host);
-  await assert.rejects(jobs.jobSpec('missing-main', { files: { 'hello.txt': 'hello' }, command: 'true', timeoutSeconds: 30 }), err('no_ref'));
-  assert.equal(await ctx.repo.ref('main'), null);
-  assert.equal(await ctx.repo.ref('job/missing-main'), null);
 });

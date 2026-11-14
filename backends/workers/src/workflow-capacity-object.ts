@@ -20,8 +20,8 @@ export class WorkflowCapacity extends DurableObject<Env> {
     this.ledger = new CapacityLedger(ctx.storage.sql, write => ctx.storage.transactionSync(write));
   }
 
-  /** `limits`: the tenant's busy-agent and computer limits, which the host resolves (billing, tenants). */
-  async open(workflow: string, asked: { concurrency?: number; jobConcurrency?: number; leaseMs?: number }, limits: TenantLimits) {
+  /** `limits`: the tenant's busy-agent limit from billing. */
+  async open(workflow: string, asked: { concurrency?: number; leaseMs?: number }, limits: TenantLimits) {
     return refusable(async () => {
       const { caps, grants } = this.ledger.open(workflow, asked, tenantCaps(this.env, this.tenant(), limits));
       await this.settled(grants);
