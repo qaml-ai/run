@@ -80,7 +80,7 @@ function fixture(t: TestContext) {
     const vm = vms.get(id)!;
     if (!op) return Response.json(vm);
     if (op === "deadline") {
-      if (flags.leaseExpired) return Response.json({ error: "lease_expired" }, { status: 409 });
+      if (flags.leaseExpired) return fail(409, "lease_expired");
       vm.deadline = body.deadline;
       return Response.json({ deadline: vm.deadline });
     }
