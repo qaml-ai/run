@@ -55,6 +55,7 @@ import { endUserRoutes } from "./end-users-api.ts";
 import { bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-credits.ts";
 import { getVoice, VoiceLookupInput, VoiceLookupResult, searchVoices, VoiceSearchInput, VoiceSearchResult } from "./voice-library.ts";
 import { voiceRoutes } from "./voice-api.ts";
+import type { VoiceCalls } from "./voice-calls.ts";
 import type { VoiceSessions } from "./voice-sessions.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
@@ -157,6 +158,7 @@ export interface ApiContext {
   endUsers?: EndUserCredits;
   /** `/v1/voice/sessions`: calls the runtime holds for the tenant's bots; without it, voice is not enabled. */
   voice?: VoiceSessions;
+  calls?: VoiceCalls;
   /** The caller's address (Get Help's per-source limit); by default the load balancer's, as `clientAddress` reads it without Cloudflare. */
   clientAddress?: (c: Context) => string | undefined;
 }
@@ -1555,7 +1557,7 @@ export function api(context: ApiContext) {
     const input = parse(VoiceLookupInput, c.req.param());
     return json(c, 200, await getVoice(input, () => context.voiceLibraryKey?.(c.var.principal.tenant) ?? accounts.apiKey(c.var.principal.tenant, "elevenlabs")));
   });
-  voiceRoutes(route, () => context.voice);
+  voiceRoutes(route, () => context.voice, () => context.calls);
 
   route(createRoute({ method: "get", path: "/v1/agents/{id}/mounts", request: { params: agentId }, responses: { 200: reply("The agent's mounts", z.array(schema.Mount)) } }),
     async c => json(c, 200, (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).mounts));
