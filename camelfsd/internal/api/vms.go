@@ -11,7 +11,6 @@ import (
 	"path"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -71,11 +70,6 @@ func (v *vmAPI) handle(fn func(http.ResponseWriter, *http.Request, auth.Claims) 
 		}
 		storageFail(w, err)
 	}
-}
-
-func runtimeSubject(claims auth.Claims) bool {
-	suffix, ok := strings.CutPrefix(claims.Subject, "runtime:")
-	return ok && suffix != ""
 }
 
 func vmWriteAllowed(claims auth.Claims, lineage, ref string) bool {
