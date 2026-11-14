@@ -88,7 +88,12 @@ func (g *guest) sessionRequest(c *sessionChannel, req request) bool {
 			}
 			execs = append(execs, m)
 		}
-		c.send(message{"ok": true, "shells": shells, "execs": execs})
+		reply := message{"ok": true, "shells": shells, "execs": execs}
+		if g.session && g.index != nil {
+			reply["tree"] = g.index.Tree
+			reply["checkpointPending"] = g.pending != nil
+		}
+		c.send(reply)
 	case "exec_tail":
 		e := s.execs[req.ExecID]
 		switch {
@@ -116,7 +121,7 @@ func (g *guest) acceptExec(c *sessionChannel, req request) {
 	if len(req.Env) == 0 {
 		req.Env = nil
 	}
-	args, _ := json.Marshal([]any{req.Command, req.Shell, req.Env, req.Stdin})
+	args, _ := json.Marshal([]any{req.Command, req.Shell, req.Env, req.Stdin, req.Cwd})
 	digest := sha256.Sum256(args)
 	ack := message{"ok": true, "execId": req.ExecID, "accepted": true}
 	if e := s.execs[req.ExecID]; e != nil {
@@ -159,12 +164,13 @@ func (g *guest) acceptExec(c *sessionChannel, req request) {
 }
 
 func (e *execution) attach(c *sessionChannel, ack message, offset int64) {
-	if err := c.send(ack); err != nil {
-		return
-	}
 	first := e.next
 	if len(e.chunks) > 0 {
 		first = e.chunks[0].offset
+	}
+	ack["firstOffset"] = first
+	if err := c.send(ack); err != nil {
+		return
 	}
 	if offset < first {
 		c.send(message{"event": "tail_truncated", "execId": e.id, "firstOffset": first})

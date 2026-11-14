@@ -29,3 +29,7 @@ AWS_REGION=us-west-2
 NVME_DEVICE=
 # Optional artifact location; defaults to CAMELFSD_STORE.
 GUEST_IMAGE_S3_PREFIX=
+
+# Enable the Go session control plane only on hosts configured for tier mTLS and the image bucket.
+# Leave empty for storage-only hosts.
+# CAMELFSD_COMPUTE_FLAGS="--compute --tier-hosts-endpoint fs-internal.camelai.dev:8794 --tier-enroll-url https://fs.camelai.dev:8443 --pool test --slots 2 --vcpus 2 --memory-mib 4096 --disk-mib 8192 --images-store s3://<bucket>"
