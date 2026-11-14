@@ -1,3 +1,4 @@
+import { repoAt } from '../repos/target.ts';
 import { INSTANCE_TYPES, SNAPSHOT_NAME, snapshotHandle, type ComputerSnapshot, type InstanceType } from "../computers/provider.ts";
 import { INSTANCE_RESOURCES, type ComputerPayer } from "../computers/meter.ts";
 
@@ -120,14 +121,13 @@ export class JobSpecError extends Error {
 }
 
 /**
- * The volume a job starts from (`at`), or a JobSpecError that says why there is none: a workflow's forks are deleted
- * when the workflow ends, which an agent reading a finished workflow's result may not know.
+ * The volume a job starts from (`at`), or a JobSpecError when it is gone.
  */
 export async function jobVolume<T>(open: () => Promise<T>, id: string): Promise<T> {
   try { return await open(); }
   catch (error) {
     if ((error as { status?: number }).status !== 404) throw error;
-    throw new JobSpecError(`No volume ${id}: it does not exist or was deleted (a workflow's forks are deleted when the workflow ends; start from the volume they were committed to)`);
+    throw new JobSpecError(`No volume ${id}: it does not exist or was deleted`);
   }
 }
 const bad = (message: string) => new JobSpecError(message);
@@ -232,11 +232,11 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
     const r = v.repo;
     if (!r || typeof r !== "object" || typeof r.tenant !== "string" || !r.tenant || typeof r.repo !== "string" || !r.repo.trim()) throw bad("repo needs tenant and a non-empty repo");
     if (v.volume !== undefined || v.files !== undefined) throw bad("repo excludes volume and files");
-    if (r.ref !== undefined && (typeof r.ref !== "string" || !r.ref)) throw bad("repo ref is a non-empty string");
-    if (r.version !== undefined && (typeof r.version !== "string" || !/^[a-fA-F0-9]{40}$/.test(r.version))) throw bad("repo version is 40 hex characters");
-    if (r.ref !== undefined && r.version !== undefined) throw bad("Give repo ref or version, not both");
+    let target;
+    try { target = repoAt({ repo: r.repo, ...(r.ref !== undefined ? { ref: r.ref } : {}), ...(r.version !== undefined ? { version: r.version } : {}) }); }
+    catch (error) { throw bad((error as Error).message); }
     if (typeof r.owner !== "string" || !/^(agent|workflow|job|user|api|cache):[A-Za-z0-9._:-]{1,200}$/.test(r.owner)) throw bad("Invalid repo owner");
-    repo = { tenant: r.tenant, repo: r.repo, owner: r.owner, ...(r.ref !== undefined ? { ref: r.ref } : {}), ...(r.version !== undefined ? { version: r.version } : {}) };
+    repo = { ...target, tenant: r.tenant, owner: r.owner };
   }
   if (v.commit !== undefined && typeof v.commit !== "boolean") throw bad("commit is true or false");
   if (v.commit && !volume && !repo) throw bad("A job commits only a volume's tree: commit needs volume");

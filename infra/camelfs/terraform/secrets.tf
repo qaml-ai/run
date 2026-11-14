@@ -11,10 +11,24 @@
 #
 # Tier ↔ host calls use no token: mutual TLS (§9.12, mtls.tf). The service-signing-key / service-verify-keys
 # secrets of the retired camelfs-host+jwt family were deleted with that change.
+#
+# The notify webhook (§9.11): the tier signs each delivery to <runtime>/v1/internal/camelfs/notify with an HMAC key
+# both sides hold (Camel-Signature: t=…,v1=hex hmac-sha256(notifyKey, t + "." + body)). notify-key.sh generates it
+# into the secret below and prints the runtime's `wrangler secret put` for the same value; ECS injects it into the
+# api task as CAMELFS_NOTIFY_KEY. Separate from every token key, as the design requires.
 
 resource "aws_secretsmanager_secret" "token_verify_keys" {
   name        = "${var.name}/${var.env}/token-verify-keys"
   description = "camelFS token verification keys: the runtime's public JWKS (Ed25519), injected into the api tasks as CAMELFS_JWKS. Set with infra/camelfs/jwks.sh."
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_secretsmanager_secret" "notify_key" {
+  name        = "${var.name}/${var.env}/notify-key"
+  description = "camelFS notify webhook HMAC key (§9.11), hex; injected into the api tasks as CAMELFS_NOTIFY_KEY; the runtime holds the same value. Set with infra/camelfs/notify-key.sh."
 
   lifecycle {
     prevent_destroy = true

@@ -1,13 +1,13 @@
-# Two load balancers in front of the api tasks (ecs.tf), both HTTP/1.1 only and both terminating TLS with one ACM
-# certificate:
+# Two application load balancers in front of the api tasks (ecs.tf), both HTTP/1.1 only and both terminating TLS
+# with one ACM certificate:
 #   public   <hostname>, proxied through Cloudflare, security group open to Cloudflare's IPv4 ranges only: what the
 #            runtime (Workers, Node, later customers and the git edge) calls. Tokens (camel-fs.md §1.10) are the
 #            authorization; the security group only narrows the network source to Cloudflare, as the runtime's ALB does.
 #   internal <internal_hostname>, a DNS-only record to the internal balancer (its name resolves to private
-#            addresses), security group open to the hosts' groups only: what camelfsd --role host calls for cas,
-#            renew and reads, in-VPC (the "vpc 2 ms" leg of the C view). Hosts never go out through Cloudflare to
-#            reach a service in their own VPC, and the public balancer never sees a host.
-# A target group belongs to one load balancer, so there are two; the ECS service registers with both.
+#            addresses), security group open to the hosts' groups only, on the ENROLLMENT port alone (mtls.tf):
+#            where a new host presents its STS attestation for its first certificate. Every other host → tier call
+#            goes through the hosts' NLB in TCP passthrough (mtls.tf), where the tier terminates mutual TLS itself.
+# The public ALB has the api target group; the internal ALB has only the enrollment one (mtls.tf).
 #
 # enable_http2 = false on both: 2026-10-24, Cloudflare multiplexed requests on one h2 connection to the runtime's
 # ALB and a cancelled response left unread stalled every stream on it (25–183 s chat loads; qaml-ai/run#415).
@@ -97,28 +97,13 @@ resource "aws_vpc_security_group_egress_rule" "alb_public_to_api" {
 resource "aws_security_group" "alb_internal" {
   name        = "${var.name}-${var.env}-alb-internal"
   description = "camelFS internal load balancer: HTTPS from the VM hosts only"
-  vpc_id      = data.aws_vpc.default.id
-  tags        = { Name = "${var.name}-${var.env}-alb-internal" }
+  # (The description predates the enrollment-only role; changing it would replace the group.)
+  vpc_id = data.aws_vpc.default.id
+  tags   = { Name = "${var.name}-${var.env}-alb-internal" }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_internal_hosts" {
-  for_each                     = toset(var.host_security_group_ids)
-  security_group_id            = aws_security_group.alb_internal.id
-  referenced_security_group_id = each.value
-  ip_protocol                  = "tcp"
-  from_port                    = 443
-  to_port                      = 443
-  description                  = "HTTPS from camelfsd --role host"
-}
-
-resource "aws_vpc_security_group_egress_rule" "alb_internal_to_api" {
-  security_group_id            = aws_security_group.alb_internal.id
-  referenced_security_group_id = aws_security_group.api.id
-  ip_protocol                  = "tcp"
-  from_port                    = var.api_port
-  to_port                      = var.api_port
-  description                  = "API tasks"
-}
+# The internal balancer admits the hosts on the enrollment port only (mtls.tf, alb_internal_hosts_enroll) and
+# reaches the tasks on the enrollment port only (alb_internal_to_enroll): no host path to the api port exists here.
 
 # The tier pushes boot/stop to the hosts' compute listener (K4): one rule on each host security group from the api
 # tasks' group, and the matching egress on the api group (ecs.tf). The hosts' groups are the pools' (job-hosts) or
@@ -140,6 +125,9 @@ locals {
     public   = { internal = false, security_group = aws_security_group.alb_public.id, hostname = var.hostname }
     internal = { internal = true, security_group = aws_security_group.alb_internal.id, hostname = var.internal_hostname }
   }
+  # The api target group and its 443 listener exist on the public balancer only: host routes left the internal ALB
+  # for the NLB (mtls.tf), and the internal ALB keeps the enrollment listener alone.
+  api_balancers = { public = local.balancers.public }
 }
 
 resource "aws_lb" "api" {
@@ -176,7 +164,7 @@ resource "aws_lb" "api" {
 }
 
 resource "aws_lb_target_group" "api" {
-  for_each = local.balancers
+  for_each = local.api_balancers
 
   name        = "${var.name}-${var.env}-${each.key}"
   target_type = "ip"
@@ -202,7 +190,7 @@ resource "aws_lb_target_group" "api" {
 }
 
 resource "aws_lb_listener" "api_https" {
-  for_each = var.certificate_issued ? local.balancers : {}
+  for_each = var.certificate_issued ? local.api_balancers : {}
 
   load_balancer_arn = aws_lb.api[each.key].arn
   port              = 443
@@ -210,14 +198,13 @@ resource "aws_lb_listener" "api_https" {
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = aws_acm_certificate_validation.api[0].certificate_arn
 
-  # §9.12 (mtls.tf). Public: Cloudflare's zone certificate from our AOP CA, once aop_ca_version pins it; off before
-  # (the Cloudflare-ranges group alone, as the runtime's ALB ran until its own AOP). Internal: every host presents a
-  # certificate from the hosts' Private CA, from the first listener on. Verify, never passthrough: the ALB checks the
-  # chain and the expiry itself and strips client-supplied X-Amzn-Mtls-Clientcert-* headers.
+  # §9.12 (mtls.tf): Cloudflare's per-hostname certificate from our AOP CA, once aop_ca_version pins it; off
+  # before (the Cloudflare-ranges group alone, as the runtime's ALB ran until its own AOP). Verify, never
+  # passthrough: the ALB checks the chain and the expiry itself. Hosts never reach this listener (mtls.tf).
   mutual_authentication {
-    mode                             = each.key == "internal" ? "verify" : (var.aop_ca_version == null ? "off" : "verify")
-    trust_store_arn                  = each.key == "internal" ? aws_lb_trust_store.hosts.arn : one(aws_lb_trust_store.aop[*].arn)
-    ignore_client_certificate_expiry = each.key == "internal" || var.aop_ca_version != null ? false : null
+    mode                             = var.aop_ca_version == null ? "off" : "verify"
+    trust_store_arn                  = one(aws_lb_trust_store.aop[*].arn)
+    ignore_client_certificate_expiry = var.aop_ca_version != null ? false : null
   }
 
   default_action {

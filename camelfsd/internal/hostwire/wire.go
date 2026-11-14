@@ -117,3 +117,18 @@ type Ended struct {
 type Stop struct {
 	Checkpoint bool `json:"checkpoint"`
 }
+
+// Renew asks for a fresh certificate using the host's current mTLS identity.
+// Hosts renew every eight hours.
+type Renew struct {
+	CSR string `json:"csr"`
+}
+
+// Enrolled is the reply to both initial enrollment and renewal. NotAfter is Unix milliseconds.
+type Enrolled struct {
+	CertificatePEM string `json:"certificatePem"`
+	ChainPEM       string `json:"chainPem"`
+	CAPEM          string `json:"caPem"`
+	NotAfter       int64  `json:"notAfter"`
+	HostID         string `json:"hostId"`
+}

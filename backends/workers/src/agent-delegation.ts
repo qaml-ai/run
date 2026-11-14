@@ -166,22 +166,11 @@ export function createDelegation(this: AgentRuntime): Delegation {
     create: async (config, key, parent) => {
       const conf = await this.config();
       const directory = new Directory(this.env, conf.tenantId);
-      // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-      const mounts = Array.isArray(config.mounts) ? config.mounts : [];
-      const legacy = mounts.filter((mount: any) => mount?.volumeId);
-      let inheritedMounts: import('./api-contract.ts').AgentConfiguration['mounts'];
-      // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-      if (legacy.length) {
-        if (!legacy.every((mount: any) => conf.config.mounts?.some(parent => parent.volumeId === mount.volumeId)))
-          throw new BadRequest('Volumes are replaced by repos: mount { repo }');
-        const {prepareMounts}=await import('./repos/mounts.ts');
-        inheritedMounts=[...await prepareMounts(this.env,conf.tenantId,await directory.id(key),mounts.filter((mount:any)=>!mount?.volumeId)),...legacy];
-      }
       const entry = await directory.upsert(
         config,
         key,
         conf.runtimeOrigin,
-        undefined, false, inheritedMounts,
+        undefined, false,
       );
       if ("failed" in entry)
         throw Object.assign(new Error(entry.error), { status: entry.status });

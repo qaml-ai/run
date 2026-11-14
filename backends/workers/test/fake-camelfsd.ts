@@ -524,8 +524,11 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
         const { holder, ttlMs } = await q(["holder", "ttlMs"], ["holder", "ttlMs"]);
         if (!validHolder(holder)) return bad();
         const duration = ttl(ttlMs), ref = current(name);
-        unheld(ref);
-        const epoch = ref.leaseEpoch + 1, deadline = now() + duration;
+        // A re-acquire by the same holder while it holds is idempotent: same epoch, new deadline (C3a; compute's
+        // recovery relies on it). Only another holder gets 409 held.
+        const same = isHeld(ref, now()) && ref.holder!.host === holder.host && ref.holder!.boot === holder.boot && ref.holder!.mount === holder.mount;
+        if (!same) unheld(ref);
+        const epoch = same ? ref.leaseEpoch : ref.leaseEpoch + 1, deadline = now() + duration;
         own.epochs.set(name, epoch);
         own.refs.set(name, { ...ref, holder, leaseEpoch: epoch, leaseDeadline: deadline });
         return json({ epoch, deadline, version: ref.version, tree: ref.tree });
@@ -610,9 +613,11 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
           if (ref.version !== latest.version) stale(latest);
           return json({ ...move(l, latest, c.commit, c, input.quota, undefined, true), ...extra }, 201);
         };
+        // As C3b (#1042): restore and merge take trailers, defaulting Camel-Op (caller keys win), and their replies carry
+        // bytes + files like write and cas (move()).
         if (op === "restore") {
           const old = info(l, requireHash(input.version), true);
-          return finish(await makeCommit(l, { ...input, parents: [ref.version], baseTree: old.tree, changes: [], trailers: input.trailers ?? {} }));
+          return finish(await makeCommit(l, { ...input, parents: [ref.version], baseTree: old.tree, changes: [], trailers: { "Camel-Op": "restore", ...input.trailers } }));
         }
         const { mode } = input;
         if (mode !== "merge" && mode !== "ff-only" && mode !== "squash") bad();
@@ -629,7 +634,7 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
         if (merged.conflicts.length) return mergeConflict(merged.conflicts);
         const baseTree = await build(l, merged.files);
         const c = await makeCommit(l, { ...input, parents: mode === "squash" ? [ref.version] : [ref.version, theirs],
-          baseTree, changes: [], trailers: input.trailers ?? {} });
+          baseTree, changes: [], trailers: { "Camel-Op": "merge", ...input.trailers } });
         return finish(c, { ff: false, merged: merged.merged, took: merged.took });
       }
       return absent();

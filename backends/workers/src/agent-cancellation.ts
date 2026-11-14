@@ -259,7 +259,7 @@ export async function startHostRequestImpl(this: AgentRuntime,
       const limit = await accounts.runLimit(conf.tenantId);
       if (limit) throw typeof limit === "string" ? Object.assign(new Error(limit), { status: 402, code: "SPEND_LIMIT" }) : limit;
       if (!intent.admitted) {
-        await this.admitRequest(conf, intent.id);
+        intent.limitsSnapshot = await this.admitRequest(conf, intent.id);
         intent.admitted = true;
         await this.ctx.storage.put(reqKey(intent.id), intent);
       }

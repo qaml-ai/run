@@ -1,3 +1,6 @@
+import { serveFakeCamelfsd } from './fake-camelfsd.ts';
+import { fileURLToPath } from 'node:url';
+import { repoJobHost } from './workflow-job-host.ts';
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -937,7 +940,7 @@ test("jobs: one command in a container of its own, its files synced in and its o
   assert.equal(ended.code, "stopped", JSON.stringify(ended));
 });
 
-test("workflows: children edit forks of a repo volume with their file tools, commit() lands them (one conflicts), and a job() tests the result", {
+test("workflows: children edit branches of a repo with their file tools, commit() lands them (one conflicts), and a job() tests the result", {
   timeout: 600_000, skip: requireDocker ? false : unavailable,
 }, async (t) => {
   assert.equal(unavailable, undefined, unavailable);
@@ -971,7 +974,10 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   });
   model.listen(0, "127.0.0.1"); await once(model, "listening");
   t.after(() => { model.closeAllConnections(); return new Promise<void>(resolve => model.close(() => resolve())); });
-  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
+  const camelfs = await serveFakeCamelfsd('workflow-test-token');
+  t.after(() => camelfs.close());
+  const hostSecret = 'workflow-job-host-secret-at-least-32-characters';
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", camelfsStub: true, entrypoint: fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)), vars: { TEST_CAMELFS_URL:camelfs.url, CAMELFS_API_TOKEN:'workflow-test-token', JOB_HOST_ATTESTORS:'test', JOB_HOST_TEST_SECRET:hostSecret, TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
     AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "repo-fixture/repo-model", strong: "repo-fixture/repo-model", max: "repo-fixture/repo-model" }) } });
   t.after(async () => {
     const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));
@@ -991,11 +997,13 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   };
   await call("/v1/providers/repo-fixture", { type: "openai-completions", baseUrl: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`, models: [{ id: "repo-model", contextWindow: 32768, pricing: { input: 1, output: 1 } }] }, undefined, "PUT");
 
+  await repoJobHost(t,fixture.url,hostSecret,camelfs.url,'workflow-test-token');
+
   // A small repository: two source files and the test the job runs.
-  const repo = await call("/v1/volumes", { name: "workflow-repo" });
-  await call(`/v1/volumes/${repo.id}/files/src/a.txt`, undefined, "1");
-  await call(`/v1/volumes/${repo.id}/files/src/b.txt`, undefined, "2");
-  await call(`/v1/volumes/${repo.id}/files/check.sh`, undefined,
+  const repo = await call("/v1/repos", { name: "workflow-repo" });
+  await call(`/v1/repos/${repo.id}/files/src/a.txt`, undefined, "1");
+  await call(`/v1/repos/${repo.id}/files/src/b.txt`, undefined, "2");
+  await call(`/v1/repos/${repo.id}/files/check.sh`, undefined,
     'a=$(cat src/a.txt); b=$(cat src/b.txt); echo "a=$a b=$b" | tee "$JOB_OUT/report.txt"; test "$a" = one && test "$b" = two && echo PASS');
   script = `
     // Three workers fork the repo as it is now and edit it with their write tool; the third edits the file the first does.
@@ -1005,11 +1013,11 @@ test("workflows: children edit forks of a repo volume with their file tools, com
       () => agent("EDIT /repo/src/a.txt uno", { key: "edit:c", repo: args.repo, type: "worker" }),
     ]);
     // A job on a child's fork, while the workflow runs: it sees the child's edit.
-    const peek = await job({ key: "peek", command: "cat src/b.txt", timeoutSeconds: 60, at: b.fork.volume });
+    const peek = await job({ key: "peek", command: "cat src/b.txt", timeoutSeconds: 60, at: { repo: b.fork.repo, ref: b.fork.ref } });
     const landedA = await commit(a.fork, { key: "commit:a" });
     const landedB = await commit(b.fork, { key: "commit:b" });
     const landedC = await commit(c.fork, { key: "commit:c" });
-    const checked = await job({ key: "check", command: "bash check.sh", timeoutSeconds: 120, at: args.repo, outputs: ["report.txt"] });
+    const checked = await job({ key: "check", command: "bash check.sh", timeoutSeconds: 120, at: { repo: args.repo }, outputs: ["report.txt"] });
     return { said: [a.text, b.text, c.text], landedA, landedB, landedC, checked, peek };`;
   // An agent starts the workflow and owns it: it is the payer of the workflow's jobs.
   const owner = await call("/v1/agents", { model: "repo-fixture/repo-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
@@ -1029,23 +1037,23 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   const { said, landedA, landedB, landedC, checked, peek } = done.result;
   assert.deepEqual(said, ["edited /repo/src/a.txt", "edited /repo/src/b.txt", "edited /repo/src/a.txt"]);
   assert.equal(landedA.committed, true, JSON.stringify(landedA));
-  assert.deepEqual(landedA.files, ["/src/a.txt"]);
+  assert.equal(landedA.changed, true);
   assert.equal(landedB.committed, true, JSON.stringify(landedB));
-  assert.deepEqual(landedB.files, ["/src/b.txt"]);
+  assert.deepEqual(landedB.files, ["src/b.txt"]);
   // The third fork started from the a.txt the first commit changed: nothing of it is written.
   assert.equal(landedC.committed, false, JSON.stringify(landedC));
-  assert.deepEqual(landedC.conflicts.map((conflict: { path: string }) => conflict.path), ["/src/a.txt"]);
+  assert.deepEqual(landedC.conflicts.map((conflict: { path: string }) => conflict.path), ["src/a.txt"]);
   // The base holds both commits and not the conflicting edit; the job ran against it.
-  assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one");
-  assert.equal(await call(`/v1/volumes/${repo.id}/files/src/b.txt`), "two");
+  assert.equal(await call(`/v1/repos/${repo.id}/files/src/a.txt`), "one");
+  assert.equal(await call(`/v1/repos/${repo.id}/files/src/b.txt`), "two");
   assert.ok(peek, `the job at a child's fork ran: ${JSON.stringify(await call(`/v1/workflows/${created.id}/items`))}`);
   assert.equal(peek.exitCode, 0, JSON.stringify(peek));
   assert.match(peek.stdout.tail, /^two/);
   assert.equal(checked.exitCode, 0, JSON.stringify(checked));
   assert.match(checked.stdout.tail, /a=one b=two\nPASS/);
-  // Its streams and outputs are kept whole in the workflow's volume.
-  assert.equal((await call(`/v1/volumes/${checked.volume}/files${checked.outputs["report.txt"].path}`)).trim(), "a=one b=two");
-  assert.match(await call(`/v1/volumes/${checked.volume}/files${checked.stdout.path}`), /PASS/);
+  // Its streams and outputs are kept whole in the workflow's repo.
+  assert.equal((await call(`/v1/repos/${checked.repo}/files${checked.outputs["report.txt"].path}`)).trim(), "a=one b=two");
+  assert.match(await call(`/v1/repos/${checked.repo}/files${checked.stdout.path}`), /PASS/);
   const items = (await call(`/v1/workflows/${created.id}/items`)).items as { key: string; kind: string; status: string }[];
   assert.deepEqual(items.map(item => [item.key, item.kind, item.status]).sort(),
     [["check", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"], ["peek", "job", "done"]]);
@@ -1068,20 +1076,14 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   }
   assert.ok(done.spent.usd >= receipts.reduce((sum, row) => sum + row.receipt.costUsd, 0) - 1e-9, JSON.stringify(done.spent));
 
-  // The workflow ended: its children's forks are deleted, which releases their pins on the repo's content. Their results
-  // were cached, but the commits moved the repo past the version those entries are keyed with, so the cache does not
-  // take the forks over.
-  const forks = (items as unknown as { kind: string; result?: { fork?: { volume: string } } }[]).filter(item => item.kind === "agent").map(item => item.result!.fork!.volume);
-  assert.equal(forks.length, 3);
-  for (const fork of forks) {
-    let status = 0;
-    for (let i = 0; i < 50 && status !== 404; i++) {
-      status = (await fetch(`${fixture.url}/v1/volumes/${fork}`, { headers: { authorization: `Bearer ${fixture.token}` } })).status;
-      if (status !== 404) await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    assert.equal(status, 404, `fork ${fork} is deleted`);
+  // Workflow refs go at the end; independent cache refs retain cached versions.
+  for (let i = 0; i < 50; i++) {
+    const refs = await call(`/v1/repos/${repo.id}/refs`) as { name: string; owner: string }[];
+    if (!refs.some(ref => ref.owner === `workflow:${created.id}`)) break;
+    await new Promise(resolve => setTimeout(resolve, 200));
   }
-  assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one", "the base keeps its content");
+  const refs = await call(`/v1/repos/${repo.id}/refs`) as { name: string; owner: string }[];
+  assert.ok(!refs.some(ref => ref.owner === `workflow:${created.id}`));
 
   // A workflow an API key started has no owner agent: its job() runs too, paid by its tenant (the next test has the money).
   const keyStarted = await call("/v1/workflows", { script: `return await job({ key: "j", command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });

@@ -4,8 +4,13 @@ output "public_url" {
 }
 
 output "internal_url" {
-  description = "The API tier for camelfsd --role host, in-VPC: https://<internal_hostname> (private addresses)."
+  description = "The internal ALB, in-VPC: https://<internal_hostname>:<enroll_listener_port> is enrollment (plain TLS); nothing else is served there."
   value       = "https://${var.internal_hostname}"
+}
+
+output "hosts_endpoint" {
+  description = "Where camelfsd --role host dials the tier for every call after enrollment: the hosts NLB (TCP passthrough; the tier terminates mutual TLS and the host verifies spiffe://camelfs/tier against its enroll reply's caPem)."
+  value       = "${aws_lb.hosts.dns_name}:${var.hosts_port}"
 }
 
 output "load_balancer_dns_names" {
@@ -98,18 +103,18 @@ output "token_verify_keys_secret_arn" {
 }
 
 output "hosts_ca_arn" {
-  description = "The hosts' Private CA (short-lived mode): camelfsd api --hosts-ca. Hosts trust its certificate, delivered in their enroll reply, on --listen-compute."
+  description = "The hosts' Private CA (short-lived mode): camelfsd api --hosts-ca. Hosts trust its certificate, delivered in their enroll reply, for the tier on the NLB and on --listen-compute."
   value       = aws_acmpca_certificate_authority.hosts.arn
 }
 
-output "hosts_ca_certificate_s3" {
-  description = "The hosts' CA certificate (PEM) in the trust bucket, the object the internal listener's trust store pins. Hosts get the CA in their enroll reply, not from here."
-  value       = "s3://${aws_s3_bucket.trust.bucket}/${aws_s3_object.hosts_ca.key}"
+output "trust_bucket" {
+  description = "Public CA certificates only: aop-ca.pem (written by aop.sh init; its VersionId is aop_ca_version)."
+  value       = aws_s3_bucket.trust.bucket
 }
 
-output "trust_bucket" {
-  description = "Public CA certificates only: hosts-ca.pem (written by Terraform) and aop-ca.pem (written by aop.sh init; its VersionId is aop_ca_version)."
-  value       = aws_s3_bucket.trust.bucket
+output "notify_key_secret_arn" {
+  description = "Secrets Manager: the notify webhook's HMAC key (§9.11), injected as CAMELFS_NOTIFY_KEY; set with notify-key.sh, which also prints the runtime's wrangler command."
+  value       = aws_secretsmanager_secret.notify_key.arn
 }
 
 output "aop_ca_secret_arn" {
@@ -118,13 +123,14 @@ output "aop_ca_secret_arn" {
 }
 
 output "mtls" {
-  description = "Mutual TLS status: the public listener's mode (off until aop_ca_version pins the AOP CA), the internal listener's (verify from the first listener), the enrollment listener and port."
+  description = "Mutual TLS status: the public listener's mode (off until aop_ca_version pins the AOP CA); host routes behind the NLB where the tier terminates mTLS itself; the enrollment listener and port."
   value = {
     public_mode          = var.aop_ca_version == null ? "off" : "verify"
-    internal_mode        = "verify"
+    hosts_endpoint       = "${aws_lb.hosts.dns_name}:${var.hosts_port}"
     aop_ca_version       = var.aop_ca_version
     enroll_listener_port = var.enroll_listener_port
     enroll_port          = var.enroll_port
+    hosts_port           = var.hosts_port
   }
 }
 
