@@ -1,4 +1,3 @@
-import { releaseTurn } from "./control.ts";
 import { enqueueTerminalEvents } from "./event-log.ts";
 import { reqKey, type RequestRecord } from "./agent-types.ts";
 import { retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
@@ -30,7 +29,6 @@ export async function releaseInputPrompts(runtime: AgentRuntime) {
         // Release before completing: an interrupted release remains a held request and is safe to repeat.
         if (current.admitted) {
           const conf = await runtime.config();
-          await releaseTurn(runtime.env, conf.tenantId, conf.id, record.id);
           await runtime.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
         }
         const outcome = { error: error instanceof Error ? error.message : String(error) };

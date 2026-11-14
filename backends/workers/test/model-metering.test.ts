@@ -1,3 +1,4 @@
+import { EndUserCredits } from "../src/end-user-credits.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -84,6 +85,9 @@ test("model accounting serializes stream progress, heartbeat and terminal receip
   await db.query("insert into tenants(id,billing,created_at) values('meter-test','prepaid',$1)", [Date.now()]);
   await postLedger(db, [{ tenant: "meter-test", kind: "purchase", amount: 100_000_000, key: "meter-funding" }]);
   const env = { HYPERDRIVE: { connectionString: url }, AGENT_TENANTS_JSON: JSON.stringify({ tenants: {}, platformKeys: { openrouter: "fixture-key" } }) };
+  const credits = new EndUserCredits(db);
+  await credits.setSettings("meter-test", { enabled: true });
+  await credits.post("meter-test", "person", { kind: "grant", amount: 100_000_000, key: "fund-person" });
   let heartbeat: (() => void) | undefined;
   t.mock.method(globalThis, "setInterval", (fn: () => void, delay: number) => {
     assert.equal(delay, RENEW_MS / 4);
@@ -113,7 +117,7 @@ test("model accounting serializes stream progress, heartbeat and terminal receip
   const model = { id: "test-model", provider: "openrouter", api: "openai-completions", maxTokens: 8192,
     contextWindow: 32768,
     cost: { input: 1, output: 10, cacheRead: 0, cacheWrite: 0 } } as any;
-  const metered = meterProvider(provider, env, async () => ({ tenant: "meter-test", agent: "agent-fixture", platform: true }), receipt => applyModelReceipt(env, receipt).then(() => {}));
+  const metered = meterProvider(provider, env, async () => ({ tenant: "meter-test", agent: "agent-fixture", subject: "person", platform: true }), receipt => applyModelReceipt(env, receipt).then(() => {}));
   const output = metered.stream(model, { messages: [] }, { fetch: async () => new Response('{"id":"gen-serialized"}') });
   const done = (async () => { for await (const _event of output) { /* drain */ } })();
   await until(() => started && !!heartbeat, "model begin");
@@ -136,5 +140,5 @@ test("model accounting serializes stream progress, heartbeat and terminal receip
   assert.equal(observed.at(-1), "finish");
   assert.equal(progress, 1, "source coalesces heartbeat and chunk renewal");
   assert.ok(observed.includes("generation"));
-  assert.equal(Number((await db.query("select count(*) from credit_holds")).rows[0].count), 0);
+  assert.equal(Number((await db.query("select count(*) from end_user_holds")).rows[0].count), 0);
 });

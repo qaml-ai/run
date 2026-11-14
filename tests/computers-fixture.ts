@@ -12,7 +12,6 @@ import { Accounts } from "../src/accounts.ts";
 import { postLedger } from "../src/billing.ts";
 import { BoatRefused, type Machine, type ManagedMachines } from "../src/computers/managed.ts";
 import { Computers } from "../src/computers/service.ts";
-import { CreditHolds } from "../src/credit-holds.ts";
 import { EndUserCredits } from "../src/end-user-credits.ts";
 import { Outbound } from "../src/outbound.ts";
 import { DEFAULT_PRICING, micros } from "../src/pricing.ts";
@@ -87,14 +86,14 @@ export async function fixture(options: { billing?: "prepaid" | "none"; flag?: bo
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: entry("payg", { ...options.adminKey ? { apiKeys: { boat: "admin-key" } } : {}, ...options.maxMonthlyCost !== undefined ? { maxMonthlyCost: options.maxMonthlyCost } : {} }), rich: entry("rich") }, platformKeys: options.platformKey === false ? {} : { boat: "platform-key" } }) });
   await tenants.reload();
   const accounts = new Accounts({ db, tenants, pricing: { ...DEFAULT_PRICING, ...options.price ? { computerHour: options.price } : {} }, secretsKey: "ab".repeat(32) });
-  const endUsers = new EndUserCredits(db), credit = new CreditHolds(db, accounts.billing);
+  const endUsers = new EndUserCredits(db);
   const balanceAtStart = options.balance ?? micros(10);
   await postLedger(db, [options.purchased === false ? { tenant: "payg", kind: "grant", amount: balanceAtStart, key: "fund" } : { tenant: "payg", kind: "purchase", amount: balanceAtStart, key: "fund" }, { tenant: "rich", kind: "purchase", amount: micros(10), key: "fund-rich" }]);
   accounts.billing.invalidate(["payg", "rich"]);
   let now = Date.now();
   const { boat, state, machines, rollover } = fakeBoat(() => now);
   const keys: string[] = [], waits: number[] = [];
-  const make = (flag: boolean) => new Computers({ provider: "boat", db, accounts, outbound: options.outbound ?? new Outbound(), now: () => now, enabled: flag, runtime: "https://run.test", endUsers: () => endUsers, credit: () => credit, payer: () => options.payer, machines: options.outbound ? undefined : key => { keys.push(key); return boat; }, sleep: async ms => { waits.push(ms); },
+  const make = (flag: boolean) => new Computers({ provider: "boat", db, accounts, outbound: options.outbound ?? new Outbound(), now: () => now, enabled: flag, runtime: "https://run.test", endUsers: () => endUsers, payer: () => options.payer, machines: options.outbound ? undefined : key => { keys.push(key); return boat; }, sleep: async ms => { waits.push(ms); },
     driver: () => ({ async create(id: string) { return { id }; }, async call() { return { exitCode: 0, stdout: "byo" }; }, async close() {} }) });
   const service = make(options.flag !== false);
   const logged: any[] = [], error = console.error;
@@ -108,7 +107,7 @@ export async function fixture(options: { billing?: "prepaid" | "none"; flag?: bo
   const start = (tenant = "payg", agent = "a", key = "start", on = service) => on.call(tenant, agent, "computer_start", {}, key);
   const stop = (tenant = "payg", agent = "a", key = "stop") => service.call(tenant, agent, "computer_stop", {}, key);
   const exec = (key: string, args: Record<string, unknown> = {}) => service.call("payg", "a", "computer_exec", { command: "make", ...args }, key);
-  return { db, accounts, endUsers, credit, service, make, state, machines, rollover, keys, waits, logged, row, rows, balance, spent, holds, connect, start, stop, exec, advance: (ms: number) => { now += ms; }, now: () => now, done: () => { console.error = error; } };
+  return { db, accounts, endUsers, service, make, state, machines, rollover, keys, waits, logged, row, rows, balance, spent, holds, connect, start, stop, exec, advance: (ms: number) => { now += ms; }, now: () => now, done: () => { console.error = error; } };
 }
 
 export const pass = (f: { service: Computers }) => f.service.managed.pass();

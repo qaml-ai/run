@@ -441,7 +441,7 @@ your own key the provider bills you directly; the usage record still carries the
 nothing.
 
 A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise). An account that runs out during a call
-ends it: `reason: "budget"`, `limit: "tenant"`. With end-user credits on, a subject with nothing left is refused at the start (402 `END_USER_CREDIT`), each answer holds $0.05 of the subject's credit, or what is left if that is less, before it is asked for and settles at
+ends it at the next metering checkpoint: `reason: "budget"`, `limit: "tenant"`. Admitted usage is charged in full and can take the account balance below zero. With end-user credits on, a subject with nothing left is refused at the start (402 `END_USER_CREDIT`), each answer holds $0.05 of the subject's credit, or what is left if that is less, before it is asked for and settles at
 what it cost, and running out ends the session (`limit: "end_user"`).
 
 ## Privacy and your duties

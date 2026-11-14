@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import ts from '../node_modules/typescript/lib/typescript.js';
 const root = new URL('../../../', import.meta.url);
 const out = new URL('../src/', import.meta.url);
-const modules = ['credit-holds', 'workspaces', 'model-attempts', 'model-attempt', 'model-attempt-stream', 'platform-pricing', 'webhooks', 'money-tokens'];
+const modules = ['workspaces', 'model-attempts', 'model-attempt', 'model-attempt-stream', 'platform-pricing', 'webhooks', 'money-tokens'];
 for (const name of modules) {
   const source = name === 'money-tokens' ? 'pi-harness/tokens' : name;
   let text = await readFile(new URL(`src/${source}.ts`, root), 'utf8');

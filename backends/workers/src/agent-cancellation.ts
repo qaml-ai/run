@@ -2,7 +2,6 @@ import { CANCELLABLE_METHODS } from "../../../shared/queue-mode.ts";
 import { type LiveState } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { cancelledHumanInput, HumanInputs } from "./human.ts";
-import { releaseTurn } from "./control.ts";
 import { keyServices } from "./security-services.ts";
 import { startHostExecution, admitHostExecution, abortHostExecution, hostExecutionTask, HOST_EXECUTION_TOOL } from "./host-execution.ts";
 import { RequestRecord, reqKey } from "./agent-types.ts";
@@ -64,7 +63,7 @@ export async function abortRequestsImpl(this: AgentRuntime,
     return { aborted: true, cancelled: [...heldCancelled, ...cancelled] };
   }
 
-/** The stop and member-removal paths publish the same terminal records and release the same reservations. */
+/** The stop and member-removal paths publish the same terminal records and release the same concurrency slots. */
 async function finishCancelledRequests(this: AgentRuntime, cancelled: string[]) {
     const conf = await this.config();
     for (const id of cancelled) {
@@ -77,7 +76,6 @@ async function finishCancelledRequests(this: AgentRuntime, cancelled: string[]) 
         result: { error: "Queued run cancelled", code: "cancelled" },
       };
       await this.ctx.storage.put(reqKey(id), record);
-      await releaseTurn(this.env, conf.tenantId, conf.id, id);
       await this.env.TENANTS.getByName(conf.tenantId).release(
         `${conf.id}:${id}`,
       );
@@ -220,7 +218,6 @@ export async function cancelHostIntentImpl(this: AgentRuntime,
     await this.ctx.storage.put(reqKey(record.id), completed);
     if (record.admitted) {
       const conf = await this.config();
-      await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
       await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
     }
     await this.emit({ type: "response", id: record.id, outcome: completed.outcome });
