@@ -428,7 +428,6 @@ Swaps `db.ts` to `postgres.ts`, HTTP errors to `errors.ts`, and `node-context`, 
 
 | Generated copy | Lines | Declarations (and member signatures for whole-file copies) |
 | --- | ---: | --- |
-| `credit-holds.ts` | 59 | `HOLD_MS`, `CreditHolds`; methods: `constructor`, `room`, `available`, `reserve`, `extend`, `renew` |
 | `workspaces.ts` | 78 | `WorkspaceKind`, `Workspace`, `view`, `Workspaces`, `AttributedUsage`, `applyWorkspaceUsage`; methods: `constructor`, `list`, `get`, `create`, `update`, `current`, `validate`, `assign`, `memberships`, `members` |
 | `model-attempts.ts` | 400 | `zero`, `hash`, `uuid`, `HOLD_OUTPUT_TOKENS`, `ATTEMPT_STALE_MS`, `INITIAL_OUTPUT_TOKENS`, `MIN_OUTPUT_TOKENS`, `CHARS_PER_TOKEN`, `Metered`, `ASK_AHEAD_TOKENS`, `lines`, `affordable`, `callCost`, `ModelAttempts`; methods: `constructor`, `event`, `persistEvent`, `hold`, `creditHold`, `progress`, `settle`, `drain`, `reconcile`, `check` |
 | `model-attempt.ts` | 39 | `ModelAttemptEvent`, `Superseded`, `AttemptEstimate`, `AttemptAck`, `CreditStop`, `ModelAttemptHook`, `attemptAck`, `END_USER_CREDIT` |

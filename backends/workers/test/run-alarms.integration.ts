@@ -110,7 +110,6 @@ test("a tracked turn retains its elapsed-time deadline after a hard restart", { 
   const result = await call(`/v1/agents/${id}/requests/restart-deadline`);
   assert.equal(result.state, "completed");
   assert.equal(result.outcome.result.code, "turn_limit", JSON.stringify(result));
-  assert.equal(Number((await f.db.query("select count(*) n from credit_holds")).rows[0].n), 0);
 });
 
 test("a deleted agent keeps retrying a committed receipt without charging twice", { timeout: 60000 }, async t => {

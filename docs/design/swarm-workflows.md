@@ -350,9 +350,8 @@ prompt, and `resume({ rerun: [...keys] })` is the deliberate choice if the owner
 
 ### Budget, spend and cache reporting
 
-- `budget.usd` is a hard cap enforced by the ledger, not a reservation: nothing in the runtime holds money for
-  longer than one call (`CreditHolds` are per call with a 10-minute expiry, `credit-holds.ts:7,33-41`; end-user
-  pools are daily, #784), so "hold the budget at start" does not exist and is not claimed. Children get their run
+- `budget.usd` is enforced using the ledger. Platform calls draw on positive spendable credit at admission
+  and settle their full cost. Children get their run
   spend limits from what the ledger says is left; a job's compute is charged at the provider's price; a step that
   would start an effect past the cap pauses the workflow with `budget_exhausted` and posts an inbox item to the
   owner with the numbers.
@@ -1067,7 +1066,7 @@ stand-in for this.
 | An agent holding compute for a swarm | A workflow child has no `computer` tool and no `computer: "share" | "fork" | "fresh"`: its compute is jobs, and `job()` from a child counts against the workflow's `jobConcurrency` |
 | Repository abuse | A repo object takes 100,000 files and 2 GB of text in SQLite; larger trees keep only the index resident and read blobs from the chunk store; layers are capped at 10,000 changed paths |
 | Pushing to GitHub | Only to the repositories and permissions the App grant names, with tokens the model never sees; `repo.push` to a protected branch fails as GitHub says |
-| Cost visibility | The ledger and `/v1/usage` by workflow; the 100% pause in phase 1, `cacheShare` and the 50/80% alerts in phase 4. No budget is reserved at start: credit holds are per call, so the ledger is the cap |
+| Cost visibility | The ledger and `/v1/usage` by workflow; the 100% pause in phase 1, `cacheShare` and the 50/80% alerts in phase 4. The workflow checks the ledger before starting more work |
 | Rollout | `WorkflowObject` ships under a `new_sqlite_classes` migration tag; journal rows and the runner protocol carry `version`; a rollback that cannot read rows faults `journal_version` and pauses. Column drops (`parentAgentId`, `agent_inputs.agent`) are expand/contract across two deploys; no compatibility shims otherwise |
 | Tenant-wide | A tenant's running workflows ≤ 20 (operator-set), effects a minute ≤ the tenant's runs a minute |
 

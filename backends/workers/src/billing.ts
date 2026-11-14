@@ -28,6 +28,9 @@ import { CODE_LIMITS, DECISION_LIMITS, SANDBOX_LIMITS } from "../../../src/limit
  * a turn already running stops after its current response, so the overdraft is
  * bounded by one response and the time around it.
  */
+/** The error code of the free hourly allowance's refusal (a 429): a spend refusal, as a 402 credit refusal is. */
+export const FREE_HOURLY_LIMIT = "FREE_HOURLY_LIMIT";
+
 export type BillingMode = "prepaid" | "none";
 
 /**
@@ -358,13 +361,13 @@ export class Billing {
     if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`, "INSUFFICIENT_CREDIT");
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
-      return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`);
+      return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`, FREE_HOURLY_LIMIT);
     }
     return undefined;
   }
 
   /**
-   * What a prepaid tenant can spend now, read afresh in `sql` (credit-holds.ts): its balance, and on free credit no more
+   * What a prepaid tenant can spend now, read afresh in `sql`: its balance, and on free credit no more
    * than is left of the hour's allowance; nothing while a payment is disputed.
    */
   async spendable(tenant: string, sql: Sql): Promise<number> {

@@ -97,14 +97,14 @@ test("out of credit mid-run: the charge posts though it overdraws, the machine s
   f.done();
 });
 
-test("a start refuses credit that model calls hold all of, and an account that never bought credit, with nothing created", async () => {
-  const held = await fixture({ balance: 1000 });
-  await held.connect();
-  await held.credit.reserve("payg", "11111111-1111-4111-8111-111111111111", 1000, 1000, held.now());
-  await assert.rejects(held.start(), (error: unknown) => error instanceof HttpError && error.status === 402 && error.code === "INSUFFICIENT_CREDIT");
-  assert.deepEqual(await held.rows(), []);
-  assert.equal(held.state.creates, 0);
-  held.done();
+test("a start refuses a spent balance and an account that never bought credit, with nothing created", async () => {
+  const spent = await fixture({ balance: 1000 });
+  await spent.connect();
+  await spent.db.query("update credit_accounts set balance = 0 where tenant = 'payg'");
+  await assert.rejects(spent.start(), (error: unknown) => error instanceof HttpError && error.status === 402 && error.code === "INSUFFICIENT_CREDIT");
+  assert.deepEqual(await spent.rows(), []);
+  assert.equal(spent.state.creates, 0);
+  spent.done();
 
   const free = await fixture({ purchased: false });
   await free.connect();
@@ -122,7 +122,7 @@ test("a start refuses credit that model calls hold all of, and an account that n
 test("an internal account with no purchased credit starts, records usage without a debit, and keeps running", async () => {
   const f = await fixture({ billing: "none", purchased: false, balance: 0 });
   try {
-    assert.equal(await f.credit.available("payg", f.now()), 0);
+    assert.equal(await f.accounts.billing.spendable("payg", f.db), 0);
     await f.connect();
     await f.start();
     assert.equal(f.state.creates, 1);

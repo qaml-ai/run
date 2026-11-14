@@ -28,11 +28,11 @@ const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.pr
 const publicLease = (r: any) => r ? ({ id: r.id, provider: r.provider, workspaceId: r.workspace, state: r.state, recoveryRequired: r.state === "uncertain" || r.state === "closing" && !!r.error, createdAt: r.created_at, expiresAt: r.expires_at, closedAt: r.closed_at, ...(r.error ? { error: r.error } : {}) }) : null;
 
 export class Computers {
-  readonly options: { tenantComputerLimit?: (tenant: string) => number | undefined; db: Db; accounts: Pick<Accounts, "seal" | "unseal"> & ManagedComputers["options"]["accounts"]; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number } & Partial<Pick<ManagedComputers["options"], "enabled" | "runtime" | "endUsers" | "credit" | "payer" | "machines" | "sleep" | "provider" | "microvm" | "priceAtCost" | "boatUrl">>;
+  readonly options: { tenantComputerLimit?: (tenant: string) => number | undefined; db: Db; accounts: Pick<Accounts, "seal" | "unseal"> & ManagedComputers["options"]["accounts"]; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number } & Partial<Pick<ManagedComputers["options"], "enabled" | "runtime" | "endUsers" | "payer" | "machines" | "sleep" | "provider" | "microvm" | "priceAtCost" | "boatUrl">>;
   readonly managed: ManagedComputers;
   constructor(options: Computers["options"]) {
     this.options = options;
-    this.managed = new ManagedComputers({ tenantComputerLimit: options.tenantComputerLimit, db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", endUsers: options.endUsers, credit: options.credit, payer: options.payer, provider: options.provider, microvm: options.microvm, priceAtCost: options.priceAtCost, machines: options.machines, sleep: options.sleep, boatUrl: options.boatUrl, now: () => this.now() });
+    this.managed = new ManagedComputers({ tenantComputerLimit: options.tenantComputerLimit, db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", endUsers: options.endUsers, payer: options.payer, provider: options.provider, microvm: options.microvm, priceAtCost: options.priceAtCost, machines: options.machines, sleep: options.sleep, boatUrl: options.boatUrl, now: () => this.now() });
   }
   private now() { return this.options.now?.() ?? Date.now(); }
   private async lock<T>(tenant: string, agent: string, fn: (sql: DbClient) => Promise<T>) {
