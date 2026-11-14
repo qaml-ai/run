@@ -60,9 +60,9 @@ L74, `--token-max-ttl`). Keys are not flags: ECS injects `token-verify-keys` as 
 `--jwks-file`; exactly one of the two) at task start, so no key material is in the task definition and the task role
 reads no secret. `token_issuer` is the runtime's `AGENT_PUBLIC_URL` (the JWT `iss` the tier checks); it must equal
 `infra/job-hosts`' `runtime_public_url`. The daemon writes only under `--data` (`storage.db`, `tmp/`), the image's own `/var/lib/camelfs`; the image
-carries `git` for `git merge-file`. The enrollment and hosts target groups exist whatever `api_features` says
-(their health checks probe `/v0/health` on 8790); until "compute" is on, nothing listens behind them, and no host
-is wired.
+carries `git` for `git merge-file`. The enrollment and hosts target groups exist whatever `api_features` says, but the service registers with them
+only once "compute" is on (their health checks probe `/v0/health` on 8790 through rules that exist for that alone;
+registered before the daemon listened on 8793/8794, their checks timed out and ECS replaced healthy tasks, 11-14).
 
 ## Decisions, with reasons
 
@@ -168,9 +168,10 @@ host's current certificate on 443.
 - No principal here may delete an object: the collector (camel-fs.md §1.9) gets a role of its own in a later phase.
 - The tier reaches each host security group on `host_compute_port` only (the boot/stop listener); the hosts'
   own egress rules (job-hosts: 443 out only) are theirs to widen, to 8443 (enrollment) and 8794 (the NLB).
-- The internal ALB's security group admits hosts on 8443 only and reaches the tasks on 8793 only; the NLB's admits
-  hosts on 8794 only and reaches the tasks on 8794 only; the tasks admit 8790 from the public ALB, 8793 from the
-  internal ALB, 8794 from the NLB.
+- The internal ALB's security group admits hosts on 8443 only and reaches the tasks on 8793 (traffic) and 8790
+  (health checks only: no listener forwards there); the NLB's admits hosts on 8794 only and reaches the tasks on
+  8794 and 8790 (health checks); the tasks admit 8790 from all three balancers, 8793 from the internal ALB, 8794
+  from the NLB.
 - The guest-image publisher (GitHub Actions through the account's existing OIDC provider, the repository's
   `production` environment, as the runtime's deploy role) may only `PutObject` under `guest/`: no read, no list,
   no delete, no other prefix. The key is the image's sha256 and `publish-guest-image.sh` puts with
