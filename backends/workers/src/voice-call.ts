@@ -13,8 +13,9 @@ import { openaiCalls, type Sideband, type SidebandEvents } from "./voice/calls/o
 import { type VoiceCall as Call, type VoiceCallInput, type VoiceCallUpdate, type VoiceTranscriptInput, VOICE_LIMITS } from "./voice/calls/schema.ts";
 import { ASK_AGENT, ASK_FAILED, EMPTY_REPLY, EMPTY_REQUEST, lateFailure, lateReply, LATE_FAILURE, LATE_REPLY, PENDING, realtimeInstructions, STAY_SILENT } from "./voice/calls/prompts.ts";
 import { streamVoiceReply } from "./voice/calls/ask.ts";
-
-import { REALTIME_VOICE_FOR, realtimePrice } from "../../../src/voice/realtime/provider.ts";
+import { DEFAULT_BUCKET } from "./end-user-credits.ts";
+import { REALTIME_VOICE_FOR } from "../../../src/voice/realtime/provider.ts";
+import { admitVoiceUsage, recordVoiceUsage, voiceCredits, voicePrice, type VoiceCredits, type VoiceCharge } from "./voice/calls/money.ts";
 
 
 type Ending = { reason: string; detail?: string; limit?: "end_user"; endUserReason?: string; bucket?: string };
@@ -33,6 +34,12 @@ export class VoiceCall extends DurableObject<Env> {
   private sideband?: Sideband;
   private readonly answers = new Map<number, PromiseWithResolvers<ToolAnswer>>();
   private readonly running = new Map<number, AbortController>();
+  private readonly credits: VoiceCredits;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.credits = voiceCredits(env);
+  }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.tail.then(fn);
@@ -111,7 +118,7 @@ export class VoiceCall extends DurableObject<Env> {
     if (!openai.models.includes(model)) throw new HttpError(400, `Unknown OpenAI realtime model: ${model}`, "REALTIME_MODEL");
     const requested = options.voice ?? "alloy";
     const voice = [requested, REALTIME_VOICE_FOR[requested]].find(value => openai.voices.includes(value)) ?? openai.voices[0];
-    if (!realtimePrice(`openai/${model}`)) throw new HttpError(400, `No realtime price for openai/${model}`, "REALTIME_UNPRICED");
+    if (!voicePrice(this.env, `openai/${model}`)) throw new HttpError(400, `No realtime price for openai/${model}`, "REALTIME_UNPRICED");
     identityInput(options);
     if (options.bucket !== undefined) options.bucket = bucketInput(options.bucket);
     const key = await mediaKey(this.env, tenant, options.keyScope, provider, services);
@@ -121,7 +128,8 @@ export class VoiceCall extends DurableObject<Env> {
     const call: Call = { id, agent, provider, model, voice, subject, maxMinutes, state: "connecting",
       startedAt: null, endedAt: null, expiresAt: now + maxMinutes * 60_000, reason: null,
       turns: 0, asks: 0, audioSeconds: 0, costUsd: 0, speakers: options.speakers ?? {}, metadata: options.metadata ?? {} };
-    const row: Row = { call, tenant, options, platform: key.platform, payer: false, seq: 0, lines: [] };
+    const row: Row = { call, tenant, options, platform: key.platform, payer: await this.credits.enabled(tenant), seq: 0, lines: [] };
+    await admitVoiceUsage(this.env, this.credits, row, services, true);
     await this.save(row);
     await transaction(this.env, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext('voice-sessions:' || $1))", [tenant]);
@@ -161,8 +169,28 @@ export class VoiceCall extends DurableObject<Env> {
 
   private sidebandEvents(): SidebandEvents {
     return {
-      responseStarted: () => {},
-      responseDone: () => {},
+      responseStarted: id => this.background(async () => {
+        const row = await this.row();
+        if (row.call.state !== "live" || await this.ctx.storage.get(`response-start:${id}`) || await this.ctx.storage.get(`response:${id}`)) return;
+        await this.ctx.storage.put(`response-start:${id}`, Date.now());
+        try { await admitVoiceUsage(this.env, this.credits, row); }
+        catch (error) {
+          if (!(error instanceof HttpError) || error.status !== 402) throw error;
+          const by: Ending = { reason: "budget" };
+          if (error.code === "END_USER_CREDIT") Object.assign(by, { limit: "end_user", endUserReason: error.details?.reason, bucket: row.options.bucket ?? DEFAULT_BUCKET });
+          await this.ctx.storage.put(`refused:${id}`, by);
+        }
+      }),
+      responseDone: (id, { usage }) => this.background(async () => {
+        const row = await this.row();
+        if (row.call.state === "ended" || await this.ctx.storage.get(`response:${id}`)) return;
+        const at = Date.now();
+        const charge: VoiceCharge = { key: `voice_openai:${row.call.id}:${id}`,
+          startedAt: await this.ctx.storage.get<number>(`response-start:${id}`) ?? at, at, usage, audioSeconds: usage.outputAudio / 20 };
+        await this.ctx.storage.put(`charge:${id}`, charge);
+        await this.arm(row);
+        await this.settleResponse(row, id, charge);
+      }),
       heard: (id, text, seconds) => this.background(async () => {
         const row = await this.row();
         if (row.call.state !== "live" || await this.ctx.storage.get(`heard:${id}`)) return;
@@ -192,6 +220,19 @@ export class VoiceCall extends DurableObject<Env> {
     };
   }
 
+  private async settleResponse(row: Row, id: string, charge: VoiceCharge) {
+    if (!await this.ctx.storage.get(`response:${id}`)) {
+      const cost = await recordVoiceUsage(this.env, this.credits, row, charge);
+      row.call.turns++;
+      row.call.costUsd += Math.round(cost * 1_000_000) / 1_000_000;
+      await this.ctx.storage.put({ call: row, [`response:${id}`]: true });
+    }
+    const refused = await this.ctx.storage.get<Ending>(`refused:${id}`);
+    if (refused && row.call.state === "live") await this.end(row, refused);
+    await this.ctx.storage.delete([`charge:${id}`, `refused:${id}`, `response-start:${id}`]);
+    await this.arm(row);
+  }
+
   private async end(row: Row, by: Ending, providerClosed = false) {
     if (row.call.state === "ended") return row.call;
     if (row.call.state !== "ending") {
@@ -202,7 +243,7 @@ export class VoiceCall extends DurableObject<Env> {
     }
     if (row.providerCall) {
       try {
-        const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "openai");
+        const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "openai", undefined, undefined, false);
         if (!key?.apiKey) throw new Error("No OpenAI key for hanging up the voice call");
         await this.openai().hangup(row.providerCall, key.apiKey);
       } catch (error) {
@@ -282,7 +323,7 @@ export class VoiceCall extends DurableObject<Env> {
     const controller = new AbortController();
     this.running.set(ask.n, controller);
     await this.arm(row);
-    const payer = {};
+    const payer = await this.credits.enabled(row.tenant) ? { endUser: row.call.subject, bucket: row.options.bucket } : {};
     this.ctx.waitUntil(streamVoiceReply(this.env, row.call, ask, lines, payer, controller.signal).then(result =>
       this.serial(async () => this.reply(await this.row(), ask.n, result.outcome, result.reply)),
     ).catch(() => console.error("voice_call_ask_failed")));
@@ -323,6 +364,7 @@ export class VoiceCall extends DurableObject<Env> {
     if (state === "live" || state === "connecting") next.push(expiresAt);
     if (state === "ending") next.push(Date.now() + 1000);
     for (const ask of (await this.ctx.storage.list<Ask>({ prefix: "ask:" })).values()) next.push(ask.started + (ask.pending ? LATE_MS : PENDING_MS));
+    if ((await this.ctx.storage.list({ prefix: "charge:", limit: 1 })).size) next.push(Date.now() + 1000);
     const at = Math.min(...next);
     if (Number.isFinite(at)) await this.ctx.storage.setAlarm(at);
     else await this.ctx.storage.deleteAlarm();
@@ -357,6 +399,8 @@ export class VoiceCall extends DurableObject<Env> {
         }
       }
     }
+    for (const [key, charge] of await this.ctx.storage.list<VoiceCharge>({ prefix: "charge:" }))
+      await this.settleResponse(row, key.slice("charge:".length), charge);
     if (row.call.state === "live" && row.call.provider === "openai" && !this.sideband && row.call.expiresAt > now)
       await this.end(row, { reason: "error", detail: "The realtime connection closed" }, true);
     if (row.call.state === "live" && row.call.expiresAt <= now) await this.end(row, { reason: "max_duration" }, true);
