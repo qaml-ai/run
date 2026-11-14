@@ -50,8 +50,9 @@ Re-adoption therefore also needs a guest lifecycle change.
 
 ## KVM lane
 
-On the dedicated EC2 KVM test host with base rules provisioned, from
-`camelfsd/` run as root.
+On the dedicated EC2 KVM test host with base rules provisioned and the
+Go `camel-egress-proxy.service` running as UID 940, run as root from
+`camelfsd/`.
 
 ```sh
 CAMELFSD_KVM=1 GUEST_IMAGE=/nvme/camel/base.ext4 go test -tags=kvm ./internal/vmhost
@@ -60,5 +61,6 @@ CAMELFSD_KVM=1 GUEST_IMAGE=/nvme/camel/base.ext4 go test -tags=kvm ./internal/vm
 `GUEST_KERNEL` defaults to `/var/lib/camel/guest/vmlinux`. Set `GUEST_INITRD`
 if the kernel requires it and `CAMELFSD_KVM_WORK` if the guest image's
 directory is unsuitable for work files. The work directory must support
-reflinks. Tests do not install firewall rules. Proxy-dependent checks wait
-for K2b.
+reflinks. The egress test uses the service’s live `/run/camel/egress`
+policy directory. Run it on the dedicated lane with no other jobs using the
+test slots.

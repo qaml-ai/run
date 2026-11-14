@@ -41,7 +41,7 @@ func (d *dirs) Set(s string) error {
 }
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: camelfsd host|api|cleanup|client|version|guest|init")
+		return fmt.Errorf("usage: camelfsd host|api|cleanup|client|version|guest|init|egress")
 	}
 	switch args[0] {
 	case "guest", "init":
@@ -65,6 +65,8 @@ func run(args []string) error {
 		return image.Cleanup(context.Background(), *data, nil)
 	case "api":
 		return apiRole(args[1:])
+	case "egress":
+		return runEgress(args[1:])
 	case "host":
 		return host(args[1:])
 	default:
