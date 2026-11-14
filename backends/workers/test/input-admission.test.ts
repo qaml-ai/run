@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { RequestRecord } from "../src/agent-types.ts";
 
-registerHooks({ resolve(specifier, context, next) {
-  if (specifier === "./control.ts" && context.parentURL?.endsWith("/src/input-admission.ts"))
-    return { url: "data:text/javascript,export async function releaseTurn() {}", shortCircuit: true };
-  return next(specifier, context);
-} });
 const { inputAdmissionDeadline, releaseInputPrompts } = await import("../src/input-admission.ts");
 const { requestView } = await import("../src/request-view.ts");
 

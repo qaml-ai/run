@@ -130,6 +130,7 @@ export interface BrainHooks {
   askAgent?(request: string, speaker: string | undefined, signal: AbortSignal): Promise<string>;
   /** The tenant may spend; throws a 402 HttpError otherwise. */
   admit(): Promise<void>;
+  tenantCreditExhausted?(): Promise<boolean>;
   /** Hold `usd` of the end user's credit (where the tenant meters end users); throws 402 END_USER_CREDIT. */
   hold(usd: number): Promise<Hold | undefined>;
   /** The money ran out: the session ends. */
@@ -561,20 +562,20 @@ export class RealtimeBrain {
       this.providerAnswered = undefined;
     };
     if (this.metered) {
-      this.meteredHold ??= this.creditHold();
+      this.meteredHold ??= this.holdSlice();
       void this.meteredHold.then(() => {
         try { connect(); } catch (error) { this.hooks.failed("realtime_failed", safeError(error)); }
       }).catch(() => {});
     } else connect();
   }
 
-  private async creditHold() {
+  private async holdSlice() {
     try {
       await this.hooks.admit();
       return await this.hooks.hold(REALTIME_LIMITS.holdUsd);
     } catch (error) {
       const refused = error as HttpError;
-      if (refused.status === 402) {
+      if (refused.status === 402 || refused.status === 429) {
         const endUser = refused.code === "END_USER_CREDIT";
         this.hooks.budget(endUser ? "end_user" : "tenant", endUser ? refused.details?.reason as string : undefined, endUser ? refused.details?.bucket as string : undefined);
       } else this.hooks.failed("realtime_credit_failed");
@@ -601,10 +602,10 @@ export class RealtimeBrain {
       const credit = await hold;
       if (costUsd > 0) await credit?.settle(costUsd);
       else await credit?.release();
-      return closing ? undefined : this.creditHold();
+      return closing || this.closed ? undefined : this.holdSlice();
     })();
     void this.meteredHold.catch(error => {
-      if ((error as HttpError)?.status === 402) return;
+      if ([402, 429].includes((error as HttpError)?.status)) return;
       this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) });
       if (!this.closed) this.hooks.failed("realtime_credit_failed");
     });
@@ -923,7 +924,7 @@ export class RealtimeBrain {
       return this.hooks.hold(REALTIME_LIMITS.holdUsd);
     })();
     response.hold.catch((refused: HttpError) => {
-      if (refused?.status !== 402) { this.hooks.log("voice_realtime_hold_failed", { error: safeError(refused) }); return; }
+      if (refused?.status !== 402 && refused?.status !== 429) { this.hooks.log("voice_realtime_hold_failed", { error: safeError(refused) }); return; }
       this.cancel(response, "budget", 0);
       const endUser = refused.code === "END_USER_CREDIT";
       const reason = refused.details?.reason;
@@ -1025,6 +1026,9 @@ export class RealtimeBrain {
     if (!this.metered) {
       this.stats.costUsd += costUsd;
       this.hooks.usage({ usage: outcome.usage, costUsd, audioSeconds: outcome.usage.outputAudio / 20 });
+      if (!this.closed) void this.hooks.tenantCreditExhausted?.().then(exhausted => {
+        if (exhausted && !this.closed) this.hooks.budget("tenant");
+      }).catch(error => this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) }));
     }
     if (outcome.status === "failed") this.hooks.log("voice_realtime_response_failed", { ...(outcome.error ? { error: outcome.error } : {}) });
     const moved = !!outcome.rateLimited && this.connection?.host === "azure";

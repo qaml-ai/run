@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { startFixture } from "./fixture.ts";
-import { reserveTurn, settleTurn, transfer } from "../src/control.ts";
+import { settleTurn, transfer } from "../src/control.ts";
+import { recordDecision } from "../src/decision-service.ts";
 import { EndUserCredits } from "../src/end-user-credits.ts";
 import { database, transaction } from "../src/postgres.ts";
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("Postgres money: holds, concurrent overspend, lost acknowledgement, transfers and rollback", async () => {
+test("Postgres money: lost acknowledgement, transfers and rollback", async () => {
   const fixture = await startFixture();
   const env = {
     HYPERDRIVE: { connectionString: fixture.databaseUrl },
@@ -27,14 +28,6 @@ test("Postgres money: holds, concurrent overspend, lost acknowledgement, transfe
     const agent = (await created.json()) as { id: string };
     const tenant = "camelrun-proto-local",
       requestId = crypto.randomUUID();
-    assert.deepEqual(
-      await reserveTurn(env, tenant, agent.id, requestId, 10000),
-      { held: 10000 },
-    );
-    assert.deepEqual(
-      await reserveTurn(env, tenant, agent.id, requestId, 10000),
-      { held: 10000 },
-    );
     const initial = Number(
       (
         await fixture.db.query(
@@ -69,15 +62,6 @@ test("Postgres money: holds, concurrent overspend, lost acknowledgement, transfe
       settleTurn(env, { ...receipt, costMicros: 8000 }),
       /Receipt changed/,
     );
-    assert.equal(
-      (
-        await fixture.db.query(
-          "select count(*) from credit_holds where tenant=$1",
-          [tenant],
-        )
-      ).rows[0].count,
-      0,
-    );
     const target = "camelrun-proto-team";
     await fixture.db.query(
       "insert into tenants(id,created_at,billing) values($1,$2,'prepaid')",
@@ -109,6 +93,13 @@ test("Postgres money: holds, concurrent overspend, lost acknowledgement, transfe
       ),
       10000,
     );
+    await assert.rejects(transfer(env, target, tenant, 10_001, "overdraft"), /Insufficient credit/);
+    const credited = await fetch(`${fixture.url}/v1/credits`, { headers: { Authorization: `Bearer ${fixture.token}` } });
+    assert.equal(credited.status, 200);
+    assert.equal((await credited.json() as { held: number }).held, 0);
+    const holds = await fetch(`${fixture.url}/v1/credits/holds`, { headers: { Authorization: `Bearer ${fixture.token}` } });
+    assert.equal(holds.status, 200);
+    assert.deepEqual(await holds.json(), []);
     const before = Number(
       (
         await fixture.db.query(
@@ -138,54 +129,23 @@ test("Postgres money: holds, concurrent overspend, lost acknowledgement, transfe
       ),
       before,
     );
-    await fixture.db.query(
-      "update credit_accounts set balance=2000000,purchased=0 where tenant=$1",
-      [tenant],
-    );
-    await fixture.db.query(
-      "update credit_spend_minutes set amount=1000000 where tenant=$1",
-      [tenant],
-    );
-    await assert.rejects(
-      reserveTurn(env, tenant, agent.id, crypto.randomUUID(), 10000),
-      /hourly allowance/,
-    );
-    await fixture.db.query(
-      "insert into billing_disputes(id,payment_intent,tenant,amount,status,created_at,updated_at) values('fixture-dispute','fixture-intent',$1,100,'needs_response',$2,$2)",
-      [tenant, Date.now()],
-    );
-    await fixture.db.query(
-      "update credit_accounts set purchased=100000000 where tenant=$1",
-      [tenant],
-    );
-    await assert.rejects(
-      reserveTurn(env, tenant, agent.id, crypto.randomUUID(), 10000),
-      /hourly allowance/,
-    );
-    await fixture.db.query(
-      "update billing_disputes set closed=true where id='fixture-dispute'",
-    );
-    await fixture.db.query(
-      "update credit_accounts set balance=100000 where tenant=$1",
-      [tenant],
-    );
-    const outcomes = await Promise.allSettled(
-      Array.from({ length: 20 }, () =>
-        reserveTurn(env, tenant, agent.id, crypto.randomUUID(), 10000),
-      ),
-    );
-    assert.equal(outcomes.filter((x) => x.status === "fulfilled").length, 10);
-    assert.equal(
-      Number(
-        (
-          await fixture.db.query(
-            "select sum(amount) n from credit_holds where tenant=$1",
-            [tenant],
-          )
-        ).rows[0].n,
-      ),
-      100000,
-    );
+  } finally {
+    await fixture.stop();
+  }
+});
+
+test("a completed platform decision debits the full cost after the account runs out of credit", async () => {
+  const fixture = await startFixture();
+  const env = { HYPERDRIVE: { connectionString: fixture.databaseUrl }, TEST_MODE: "1", TEST_MODEL: "1" };
+  const tenant = "camelrun-proto-local";
+  try {
+    await fixture.db.query("update credit_accounts set balance=1 where tenant=$1", [tenant]);
+    await recordDecision(env, { tenant }, { provider: "openrouter", model: "fixture", platform: true, decisions: 1,
+      timestamp: Date.now(), usage: { input: 100, output: 10, cost: { total: 0.01 } } });
+    const account = (await fixture.db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0];
+    assert.equal(Number(account.balance), 1 - 10_000);
+    const usage = (await fixture.db.query("select responses from usage where tenant=$1 and model='decision:openrouter/fixture'", [tenant])).rows[0];
+    assert.equal(Number(usage.responses), 1);
   } finally {
     await fixture.stop();
   }
@@ -286,7 +246,6 @@ test("API keys isolate tenants, revoke immediately, Queue delivers signed webhoo
         TEST_MODE: "1",
       },
       requestId = crypto.randomUUID();
-    await reserveTurn(env, "camelrun-proto-local", agent.id, requestId);
     await settleTurn(env, {
       tenantId: "camelrun-proto-local",
       agentId: agent.id,

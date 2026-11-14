@@ -36,59 +36,38 @@
     "reason": "ECS HTTP fixture"
   },
   {
-    "file": "tests/credit-holds.test.ts",
-    "test": "a dear call a small balance cannot pay for is refused before it is made, and leaves no attempt",
+    "file": "tests/model-credit.test.ts",
+    "test": "a failed attempt without usage evidence costs nothing, including after reconciliation",
     "included": true
   },
   {
-    "file": "tests/credit-holds.test.ts",
-    "test": "the long-context tier counts: $60 per million past 272k input, not $30",
+    "file": "tests/model-credit.test.ts",
+    "test": "a failed platform call releases the end-user hold and costs neither payer",
     "included": true
   },
   {
-    "file": "tests/credit-holds.test.ts",
-    "test": "max_tokens is sized to what is left, so reasoning that never streams is bounded; holds leave room for other calls",
+    "file": "tests/model-credit.test.ts",
+    "test": "a tenants-file tenant with no billing, or none, starts without a credit account: as camel-bots and chiridion-prod are",
     "included": true
   },
   {
-    "file": "tests/credit-holds.test.ts",
-    "test": "people can spend all they paid for: a last call starts within the shortfall, then nothing does",
+    "file": "tests/model-credit.test.ts",
+    "test": "a tenant with one micro-dollar can start without an output cap, settles in full, and cannot start again",
     "included": true
   },
   {
-    "file": "tests/credit-holds.test.ts",
-    "test": "an unknown price holds at a mid-range one; a router's zero is unknown; :free holds nothing; no estimate, own key and no billing hold nothing",
+    "file": "tests/model-credit.test.ts",
+    "test": "free credit refuses the next call when hourly spend reaches the allowance with balance left",
     "included": true
   },
   {
-    "file": "tests/credit-holds.test.ts",
-    "test": "on free credit a call is held within the hour's allowance, not the whole balance",
+    "file": "tests/model-credit.test.ts",
+    "test": "concurrent agents can all admit against the same tiny positive balance and all debit in full",
     "included": true
   },
   {
-    "file": "tests/credit-holds.test.ts",
-    "test": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
-    "included": false,
-    "reason": "ECS HTTP fixture"
-  },
-  {
-    "file": "tests/credit-holds.test.ts",
-    "test": "a hold whose host went away lapses and stops counting",
-    "included": true
-  },
-  {
-    "file": "tests/credit-holds.test.ts",
-    "test": "a failed attempt's hold goes as it ends and costs nothing, on reconciliation too; only the attempt that answered is charged",
-    "included": true
-  },
-  {
-    "file": "tests/credit-holds.test.ts",
-    "test": "a call an end user pays for on the platform's key holds both credits; a failed attempt releases both and costs neither, and only the attempt that answered is charged",
-    "included": true
-  },
-  {
-    "file": "tests/credit-holds.test.ts",
-    "test": "a tenants-file tenant with no billing, or none, is never held or refused, and takes no row lock: as camel-bots and chiridion-prod are",
+    "file": "tests/model-credit.test.ts",
+    "test": "an open payment dispute blocks admission with a positive purchased balance",
     "included": true
   },
   {

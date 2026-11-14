@@ -21,6 +21,7 @@ export type VoiceCallOptions = {
 export type VoiceCallsOptions = {
   db: Db; node: string;
   admit(tenant: string): Promise<void>;
+  tenantCreditExhausted?(tenant: string): Promise<boolean>;
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   record(tenant: string, usage: UsageRecord): void;
   submitStreaming(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncIterable<string>;
@@ -158,7 +159,11 @@ export class VoiceCalls {
         responseDone: (response, outcome) => afterLive("voice_call_usage_failed", live => {
           const write = this.responseDone(tenant, id, model, options, live, response, outcome.usage);
           live.usage.add(write);
-          return write.finally(() => { live.usage.delete(write); });
+          return write.finally(() => { live.usage.delete(write); }).then(async () => {
+            if (live.platform && !live.abort.signal.aborted && await this.options.tenantCreditExhausted?.(tenant)) {
+              await this.end(tenant, id, { reason: "budget" });
+            }
+          });
         }),
         heard: (item, text, seconds) => afterLive("voice_call_utterance_failed", live => this.heard(id, live, item, text, seconds)),
         said: () => {},

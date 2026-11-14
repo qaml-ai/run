@@ -34,7 +34,7 @@ retry.
 | 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio, or an image, would cost more than the run's or agent's spend limit has left |
-| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent (or a payment for it is disputed): no runs start and no files are stored |
+| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent (or a payment for it is disputed). An admitted model call can settle below zero. New runs are refused and file storage requires positive credit |
 | 402 | `END_USER_CREDIT` | With [end-user credits](../guides/end-user-credits.md) on: the run's or call's payer (`endUser`, else its subject) may not spend more in its bucket. The body names whose (`endUser`), which `bucket`, and why (`reason`, one of the [credit reasons](#end-user-credit-reasons)). Grant them credit, raise the limit, or wait for tomorrow's allowance |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |

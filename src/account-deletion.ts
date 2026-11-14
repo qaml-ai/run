@@ -54,6 +54,7 @@ const TENANT_TABLES = [
   "agent_inputs", "schedules", "channel_agents", "volume_watchers", "channels", "voice_sessions", "voice_calls", "voice_recordings",
   "chunk_pins", "chunk_touches", "gc_candidates", "storage_gc",
   "billing_email_outbox", "billing_recipients", "billing_events", "billing_alert_settings", "billing_auto_settings", "help_requests",
+  "credit_holds", // Legacy tenant reservations, retained until the table is dropped.
   // The tenant's own users' credit: their ids are the tenant's customers' data.
   "end_user_settings", "end_users", "end_user_ledger", "end_user_days", "end_user_holds", "end_user_lots",
 ];

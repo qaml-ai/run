@@ -79,7 +79,7 @@ test("over the API: an agent keeps what the lookup said, a move looks up too, an
 
 const USD = 1_000_000;
 
-test("a pass-through model's looked-up price is what a call on the platform's key holds, of the tenant's credit and its end user's, not the mid-range one", async () => {
+test("a pass-through model's looked-up price is what a call on the platform's key holds for its end user, not the mid-range one", async () => {
   const { db } = await testDatabase();
   const key = createHash("sha256").update("fixture").digest("hex");
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: key, billing: "prepaid" } }, platformKeys: { openrouter: "fixture" } }) });
@@ -94,16 +94,14 @@ test("a pass-through model's looked-up price is what a call on the platform's ke
     await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "new/dear", kind: "response", at: Date.now(), keyHash: key,
       estimate: { inputTokens: 100_000, maxOutputTokens: 1_000, rates: rates ?? { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } } as never);
     const held = Number((await db.query("select paid + allowance as n from end_user_holds where id = $1", [id])).rows[0].n);
-    const tenantHeld = Number((await db.query("select amount from credit_holds where id = $1", [id])).rows[0].amount);
     await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: { input: 0, output: 0 }, chars: 0, completed: false });
-    return { held, tenantHeld };
+    return held;
   };
   // As the agent holds it after its lookup: $75 and $300 per million, with OpenRouter's funding on top.
   const looked = await hold({ input: 75, output: 300 });
-  assert.ok(looked.held > 7.5 * USD && looked.held < 9 * USD, `the end user's, about $8.25: ${looked.held}`);
-  assert.ok(looked.tenantHeld > 7.5 * USD && looked.tenantHeld < 9 * USD, `the tenant's, about $8.25: ${looked.tenantHeld}`);
+  assert.ok(looked > 7.5 * USD && looked < 9 * USD, `the end user's, about $8.25: ${looked}`);
   const unknown = await hold();
-  assert.ok(unknown.held < USD && unknown.tenantHeld < USD, `the mid-range $3 and $15 with no price: ${JSON.stringify(unknown)}`);
+  assert.ok(unknown < USD, `the mid-range $3 and $15 with no price: ${unknown}`);
 });
 
 test("over the API: the lookup's price reaches an end user's hold, so a dear model is refused where the mid-range price would have started", async t => {

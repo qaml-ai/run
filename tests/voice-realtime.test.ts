@@ -587,3 +587,22 @@ test("Grok stops on an end-user credit refusal when renewing its hold", async ()
   assert.deepEqual(budget, ["end_user"]);
   brain.close();
 });
+
+test("a token-metered voice response reports its usage before ending on tenant credit", async () => {
+  let reportedCost = 0;
+  const { brain, connection, budget, usage } = testBrain({
+    tenantCreditExhausted: async () => {
+      reportedCost = usage[0]?.costUsd ?? 0;
+      return reportedCost > 0;
+    },
+  });
+  try {
+    await until(connection, "connection");
+    await connection()!.answer("paid", { usage: { outputAudio: 100 } });
+    await until(() => budget.length === 1, "tenant budget stop");
+    assert.ok(reportedCost > 0);
+    assert.deepEqual(budget, ["tenant"]);
+  } finally {
+    brain.close();
+  }
+});

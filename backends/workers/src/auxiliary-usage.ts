@@ -15,8 +15,7 @@ export type AuxiliaryCall = {
 export type AuxiliaryCost = { costUsd: number; provider?: string; model?: string };
 
 /**
- * Check before sending any external request. A platform call must first acquire
- * its existing billing hold; absence of that integration is a refusal, not free use.
+ * Check before sending any external request. A platform call must pass its billing admission check.
  */
 export async function admitAuxiliaryUsage(env: PostgresEnv, call: Omit<AuxiliaryCall, "callId" | "kind" | "startedAt"> & { spendLimit?: number }, platform = false, admitPlatform?: () => Promise<void>) {
   await withSql(env, async sql => {

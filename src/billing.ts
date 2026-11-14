@@ -362,7 +362,7 @@ export class Billing {
   }
 
   /**
-   * What a prepaid tenant can spend now, read afresh in `sql` (credit-holds.ts): its balance, and on free credit no more
+   * What a prepaid tenant can spend now, read afresh in `sql`: its balance, and on free credit no more
    * than is left of the hour's allowance; nothing while a payment is disputed.
    */
   async spendable(tenant: string, sql: Sql): Promise<number> {

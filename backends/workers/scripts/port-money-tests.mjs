@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "../node_modules/typescript/lib/typescript.js";
 const here = dirname(fileURLToPath(import.meta.url));
-const names = ["shared-allowances", "credit-holds", "end-user-holds", "end-user-lots", "end-user-credits", "end-user-written-off", "end-user-settings-concurrency", "end-user-balance-events", "end-user-history", "end-user-usage", "model-attempts", "oauth-clients"];
+const names = ["shared-allowances", "model-credit", "end-user-holds", "end-user-lots", "end-user-credits", "end-user-written-off", "end-user-settings-concurrency", "end-user-balance-events", "end-user-history", "end-user-usage", "model-attempts", "oauth-clients"];
 const inventory = [];
 for (const name of names) {
   const source = await readFile(resolve(here, `../../../tests/${name}.test.ts`), "utf8");

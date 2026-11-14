@@ -435,6 +435,8 @@ export interface VoiceSessionsOptions {
   transports: Partial<Record<typeof VOICE_PROVIDERS[number], VoiceTransport>>;
   /** Refuses a tenant that may not start paid work now (spent credit, monthly cap); throws an HttpError. */
   admit(tenant: string): Promise<void>;
+  tenantCreditExhausted?(tenant: string): Promise<boolean>;
+  admitRealtime?(tenant: string): Promise<void>;
   /** Whether an agent is the tenant's (and not deleted), for `deliver.agent`. */
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   /** Speech to text for listening sessions, as `POST /v1/transcriptions` makes it; without it, brain listen is refused. */
@@ -1560,7 +1562,7 @@ export class VoiceSessions {
     try {
       try { await this.options.admit(origin.tenant); }
       catch (error) {
-        if ((error as HttpError).status !== 402) throw error;
+        if (![402, 429].includes((error as HttpError).status)) throw error;
         await this.endFor(origin, { reason: "budget", limit: "tenant" });
         return;
       }
@@ -1618,6 +1620,7 @@ export class VoiceSessions {
     const local = this.held.get(origin.id);
     if (row && transcript.text) local?.media?.notify?.({ type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, brain: "listen" });
     if (row && local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
+    if (usage.platform && await this.options.tenantCreditExhausted?.(origin.tenant)) await this.endFor(origin, { reason: "budget", limit: "tenant" });
     console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started }));
   }
 
@@ -1772,7 +1775,8 @@ export class VoiceSessions {
           return text;
         },
       } : {}),
-      admit: () => this.options.admit(held.tenant),
+      admit: () => (this.options.admitRealtime ?? this.options.admit)(held.tenant),
+      ...(credentials.platform && this.options.tenantCreditExhausted ? { tenantCreditExhausted: () => this.options.tenantCreditExhausted!(held.tenant) } : {}),
       hold: async usd => {
         const { subject, bucket } = options();
         return subject !== undefined && this.options.credit ? this.options.credit.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_realtime", { session: held.id }) : undefined;

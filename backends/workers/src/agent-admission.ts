@@ -11,7 +11,7 @@ import { childParent } from "./child-parent.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, boundedText, object } from "./validation.ts";
-import { Directory, releaseTurn } from "./control.ts";
+import { Directory } from "./control.ts";
 import { type Mount } from "./files.ts";
 import { imageReferenceInput, type ImageRef } from "./images.ts";
 import { PromptAttachments, attachmentInput, attachmentFiles } from "./prompt-attachments.ts";
@@ -60,7 +60,6 @@ export async function releaseConfigurationWaitersImpl(this: AgentRuntime,
         const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
         await this.ctx.storage.put(reqKey(record.id), completed);
         const conf = await this.config();
-        await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
         await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
         await this.emit({ type: 'response', id: record.id, outcome: completed.outcome });
       }
@@ -639,7 +638,6 @@ export async function admitImpl(this: AgentRuntime,
       await this.ctx.storage.put(reqKey(id), record);
       if (preparing) {
         await this.promptPreparations.finish(id);
-        await releaseTurn(this.env, conf.tenantId, conf.id, id);
         await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
       }
       await this.emit({ type: "response", id, outcome: record.outcome });
@@ -699,7 +697,6 @@ export async function admitImpl(this: AgentRuntime,
       await this.ctx.storage.put(reqKey(id), record);
       await this.emit({ type: "response", id, outcome: record.outcome });
       if (record.admitted) {
-        await releaseTurn(this.env, conf.tenantId, conf.id, id);
         await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
       }
       return record;

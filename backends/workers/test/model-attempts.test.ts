@@ -150,7 +150,6 @@ test("end-user settlement preserves holds on rollback and charges once after a l
   assert.equal((await credits.get("payg", "person")).balance, 880_000);
   assert.equal(Number((await db.query("select count(*) n from end_user_ledger where kind='usage'")).rows[0].n), 1);
   assert.equal(Number((await db.query("select count(*) n from end_user_holds")).rows[0].n), 0);
-  assert.equal(Number((await db.query("select count(*) n from credit_holds")).rows[0].n), 0);
   const rows = (await db.query("select workspace, responses, cost from workspace_usage")).rows;
   assert.equal(rows.length, 1);
   assert.deepEqual(rows[0], { workspace: original.id, responses: 1, cost: 0.1 });

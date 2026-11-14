@@ -13,7 +13,6 @@ import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
 import { ComputerTransfers } from "./computers/transfers.ts";
 import { Computers } from "./computers/service.ts";
-import { CreditHolds } from "./credit-holds.ts";
 import { Workspaces } from "./workspaces.ts";
 import { anthropicFederationFromEnvironment } from "./anthropic-federation.ts";
 import { ModelAttempts } from "./model-attempts.ts";
@@ -428,14 +427,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // A provider's key for speech to text and images, as a model call resolves it: its key scope's, its own, else the
   // platform's, which a prepaid tenant pays for (per second of audio, per token of an image).
-  const providerKey = async (tenant: string, keyScope: string | undefined, provider: string, azureDeployment?: string) => {
+  const providerKey = async (tenant: string, keyScope: string | undefined, provider: string, azureDeployment?: string, checkCredit = true) => {
     const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
     // A scope's entry, as its model calls take it: its key, or an address (a gateway) that needs none.
     if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     if (!resolved) return undefined;
     const platform = chargesPlatform(resolved.source);
-    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    if (platform && checkCredit) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
     // The platform's key goes to its Azure OpenAI deployment when there is one, falling back on OpenAI (azure-openai.ts).
     const azure = secrets.azureOpenAI;
     if (platform && provider === "openai" && azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform };
@@ -491,8 +490,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
-  const creditHolds = new CreditHolds(db, accounts.billing);
-  const computers = new Computers({ tenantComputerLimit: tenant => tenants.computerLimit(tenant), db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, provider: config.computerProvider, microvm: config.microvm, priceAtCost: config.computerAtCost, boatUrl: config.boatUrl, runtime: publicUrl, endUsers: () => endUsers, credit: () => creditHolds, payer: agent => clients.payerOf(agent) });
+  const computers = new Computers({ tenantComputerLimit: tenant => tenants.computerLimit(tenant), db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, provider: config.computerProvider, microvm: config.microvm, priceAtCost: config.computerAtCost, boatUrl: config.boatUrl, runtime: publicUrl, endUsers: () => endUsers, payer: agent => clients.payerOf(agent) });
   let sweepingComputers = false;
   const computerTimer = setInterval(() => {
     if (sweepingComputers) return;
@@ -984,10 +982,17 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const refused = await accounts.runLimit(tenant);
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
   };
+  const voiceCreditExhausted = async (tenant: string) =>
+    await accounts.billing.mode(tenant) === "prepaid" && await accounts.billing.spendable(tenant, db) <= 0;
   const voice = voiceTransports && new VoiceSessions({
     // Recordings are kept in the node's object storage, under recordings/.
     db, storage, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
-    admit: admitVoice,
+    admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted,
+    admitRealtime: async tenant => {
+      const capped = await accounts.spendLimit(tenant);
+      if (capped) throw new HttpError(402, capped, "SPEND_LIMIT");
+      if (await voiceCreditExhausted(tenant)) throw new HttpError(402, "This account is out of spendable credit", "INSUFFICIENT_CREDIT");
+    },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
     transcriber,
@@ -1024,13 +1029,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     } : {}),
   });
   const calls = config.voice.realtime.includes("openai") ? new VoiceCalls({
-    db, node, admit: admitVoice, agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    db, node, admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted, agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     submitStreaming: submitStreamingAnywhere, credit: endUsers,
     creditEnabled: deps.voiceCallOverrides && "credit" in deps.voiceCallOverrides ? undefined : tenant => endUsers.enabled(tenant),
     providers: { openai: openaiCalls({ baseUrl: config.voice.realtimeUrl }) },
     key: async (tenant, keyScope, provider) => {
-      const key = await providerKey(tenant, keyScope, provider);
+      const key = await providerKey(tenant, keyScope, provider, undefined, false);
       return key?.apiKey && !("baseUrl" in key && key.baseUrl) ? { apiKey: key.apiKey, platform: key.platform } : undefined;
     },
     perTenant: async tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant,

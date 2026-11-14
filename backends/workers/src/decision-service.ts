@@ -33,7 +33,7 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
   const charge = usage.platform ? Math.ceil(usage.usage.cost.total * 1_000_000) : 0;
   const now = usage.timestamp;
   await transaction(env, async sql => {
-    // A real platform key must come with the money track's admission and hold
+    // A real platform key must come with the money track's admission
     // integration. This adapter's platform credentials are local fixtures only.
     if (usage.platform && !(env.TEST_MODEL === '1' && env.TEST_MODE === '1')) throw new HttpError(503, 'Platform decision billing is not configured');
     if (agentId) {
@@ -42,7 +42,6 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
     }
     await sql.query('select tenant from credit_accounts where tenant=$1 for update', [context.tenant]);
     if (charge > 0) {
-      if (await new BillingSpendable().spendable(context.tenant, sql) < charge) throw new HttpError(402, 'Insufficient credit', 'INSUFFICIENT_CREDIT');
       await accrueUsage(sql, [{ tenant: context.tenant, amount: charge, metadata: { decision: charge, decisions: usage.decisions ?? 0 } }], now);
     }
     await sql.query(`insert into usage(tenant,day,model,responses,input,output,cost,platform_responses,platform_cost) values($1,$2,$3,$4,$5,$6,$7,$8,$9)

@@ -127,14 +127,13 @@ async function admit(env: MediaBindings, tenant: string, services: KeyServices) 
   // Compatibility for pre-money-track synthetic fixture settings only.
   if (env.TEST_MODE !== '1' || !env.TEST_MEDIA_TENANTS || services.accounts.tenants.has(tenant)) return;
   const configured = testConfig(env).tenants?.[tenant];
-  const row = (await withSql(env, sql => sql.query('select t.billing,t.limits,a.balance,coalesce((select sum(amount) from credit_holds where tenant=t.id),0) held from tenants t left join credit_accounts a on a.tenant=t.id where t.id=$1', [tenant]))).rows[0];
+  const row = (await withSql(env, sql => sql.query('select limits from tenants where id=$1', [tenant]))).rows[0];
   if (!row) throw new HttpError(401, 'Unknown account');
   const cap = configured?.maxMonthlyCost ?? row.limits?.maxMonthlyCost;
   if (cap !== undefined) {
     const spent = Number((await withSql(env, sql => sql.query('select coalesce(sum(cost),0) spent from usage where tenant=$1 and day >= $2', [tenant,new Date().toISOString().slice(0,7)+'-01']))).rows[0].spent);
     if (spent >= cap) throw new HttpError(402, 'Monthly spend limit reached', 'SPEND_LIMIT');
   }
-  if (row.billing !== 'none' && Number(row.balance) - Number(row.held) <= 0) throw new HttpError(402, 'Credit required', 'INSUFFICIENT_CREDIT');
   const rate = configured?.runsPerMinute ?? row.limits?.runsPerMinute;
   if (rate !== undefined && env.TENANTS && !await env.TENANTS.getByName(tenant).rate('runs',rate)) throw new HttpError(429,'Run rate limit reached','RATE_LIMIT');
 }

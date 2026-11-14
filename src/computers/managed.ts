@@ -4,8 +4,7 @@ import { microvmMachines, MICROVM_HOUR, MICROVM_MAX_SECONDS, type MicrovmSetting
 import { fileReceipts } from "./providers.ts";
 import { randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
-import { resolveKey } from "../capabilities/router.ts";
-import type { CreditHolds } from "../credit-holds.ts";
+import { chargesPlatform } from "../core/key-source.ts";
 import { transaction, type Db } from "../db.ts";
 import { creditError, type EndUserCredits } from "../end-user-credits.ts";
 import { HttpError } from "../http.ts";
@@ -173,7 +172,6 @@ export class ManagedComputers {
     /** What names this runtime on its machines: its public URL. */
     runtime: string;
     endUsers?(): Pick<EndUserCredits, "reserve" | "extend" | "settleHold" | "release" | "renew"> | undefined;
-    credit?(): Pick<CreditHolds, "available"> | undefined;
     /** Who pays for the agent's current run, where the tenant meters its end users. */
     tenantComputerLimit?: (tenant: string) => number | undefined;
     payer?(agent: string): { id: string; bucket: string } | undefined;
@@ -309,22 +307,22 @@ export class ManagedComputers {
   /**
    * What a new computer needs: that it may start, on which key, and its end user's hold. The account must be under its
    * monthly spend limit, on any key, as a run must (the same check as a fresh run, and as Workers computers make). On the
-   * platform's key an account on prepaid billing must also have bought credit and have credit left after its model-call
-   * holds. Internal accounts use their configured billing mode; end-user limits still apply to either mode.
+   * platform's key a prepaid account must have purchased credit and positive spendable credit. Internal accounts
+   * use their configured billing mode. End-user limits apply to either mode.
    */
   private async newRow(connection: any, tenant: string, agent: string) {
-    const { accounts, payer, endUsers, credit, now } = this.options;
+    const { accounts, payer, endUsers, now } = this.options;
     if ((await this.db.query("select 1 from computer_blocks where tenant=$1", [tenant])).rowCount) throw new HttpError(403, "Computers are turned off for this account. Nothing was created or charged. Do not retry in this turn; tell the user.");
     const capped = await accounts.spendLimit(tenant);
     if (capped) throw new HttpError(402, `${capped}. Nothing was created or charged. Do not retry in this turn; tell the user.`, "SPEND_LIMIT");
-    const credential = this.provider === "lambda" ? { platform: true } : await resolveKey(accounts, tenant, NAME);
-    if (!credential) throw new HttpError(503, "Computers are unavailable on this runtime. Do not retry in this turn; tell the user.");
+    const credential = this.provider === "lambda" ? undefined : await accounts.providerKey(tenant, NAME);
+    if (this.provider !== "lambda" && !credential) throw new HttpError(503, "Computers are unavailable on this runtime. Do not retry in this turn; tell the user.");
     let held: { id: string; endUser: string; bucket: string } | undefined;
-    if (credential.platform) {
+    const platform = !credential || chargesPlatform(credential.source);
+    if (platform) {
       if (await accounts.billing.mode(tenant) === "prepaid") {
         if (await accounts.billing.onFreeCredit(tenant)) throw new HttpError(403, "Computers are available once this account has bought credit. Nothing was created or charged. Do not retry in this turn; tell the user.");
-        const available = await credit?.()?.available(tenant, now());
-        if (available !== undefined && available <= 0) throw new HttpError(402, "This account's credit is spent or held by calls in flight, so a computer can't start. Nothing was created or charged. Do not retry in this turn; tell the user.", "INSUFFICIENT_CREDIT");
+        if (await accounts.billing.spendable(tenant, this.db) <= 0) throw new HttpError(402, "This account is out of credit, so a computer can't start. Nothing was created or charged. Do not retry in this turn; tell the user.", "INSUFFICIENT_CREDIT");
       }
       const user = payer?.(agent), users = endUsers?.();
       if (user && users) {
@@ -336,7 +334,7 @@ export class ManagedComputers {
     }
     const at = now(), workspace = await new Workspaces(this.db).current(tenant, "agent", agent);
     const row = (await this.db.query("insert into managed_computers(id,tenant,agent,connection,workspace,platform,hold,end_user,bucket,deadline,created_at,provider) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) on conflict do nothing returning *",
-      [id(), tenant, agent, connection.id, workspace?.workspace ?? null, credential.platform, held?.id ?? null, held?.endUser ?? null, held?.bucket ?? null, at + Math.min(connection.lease_seconds, this.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds) * 1000, at, this.provider])).rows[0];
+      [id(), tenant, agent, connection.id, workspace?.workspace ?? null, platform, held?.id ?? null, held?.endUser ?? null, held?.bucket ?? null, at + Math.min(connection.lease_seconds, this.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds) * 1000, at, this.provider])).rows[0];
     if (row) return row;
     // A start at the same moment made it: this one uses its row, and so its machine.
     if (held) await endUsers?.()?.release(held.id);
@@ -543,7 +541,7 @@ export class ManagedComputers {
     const limits = new Map<string, Promise<{ spend: boolean; credit: boolean }>>();
     const limitOf = (tenant: string) => {
       let found = limits.get(tenant);
-      if (!found) limits.set(tenant, found = (async () => ({ spend: !!await accounts.spendLimit(tenant), credit: !!await accounts.billing.creditLimit(tenant) }))());
+      if (!found) limits.set(tenant, found = (async () => ({ spend: !!await accounts.spendLimit(tenant), credit: await accounts.billing.mode(tenant) === "prepaid" && await accounts.billing.spendable(tenant, this.db) <= 0 }))());
       return found;
     };
     for (const row of rows.filter(row => !row.agent_gone)) {

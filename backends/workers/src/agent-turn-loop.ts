@@ -8,7 +8,6 @@ import { body } from "./validation.ts";
 import { supersedesInput } from "../../../src/shared-agents.ts";
 import { answerHuman, bindHumanInput, sameHumanAnswer, systemHumanAnswer, humanInputView, HumanInputs, resumedHumanTools, type HumanInput } from "./human.ts";
 import { settledAlready } from "./input-policy.ts";
-import { releaseTurn } from "./control.ts";
 import { attachmentMessage } from "./prompt-attachments.ts";
 import { publishScheduleEmails } from "./schedules.ts";
 import { metric, errorClass } from "./observability.ts";
@@ -305,7 +304,6 @@ export async function onViewImpl(this: AgentRuntime,
           });
           await this.emit({ type: "response", id, outcome: record.outcome });
           const conf = await this.config();
-          await releaseTurn(this.env, conf.tenantId, conf.id, id);
           await this.env.TENANTS.getByName(conf.tenantId).release(
             `${conf.id}:${id}`,
           );
@@ -874,7 +872,6 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       for (const resume of created) {
         await this.ctx.storage.delete(reqKey(resume.id));
         await this.ctx.storage.delete(`resume-for:${resume.piId}`);
-        await releaseTurn(this.env, conf!.tenantId, conf!.id, resume.id);
         await this.env.TENANTS.getByName(conf!.tenantId).release(`${conf!.id}:${resume.id}`);
       }
       throw error;
