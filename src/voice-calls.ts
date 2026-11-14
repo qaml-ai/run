@@ -9,7 +9,7 @@ import { DEFAULT_VOICE } from "./speech.ts";
 import { VOICE_LIMITS, type VoiceCredit } from "./voice-sessions.ts";
 import { redactDetail } from "./voice-providers/socket.ts";
 import { ASK_LIMITS, askAgent, TRANSCRIPT_CHARS, TRANSCRIPT_LINES } from "./voice/calls/bridge.ts";
-import type { ElevenLabsCalls } from "./voice/calls/elevenlabs.ts";
+import { ELEVENLABS_BUCKETS_MINUTES, terminationReasonToEnd, type ElevenLabsCalls } from "./voice/calls/elevenlabs.ts";
 import type { OpenAICalls, Sideband, SidebandEvents } from "./voice/calls/openai.ts";
 import { ASK_AGENT, ASK_FAILED, EMPTY_REPLY, EMPTY_REQUEST, lateFailure, lateReply, LATE_FAILURE, LATE_REPLY, PENDING, realtimeInstructions, STAY_SILENT } from "./voice/calls/prompts.ts";
 import { NO_USAGE, realtimeCost, realtimePrice, realtimeVoice, type RealtimeUsage } from "./voice/realtime/provider.ts";
@@ -46,7 +46,9 @@ type Row = {
   state: VoiceCall["state"]; end_reason: string | null; provider_call: string | null; options: VoiceCallOptions;
   hold: CallHold | null;
   turns: number; asks: number; audio_seconds: string; cost: number;
-  started_at: Date | null; ended_at: Date | null; expires_at: Date;
+  started_at: Date | null; ended_at: Date | null;
+  // The call's fixed end (start + maxMinutes). The sweeper renews the separate expiry in end_user_holds.
+  expires_at: Date;
 };
 type CallHold = { id: string; endUser: string; bucket: string; usd: number; heldAt: number };
 type Ending = { reason: string; detail?: string; limit?: "end_user"; endUserReason?: string; bucket?: string };
@@ -71,7 +73,7 @@ function view(row: Row): VoiceCall {
   const { id, state, provider, model, voice, agent, turns, asks, options } = row;
   return {
     id, state, provider, model, voice, agent, subject: options.subject, startedAt: row.started_at?.getTime() ?? null,
-    endedAt: row.ended_at?.getTime() ?? null, expiresAt: row.expires_at.getTime(), reason: row.end_reason,
+    endedAt: row.ended_at?.getTime() ?? null, expiresAt: row.expires_at.getTime(), maxMinutes: options.maxMinutes, reason: row.end_reason,
     turns, asks, audioSeconds: Number(row.audio_seconds), costUsd: Number(row.cost) / 1_000_000,
     metadata: options.metadata ?? {}, speakers: options.speakers,
   };
@@ -148,7 +150,7 @@ export class VoiceCalls {
     await this.options.admit(tenant);
     const bucket = options.bucket ?? DEFAULT_BUCKET;
     const credit = !this.options.creditEnabled || await this.options.creditEnabled(tenant) ? this.options.credit : undefined;
-    const refused = await credit?.refusal(tenant, options.subject, bucket);
+    const refused = name === "openai" ? await credit?.refusal(tenant, options.subject, bucket) : undefined;
     if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket, reason: refused.reason });
 
     const id = `vc_${randomBytes(12).toString("hex")}`;
@@ -166,14 +168,30 @@ export class VoiceCalls {
       if (name === "elevenlabs") {
         const price = realtimePrice(`elevenlabs/${model}`);
         if (!price || !("perMinute" in price)) throw new HttpError(400, `Realtime model elevenlabs/${model} has no price configured`, "REALTIME_UNPRICED");
+        const cap = Math.min(given.maxMinutes ?? 30, 30);
+        const candidates = ELEVENLABS_BUCKETS_MINUTES.filter(minutes => minutes <= cap).reverse();
+        if (!candidates.length) throw new HttpError(400, "ElevenLabs calls require maxMinutes of at least 5");
+        options.maxMinutes = candidates[0];
         if (credit) {
           if (!credit.settleHold || !credit.renew || !credit.release) throw new Error("Voice credit does not support durable holds");
-          const usd = options.maxMinutes * price.perMinute / 1_000_000;
-          const reservation = await credit.hold(tenant, options.subject, bucket, usd, "voice_elevenlabs", { session: id }, now, sql);
-          if (reservation) {
-            if (!reservation.id) throw new Error("Voice credit returned no hold id");
-            hold = { id: reservation.id, endUser: options.subject, bucket, usd, heldAt: now };
+          let refusal: HttpError | undefined;
+          for (const minutes of candidates) {
+            const usd = minutes * price.perMinute / 1_000_000;
+            options.maxMinutes = minutes;
+            try {
+              const reservation = await credit.hold(tenant, options.subject, bucket, usd, "voice_elevenlabs", { session: id }, { now, sql, full: true });
+              if (reservation) {
+                if (!reservation.id) throw new Error("Voice credit returned no hold id");
+                hold = { id: reservation.id, endUser: options.subject, bucket, usd, heldAt: now };
+              }
+              refusal = undefined;
+              break;
+            } catch (error) {
+              if (!(error instanceof HttpError) || error.status !== 402) throw error;
+              refusal = error;
+            }
           }
+          if (refusal) throw refusal;
         }
       }
       await sql.query(`insert into voice_calls (id, tenant, agent, provider, model, voice, state, options, expires_at, created_at, updated_at, hold)
@@ -237,7 +255,7 @@ export class VoiceCalls {
   private async connectElevenLabs(id: string, provider: ElevenLabsCalls, apiKey: string, model: string, voice: string, options: VoiceCallOptions): Promise<VoiceCallCreated> {
     try {
       const { agentId } = await provider.provision({
-        apiKey, model, voiceId: voice, language: options.language,
+        apiKey, model, voiceId: voice, language: options.language, maxMinutes: options.maxMinutes,
         instructions: realtimeInstructions(options.instructions, { agent: true, group: true }),
       });
       const connect = await provider.signedUrl({ apiKey, agentId });
@@ -448,9 +466,19 @@ export class VoiceCalls {
       console.log(JSON.stringify({ type: "voice_call_webhook_ignored", eventType: typeof type === "string" ? type.slice(0, 100) : undefined }));
       return;
     }
+    const conversationId = typeof data.conversation_id === "string" ? data.conversation_id : null;
+    const duration = data.metadata?.call_duration_secs;
+    const reportedSeconds = typeof duration === "number" && Number.isFinite(duration) ? Math.max(0, duration) : undefined;
+    const lookup = [conversationId, agentId];
+    const byConversation = `select * from voice_calls where provider = 'elevenlabs' and provider_call = $1
+      and options->>'elevenlabsAgent' = $2`;
+    // Resolve the provider duration before taking the row lock. Re-read the row before settling.
+    const candidate = type === "post_call_transcription" && reportedSeconds === undefined
+      ? (await this.options.db.query<Row>(byConversation + " and state <> 'ended'", lookup)).rows[0]
+      : undefined;
+    const conversation = candidate && await this.elevenLabsConversation(candidate);
     const result = await transaction(this.options.db, async sql => {
-      const { rows } = await sql.query<Row>(`select * from voice_calls where provider = 'elevenlabs' and provider_call = $1
-        and options->>'elevenlabsAgent' = $2 for update`, [typeof data.conversation_id === "string" ? data.conversation_id : null, agentId]);
+      const { rows } = await sql.query<Row>(byConversation + " for update", lookup);
       const row = rows[0];
       if (!row) {
         console.log(JSON.stringify({ type: "voice_call_unknown_conversation" }));
@@ -466,8 +494,9 @@ export class VoiceCalls {
         await this.finishElevenLabs(sql, row, "error", { detail });
         return { row };
       }
-      const duration = data.metadata?.call_duration_secs;
-      const seconds = typeof duration === "number" && Number.isFinite(duration) ? Math.max(0, duration) : 0;
+      const seconds = reportedSeconds ?? conversation?.durationSeconds ??
+        Math.max(0, ((row.ended_at?.getTime() ?? this.now()) - (row.started_at ?? row.expires_at).getTime()) / 1000);
+      const source = reportedSeconds !== undefined ? undefined : conversation?.durationSeconds !== undefined ? "conversation" : "elapsed";
       const usage = await this.settleElevenLabs(sql, row, seconds, false);
       let turns = row.turns;
       if (turns === 0 && Array.isArray(data.transcript)) {
@@ -476,11 +505,30 @@ export class VoiceCalls {
           await this.enqueue(row, "voice.utterance", { text: entry.message, reported: "provider", seq: ++turns, secondsIntoCall: entry.time_in_call_secs }, sql);
         }
       }
-      const reason = row.state === "ending" ? row.end_reason ?? "requested" : data.metadata?.termination_reason ? "provider" : "max_duration";
+      const termination = typeof data.metadata?.termination_reason === "string" ? data.metadata.termination_reason : conversation?.terminationReason ?? "";
+      const reason = row.state === "ending" ? row.end_reason ?? "requested" : terminationReasonToEnd(termination);
       await this.finishElevenLabs(sql, row, reason, { turns, usage });
-      return { row, usage };
+      return { row, usage, source };
     });
-    if (result) this.elevenLabsCommitted(result.row, result.usage);
+    if (result) {
+      if (result.source) {
+        const log = JSON.stringify({ type: "voice_call_duration_missing", id: result.row.id, source: result.source });
+        if (result.source === "elapsed") console.warn(log);
+        else console.info(log);
+      }
+      this.elevenLabsCommitted(result.row, result.usage);
+    }
+  }
+
+  private async elevenLabsConversation(row: Row) {
+    const provider = this.options.providers.elevenlabs;
+    if (!provider || !row.provider_call) return;
+    try {
+      const key = await this.options.key(row.tenant, row.options.keyScope, "elevenlabs");
+      if (key?.platform) return await provider.conversation(key.apiKey, row.provider_call);
+    } catch {
+      // Settlement falls back to the elapsed duration if the provider lookup fails.
+    }
   }
 
   private async releaseElevenLabs(row: Row, sql: Sql) {
@@ -531,16 +579,19 @@ export class VoiceCalls {
 
   private async sweepElevenLabs(now: number) {
     const deadline = new Date(now - POST_CALL_GRACE_MS);
-    const { rows } = await this.options.db.query<Pick<Row, "id">>(`select id from voice_calls
+    const { rows } = await this.options.db.query<Row>(`select * from voice_calls
       where provider = 'elevenlabs' and state <> 'ended' and (hold is not null or coalesce(ended_at, expires_at) < $1)`, [deadline]);
-    for (const { id } of rows) {
+    for (const candidate of rows) {
+      const { id } = candidate;
       try {
+        const conversation = candidate.started_at && (candidate.ended_at ?? candidate.expires_at) < deadline
+          ? await this.elevenLabsConversation(candidate) : undefined;
         const result = await transaction(this.options.db, async sql => {
           const { rows } = await sql.query<Row>("select * from voice_calls where id = $1 and state <> 'ended' for update", [id]);
           const row = rows[0];
           if (!row) return;
-          const end = row.ended_at ?? row.expires_at;
-          if (end >= deadline) {
+          const fixedEnd = row.ended_at ?? row.expires_at;
+          if (fixedEnd >= deadline) {
             if (row.hold) await this.options.credit?.renew?.(row.tenant, row.hold.endUser, row.hold.id, now, sql);
             return;
           }
@@ -549,16 +600,18 @@ export class VoiceCalls {
             await this.finishElevenLabs(sql, row, "error", { detail: "The call did not connect" });
             return { row };
           }
-          const elapsedSeconds = Math.max(0, (end.getTime() - row.started_at.getTime()) / 1000);
-          const usage = await this.settleElevenLabs(sql, row, elapsedSeconds, true);
+          if ((candidate.ended_at ?? candidate.expires_at) >= deadline) return;
+          const elapsedSeconds = Math.max(0, (fixedEnd.getTime() - row.started_at.getTime()) / 1000);
+          const source = conversation?.durationSeconds === undefined ? "elapsed" : "conversation";
+          const usage = await this.settleElevenLabs(sql, row, conversation?.durationSeconds ?? elapsedSeconds, true);
           await this.finishElevenLabs(sql, row, row.ended_at ? row.end_reason ?? "requested" : "max_duration",
             { usage, deadline: true, detail: "settled at the deadline: no post-call report" });
-          return { row, usage, elapsedSeconds };
+          return { row, usage, elapsedSeconds, source };
         });
         if (!result) continue;
         if (result.usage) {
           deadlineSettles++;
-          console.warn(JSON.stringify({ type: "voice_call_settled_deadline", id, usd: result.usage.usage.cost.total, elapsedSeconds: result.elapsedSeconds }));
+          console.warn(JSON.stringify({ type: "voice_call_settled_deadline", id, usd: result.usage.usage.cost.total, elapsedSeconds: result.elapsedSeconds, source: result.source }));
         }
         this.elevenLabsCommitted(result.row, result.usage);
       } catch (error) {

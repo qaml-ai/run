@@ -419,7 +419,7 @@ export interface VoiceCredit {
   /** With `usd`, also refused when the subject cannot cover that much (a realtime brain's first response hold). */
   refusal(tenant: string, endUser: string, bucket: string): Promise<{ reason: string; message: string } | undefined>;
   /** Throws 402 END_USER_CREDIT (`details.reason`) when the subject has too little left to start work costing `usd`. */
-  hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>, now?: number, sql?: Sql): Promise<{ id?: string; settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+  hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>, options?: { now?: number; sql?: Sql; full?: boolean }): Promise<{ id?: string; settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
   /** Durable holds for calls that can finish on another node. Amounts passed to settleHold are raw micro-USD. */
   settleHold?(tenant: string, endUser: string, bucket: string, id: string, rawMicros: number, key: string, metadata: Record<string, unknown>, now?: number, sql?: Sql): Promise<void>;
   release?(id: string, sql?: Sql): Promise<void>;

@@ -15168,6 +15168,9 @@
           "expiresAt": {
             "type": "number"
           },
+          "maxMinutes": {
+            "type": "number"
+          },
           "reason": {
             "type": [
               "string",
@@ -15208,6 +15211,7 @@
           "startedAt",
           "endedAt",
           "expiresAt",
+          "maxMinutes",
           "reason",
           "turns",
           "asks",

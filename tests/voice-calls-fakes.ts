@@ -102,6 +102,8 @@ export function fakeSubmit(replies: ({ text: string; delay?: number } | "hang" |
 
 export async function fakeElevenLabs(t: TestContext, onRequest?: (path: string) => void) {
   const webhooks: any[] = [], tools: any[] = [], agents: any[] = [], signed: URLSearchParams[] = [];
+  const conversations: string[] = [];
+  const reports = new Map<string, { status?: string; metadata?: { call_duration_secs?: number; termination_reason?: string } } | 404 | 500>();
   const webhookSecret = "fixture-webhook-secret";
   const server = createServer(async (req, res) => {
     try {
@@ -123,6 +125,15 @@ export async function fakeElevenLabs(t: TestContext, onRequest?: (path: string) 
       } else if (req.method === "GET" && url.pathname === "/v1/convai/conversation/get-signed-url") {
         signed.push(url.searchParams);
         result = { signed_url: `wss://fake/convai?agent_id=${url.searchParams.get("agent_id")}&conversation_signature=sig&conversation_id=conv_${signed.length}` };
+      } else if (req.method === "GET" && url.pathname.startsWith("/v1/convai/conversations/")) {
+        const id = decodeURIComponent(url.pathname.slice("/v1/convai/conversations/".length));
+        conversations.push(id);
+        const report = reports.get(id) ?? 404;
+        if (typeof report === "number") {
+          res.writeHead(report).end();
+          return;
+        }
+        result = report;
       } else {
         res.writeHead(404).end();
         return;
@@ -134,7 +145,7 @@ export async function fakeElevenLabs(t: TestContext, onRequest?: (path: string) 
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, webhooks, tools, agents, signed, webhookSecret };
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, webhooks, tools, agents, signed, webhookSecret, conversations, reports };
 }
 
 export function sign(secret: string, body: string, now = Date.now()) {

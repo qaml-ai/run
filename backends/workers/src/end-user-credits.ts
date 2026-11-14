@@ -760,12 +760,12 @@ export class EndUserCredits {
   /**
    * Hold `usd` of `endUser`'s credit for work that is not a model call (audio to transcribe, images), before it is sent:
    * all of it, or as much as is left when that is within LAST_CALL_SHORTFALL of it, else a 402 END_USER_CREDIT. Settle it
-   * with what the work cost, or release it if none was done. ElevenLabs calls require the full amount.
+   * with what the work cost, or release it if none was done. With full, require the whole amount.
    * Undefined: the tenant does not meter its end users.
    */
-  async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}, now = Date.now(), sql?: Sql): Promise<CreditHold | undefined> {
+  async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}, options: { now?: number; sql?: Sql; full?: boolean } = {}): Promise<CreditHold | undefined> {
     const id = randomUUID(), want = Math.ceil(usd * MICROS);
-    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: call === "voice_elevenlabs" ? want : lastCallMin(want) }, now, sql);
+    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: options.full ? want : lastCallMin(want) }, options.now, options.sql);
     if (!reserved) return undefined;
     if (reserved.refused) throw creditError(reserved.refused);
     return {
@@ -856,7 +856,7 @@ export function creditError(refused: CreditRefusal) {
 export type CreditRefusal = { endUser: string; bucket: string; reason: CreditReason; message: string };
 /**
  * Why an end user's credit refused or stopped work, the one list every path names (a 402's, a run's result, run.failed,
- * voice.session.ended's endUserReason): the balance, their daily credit limit, or the bucket's own daily limit on paid
+ * an ended session's endUserReason): the balance, their daily credit limit, or the bucket's own daily limit on paid
  * spend. More may be added; code that meets one it does not know treats it as a credit refusal of no particular kind.
  */
 export const CREDIT_REASONS = ["balance", "daily_limit", "bucket_limit"] as const;

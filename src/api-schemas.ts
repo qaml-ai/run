@@ -1986,7 +1986,7 @@ export type VoiceCallInput = z.output<typeof VoiceCallInput>;
 export const VoiceCall = z.object({
   id: z.string(), state: z.enum(["connecting", "live", "ending", "ended"]), provider: z.enum(["openai", "elevenlabs"]),
   model: z.string(), voice: z.string(), agent: z.string(), subject: z.string(),
-  startedAt: z.number().nullable(), endedAt: z.number().nullable(), expiresAt: z.number(), reason: z.string().nullable(),
+  startedAt: z.number().nullable(), endedAt: z.number().nullable(), expiresAt: z.number(), maxMinutes: z.number(), reason: z.string().nullable(),
   turns: z.number(), asks: z.number(), audioSeconds: z.number(), costUsd: z.number(),
   metadata: z.record(z.string(), z.unknown()), speakers: z.record(z.string(), z.string()),
 }).openapi("VoiceCall");

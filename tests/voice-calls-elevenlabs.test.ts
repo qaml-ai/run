@@ -9,6 +9,7 @@ import type { Db } from "../src/db.ts";
 import { DEFAULT_BUCKET, EndUserCredits } from "../src/end-user-credits.ts";
 import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { terminationReasonToEnd } from "../src/voice/calls/elevenlabs.ts";
 import { ASK_AGENT, PENDING, STAY_SILENT } from "../src/voice/calls/prompts.ts";
 import { enqueueEvents, type WebhookEvent } from "../src/webhooks.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
@@ -20,10 +21,11 @@ const path = "/v1/voice/sessions";
 const inbound = "/v1/voice/providers/elevenlabs";
 const minute = 60_000;
 
-async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance?: number } = {}) {
+async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance?: number; metered?: boolean } = {}) {
   const initial = Date.now();
   let now = initial;
   const warn = t.mock.method(console, "warn", () => {});
+  const info = t.mock.method(console, "info", () => {});
   const log = t.mock.method(console, "log", () => {});
   const rates = {
     AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "0.10",
@@ -72,7 +74,7 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance
     });
     const made = await createNode(config, {
       ...deps, voiceCallOverrides: {
-        now: () => now, credit: credits, pendingMs: 100, lateMs: 3_000, submitStreaming: submit.submit,
+        now: () => now, credit: options.metered === false ? undefined : credits, pendingMs: 100, lateMs: 3_000, submitStreaming: submit.submit,
         enqueue: async (batch, sql) => {
           await enqueueEvents(sql ?? db, batch);
           events.push(...batch);
@@ -114,7 +116,7 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance
   const byCall = (id: string, type: WebhookEvent["type"]) => events.filter(event => event.data.session === id && event.type === type).map(event => event.data);
   const holdRow = async (id: string) => (await db.query("select hold from voice_calls where id = $1", [id])).rows[0].hold;
   const ledger = async (holdId: string) => (await db.query("select raw from end_user_ledger where idempotency_key = $1", [`voice_elevenlabs:${holdId}`])).rows;
-  return { base, warn, log, eleven, http, create, live, order, usage, submit, byCall, post, tool, holdRow, ledger, db,
+  return { base, warn, info, log, eleven, http, create, live, order, usage, submit, byCall, post, tool, holdRow, ledger, db,
     calls: node!.calls!, initial, advance: (minutes: number) => { now = initial + minutes * minute; } };
 }
 
@@ -125,6 +127,7 @@ test("provisions webhook tools once per persona and holds the full capped amount
     conversationId: "conv_1", signedUrl: "wss://fake/convai?agent_id=agent_1&conversation_signature=sig&conversation_id=conv_1",
   });
   assert.equal(f.eleven.signed[0].get("include_conversation_id"), "true");
+  assert.equal(call.maxMinutes, 30);
   assert.equal(call.expiresAt - f.initial, 30 * minute);
   const hold = await f.holdRow(call.id);
   assert.deepEqual(hold, { id: hold.id, endUser: "user-1", bucket: DEFAULT_BUCKET, usd: 3.60, heldAt: f.initial });
@@ -160,13 +163,20 @@ test("provisions webhook tools once per persona and holds the full capped amount
   assert.deepEqual([f.eleven.webhooks.length, f.eleven.tools.length, f.eleven.agents.length], [1, 2, 1]);
   await f.live({ instructions: "Talk like Bea." });
   assert.deepEqual([f.eleven.webhooks.length, f.eleven.tools.length, f.eleven.agents.length], [1, 4, 2]);
+  const shorter = await f.live({ instructions: "Talk like Ana.", maxMinutes: 12 });
+  assert.equal(shorter.maxMinutes, 10);
+  assert.equal(shorter.expiresAt - f.initial, 10 * minute);
+  assert.deepEqual([f.eleven.webhooks.length, f.eleven.tools.length, f.eleven.agents.length], [1, 6, 3]);
 });
 
 test("a short reservation and a tenant-owned key are refused before any provider call", async t => {
   await t.test("insufficient full hold", async t => {
-    const f = await fixture(t, { allowance: 3_500_000 });
-    assert.equal((await f.create()).status, 402);
-    assert.deepEqual(f.order, ["hold"]);
+    const f = await fixture(t, { allowance: 360_000 });
+    const refused = await f.create();
+    assert.equal(refused.status, 402);
+    assert.equal(refused.json.code, "END_USER_CREDIT");
+    assert.deepEqual(f.order, ["hold", "hold", "hold", "hold"]);
+    assert.equal((await f.db.query("select id from end_user_holds")).rowCount, 0);
     assert.equal((await f.db.query("select id from voice_calls")).rowCount, 0);
   });
   await t.test("tenant-owned key", async t => {
@@ -176,6 +186,31 @@ test("a short reservation and a tenant-owned key are refused before any provider
     assert.equal(result.json.code, "REALTIME_UNAVAILABLE");
     assert.deepEqual(f.order, []);
   });
+});
+
+test("credit for twelve minutes selects one ten-minute reservation", async t => {
+  const f = await fixture(t, { allowance: 1_440_000 });
+  const call = await f.live();
+  assert.equal(call.maxMinutes, 10);
+  assert.equal(call.expiresAt - f.initial, 10 * minute);
+  assert.equal((await f.http("GET", `${path}/${call.id}`)).json.maxMinutes, 10);
+  const hold = await f.holdRow(call.id);
+  assert.equal(hold.usd, 1.20);
+  assert.deepEqual((await f.db.query("select id, allowance from end_user_holds")).rows, [{ id: hold.id, allowance: 1_200_000 }]);
+  assert.deepEqual(f.order.slice(0, 4), ["hold", "hold", "hold", "/v1/workspace/webhooks"]);
+  assert.equal(f.eleven.agents[0].conversation_config.conversation.max_duration_seconds, 600);
+  assert.match(f.eleven.agents[0].name, / 10m$/);
+});
+
+test("an unmetered call defaults to thirty minutes and rounds a twelve-minute cap down", async t => {
+  const f = await fixture(t, { metered: false });
+  const call = await f.live();
+  const shorter = await f.live({ maxMinutes: 12 });
+  assert.equal(call.maxMinutes, 30);
+  assert.equal(shorter.maxMinutes, 10);
+  assert.equal(await f.holdRow(call.id), null);
+  assert.equal(f.order.includes("hold"), false);
+  assert.equal((await f.create({ maxMinutes: 4 })).status, 400);
 });
 
 test("client transcripts feed authenticated tools and late replies are sent as events", async t => {
@@ -224,7 +259,7 @@ test("signed post-call reports settle by persisted hold id once and emit only on
   assert.deepEqual(f.byCall(call.id, "voice.utterance").map(event => event.reported), ["client"]);
 
   const fallback = await f.live();
-  assert.equal((await f.post(fallback.connect.conversationId)).status, 200);
+  assert.equal((await f.post(fallback.connect.conversationId, { metadata: { call_duration_secs: 600, termination_reason: "Max call duration exceeded" } })).status, 200);
   assert.deepEqual(f.byCall(fallback.id, "voice.utterance").map(({ text, reported, seq, secondsIntoCall }) =>
     ({ text, reported, seq, secondsIntoCall })), [{ text: "Provider words", reported: "provider", seq: 1, secondsIntoCall: 3 }]);
   assert.equal(f.byCall(fallback.id, "voice.session.ended")[0].reason, "max_duration");
@@ -239,8 +274,10 @@ test("signed post-call reports settle by persisted hold id once and emit only on
 
 test("sweeps renew ending holds and settle at the deadline before dropping late reports", async t => {
   const f = await fixture(t);
+  const before = f.calls.stats().deadlineSettles;
   const call = await f.live();
   const hold = await f.holdRow(call.id);
+  f.eleven.reports.set(call.connect.conversationId, 500);
   f.advance(8);
   await f.calls.sweep();
   f.advance(10);
@@ -249,18 +286,83 @@ test("sweeps renew ending holds and settle at the deadline before dropping late 
   await f.calls.sweep();
   const persisted = (await f.db.query("select expires_at from end_user_holds where id = $1", [hold.id])).rows[0];
   assert.ok(persisted.expires_at > f.initial + 12 * minute);
+  assert.equal((await f.http("GET", `${path}/${call.id}`)).json.expiresAt, call.expiresAt);
   f.advance(20);
   await f.calls.sweep();
   f.advance(26);
   await f.calls.sweep();
-  assert.equal(f.calls.stats().deadlineSettles, 1);
+  assert.equal(f.calls.stats().deadlineSettles, before + 1);
   assert.deepEqual(await f.ledger(hold.id), [{ raw: 1_200_000 }]);
   assert.equal(f.usage[0].audioSeconds, 600);
   assert.deepEqual([f.usage[0].usage.cost.total, f.usage[0].usage.settled], [1.20, "deadline"]);
   assert.equal(f.byCall(call.id, "voice.session.ended")[0].reason, "requested");
-  assert.ok(f.warn.mock.calls.some(call => String(call.arguments[0]).includes("voice_call_settled_deadline")));
+  assert.ok(f.warn.mock.calls.some(call => {
+    const log = JSON.parse(String(call.arguments[0]));
+    return log.type === "voice_call_settled_deadline" && log.source === "elapsed";
+  }));
+  assert.deepEqual(f.eleven.conversations, [call.connect.conversationId]);
   assert.equal((await f.post(call.connect.conversationId)).status, 200);
   assert.equal(f.usage.length, 1);
   assert.ok(f.log.mock.calls.some(call => String(call.arguments[0]).includes("voice_call_post_call_late")));
   assert.equal(f.byCall(call.id, "voice.session.ended").length, 1);
+});
+
+test("maps ElevenLabs termination reasons from observed provider text", () => {
+  assert.deepEqual([
+    "Max call duration exceeded",
+    "Client disconnected: 1000",
+    "client disconnected",
+    "the conversation was ended by the user",
+    "LLM request failed",
+    "",
+  ].map(terminationReasonToEnd), ["max_duration", "client", "client", "client", "provider", "provider"]);
+});
+
+test("post-call duration falls back to the conversation lookup, then elapsed time", async t => {
+  const f = await fixture(t);
+  const call = await f.live();
+  const hold = await f.holdRow(call.id);
+  f.eleven.reports.set(call.connect.conversationId, { status: "done", metadata: { call_duration_secs: 540 } });
+  assert.equal((await f.post(call.connect.conversationId, { metadata: { termination_reason: "Client disconnected: 1000" } })).status, 200);
+  assert.deepEqual(f.eleven.conversations, [call.connect.conversationId]);
+  assert.equal(f.usage[0].audioSeconds, 540);
+  assert.deepEqual(await f.ledger(hold.id), [{ raw: 1_080_000 }]);
+  assert.equal(f.byCall(call.id, "voice.session.ended")[0].reason, "client");
+  assert.ok(f.info.mock.calls.some(call => String(call.arguments[0]).includes('"source":"conversation"')));
+
+  const fallback = await f.live();
+  const fallbackHold = await f.holdRow(fallback.id);
+  f.advance(4);
+  await f.http("POST", `${path}/${fallback.id}/end`, {});
+  f.advance(6);
+  assert.equal((await f.post(fallback.connect.conversationId, { metadata: { call_duration_secs: "unavailable" } })).status, 200);
+  assert.deepEqual(f.eleven.conversations, [call.connect.conversationId, fallback.connect.conversationId]);
+  assert.equal(f.usage[1].audioSeconds, 240);
+  assert.deepEqual(await f.ledger(fallbackHold.id), [{ raw: 480_000 }]);
+  assert.ok(f.warn.mock.calls.some(call => {
+    const log = JSON.parse(String(call.arguments[0]));
+    return log.type === "voice_call_duration_missing" && log.source === "elapsed";
+  }));
+});
+
+test("the deadline bills the conversation duration when ElevenLabs returns it", async t => {
+  const f = await fixture(t);
+  const before = f.calls.stats().deadlineSettles;
+  const call = await f.live();
+  const hold = await f.holdRow(call.id);
+  f.eleven.reports.set(call.connect.conversationId, { status: "done", metadata: { call_duration_secs: 120 } });
+  for (const time of [8, 16, 24, 32, 40, 46]) {
+    f.advance(time);
+    await f.calls.sweep();
+  }
+  assert.deepEqual(f.eleven.conversations, [call.connect.conversationId]);
+  assert.equal(f.calls.stats().deadlineSettles, before + 1);
+  assert.deepEqual(await f.ledger(hold.id), [{ raw: 240_000 }]);
+  assert.equal(f.usage[0].audioSeconds, 120);
+  assert.deepEqual([f.usage[0].usage.cost.total, f.usage[0].usage.settled], [0.24, "deadline"]);
+  assert.equal(f.byCall(call.id, "voice.session.ended")[0].detail, "settled at the deadline: no post-call report");
+  assert.ok(f.warn.mock.calls.some(call => {
+    const log = JSON.parse(String(call.arguments[0]));
+    return log.type === "voice_call_settled_deadline" && log.source === "conversation";
+  }));
 });

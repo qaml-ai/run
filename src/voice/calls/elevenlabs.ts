@@ -13,7 +13,8 @@ export type ElevenLabsCallsOptions = {
   unseal(sealed: string): Promise<string>;
 };
 
-type ProvisionInput = { apiKey: string; model: string; instructions: string; language?: string; voiceId: string };
+type ProvisionInput = { apiKey: string; model: string; instructions: string; language?: string; voiceId: string; maxMinutes: number };
+type Conversation = { durationSeconds?: number; status?: string; terminationReason?: string };
 type Provisioned = { agentId: string; toolSecret: string };
 export interface ElevenLabsCalls {
   readonly models: readonly string[];
@@ -23,6 +24,7 @@ export interface ElevenLabsCalls {
   readonly voiceFor: Readonly<Record<string, string>>;
   provision(input: ProvisionInput): Promise<Provisioned>;
   signedUrl(input: { apiKey: string; agentId: string }): Promise<{ signedUrl: string; conversationId: string }>;
+  conversation(apiKey: string, conversationId: string): Promise<Conversation>;
   agentFor(agentId: string, sql?: Sql): Promise<{ keyHash: string; toolSecret: string } | undefined>;
   webhookSecret(keyHash: string): Promise<string | undefined>;
 }
@@ -34,6 +36,14 @@ const VOICE_FOR: Readonly<Record<string, string>> = Object.freeze(Object.assign(
   ),
 ));
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+export const ELEVENLABS_BUCKETS_MINUTES = [5, 10, 15, 30] as const;
+
+export function terminationReasonToEnd(text: string): "max_duration" | "client" | "provider" {
+  if (/max call duration/i.test(text)) return "max_duration";
+  if (/client disconnected|ended by the user|end_call/i.test(text)) return "client";
+  return "provider";
+}
+
 export const ELEVENLABS_INBOUND = "/v1/voice/providers/elevenlabs";
 
 export function elevenlabsCalls(options: ElevenLabsCallsOptions): ElevenLabsCalls {
@@ -74,14 +84,14 @@ export function elevenlabsCalls(options: ElevenLabsCallsOptions): ElevenLabsCall
     }, { rerun: false });
   }
 
-  async function findAgent(sql: Sql, identity: string[]) {
+  async function findAgent(sql: Sql, identity: (string | number)[]) {
     return (await sql.query<{ agent_id: string; tool_secret: string }>(`update elevenlabs_call_agents set last_used_at = now()
-      where key_hash = $1 and model = $2 and persona_hash = $3 returning agent_id, tool_secret`, identity)).rows[0];
+      where key_hash = $1 and model = $2 and persona_hash = $3 and max_minutes = $4 returning agent_id, tool_secret`, identity)).rows[0];
   }
 
   async function provision(input: ProvisionInput, keyHash: string, personaHash: string) {
-    const { apiKey, model, instructions, language, voiceId } = input;
-    const identity = [keyHash, model, personaHash];
+    const { apiKey, model, instructions, language, voiceId, maxMinutes } = input;
+    const identity = [keyHash, model, personaHash, maxMinutes];
     const cached = await findAgent(options.db, identity);
     if (cached) return { agentId: cached.agent_id, toolSecret: await options.unseal(cached.tool_secret) };
     const webhookId = await webhook(apiKey, keyHash);
@@ -109,7 +119,7 @@ export function elevenlabsCalls(options: ElevenLabsCallsOptions): ElevenLabsCall
         toolIds.push(created.id);
       }
       const created = await api(apiKey, "create agent", "/v1/convai/agents/create", {
-        name: `camelRun voice ${model} ${personaHash.slice(0, 8)}`,
+        name: `camelRun voice ${model} ${personaHash.slice(0, 8)} ${maxMinutes}m`,
         conversation_config: {
           agent: { first_message: "", language: elevenlabsLanguage(language) ?? "en", prompt: {
             prompt: instructions, llm: model, temperature: 0.3, tool_ids: toolIds,
@@ -118,7 +128,7 @@ export function elevenlabsCalls(options: ElevenLabsCallsOptions): ElevenLabsCall
           asr: { user_input_audio_format: "pcm_16000" },
           tts: { voice_id: VOICE_FOR[voiceId] ?? voiceId, model_id: "eleven_v4_turbo", agent_output_audio_format: "pcm_24000" },
           turn: { turn_eagerness: "normal", turn_timeout: 7, silence_end_call_timeout: -1 },
-          conversation: { max_duration_seconds: 1800, client_events: ["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "agent_response_complete", "client_error"] },
+          conversation: { max_duration_seconds: maxMinutes * 60, client_events: ["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "agent_response_complete", "client_error"] },
         },
         platform_settings: {
           auth: { enable_auth: true }, privacy: { record_voice: false },
@@ -127,7 +137,7 @@ export function elevenlabsCalls(options: ElevenLabsCallsOptions): ElevenLabsCall
         },
       });
       if (!created?.agent_id) throw new Error("ElevenLabs returned no agent id");
-      await sql.query("insert into elevenlabs_call_agents (key_hash, model, persona_hash, agent_id, tool_secret) values ($1, $2, $3, $4, $5)",
+      await sql.query("insert into elevenlabs_call_agents (key_hash, model, persona_hash, max_minutes, agent_id, tool_secret) values ($1, $2, $3, $4, $5, $6)",
         [...identity, created.agent_id, await options.seal(toolSecret)]);
       return { agentId: created.agent_id as string, toolSecret };
     }, { rerun: false });
@@ -137,7 +147,7 @@ export function elevenlabsCalls(options: ElevenLabsCallsOptions): ElevenLabsCall
     models: [], defaultModel: "gemini-3.1-flash-lite", voices: [JESSICA], voiceFor: VOICE_FOR, customVoices: true,
     provision(input) {
       const keyHash = hash(input.apiKey), personaHash = hash(input.instructions);
-      const identity = JSON.stringify([keyHash, input.model, personaHash]);
+      const identity = JSON.stringify([keyHash, input.model, personaHash, input.maxMinutes]);
       let pending = agents.get(identity);
       if (!pending) {
         pending = provision(input, keyHash, personaHash).finally(() => agents.delete(identity));
@@ -157,6 +167,15 @@ export function elevenlabsCalls(options: ElevenLabsCallsOptions): ElevenLabsCall
       }
       if (!conversationId) throw new Error("ElevenLabs returned no conversation id");
       return { signedUrl: result.signed_url, conversationId };
+    },
+    async conversation(apiKey, conversationId) {
+      const result = await api(apiKey, "get conversation", `/v1/convai/conversations/${encodeURIComponent(conversationId)}`);
+      const duration = result?.metadata?.call_duration_secs;
+      return {
+        durationSeconds: typeof duration === "number" && Number.isFinite(duration) ? Math.max(0, duration) : undefined,
+        status: typeof result?.status === "string" ? result.status : undefined,
+        terminationReason: typeof result?.metadata?.termination_reason === "string" ? result.metadata.termination_reason : undefined,
+      };
     },
     async agentFor(agentId, sql = options.db) {
       const { rows } = await sql.query<{ key_hash: string; tool_secret: string }>(
