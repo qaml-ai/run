@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -63,6 +64,11 @@ func TestKVMComputeSessionRestart(t *testing.T) {
 		}
 	}
 	cert, tierPair := testIdentity(t)
+	var pinnedPEM []byte
+	for _, ca := range cert.ca.certs {
+		pinnedPEM = append(pinnedPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})...)
+	}
+	must(os.WriteFile(filepath.Join(data, "tier-ca.pem"), pinnedPEM, 0600))
 	// Share the same test CA and host credentials across both daemon processes.
 	raw, err := os.ReadFile(filepath.Join(cert.dir, "host-key.pem"))
 	must(err)
@@ -335,7 +341,9 @@ func TestKVMComputeDaemonProcess(t *testing.T) {
 	must(err)
 	defer m.Close()
 	// Enrollment is already persisted by the harness.
-	cert, err := NewIdentity(ctx, q.Data, q.HostID, "test", q.Tier, "https://unused.test", nil)
+	pinned, err := LoadTierCA(filepath.Join(q.Data, "tier-ca.pem"))
+	must(err)
+	cert, err := NewIdentity(ctx, q.Data, q.HostID, "test", q.Tier, "https://unused.test", pinned, nil)
 	must(err)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	must(err)

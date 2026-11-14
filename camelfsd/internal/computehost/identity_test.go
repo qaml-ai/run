@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,7 +130,9 @@ func testIdentity(t *testing.T) (*Identity, tls.Certificate) {
 		jsonReply(w, 200, hostwire.Enrolled{HostID: id, CAPEM: ca.pem, NotAfter: leaf.NotAfter.UnixMilli(),
 			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: raw}))})
 	}
-	enroll := httptest.NewTLSServer(http.HandlerFunc(issue))
+	enroll := httptest.NewUnstartedServer(http.HandlerFunc(issue))
+	enroll.TLS = &tls.Config{Certificates: []tls.Certificate{tierPair}}
+	enroll.StartTLS()
 	t.Cleanup(enroll.Close)
 	tier := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		leaf := r.TLS.VerifiedChains[0][0]
@@ -146,8 +150,7 @@ func testIdentity(t *testing.T) (*Identity, tls.Certificate) {
 	tier.StartTLS()
 	t.Cleanup(tier.Close)
 	dir := t.TempDir()
-	identity, err := newIdentity(t.Context(), dir, id, "test", strings.TrimPrefix(tier.URL, "https://"), enroll.URL,
-		func(_ context.Context) (attestation, error) { return attestation{Kind: "aws"}, nil }, enroll.Client())
+	identity, err := NewIdentity(t.Context(), dir, id, "test", strings.TrimPrefix(tier.URL, "https://"), enroll.URL, pinCA(t, ca), testAttestation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,4 +212,80 @@ func testIdentity(t *testing.T) (*Identity, tls.Certificate) {
 		}
 	}
 	return identity, tierPair
+}
+
+func pinCA(t *testing.T, ca testCA) *TierCA {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tier-ca.pem")
+	if err := os.WriteFile(path, []byte(ca.pem), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := LoadTierCA(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pinned
+}
+
+func testAttestation(context.Context) (attestation, error) { return attestation{Kind: "aws"}, nil }
+
+func TestPinnedEnrollment(t *testing.T) {
+	const id = "i-0123456789abcdef0"
+	old, current := makeCA(t), makeCA(t)
+	enrollment := func(serverCA, replyCA testCA) (string, *atomic.Int32) {
+		calls := new(atomic.Int32)
+		server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			var body struct{ CSR string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			block, _ := pem.Decode([]byte(body.CSR))
+			csr, err := x509.ParseCertificateRequest(block.Bytes)
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			raw := serverCA.issue(t, hostURI+id, 8, csr.PublicKey)
+			jsonReply(w, 200, hostwire.Enrolled{HostID: id, CAPEM: replyCA.pem, CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: raw}))})
+		}))
+		server.TLS = &tls.Config{Certificates: []tls.Certificate{serverCA.pair(t, hostcert.TierURI)}}
+		server.StartTLS()
+		t.Cleanup(server.Close)
+		return server.URL, calls
+	}
+	pinned := pinCA(t, current)
+	t.Run("foreign reply CA", func(t *testing.T) {
+		endpoint, calls := enrollment(current, old)
+		_, err := NewIdentity(t.Context(), t.TempDir(), id, "test", "unused:8794", endpoint, pinned, testAttestation)
+		if err == nil || !strings.Contains(err.Error(), "reply CA") || calls.Load() != 1 {
+			t.Fatalf("enrollment calls=%d, error=%v", calls.Load(), err)
+		}
+	})
+	t.Run("untrusted enrollment server", func(t *testing.T) {
+		endpoint, calls := enrollment(old, current)
+		_, err := NewIdentity(t.Context(), t.TempDir(), id, "test", "unused:8794", endpoint, pinned, testAttestation)
+		var untrusted x509.UnknownAuthorityError
+		if !errors.As(err, &untrusted) || calls.Load() != 0 {
+			t.Fatalf("enrollment calls=%d, error=%v", calls.Load(), err)
+		}
+	})
+	t.Run("saved foreign CA", func(t *testing.T) {
+		dir := t.TempDir()
+		endpoint, _ := enrollment(old, old)
+		if _, err := NewIdentity(t.Context(), dir, id, "test", "unused:8794", endpoint, pinCA(t, old), testAttestation); err != nil {
+			t.Fatal(err)
+		}
+		endpoint, calls := enrollment(current, current)
+		identity, err := NewIdentity(t.Context(), dir, id, "test", "unused:8794", endpoint, pinned, testAttestation)
+		if err != nil || calls.Load() != 1 {
+			t.Fatalf("re-enrollment calls=%d, error=%v", calls.Load(), err)
+		}
+		if identity.current.Load().server.ClientCAs != pinned.roots {
+			t.Fatal("server did not use the pinned pool")
+		}
+	})
 }

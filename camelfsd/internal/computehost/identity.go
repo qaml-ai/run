@@ -87,14 +87,87 @@ type Identity struct {
 	keyPEM                         []byte
 	attest                         func(context.Context) (attestation, error)
 	enrollment                     *http.Client
+	ca                             *TierCA
 	current                        atomic.Pointer[credentials]
 }
 
-func NewIdentity(ctx context.Context, dir, id, pool, endpoint, enrollURL string, attest func(context.Context) (attestation, error)) (*Identity, error) {
-	return newIdentity(ctx, dir, id, pool, endpoint, enrollURL, attest, &http.Client{CheckRedirect: noRedirect})
+// TierCA contains only the certificates explicitly pinned by the operator.
+type TierCA struct {
+	roots *x509.CertPool
+	certs []*x509.Certificate
 }
 
-func newIdentity(ctx context.Context, dir, id, pool, endpoint, enrollURL string, attest func(context.Context) (attestation, error), enrollment *http.Client) (*Identity, error) {
+func LoadTierCA(path string) (*TierCA, error) {
+	if path == "" {
+		return nil, errors.New("--tier-ca is required with --compute")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("--tier-ca: %w", err)
+	}
+	certs, err := parseCAs(raw)
+	if err != nil {
+		return nil, fmt.Errorf("--tier-ca: %w", err)
+	}
+	pool := x509.NewCertPool()
+	for _, cert := range certs {
+		pool.AddCert(cert)
+	}
+	return &TierCA{pool, certs}, nil
+}
+
+func parseCAs(raw []byte) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	for raw = bytes.TrimSpace(raw); len(raw) > 0; raw = bytes.TrimSpace(raw) {
+		block, rest := pem.Decode(raw)
+		if !bytes.HasPrefix(raw, []byte("-----BEGIN CERTIFICATE-----")) || block == nil || block.Type != "CERTIFICATE" ||
+			bytes.Contains(raw[len("-----BEGIN CERTIFICATE-----"):len(raw)-len(rest)], []byte("-----BEGIN ")) {
+			return nil, errors.New("invalid CA PEM")
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !cert.IsCA {
+			return nil, errors.New("invalid CA certificate")
+		}
+		certs = append(certs, cert)
+		raw = rest
+	}
+	if len(certs) == 0 {
+		return nil, errors.New("empty CA bundle")
+	}
+	return certs, nil
+}
+
+func (ca *TierCA) verifyBundle(raw string) error {
+	certs, err := parseCAs([]byte(raw))
+	if err != nil {
+		return err
+	}
+	intermediates := x509.NewCertPool()
+	for _, cert := range certs {
+		intermediates.AddCert(cert)
+	}
+	for _, cert := range certs {
+		matched := false
+		for _, pin := range ca.certs {
+			if cert.Equal(pin) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		if _, err := cert.Verify(x509.VerifyOptions{Roots: ca.roots, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+			return fmt.Errorf("reply CA does not match or chain to --tier-ca: %w", err)
+		}
+	}
+	return nil
+}
+
+func NewIdentity(ctx context.Context, dir, id, pool, endpoint, enrollURL string, ca *TierCA, attest func(context.Context) (attestation, error)) (*Identity, error) {
+	if ca == nil {
+		return nil, errors.New("pinned tier CA is required")
+	}
 	u, err := url.Parse(enrollURL)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" && u.Path != "/" && u.Path != "/v1/hosts/enroll" || !hostwire.HostID.MatchString(id) {
 		return nil, errors.New("invalid enroll URL or host ID")
@@ -112,19 +185,21 @@ func newIdentity(ctx context.Context, dir, id, pool, endpoint, enrollURL string,
 	if err != nil || key.Curve != elliptic.P256() {
 		return nil, errors.New("invalid host P-256 key")
 	}
-	i := &Identity{HostID: id, dir: dir, endpoint: endpoint, enrollURL: u.String(), pool: pool, key: key, keyPEM: raw, attest: attest, enrollment: enrollment}
-	saved, err := os.ReadFile(filepath.Join(dir, "host-certificate.json"))
+	i := &Identity{HostID: id, dir: dir, endpoint: endpoint, enrollURL: u.String(), pool: pool, key: key, keyPEM: raw, attest: attest, ca: ca, enrollment: ca.client(nil)}
+	path := filepath.Join(dir, "host-certificate.json")
+	saved, err := os.ReadFile(path)
 	if err == nil {
 		var reply hostwire.Enrolled
-		if err = json.Unmarshal(saved, &reply); err != nil {
-			return nil, err
+		err = json.Unmarshal(saved, &reply)
+		if err == nil {
+			err = i.install(reply, false)
 		}
-		if err := i.install(reply, false); err != nil {
-			if !errors.Is(err, errExpired) {
-				return nil, err
-			}
-		} else {
+		if err == nil {
 			return i, nil
+		}
+		slog.Warn("compute_identity_reenroll", "reason", err)
+		if err := os.Remove(path); err != nil {
+			return nil, err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -177,10 +252,10 @@ func (i *Identity) install(reply hostwire.Enrolled, save bool) error {
 	if !time.Now().Before(pair.Leaf.NotAfter) {
 		return errExpired
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM([]byte(reply.CAPEM)) {
-		return errors.New("invalid host CA bundle")
+	if err := i.ca.verifyBundle(reply.CAPEM); err != nil {
+		return err
 	}
+	roots := i.ca.roots
 	for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth} {
 		if err := verifyPeer(pair.Leaf, pair.Certificate[1:], roots, usage); err != nil {
 			return err
@@ -256,22 +331,29 @@ func (i *Identity) ServerTLS() *tls.Config {
 
 func (i *Identity) Post(ctx context.Context, path string, body, out any) error {
 	state := i.current.Load().server
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: state.Certificates, InsecureSkipVerify: true,
+	return post(ctx, i.ca.client(state.Certificates), "https://"+i.endpoint+"/v1/hosts/"+url.PathEscape(i.HostID)+path, body, out)
+}
+
+func (ca *TierCA) client(certs []tls.Certificate) *http.Client {
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12, Certificates: certs, RootCAs: ca.roots,
+		// Verify the private certificate chain and SPIFFE URI in place of DNS.
+		InsecureSkipVerify: true,
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			leaf := cs.PeerCertificates[0]
 			if err := hostcert.CheckLeaf(leaf, hostcert.TierURI); err != nil {
 				return err
 			}
-			pool := x509.NewCertPool()
+			intermediates := x509.NewCertPool()
 			for _, cert := range cs.PeerCertificates[1:] {
-				pool.AddCert(cert)
+				intermediates.AddCert(cert)
 			}
-			_, err := leaf.Verify(x509.VerifyOptions{Roots: state.ClientCAs, Intermediates: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+			_, err := leaf.Verify(x509.VerifyOptions{Roots: ca.roots, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
 			return err
-		}}
+		},
+	}
 	transport := &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true, DialContext: (&net.Dialer{}).DialContext}
-	client := &http.Client{Transport: transport, CheckRedirect: noRedirect, Timeout: 45 * time.Second}
-	return post(ctx, client, "https://"+i.endpoint+"/v1/hosts/"+url.PathEscape(i.HostID)+path, body, out)
+	return &http.Client{Transport: transport, CheckRedirect: noRedirect, Timeout: 45 * time.Second}
 }
 
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

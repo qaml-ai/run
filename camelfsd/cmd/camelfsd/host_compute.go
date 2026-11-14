@@ -26,6 +26,8 @@ import (
 
 type hostComputeFlags struct {
 	enabled                                                      bool
+	tierCAPath                                                   string
+	tierCA                                                       *computehost.TierCA
 	listen, tier, enroll, pool, images, attestor, audience, addr string
 	firecracker, jailer, kernel, initrd, policy                  string
 	slots                                                        int
@@ -37,6 +39,7 @@ func addHostComputeFlags(f *flag.FlagSet) *hostComputeFlags {
 	f.BoolVar(&c.enabled, "compute", false, "run the session VM host")
 	f.StringVar(&c.listen, "listen-compute", "0.0.0.0:8792", "tier-to-host mTLS listener")
 	f.StringVar(&c.tier, "tier-hosts-endpoint", "", "tier host mTLS endpoint (host:port)")
+	f.StringVar(&c.tierCAPath, "tier-ca", "", "pinned tier CA PEM file (required with compute)")
 	f.StringVar(&c.enroll, "tier-enroll-url", "", "tier HTTPS enrollment URL")
 	f.StringVar(&c.pool, "pool", "", "AWS enrollment and placement pool (build or test)")
 	f.StringVar(&c.images, "images-store", "", "guest image S3 bucket and optional prefix")
@@ -71,7 +74,9 @@ func (c *hostComputeFlags) validate() error {
 		c.addr != "" && !validEndpoint(c.addr) {
 		return errors.New("invalid compute host flags")
 	}
-	return nil
+	var err error
+	c.tierCA, err = computehost.LoadTierCA(c.tierCAPath)
+	return err
 }
 
 func (c *hostComputeFlags) start(ctx context.Context, data, region string, m *image.Manager, onError func()) (func(), error) {
@@ -110,7 +115,7 @@ func (c *hostComputeFlags) start(ctx context.Context, data, region string, m *im
 	if err != nil {
 		return nil, err
 	}
-	identity, err := computehost.NewIdentity(identityCtx, data, id, c.pool, c.tier, c.enroll, attest)
+	identity, err := computehost.NewIdentity(identityCtx, data, id, c.pool, c.tier, c.enroll, c.tierCA, attest)
 	if err != nil {
 		return nil, err
 	}
