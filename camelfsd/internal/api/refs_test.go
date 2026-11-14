@@ -504,7 +504,10 @@ func TestRefMutationRoutes(t *testing.T) {
 	create("ff", baseID)
 	ff := mergeRef("ff", version(created), "merge", 201, "")
 	check(ff, map[string]any{"version": version(created), "tree": created["tree"], "ff": true, "merged": []any{},
-		"took": map[string]any{"ours": float64(0), "theirs": float64(3)}})
+		"took": map[string]any{"ours": float64(0), "theirs": float64(3)}, "bytes": ff["bytes"], "files": float64(3)})
+	if _, ok := ff["bytes"].(float64); !ok {
+		t.Fatalf("merge reply lacks bytes: %v", ff)
+	}
 	mergeRef("ff", version(unrelated), "ff-only", 409, "not_fast_forward")
 	check(version(get("ff")), version(created))
 	merged := mergeRef("ff", version(unrelated), "merge", 201, "")
