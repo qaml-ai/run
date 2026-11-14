@@ -55,7 +55,8 @@ func TestDaemonStreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = m.Mount(ctx, image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: imported.Tree, JobID: "j", Vsock: g.uds})
+	// A fenced mount names the commit its checkpoint commits on top of (#980).
+	_, err = m.Mount(ctx, image.Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Parent: strings.Repeat("a", 40), Lineage: "l", Tree: imported.Tree, JobID: "j", Vsock: g.uds})
 	if err != nil {
 		t.Fatal(err)
 	}
