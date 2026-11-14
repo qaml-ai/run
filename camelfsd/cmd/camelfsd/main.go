@@ -127,6 +127,10 @@ func host(args []string) error {
 	hostID := fmt.Sprintf("%s-%d", strings.TrimSpace(string(machine)), time.Now().UnixNano())
 	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
 	origin := &nbd.Server{Store: s, Cache: c, Prefetch: *depth, Patterns: filepath.Join(*data, "patterns")}
+	// Fail at start, not at the first cold mount, when the host lacks a device-mapper target.
+	if e = image.ProbeDeviceMapper(ctx); e != nil {
+		return e
+	}
 	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
