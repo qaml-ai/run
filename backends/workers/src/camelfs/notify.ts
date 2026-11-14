@@ -55,14 +55,17 @@ export async function handleCamelfsNotify(request: Request, env: NotifyEnv, now 
 }
 
 const prefix = "camelfs:move:";
-export async function stageRepoMove(storage: DurableObjectStorage, move: RefMove) {
+export async function stageRepoMove(storage: DurableObjectStorage, move: RefMove, arm?: () => Promise<void>) {
   await storage.transaction(async tx => {
     const key = prefix + move.id;
     if (await tx.get(key) !== undefined || await tx.get("camelfs:seen:" + move.id)) return;
     await tx.put(key, move);
-    const at = Date.now() + 1000, alarm = await tx.getAlarm();
-    if (alarm === null || alarm > at) await tx.setAlarm(at);
+    if (!arm) {
+      const at = Date.now() + 1000, alarm = await tx.getAlarm();
+      if (alarm === null || alarm > at) await tx.setAlarm(at);
+    }
   });
+  await arm?.();
 }
 
 export async function repoMoveDeadline(storage: DurableObjectStorage) {

@@ -75,6 +75,7 @@ export class WorkflowCommits implements EffectExecutor {
       try {
         const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref });
         if (!merged.changed) return { ok: true, value: { committed: true, version: merged.version, changed: false } };
+        // The tier reports text merges. A workflow needs every file changed on the destination ref.
         const previous = await ctx.storage.getCommit(ctx.lineage, merged.previous);
         const { changes } = await ctx.storage.diff(ctx.lineage, previous.tree, merged.tree);
         return { ok: true, value: { committed: true, version: merged.version, changed: true, files: changes.map(change => change.path) } };

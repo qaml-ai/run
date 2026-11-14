@@ -9,7 +9,7 @@ export async function repoMoveRequestId(repo: string, delivery: string, mount: s
 export async function deliverRepoMoves(env: RepoContext["env"], config: import("../agent-types.ts").Config, moves: import("../camelfs/notify.ts").RefMove[], admit: (request: Request) => Promise<Response>) {
   const { repoContext } = await import("./registry.ts");
   for (const mount of config.config.mounts ?? []) {
-    if (!mount.repo || !mount.notify) continue;
+    if (!mount.repo || !mount.notify || !mount.path) continue;
     const row = await env.TENANTS.getByName(config.tenantId).repoRow(mount.repo);
     if (!row || row.deletedAt !== null || !moves.some(move => move.lineage === row.lineage)) continue;
     const ctx = await repoContext(env, config.tenantId, mount.repo, `agent:${config.id}`);

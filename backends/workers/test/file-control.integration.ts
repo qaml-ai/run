@@ -51,7 +51,7 @@ test("mount preparation follows owner checks and an upsert preserves mounts read
     await new Promise(resolve => setTimeout(resolve, 200));
     notified = await call(notificationPath);
   }
-  assert.equal(notified.body.state,'completed',JSON.stringify(notified));
+  assert.equal(notified.body.state,'completed',`${JSON.stringify(notified)}\n${f.worker.logs()}`);
   const watcherHistory=(await call(`/v1/agents/${watcher.body.id}/history`)).body;
   assert.match(JSON.stringify(watcherHistory),/Files changed in a mounted volume/);
   assert.match(JSON.stringify(watcherHistory),/\/memory\/note.txt/);

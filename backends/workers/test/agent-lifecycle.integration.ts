@@ -67,11 +67,11 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
     });
     const value = await response.json() as any;
-    assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}`);
+    assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}\n${f.camelfsCalls?.slice(-12).join("\n")}\n${f.worker.logs()}`);
     return value;
   }
   const shared = await json("/v1/repos", { name: "shared" });
-  await call(`/v1/repos/${shared.id}/commit`, {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({files:{"docs/initial.txt":{text:"initial"}}})});
+  await json(`/v1/repos/${shared.id}/commit`, { files: { "docs/initial.txt": { text: "initial" } } });
   const sharedMount = { repo: shared.id, path: "/shared", subpath: "/docs", mode: "ro", notify: true, ref: "main" };
   const source = await json("/v1/agents", { mounts: [{ workspace: true, path: "/private" }, sharedMount] });
   const bytes = Buffer.alloc(5 * 1024 * 1024 + 37, 0xa5);
