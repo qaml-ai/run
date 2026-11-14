@@ -50,16 +50,8 @@ func TestAPIRole(t *testing.T) {
 		status                    int
 		code                      string
 	}{
-		{"GET", "/v0/health", "", "", 200, ""},
 		{"GET", "/v1/health", "", "", 200, ""},
-		{"GET", "/v0/stats", "", "", 401, "unauthorized"},
-		{"GET", "/v0/stats", token("elsewhere", "r"), "", 200, ""},
-		{"GET", "/v0/stats", write, "", 200, ""},
-		{"POST", "/v0/mounts", write, "", 404, ""},
-		{"POST", "/v0/trees", write, "", 404, ""},
-		{"PUT", "/v0/blobs/abc", write, "", 404, ""},
-		{"POST", "/v0/images", write, "", 404, ""},
-		{"GET", "/v1/unrelated", write, "", 404, ""},
+		{"GET", "/v1/unrelated", write, "", 404, "not_found"},
 		{"PUT", "/v1/lineages/a/blobs", "", "hello", 401, "unauthorized"},
 		{"PUT", "/v1/lineages/a/blobs", "shared-bearer", "hello", 401, "unauthorized"},
 		{"PUT", "/v1/lineages/a/blobs", read, "hello", 403, "forbidden"},
@@ -88,11 +80,11 @@ func TestAPIRole(t *testing.T) {
 				t.Errorf("%s: %s; want error code %s and a message", tc.path, w.Body.String(), tc.code)
 			}
 		}
-		if (tc.path == "/v0/health" || tc.path == "/v1/health") && strings.TrimSpace(w.Body.String()) != `{"version":"test-version"}` {
+		if tc.path == "/v1/health" && strings.TrimSpace(w.Body.String()) != `{"version":"test-version"}` {
 			t.Errorf("health = %s", w.Body.String())
 		}
 	}
-	req := httptest.NewRequest(http.MethodGet, "/v0/stats", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/lineages/a", nil)
 	req.Header.Set("Authorization", "Bearer "+read)
 	if got, ok := ClaimsFromContext(authorizeToken(httptest.NewRecorder(), req, keys).Context()); !ok || got.Subject != "test" || got.Lineage != "a" || got.Access != "r" || got.KeyID != "test" {
 		t.Fatalf("claims context = %+v, %v", got, ok)

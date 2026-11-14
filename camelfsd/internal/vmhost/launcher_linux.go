@@ -351,7 +351,7 @@ func (l *Launcher) readRecord(id string) (VMRecord, error) {
 }
 
 func (l *Launcher) start(ctx context.Context, id string, shape Shape, boot Boot) (*VM, error) {
-	if boot.Session && boot.Repo == "" {
+	if boot.Repo == "" {
 		return nil, errors.New("session requires a branch disk")
 	}
 	path := boot.Image
@@ -445,10 +445,8 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc, imagePath string, size in
 	}
 	if boot.Repo != "" {
 		files.repo = "/repo"
-		if boot.Session {
-			if err := os.Chown(boot.Repo, uid, uid); err != nil {
-				return err
-			}
+		if err := os.Chown(boot.Repo, uid, uid); err != nil {
+			return err
 		}
 		if err := mountAsset(boot.Repo, filepath.Join(v.root, files.repo), false, uid); err != nil {
 			return err
@@ -465,7 +463,7 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc, imagePath string, size in
 		return err
 	}
 	lap(&v.timings.Policy)
-	config := firecrackerConfig(files, addr, r.Shape, l.Build, l.KVM, boot.Internet, boot.Session)
+	config := firecrackerConfig(files, addr, r.Shape, l.Build, l.KVM, boot.Internet)
 	if err := writeJSON(filepath.Join(v.root, "config.json"), config, 0644); err != nil {
 		return err
 	}

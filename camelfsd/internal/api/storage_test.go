@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
@@ -15,7 +16,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -34,16 +34,25 @@ func (s *countedStore) Put(c context.Context, k string, b []byte) error {
 	s.mu.Unlock()
 	return s.Store.Put(c, k, b)
 }
-func storageServer(t *testing.T, st store.Store) *Server {
+func storageServer(t *testing.T, st store.Store) *StorageServer {
 	t.Helper()
 	db, e := refs.Open(filepath.Join(t.TempDir(), "refs.db"))
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	return &Server{APIToken: "test", Manager: &image.Manager{Refs: db, Store: st, Config: image.Config{Data: t.TempDir()}}}
+	return &StorageServer{
+		repo: &objects.Repository{DB: db, Store: st, TempDir: t.TempDir()},
+		authorize: func(w http.ResponseWriter, r *http.Request) *http.Request {
+			if r.Header.Get("Authorization") != "Bearer test" {
+				authFail(w, http.StatusUnauthorized, "unauthorized", "bearer token required")
+				return nil
+			}
+			return r
+		},
+	}
 }
-func callStorage(t *testing.T, s *Server, l, method, route string, v any, key string, status int) *httptest.ResponseRecorder {
+func callStorage(t *testing.T, s *StorageServer, l, method, route string, v any, key string, status int) *httptest.ResponseRecorder {
 	t.Helper()
 	var raw []byte
 	if b, ok := v.([]byte); ok {
@@ -71,10 +80,10 @@ func response(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	}
 	return v
 }
-func put(t *testing.T, s *Server, l, text string) string {
+func put(t *testing.T, s *StorageServer, l, text string) string {
 	return response(t, callStorage(t, s, l, "PUT", "blobs", []byte(text), "", 201))["blob"].(string)
 }
-func commit(t *testing.T, s *Server, l, base string, changes []change) map[string]any {
+func commit(t *testing.T, s *StorageServer, l, base string, changes []change) map[string]any {
 	q := commitRequest{Parents: []string{}, Author: "agent:test", Message: "test", Changes: changes}
 	now := int64(123)
 	q.Time = &now
@@ -114,7 +123,7 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 			t.Fatal(key, e)
 		}
 	}
-	es, e := s.repository().ForLineage("a").ReadTree(context.Background(), tree)
+	es, e := s.repo.ForLineage("a").ReadTree(context.Background(), tree)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -176,7 +185,7 @@ func TestStorageRoutesDurabilityAndScoping(t *testing.T) {
 		t.Fatal("blob replay wrote")
 	}
 	// Cache misses verify the content id even for an opaque store implementation.
-	_, e = fresh.repository().ForLineage("a").DB.DB.Exec("DELETE FROM objects")
+	_, e = fresh.repo.ForLineage("a").DB.DB.Exec("DELETE FROM objects")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -235,8 +244,8 @@ func TestStorageBatchGrepAndDiff(t *testing.T) {
 	}
 	next := commit(t, s, "l", tree, []change{{Path: "src/a", Mode: "100755"}})["tree"].(string)
 	reads := 0
-	s.repository().ForLineage("a") // Observe only tree reads, with unchanged subtrees pruned.
-	repo := s.repository().ForLineage("l")
+	s.repo.ForLineage("a") // Observe only tree reads, with unchanged subtrees pruned.
+	repo := s.repo.ForLineage("l")
 	repo.Query = func(k string) {
 		if k == "tree" {
 			reads++
@@ -288,11 +297,11 @@ func TestStorageMerge(t *testing.T) {
 				}
 			} else {
 				v := response(t, w)
-				f, e := s.repository().ForLineage("l").File(context.Background(), v["tree"].(string), "x")
+				f, e := s.repo.ForLineage("l").File(context.Background(), v["tree"].(string), "x")
 				if e != nil {
 					t.Fatal(e)
 				}
-				raw, e := blobBytes(context.Background(), s.repository().ForLineage("l"), "l", f.SHA1)
+				raw, e := blobBytes(context.Background(), s.repo.ForLineage("l"), "l", f.SHA1)
 				if e != nil || string(raw) != "A\nb\nC\n" {
 					t.Fatal(string(raw), e)
 				}

@@ -48,11 +48,11 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 			return err
 		}
 		v := Mount{
-			Request: Request{JobID: state.JobID, Lineage: state.Lineage, Root: state.Root, Tree: state.Tree, Fence: state.Fence, Session: true},
-			Dest:    state.Dest, Image: state.Image, State: state.State, DM: state.DM, Parent: state.Parent,
+			Request: Request{JobID: state.JobID, Lineage: state.Lineage, Tree: state.Tree, Fence: state.Fence},
+			Dest:    state.Dest, Image: state.Image, State: state.State, Root: state.Root, Parent: state.Parent,
 			Snapshot: state.Snapshot, Promoted: state.Promoted, Warm: state.Warm, mu: new(sync.Mutex),
 		}
-		if v.JobID != id || v.Dest != filepath.Join(dir, "image.img") || v.Image != v.Dest || v.DM != "" {
+		if v.JobID != id || v.Dest != filepath.Join(dir, "image.img") || v.Image != v.Dest || state.DM != "" || !validMountFence(v.Fence) {
 			return fmt.Errorf("invalid session mount %s", id)
 		}
 		r, err := m.mountRoot(context.Background(), v.Lineage, v.Root)
@@ -83,22 +83,14 @@ func (m *Manager) SessionStreams(ctx context.Context, id, path string, uid int, 
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if !v.Session {
-		return errors.New("expected a session mount")
-	}
 	if v.streams != nil {
 		v.streams.close()
 	}
-	v.Vsock = path
 	r, err := m.mountRoot(ctx, v.Lineage, v.Root)
 	if err != nil {
 		return err
 	}
-	return m.listenStreams(ctx, v, r.Tree, apply, uid)
-}
-
-func (m *Manager) SessionCheckpoint(ctx context.Context, id string, q CheckpointRequest, publish func(context.Context, Checkpoint) error) (Checkpoint, error) {
-	return m.streamCheckpoint(ctx, id, 0, publish, q)
+	return m.listenStreams(ctx, v, path, r.Tree, apply, uid)
 }
 
 // AdoptCheckpoint installs an already-published checkpoint after an

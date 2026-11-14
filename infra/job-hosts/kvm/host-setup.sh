@@ -32,16 +32,11 @@ RUN_REF=main CAMELFSD_REF=main
 # shellcheck source=/dev/null
 source /etc/camel/kvm-host.conf
 [[ -n ${RUNTIME_URL:-} && -n ${CAMELFSD_STORE:-} ]] || fail 'Set RUNTIME_URL and CAMELFSD_STORE'
-compute=0
-if [[ -n ${TIER_ENROLL_URL:-}${TIER_HOSTS_ENDPOINT:-} ]]; then
-  compute=1
-  [[ -n ${TIER_ENROLL_URL:-} && -n ${TIER_HOSTS_ENDPOINT:-} ]] || fail 'Set both tier endpoints for compute'
-  [[ ${CAMELFSD_IMAGES_STORE:-} == s3://?* ]] || fail 'Set CAMELFSD_IMAGES_STORE to s3://bucket[/prefix]'
-  [[ ${TIER_CA_S3:-} =~ ^s3://[^/]+/.+ && ${TIER_CA_S3:-} != */ ]] || fail 'Set TIER_CA_S3 to an S3 object'
-  [[ ${TIER_CA_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || fail 'Set TIER_CA_SHA256 to a lowercase SHA-256'
-elif [[ -n ${CAMELFSD_COMPUTE_FLAGS:-} ]]; then
-  fail 'Replace CAMELFSD_COMPUTE_FLAGS with the tier settings in kvm-host.conf.example'
-fi
+# camelfsd host is the compute host only (unit 11 removed the /v0 socket API and storage-only mode).
+[[ -n ${TIER_ENROLL_URL:-} && -n ${TIER_HOSTS_ENDPOINT:-} ]] || fail "Set TIER_ENROLL_URL and TIER_HOSTS_ENDPOINT"
+[[ ${CAMELFSD_IMAGES_STORE:-} == s3://?* ]] || fail "Set CAMELFSD_IMAGES_STORE to s3://bucket[/prefix]"
+[[ ${TIER_CA_S3:-} =~ ^s3://[^/]+/.+ && ${TIER_CA_S3:-} != */ ]] || fail "Set TIER_CA_S3 to an S3 object"
+[[ ${TIER_CA_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || fail "Set TIER_CA_SHA256 to a lowercase SHA-256"
 source "$here/guest-image.conf"
 [[ $GUEST_IMAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || fail 'Pin the published GUEST_IMAGE_SHA256 in guest-image.conf'
 GUEST_IMAGE_S3_PREFIX=${GUEST_IMAGE_S3_PREFIX:-$CAMELFSD_STORE}
@@ -71,14 +66,14 @@ for package in "${packages[@]}"; do
 done
 if ((${#missing[@]})); then apt-get update -qq; apt-get install -y -qq "${missing[@]}"; fi
 ca_changed=0
-if (( compute )); then
+{
   echo '== Tier CA'
   aws s3 cp --region "${AWS_REGION:-us-west-2}" --only-show-errors "$TIER_CA_S3" "$work/tier-ca.pem"
   verify TIER_CA_SHA256 "$TIER_CA_SHA256" "$work/tier-ca.pem"
   changed=0
   put "$work/tier-ca.pem" "${TIER_CA:-/etc/camel/tier-ca.pem}"
   ca_changed=$changed
-fi
+}
 if ! command -v node >/dev/null || [[ $(node --version) != v22.* ]]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x -o "$work/nodesource.sh"
   bash "$work/nodesource.sh"
@@ -185,13 +180,6 @@ else
   verify GUEST_IMAGE_SHA256 "$GUEST_IMAGE_SHA256" "$base"
 fi
 bash "$here/files/camel-kvm-prep"
-echo '== Secrets'
-if [[ ! -f /etc/camel/camelfs-api.env ]]; then
-  (umask 077; printf 'CAMELFS_API_TOKEN=%s\n' "$(openssl rand -hex 32)" > /etc/camel/camelfs-api.env)
-fi
-if [[ $(stat -c %u:%g /etc/camel/camelfs-api.env) != 0:0 ]]; then chown root:root /etc/camel/camelfs-api.env; fi
-if [[ $(stat -c %a /etc/camel/camelfs-api.env) != 600 ]]; then chmod 0600 /etc/camel/camelfs-api.env; fi
-
 echo '== Units'
 if ! getent passwd camel-proxy >/dev/null; then
   useradd --system --uid 940 --user-group --no-create-home --shell /usr/sbin/nologin camel-proxy

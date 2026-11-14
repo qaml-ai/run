@@ -298,7 +298,7 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 	case "restore":
 		return s.refRestore(w, r, l, name, repo)
 	default:
-		http.NotFound(w, r)
+		authFail(w, http.StatusNotFound, "not_found", "route not found")
 	}
 	return nil
 }

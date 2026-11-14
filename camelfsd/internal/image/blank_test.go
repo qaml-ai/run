@@ -1,17 +1,13 @@
 package image
 
 import (
-	"context"
 	"encoding/binary"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 
-	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"golang.org/x/sys/unix"
 )
 
@@ -55,61 +51,4 @@ func TestLargeBlankIsSparseAndUsesExtents(t *testing.T) {
 		}
 	}
 	t.Logf("64 GiB blank allocated_bytes=%d", st.Blocks*512)
-}
-
-func TestZeroWrittenCheckpointRecordsHoleWithoutUpload(t *testing.T) {
-	m, _ := unit3(t)
-	b := make([]byte, 2*root.ChunkSize)
-	b[0] = 11
-	b[root.ChunkSize] = 22
-	p := filepath.Join(m.Data, "nonzero.img")
-	if e := os.WriteFile(p, b, 0600); e != nil {
-		t.Fatal(e)
-	}
-	ctx := context.Background()
-	imp, e := m.Import(ctx, ImportRequest{Lineage: "zeros", Name: "main", Path: p})
-	if e != nil {
-		t.Fatal(e)
-	}
-	v, e := m.Mount(ctx, Request{Lineage: "zeros", Root: imp.Root, Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "zero-write"})
-	if e != nil {
-		t.Fatal(e)
-	}
-	f, e := os.OpenFile(v.Image, os.O_WRONLY, 0)
-	if e != nil {
-		t.Fatal(e)
-	}
-	_, e = f.WriteAt(make([]byte, root.ChunkSize), root.ChunkSize)
-	closeErr := f.Close()
-	if e != nil || closeErr != nil {
-		t.Fatal(e, closeErr)
-	}
-	cp, e := m.Checkpoint(ctx, v.JobID)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if cp.ParentRoot != imp.Root || cp.ChangedChunks != 1 || cp.UploadedChunks != 0 {
-		t.Fatal("zero write uploaded a chunk", cp)
-	}
-	r, e := m.load(ctx, "zeros", cp.Root)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, present := r.Chunks["262144"]; present || len(r.Chunks) != 1 {
-		t.Fatal("zero-written region is not a hole", r.Chunks)
-	}
-	// Repeated all-zero writes to that region remain a hole and upload nothing.
-	f, e = os.OpenFile(v.Image, os.O_WRONLY, 0)
-	if e != nil {
-		t.Fatal(e)
-	}
-	_, e = f.WriteAt(make([]byte, root.ChunkSize), root.ChunkSize)
-	closeErr = f.Close()
-	if e != nil || closeErr != nil {
-		t.Fatal(e, closeErr)
-	}
-	cp, e = m.Checkpoint(ctx, v.JobID)
-	if e != nil || cp.ChangedChunks != 0 || cp.UploadedChunks != 0 {
-		t.Fatal(cp, e)
-	}
 }

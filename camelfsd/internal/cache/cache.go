@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -19,35 +18,29 @@ type flight struct {
 	err  error
 }
 type Cache struct {
-	verified        map[string]time.Time
-	Hashes          atomic.Int64
-	fdMu            sync.Mutex
-	fds             map[string]*list.Element
-	lru             list.List
-	Dir             string
-	Store           store.Store
-	mu              sync.Mutex
-	flights         map[string]*flight
-	atomic          func(string, []byte) error
-	writeAt         func(*os.File, []byte, int64) (int, error)
-	cloneRange      func(*os.File, *os.File, int64) error
-	ReflinkedChunks atomic.Int64
+	verified map[string]time.Time
+	Hashes   atomic.Int64
+	Dir      string
+	Store    store.Store
+	mu       sync.Mutex
+	flights  map[string]*flight
+	atomic   func(string, []byte) error
 }
 
 func New(dir string, s store.Store, n int) *Cache {
 	if n < 1 {
 		n = 64
 	}
-	return &Cache{atomic: store.Atomic, writeAt: func(f *os.File, b []byte, off int64) (int, error) { return f.WriteAt(b, off) }, cloneRange: cloneRange, Dir: dir, Store: store.WithDepth(s, n), flights: map[string]*flight{}, verified: map[string]time.Time{}, fds: map[string]*list.Element{}}
+	return &Cache{atomic: store.Atomic, Dir: dir, Store: store.WithDepth(s, n), flights: map[string]*flight{}, verified: map[string]time.Time{}}
 }
 func (c *Cache) Ensure(h string) (string, error) { return c.EnsureContext(context.Background(), h) }
 func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
-	return c.ensure(ctx, h, c.Store, nil)
+	return c.ensure(ctx, h, c.Store)
 }
 func (c *Cache) EnsureLineage(ctx context.Context, lineage, h string) (string, error) {
-	return c.ensure(ctx, h, store.ForLineage(c.Store, lineage), nil)
+	return c.ensure(ctx, h, store.ForLineage(c.Store, lineage))
 }
-func (c *Cache) ensure(ctx context.Context, h string, source store.Store, publish func(string, []byte) error) (string, error) {
+func (c *Cache) ensure(ctx context.Context, h string, source store.Store) (string, error) {
 	if !root.Hex(h, 64) {
 		return "", fmt.Errorf("invalid hash")
 	}
@@ -91,11 +84,7 @@ func (c *Cache) ensure(ctx context.Context, h string, source store.Store, publis
 		e = fmt.Errorf("chunk hash mismatch")
 	}
 	if e == nil {
-		if publish != nil {
-			e = publish(p, b)
-		} else {
-			e = c.atomic(p, b)
-		}
+		e = c.atomic(p, b)
 	}
 	f.err = e
 	if e == nil {
@@ -109,8 +98,19 @@ func (c *Cache) ensure(ctx context.Context, h string, source store.Store, publis
 	}
 	return f.path, e
 }
-func (c *Cache) Fetch(ctx context.Context, hashes []string, n int) error {
-	return store.Parallel(ctx, n, hashes, func(h string) error { _, e := c.EnsureContext(ctx, h); return e })
+
+// Remove invalidates a trusted hit before eviction.
+func (c *Cache) Remove(path string) error {
+	h := filepath.Base(path)
+	c.mu.Lock()
+	if flight := c.flights[h]; flight != nil {
+		c.mu.Unlock()
+		<-flight.done
+		return c.Remove(path)
+	}
+	defer c.mu.Unlock()
+	delete(c.verified, h)
+	return os.Remove(path)
 }
 
 func (c *Cache) hash(b []byte) string { c.Hashes.Add(1); return root.Hash(b) }

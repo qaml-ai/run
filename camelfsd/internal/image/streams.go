@@ -24,11 +24,10 @@ import (
 var ErrBadStream = errors.New("bad-stream")
 var ErrStreamTimeout = errors.New("stream-timeout")
 
-type Apply struct {
-	FromTree string `json:"fromTree"`
-	ToTree   string `json:"toTree"`
-	Files    int    `json:"files"`
-	Bytes    int64  `json:"bytes"`
+type applyTrees struct {
+	FromTree, ToTree string
+	Files            int
+	Bytes            int64
 }
 type arm struct {
 	ctx  context.Context
@@ -66,14 +65,7 @@ func (m *Manager) entries(ctx context.Context, lineage, t string) ([]objects.Ent
 }
 
 // v0-limitation: L53
-func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error {
-	return m.listenStreams(ctx, v, from, true, -1)
-}
-
-func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, apply bool, uid int) error {
-	if v.Vsock == "" && v.Session {
-		return nil
-	}
+func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from string, apply bool, uid int) error {
 	var old, next []objects.Entry
 	if apply {
 		var e error
@@ -107,15 +99,9 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 		}
 		return ops[i].Path < ops[j].Path
 	})
-	a := Apply{FromTree: from, ToTree: v.Tree, Files: len(ops)}
-	for _, o := range ops {
-		a.Bytes += o.Size
-	}
-	if apply && from != v.Tree {
-		v.Apply = &a
-	}
-	if v.Vsock == "" {
-		return nil
+	a := applyTrees{FromTree: from, ToTree: v.Tree, Files: len(ops)}
+	for _, op := range ops {
+		a.Bytes += op.Size
 	}
 	s := &streams{conns: map[net.Conn]bool{}}
 	v.streams = s
@@ -124,38 +110,27 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 		ports = append(ports, "5201")
 	}
 	for _, port := range ports {
-		path := v.Vsock + "_" + port
-		bind := path
-		var dir *os.File
-		if uid >= 0 {
-			var e error
-			dir, e = os.Open(filepath.Dir(path))
-			if e != nil {
-				s.close()
-				return e
-			}
-			bind = fmt.Sprintf("/proc/self/fd/%d/%s", dir.Fd(), filepath.Base(path))
-			if e = os.Remove(path); e != nil && !os.IsNotExist(e) {
-				dir.Close()
-				s.close()
-				return e
-			}
-		}
-		l, e := net.ListenUnix("unix", &net.UnixAddr{Name: bind, Net: "unix"})
-		if dir != nil {
-			if e == nil {
-				l.SetUnlinkOnClose(false)
-				s.paths = append(s.paths, path)
-			}
-			dir.Close()
-		}
+		path := vsock + "_" + port
+		dir, e := os.Open(filepath.Dir(path))
 		if e != nil {
 			s.close()
 			return e
 		}
-		if uid >= 0 {
-			e = os.Chown(path, uid, uid)
+		bind := fmt.Sprintf("/proc/self/fd/%d/%s", dir.Fd(), filepath.Base(path))
+		if e = os.Remove(path); e != nil && !os.IsNotExist(e) {
+			dir.Close()
+			s.close()
+			return e
 		}
+		l, e := net.ListenUnix("unix", &net.UnixAddr{Name: bind, Net: "unix"})
+		dir.Close()
+		if e != nil {
+			s.close()
+			return e
+		}
+		l.SetUnlinkOnClose(false)
+		s.paths = append(s.paths, path)
+		e = os.Chown(path, uid, uid)
 		if e == nil {
 			e = os.Chmod(path, 0600)
 		}
@@ -215,9 +190,9 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 						wire.Send(raw, wire.Op{End: true, Error: e.Error()})
 						return
 					}
+
 					var reply struct {
-						Applied bool    `json:"applied"`
-						ApplyMs float64 `json:"applyMs"`
+						Applied bool `json:"applied"`
 					}
 					if e := wire.JSON(c, &reply); e != nil {
 						raw.SetWriteDeadline(time.Now().Add(time.Second))
@@ -227,11 +202,6 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 							code = ErrStreamTimeout.Error()
 						}
 						wire.Send(raw, wire.Op{End: true, Error: code})
-					} else if reply.Applied {
-						v.mu.Lock()
-						v.Applied = true
-						v.ApplyMs = reply.ApplyMs
-						v.mu.Unlock()
 					}
 				}()
 			}
@@ -239,7 +209,7 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 	}
 	return nil
 }
-func (m *Manager) sendApply(c net.Conn, lineage, job string, a Apply, entries []objects.Entry, ops []wire.Op) error {
+func (m *Manager) sendApply(c net.Conn, lineage, job string, a applyTrees, entries []objects.Entry, ops []wire.Op) error {
 	ctx, cancel := context.WithTimeout(context.Background(), m.ApplyMax)
 	defer cancel()
 	if e := wire.Send(c, wire.Header{V: 1, Kind: "apply", JobID: job, FromTree: a.FromTree, ToTree: a.ToTree}); e != nil {
@@ -482,35 +452,27 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 	out.stream = ms(start)
 	return out, nil
 }
-func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, metadata ...CheckpointRequest) (Checkpoint, error) {
-	return m.streamCheckpoint(ctx, id, timeout, nil, metadata...)
-}
-
-func (m *Manager) streamCheckpoint(ctx context.Context, id string, timeout int, publish func(context.Context, Checkpoint) error, metadata ...CheckpointRequest) (out Checkpoint, err error) {
-	defer func() { out.RefreshTimings() }()
+func (m *Manager) SessionCheckpoint(ctx context.Context, id string, q CheckpointRequest, publish func(context.Context, Checkpoint) error) (out Checkpoint, err error) {
+	defer func() { out.Timings = out.timingFields() }()
+	if err := q.Validate(); err != nil {
+		return out, err
+	}
+	if publish == nil {
+		return out, apierr.Invalid("session checkpoint requires a publisher")
+	}
+	timeout := q.TimeoutMs
 	if timeout == 0 {
 		timeout = 120000
 	}
-	if timeout < 1 || timeout > 600000 {
-		return out, apierr.Invalid("invalid timeoutMs")
-	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
 	defer cancel()
-	for _, q := range metadata {
-		if e := q.Validate(); e != nil {
-			return out, e
-		}
-	}
-	if len(metadata) == 0 {
-		metadata = []CheckpointRequest{{}}
-	}
 	v := m.lookup(id)
 	if v == nil {
 		return out, os.ErrNotExist
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.Fence == nil {
+	if !validMountFence(v.Fence) {
 		return out, &apierr.Error{Status: 409, Code: "no_fence", Cause: fmt.Errorf("mount has no fence")}
 	}
 	if v.streams == nil {
@@ -542,9 +504,6 @@ func (m *Manager) streamCheckpoint(ctx context.Context, id string, timeout int, 
 	defer stopCancel()
 	deadline, _ := ctx.Deadline()
 	c = &wire.DeadlineConn{Conn: raw, Idle: m.StreamIdle, Overall: deadline}
-	if e := m.awaitHydration(ctx, v); e != nil {
-		return out, e
-	}
 	streamStart := time.Now()
 	prepared, e := m.prepareReceive(ctx, v)
 	if e != nil {
@@ -575,57 +534,20 @@ func (m *Manager) streamCheckpoint(ctx context.Context, id string, timeout int, 
 		return out, fmt.Errorf("%w: %v", ErrBadStream, e)
 	}
 	defer os.RemoveAll(r.dir)
-	if publish != nil {
-		base, e := m.mountRoot(ctx, v.Lineage, v.Root)
-		if e != nil {
-			return out, e
-		}
-		v.Snapshot++
-		snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
-		defer os.Remove(snap)
-		if e = clone(v.Dest, snap); e != nil {
-			return out, e
-		}
-		f, e := os.Open(snap)
-		if e != nil {
-			return out, e
-		}
-		ranges, e := sessionRanges(f, base.VirtualSize, base.Chunks)
-		f.Close()
-		if e != nil {
-			return out, e
-		}
-		v.preparedSnapshot, v.preparedRanges = snap, ranges
-		defer func() { v.preparedSnapshot = ""; v.preparedRanges = nil }()
-	} else if v.DM != "" {
-		root, e := m.mountRoot(ctx, v.Lineage, v.Root)
-		if e != nil {
-			return out, e
-		}
-		v.Snapshot++
-		snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
-		if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
-			return out, e
-		}
-		ranges, captureErr := snapshotCopy(ctx, v.Dest, filepath.Join(filepath.Dir(v.Dest), "cow.img"), snap, root.VirtualSize)
-		_, resumeErr := resumeDM(v.DM)
-		if captureErr != nil {
-			os.Remove(snap)
-			return out, captureErr
-		}
-		if resumeErr != nil {
-			os.Remove(snap)
-			return out, resumeErr
-		}
-		v.preparedSnapshot = snap
-		v.preparedRanges = ranges
-		defer func() {
-			if v.preparedSnapshot != "" {
-				os.Remove(v.preparedSnapshot)
-				v.preparedSnapshot = ""
-				v.preparedRanges = nil
-			}
-		}()
+	v.Snapshot++
+	snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
+	defer os.Remove(snap)
+	if e = clone(v.Dest, snap); e != nil {
+		return out, e
+	}
+	f, e := os.Open(snap)
+	if e != nil {
+		return out, e
+	}
+	defer f.Close()
+	ranges, e := sessionRanges(f, prepared.quota, prepared.chunks)
+	if e != nil {
+		return out, e
 	}
 	if err = wire.Send(c, map[string]bool{"ack": true}); err != nil {
 		return out, ErrStreamTimeout
@@ -659,7 +581,7 @@ func (m *Manager) streamCheckpoint(ctx context.Context, id string, timeout int, 
 	if e != nil {
 		return out, e
 	}
-	out, err = m.checkpointWithPublish(ctx, v, tree.Tree, publish, metadata...)
+	out, err = m.publishCheckpoint(ctx, v, tree.Tree, f, ranges, q, publish)
 	out.FilesChanged = r.count
 	out.BytesReceived = r.bytes
 	out.WalkMs = r.walk
@@ -721,9 +643,10 @@ func sendIndex(w io.Writer, entries []objects.Entry) error {
 }
 
 type receiveBase struct {
-	quota int64
-	files map[string]objects.File
-	sizes map[string]int64
+	quota  int64
+	chunks map[string]string
+	files  map[string]objects.File
+	sizes  map[string]int64
 }
 
 func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase, err error) {
@@ -732,6 +655,7 @@ func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase
 		return out, err
 	}
 	out.quota = r.VirtualSize
+	out.chunks = r.Chunks
 	// v0-limitation: L53
 	entries, err := m.entries(ctx, v.Lineage, v.Tree)
 	if err != nil {

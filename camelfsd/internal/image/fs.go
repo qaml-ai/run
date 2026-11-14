@@ -107,18 +107,6 @@ func readExtents(f *os.File) ([]extent, error) {
 	return all, nil
 }
 
-// Collect private extents BEFORE reflinking: afterwards the new snapshot itself
-// is a sharing partner. Include holes to detect punched-out parent chunks.
-func changedRanges(f *os.File, size int64, parent map[string]string) ([]chunk.Range, error) {
-	if os.Getenv("CAMELFSD_TEST_NO_REFLINK") == "1" {
-		return []chunk.Range{{Offset: 0, Length: size}}, nil
-	}
-	es, e := extents(f)
-	if e != nil {
-		return nil, e
-	}
-	return rangesFromExtents(es, size, parent), nil
-}
 func rangesFromExtents(es []extent, size int64, parent map[string]string) []chunk.Range {
 	var out []chunk.Range
 	// Only parent chunks intersecting a hole need to be read to detect deletion.

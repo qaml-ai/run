@@ -150,7 +150,7 @@ func TestEntryAndDiffSizes(t *testing.T) {
 	next := commit(t, s, "l", tree, []change{{Path: "a/b/file", Mode: "100755"}, {Path: "link", Blob: b}, {Path: "deleted", Delete: true}, {Path: "added", Blob: empty}})["tree"].(string)
 	// A wiped local index must use the tree size sidecars, never blob HEADs.
 	fresh := storageServer(t, treeOnlyStore{st})
-	repo := fresh.repository().ForLineage("l")
+	repo := fresh.repo.ForLineage("l")
 	changes, e := treeDiff(context.Background(), repo, tree, next, "")
 	if e != nil {
 		t.Fatal(e)
@@ -263,10 +263,10 @@ func TestReadRoutesUseOnlyTreeSizes(t *testing.T) {
 	first := commit(t, s, "l", "", []change{{Path: "nested/file", Blob: blob}})["tree"].(string)
 	next := commit(t, s, "l", first, []change{{Path: "nested/file", Mode: "100755"}})["tree"].(string)
 	// Incorrect cached blob metadata must not affect any size-bearing read.
-	if _, e := s.repository().DB.DB.Exec("UPDATE lineage_blobs SET size=999"); e != nil {
+	if _, e := s.repo.DB.DB.Exec("UPDATE lineage_blobs SET size=999"); e != nil {
 		t.Fatal(e)
 	}
-	s.Manager.Store = treeOnlyStore{st}
+	s.repo.Store = treeOnlyStore{st}
 	listing := response(t, callStorage(t, s, "l", "GET", "trees/"+first+"?recursive=1", nil, "", 200))
 	if listing["entries"].([]any)[0].(map[string]any)["size"] != float64(3) {
 		t.Fatal(listing)
@@ -281,7 +281,7 @@ func TestReadRoutesUseOnlyTreeSizes(t *testing.T) {
 	}
 	// Losing either the root or a traversed subtree's sidecar is an invariant
 	// failure, even when the blob metadata and bytes remain available.
-	es, e := s.repository().ForLineage("l").ReadTree(context.Background(), first)
+	es, e := s.repo.ForLineage("l").ReadTree(context.Background(), first)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -294,7 +294,7 @@ func TestReadRoutesUseOnlyTreeSizes(t *testing.T) {
 		if e = os.Remove(path); e != nil {
 			t.Fatal(e)
 		}
-		if _, e = s.repository().DB.DB.Exec("DELETE FROM tree_sizes WHERE id=?", id); e != nil {
+		if _, e = s.repo.DB.DB.Exec("DELETE FROM tree_sizes WHERE id=?", id); e != nil {
 			t.Fatal(e)
 		}
 		for _, route := range []string{"trees/" + first + "?recursive=1", "trees/" + first + "/entry?path=nested/file", "diff?from=" + first + "&to=" + next} {

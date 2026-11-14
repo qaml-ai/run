@@ -337,7 +337,7 @@ func TestKVMComputeDaemonProcess(t *testing.T) {
 	db, err := refs.Open(filepath.Join(q.Data, "refs.db"))
 	must(err)
 	defer db.Close()
-	m, err := image.New(image.Config{Data: q.Data, RecoverSessions: true, VirtualSize: 32 << 20}, local, cache.New(filepath.Join(q.Data, "cache"), local, 4), db)
+	m, err := image.New(image.Config{Data: q.Data, VirtualSize: 32 << 20}, local, cache.New(filepath.Join(q.Data, "cache"), local, 4), db)
 	must(err)
 	defer m.Close()
 	// Enrollment is already persisted by the harness.

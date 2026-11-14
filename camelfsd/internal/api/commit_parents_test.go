@@ -26,7 +26,7 @@ func TestCommitParentsRoundTrip(t *testing.T) {
 		t.Fatal(get)
 	}
 	body := fmt.Sprintf("tree %s\nparent %s\nparent %s\nauthor agent:test <agent:test@camelfs> 123 +0000\ncommitter camelfs <camelfs@camelfs> 123 +0000\n\nmerge\n\n", first["tree"], parents[0], parents[1])
-	raw, e := s.repository().ForLineage("l").Object(context.Background(), post["commit"].(string), "commit")
+	raw, e := s.repo.ForLineage("l").Object(context.Background(), post["commit"].(string), "commit")
 	if e != nil || string(raw) != body || post["commit"] != store.GitHash("commit", []byte(body)) {
 		t.Fatalf("git commit mismatch: %q %v", raw, e)
 	}
