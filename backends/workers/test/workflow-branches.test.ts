@@ -51,3 +51,16 @@ test('two workflows with the same effect key on one repo get their own branches'
   assert.equal((await ctx.repo.ref(one.ref))!.owner,'workflow:wf_one');
   assert.equal((await ctx.repo.ref(two.ref))!.owner,'workflow:wf_two');
 });
+test('on the tier, workflow fork refs are allowed and the repo-fork namespace fork/repo_ stays reserved', async t => {
+  const { branch } = await import('../src/repos/write.ts');
+  const f = await fixture(t), ctx = await f.create(), storage = memory();
+  // A workflow child branch (fork/<hash>-<attempt>) is created on the tier, owned by its workflow.
+  const fork = await childBranch(f.env,'t',storage as never,{workflow:'wf',key:'tier',attempt:2},repoAt(ctx.repoId));
+  assert.match(fork.ref,/^fork\/[0-9a-f]{16}-2$/);
+  assert.equal((await ctx.repo.ref(fork.ref))!.owner,'workflow:wf');
+  // fork/repo_<id>/ belongs to repo forks sharing a lineage: refused for a ref name, whatever the caller.
+  const head = await ctx.repo.resolve('main');
+  await assert.rejects(branch(ctx,{name:'fork/repo_abc/main',from:{version:head.version}}), (e: any) => e.code === 'bad_ref' && e.status === 400);
+  assert.throws(() => ctx.repo.tierRefName('fork/repo_abc/main'), (e: any) => e.code === 'bad_ref');
+  assert.equal(await ctx.repo.ref('fork/repo_abc/main').catch((e: any) => e.code), 'bad_ref');
+});
