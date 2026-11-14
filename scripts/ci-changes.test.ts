@@ -60,15 +60,19 @@ test("only allowlisted PR paths skip expensive tests", () => {
   for (const paths of [[], ["README.md", "src/server.ts"], ["docs/moved.ts", "src/deleted.ts"]]) {
     assert.equal(changes({ event: "pull_request", paths }), "tests=true\nimage=true\nguest_image=false\n");
   }
-  assert.equal(changes({ event: "pull_request", paths: [".github/workflows/ci.yml"] }), "tests=true\nimage=true\nguest_image=true\n");
+  assert.equal(changes({ event: "pull_request", paths: [".github/workflows/ci.yml"] }), "tests=true\nimage=true\nguest_image=false\n");
   assert.equal(changes({ event: "pull_request", paths: [".github/ISSUE_TEMPLATE/bug.yml"] }), "tests=true\nimage=false\nguest_image=false\n");
 });
 
-test("PR guest images follow the guest's inputs, the build script, and the workflow", () => {
-  for (const path of ["camelfsd/internal/guest/guest.go", "camelfsd/scripts/build-guest-image.sh", ".github/workflows/ci.yml"]) {
+test("PR guest images follow the guest's inputs and the build scripts, not workflow edits", () => {
+  for (const path of ["camelfsd/internal/guest/guest.go", "camelfsd/scripts/build-guest-image.sh", "camelfsd/scripts/build-guest-image-container.sh"]) {
     assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=true$/m, path);
   }
   assert.match(changes({ event: "pull_request", paths: ["README.md", "jobhost/guest.ts"] }), /^guest_image=false$/m);
+  // The base digest lives in build-guest-image-container.sh, so a workflow edit no longer republishes the image.
+  for (const path of [".github/workflows/ci.yml", ".github/workflows/guest-image.yml"]) {
+    assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=false$/m, path);
+  }
   // camelfsd/scripts/guest-inputs.txt names the guest's inputs; host/tier-only camelfsd code does not rebuild it.
   for (const path of ["camelfsd/internal/api/refs.go", "camelfsd/internal/computehost/host.go", "camelfsd/cmd/camelfsd/main.go"]) {
     assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=false$/m, path);
