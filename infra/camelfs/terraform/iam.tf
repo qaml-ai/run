@@ -49,7 +49,8 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-# Used by ECS itself: pull the image, write logs, and read the one secret it injects (CAMELFS_JWKS).
+# Used by ECS itself: pull the image, write logs, and read the two secrets it injects (CAMELFS_JWKS,
+# CAMELFS_NOTIFY_KEY).
 resource "aws_iam_role" "api_execution" {
   name               = "${var.name}-${var.env}-api-execution"
   description        = "camelFS api ECS task execution (image pull, logs, the JWKS injection)"
@@ -70,7 +71,7 @@ resource "aws_iam_role_policy" "api_execution_jwks" {
       Sid      = "InjectKeys"
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
+      Resource = [aws_secretsmanager_secret.token_verify_keys.arn, aws_secretsmanager_secret.notify_key.arn]
     }]
   })
 }

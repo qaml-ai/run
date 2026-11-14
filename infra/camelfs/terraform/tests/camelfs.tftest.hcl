@@ -287,9 +287,9 @@ run "roles_and_policies" {
     condition = (
       !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : anytrue([for action in flatten([statement.Action]) : startswith(action, "secretsmanager:")])])
       && [for statement in jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement : statement.Action] == [["secretsmanager:GetSecretValue"]]
-      && length(jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement[0].Resource) == 1
+      && length(jsondecode(aws_iam_role_policy.api_execution_jwks.policy).Statement[0].Resource) == 2
     )
-    error_message = "Neither the api task role nor the host policy reads a secret; the execution role reads the one JWKS secret it injects."
+    error_message = "Neither the api task role nor the host policy reads a secret; the execution role reads the two secrets it injects (JWKS, notify key)."
   }
   assert {
     condition = (
@@ -405,15 +405,15 @@ run "service_with_every_feature" {
   }
 
   assert {
-    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--listen-enroll", "0.0.0.0:8793", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--token-max-ttl", "1h"]
-    error_message = "With refs and compute on, the command carries C2's and K4c's flags (no file flags: the tier keeps its key in memory) and then api_extra_args."
+    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]
+    error_message = "With refs and compute on, the command carries C2's and K4c's full flag set (wf-durable, 2026-11-14; no file flags: the tier keeps its key in memory) and then api_extra_args."
   }
   assert {
     condition = (
-      [for secret in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets : secret.name] == ["CAMELFS_JWKS"]
+      [for secret in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets : secret.name] == ["CAMELFS_JWKS", "CAMELFS_NOTIFY_KEY"]
       && !anytrue([for pair in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : startswith(pair.name, "CAMELFS_")])
     )
-    error_message = "The runtime's JWKS is injected from Secrets Manager; no key material is in the environment, and no service signing key exists."
+    error_message = "The runtime's JWKS and the notify key are injected from Secrets Manager; no key material is in the environment, and no service signing key exists."
   }
   assert {
     condition     = aws_appautoscaling_target.api[0].min_capacity == 2 && aws_appautoscaling_target.api[0].max_capacity == 8

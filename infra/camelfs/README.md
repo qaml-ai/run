@@ -26,7 +26,7 @@ outputs.
 | `mtls.tf` | §9.12. The trust bucket `camelfs-prod-trust-<account>` (public CA PEMs, versioned). The offline **AOP CA**'s secret `camelfs/prod/aop-ca` (filled by `aop.sh init`) and, once `aop_ca_version` pins its PEM, the public listener's trust store. The **hosts' CA**: AWS Private CA, root, EC P-256, **short-lived mode** (leaves ≤ 7 days, no CRL/OCSP), self-signed for 10 years and activated by Terraform. **Host routes**: an internal **NLB in TCP passthrough** (`camelfs-prod-hosts`, port 8794, its own security group: hosts in, api tasks out) to the tier's `--listen-hosts` port, where the tier terminates mutual TLS itself. The **enrollment** path: a plain-TLS listener on the internal balancer (8443) whose only rule forwards `POST /v1/hosts/enroll` to a separate target group on container port 8793 (everything else 404), with the security-group rules both sides. A rule on the public listener: `/v1/hosts/*` → 404 |
 | `ecs.tf` | ECR repository `camelfs-prod` (immutable tags, newest 20 kept), cluster `camelfs-prod` (Container Insights), the api tasks' security group, the Fargate task definition (ARM64, 1 vCPU / 2 GiB, read-only root, an ephemeral `/var/lib/camelfs` for the SQLite caches and temp files, `CAMELFS_JWKS` and `CAMELFS_SERVICE_SIGNING_KEY` injected from Secrets Manager), and, with `certificate_issued`, the service `camelfs-prod-api` on both target groups (circuit breaker + alarm rollback) at **`api_min_count` tasks, 0 by default**; CPU target-tracking autoscaling (`api_min_count`–8) once the minimum is above 0 |
 | `iam.tf` | **api** task role (every table; the bucket read/write, never delete; the hosts' CA as registration authority: `IssueCertificate` restricted to the `EndEntityCertificate/V1` template, `GetCertificate`; ECS Exec; no secret) and execution role (image, logs, the one JWKS secret it injects). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on the six other tables and on `sts:AssumeRole*`; no secret, no CA; it puts its VMs' results under `results/<lineage>/<vm>` and may read none: `results/` is write-only for hosts), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles). **publisher** role `camelfs-prod-guest-image-publisher` for GitHub Actions (OIDC, the repository's `production` environment): `s3:PutObject` under `guest/` and nothing else |
-| `secrets.tf` | Secrets Manager container `camelfs/prod/token-verify-keys` (the runtime's public JWKS, Ed25519: what the tier verifies runtime tokens with; `jwks.sh`). The `service-signing-key` / `service-verify-keys` pair of the retired `camelfs-host+jwt` family is deleted (§9.12). Values never by Terraform |
+| `secrets.tf` | Secrets Manager containers `camelfs/prod/token-verify-keys` (the runtime's public JWKS, Ed25519: what the tier verifies runtime tokens with; `jwks.sh`) and `camelfs/prod/notify-key` (the §9.11 webhook HMAC key both sides hold; `notify-key.sh`). The `service-signing-key` / `service-verify-keys` pair of the retired `camelfs-host+jwt` family is deleted (§9.12). Values never by Terraform |
 | `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists); unhealthy targets on the hosts NLB and the enrollment group. 32 alarms |
 | `outputs.tf` | URLs, bucket, key, tables, role and policy ARNs, repository, the secret, the guest-image location, and the api command |
 
@@ -55,9 +55,7 @@ Composed by `ecs.tf` from what the daemon on the deployed image accepts (Go's fl
 flag, so a flag set is switched on in the same apply as the deploy that carries it):
 `camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer>`
 is C1's command and the default; `api_features=["refs"]` adds `--refs-table camelfs-prod-refs` (C2);
-`api_features=["refs","compute"]` adds `--listen-enroll 0.0.0.0:8793 --listen-hosts 0.0.0.0:8794 --hosts-ca <Private CA ARN>` (K4c: the enrollment-only port behind the plain-TLS listener, the host routes behind the NLB with mutual
-TLS terminated by the tier, the CA it issues host certificates and its own from; the tier's key stays in memory, so
-no file flags in production); `api_extra_args` appends anything else (`--objects-table` / `--lineages-table` with
+`api_features=["refs","compute"]` adds K4c's set (wf-durable, 11-14): `--vms-table --hosts-table --deliveries-table --usage-table` (the compute tables), `--pools build,test` and `--enroll-roles build=<arn>,test=<arn>` (the job-hosts pools and the instance roles their hosts attest with; `pools`, `enroll_roles`), `--listen-hosts 0.0.0.0:8794 --hosts-ca <Private CA ARN>` (the host routes behind the NLB with mutual TLS terminated by the tier, the CA it issues host certificates and its own from; the tier's key stays in memory, so no file flags in production), `--listen-enroll 0.0.0.0:8793 --enroll-audience camelfs:enroll` (the enrollment-only port behind the plain-TLS listener), `--runtime-notify-url <token_issuer>/v1/internal/camelfs/notify` (§9.11; its HMAC key is injected as `CAMELFS_NOTIFY_KEY` from `camelfs/prod/notify-key`, `notify-key.sh`); `api_extra_args` appends anything else (`--objects-table` / `--lineages-table` with
 L74, `--token-max-ttl`). Keys are not flags: ECS injects `token-verify-keys` as `CAMELFS_JWKS` (the daemon also takes
 `--jwks-file`; exactly one of the two) at task start, so no key material is in the task definition and the task role
 reads no secret. `token_issuer` is the runtime's `AGENT_PUBLIC_URL` (the JWT `iss` the tier checks); it must equal
@@ -110,7 +108,10 @@ EdDSA/Ed25519 JWTs (`typ` `camelfs+jwt`, `aud` `camelrun:camelfs`) signed by the
 `signing_keys` and the public JWKS is published at `<runtime>/.well-known/jwks.json`. The tier verifies against a
 copy of that JWKS (`jwks.sh set` stores it in `token-verify-keys`; ECS injects it as `CAMELFS_JWKS`) and never
 calls the network for keys; a rotation is the runtime's (publish the new key beside the old) followed by
-`jwks.sh set`, which rolls the service. Tier ↔ host calls carry no token: the connection's certificate is the
+`jwks.sh set`, which rolls the service. **Rotation runbook:** the runtime publishes the new key beside the old
+one at `/.well-known/jwks.json`; run `jwks.sh set` THEN (it copies both, and rolls the tasks); only after every
+task runs the new set may the runtime drop the old key. A `jwks.sh set` run before the runtime publishes the new
+key, or a key dropped before the copy, rejects every token signed with the key the tier does not have. Tier ↔ host calls carry no token: the connection's certificate is the
 machine's identity (Miguel, 11-13: "probably safer and simpler"), which retired the `camelfs-host+jwt` family and
 its two secrets.
 
@@ -199,7 +200,7 @@ on-demand prices in November 2024 ($0.625/M and $0.125/M), which the second colu
 | public balancer's IPv4 addresses (one per default subnet, $0.005/h) | ~$15 | ~$15 |
 | Fargate ARM, 2 × (1 vCPU / 2 GiB) at $0.0395/h | $0 | ~$58 |
 | the tasks' public IPv4 ($0.005/h each) | $0 | ~$7 |
-| KMS key, 2 secrets, 32 alarms, Container Insights, logs, ECR, trust bucket | ~$7 | ~$10 |
+| KMS key, 3 secrets, 32 alarms, Container Insights, logs, ECR, trust bucket | ~$7 | ~$10 |
 | **AWS Private CA, short-lived mode** (the hosts' CA) | ~$50 | ~$50 |
 | **host and tier certificates** (~$0.058 each in short-lived mode; 24 h validity renewed every 8 h = 3 a day per host) | ~$0 (no hosts) | 10 hosts ≈ 900/month ≈ ~$52; 50 hosts ≈ ~$260 |
 | **total** | **~$121** | **~$241 (10 hosts) – ~$451 (50 hosts)** |
@@ -262,6 +263,7 @@ to expect by name.
 
    ```bash
    infra/camelfs/jwks.sh set                                 # <token_issuer>/.well-known/jwks.json → token-verify-keys
+   infra/camelfs/notify-key.sh new                           # the §9.11 HMAC key → notify-key; prints the runtime's wrangler command
    infra/camelfs/aop.sh init                                 # the AOP CA → camelfs/prod/aop-ca; prints the PEM's VersionId
    infra/camelfs/aop.sh issue                                # the leaf, uploaded and enabled per-hostname on fs.camelai.dev
    infra/camelfs/aop.sh status                               # Cloudflare reports it enabled

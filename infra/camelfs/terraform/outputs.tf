@@ -112,6 +112,11 @@ output "trust_bucket" {
   value       = aws_s3_bucket.trust.bucket
 }
 
+output "notify_key_secret_arn" {
+  description = "Secrets Manager: the notify webhook's HMAC key (§9.11), injected as CAMELFS_NOTIFY_KEY; set with notify-key.sh, which also prints the runtime's wrangler command."
+  value       = aws_secretsmanager_secret.notify_key.arn
+}
+
 output "aop_ca_secret_arn" {
   description = "Secrets Manager: the offline AOP CA (key + certificate) that aop.sh uses; nothing in AWS reads it."
   value       = aws_secretsmanager_secret.aop_ca.arn

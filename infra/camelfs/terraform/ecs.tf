@@ -190,8 +190,12 @@ resource "aws_ecs_task_definition" "api" {
     essential    = true
     portMappings = [{ containerPort = var.api_port, protocol = "tcp" }, { containerPort = var.enroll_port, protocol = "tcp" }, { containerPort = var.hosts_port, protocol = "tcp" }]
     environment  = [for name in sort(keys(local.api_environment)) : { name = name, value = local.api_environment[name] }]
-    # Read by the execution role at task start: the runtime's public JWKS (a rotation is jwks.sh set + a roll).
-    secrets     = [{ name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn }]
+    # Read by the execution role at task start: the runtime's public JWKS (a rotation is jwks.sh set + a roll) and
+    # the notify webhook's HMAC key (§9.11; notify-key.sh; the runtime holds the same value).
+    secrets = [
+      { name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn },
+      { name = "CAMELFS_NOTIFY_KEY", valueFrom = aws_secretsmanager_secret.notify_key.arn },
+    ]
     mountPoints = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
     # The image runs as a non-root user; everything but the data volume is read-only.
     readonlyRootFilesystem = true
