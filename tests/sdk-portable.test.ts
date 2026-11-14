@@ -5,6 +5,37 @@ import { AgentRuntime, type SessionCredentials } from "../clients/typescript.ts"
 const session: SessionCredentials = { id: `client_${"a".repeat(40)}`, token: "scoped-test-token", expiresAt: Date.now() + 60_000 };
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 
+test("the SDK waits after a settlement-pending submit", async t => {
+  const posts = new Map<string, number>();
+  const reads = new Map<string, number>();
+  const pending = () => Response.json({ code: "SETTLEMENT_PENDING" }, {
+    status: 503, headers: { "Retry-After": "0" },
+  });
+  const fetcher: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (init?.method === "POST") {
+      assert.equal(path, `/clients/${session.id}/requests`);
+      const { id } = JSON.parse(String(init.body));
+      posts.set(id, (posts.get(id) ?? 0) + 1);
+      return pending();
+    }
+    const id = path.split("/").at(-1)!;
+    assert.equal(path, `/clients/${session.id}/requests/${id}`);
+    assert.equal(posts.get(id), 4);
+    reads.set(id, (reads.get(id) ?? 0) + 1);
+    if (reads.get(id) === 1 || id === "timeout") return pending();
+    return Response.json({ id, state: "completed", outcome: { result: { reply: "settled" } } });
+  };
+  const client = await new AgentRuntime({ fetch: fetcher }).connectAgent(session, { attach: false, connection: "lazy" });
+  t.after(() => client.close());
+  assert.deepEqual(await client.request("prompt", { text: "hi" }, { idempotencyKey: "request" }), { reply: "settled" });
+  assert.deepEqual(await client.prompt("hi", { idempotencyKey: "prompt" }), { reply: "settled" });
+  assert.deepEqual(await client.submit("hi", { idempotencyKey: "submit" }), { id: "submit", state: "completed" });
+  assert.deepEqual(await client.steerMessage("hi", { idempotencyKey: "steer" }), { id: "steer", status: "accepted" });
+  await assert.rejects(client.prompt("hi", { idempotencyKey: "timeout", timeoutMs: 1500 }), { message: /Request timed out/, status: 0 });
+  assert.ok(reads.get("timeout"));
+});
+
 test("portable SDK hands events to consumers apart from the stream, and attaches with saved credentials", async () => {
   const gate = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();

@@ -222,8 +222,8 @@ export class AgentRuntime extends AgentContext {
     return replayedRequestImpl.call(this, record);
   }
 
-  requestResponse(record: RequestRecord) {
-    return requestResponseImpl.call(this, record);
+  requestResponse(invocation: AgentInvocation, record: RequestRecord) {
+    return requestResponseImpl.call(this, invocation, record);
   }
 
   endUserLimit(conf: Config, bucket?: string, endUser?: string, invocation?: AgentInvocation) {

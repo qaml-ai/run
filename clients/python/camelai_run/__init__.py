@@ -81,6 +81,11 @@ class AgentError(RuntimeError):
         self.conflicts = None
 
 
+def _settlement_pending(error):
+    # SETTLEMENT_PENDING only applies to a request already admitted under this idempotency key.
+    return error.status == 503 and error.code == "SETTLEMENT_PENDING"
+
+
 def _credit_of(value):
     """An end user's credit refusal's fields, from an error body or a run's error, as AgentError's keywords."""
     value = value or {}
@@ -2396,6 +2401,22 @@ class AgentClient(_AgentCalls):
         return await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
                            {"id": request_id, "method": method, "params": params})
 
+    async def _submit_or_pending(self, request_id, method, params):
+        try:
+            return await self._submit_request(request_id, method, params)
+        except AgentError as error:
+            if not _settlement_pending(error):
+                raise
+
+    async def _settled_replay_record(self, request_id):
+        while True:
+            try:
+                return await self.request_status(request_id)
+            except AgentError as error:
+                if not _settlement_pending(error):
+                    raise
+                await asyncio.sleep(error.retry_after if error.retry_after is not None else 0.25)
+
     async def request(self, method, params=None, *, idempotency_key=None, timeout=None):
         """Send a request and wait for its outcome, however long the run takes: `timeout` (seconds) only stops the
         wait, as cancelling the task does; the request goes on."""
@@ -2408,8 +2429,8 @@ class AgentClient(_AgentCalls):
             await self.connect()
         future = self._waiter(request_id)
         try:
-            record = await self._submit_request(request_id, method, params)
-            if "outcome" in record:
+            record = await self._submit_or_pending(request_id, method, params)
+            if record is not None and "outcome" in record:
                 self._settle(request_id, record["outcome"])
             return await asyncio.wait_for(self._outcome(request_id, future), timeout)
         except TimeoutError as error:
@@ -2489,7 +2510,7 @@ class AgentClient(_AgentCalls):
             return await self.wait_for_request(into, timeout=options.get("timeout"))
         return result
 
-    async def steer_message(self, text, *, end_user=None, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
+    async def steer_message(self, text, *, end_user=None, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, timeout=None):
         """Hand a message to the running turn (while_running="steer") and return as soon as the runtime has it, without
         waiting for the turn: {"id", "status", "steeredInto"?}. status "accepted": the running turn reads it after its current
         step; "taken": it has read it already (steeredInto names the turn, whose request has the turn's outcome); "queued": no
@@ -2501,13 +2522,15 @@ class AgentClient(_AgentCalls):
         _check_request_id(request_id)
         attached = await self._attach(request_id, files) if files else None
         params = _message_params(text, attached, _prompt_extra(actor, "steer", allow_disconnected, end_user=end_user), from_, metadata)
-        record = await self._submit_request(request_id, "prompt", params)
+        record = await self._submit_or_pending(request_id, "prompt", params)
+        if record is None:
+            record = await asyncio.wait_for(self._settled_replay_record(request_id), timeout)
         if "outcome" in record:
             self._settle(request_id, record["outcome"])
         return _steer_receipt(record)
 
     async def submit(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, output=None, history=None, run_limits=None, end_user=None):
+                     spend_limit=None, output=None, history=None, run_limits=None, end_user=None, timeout=None):
         """Send a message and return as soon as the runtime has it (202), without waiting for its run: {"id", "state"},
         the request's id and whether it runs or is queued. Follow it with wait_for_request(id), the stream or a webhook."""
         if self.closed or self.closing or self.fatal:
@@ -2516,7 +2539,9 @@ class AgentClient(_AgentCalls):
         _check_request_id(request_id)
         attached = await self._attach(request_id, files) if files else None
         params = _message_params(text, attached, _prompt_extra(actor, None, allow_disconnected, spend_limit, output, history, run_limits, end_user), from_, metadata)
-        record = await self._submit_request(request_id, "prompt", params)
+        record = await self._submit_or_pending(request_id, "prompt", params)
+        if record is None:
+            record = await asyncio.wait_for(self._settled_replay_record(request_id), timeout)
         if "outcome" in record:
             self._settle(request_id, record["outcome"])
         return {"id": record["id"], "state": record["state"]}

@@ -2797,6 +2797,38 @@ export class AgentClient {
     return this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true);
   }
 
+  private async submitOrPending(id: string, method: RequestMethod, params: Record<string, unknown>): Promise<RequestRecord | undefined> {
+    try { return await this.submitRequest(id, method, params); }
+    catch (error) {
+      // SETTLEMENT_PENDING only applies to a request already admitted under this idempotency key.
+      if (!(error instanceof AgentError && error.status === 503 && error.code === "SETTLEMENT_PENDING")) throw error;
+    }
+  }
+
+  private async settledReplayRecord(id: string, options?: RequestOptions): Promise<RequestRecord> {
+    const timeout = options?.timeoutMs === undefined ? undefined : AbortSignal.timeout(options.timeoutMs);
+    const signal = options?.signal && timeout ? AbortSignal.any([options.signal, timeout]) : options?.signal ?? timeout;
+    signal?.throwIfAborted();
+    const stopped = new AbortController();
+    const cancelled = Promise.withResolvers<never>();
+    const abort = () => cancelled.reject(signal!.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    const read = async () => {
+      const path = this.path(`/requests/${encodeURIComponent(id)}`);
+      for (;;) {
+        stopped.signal.throwIfAborted();
+        try {
+          return await this.transport.json(path, this.session.token, "GET", undefined, true, {}, 10_000, stopped.signal);
+        } catch (error) {
+          if (!(error instanceof AgentError && error.status === 503 && error.code === "SETTLEMENT_PENDING")) throw error;
+          await pause(error.retryAfterMs ?? 250);
+        }
+      }
+    };
+    try { return await Promise.race([read(), cancelled.promise]); }
+    finally { stopped.abort(); signal?.removeEventListener("abort", abort); }
+  }
+
   /**
    * Send a request and wait for its outcome, however long the run takes: there is no timeout unless
    * `timeoutMs` or `signal` says so, and either only stops the wait (the request goes on).
@@ -2810,8 +2842,8 @@ export class AgentClient {
     if (this.lazy && this.listeners.size) await this.connect();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
-      const record = await this.submitRequest(id, method, params);
-      if (record.outcome) this.settle(id, record.outcome);
+      const record = await this.submitOrPending(id, method, params);
+      if (record?.outcome) this.settle(id, record.outcome);
       return await this.outcome(id, deferred.promise);
     } catch (error) {
       if (error instanceof AgentError) { error.requestId ??= id; throw error; }
@@ -2898,7 +2930,7 @@ export class AgentClient {
       text, ...(options?.endUser !== undefined ? { endUser: options.endUser } : {}), ...(files ? { files } : {}), whileRunning: "steer", ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.submitRequest(id, "prompt", params) as RequestRecord;
+    const record = await this.submitOrPending(id, "prompt", params) ?? await this.settledReplayRecord(id, options);
     if (record.outcome) this.settle(id, record.outcome);
     return steerReceipt(record);
   }
@@ -2917,7 +2949,7 @@ export class AgentClient {
       ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.submitRequest(id, "prompt", params) as RequestRecord;
+    const record = await this.submitOrPending(id, "prompt", params) ?? await this.settledReplayRecord(id, options);
     if (record.outcome) this.settle(id, record.outcome);
     return { id: record.id, state: record.state };
   }

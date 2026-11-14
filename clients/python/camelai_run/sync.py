@@ -29,7 +29,7 @@ from . import (
     _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _TRANSCRIPTION_TIMEOUT, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
-    _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _turn_of, _unauthorized,
+    _settlement_pending, _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _turn_of, _unauthorized,
     _unique_name, _verified,
 )
 from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _AsyncRuns, TestRuntime as _AsyncTestRuntime
@@ -221,6 +221,27 @@ class AgentClient(_AgentCalls):
         return _http_sync(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
                           {"id": request_id, "method": method, "params": params or {}})
 
+    def _submit_or_pending(self, method, params, request_id):
+        try:
+            return self._submit(method, params, request_id)
+        except AgentError as error:
+            if not _settlement_pending(error):
+                raise
+
+    def _settled_replay_record(self, request_id, timeout):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise AgentError("Stopped waiting for the request's settlement", request_id=request_id)
+            try:
+                return self._http(f"/requests/{quote(request_id, safe='')}", retry=False, timeout=remaining)
+            except AgentError as error:
+                if not _settlement_pending(error):
+                    raise
+                delay = error.retry_after if error.retry_after is not None else 0.25
+                time.sleep(delay if remaining is None else min(remaining, delay))
+
     def _outcome(self, request_id, record=None, timeout=None):
         """A request's outcome ({"result"} or {"error", "code"?}): from its record, or asked for until it settles."""
         if record is not None and "outcome" in record:
@@ -252,7 +273,7 @@ class AgentClient(_AgentCalls):
         """Send a request and wait for its result, however long the run takes: `timeout` (seconds) only stops the wait;
         the request goes on. A runtime error raises AgentError."""
         request_id = idempotency_key or str(uuid.uuid4())
-        return _result(request_id, self._outcome(request_id, self._submit(method, params, request_id), timeout))
+        return _result(request_id, self._outcome(request_id, self._submit_or_pending(method, params, request_id), timeout))
 
     def wait_for_request(self, request_id, *, timeout=None):
         """Wait for a request already sent (by this process or another) to settle. This never submits or re-executes work."""
@@ -295,12 +316,15 @@ class AgentClient(_AgentCalls):
             return self.wait_for_request(into, timeout=timeout)
         return result
 
-    def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
+    def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, timeout=None):
         """Hand a message to the running turn and return as soon as the runtime has it: {"id", "status", "steeredInto"?},
         as camelai_run.AgentClient.steer_message."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running="steer", allow_disconnected=allow_disconnected)
-        return _steer_receipt(self._submit("prompt", params, request_id))
+        record = self._submit_or_pending("prompt", params, request_id)
+        if record is None:
+            record = self._settled_replay_record(request_id, timeout)
+        return _steer_receipt(record)
 
     def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT):
         """Change the model, system prompt, thinking level, declared tools, max_output_tokens or temperature between runs (None

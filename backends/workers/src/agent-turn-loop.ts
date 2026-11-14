@@ -478,7 +478,7 @@ export function trackImpl(this: AgentRuntime,
     this.ctx.waitUntil(settled);
   }
 
-async function flushCompletedSettlement(flush: (propagate: boolean) => Promise<void>) {
+export async function flushCompletedSettlement(flush: (propagate: boolean) => Promise<void>) {
   try {
     await flush(true);
   } catch (error) {

@@ -46,6 +46,7 @@ import { modelSettingsRefusal } from "./model-policy.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { resetContext } from "./context-reset.ts";
 import { setAgentSpendLimit } from "./agent-spend.ts";
+import { flushCompletedSettlement } from "./agent-turn-loop.ts";
 import { Config, RequestRecord, Env, json, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -56,13 +57,17 @@ export function replayedRequestImpl(this: AgentRuntime,
   }
 
 export async function requestResponseImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   record: RequestRecord) {
     const headers = admissionHeaders(this.runRates.get(record.id));
     this.runRates.delete(record.id);
     const replayed = this.replayedRequests.has(record);
-    // A replay with a pending receipt sends the client to the settlement-gated read.
-    if (replayed && record.state === "completed" && await this.ctx.storage.get(`billing:${record.id}`))
-      return Response.json({ id: record.id, state: "running" }, { status: 200, headers });
+    if (replayed && record.state === "completed" && await this.ctx.storage.get(`billing:${record.id}`)) {
+      await flushCompletedSettlement(propagate => this.flushBilling(invocation, propagate));
+      const latest = await this.ctx.storage.get<RequestRecord>(reqKey(record.id));
+      if (!latest) throw new HttpError(404, "Unknown request");
+      record = latest;
+    }
     return requestView(record).then(value => Response.json(value, { status: replayed ? 200 : 202, headers }));
   }
 
@@ -533,7 +538,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           "files",
         ]);
         const { idempotencyKey, requestId, ...params } = input;
-        return this.requestResponse(
+        return await this.requestResponse(invocation,
             await this.submit(invocation, {
               id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
               method: "prompt",
@@ -584,7 +589,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
       if (path === "/state" && request.method === "GET")
         return json(await this.state(invocation));
       if (path === "/requests" && request.method === "POST")
-        return this.requestResponse(await this.submit(invocation, await body(request, 6 * 1024 * 1024)));
+        return await this.requestResponse(invocation, await this.submit(invocation, await body(request, 6 * 1024 * 1024)));
       if (path.startsWith("/requests/") && request.method === "GET") {
         const seconds = Number(url.searchParams.get("wait") ?? 0);
         if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
