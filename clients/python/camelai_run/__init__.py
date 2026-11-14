@@ -1413,7 +1413,7 @@ class Workflows:
     def items(self, workflow_id, *, after=None, limit=None, status=None, kind=None):
         """Its effects (agents, jobs, commits, pushes) in journal order, a page at a time: {"items": [{"key", "attempt", "kind", "status",
         "args", "result"?, "reason"?, "costUsd"?, "ord", ...}], "next"?}; pass next as `after`. `status`: pending, running, done,
-        failed, refused or aborted; `kind`: agent, job, commit or push; `limit` at most 500."""
+        failed, refused or aborted; `kind`: agent or commit; `limit` at most 500."""
         query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("status", status), ("kind", kind)) if value is not None})
         return self._runtime._rest("GET", self._path(workflow_id, "/items") + (f"?{query}" if query else ""))
 

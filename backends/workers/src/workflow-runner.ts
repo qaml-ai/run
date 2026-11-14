@@ -16,7 +16,7 @@
 //    starts; the executor dedupes a start by `key:attempt`.
 //
 // A workflow is not edited (docs/design/workflow-simplification.md): to change one, its owner aborts it and starts a new
-// one, and finished agent()/job() results with the same arguments come from the owner's result cache (`ResultCache`,
+// one, and finished agent() results with the same arguments come from the owner's result cache (`ResultCache`,
 // workflow-results.ts) instead of running again.
 import type { IssuedEffect, WorkflowBatch, WorkflowFaultCode, WorkflowSandbox, WorkflowStepOutcome, WorkflowStepRequest } from "../codemode/workflow-protocol.ts";
 import { WORKFLOW_STEP_PROTOCOL } from "../codemode/workflow-protocol.ts";
@@ -42,8 +42,6 @@ export const WORKFLOW_LIMITS = Object.freeze({
   sweepMs: 5 * 60_000,
   /** Agents running at once: by default, and at most. */
   concurrency: 8, maxConcurrency: 64,
-  /** Jobs (`job()`, `push()`) running at once: by default, and at most (the capacity limiter bounds it by the tenant's too). */
-  jobConcurrency: 8, maxJobConcurrency: 64,
   /** A workflow paused for its payer's credit tries again on its own: first after this long, doubling to `payerRetryMaxMs`. */
   payerRetryMs: 5 * 60_000, payerRetryMaxMs: 30 * 60_000,
   /** A payer that stays without credit this long ends the workflow (`payer_gave_up`) instead of being tried forever. */
@@ -57,7 +55,7 @@ export const WORKFLOW_LIMITS = Object.freeze({
 export interface StartedEffect { key: string; attempt: number; kind: string; args: unknown }
 
 /**
- * Runs `agent`, `job`, `commit` and `push` effects. Results come back through `WorkflowRunner.land()`.
+ * Runs `agent` and `commit` effects. Results come back through `WorkflowRunner.land()`.
  * The real agent executor is the delegation path with the workflow as the child's owner; it comes with the owner model.
  */
 export interface EffectExecutor {
@@ -113,7 +111,6 @@ export interface WorkflowSummary {
   fault?: { code: WorkflowFaultCode; message: string };
   budget: { usd: number | null };
   concurrency: number;
-  jobConcurrency: number;
   spent: { usd: number; calls: number; inputTokens: number; cachedInputTokens: number; outputTokens: number };
   counts: Record<string, number>;
   throttledUntil?: number;
@@ -123,7 +120,7 @@ export interface WorkflowSummary {
 
 /** What `init` creates a workflow with. `seed` and `startedAt` fix its `random()` and its clock's start. */
 export interface WorkflowInit {
-  code: string; seed: number; startedAt: number; budgetUsd?: number | null; concurrency?: number; jobConcurrency?: number;
+  code: string; seed: number; startedAt: number; budgetUsd?: number | null; concurrency?: number;
   /** Who the workflow belongs to, fixed at create: it bills `tenant` (in `bucket`), attributed to `endUser`. */
   tenant?: string; bucket?: string; endUser?: string;
 }
@@ -158,7 +155,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS workflow_state (
     id INTEGER PRIMARY KEY CHECK (id = 1), seed INTEGER NOT NULL, started_at INTEGER NOT NULL,
     status TEXT NOT NULL, pause_reason TEXT, revision INTEGER NOT NULL, step INTEGER NOT NULL, phase TEXT,
-    result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL, job_concurrency INTEGER,
+    result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL,
     throttled_until INTEGER, swept_at INTEGER, tenant TEXT, bucket TEXT, end_user TEXT, capacity_open INTEGER NOT NULL DEFAULT 0, renewed_at INTEGER,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL, code TEXT, resume_at INTEGER, resume_tries INTEGER NOT NULL DEFAULT 0, payer_since INTEGER)`,
   // `phase`, `options` and `due_at` are no longer written (gate(), sleep() and phase() were removed); a contract
@@ -191,14 +188,13 @@ const SCHEMA = [
 type Row = Record<string, SqlStorageValue>;
 const bytesOf = (value: SqlStorageValue) => value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
 const text = (value: SqlStorageValue) => value === null || value === undefined ? undefined : String(value);
-const EXECUTED = new Set(["agent", "job", "commit", "push"]);
+const EXECUTED = new Set(["agent", "commit"]);
 /** The executed kinds as an SQL list: every one is swept, and keeps the sweep's alarm armed, until it lands. */
 const EXECUTED_SQL = [...EXECUTED].map(kind => `'${kind}'`).join(", ");
-/** The effects that hold a capacity slot while they run, and which kind: an agent a child's, a job or push a job's. */
-const SLOTTED: Record<string, "child" | "job"> = { agent: "child", job: "job", push: "job" };
-export const slotKind = (kind: string) => SLOTTED[kind];
+/** Each running child holds a capacity slot. */
+export const slotKind = (kind: string) => kind === "agent" ? "child" as const : undefined;
 /** Executed effects that ended without landing whose work has not been told to stop yet. */
-const UNCANCELLED = "status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'job', 'push')";
+const UNCANCELLED = "status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind = 'agent'";
 /** A cancel that keeps failing is tried this many times, a minute apart and doubling to an hour, then given up. */
 const CANCEL_ATTEMPTS = 8, CANCEL_FIRST_RETRY_MS = 60_000, CANCEL_MAX_RETRY_MS = 3_600_000;
 
@@ -210,35 +206,31 @@ const CANCEL_ATTEMPTS = 8, CANCEL_FIRST_RETRY_MS = 60_000, CANCEL_MAX_RETRY_MS =
  */
 export interface CapacitySeam {
   leaseMs: number;
-  open(concurrency: number, jobConcurrency: number): Promise<{ ok: true } | { ok: false; message: string }>;
-  acquire(key: string, kind: "child" | "job"): Promise<{ granted: true; lease: string } | { granted: false }>;
+  open(concurrency: number): Promise<{ ok: true } | { ok: false; message: string }>;
+  acquire(key: string, kind: "child"): Promise<{ granted: true; lease: string } | { granted: false }>;
   release(lease: string): Promise<void>;
   /** The leases held (grants whose wake was missed among them), or a refusal: the limiter dropped this workflow. */
-  renew(): Promise<{ ok: true; held: { key: string; lease: string; kind: "child" | "job" }[] } | { ok: false; message: string }>;
+  renew(): Promise<{ ok: true; held: { key: string; lease: string; kind: "child" }[] } | { ok: false; message: string }>;
   close(): Promise<void>;
 }
 
 /**
- * The owner's result cache (workflow-results.ts, docs/design/workflow-simplification.md "Cut 1"): a finished agent() or
- * job() result keyed by its kind and arguments, reused by a later workflow of the same owner instead of running again.
+ * The owner's result cache (workflow-results.ts, docs/design/workflow-simplification.md "Cut 1"): a finished agent()
+ * result reused by another workflow of the same owner.
  * Storage failures throw so an unlanded effect can retry.
  */
 export interface ResultCache {
   /**
-   * The cache key of an effect of `kind` with canonical `args` as it is about to start (for one that reads a volume,
-   * with that volume's version now), and the result stored under it, if any. The key is kept on the effect: its result
-   * is offered under the key it was looked up with, never one made after it ran, so a result is only ever found again
-   * on the version it could have read (a volume's version only grows: a key made before a change is never made again).
+   * Look up the canonical arguments and any repo base tree before starting the child. The effect keeps that key
+   * to store the result against the tree the child could have read.
    */
   lookup(kind: string, args: string, effect: { key: string; attempt: number }): Promise<{ key: string; hit?: { value: unknown; source: string } }>;
   /** Retain a cacheable result before journaling its landing and cleaning up its source branch. */
   landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown; cacheKey: string }): void | Promise<void>;
 }
-/** Kinds whose `ok` results are reused (`commit`, `push` change a volume or a branch: effects, not results). */
-const CACHEABLE = new Set(["agent", "job"]);
-/** Whether an effect's result may come from, or go to, the cache: an agent or job that did not opt out (`nocache: true`). */
+/** Whether an effect's result may come from, or go to, the cache: an agent that did not opt out (`nocache: true`). */
 export function cacheable(kind: string, args: string) {
-  if (!CACHEABLE.has(kind)) return false;
+  if (kind !== "agent") return false;
   try { return (JSON.parse(args) as { nocache?: unknown } | null)?.nocache !== true; } catch { return false; }
 }
 
@@ -271,9 +263,6 @@ export class WorkflowRunner {
     this.options = options;
     this.sql = storage.sql;
     for (const statement of SCHEMA) this.sql.exec(statement);
-    // A workflow made before jobs had no job_concurrency (null reads as the default).
-    if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_state') WHERE name = 'job_concurrency'").toArray().length)
-      this.sql.exec("ALTER TABLE workflow_state ADD COLUMN job_concurrency INTEGER");
     // A workflow made before cancels were retried with backoff had neither column (no attempts yet, none scheduled).
     for (const [column, type] of [["cancel_attempts", "INTEGER NOT NULL DEFAULT 0"], ["cancel_next_at", "INTEGER"], ["cached_from", "TEXT"], ["cache_key", "TEXT"]] as const)
       if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_effects') WHERE name = ?", column).toArray().length)
@@ -292,20 +281,16 @@ export class WorkflowRunner {
     const concurrency = workflow.concurrency ?? WORKFLOW_LIMITS.concurrency;
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > WORKFLOW_LIMITS.maxConcurrency)
       throw new WorkflowError(`concurrency must be an integer from 1 to ${WORKFLOW_LIMITS.maxConcurrency}`, 400);
-    const jobConcurrency = workflow.jobConcurrency ?? WORKFLOW_LIMITS.jobConcurrency;
-    if (!Number.isInteger(jobConcurrency) || jobConcurrency < 1 || jobConcurrency > WORKFLOW_LIMITS.maxJobConcurrency)
-      throw new WorkflowError(`jobConcurrency must be an integer from 1 to ${WORKFLOW_LIMITS.maxJobConcurrency}`, 400);
-    if (workflow.budgetUsd !== undefined && workflow.budgetUsd !== null && !(workflow.budgetUsd >= 0)) throw new WorkflowError("budgetUsd must be at least 0", 400);
-    if (typeof workflow.code !== "string" || !workflow.code.trim()) throw new WorkflowError("A workflow needs a script", 400);
+
     const at = this.now();
     this.storage.transactionSync(() => {
       if (this.sql.exec("SELECT 1 FROM workflow_state WHERE id = 1").toArray().length) return;
       this.sql.exec(
-        `INSERT INTO workflow_state (id, seed, started_at, status, revision, step, budget_usd, concurrency, job_concurrency, tenant, bucket, end_user, created_at, updated_at, version, code)
-         VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, jobConcurrency, workflow.tenant ?? null, workflow.bucket ?? null, workflow.endUser ?? null, at, at, WORKFLOW_RUNNER_VERSION, workflow.code,
+        `INSERT INTO workflow_state (id, seed, started_at, status, revision, step, budget_usd, concurrency, tenant, bucket, end_user, created_at, updated_at, version, code)
+         VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, workflow.tenant ?? null, workflow.bucket ?? null, workflow.endUser ?? null, at, at, WORKFLOW_RUNNER_VERSION, workflow.code,
       );
-      this.event("created", { concurrency, jobConcurrency, budgetUsd: workflow.budgetUsd ?? null });
+      this.event("created", { concurrency, budgetUsd: workflow.budgetUsd ?? null });
     });
   }
 
@@ -330,7 +315,7 @@ export class WorkflowRunner {
     if (cached) counts.cached = cached;
     const summary: WorkflowSummary = {
       status: row.status as WorkflowStatus, step: Number(row.step),
-      budget: { usd: row.budget_usd === null ? null : Number(row.budget_usd) }, concurrency: Number(row.concurrency), jobConcurrency: Number(row.job_concurrency ?? WORKFLOW_LIMITS.jobConcurrency),
+      budget: { usd: row.budget_usd === null ? null : Number(row.budget_usd) }, concurrency: Number(row.concurrency),
       spent: { usd: Number(spent.usd), calls: Number(spent.calls), inputTokens: Number(spent.input), cachedInputTokens: Number(spent.cached), outputTokens: Number(spent.output) },
       counts, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
     };
@@ -558,7 +543,7 @@ export class WorkflowRunner {
       return;
     }
     if (state.status !== "running") return;
-    const opened = await capacity.open(Number(state.concurrency), Number(state.job_concurrency ?? WORKFLOW_LIMITS.jobConcurrency));
+    const opened = await capacity.open(Number(state.concurrency));
     this.storage.transactionSync(() => {
       if (opened.ok) this.sql.exec("UPDATE workflow_state SET capacity_open = 1, renewed_at = ? WHERE id = 1", this.now());
       else { this.setStatus("paused", "capacity_refused"); this.event("capacity_refused", { message: opened.message }); }
@@ -602,7 +587,7 @@ export class WorkflowRunner {
   }
 
   /** Slots the limiter granted (a wake, or a renew's `held`): each goes to its effect, or straight back if it has none. */
-  private async assignGrants(grants: { key: string; lease: string; kind?: "child" | "job" }[]) {
+  private async assignGrants(grants: { key: string; lease: string; kind?: "child" }[]) {
     for (const grant of grants) {
       const row = this.sql.exec("SELECT attempt, lease, kind FROM workflow_effects WHERE key = ? AND current = 1 AND status = 'pending'", grant.key).toArray()
         .filter(row => slotKind(row.kind as string) !== undefined && (grant.kind === undefined || slotKind(row.kind as string) === grant.kind))[0];
@@ -612,7 +597,7 @@ export class WorkflowRunner {
   }
 
   /** The limiter's wake: slots it granted to effects that waited for one. */
-  capacityGranted(grants: { key: string; lease: string; kind?: "child" | "job" }[]): Promise<void> {
+  capacityGranted(grants: { key: string; lease: string; kind?: "child" }[]): Promise<void> {
     return this.serial(async () => {
       await this.assignGrants(grants);
       await this.advance();
@@ -626,10 +611,9 @@ export class WorkflowRunner {
     const held = this.sql.exec("SELECT key, attempt, kind, args, lease, start_failures FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
     if (!held.length) return;
     const budget = row.budget_usd === null ? null : Number(row.budget_usd);
-    const runningOf = (slot: "child" | "job") => Number(this.sql.exec(
-      `SELECT COUNT(*) AS n FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind IN (${slot === "child" ? "'agent'" : "'job', 'push'"})`).one().n);
-    const running = { child: runningOf("child"), job: runningOf("job") };
-    const caps = { child: Number(row.concurrency), job: Number(row.job_concurrency ?? WORKFLOW_LIMITS.jobConcurrency) };
+    let running = Number(this.sql.exec(
+      "SELECT COUNT(*) AS n FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind = 'agent'").one().n);
+    const concurrency = Number(row.concurrency);
     for (const effect of held) {
       // The owner's cache first: a hit lands at once, at no cost, without a slot or a child.
       if (this.options.results && cacheable(effect.kind as string, effect.args as string) && await this.fromCache(effect)) continue;
@@ -642,7 +626,7 @@ export class WorkflowRunner {
             return;
           }
         }
-        if (running[slot] >= caps[slot]) continue;
+        if (running >= concurrency) continue;
         if (this.options.capacity && !row.capacity_open) continue;
         if (this.options.capacity && effect.lease === null) {
           const granted = await this.options.capacity.acquire(effect.key as string, slot);
@@ -650,14 +634,14 @@ export class WorkflowRunner {
           if (!granted.granted) continue;
           this.sql.exec("UPDATE workflow_effects SET lease = ? WHERE key = ? AND attempt = ?", granted.lease, effect.key, effect.attempt);
         }
-        running[slot]++;
+        running++;
       }
       if (EXECUTED.has(effect.kind as string)) {
         try { await this.executor.start(this.started(effect)); }
         catch (error) {
           // The effect stays journaled and unstarted; the alarm's sweep (armed while any is unstarted) and every later
           // landing or wake try it again. Recorded, and the other effects still start.
-          if (slot) running[slot]--;
+          if (slot) running--;
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Workflow effect ${effect.key}:${effect.attempt} did not start`, error);
           this.storage.transactionSync(() => {
@@ -934,7 +918,7 @@ export class WorkflowRunner {
   private goOn(selfResumed: boolean) {
     const payer = selfResumed && this.state().pause_reason === "payer_exhausted";
     // The alarm's own try after a payer refusal re-issues one refused effect, a probe: the rest follow once it is admitted
-    // (record), so a payer that stays without credit makes one new child (or job snapshot) per try, not one per effect.
+    // (record), so a payer that stays without credit makes one new child per try, not one per effect.
     const again = this.sql.exec(`SELECT key FROM workflow_effects WHERE current = 1 AND status IN ('refused', 'aborted') ORDER BY ord${payer ? " LIMIT 1" : ""}`).toArray();
     for (const row of again) this.nextAttempt(row.key as string, "reissue");
     this.sql.exec("UPDATE workflow_state SET resume_tries = ? WHERE id = 1", selfResumed ? Number(this.state().resume_tries) + 1 : 0);

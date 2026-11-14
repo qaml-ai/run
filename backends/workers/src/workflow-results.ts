@@ -32,10 +32,10 @@ export async function sha256(text: string) {
 
 /**
  * The cache key of an effect: its canonical arguments (the VM's JSON, which already keys an effect's identity), and for
- * a repo reader its resolved tree, or a volume reader its seq before it started.
+ * a repo reader its resolved base tree.
  */
-export function cacheKey(args: string, baseSeq?: number | string) {
-  return baseSeq === undefined ? args : `${args}\n@base:${baseSeq}`;
+export function cacheKey(args: string, baseTree?: string) {
+  return baseTree === undefined ? args : `${args}\n@base:${baseTree}`;
 }
 
 export class WorkflowResults extends DurableObject<FileBindings> {
