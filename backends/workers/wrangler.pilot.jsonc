@@ -34,6 +34,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -41,11 +42,6 @@
       {
         "name": "TENANTS",
         "class_name": "TenantAdmission"
-      },
-      {
-        // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-        "name": "VOLUMES",
-        "class_name": "Volume"
       },
       { "name": "REPOS", "class_name": "RepoDO" },
       {
@@ -113,6 +109,9 @@
       ]
     },
     { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    // Pilot Volume data is test data and is not migrated.
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] },
     {
       "tag": "delete-job-hosts",
       "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]

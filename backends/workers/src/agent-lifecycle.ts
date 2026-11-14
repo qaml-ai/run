@@ -1,3 +1,6 @@
+import { drainRepoMoves, repoMoveDeadline } from "./camelfs/notify.ts";
+import { deliverRepoMoves } from "./repos/notify.ts";
+import type { RepoEnv } from "./repos/registry.ts";
 export { configImpl } from './agent-config.ts';
 import { ChildOutbox, deletedDeadline, settleDeleted } from "./ending-outbox.ts";
 import { goneStart, stageMissedEndings } from "./agent-endings.ts";
@@ -135,6 +138,7 @@ export async function armImpl(this: AgentRuntime,
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       await this.outbox.deadline() ?? Infinity,
+      await repoMoveDeadline(this.ctx.storage) ?? Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.batchQueue.deadline(config),
@@ -322,6 +326,8 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.limits.check(Date.now(), false)) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain();
+    await drainRepoMoves(this.ctx.storage, async moves => deliverRepoMoves(this.env as RepoEnv, await this.config(), moves, request => this.fetch(request)))
+      .catch(error => console.error("Repo watcher delivery failed", String(error)));
     await this.outbox.flush();
     this.batchQueue.kick();
     for (const record of await this.records()) {

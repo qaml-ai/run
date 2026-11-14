@@ -74,7 +74,7 @@ version, if the mount names one).
 | agent | the ref is | writes | the turn checkpoint |
 |---|---|---|---|
 | on a computer (our hosts, [camel-fs.md](camel-fs.md) §1.5) | held: the VM mounts the ref's version as its disk, the host holds the lease | native ext4 writes in the VM | the automatic checkpoint at the end of every turn that wrote, after 30 s of dirtiness, before a fork, job, merge or sleep (§1.3 of the design): freeze → walk → stream → publish → fenced CAS |
-| in a job | held, on a `job/<id>` branch | the same | at job end (`commit: true`), and periodically for long jobs |
+| in a child agent (a workflow step or fan-out) | held by its own `bash` VM, on its own `fork/<effect>` branch | the same | after every `bash` call that changed the tree, as on a computer (camel-fs-compute.md §6); there are no jobs |
 | without a VM (Workers; most agents today) | unheld | **every file-tool write is a commit**: `write`/`edit` make a new tree and commit on the ref and CAS it; a tool that writes several files uses `commit` for one version | none needed: the ref is always durable |
 
 The agent's tools keep their names (`read`, `write`, `edit`, `ls`, `glob`, `grep`, `present_file`) and the
@@ -82,7 +82,7 @@ The agent's tools keep their names (`read`, `write`, `edit`, `ls`, `glob`, `grep
 ref is the manual checkpoint of the design (§1.3 of camel-fs.md) and on an unheld ref is a commit with the message
 and no file changes (allowed; it names the current state); `restore(version | message-prefix)`, a new commit whose
 tree is that version's; `history` and `diff`. One writer per ref, fenced (camel-fs.md §1.2): an API write to a held
-ref is forwarded to the VM, and a VM-held ref is checkpointed before a fork or a job reads it.
+ref is forwarded to the VM, and a VM-held ref is checkpointed before a fork reads it.
 
 **Attachments and tool outputs** are commits into the agent's workspace, as today's paths: `uploads/<request>/…`
 for files sent with a message, `tool-outputs/<tool>/<call>/…` for files tools return, `tmp/` for scratch. A
@@ -171,7 +171,7 @@ workflow) instead of forked volumes; `commit()` in a script is `merge`. The `For
 |---|---|
 | **Projects / `publishTool`** (`clients/projects.ts` 203, `clients/python/camelai_run/projects.py` 176, `docs/guides/projects.md`, their tests; client-side only, over keyed volumes and `published:<v>` pinned snapshots, `keep` ≤ 90 because a volume holds 100 snapshots) | **Dropped (Miguel, 2026-11-13).** The pattern replaces the feature, with no runtime or SDK surface of its own: (1) a keyed ref: `POST /v1/repos { key }` makes the repo once; (2) an agent mounts it (`{ repo, path: "/bot", mode: "rw" }`); (3) the app reads the tree at a version (`files?version=&content=true`), checks it, and **moves a `published` ref (or a `release/<label>` tag) to that version** with `PUT refs/published { version, expect }`; (4) the app **serves from the tree at `published`** (`files/:path?ref=published`, or `blobs/:sha` through the edge cache), so there is no copy into the app's own storage; (5) versions are just `history` of `published` and `main`; `restore` is `restore`. The model-facing publish tool becomes a **short SDK example**: a served tool whose handler does (3) and answers the model with the problems or the version. camel-bots is the one consumer (bot source lives in project snapshots today); its move onto this pattern is migration, later |
 | **Shares**: mounting one volume in several agents (ro or rw), fork pins (`seed`, `fork-base:<id>`, `forwarded_pins`, 7-day `FORK_SNAPSHOT_TTL_MS`), `history-pins.ts` | a mount names `{ repo, ref }`; many agents may mount one repo (one writer per ref at a time; a second rw holder gets its own branch and merges); nothing is pinned, ever: a fork is a ref and reachability keeps what refs reach; attachments are the history ref of §2 |
-| **Workflow output, `keep()`** (`workflow-jobs.ts:246`): writes `/jobs/<id>/stdout.txt`, `stderr.txt`, `out/<name>` into the workflow's keyed volume `workflow:<wf>:files`, with a volume lookup and a quota check per write | **one commit** on the workflow's repo (`workflow:<id>`, owner the workflow) with every stream and output of the job as files under `/jobs/<id>/`, message "job <key> attempt <n>"; the script sees the tails inline as today; the 4.8 s result leg (ledger L70) becomes one object write and one CAS |
+| **Workflow output, `keep()`** (`workflow-jobs.ts:246`): writes `/jobs/<id>/stdout.txt`, `stderr.txt`, `out/<name>` into the workflow's keyed volume `workflow:<wf>:files`, with a volume lookup and a quota check per write | **one commit** on the workflow's repo (`workflow:<id>`, owner the workflow) with every stream and output of the job as files under `/jobs/<id>/`, message "job <key> attempt <n>"; the script sees the tails inline as today; the 4.8 s result leg (ledger L70) becomes one object write and one CAS; superseded 2026-11-14: with no jobs there is no `keep()`, and a child agent's outputs are commits on its own branch |
 | **Uploads** (`PUT /uploads/:req/:name`, `file-upload.ts` R2 multipart with 5 MiB parts, signed `PUT` links) | an upload is a blob PUT (multipart past 64 MiB, straight to S3 through the runtime or a signed link) followed by a commit on the target ref at the path; the 15-minute upload window stays; the agent sees the file as a version |
 | **Prompt attachments and message files** (`prompt-attachments.ts`: saved under `uploads/<request>/` in the writable mount, then pinned `agent:<id>`; history holds `FileRef { key, volume, path, version, sha256 }`; `history-pins.ts` copies the pins to a forked agent; `file-output.ts` pins presented files under `file-pin-volumes`; Node `chunk_pins`, `pin-backfill.ts`) | commits into the workspace (§2); history holds `{ repo, version, path, blob }`; the agent's **history ref** keeps every version the transcript names reachable, so there are no pins, no pin inheritance (a forked agent's history ref starts as its parent's) and no backfill |
 | **Tool-output files and signed file links** (`tool-output-files.ts`: `<mount>/tool-outputs/<tool>/<hash8>/`; `tool-files.ts`: a per-call temporary snapshot `[tool-call]<call>` for directory `{$file}` arguments and `/v1/files/<token>/<name>` URLs streaming a file, a manifest or a tar.gz from R2; `file-links.ts`; `/v1/links/<token>/<name>`; Node `tool-files.ts`, `file-arguments.ts`, `FileUrls`) | tool outputs are commits into the workspace at the same paths; a `{$file}` argument is a signed link to a blob (a file) or to a version and path prefix (a directory, served as a tar of that subtree), with no temporary snapshot because the version is already immutable; `/v1/files/<token>/…` and `/v1/links/<token>/…` keep their shapes over blobs and versions |
@@ -222,9 +222,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - Keys: `<lineage>/{o,t,k,r,c,ts}/<hash>`.
   - The guest image (K1) at `guest/<sha256>…`, put only by the GitHub OIDC role
     `camelfs-prod-guest-image-publisher`.
-  - VM results at `results/<lineage>/<vm>` (prefix first, so one 7-day lifecycle rule on `results/` expires them,
-    no tags; #1003), written by the host and verified by the tier (camel-fs-compute.md §2). Deleting a lineage
-    must cover `results/<lineage>/` as well as `<lineage>/` (ledger L102).
+    - There is no `results/` prefix any more: the session-only VMs write no results, and the code and infra for
+      it were deleted (#1059, #1060; ledger L102).
 - **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
   - `camelfs-prod-objects` (`lineage` + `id`);
   - `camelfs-prod-refs` (`lineage` + `name`);
@@ -258,7 +257,8 @@ deleted. The reasons, from the study:
   `version = :expect`, after the tier has checked the approved rules below against immutable commits: a new commit's
   `parents[0]` is the current version, and a move to a recorded commit is a fast-forward. A move can only land on
   the version it was checked against.
-- **The dominant writer is a VM.** Per-turn checkpoints of `bash` VMs, computers and jobs are the writes that grow.
+- **The dominant writer is a VM.** The `bash` VMs' checkpoints (one per call that changed the tree) are the
+  writes that grow.
   Under C the host's CAS is in-region (checkpoint ≈ 170 ms + ≈ 7 ms to the tier and DynamoDB). Under D it would
   have travelled host → Worker → `RepoDO` → host (≈ 80–165 ms more on the per-turn path).
 - **It stands alone.** One binary, a bucket and a table. Node, Workers, hosts and customers call one API with the
@@ -383,11 +383,12 @@ files must free quota.
 **Notify** is a signed webhook from the tier to the runtime (§9.11), at least once, landing as an outbox row in the
 receiving object, which the receiver's alarm then drains, as wf-durable's design already does for host results. A
 move of a watched ref writes its delivery item in the same transaction as the move, so a crash between the two
-cannot lose a notification. See [camel-fs compute](camel-fs-compute.md) for VM delivery.
+cannot lose a notification. A host checkpoint's result already carries `{version, tree}` and the diff to the
+agent that owns the VM, so the agent learns of the move without a webhook.
 
 **Agents cache trees by tree id** in their own Durable Object's SQLite. The cache is not a TTL cache: an id never
 changes meaning, and the cache is bounded by size, oldest tree first. After its own write the agent knows the new
-tree id and the changed entries (the write's reply carries them), and after a job, `bash` or computer checkpoint the
+tree id and the changed entries (the write's reply carries them), and after a `bash` checkpoint the
 result carries the tree and the diff. So `ls`, `stat`, `glob`, `read`'s blob lookup and the write precondition of
 the agent's own version never leave the object. A foreign version is one ref `GET` plus one diff by tree pair,
 O(changed).
@@ -430,7 +431,8 @@ the model requires two refs to move together.
 3. The Go `refs` package with the ref-move rules checked before a `version = :expect` condition, leases, fences, watchers and
    the quota check (its bookkeeping waits on Miguel). Its contract
    tests are ported from `RepoDO`'s tests and the strict fake.
-4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted, and the agent-side tree cache.
+4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted; the agent's VM row's lease and renew over
+   HTTPS; the agent-side tree cache.
 5. Hosts do the CAS in-VPC, notify arrives as webhooks into outbox rows, the public `/v1/repos` moves onto the tier,
    and `RepoDO` is deleted.
 6. Node on the same API.
@@ -483,12 +485,12 @@ throughout):
    write ≈ 5; a Worker file write end to end = that + the measured Worker → us-west-2 round trip (estimated 85 ms
    from an arbitrary colo, 25 placed `wnam`); `files:batch` of 20 files ≤ 150 ms; fork ≤ 50 ms; merge of 3 disjoint
    edits ≤ 200 ms; `history`/`diff` ≤ 100 ms at 50k files.
-2. **Hosts, jobs and workflows on refs**: hosts do their CAS in-VPC against the tier with a fence-scoped token
-   (§9.7); `job({ at: { repo, ref? | version? }, commit })` mounts the tree with no import; the `job/<id>` branch, merge and
-   fast-forward effects; result cache on the tree; `keep()` as one commit; computers mount the agent's ref with the
-   lease (per camel-fs.md phase 2). The import bridge and `camel-sync` are deleted.
-   Bar: job placement → first command ≤ 300 ms warm with no import leg (ledger L25, L43, L68 close); result leg
-   (L70) ≤ 300 ms; a commit job's branch merges or fast-forwards in one effect.
+2. **Hosts and workflows on refs** (rewritten 2026-11-14: there are no jobs). Hosts do their CAS in-VPC against
+   the tier (§9.7); the `bash` tool runs one VM per agent per branch (camel-fs-compute.md §6); workflows fan out
+   through child agents on `fork/<effect>` branches, merged or fast-forwarded in one effect. The import bridge and
+   `camel-sync` are deleted.
+   Bar: the first `bash` command after a sleep ≤ 1 s warm (mount + boot); a child's branch merges or fast-forwards
+   in one effect.
 3. **Everything Volumes did**: the published-ref pattern as an SDK example (projects and `publishTool`
    deleted); uploads and attachments as commits with the history ref; dreaming on a repo; signed links on blobs and
    versions; `notify` as signed webhooks into outbox rows (§9.11); account export (tar + bundle) and deletion by refs; quota and billing
@@ -730,8 +732,8 @@ Over the host's Unix socket (unchanged transport):
 
 **Who does what** (decided 2026-11-14: the host's CAS is its own host route, C4; wf-durable, proto-block):
 
-- **Before boot**, the caller creates the branch (`job/<id>` at the version the job mounts, §9.9 `POST refs`,
-  `owner: job:<id>`; for inline `files` that version is the scratch commit of §4). The **tier** takes the ref lease
+- **Before boot**, the agent's branch exists (its workspace's `main`, or its own `fork/<effect>` as a child). The
+  **tier** takes the ref lease
   just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`.
   - `booting` is written with the lease fields under a host-epoch condition.
   - The boot spec carries `Lease { Holder { Host, Boot, Mount }, Epoch, Deadline }` to the host over hostwire, and
@@ -754,15 +756,11 @@ Over the host's Unix socket (unchanged transport):
   - **The reply** is §9.9's `cas` reply, `200 { version, tree, parents, diff, bytes, files }`, so the host can put
     the diff in its result.
   - **No token** of any kind is used on this listener.
-- **Jobs** checkpoint once, at the end. The host CASes `job/<id>` (`expect` = the mounted version, `root`
-  included), then sends `checkpointed { tree }` to the guest, then reports `ended`. **`ended`'s `version` is the
-  commit the host already CASed. The tier never CASes on a host's behalf.** A failed CAS becomes the job's
-  `checkpointError` (`"cas: <code>"`), and the rest of the job's output stands.
-- **Computers and `bash` VMs** (per-turn checkpoints in a long-lived VM): checkpoint → the host's CAS (in-VPC,
+- **`bash` VMs** (sessions; a checkpoint after every call that changed the tree, and before every stop): checkpoint → the host's CAS (in-VPC,
   ≈ 2 ms to the tier + ≈ 5 ms in DynamoDB) → `checkpointed { tree }` or `checkpointed { error }`, so the guest's
   index commits only after the ref moved. The runtime is not on this path.
 
-The CAS carries the checkpoint's `root`, so a later job at that version mounts warm without the daemon rebuilding
+The CAS carries the checkpoint's `root`, so a later boot at that version mounts warm without the daemon rebuilding
 the image; the ref item carries `root?` (§6).
 
 ### 9.8 Errors
@@ -817,7 +815,7 @@ The runtime calls it at repo creation, before the first commit. `GET` returns th
   `lineages` item `deletedAt`, in one conditional write → `204`.
 - A replay with the same `Idempotency-Key` returns `204` again. A new key on a deleted lineage gets
   `410 lineage_deleted`.
-- The objects are left to GC: the mark finds them unreachable. Results under `results/<lineage>/` follow the same
+- The objects are left to GC: the mark finds them unreachable. Under the session-only design there are no result objects (camel-fs-compute.md §2); any left from the job era under `results/<lineage>/` follow the same
   path (L102).
 - From then on every route on that lineage answers `410 lineage_deleted`.
 
@@ -838,7 +836,7 @@ the ref's history stays reachable only from other refs.
 
 **Delete by owner.** `DELETE /v1/lineages/{lineage}/refs?owner=<owner-form id>` (a `w` token) →
 `200 { "deleted": [names], "held": [names] }`. It deletes every live, unheld ref with that owner (an agent's,
-workflow's or job's refs when it ends) and reports the held ones untouched, for the caller to retry after their
+workflow's or child's refs when it ends) and reports the held ones untouched, for the caller to retry after their
 leases end.
 
 **Expiry and epochs, everywhere in this section:**
@@ -968,7 +966,7 @@ claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_12
 **Who gets which token:**
 - An agent's tool calls: `acc: w` on its workspace's `main`, `r` elsewhere.
 - A workflow child: `w` on `fork/<effect>`, `r` on `main`.
-- A job's host: a fence token on `job/<id>`.
+- A host: no token; its CAS is the mTLS host route (§9.7, §9.12).
 - A customer: one from the runtime's token endpoint against their API key.
 - A laptop clone: `r` on one branch.
 
@@ -998,8 +996,7 @@ Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
 { "id": "dlv_…", "type": "ref.moved", "lineage", "ref", "from": "<version>", "to": "<version>", "tree",
   "by": "agent:ag_123", "at": 1763046000, "watchers": ["agent:ag_7", "workflow:wf_2"] }
 
-{ "id": "dlv_…", "type": "vm.ended", "vm": "<vm id>", "lineage", "code", "exit", "timedOut", "resultKey",
-  "resultSha256", "resultBytes", "version"?, "checkpointError"?, "at" }
+{ "id": "dlv_…", "type": "vm.ended", "vm": "<vm id>", "lineage", "code", "version"?, "checkpointError"?, "at" }
 ```
 
 - **Every body carries `type`, and it is required** (wf-repos and wf-durable, for the K5 receiver).
@@ -1009,7 +1006,8 @@ Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
     `2xx`. The tier then retries and finally logs `notify_dropped`, so a new event type cannot be lost quietly to an
     old receiver.
   - There is no default: a missing `type` does not mean `ref.moved`.
-  - `ref.moved` goes to its `watchers`, and `vm.ended` to the VM's owner by `vm` id. See [camel-fs compute](camel-fs-compute.md) for reconciliation.
+  - `ref.moved` goes to its `watchers`, and `vm.ended` to the VM's owner by `vm` id (the agent's object that owns the VM, which
+    reconciles with `GET /v1/vms/{id}` and the usage poll if the hint is lost).
 
 - The runtime rejects a signature older than 5 minutes.
 - For each watcher it writes an outbox row keyed by `id` into the receiving object; the insert is idempotent, so
@@ -1070,7 +1068,7 @@ proves only "this came through Cloudflare", and anyone can proxy their own zone 
   - Its body carries `{ holder, epoch, commit, expect, root? }`.
   - The tier first checks the holder against the certificate (below), then runs refstore's fenced CAS with
     `Fence{ holder, epoch }`.
-  - For a job, `ended`'s `version` is the commit the host already CASed. The tier never CASes on a host's behalf.
+    - `ended`'s `version` is the commit the host already CASed. The tier never CASes on a host's behalf.
 - **Lease-bound host calls** (the CAS above, and any lease operation a host makes) are accepted only when the
   lease holder's `host` equals the certificate's host id **and** its `boot` equals that host's current
   `bootEpoch` (`hosts` item), else `403 forbidden`.
@@ -1174,4 +1172,4 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
 VM's lease once `now ≥ deadline`, so the usage events never cover time the runtime did not extend credit for.
 
 **Notifications stay pushed.** `vm.ended` and ref moves remain on §9.11's webhook outbox. `vm.ended` is a hint:
-if one is lost, the next poll's final `usage.vm` event and `GET /v1/vms/{id}` reconcile the job.
+if one is lost, the next poll's final `usage.vm` event and `GET /v1/vms/{id}` reconcile the VM.

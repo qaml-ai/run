@@ -1,3 +1,7 @@
+import { handleCamelfsNotify, type NotifyEnv } from "./camelfs/notify.ts";
+import { handleCamelfsSmoke } from "./camelfs/smoke.ts";
+import { handlePilotReset } from "./camelfs/pilot-reset.ts";
+import { tierConfigured } from "./camelfs/tier.ts";
 import { storedConfiguration } from "./api-contract.ts";
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { vaultRoutes } from "./vault.ts";
@@ -58,7 +62,7 @@ import {
   resumeWebhookDeliveries,
   type DeliveryMessage,
 } from "./webhooks.ts";
-import { handleRepoRequest } from "./repos/routes.ts";
+import { handleRepoRequest, repoTransportFailure } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { handleFileRequest, retiredVolumes } from "./files.ts";
@@ -101,8 +105,8 @@ export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
-// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-export { Volume } from "./volume.ts";
+export { CamelfsUsagePoller } from "./camelfs/usage-poller.ts";
+import { startUsagePoller } from "./camelfs/usage-poller.ts";
 export { RepoDO } from "./repos/repo-do.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
@@ -193,6 +197,8 @@ function shareInput<T>(schema: { safeParse(value: unknown): { success: true; dat
 }
 
 function httpFailure(error: unknown, env: Env): Response {
+  const transport = repoTransportFailure(error);
+  if (transport) return transport;
   const limited = admissionError(error);
   if (limited) return limited;
   // The shared core's errors (src/core/http-error.ts: decision questions, channels) answer as this backend's own do.
@@ -209,6 +215,11 @@ function httpFailure(error: unknown, env: Env): Response {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const hostPath = new URL(request.url).pathname;
+    if (hostPath === "/v1/internal/camelfs/notify") {
+      try { return await handleCamelfsNotify(request, env as unknown as NotifyEnv); }
+      catch (error) { return httpFailure(error, env); }
+    }
+    if (hostPath === "/v1/internal/camelfs/smoke" && !tierConfigured(env as RepoEnv)) return new Response(null, { status: 404 });
     const retired = retiredVolumes(hostPath);
     if (retired) return publicPageHeaders(request, corsResponse(request, retired));
     if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
@@ -378,6 +389,9 @@ const worker = {
           const workflow = await workflowTestRoute(request, env as unknown as WorkflowEnv, path, auth.tenantId);
           if (workflow) return workflow;
         }
+        if (path === "/v1/internal/camelfs/smoke") return handleCamelfsSmoke(request, env as RepoEnv, auth);
+        // TEMPORARY(pilot-switch): R5 deletes this route.
+        if (path === "/v1/internal/camelfs/pilot-reset") return handlePilotReset(request, env as never, auth);
         const workflows = await workflowRoutes(request, env as unknown as WorkflowEnv & { AGENT_WORKFLOW_TENANTS?: string }, auth.tenantId);
         if (workflows) return workflows;
         const money = await moneyRoutes(request, env, auth, ctx);
@@ -758,6 +772,7 @@ const worker = {
   },
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
+    await startUsagePoller(env).catch(error => failure(env, "usage_poll_start_failed", error));
     try { await (await workerTriggers(env)).scan(); }
     catch(error) { failure(env,"trigger_scan_failed",error); }
     try {

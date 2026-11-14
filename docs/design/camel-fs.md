@@ -1,6 +1,11 @@
 # camelFS: the file system for agents, on our own AWS machines
 
-The Workers job-host plane discussed here was removed. See [camel-fs compute](camel-fs-compute.md).
+The Workers job-host plane was removed.
+
+> **Superseded in part (Miguel, 2026-11-14): there are no jobs.** Agents compute through one `bash` tool backed by
+> one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
+> child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2
+> and §6. What this document says about jobs is the record of the replaced design.
 
 Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions; merged in #874; §6 records the v0 defaults he approved (questions 8, 9, 10, 12). Docs
 only; nothing here creates AWS resources (Miguel applies every AWS change himself). It supersedes the file half of
@@ -446,6 +451,9 @@ radius: a metal host holds tens of tenants' VMs; the design already assumes any 
 so the cost is a bigger simultaneous re-place, bounded by the warm pool.
 
 ### 1.5 VMs: jobs and computers on one substrate
+
+**Superseded (2026-11-14):** one VM shape remains, the `bash` session on an agent's branch (camel-fs-compute.md §6).
+The job column below is the replaced design.
 
 Both run as Firecracker microVMs on the fleet, with the job-hosts plan's image, netns pool, egress proxy and
 isolation suite. The difference is the lease:

@@ -183,7 +183,7 @@ func TestDDBHostChannel(t *testing.T) {
 	if len(gotStops) != 1 || !gotStops[0].Checkpoint {
 		t.Fatal(gotStops)
 	}
-	if reply := heartbeat(1, 0, hostwire.Running{ID: "life"}); len(reply.Stop) != 1 || reply.Stop[0] != "life" {
+	if reply := heartbeat(1, 0, hostwire.Running{ID: "life"}); len(reply.Stop) != 1 || reply.Stop[0] != (hostwire.StopOrder{ID: "life", Checkpoint: true}) {
 		t.Fatal(reply)
 	}
 	end := hostwire.Ended{BootEpoch: 1, At: now.UnixMilli(), Code: "stopped"}
@@ -193,7 +193,7 @@ func TestDDBHostChannel(t *testing.T) {
 	post(clientA, path, end, 204, nil)
 	post(clientA, path, end, 204, nil)
 	v = get("life")
-	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.ResultRef != "" || v.UsageSeq != 5 {
+	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.UsageSeq != 5 {
 		t.Fatalf("ended: %+v", v)
 	}
 	h, err := c.Host(ctx, "pool", "a")

@@ -6,6 +6,7 @@ import { FileError, normalizePath } from '../file-errors.ts';
 import { safeName } from '../file-policy.ts';
 import { boundedBytes } from '../images.ts';
 import { streamFile, repoFailure } from './routes.ts';
+import type { RepoTreeCache } from './tree-cache.ts';
 import { signRepoLink } from './links.ts';
 export type WrittenRepoFile = {path:string; version:string; size:number; contentType:string};
 export type PresentedRepoFile = (WrittenRepoFile & {type:'file'; repo:string; repoPath?:string; blob:string; caption?:string});
@@ -16,12 +17,13 @@ export function mountTarget(mounts: Mount[], tenant: string, agent: string, raw?
   if (!mount) throw new FileError('Path is not inside a mount',403);
   return { mount, path, inside: normalizePath((mount.subpath??'/')+'/'+path.slice(mount.path.length)) };
 }
-export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: Mount[] = [], op: 'api' | 'turn' = 'turn'): Promise<Response> {
+export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: Mount[] = [], op: 'api' | 'turn' = 'turn', cache?: RepoTreeCache): Promise<Response> {
+  const scope = cache?.scope();
   try {
     path=normalizePath(path);
     const t=mountTarget(mounts.filter((m):m is Mount=>'repo' in m),tenant,agent,path);
     if(request.method!=='GET' && t.mount.mode!=='rw') throw new FileError('Mount is read-only',403);
-    const store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent, { ...(request.headers.get("x-camel-run") ? {"Camel-Run":request.headers.get("x-camel-run")!} : {}), ...(request.headers.get("x-camel-call") ? {"Camel-Call":request.headers.get("x-camel-call")!} : {}) }), p=insideRepo(t.inside);
+    const store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent, { ...(request.headers.get("x-camel-run") ? {"Camel-Run":request.headers.get("x-camel-run")!} : {}), ...(request.headers.get("x-camel-call") ? {"Camel-Call":request.headers.get("x-camel-call")!} : {}) }, scope), p=insideRepo(t.inside);
     if(request.method==='GET') {
       const file=await store.stat(t.inside), v=await store.ctx.repo.resolve(file.version);
       const response=await streamFile(request,store.ctx,v,{path:p,blob:file.blob,size:file.size,mode:'100644'});
@@ -37,11 +39,12 @@ export async function handleAgentFileRequest(request: Request, env: FileBindings
       return Response.json(request.method==='DELETE'?{deleted:true,version:result.version}:{...await store.stat(t.inside,result.version!),path:t.path,version:result.version,by:agent},{status:request.method==='PUT'?201:200});
     }
     throw new FileError('Method not allowed',405);
-  } catch(e) {return failure(e);}
+  } catch(e) {return failure(e);} finally {scope?.close();}
 }
 function failure(e:unknown) {const m=/FILE_(\d{3}):([^]*)/.exec(String(e));return m?Response.json({error:m[2]},{status:Number(m[1])}):repoFailure(e);}
-export async function handleAgentFilesRoute(request:Request,env:FileBindings,tenant:string,agent:string,mounts:Mount[],path=new URL(request.url).pathname):Promise<Response|null> {
+export async function handleAgentFilesRoute(request:Request,env:FileBindings,tenant:string,agent:string,mounts:Mount[],path=new URL(request.url).pathname, cache?: RepoTreeCache):Promise<Response|null> {
   if(path!=='/files'&&path!=='/links'&&!path.startsWith('/uploads/'))return null;
+  const scope = cache?.scope();
   try {
     const url=new URL(request.url);
     if(path.startsWith('/uploads/')) {
@@ -50,11 +53,11 @@ export async function handleAgentFilesRoute(request:Request,env:FileBindings,ten
       const own=mounts.find(m=>'repo'in m&&m.repo===agentRepoId(tenant,agent)&&m.mode==='rw');
       if(!own)throw new FileError('Attaching files needs a writable mount, like the default /workspace');
       const headers=new Headers(request.headers);headers.set('x-camel-run',match[1]);
-      return handleAgentFileRequest(new Request(request,{headers}),env,tenant,agent,`${own.path}/uploads/${match[1]}/${safeName(decodeURIComponent(match[2]))}`,mounts);
+      return handleAgentFileRequest(new Request(request,{headers}),env,tenant,agent,`${own.path}/uploads/${match[1]}/${safeName(decodeURIComponent(match[2]))}`,mounts,'turn',cache);
     }
     const body=path==='/links'?await request.clone().json() as any:undefined;
     const asked=body?.path??url.searchParams.get('path')??undefined;
-    const t=mountTarget(mounts.filter((m):m is Mount=>'repo'in m),tenant,agent,asked), store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent);
+    const t=mountTarget(mounts.filter((m):m is Mount=>'repo'in m),tenant,agent,asked), store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent,{},scope);
     if(path==='/links') {
       if(body.method==='PUT'&&t.mount.mode!=='rw')throw new FileError('Mount is read-only',403);
       return Response.json({...await signRepoLink(store.ctx,url.origin,{...body,path:insideRepo(t.inside),ref:store.ref,agent,run:request.headers.get("x-camel-run")??undefined,call:request.headers.get("x-camel-call")??undefined}),path:t.path},{status:201});
@@ -64,5 +67,5 @@ export async function handleAgentFilesRoute(request:Request,env:FileBindings,ten
     if(!Number.isInteger(limit))throw new FileError('Invalid limit');
     const matches=files.filter(f=>show(f.path)>(url.searchParams.get('after')??''));
     return Response.json({files:matches.slice(0,limit).map(f=>({...f,path:show(f.path)})),...(matches.length>limit?{next:show(matches[limit-1].path)}:{})});
-  }catch(e){return failure(e);}
+  }catch(e){return failure(e);} finally {scope?.close();}
 }

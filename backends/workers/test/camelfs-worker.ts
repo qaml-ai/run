@@ -24,10 +24,6 @@ export default {
       const entry=await new Directory(env,'camelrun-proto-local').get(agent);
       if(!entry)return new Response(null,{status:404});
       const volume=givenVolume??`vol_${(await digest(`workspace:${agent}`)).slice(0,24)}`;
-      if(!givenVolume) {
-        await withSql(env,sql=>sql.query('insert into volumes(id,tenant,name,created_at) values($1,$2,$3,$4)',[volume,entry.tenantId,'Stored pilot workspace',Date.now()]));
-        await env.VOLUMES.getByName(`${entry.tenantId}:${volume}`).initialize(entry.tenantId,volume,'Stored pilot workspace');
-      }
       entry.config.mounts=[{volumeId:volume,path:'/workspace',mode:'rw'}];
       entry.revision++;entry.configHash=await digest(canonical(entry.config));
       await withSql(env,sql=>sql.query('update agents set header=$2,revision=$3 where id=$1',[agent,JSON.stringify(entry),entry.revision]));

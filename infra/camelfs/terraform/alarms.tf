@@ -127,6 +127,39 @@ resource "aws_cloudwatch_metric_alarm" "enroll_unhealthy" {
   ok_actions          = local.alarm_topics
 }
 
+# --- The tier refusing usage writes for clock skew (compute) ---
+
+# camelfsd's compute controller checks the task's clock against DynamoDB's Date header on every response and refuses
+# usage writes when they drift more than ~6 s, logging the key `clock_skew_refused` (wf-durable, 2026-11-14). A
+# metric filter on the api log group turns each such line into a point; the alarm fires on any in five minutes.
+resource "aws_cloudwatch_log_metric_filter" "clock_skew_refused" {
+  name           = "${var.name}-${var.env}-clock-skew-refused"
+  log_group_name = aws_cloudwatch_log_group.api.name
+  pattern        = "clock_skew_refused"
+
+  metric_transformation {
+    name          = "ClockSkewRefused"
+    namespace     = "${var.name}/${var.env}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "clock_skew_refused" {
+  alarm_name          = "${var.name}-${var.env}-clock-skew-refused"
+  alarm_description   = "camelFS api tasks refused usage writes because their clock drifts from DynamoDB's (clock_skew_refused in /ecs/${local.service_name})"
+  namespace           = "${var.name}/${var.env}"
+  metric_name         = "ClockSkewRefused"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
 # --- DynamoDB ---
 
 # On-demand tables throttle only when a partition's limit (1,000 WCU/s, 3,000 RCU/s) or the table's previous peak

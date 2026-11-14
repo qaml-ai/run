@@ -16,9 +16,9 @@ local-only fixture credentials. It is not a deployable production configuration.
 
 Workers files use `/v1/repos`. Agent mounts use `{ repo, path, mode }`, image saves
 use `{ repo, path }`, and apply takes repo IDs in mounts. Requests to
-`/v1/volumes` and its subpaths return 410. The internal Volume binding still
-serves snapshots for the old job paths. Pilot Volume data is test data and
-will not be migrated when that binding is removed.
+`/v1/volumes` and its subpaths return 410. The `delete-volumes` migration
+removes the Volume Durable Object. Pilot Volume data is test data and is
+not migrated. Account deletion still removes that tenant's legacy R2 objects.
 
 ## Run locally
 
