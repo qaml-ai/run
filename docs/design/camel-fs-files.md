@@ -118,6 +118,11 @@ so (`landed: "forwarded"`).
 
 ## 4. Jobs and workflows
 
+**Superseded for jobs (Miguel, 2026-11-14): there is no `job()`.** Agents compute through one `bash` tool (one VM
+per agent per branch), and workflow steps are agent turns or child agents, each child with its own `bash` VM on
+its own `fork/<effect>` branch (camel-fs-compute.md §6). What follows about `job()` is the record of the replaced
+design. Its branch, merge and fast-forward effects still describe how a workflow merges its children's branches.
+
 `job({ at: { repo, ref?, version? }, commit?: true | { onto: ref } })`. `at` is a place in a repo, the same shape as
 `POST /v1/repos`' `from` (§1): `repo` is the repo id, and at most one of `ref` (a name, default `main`) or `version`
 (40 hex) picks the version; a bare ref or version means nothing without its repo, so neither is accepted alone
