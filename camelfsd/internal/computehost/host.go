@@ -329,10 +329,9 @@ func (h *Host) poll(ctx context.Context) error {
 	if err == nil && reply.BootEpoch == q.BootEpoch {
 		h.mu.Lock()
 		if h.epoch == q.BootEpoch {
-			for _, id := range reply.Stop {
-				if s := h.vms[id]; s != nil {
-					// The pull protocol has no checkpoint bit. Preserve the branch on a missed push.
-					h.queueStopLocked(s, true, endCode(s.row))
+			for _, stop := range reply.Stop {
+				if s := h.vms[stop.ID]; s != nil {
+					h.queueStopLocked(s, stop.Checkpoint, endCode(s.row))
 				}
 			}
 			for _, spec := range reply.Boot {
