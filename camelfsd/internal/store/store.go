@@ -42,13 +42,19 @@ func guestManifest(key string) bool {
 
 func valid(k string) bool {
 	_, p, h, ok := splitKey(k)
-	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts") && root.Hex(h, 40))
+	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts" || p == "tr") && root.Hex(h, 40))
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
 		return fmt.Errorf("invalid key")
 	}
 	_, p, h, _ := splitKey(k)
+	if p == "tr" {
+		if !root.Hex(string(b), 64) {
+			return fmt.Errorf("invalid tree root")
+		}
+		return nil
+	}
 	if p == "ts" {
 		return VerifyTreeSizes(h, b)
 	}
@@ -244,9 +250,21 @@ func (l Local) Put(c context.Context, k string, b []byte) error {
 			return ioFailure(e)
 		}
 	}
-	return ioFailure(Atomic(filepath.Join(l.Dir, k), b))
+	path := filepath.Join(l.Dir, k)
+	if kind == "tr" {
+		e := atomicFile(path, b, os.Link)
+		if errors.Is(e, os.ErrExist) {
+			return nil
+		}
+		return ioFailure(e)
+	}
+	return ioFailure(Atomic(path, b))
 }
 func Atomic(p string, b []byte) error {
+	return atomicFile(p, b, os.Rename)
+}
+
+func atomicFile(p string, b []byte, install func(string, string) error) error {
 	if e := os.MkdirAll(filepath.Dir(p), 0700); e != nil {
 		return e
 	}
@@ -265,7 +283,7 @@ func Atomic(p string, b []byte) error {
 	if e != nil {
 		return e
 	}
-	return os.Rename(f.Name(), p)
+	return install(f.Name(), p)
 }
 
 type S3 struct {
@@ -345,11 +363,28 @@ func (s *S3) Put(c context.Context, k string, b []byte) error {
 	key := s.key(k)
 	input := &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)}
 	_, kind, _, _ := splitKey(k)
+	if kind == "tr" {
+		input.IfNoneMatch = aws.String("*")
+	}
 	if kind == "o" {
 		input.Metadata = map[string]string{"x-camel-sha256": root.Hash(b)}
 	}
-	_, e := s.Client.PutObject(c, input)
-	return ioFailure(e)
+	for {
+		input.Body = bytes.NewReader(b)
+		_, e := s.Client.PutObject(c, input)
+		var apiErr smithy.APIError
+		if kind == "tr" && errors.As(e, &apiErr) {
+			switch apiErr.ErrorCode() {
+			case "PreconditionFailed":
+				return nil
+			case "ConditionalRequestConflict":
+				if c.Err() == nil {
+					continue
+				}
+			}
+		}
+		return ioFailure(e)
+	}
 }
 func Parallel(ctx context.Context, n int, items []string, fn func(string) error) error {
 	if n < 1 {

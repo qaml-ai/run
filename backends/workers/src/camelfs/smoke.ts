@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { tierConfigured, TierError, type TierEnv } from "./tier.ts";
+import { tierConfigured, TierError, tierRequest, type TierEnv } from "./tier.ts";
 import { StorageError } from "../repos/storage.ts";
 import { repoStorage } from "./repo-storage.ts";
 
+const SMOKE_SUB = "runtime:camelfs-smoke";
 const ROUTES = ["putBlob", "commit", "readBatch", "getCommit"] as const;
 const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
 
 /** One round on a throwaway lineage: PUT blob, POST commit (1 file), batch read, GET commit. `wall` collects each
  * fetch's duration by route (ledger L89 measures Worker -> tier wall time against the tier's server-side ms). */
 async function smokeRound(env: TierEnv, lineage: string, round: number, wall: Record<string, number[]>, statuses: Record<string, Record<string, number>>) {
-  const path = "probe.txt", sub = "runtime:camelfs-smoke";
+  const path = "probe.txt", sub = SMOKE_SUB;
   const bytes = new TextEncoder().encode(`${lineage}:${round}`);
   const storage = repoStorage(env, sub);
   async function measure<T>(op: (typeof ROUTES)[number], run: () => Promise<T>) {
@@ -37,11 +38,19 @@ async function smokeRound(env: TierEnv, lineage: string, round: number, wall: Re
 
 /** `iterations` rounds (1..500) on one fresh lineage; the reply has per-route count and p50/p95/p99 ms, never ids
  * beyond the throwaway lineage itself. */
-export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0) {
+/** The throwaway lineage is registered like a real repo's (HttpRepoClient.prepareLineage): the tier refuses blob
+ * uploads to an unregistered lineage (404 not_found). */
+const lineageCall = (env: TierEnv, lineage: string, method: "PUT" | "DELETE", body?: unknown) => tierRequest(env, {
+  method, path: "/v1/lineages/" + encodeURIComponent(lineage), body,
+  claims: { sub: SMOKE_SUB, lin: lineage, acc: "w" }, idempotencyKey: method === "DELETE" ? `delete:${lineage}` : undefined,
+});
+
+export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0, tenant = "camelfs-smoke") {
   const lineage = "smoke:" + randomUUID(), wall = Object.fromEntries(ROUTES.map(r => [r, [] as number[]])) as Record<string, number[]>;
   const statuses = Object.fromEntries(ROUTES.map(r => [r, {} as Record<string, number>]));
   const startedAt = new Date().toISOString(), began = Date.now();
   let completed = 0, failure: TierError | undefined;
+  await lineageCall(env, lineage, "PUT", { tenant, kind: "workspace", defaultBranch: "main" });
   // At least `iterations` rounds, continuing until `minSeconds` have passed (a clean edge for the server-side query).
   for (let round = 0; round < iterations || Date.now() - began < minSeconds * 1000; round++) {
     try { await smokeRound(env, lineage, round, wall, statuses); completed++; }
@@ -52,8 +61,12 @@ export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0)
     return [route, { count: sorted.length, p50: quantile(sorted, 0.5), p95: quantile(sorted, 0.95), p99: quantile(sorted, 0.99) }];
   }));
   const window = { startedAt, endedAt: new Date().toISOString() };
+  // The lineage is deleted after the window; a failed delete is reported, not hidden (the reply stays 502).
+  let cleanup: { deleted: true } | { deleted: false; status: number; code: string } = { deleted: true };
+  try { await lineageCall(env, lineage, "DELETE"); }
+  catch (e) { if (!(e instanceof TierError)) throw e; cleanup = { deleted: false, status: e.status, code: e.code }; }
   const error = failure && { status: failure.status, code: failure.code, op: failure.op };
-  return { ok: !failure, lineage, iterations, completed, window, routes, statuses, ...(error ? { error } : {}) };
+  return { ok: !failure && cleanup.deleted, lineage, iterations, completed, window, routes, statuses, cleanup, ...(error ? { error } : {}) };
 }
 
 export async function handleCamelfsSmoke(request: Request, env: TierEnv & { ADMIN_TENANTS?: string }, auth: { tenantId: string; scopes: string[] }) {
@@ -70,7 +83,7 @@ export async function handleCamelfsSmoke(request: Request, env: TierEnv & { ADMI
   if (!Number.isSafeInteger(minSeconds) || minSeconds < 0 || minSeconds > 600)
     return Response.json({ error: "minSeconds must be 0..600", code: "INVALID_REQUEST" }, { status: 400 });
   try {
-    const result = await camelfsSmoke(env, iterations, minSeconds);
+    const result = await camelfsSmoke(env, iterations, minSeconds, auth.tenantId);
     return Response.json(result, { status: result.ok ? 200 : 502, headers: { "cache-control": "no-store" } });
   }
   catch (e) {

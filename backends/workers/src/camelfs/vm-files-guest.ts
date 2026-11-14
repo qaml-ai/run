@@ -1,4 +1,4 @@
-// The guest image includes Python 3. JSON arguments are supplied on stdin, separately from this program.
+// The guest image includes Python 3. Writes carry JSON arguments in argv and raw file bytes on stdin.
 export const vmFilesGuest = String.raw`
 import base64
 from collections import deque
@@ -123,7 +123,6 @@ def write(a):
 def write_file(a, path):
     token = a.get('expectSha256')
     folder, name = parent(path, create=token in (None, 'none'))
-    data = base64.b64decode(a['bytes'])
     with folder as fd:
         # The directory descriptor keeps the temporary file and rename in the same directory.
         tmp = '.vmfiles-' + secrets.token_hex(16)
@@ -135,15 +134,31 @@ def write_file(a, path):
                 except FileNotFoundError:
                     old = None
                 mode = '100755' if old == '100755' else '100644'
-            if mode == '120000':
-                os.symlink(data, tmp, dir_fd=fd)
-            else:
-                f = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd)
-                with os.fdopen(f, 'wb') as out:
-                    out.write(data)
+            f = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd)
+            with os.fdopen(f, 'w+b') as out:
+                digest = hashlib.sha256()
+                size = 0
+                while chunk := sys.stdin.buffer.read(min(1024 * 1024, a['size'] - size + 1)):
+                    size += len(chunk)
+                    if size > a['size']:
+                        raise Refused('transfer_corrupt')
+                    digest.update(chunk)
+                    out.write(chunk)
+                sha = digest.hexdigest()
+                if size != a['size'] or sha != a['sha256']:
+                    raise Refused('transfer_corrupt')
+                if mode == '120000':
+                    out.seek(0)
+                    data = out.read(4096)
+                    if size >= 4096:
+                        raise Refused('bad_input')
+                else:
                     os.fchmod(f, 0o755 if mode == '100755' else 0o644)
                     out.flush()
                     os.fsync(f)
+            if mode == '120000':
+                os.unlink(tmp, dir_fd=fd)
+                os.symlink(data, tmp, dir_fd=fd)
             expect(fd, name, a.get('expectSha256'), path)
             os.replace(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
             os.fsync(fd)
@@ -152,7 +167,7 @@ def write_file(a, path):
                 os.unlink(tmp, dir_fd=fd)
             except FileNotFoundError:
                 pass
-    return dict(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+    return dict(size=size, sha256=sha)
 
 def delete(a):
     paths = a['paths']
@@ -270,7 +285,7 @@ def grep(a):
             continue
     return dict(matches=found, files=files, truncated=False)
 
-a = json.load(sys.stdin)
+a = json.loads(base64.b64decode(sys.argv[1])) if len(sys.argv) > 1 else json.load(sys.stdin)
 try:
     operations = dict(stat=lambda a: {p: path_stat(p) for p in a['paths']},
                       read=read, write=write, delete=delete, list=listing, grep=grep)

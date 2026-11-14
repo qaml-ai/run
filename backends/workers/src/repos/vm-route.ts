@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import type { VmFiles, VmFilesScope } from "../camelfs/vm-files.ts";
 import { FileError } from "../file-errors.ts";
 import { HttpError } from "../errors.ts";
@@ -6,10 +7,10 @@ import { globMatch, insideRepo } from "./agent-store.ts";
 import { normalizeRepoPath, repoErrorFrom } from "./repo-policy.ts";
 import type { RepoEnv } from "./registry.ts";
 
-export type VmFilesProvider = (scope: VmFilesScope) => Promise<VmFiles | undefined>;
+export type VmFilesProvider = (scope: VmFilesScope, invocation?: AgentInvocation) => Promise<VmFiles | undefined>;
 
-export async function resolveVmFiles(_env: RepoEnv, scope: VmFilesScope, vmFiles?: VmFilesProvider) {
-  return vmFiles?.(scope);
+export async function resolveVmFiles(_env: RepoEnv, scope: VmFilesScope, vmFiles?: VmFilesProvider, invocation?: AgentInvocation) {
+  return vmFiles?.(scope, invocation);
 }
 
 // Model-facing text (reviewed by the lead, 2026-11-14): the model knows the VM as "your machine" (the bash tool).
@@ -40,6 +41,8 @@ export async function vmOperation<T>(ref: string, run: () => Promise<T>, path?: 
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error && typeof error.code === "string"
       ? error.code : undefined;
+    if (code === "transfer_corrupt" || code === "blob_mismatch")
+      throw new VmRouteError(502, "The file transfer failed verification.", code, error);
     if (code === "stale_path") throw new FileError(STALE_FILE, 412);
     // The machine answered: these are about the file, not a stopped machine (K5b2's codes).
     if (code === "no_file") throw new FileError(path === undefined ? "File not found" : `File not found: ${path}`, 404);

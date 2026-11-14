@@ -276,8 +276,13 @@ holder sends explicit null for a read-only mount. Image import returns a root an
 without creating a ref. Import paths must resolve under --data, /nvme, or
 a repeatable --import-allow directory.
 
-Tree mounts still resolve the newest lineage/tree root, then up to 64
-tree_parents ancestors, then the blank image (--virtual-size, default 1 GiB).
+Tree mounts resolve the newest local lineage/tree root, then the exact shared
+root, then up to 64 local tree_parents ancestors, then the blank image
+(--virtual-size, default 1 GiB). A session that applies a nonempty file delta
+captures a baseline before first exec. One publisher per host processes these
+snapshots after thaw, including after the VM stops. --baseline-disk-max caps
+the total logical size of pending workspace snapshots and defaults to twice
+--virtual-size. A full queue skips the capture.
 Apply uses the guest Unix endpoints <vsock>_5201 and checkpoint <vsock>_5200,
 mode 0600. Frames have a four-byte big-endian length, at most 64 KiB of JSON
 or 1 MiB of data. Header baseTree/fromTree/toTree are always present,

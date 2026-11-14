@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { defaultModels } from "./default-model-policy.ts";
 import { modelReference, resolveModel, modelSettingsRefusal } from "./model-policy.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
@@ -24,10 +25,10 @@ export async function defaultModelFor(env: DefaultModelEnv, tenant: string, keyS
 }
 
 /** A reconfiguration needs a usable key, but must not exchange a short-lived token. */
-export async function configurationModelError(env: DefaultModelEnv, tenant: string, config: AgentConfiguration): Promise<string | undefined> {
+export async function configurationModelError(env: DefaultModelEnv, tenant: string, config: AgentConfiguration, invocation?: AgentInvocation): Promise<string | undefined> {
   const reference = config.model ?? env.MODEL;
   if (/^(?:test|camel-test|cloudflare)\//.test(reference) || reference.startsWith("@cf/")) return;
-  const { accounts, keyScopes, modelProviders, tenants } = await keyServices(env);
+  const { accounts, keyScopes, modelProviders, tenants } = await keyServices(env, invocation);
   const custom = await modelProviders.resolvable(tenant, config.keyScope);
   const endpoints = tenants.modelEndpoints(tenant);
   const model = resolveModel(reference, endpoints, custom);
@@ -40,10 +41,10 @@ export async function configurationModelError(env: DefaultModelEnv, tenant: stri
 }
 
 /** Refuse invalid declarations before creating agent rows or workspace repos. */
-export async function validateAgentModel(env: DefaultModelEnv, tenant: string, config: AgentConfiguration, previous?: { reference?: string; model?: Model<Api>; defaultModel?: boolean }): Promise<Model<Api> | undefined> {
+export async function validateAgentModel(env: DefaultModelEnv, tenant: string, config: AgentConfiguration, previous?: { reference?: string; model?: Model<Api>; defaultModel?: boolean }, invocation?: AgentInvocation): Promise<Model<Api> | undefined> {
   const reference = config.model ?? env.MODEL;
   if (reference.startsWith("test/") || reference.startsWith("camel-test/") || reference.startsWith("cloudflare/") || reference.startsWith("@cf/")) return;
-  const services = await keyServices(env);
+  const services = await keyServices(env, invocation);
   try {
     let resolved = resolveModel(reference, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, config.keyScope));
     // src/model.ts takes the configured default directly from the catalog.

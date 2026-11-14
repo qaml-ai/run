@@ -678,6 +678,9 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
     }
     const q: (allowed: string[], required?: string[]) => Promise<any> = readBody;
     if (request.method === "PUT" && route === "blobs") {
+      // As the daemon (storage.go): a blob upload needs a registered lineage (PUT /v1/lineages/{l}). Enforced for
+      // runtime-token (JWT) callers, which is every Worker path; the legacy bearer surface (unit 11 deletes it) is not.
+      if (authorization !== `Bearer ${token}` && !own.metadata) bad("not_found", 404);
       const length = request.headers.get("content-length");
       if (length && Number(length) > 5 * 1024 ** 3) bad("too_large", 413);
       const bytes = new Uint8Array(await request.arrayBuffer());

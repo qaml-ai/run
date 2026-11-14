@@ -14,7 +14,7 @@ import type { BashSessions } from "./bash.ts";
 import type { BashResult } from "./bash-stream.ts";
 import { tierConfigured } from "./tier.ts";
 import { vmFilesGuest } from "./vm-files-guest.ts";
-import type { GrepInput, GrepResult } from "../repos/storage.ts";
+import type { GrepInput, GrepResult, StoragePlane } from "../repos/storage.ts";
 
 export type VmFileStat = { size: number; mode: string; sha256: string };
 export type VmFiles = {
@@ -39,9 +39,11 @@ export async function vmFiles(env: VmFilesEnv, scope: VmFilesScope): Promise<VmF
   if (repo instanceof HttpRepoClient) return env.bashSessions.runningFiles(lineage, repo.tierRefName(scope.ref));
 }
 
-type Exec = (execId: string, command: string, stdin: string, mutation: boolean) => Promise<BashResult>;
+type StdinBlob = Awaited<ReturnType<StoragePlane["putBlob"]>>;
+type ExecInput = { stdin: string; stdinBlob?: never } | { stdinBlob: StdinBlob; stdin?: never };
+type Exec = (execId: string, command: string, input: ExecInput, mutation: boolean) => Promise<BashResult>;
 const command = "python3 -c '" + vmFilesGuest.replaceAll("'", "'\\''") + "'";
-const status = { stale_path: 412, no_file: 404, too_large: 413, bad_path: 400, bad_pattern: 400, bad_input: 400 };
+const status = { stale_path: 412, no_file: 404, too_large: 413, bad_path: 400, bad_pattern: 400, bad_input: 400, transfer_corrupt: 502 };
 const requestBytes = 16 * 1024 * 1024; // computehost's JSON request body limit
 export const VM_FILES_STDOUT_BYTES = 16 * 1024 * 1024;
 
@@ -57,13 +59,15 @@ function token(value: string | undefined) {
   return value;
 }
 
-export function guestFiles(exec: Exec, checkpoint: VmFiles["checkpoint"]): VmFiles {
-  async function run<T>(op: string, args: object, mutation = false): Promise<T> {
-    const stdin = JSON.stringify({ op, ...args });
+export function guestFiles(exec: Exec, checkpoint: VmFiles["checkpoint"], putBlob: (bytes: Uint8Array) => Promise<StdinBlob>): VmFiles {
+  async function run<T>(op: string, args: object, mutation = false, stdinBlob?: StdinBlob): Promise<T> {
+    const params = JSON.stringify({ op, ...args });
+    const input: ExecInput = stdinBlob ? { stdinBlob } : { stdin: params };
+    const cmd = stdinBlob ? command + " " + Buffer.from(params).toString("base64") : command;
     // The host re-encodes stdin as a JSON string. Reserve room for the exec envelope and request metadata.
-    if (Buffer.byteLength(JSON.stringify({ command, stdin })) + 1024 > requestBytes)
+    if (Buffer.byteLength(JSON.stringify({ command: cmd, ...input })) + 1024 > requestBytes)
       throw new RepoError("VM exec request exceeds the host's body limit", 413, "too_large");
-    const result = await exec("vmfiles-" + crypto.randomUUID(), command, stdin, mutation);
+    const result = await exec("vmfiles-" + crypto.randomUUID(), cmd, input, mutation);
     if (result.error || result.exitCode !== 0 || result.timedOut)
       throw new RepoError("VM file command failed", 502, "vm_file_exec_failed");
     if (result.truncated) throw new RepoError("VM file response exceeded the available exec output", 413, "too_large");
@@ -86,10 +90,12 @@ export function guestFiles(exec: Exec, checkpoint: VmFiles["checkpoint"]): VmFil
       });
       return { ...fileInfo, bytes: new Uint8Array(Buffer.from(bytes, "base64")) };
     },
-    write(file, bytes, { mode, expectSha256 } = {}) {
+    async write(file, bytes, { mode, expectSha256 } = {}) {
       check(mode === undefined || ["100644", "100755", "120000"].includes(mode), "bad_mode");
-      if (Math.ceil(bytes.length / 3) * 4 > requestBytes) throw new RepoError("VM exec request exceeds the host's body limit", 413, "too_large");
-      return run("write", { path: path(file), bytes: Buffer.from(bytes).toString("base64"), mode, expectSha256: token(expectSha256) }, true);
+      const args = { path: path(file), mode, expectSha256: token(expectSha256) };
+      if (bytes.length > 256 * 2 ** 20) throw new RepoError("File exceeds 256 MiB", 413, "too_large");
+      const blob = await putBlob(bytes);
+      return run("write", { ...args, size: blob.size, sha256: blob.sha256 }, true, blob);
     },
     async delete(paths, { expectSha256 } = {}) {
       const files = [...new Set(paths.map(path))];

@@ -3,6 +3,7 @@ package guest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -82,11 +83,7 @@ func ServeVM(ctx context.Context, repoDisk bool, r *reaper, session bool) error 
 func (g *guest) dial(ctx context.Context, port uint32, deadline time.Time) (transport, error) {
 	if !g.vsock {
 		d := net.Dialer{Deadline: deadline}
-		suffix := "_5200"
-		if port == 5201 {
-			suffix = "_5201"
-		}
-		return d.DialContext(ctx, "unix", g.uds+suffix)
+		return d.DialContext(ctx, "unix", fmt.Sprintf("%s_%d", g.uds, port))
 	}
 	f, err := socket()
 	if err != nil {

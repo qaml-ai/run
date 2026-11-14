@@ -23,8 +23,8 @@ export class CamelAgent extends RuntimeAgent {
       await resumeTracker.promise;
       return result;
     };
-    runtime.flushBilling = (propagate = false) => {
-      const pass = flush(propagate);
+    runtime.flushBilling = (invocation, propagate = false) => {
+      const pass = flush(invocation, propagate);
       if (propagate) {
         runtime.flushBilling = flush;
         this.raceTracker = pass;

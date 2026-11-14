@@ -204,16 +204,31 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		report(w, err)
 		return
 	}
-	_, vm, err := h.lookup(r.PathValue("id"))
+	if q.StdinBlob != nil && (q.Stdin != nil || !q.StdinBlob.Valid()) {
+		report(w, invalidRequest)
+		return
+	}
+	s, vm, err := h.lookup(r.PathValue("id"))
 	if err != nil {
 		report(w, err)
 		return
 	}
+	var token string
+	if q.StdinBlob != nil {
+		var release func()
+		token, release, err = h.execInput(r.Context(), s, *q.StdinBlob)
+		if err != nil {
+			report(w, err)
+			return
+		}
+		defer release()
+	}
 	input := struct {
 		hostwire.ExecRequest
-		Op     string `json:"op"`
-		Offset int64  `json:"offset"`
-	}{q, op, offset}
+		Op         string `json:"op"`
+		Offset     int64  `json:"offset"`
+		StdinToken string `json:"stdinToken,omitempty"`
+	}{q, op, offset, token}
 	events := make(chan vmhost.Reply, 64)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -373,6 +388,7 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	if err := meta.Validate(); err != nil {
 		return out, invalidRequest
 	}
+	baseline := h.Mounts.NeedsBaseline(id)
 	type result struct {
 		point image.Checkpoint
 		err   error
@@ -381,7 +397,7 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		point, err := h.Mounts.SessionCheckpoint(streamCtx, id, meta, func(ctx context.Context, point image.Checkpoint) error {
+		point, err := h.Mounts.SessionCheckpoint(streamCtx, id, baseline, meta, func(ctx context.Context, point image.Checkpoint) error {
 			h.mu.Lock()
 			current := s.row
 			current.Pending = &checkpointIntent{point.Commit, r.Spec.Version, point.Tree, point.Root}
@@ -400,8 +416,8 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 		})
 		resultCh <- result{point, err}
 	}()
-	guest, guestErr := guestRequest(ctx, vm, map[string]any{"op": "camelfs_checkpoint", "jobId": id, "timeoutMs": 120000})
-	if guestErr != nil || guest["changed"] == false {
+	guest, guestErr := guestRequest(ctx, vm, map[string]any{"op": "camelfs_checkpoint", "jobId": id, "timeoutMs": 120000, "baselineIfUnchanged": baseline})
+	if guestErr != nil || guest["changed"] == false && guest["baselineCaptured"] != true {
 		cancel()
 	}
 	stream := <-resultCh
@@ -415,6 +431,9 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	}
 	commit = stream.point.CommitMs
 	if guestErr == nil && guest["changed"] == false {
+		if e := guest["baselineError"]; e != nil {
+			slog.Warn("compute_baseline_failed", "vm", id, "tree", r.Spec.Tree, "error", e)
+		}
 		return hostwire.CheckpointReply{Version: r.Spec.Version, Tree: r.Spec.Tree, Diff: json.RawMessage("[]")}, nil
 	}
 	if r.Pending == nil {

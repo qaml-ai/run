@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { StorageError } from "./repos/storage.ts";
 import { WORKFLOW_COMMIT_PREFIX } from "./workflow-forks.ts";
 export { WORKFLOW_COMMIT_PREFIX };
@@ -70,10 +71,11 @@ export class WorkflowCommits implements EffectExecutor {
       const fork = args.fork as WorkflowFork;
       if (!fork || typeof fork !== 'object' || typeof fork.repo !== 'string' || typeof fork.ref !== 'string' || !fork.base)
         throw Object.assign(new Error('commit() needs { fork: { repo, ref, base } }'), { status: 400 });
-      if (!fork.base.ref) return { ok: false, error: 'A fork of a version has no branch to merge into; start the agent from a ref to commit its changes' };
+      const into = fork.base.ref;
+      if (!into) return { ok: false, error: 'A fork of a version has no branch to merge into; start the agent from a ref to commit its changes' };
       const ctx = await repoContext(this.env, this.host.tenant(), fork.repo);
       try {
-        const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref });
+        const merged = await AgentInvocation.run(scope => mergeRefs(ctx, { into, from: fork.ref }, scope));
         if (!merged.changed || !('tree' in merged) || !merged.previous) return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed } };
         // The tier reports text merges. A workflow needs every file changed on the destination ref.
         const previous = await ctx.storage.getCommit(ctx.lineage, merged.previous);

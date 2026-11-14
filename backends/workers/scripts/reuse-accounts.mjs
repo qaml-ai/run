@@ -19,6 +19,13 @@ for (const name of ["console-auth.ts", "email-accounts.ts", "passwords.ts", "oau
     text = text.replace('import { readFileSync } from "node:fs";\n', 'import { commonPasswords } from "./account-common-passwords.ts";\n')
       .replace('readFileSync(new URL("./common-passwords.txt", import.meta.url), "utf8")', 'commonPasswords');
   }
+  if (name === "rate-limits.ts") {
+    // Keep the isolate-wide limiter while letting one invocation supply its SQL adapter.
+    text = text.replace('run(tenant: string, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">)', 'run(tenant: string, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">, sql?: Sql)')
+      .replace('"runs started", true, policy);', '"runs started", true, policy, sql);')
+      .replace('policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">): Promise<RateLimitState', 'policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">, sql: Sql = this.options.db): Promise<RateLimitState')
+      .replace('counted, this.options.db, applies);', 'counted, sql, applies);');
+  }
   outputs.set(`account-${name}`, `// Generated from src/${name}; infrastructure imports and static asset loading only.\n` + text);
 }
 outputs.set("account-common-passwords.ts", `// Generated from src/common-passwords.txt; bundled instead of reading a host filesystem.\nexport const commonPasswords = ${JSON.stringify(await source("common-passwords.txt"))};\n`);
