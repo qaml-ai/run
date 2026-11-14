@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
@@ -369,11 +370,11 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const kid = "contract-key";
   const jwks = JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid, alg: "EdDSA", use: "sig" }] });
-  const tokenFor = (lin: string, acc = "w") => {
+  const tokenFor = (lin: string, acc = "w", extra: Record<string, unknown> = {}) => {
     const iat = Math.floor(Date.now() / 1000);
     const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
     const input = `${encode({ alg: "EdDSA", kid, typ: "camelfs+jwt" })}.${encode({
-      iss: issuer, aud: "camelrun:camelfs", sub: "agent:contract", iat, exp: iat + 120, lin, acc, refs: [],
+      iss: issuer, aud: "camelrun:camelfs", sub: "agent:contract", iat, exp: iat + 120, lin, acc, refs: [], ...extra,
     })}`;
     return `${input}.${sign(null, Buffer.from(input), privateKey).toString("base64url")}`;
   };
@@ -387,6 +388,9 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
       "--store", join(dir, "store"), "--token-issuer", issuer];
     if (source === "file") flags.push("--jwks-file", jwksFile);
     else env.CAMELFS_JWKS = jwks;
+    if (source === "file" && process.env.CAMELFS_DDB_LOCAL) {
+      flags.push(...await refsTableFlags(t, process.env.CAMELFS_DDB_LOCAL));
+    }
     const daemon = spawn(binary, flags, { env, stdio: ["ignore", "pipe", "pipe"] });
     let logs = "", spawnError: Error | undefined, completed = false;
     daemon.on("error", error => { spawnError = error; });
@@ -426,6 +430,9 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
 
     if (source === "file") {
       await storageContract(origin, tokenFor);
+      if (process.env.CAMELFS_DDB_LOCAL) {
+        await refsContract(request => fetch(request), origin, tokenFor);
+      }
       await writeFile(jwksFile, "{");
       assert.ok(daemon.kill("SIGHUP"));
       await until(() => logs.includes("op=jwks-reload error=") || undefined);
@@ -446,4 +453,149 @@ test("camelFS storage client preserves too_deep and operation context", async ()
     ["diff", () => storage.diff("l", "a", "b")],
   ] as const) await assert.rejects(run(), (e: unknown) => e instanceof StorageError &&
     e.status === 413 && e.code === "too_deep" && e.reason === "too_deep" && e.op === op);
+});
+
+
+async function refsTableFlags(t: import("node:test").TestContext, endpoint: string) {
+  const cli = promisify(execFile);
+  const run = (command: string, ...args: string[]) => cli("aws",
+    ["dynamodb", command, "--endpoint-url", endpoint, "--region", "us-west-2", ...args], {
+      env: { ...process.env, AWS_ACCESS_KEY_ID: "local", AWS_SECRET_ACCESS_KEY: "local",
+        AWS_SESSION_TOKEN: "", AWS_PAGER: "" },
+    });
+  const suffix = randomUUID();
+  const tables = { refs: `contract-refs-${suffix}`, lineages: `contract-lineages-${suffix}` };
+  for (const [kind, name] of Object.entries(tables)) {
+    const keys = kind === "refs" ? ["lineage", "name"] : ["lineage"];
+    await run("create-table", "--table-name", name, "--billing-mode", "PAY_PER_REQUEST",
+      "--attribute-definitions", ...keys.map(key => `AttributeName=${key},AttributeType=S`),
+      "--key-schema", ...keys.map((key, i) => `AttributeName=${key},KeyType=${i ? "RANGE" : "HASH"}`));
+    t.after(async () => { await run("delete-table", "--table-name", name); });
+    await run("wait", "table-exists", "--table-name", name);
+  }
+  return ["--ddb-endpoint", endpoint, "--refs-table", tables.refs, "--lineages-table", tables.lineages];
+}
+
+type RefToken = (lineage: string, access?: string, extra?: Record<string, unknown>) => string;
+
+async function refsContract(send: (request: Request) => Promise<Response>, origin: string, tokenFor: RefToken,
+  fakeFence = false) {
+  const lineage = "contract:refs";
+  const runtime = tokenFor(lineage, "w", { sub: "runtime:contract", refs: ["main", "fork/*"] });
+  const read = tokenFor(lineage, "r", { refs: ["main", "fork/*"] });
+  const agent = tokenFor(lineage, "w", { refs: ["main"] });
+  const call = async (method: string, path: string, status: number, options: {
+    body?: unknown; code?: string; token?: string; key?: string;
+  } = {}) => {
+    const headers = new Headers({ Authorization: `Bearer ${options.token ?? runtime}` });
+    if (options.key) headers.set("Idempotency-Key", options.key);
+    if (options.body !== undefined) headers.set("Content-Type", "application/json");
+    const r = await send(new Request(`${origin}/v1/lineages/${lineage}${path}`, {
+      method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    }));
+    const raw = await r.text();
+    assert.equal(r.status, status, `${method} ${path}: ${raw}`);
+    if (!raw) return undefined;
+    const body = JSON.parse(raw);
+    if (options.code) assert.equal(body.error.code, options.code, raw);
+    return body;
+  };
+  const metadata = { tenant: "contract", kind: "workspace", defaultBranch: "main" };
+  await call("PUT", "", 201, { body: metadata });
+  await call("PUT", "", 200, { body: metadata });
+  const item = await call("GET", "", 200, { token: read });
+  for (const [key, value] of Object.entries(metadata)) assert.equal(item[key], value);
+  const storage = camelfsStorage({ CAMELFS_API_TOKEN: runtime, CAMELFS: {
+    async fetch(input, init) {
+      const url = new URL(typeof input === "string" ? input : input.url);
+      return send(new Request(origin + url.pathname + url.search, init));
+    },
+  } });
+  const owner = "agent:contract";
+  const commit = (parents: string[], changes: CommitInput["changes"] = [], message = "contract") =>
+    storage.commit(lineage, { parents, changes, author: owner, message, time: 123, trailers: {} });
+  const blob = await storage.putBlob(lineage, new TextEncoder().encode("refs contract"));
+  const base = await commit([]);
+  const tip = await commit([base.commit], [{ path: "nested/a", blob: blob.blob }]);
+  const side = await commit([base.commit], [], "side");
+  const create = { name: "main", version: base.commit, owner };
+  const main = await call("POST", "/refs", 201, { body: create, key: "create" });
+  assert.equal(main.createdBy, "runtime:contract");
+  assert.equal(main.tree, base.tree);
+  assert.deepEqual(await call("POST", "/refs", 201, { body: create, key: "create" }), main);
+  await call("POST", "/refs", 409, { body: create, code: "ref_exists" });
+  await call("POST", "/refs", 400, { body: { ...create, version: "f".repeat(40) }, code: "unknown_commit" });
+  await call("POST", "/refs", 403, { body: { ...create, name: "outside" } });
+  await call("POST", "/refs", 201, { body: { ...create, name: "fork/a", version: side.commit } });
+  const list = await call("GET", "/refs?prefix=fork/&limit=1", 200, { token: read });
+  assert.deepEqual(list.refs.map((ref: {name: string}) => ref.name), ["fork/a"]);
+  assert.deepEqual(await call("GET", "/refs/main", 200, { token: read }), main);
+  await call("GET", "/refs/fork%2Fa", 200, { token: read });
+  await call("GET", "/refs/fork%2Fmissing", 404, { code: "ref_not_found" });
+  const cas = { commit: tip.commit, expect: base.commit };
+  await call("POST", "/refs/main/cas", 400, { body: { commit: tip.commit }, code: "invalid_request" });
+  const moved = await call("POST", "/refs/main/cas", 200, { body: cas, key: "move" });
+  assert.equal(moved.version, tip.commit);
+  assert.equal(moved.tree, tip.tree);
+  assert.equal(moved.files, 1);
+  assert.equal(moved.bytes, 0);
+  assert.deepEqual(moved.parents, [base.commit]);
+  assert.equal(moved.diff[0].path, "nested/a");
+  assert.deepEqual(await call("POST", "/refs/main/cas", 200, { body: cas, key: "move" }), moved);
+  const stale = await call("POST", "/refs/main/cas", 412, { body: cas, code: "stale" });
+  assert.equal(stale.error.details.current, tip.commit);
+  await call("POST", "/refs/main/cas", 409, { body: { commit: side.commit, expect: tip.commit }, code: "not_fast_forward" });
+  await call("PUT", "/refs/main/watchers/agent:contract", 204);
+  await call("DELETE", "/refs/main/watchers/agent:contract", 204);
+
+  const holder = { host: "contract-host", boot: 1, mount: "contract-mount" };
+  const leaseBody = { holder, ttlMs: 60000 };
+  await call("POST", "/refs/main/lease", 403, { token: agent, body: leaseBody });
+  const lease = await call("POST", "/refs/main/lease", 200, { body: leaseBody, key: "lease" });
+  assert.equal(lease.version, tip.commit);
+  assert.equal(lease.tree, tip.tree);
+  assert.deepEqual(await call("POST", "/refs/main/lease", 200, { body: leaseBody, key: "lease" }), lease);
+  // The same holder re-acquiring keeps its epoch; another holder is refused.
+  const again = await call("POST", "/refs/main/lease", 200, { body: leaseBody });
+  assert.equal(again.epoch, lease.epoch);
+  await call("POST", "/refs/main/lease", 409, { body: { holder: { ...holder, host: "other-host" }, ttlMs: 60000 }, code: "held" });
+  const held = await call("GET", "/refs/main", 200);
+  assert.deepEqual(held.holder, holder);
+  await call("POST", "/refs/main/cas", 409, { body: { commit: tip.commit, expect: tip.commit }, code: "fenced" });
+  const refused = await call("DELETE", "", 409, { code: "held" });
+  assert.deepEqual(refused.error.details.held, ["main"]);
+  assert.deepEqual(await call("GET", "/refs/main", 200), held);
+  const fence = tokenFor(lineage, "w", { sub: "runtime:contract", refs: ["main"], fence: {
+    holder: fakeFence ? holder : `${holder.host}:${holder.boot}:${holder.mount}`, epoch: lease.epoch,
+  } });
+  await call("POST", "/refs/main/lease/renew", 200, { token: fence, body: { ttlMs: 60000 } });
+  await call("DELETE", "/refs/main/lease", 204, { token: fence });
+  await call("DELETE", "/refs/main?expect=" + base.commit, 412, { code: "stale" });
+  await call("DELETE", "/refs/main?expect=" + tip.commit, 204);
+  const reborn = await call("POST", "/refs", 201, { body: create });
+  assert.equal(reborn.leaseEpoch, lease.epoch);
+  assert.deepEqual(await call("DELETE", "/refs?owner=" + owner, 200), { deleted: ["fork/a", "main"], held: [] });
+  await call("DELETE", "", 204);
+  await call("GET", "", 410, { code: "lineage_deleted" });
+  await call("GET", "/refs/main", 410, { code: "lineage_deleted" });
+  await call("GET", "/commits/" + tip.commit, 410, { code: "lineage_deleted" });
+}
+
+test("camelFS refs contract: R2 fake", {
+  skip: !process.env.CAMELFS_CONTRACT_FAKE_REFS && "set CAMELFS_CONTRACT_FAKE_REFS=1 once the R2 fake is available",
+}, async () => {
+  const issuer = "https://runtime.contract.example";
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const kid = "refs-contract";
+  const tokenFor: RefToken = (lin, acc = "w", extra = {}) => {
+    const iat = Math.floor(Date.now() / 1000);
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const input = `${encode({ alg: "EdDSA", kid, typ: "camelfs+jwt" })}.${encode({
+      iss: issuer, aud: "camelrun:camelfs", sub: "agent:contract", iat, exp: iat + 120, lin, acc, refs: [], ...extra,
+    })}`;
+    return `${input}.${sign(null, Buffer.from(input), privateKey).toString("base64url")}`;
+  };
+  const { fakeCamelfsd } = await import(new URL("../backends/workers/test/fake-camelfsd.ts", import.meta.url).href);
+  const fake = fakeCamelfsd("", { issuer, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid }] } });
+  await refsContract(fake.fetch, "http://camelfsd.test", tokenFor, true);
 });

@@ -146,3 +146,31 @@ func (r *Repository) Files(ctx context.Context, id string, paths []string) ([]Fi
 	}
 	return results, nil
 }
+
+// TreeFileCount counts files and symlinks without building or sorting paths.
+// Identical subtrees are read once per level and counted at each occurrence.
+func (r *Repository) TreeFileCount(ctx context.Context, id string) (int64, error) {
+	var files int64
+	for level := map[string]int64{id: 1}; len(level) > 0; {
+		ids := make([]string, 0, len(level))
+		for id := range level {
+			ids = append(ids, id)
+		}
+		trees, err := r.SizedTrees(ctx, ids)
+		if err != nil {
+			return 0, err
+		}
+		next := make(map[string]int64)
+		for id, copies := range level {
+			for _, entry := range trees[id] {
+				if entry.Mode == "40000" {
+					next[entry.SHA1] += copies
+				} else {
+					files += copies
+				}
+			}
+		}
+		level = next
+	}
+	return files, nil
+}
