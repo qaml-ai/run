@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import { repoHistory } from './history.ts';
 import { RE2JS } from "re2js";
 import { Buffer } from "node:buffer";
@@ -29,6 +30,7 @@ export function repoTools(
   identity: Record<string,string> = {},
   scope?: RepoTreeScope,
   vmFiles?: VmFilesProvider,
+  invocation?: AgentInvocation,
 ) {
   const mountPath = async (raw: string, write = false) => {
     const mounts = await getMounts();
@@ -54,9 +56,9 @@ export function repoTools(
     };
   };
   const resolve = (t: Awaited<ReturnType<typeof mountPath>>) =>
-    resolveVmFiles(env, { tenant, agent: agentId, repo: t.mount.repo, ref: t.ref }, vmFiles);
+    resolveVmFiles(env, { tenant, agent: agentId, repo: t.mount.repo, ref: t.ref }, vmFiles, invocation);
   const store = (t: Awaited<ReturnType<typeof mountPath>>) =>
-    agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity, scope);
+    agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity, scope, invocation);
   const target = async (raw: string, write = false) => {
     const t = await mountPath(raw, write);
     const vm = await resolve(t);
@@ -428,7 +430,7 @@ export function repoTools(
         },
       }),
     ),
-    ...versionTools(refTarget, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity),
+    ...versionTools(refTarget, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity, invocation),
   ];
 }
 function versionTools(
@@ -437,6 +439,7 @@ function versionTools(
   output: (value: unknown) => { output: {type: 'text'; text: string}[] },
   agent: string,
   identity: Record<string,string>,
+  invocation?: AgentInvocation,
 ) {
   const committed = (t: { running: boolean; v: { ref: string } }, value: unknown) => {
     const result = output(value);
@@ -469,7 +472,7 @@ function versionTools(
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
-      const result = await explicitWrite(t.v.ref, () => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}));
+      const result = await explicitWrite(t.v.ref, () => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}, invocation));
       t.v.moved(result);
       return output(result.version);
     }}),

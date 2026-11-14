@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import type { BillingReads } from "./billing.ts";
 import type { Accounts } from "./accounts.ts";
-import { RateLimits, rateLimitConfig } from "./account-rate-limits.ts";
+import { RateLimits, rateLimitConfig, type RateLimitOptions } from "./account-rate-limits.ts";
 import type { PostgresEnv } from "./postgres.ts";
 
 // Request wrappers may clone env. The IP buckets belong to the Worker isolate,
@@ -32,4 +33,14 @@ export function accountRateLimits(env: PostgresEnv & Record<string, unknown>, ac
   cached = Object.assign(current, { service, touched: Date.now() });
   limits.set(key, cached);
   return service;
+}
+
+export function rateBilling(accounts: Accounts, reads?: BillingReads) {
+  const { billing, tenants } = accounts;
+  return {
+    free: tenant => billing.onFreeCredit(tenant, reads),
+    override: (tenant, limit) => tenants.has(tenant) ? tenants.rateLimit(tenant, limit) : billing.rateLimit(tenant, limit, reads),
+    tier: (tenant, limit) => billing.tierRateLimit(tenant, limit, reads),
+    exempt: tenant => tenants.has(tenant),
+  } satisfies Required<Pick<RateLimitOptions, "free" | "override" | "tier" | "exempt">>;
 }

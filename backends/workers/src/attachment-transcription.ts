@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { readAttachment } from "./repos/attachments.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { AUDIO_LIMITS } from "../../../src/limits.ts";
@@ -140,6 +141,7 @@ export async function transcribeAttachments(
   scope: AttachmentAudioScope,
   files: AttachedFile[],
   host: Host = {},
+  invocation?: AgentInvocation,
 ): Promise<AttachedFile[]> {
   const plain = files.map(({ transcribe: _transcribe, ...file }) => file);
   const chosen = files.flatMap((file, index) =>
@@ -170,6 +172,7 @@ export async function transcribeAttachments(
           provider,
           services,
           mediaAzure(env)?.transcriptionDeployment,
+          invocation,
         ),
       price: () =>
         ({

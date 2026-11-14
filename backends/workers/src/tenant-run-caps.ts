@@ -1,10 +1,11 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { keyServices, type KeyEnv } from './security-services.ts';
 import { RUN_LIMITS, ADMIN_RUN_LIMITS } from './run-caps-policy.ts';
 
 type CapsEnv = KeyEnv & Partial<Record<'AGENT_MAX_RUN_RESPONSES' | 'AGENT_MAX_RUN_SECONDS' | 'AGENT_ADMIN_MAX_RUN_RESPONSES' | 'AGENT_ADMIN_MAX_RUN_SECONDS', string>>;
-export async function tenantRunCaps(env: CapsEnv, tenant: string) {
+export async function tenantRunCaps(env: CapsEnv, tenant: string, invocation?: AgentInvocation) {
   const { accounts, tenants } = await keyServices(env);
-  const own = await accounts.billing.runLimits(tenant), admin = tenants.has(tenant);
+  const own = await accounts.billing.runLimits(tenant, invocation?.tenant(accounts.billing, tenant)), admin = tenants.has(tenant);
   const prefix = admin ? 'AGENT_ADMIN_MAX_RUN_' : 'AGENT_MAX_RUN_';
   const defaults = admin ? ADMIN_RUN_LIMITS : RUN_LIMITS;
   const maxResponses = own.maxResponses ?? Number(env[`${prefix}RESPONSES`] ?? defaults.maxResponses);

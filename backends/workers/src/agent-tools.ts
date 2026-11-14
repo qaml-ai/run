@@ -1,4 +1,5 @@
 import { bashEnabled, bashTool } from "./camelfs/bash.ts";
+import { AgentInvocation } from "./agent-invocation.ts";
 import { workflowTools } from "./workflow-tools.ts";
 import { workflowsEnabled } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
@@ -134,9 +135,14 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
         const run = await this.currentRun();
         await this.emit({ type: "event", requestId: run.id, event: { type: "model_stream_stalled", ...stall } });
       },
-      beforeRequest: async () => {
-        const stopped = await this.limits.check();
-        if (stopped) throw new Error(stopped.error);
+      // The provider wrapper owns preflight so its run caps share the step's
+      // tenant read with credentials and accounting, including compaction.
+      beforeRequest: async invocation => {
+        const stopped = await this.limits.check(Date.now(), "metered", invocation);
+        if (stopped) {
+          this.retryModelFailure = false;
+          throw new Error(stopped.error);
+        }
         await assertContextRange(
           contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
           await (await this.harness.pi()).root(BACKGROUND_CONTEXT),
@@ -195,7 +201,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
           },
         };
       },
-      credentials: async (provider) => {
+      credentials: async (provider, invocation) => {
         const conf = await this.config();
         return resolveModelCredentials(
           this.env,
@@ -203,6 +209,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
           provider,
           await this.sourceIdentity(),
           conf.config.keyScope,
+          invocation,
         );
       },
     },
@@ -322,6 +329,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
           templates.map((tool, index) => ({
             ...tool,
             execute: async (args, api, context) => {
+              const invocation = new AgentInvocation();
               const config = await this.config();
               const scope = this.repoTrees.scope();
               try {
@@ -355,6 +363,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
                   { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
                   scope,
                   this.vmFiles,
+                  invocation,
                 )[index];
                 try {
                   return await impl.execute(args as never, api, context);

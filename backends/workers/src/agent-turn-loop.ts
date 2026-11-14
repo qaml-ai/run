@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { expiryAnswer, type Answer } from "./input-policy.ts";
 import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
@@ -347,6 +348,7 @@ export async function onViewImpl(this: AgentRuntime,
   }
 
 export async function onHumanImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   doc: { requests: Record<string, HumanInput> }) {
     const pending = Object.entries(doc?.requests ?? {}).filter(
       ([, input]) => input.answer === undefined,
@@ -445,7 +447,7 @@ export async function onHumanImpl(this: AgentRuntime,
           } satisfies BillingReceipt);
           await enqueueTerminalEvents(tx, id, record.outcome, false);
         });
-        await this.flushBilling();
+        await this.flushBilling(invocation);
         await this.flushTerminalEvents();
         // Suspended from code, the agent holds no VM and runs nothing until the answer (main unloads it at once).
         if (scripts.size) await this.ctx.storage.put("unloaded-at", Date.now());
@@ -456,7 +458,7 @@ export async function onHumanImpl(this: AgentRuntime,
       await this.ctx.storage.delete("human-input-deadline");
       this.kickInputPrompts();
     }
-    await this.arm();
+    await this.arm(undefined, invocation);
   }
 
 export function trackImpl(this: AgentRuntime,
@@ -480,7 +482,11 @@ export function trackImpl(this: AgentRuntime,
 
 export async function settleImpl(this: AgentRuntime,
   id: string,
-  waitMs: number): Promise<RequestRecord> {
+  waitMs: number,
+  invocation?: AgentInvocation): Promise<RequestRecord> {
+    // A background tracker may wait for the whole turn. Scope its policy reads
+    // to settlement, once there is a receipt to flush.
+    const flush = (propagate = false) => this.flushBilling(invocation ??= new AgentInvocation(), propagate);
     if (waitMs === 0 && await this.testStorage.get("test:fail-next-waiter")) {
       await this.testStorage.delete("test:fail-next-waiter");
       throw new Error("Injected result waiter interruption");
@@ -491,7 +497,7 @@ export async function settleImpl(this: AgentRuntime,
     if (record.state === "completed") {
       // Completion and its receipt commit together. A concurrent observer must
       // also wait for settlement to release the tenant's busy-agent slot.
-      await this.flushBilling(true);
+      await flush(true);
       return record;
     }
     // Held for a batch (batch-queue.ts): Pi has nothing of it to wait on until a release gives it.
@@ -508,7 +514,7 @@ export async function settleImpl(this: AgentRuntime,
       } catch (error) {
         if (signal?.aborted) {
           const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
-          if (latest.state === "completed") await this.flushBilling(true);
+          if (latest.state === "completed") await flush(true);
           return latest;
         }
         throw error;
@@ -524,7 +530,7 @@ export async function settleImpl(this: AgentRuntime,
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") {
-        await this.flushBilling(true);
+        await flush(true);
         return current;
       }
       const completed: RequestRecord = {
@@ -556,7 +562,7 @@ export async function settleImpl(this: AgentRuntime,
         await enqueueTerminalEvents(tx, id, completed.outcome, false);
         return completed;
       });
-      await this.flushBilling();
+      await flush();
       await this.flushTerminalEvents();
       this.toolFileBudgets.delete(id);
       return terminal;
@@ -586,7 +592,7 @@ export async function settleImpl(this: AgentRuntime,
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") {
-        await this.flushBilling(true);
+        await flush(true);
         return current;
       }
       if (await this.ctx.storage.get(`cancelled-request:${id}`)) await this.delegation.settleStopped(id);
@@ -704,7 +710,7 @@ export async function settleImpl(this: AgentRuntime,
       // only replays this immutable receipt; money remains one PG transaction.
       // A batch's follow-up is its first input's turn, counted once there.
       if (changed && stored && !batchedInto) await recordAgentActivity(this.env, stored.tenantId, stored.id, terminal);
-      await this.flushBilling();
+      await flush();
       if (changed && batchedInto) await this.flushTerminalEvents();
       if (changed && !batchedInto) {
         const conf = await this.ctx.storage.get<Config>("configuration");
@@ -740,6 +746,7 @@ export async function settleImpl(this: AgentRuntime,
   }
 
 export async function submitImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
@@ -753,7 +760,7 @@ export async function submitImpl(this: AgentRuntime,
     )
       return this.configureRequest(input);
     const result = this.admission.then(() =>
-      this.admit(input, notice, delivery, acceptedFingerprint, member, placement),
+      this.admit(invocation, input, notice, delivery, acceptedFingerprint, member, placement),
     );
     this.admission = result.catch(() => {});
     return result;
@@ -767,6 +774,7 @@ function settledMessage(inputs: HumanInput[]) {
 }
 
 export async function answerHumanInputsImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   answers: Array<{ id: string; body: unknown }>,
   via: "api" | "agent" | "channel",
   system?: "expired" | "superseded") {
@@ -825,8 +833,8 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         const piId = old.piId ?? owner, resumeId = `resume_${(await digest(owner)).slice(0, 40)}`;
         let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
         if (!resumed) {
-          await this.flushBilling(true);
-          const limitsSnapshot = system ? undefined : await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined, old.params?.endUser as string | undefined);
+          await this.flushBilling(invocation, true);
+          const limitsSnapshot = system ? undefined : await this.admitRequest(invocation, conf, resumeId, old.params?.bucket as string | undefined, old.params?.endUser as string | undefined);
           resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
             limitsSnapshot, outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined,
             usageBaseline: this.usageView(await this.usageForRequest(piId)) };
@@ -867,7 +875,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         await this.emit({ type: "event", requestId: entry.owner, event: { type: "input_resolved", id: entry.id, state: entry.answer.state, by: entry.answer.answerDetail.by } }, undefined,
           inputWebhook(conf, entry.owner ?? "", { id: entry.id, state: entry.answer.state }, true));
       for (const request of requests) this.track(request.id);
-      if (requests.length) await this.arm();
+      if (requests.length) await this.arm(undefined, invocation);
       this.kickInputPrompts();
       return { status: fresh ? 202 : 200, inputs, requests };
     } catch (error) {
@@ -885,7 +893,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
  * Bring every pending input's expiry forward to `at` (never later than it was), and the alarm with it: the alarm then
  * expires them as it would at their own time. Returns how many were pending. Reached only through a subclass capability.
  */
-export async function dueHumanInputsImpl(this: AgentRuntime, at: number) {
+export async function dueHumanInputsImpl(this: AgentRuntime, invocation: AgentInvocation, at: number) {
     const root = await (await this.harness.pi()).root(BACKGROUND_CONTEXT);
     let due = 0;
     await root.commit(async tx => {
@@ -900,12 +908,13 @@ export async function dueHumanInputsImpl(this: AgentRuntime, at: number) {
     if (due) {
       const deadline = await this.ctx.storage.get<number>("human-input-deadline");
       await this.ctx.storage.put("human-input-deadline", Math.min(deadline ?? at, at));
-      await this.arm();
+      await this.arm(undefined, invocation);
     }
     return due;
   }
 
 export async function closeHumanInputsImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   system: "expired" | "superseded", sender?: string, shared = false) {
     const pi = await this.harness.pi();
     const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
@@ -921,5 +930,5 @@ export async function closeHumanInputsImpl(this: AgentRuntime,
       if (system === "superseded" && record?.method === "execute") continue;
       selected.push({ id, body: { action: "cancel" } });
     }
-    if (selected.length) await this.answerHumanInputs(selected, "api", system);
+    if (selected.length) await this.answerHumanInputs(invocation, selected, "api", system);
   }

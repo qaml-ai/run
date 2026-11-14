@@ -1,3 +1,6 @@
+import type { Accounts } from "./accounts.ts";
+import type { BillingReads } from "./billing.ts";
+import { rateBilling } from "./account-rate-service.ts";
 import { accountServices, type AccountEnv } from "./account-services.ts";
 import { keyServices, type SecurityEnv } from "./security-services.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
@@ -45,9 +48,9 @@ export async function prepareCreateAdmission(env: AdmissionEnv, tenant: string) 
 }
 
 /** A replay of an already admitted request neither consumes nor rechecks its budget. */
-export async function runAdmission(env: AdmissionEnv, tenant: string, counted = true): Promise<RateLimitState | undefined> {
+export async function runAdmission(env: AdmissionEnv, tenant: string, counted = true, billing?: { accounts: Accounts; reads: BillingReads }): Promise<RateLimitState | undefined> {
   if (!counted) return undefined;
-  return (await service(env)).limits.run(tenant);
+  return (await service(env)).limits.run(tenant, billing && rateBilling(billing.accounts, billing.reads));
 }
 
 export const admissionHeaders = rateLimitHeaders;

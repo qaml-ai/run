@@ -88,10 +88,10 @@ export class ModelAttempts {
     this.credit = new CreditHolds(db, accounts.billing);
   }
 
-  async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean | AttemptAck> {
+  async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent, prepaidMode?: boolean): Promise<boolean | AttemptAck> {
     const deadline = Date.now() + this.retryMs;
     for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
-      try { return await this.persistEvent(tenant, agent, platform, catalogPriced, event); }
+      try { return await this.persistEvent(tenant, agent, platform, catalogPriced, event, prepaidMode); }
       catch (error) {
         if ((!databaseUnavailable(error) && !databaseRetryable(error)) || Date.now() + delay > deadline) throw error;
         // Retry the accounting delivery with the same ID, never the provider request.
@@ -100,19 +100,19 @@ export class ModelAttempts {
     }
   }
 
-  private async persistEvent(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean | AttemptAck> {
+  private async persistEvent(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent, prepaidMode?: boolean): Promise<boolean | AttemptAck> {
     if (!uuid.test(event.id)) throw new Error("Invalid model attempt id");
     if (event.type === "begin") {
       if (!/^[a-f0-9]{64}$/.test(event.keyHash)) throw new Error("Invalid model key fingerprint");
       // Its holds come first: a call their credit refuses is never made, and leaves no attempt.
       const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform, platform && catalogPriced, event) : undefined;
       if (metered && "refused" in metered) return { tracked: false, refused: metered.refused };
-      const credit = await this.creditHold(tenant, platform, event);
+      const credit = await this.creditHold(tenant, platform, event, prepaidMode);
       if (credit && "refused" in credit) {
         if (metered) await this.endUsers!.release(event.id);
         return { tracked: false, refused: credit.refused };
       }
-      const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
+      const prepaid = prepaidMode ?? (await this.accounts.billing.mode(tenant) === "prepaid");
       // Keep the input estimate for calls with evidence of usage but no final token counts.
       const inputTokens = Number(event.estimate?.inputTokens);
       const usageAttribution = await resolveUsageAttribution(this.db, { tenant, agent, timestamp: event.at, requestId: event.context?.requestId });
@@ -189,8 +189,8 @@ export class ModelAttempts {
    * own. A model with no price holds at a mid-range one, as for an end user: a router's cost depends on where
    * it sends the call, so its catalog entry says zero, and only a `:free` model is really free. What it cost is what settles.
    */
-  private async creditHold(tenant: string, platform: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<(Metered & { most: number }) | { refused: CreditStop } | undefined> {
-    if (!platform || !event.estimate || isSubscriptionProvider(event.provider) || await this.accounts.billing.mode(tenant) !== "prepaid") return undefined;
+  private async creditHold(tenant: string, platform: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>, prepaidMode?: boolean): Promise<(Metered & { most: number }) | { refused: CreditStop } | undefined> {
+    if (!platform || !event.estimate || isSubscriptionProvider(event.provider) || !(prepaidMode ?? (await this.accounts.billing.mode(tenant) === "prepaid"))) return undefined;
     if (/:free$/.test(event.model)) return undefined;
     const listed = catalogCost(event.provider, event.model) ?? (event.provider === "openrouter" ? event.estimate.rates : undefined);
     const rates = listed && (listed.input > 0 || listed.output > 0) ? listed : UNPRICED_COST;

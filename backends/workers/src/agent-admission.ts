@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { storedConfiguration } from "./api-contract.ts";
 import { checkRequest, RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../../../shared/monitors.ts";
 import type { Placement } from "../../../shared/owner.ts";
@@ -37,7 +38,7 @@ import type { AgentRuntime } from "./agent-runtime.ts";
 export function createConfigurationQueue(this: AgentRuntime): ConfigurationQueue<RequestRecord> {
   return new ConfigurationQueue<RequestRecord>(this.ctx.storage, {
     busy: async order => (await this.harness.session().busy()) || (await this.records()).some(record => record.method !== 'configure' && record.state !== 'completed' && (record.configurationWait === undefined || record.configurationWait < order)),
-    released: order => this.releaseConfigurationWaiters(order),
+    released: order => this.releaseConfigurationWaiters(new AgentInvocation(), order),
     apply: record => this.applyConfigurationRequest({ id: record.id, method: record.method, params: record.params }, record.configurationOrigin),
     failed: async (record, error) => {
       const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
@@ -50,13 +51,14 @@ export function createConfigurationQueue(this: AgentRuntime): ConfigurationQueue
 }
 
 export async function releaseConfigurationWaitersImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   order: number) {
     const pending = (await this.records()).sort((a, b) => (a.configurationWaitSequence ?? 0) - (b.configurationWaitSequence ?? 0));
     for (const record of pending) {
       if (record.state === 'completed' || record.configurationWait === undefined || record.configurationWait > order) continue;
       // Attachment bytes have already become stored file references. This is
       // internal continuation of the accepted request, not a new caller input.
-      try { await this.submit({ id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint); }
+      try { await this.submit(invocation, { id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint); }
       catch (error) {
         const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
         await this.ctx.storage.put(reqKey(record.id), completed);
@@ -213,6 +215,7 @@ export async function requireApplicationImpl(this: AgentRuntime,
   }
 
 export async function admitImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
@@ -287,7 +290,7 @@ export async function admitImpl(this: AgentRuntime,
           new Error("Request id reused with different input"),
           { status: 409, code: "IDEMPOTENCY_CONFLICT" },
         );
-      if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(old);
+      if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(invocation, old);
       if (await this.ctx.storage.get(`cancelled-request:${id}`))
         throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
       if (typeof actor === "string" && actor.startsWith("member:")) {
@@ -308,7 +311,7 @@ export async function admitImpl(this: AgentRuntime,
         state: "queued",
         startedAt: Date.now(),
       };
-      return this.startHostRequest(record);
+      return this.startHostRequest(invocation, record);
     }
     if (request.method === "abort") {
       const params = object(request.params ?? {}, ["queued", "children"]);
@@ -325,8 +328,8 @@ export async function admitImpl(this: AgentRuntime,
           { status: 409, code: "IDEMPOTENCY_CONFLICT" },
         );
       if (previous?.state === "completed") return previous;
-      const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
-      await this.state();
+      const stopped = await this.abortRequests(invocation, params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
+      await this.state(invocation);
       const record: RequestRecord = {
         id,
         method: "abort",
@@ -515,7 +518,7 @@ export async function admitImpl(this: AgentRuntime,
     const effectiveBucket = requestedBucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default";
     params.bucket = effectiveBucket;
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
-    if (conf.config.spendLimit) await this.flushBilling(true);
+    if (conf.config.spendLimit) await this.flushBilling(invocation, true);
     if (notice) await this.delegation.landNotice(id, notice.costUsd, Array.isArray(notice.metadata.batch) ? notice.metadata.batch as { requestId: string; costUsd: number }[] : []);
     const spend = await this.agentSpend(conf);
     const refusal = agentSpendRefusal(conf.id, spend);
@@ -538,7 +541,7 @@ export async function admitImpl(this: AgentRuntime,
     const running = old?.steerCommitted ? old.steeredInto : candidate?.owner;
     const messageWake = async () => {
       const wake = notice!.root === conf.id
-        ? await this.admitDelegateWake(id)
+        ? await this.admitDelegateWake(invocation, id)
         : await this.env.AGENTS.getByName(notice!.root).admitDelegateWake(id);
       return wake.allowed ? undefined : { error: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on`, code: 'agent_loop_limit', stopped: 'agent_loop_limit' };
     };
@@ -548,9 +551,9 @@ export async function admitImpl(this: AgentRuntime,
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     const preparedLimits = preparing
-      ? await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined))
+      ? await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(invocation, conf, id, params.bucket as string | undefined, params.endUser as string | undefined))
       : undefined;
-    if (preparing) await this.arm();
+    if (preparing) await this.arm(undefined, invocation);
     let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
     try {
     const audioRunLimit = (params.spendLimit as { usd?: number } | undefined)?.usd;
@@ -576,6 +579,7 @@ export async function admitImpl(this: AgentRuntime,
               bucket: (params.bucket as string | undefined) ?? conf.config.bucket,
             },
             params.files,
+            invocation,
           );
     if (request.method !== "continue" && !text.trim() && !files?.some(file => file.transcript))
       throw new BadRequest("Give the agent some text, or audio to transcribe");
@@ -588,7 +592,7 @@ export async function admitImpl(this: AgentRuntime,
       throw error;
     }
     if (request.method === "prompt" && !rawSteer && !notice && !old?.accepted)
-      await this.closeHumanInputs("superseded", (params.from as { id?: string } | undefined)?.id ?? params.actor as string | undefined, !!shared);
+      await this.closeHumanInputs(invocation, "superseded", (params.from as { id?: string } | undefined)?.id ?? params.actor as string | undefined, !!shared);
     const record: RequestRecord = old && !old.noticeQueued ? old : {
       id,
       method: String(request.method),
@@ -667,7 +671,7 @@ export async function admitImpl(this: AgentRuntime,
         return sequence;
       });
       if (preparing) await this.promptPreparations.finish(id);
-      await this.arm(Date.now() + 1000);
+      await this.arm(Date.now() + 1000, invocation);
       return record;
     }
     delete record.configurationWait;
@@ -712,9 +716,9 @@ export async function admitImpl(this: AgentRuntime,
       return record;
     };
     if (noTurn && notice) return landWithoutTurn(noTurn);
-    await this.arm(Date.now() + 1000);
+    await this.arm(Date.now() + 1000, invocation);
     if (!record.admitted) {
-      record.limitsSnapshot = await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
+      record.limitsSnapshot = await this.admitRequest(invocation, conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
       record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);
@@ -757,7 +761,7 @@ export async function admitImpl(this: AgentRuntime,
       if (holding) {
         const accepted = await this.batchQueue.hold(record, prompt, submission, holding === "window");
         if (requestedBucket !== undefined && params.endUser === undefined) await this.ctx.storage.put("run-bucket", requestedBucket);
-        await this.arm();
+        await this.arm(undefined, invocation);
         return accepted;
       }
       if (held.size) await this.ctx.storage.put('held-steer-taking', { request: id, keys: [...held.keys()] });
@@ -777,7 +781,7 @@ export async function admitImpl(this: AgentRuntime,
             const owned = await this.batchQueue.hold(record, prompt, { operationId: id, whenBusy: "followUp",
               entry: { kind: "camel.prompt", data: { ...(submission.entry.data as Record<string, unknown>), logicalOwner: null } } }, false);
             await this.steeringOwner(owned, null);
-            await this.arm();
+            await this.arm(undefined, invocation);
             return (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? owned;
           }
           admitted = await admitAgentMessage(root, input, 'own');
@@ -808,7 +812,7 @@ export async function admitImpl(this: AgentRuntime,
           await tx.put(reqKey(steer.id), next);
           await tx.delete(key);
         });
-        try { await this.admit({ id: steer.id, method: "prompt", params: next.params }, undefined, undefined, old.fingerprint); }
+        try { await this.admit(invocation, { id: steer.id, method: "prompt", params: next.params }, undefined, undefined, old.fingerprint); }
         catch (error) {
           const outcome = { error: error instanceof Error ? error.message : String(error) };
           await this.ctx.storage.put(reqKey(steer.id), { ...next, state: "completed", status: "failed", endedAt: Date.now(), outcome });
@@ -824,6 +828,6 @@ export async function admitImpl(this: AgentRuntime,
       return accepted;
     });
     this.track(id);
-    await this.arm();
+    await this.arm(undefined, invocation);
     return accepted;
   }
