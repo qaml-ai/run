@@ -103,7 +103,8 @@ replaces that bucket's ordinary free allowance. Removing a person's override wit
 keys and removes keys set to `null`.
 
 `endUsers.get(id)` returns configured pools in `today.pools`, including unused
-pools. Each has `key`, `allowance`, `allowanceSpent`, `held`, and `allowanceLeft`.
+pools. Each has `key`, `allowance`, `allowanceSpent`, `held` (always 0 now that nothing is held; it will be
+removed), and `allowanceLeft`.
 Each member in `today.buckets` also has its `pool` snapshot. The member's
 `allowanceSpent`, `paidSpent`, and `held` still describe that bucket alone. Its
 `allowance` and `allowanceLeft` describe the shared allowance. Unpooled buckets
@@ -361,7 +362,7 @@ Every movement of a person's money is an entry, newest first:
 | `kind` | `amount` | Also |
 | --- | --- | --- |
 | `grant`, `refund`, `adjustment`, `spend` | what you posted (a refund's and a spend's negative) | your `key`, `reference`, `description` and `metadata` |
-| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (the cost past what was left for it, not charged), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
+| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (kept for history: entries from before charges landed in full may carry it; new ones are 0), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
 
 A call whose cost is corrected later (a provider's final figure) has another usage
 entry for the difference. `balanceAfter` is the balance after each entry.
@@ -431,8 +432,9 @@ charged, in the balance's units (raw cost with your markup).
 | a day's `freeRaw` (what allowances paid) | raw |
 | a day's `paidCharged` (what the balance paid), `granted`, `refunded`, `adjusted`, `spent` | charged |
 
-A bucket's `held` today adds the allowance's part of holds (raw) to the balance's
-(charged): read `available` and `allowanceLeft` for what is left.
+`held` (a person's, a bucket's or a pool's) is always 0: nothing is held, and the field will be removed.
+`available` is what the person can spend, signed: it is negative when the balance is below zero. Read `available`
+and `allowanceLeft` for what is left. `writtenOff` stays readable for history, and no new write-offs are made.
 
 ## API
 
