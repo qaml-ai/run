@@ -177,7 +177,8 @@ host's current certificate on 443.
   `production` environment, as the runtime's deploy role) may only `PutObject` under `guest/`: no read, no list,
   no delete, no other prefix. The key is the image's sha256 and `publish-guest-image.sh` puts with
   `If-None-Match: *`, so S3 refuses to overwrite an existing object; IAM cannot express that condition, and the
-  bucket's versioning keeps every prior version in any case.
+  bucket's versioning keeps every prior version in any case. Images outside the tier's allowed set are deleted by
+  the operator with `prune-guest-images.sh` (step 9), never by CI.
 - The host role trusts `ec2.amazonaws.com` only, with the job-hosts invariant's guards (precondition, postcondition,
   a `check` against the live role on every plan, and `tests/`): nobody is ever given `sts:AssumeRole` on it, and
   `iam:PassRole` on it is as good as enrolling a host.
@@ -329,6 +330,15 @@ to expect by name.
    tofu -chdir=infra/camelfs/terraform output -raw guest_image_location             # publish-guest-image.sh's <s3-prefix>
    ```
 
+9. **Pruning guest images** (ledger L108). Every camelfsd merge publishes a ≈185 MB image under `guest/`, and
+   nothing in the bucket expires live objects. After an apply that changed `guest_images`, run
+   `infra/camelfs/prune-guest-images.sh`: it lists every published image and deletes those neither `guest_images`
+   (prod.tfvars) nor the running task definition's `--guest-images` names, once they are older than `GRACE_DAYS`
+   (7). Dry run until you type `prune` (`DRY_RUN=1` lists only); with an empty allowed set (compute off) it prunes
+   nothing. Deleted images stay recoverable for the bucket's 35-day noncurrent window. This is the operator's step,
+   not CI's: the publisher role cannot list or delete, and giving an OIDC role deletes to save a manual command is
+   the wrong trade.
+
 Later changes go the same way (`PLAN_ONLY=1` first). Arguments are saved to `camelfs/prod.tfvars` in the state
 bucket only after an apply, so repeat the ones already set (`certificate_issued=true` stays saved from step 3).
 A plan that deletes or replaces anything is refused unless `ALLOW_DESTROY` names each address, and one that
@@ -397,7 +407,9 @@ groups, autoscaling); the AOP CA pinned (trust store, public verify, the ranges 
 
 - The collector (S3 Batch Operations role, `touch` and `warm` tables; camel-fs.md §1.9), dashboards, and the
   daemon's EMF metrics (§1.12).
-- The guest-image CI job itself (K1, proto-block) and its `publish-guest-image.sh`; only the role it assumes is here.
+- The guest-image CI job itself (K1, proto-block) and its `publish-guest-image.sh`; only the role it assumes is
+  here, and `prune-guest-images.sh` for what it leaves behind (L108). Publishing only when the guest's inputs
+  change is proto-block's half of L108.
 - The hosts' side of mTLS (K2): enrollment at boot with the STS attestation on 8443, every later call to the NLB
   on 8794 with the host certificate, the certificate on `--listen-compute 0.0.0.0:8792`, renewal every 8 h, the CA
   from the enroll reply to verify the tier by SAN; the job-hosts egress rules for 8443 and 8794.
