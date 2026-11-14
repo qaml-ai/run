@@ -394,8 +394,11 @@ test("a host job survives a Worker restart, re-enters by id and charges once", {
   const wireSpec = { command: "true", timeoutSeconds: 60, outputs: [], files: [], internet: false, limits: {} };
   assert.equal((await call("/__test/host-dispatch", { id: spec.id, spec: wireSpec })).ok, true);
   assert.equal(jobs, 1);
-  const charges = (await fixture.db.query("select message from pi_usage_receipts where session_id=$1 and message->'_workersAuxiliary'->>'kind'='computer'", [workflow.id])).rows;
-  assert.equal(charges.length, 1, JSON.stringify(charges));
+  // The finished charge is stored before the result returns; its receipt is written by a background settle (the
+  // alarm retries one that is lost). Wait for the receipt, then check there is exactly one.
+  const charges = async () => (await fixture.db.query("select message from pi_usage_receipts where session_id=$1 and message->'_workersAuxiliary'->>'kind'='computer'", [workflow.id])).rows;
+  await until(async () => (await charges()).length > 0);
+  assert.equal((await charges()).length, 1, JSON.stringify(await charges()));
 });
 
 test("repo job mounts its version without import and advances its own ref", { timeout: 300_000 }, async t => {
