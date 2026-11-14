@@ -1,0 +1,31 @@
+{
+  "boot-source": {
+    "kernel_image_path": "/assets/kernel",
+    "boot_args": "console=ttyS0 panic=1 initcall_blacklist=i8042_init quiet reboot=k root=/dev/vda rw init=/sbin/camel-init camel.ip=10.200.10.2/30 camel.gw=10.200.10.1"
+  },
+  "drives": [
+    {
+      "drive_id": "root",
+      "path_on_host": "/assets/root.ext4",
+      "is_root_device": true,
+      "is_read_only": false,
+      "io_engine": "Async"
+    }
+  ],
+  "machine-config": {
+    "vcpu_count": 2,
+    "mem_size_mib": 1024,
+    "smt": false
+  },
+  "vsock": {
+    "guest_cid": 3,
+    "uds_path": "guest.vsock"
+  },
+  "network-interfaces": [
+    {
+      "iface_id": "eth0",
+      "host_dev_name": "cj10",
+      "guest_mac": "06:00:0a:c8:0a:02"
+    }
+  ]
+}
