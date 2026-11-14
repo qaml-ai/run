@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
@@ -70,8 +71,28 @@ func (s *StorageServer) writableHead(ctx context.Context, l, name string) (refst
 	return head, err
 }
 
+// refTiming is one write/merge/restore's phases for the access log: object PUT wave, tree build, and the
+// DynamoDB ref move (with the write route's one retry counted).
+type refTiming struct {
+	objects    objects.FlushTiming
+	build, ddb time.Duration
+	retries    int
+}
+
+type refTimingKey struct{}
+
+func refTimingFrom(ctx context.Context) *refTiming {
+	if t, ok := ctx.Value(refTimingKey{}).(*refTiming); ok {
+		return t
+	}
+	return &refTiming{}
+}
+
 func (s *StorageServer) moveHead(ctx context.Context, head refstore.Ref, kind, version, tree string, parents []string, q *quotaRequest) (int64, error) {
 	var bytes int64
+	timing := refTimingFrom(ctx)
+	start := time.Now()
+	defer func() { timing.ddb += time.Since(start) }()
 	_, err := s.refs.Cas(ctx, head.Lineage, head.Name, refstore.Move{
 		Kind: kind, Version: version, Tree: tree, Parents: parents, Expect: &head.Version, RequireExisting: true, APIWrite: true,
 		Prepare: func(refstore.Ref) error {
@@ -210,6 +231,8 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		if _, _, err := applyCommitChanges(paths, edits, blobs); err != nil {
 			return err
 		}
+		timing := refTimingFrom(ctx)
+		built := time.Now()
 		tree, err := dir.build(ctx, batch, true)
 		if err != nil {
 			return err
@@ -222,9 +245,13 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		if err != nil {
 			return err
 		}
-		if err := batch.Flush(ctx); err != nil {
+		timing.build += time.Since(built)
+		var flushed objects.FlushTiming
+		if err := batch.FlushTimed(ctx, &flushed); err != nil {
 			return err
 		}
+		timing.objects.Put += flushed.Put
+		timing.objects.PutKeys += flushed.PutKeys
 		diff, err := treeDiff(ctx, repo, head.Tree, tree, "")
 		if err != nil {
 			return err
@@ -244,6 +271,7 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		bytes, err := s.moveHead(ctx, head, "commit", version, tree, parents, q.Quota)
 		var failure *refstore.Error
 		if attempt == 0 && q.Expect == nil && errors.As(err, &failure) && failure.Code == "stale" {
+			refTimingFrom(ctx).retries++
 			continue
 		}
 		if err != nil {
@@ -321,9 +349,11 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 	if err != nil {
 		return err
 	}
-	if err := batch.Flush(ctx); err != nil {
+	var flushed objects.FlushTiming
+	if err := batch.FlushTimed(ctx, &flushed); err != nil {
 		return err
 	}
+	refTimingFrom(ctx).objects = flushed
 	bytes, err := s.moveHead(ctx, head, "commit", version, result.Tree, parents, q.Quota)
 	if err != nil {
 		return err
