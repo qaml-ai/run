@@ -21,7 +21,7 @@ const WINDOW = 8192, THRESHOLD = 8192 - 1228;
 const STOP = { stopped: "spend_limit", message: "Out of credit: the message is in history, but no turn ran" };
 const notice = (index: number) => ({ text: `Notice ${index}: ${"the sub-agent reported progress on its task. ".repeat(10)}`, landOnly: STOP });
 
-async function setup(t: { after(fn: () => unknown): void }, summarize: (index: number) => Promise<string> | string = index => `SUMMARY-${index}`, init: Record<string, unknown> = {}) {
+async function setup(t: { after(fn: () => unknown): void }, summarize: (index: number) => Promise<string> | string = index => `SUMMARY-${index}`, init: Record<string, unknown> = {}, ioOverrides: Partial<HostIO> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "landed-compaction-"));
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   const storages: PiStorage[] = [];
@@ -49,6 +49,7 @@ async function setup(t: { after(fn: () => unknown): void }, summarize: (index: n
     file: async () => { throw new Error("no files"); },
     modelAuth: async () => { throw new Error("no per-call credentials"); },
     fs: async () => { throw new Error("no files"); },
+    ...ioOverrides,
   };
   const hosts = new Set<ReturnType<typeof createAgentHost>>();
   /** A host over the agent's storage, as a node starting it; `stop` closes one, as a node leaving mid-summary. */
@@ -196,4 +197,48 @@ test("a range too large to load is never read for a landing: no compaction, logg
   for (let index = 0; index < 80; index++) await host.handle("prompt", notice(index));
   assert.equal(summaries(), 0);
   assert.ok(logged.some(line => line.includes('"type":"compaction_skipped"') && line.includes("context")), "the skip is logged");
+});
+
+test("background summary retries settle separate compaction attempts and preserve landed history", async t => {
+  const attempts: any[] = [];
+  const { host, storage, summaries, events } = await setup(t, index => index === 1 ? " \n" : `SUMMARY-${index}`,
+    { retry: { maxAttempts: 3, baseDelayMs: 0 } }, { modelAttempt: async event => { attempts.push(event); return true; } });
+  let landed = 0;
+  for (; !summaries(); landed++) {
+    assert.ok(landed < 200);
+    await host.handle("prompt", notice(landed));
+    if ((await held(storage)).tokens > THRESHOLD) await until(async () => summaries() > 0, "the summary request");
+  }
+  await until(async () => (await compactions(storage)).length > 0, "the retried compaction placed");
+  assert.ok(summaries() >= 2);
+  const begins = attempts.filter(event => event.type === "begin");
+  assert.equal(begins.length, summaries());
+  assert.ok(begins.every(event => event.kind === "compaction"));
+  assert.equal(new Set(begins.map(event => event.id)).size, begins.length);
+  for (const begin of begins) assert.equal(attempts.filter(event => event.type === "finish" && event.id === begin.id).length, 1);
+  assert.equal(events.filter(event => event.type === "compaction_usage").length, summaries());
+  const page = await storage.scanEntries({ conversationId: root }, 1000, undefined, context);
+  assert.equal(page.items.filter(entry => entry.kind === "camel.compaction.usage").length, summaries());
+  assert.equal(page.items.filter(entry => entry.kind === "camel.message" || entry.kind === "camel.user").length, landed);
+});
+
+test("a budget reached by the first summary prevents dispatch of its retry", async t => {
+  let exhausted = false, checkedAfterUsage = false;
+  const { host, storage, summaries, events } = await setup(t, () => { exhausted = true; return ""; },
+    { retry: { maxAttempts: 3, baseDelayMs: 0 } }, {
+      runLimit: async () => {
+        if (!exhausted) return undefined;
+        checkedAfterUsage = true;
+        return { stopped: "spend_limit", message: "Compaction budget reached", limit: "agent" };
+      },
+    });
+  for (let landed = 0; !summaries(); landed++) {
+    assert.ok(landed < 200);
+    await host.handle("prompt", notice(landed));
+    if ((await held(storage)).tokens > THRESHOLD) await until(async () => summaries() > 0, "the summary request");
+  }
+  await until(async () => checkedAfterUsage, "the retry's budget check");
+  assert.equal(summaries(), 1);
+  assert.equal(events.filter(event => event.type === "compaction_usage").length, 1);
+  assert.deepEqual(await compactions(storage), []);
 });

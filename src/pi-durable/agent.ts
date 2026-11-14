@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { estimateContextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { contentText, createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, isRetryableAssistantError, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
@@ -100,6 +101,10 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     contextWindow?: number;
     maxOutputTokens?: number;
     summaryStream?: AgentOptions["streamFn"];
+    /** Check limits before every summary attempt, including chunks and retries. A refusal must throw. */
+    beforeSummary?: () => void | Promise<void>;
+    /** Summary-only retry policy, capped at three attempts per chunk, separately from generation retries. */
+    retrySummary?: (failed: { message: AssistantMessage; invalid: boolean; attempt: number }) => RetryDecision;
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
     onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
     /**
@@ -170,6 +175,7 @@ const byteRefusal = (message: AssistantMessage) => /request_too_large|(?:^413\s|
 
 const summaryOf = (message: AssistantMessage) => {
   const text = message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
+  if (message.stopReason !== "stop" || message.content.some(part => part.type === "toolCall")) return undefined;
   return text || undefined;
 };
 
@@ -392,19 +398,36 @@ export class DurableAgent {
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
       completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
         await agent.flushEvents();
-        const apiKey = await options.getApiKey?.(agent.state.model.provider);
         const summarize = async (messages: Message[]) => {
-          const output = (streamOptions as { maxTokens?: number } | undefined)?.maxTokens ?? 0;
-          if (messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0) + output + 512 > window())
-            throw new Error("Summarization failed: request exceeds the effective context window");
-          const events = await (options.durable.summaryStream ?? options.streamFn)(agent.state.model, { ...view, messages } as never,
-            { ...(streamOptions as object), apiKey } as never);
-          const result = await events.result();
-          await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
-            kind: "camel.compaction.usage", data: { message: result } as never,
-          }), context);
-          await options.durable.onSummary?.(result);
-          return result;
+          for (let attempt = 1; ; attempt++) {
+            // The native signal cuts background work on close/storage failure too. The host's signal also cuts a
+            // blocking summary and its backoff when the caller aborts the run.
+            const native = (streamOptions as { signal?: AbortSignal } | undefined)?.signal;
+            const signal = agent.signal && native ? AbortSignal.any([agent.signal, native]) : agent.signal ?? native;
+            signal?.throwIfAborted();
+            await options.durable.beforeSummary?.();
+            const apiKey = await options.getApiKey?.(agent.state.model.provider);
+            const output = (streamOptions as { maxTokens?: number } | undefined)?.maxTokens ?? 0;
+            if (messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0) + output + 512 > window())
+              throw new Error("Summarization failed: request exceeds the effective context window");
+            signal?.throwIfAborted();
+            const events = await (options.durable.summaryStream ?? options.streamFn)(agent.state.model, { ...view, messages } as never,
+              { ...(streamOptions as object), apiKey, signal } as never);
+            const result = await events.result();
+            // Store and account the original response before validation or another paid call. Accounting failures
+            // propagate: retrying those could charge twice or lose usage. Invalid output still cost a request.
+            await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
+              kind: "camel.compaction.usage", data: { message: result } as never,
+            }), context);
+            await options.durable.onSummary?.(result);
+            if (summaryOf(result) !== undefined) return result;
+            const invalid = result.stopReason !== "error" && result.stopReason !== "aborted";
+            const decision = attempt >= 3 || result.stopReason === "aborted" || signal?.aborted ? { retry: false } as const
+              : options.durable.retrySummary?.({ message: result, invalid, attempt }) ??
+                { retry: invalid || isRetryableAssistantError(result), delayMs: 2_000 * 2 ** (attempt - 1) };
+            if (!decision.retry) return result;
+            await delay(decision.delayMs ?? 0, undefined, { signal });
+          }
         };
         // Pi asks for one summary of the whole prefix. One larger than the window (an imported history, a model whose
         // window is small) is summarized in parts that fit, each carrying the summary so far, as the legacy compactor did.
@@ -415,11 +438,11 @@ export class DurableAgent {
           const before = summary && summaryOf(summary);
           if (summary && before === undefined) break;
           summary = await summarize(chunk(before));
-          if (summary.stopReason !== "stop") break;
+          if (summaryOf(summary) === undefined) break;
         }
-        // A failed summary is not asked again. Pi reads the retry policy for it as it resumes from this call, before any
-        // I/O, so the decision holds until the current macrotask's microtasks are done; a generation's own decision,
-        // pending at the same time, wins (`retryPolicy`).
+        // Retries above are bounded per chunk. Do not let Pi retry the whole prefix again. Pi reads the retry policy
+        // as it resumes from this call, before any I/O, so the decision holds until this macrotask's microtasks are done.
+        // A generation's own decision, pending at the same time, wins (`retryPolicy`).
         if (summary!.stopReason === "error") {
           agent.summaryPlan = { retry: false };
           setImmediate(() => { agent.summaryPlan = undefined; });

@@ -1066,6 +1066,24 @@ export function createAgentHost(hostIO: HostIO) {
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,
+        beforeSummary: async () => {
+          active?.signal.throwIfAborted();
+          if (busy && stopped) throw new Error(stopped.error ?? "The run stopped");
+          const limit = await io.runLimit();
+          if (!limit) return;
+          if (busy) {
+            stopped = { stopped: limit.stopped, error: limit.message, ...stopFields(limit) };
+            io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
+          }
+          throw new Error(limit.message);
+        },
+        retrySummary: ({ message, invalid, attempt }) => {
+          const policy = config.retry ?? DEFAULT_RETRY;
+          // Summary retries have their own count and never change image/structured-output generation state.
+          return !active?.signal.aborted && (!busy || !stopped) && attempt <= policy.maxAttempts &&
+            (invalid || retriesModelError(message, failureContext()))
+            ? { retry: true, delayMs: policy.baseDelayMs * 2 ** (attempt - 1) } : { retry: false };
+        },
         get contextWindow() { return compactionModel().contextWindow; },
         get maxOutputTokens() { return config.maxOutputTokens ?? undefined; },
         onSummary: message => emitCompaction({ type: "compaction_usage", provider: message.provider,

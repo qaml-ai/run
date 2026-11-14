@@ -338,3 +338,169 @@ for (const window of [244_800, 244_799]) test(`a learned Luna limit ${window} su
   t.after(() => agent.close());
   assert.equal((agent as any).overflowWindow, window);
 });
+
+test("an empty native summary is retried before failing the run", async t => {
+  const storage = new MemoryStorage();
+  let summaries = 0, calls = 0, healthy = false;
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { calls++; return stream(fauxAssistantMessage("done")); },
+    durable: { storage, summaryStream: () => { summaries++; return stream(fauxAssistantMessage(healthy ? "valid summary" : " \n\t")); } },
+  });
+  t.after(() => agent.close());
+  await agent.replaceContext(Array.from({ length: 20 }, (_, i) => ({ role: "user", content: "x".repeat(2000), timestamp: i })) as any);
+  await agent.prompt({ role: "user", content: "queued manager brief", timestamp: 42, requestId: "brief" } as any);
+  assert.match(agent.state.errorMessage ?? "", /Compaction failed:.*Summarization produced no text/);
+  assert.equal(calls, 0, "no generation with an oversized un-compacted context");
+  const page = await storage.scanEntries({ conversationId: agent.conversationId, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT);
+  assert.equal(page.items.filter(entry => entry.kind === "pi.compaction").length, 0);
+  assert.equal((await agent.recoverMessages()).length, 1);
+  assert.equal(agent.state.messages.filter(message => message.role === "user").length, 21, "working context remains intact");
+  const submission = await storage.submissionByRequest(agent.conversationId, "brief", BACKGROUND_CONTEXT);
+  assert.equal(submission?.status, "unanswered");
+  assert.equal(submission?.reason, "model_error");
+  assert.equal(summaries, 3, "bounded retries for a successful envelope without summary text");
+  assert.equal(page.items.filter(entry => entry.kind === "camel.compaction.usage").length, summaries);
+  healthy = true;
+  await agent.prompt("next queued brief");
+  assert.equal(agent.state.errorMessage, undefined, "a later run can recover without resetting history");
+  assert.equal(calls, 1);
+  assert.ok((await agent.recoverMessages()).some(item => (item.message as any).requestId === "brief"));
+});
+
+const summaryHistory = () => Array.from({ length: 20 }, (_, i) => ({ role: "user", content: `${i}: ${"x".repeat(2000)}`, timestamp: i })) as any;
+const invalidSummaries = [
+  ["empty", () => fauxAssistantMessage("")],
+  ["whitespace", () => fauxAssistantMessage(" \n\t")],
+  ["thinking only", () => ({ ...fauxAssistantMessage(""), content: [{ type: "thinking", thinking: "private reasoning" }] } as AssistantMessage)],
+  ["length", () => fauxAssistantMessage("cut off", { stopReason: "length" })],
+  ["tool with text", () => ({ ...fauxAssistantMessage("unsafe partial"), content: [{ type: "text" as const, text: "unsafe partial" }, fauxToolCall("read", {})] })],
+  ["transient", () => ({ ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: "503 service unavailable" })],
+] as const;
+
+for (const [name, invalid] of invalidSummaries) test(`native summary recovers from ${name} and accounts each original attempt`, async t => {
+  const storage = new MemoryStorage();
+  let summaries = 0, generations = 0;
+  const accounted: AssistantMessage[] = [], prompts: string[] = [];
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { generations++; return stream(fauxAssistantMessage("done")); },
+    durable: { storage,
+      retrySummary: () => ({ retry: true, delayMs: 0 }),
+      summaryStream: (_model, view) => {
+        prompts.push(JSON.stringify(view.messages));
+        const message = ++summaries === 1 ? invalid() : fauxAssistantMessage("valid summary");
+        return stream({ ...message, usage: { ...message.usage, input: 100, output: summaries,
+          cost: { ...message.usage.cost, total: summaries / 100 } } });
+      },
+      onSummary: message => { accounted.push(message); },
+    },
+  });
+  t.after(() => agent.close());
+  await agent.replaceContext(summaryHistory());
+  await agent.prompt("continue");
+  assert.equal(agent.state.errorMessage, undefined);
+  assert.equal(generations, 1);
+  assert.ok(summaries >= 2);
+  assert.equal(prompts[0], prompts[1], "retry the same chunk, carrying no invalid output");
+  assert.equal(accounted[0].stopReason, invalid().stopReason, "account the original response before validation");
+  assert.equal(accounted.reduce((sum, message) => sum + message.usage.cost.total, 0), Array.from({ length: summaries }, (_, i) => (i + 1) / 100).reduce((a, b) => a + b));
+  const page = await storage.scanEntries({ conversationId: agent.conversationId, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT);
+  assert.deepEqual(page.items.filter(entry => entry.kind === "camel.compaction.usage").map(entry => (entry.data as any).message), accounted);
+  assert.ok(page.items.some(entry => entry.kind === "pi.compaction"));
+  assert.ok(!JSON.stringify(agent.state.messages).includes("unsafe partial"));
+});
+
+for (const [name, invalid] of invalidSummaries) test(`exhausted ${name} summaries never advance a chunk or replace history`, async t => {
+  const storage = new MemoryStorage();
+  let summaries = 0;
+  const prompts: string[] = [];
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { assert.fail("must not generate after a failed blocking compaction"); },
+    durable: { storage, retry: () => ({ retry: true, delayMs: 0 }),
+      retrySummary: () => ({ retry: true, delayMs: 0 }),
+      summaryStream: (_model, view) => { summaries++; prompts.push(JSON.stringify(view.messages)); return stream(invalid()); },
+    },
+  });
+  t.after(() => agent.close());
+  // Enough for several summary chunks. A failure in the first must never proceed to the second.
+  const history = Array.from({ length: 40 }, (_, i) => ({ role: "user", content: `${i}: ${"x".repeat(4000)}`, timestamp: i })) as any;
+  await (agent as any).conversation.commit(async (tx: any) => {
+    for (const message of history) await tx.appendEntry(agent.conversationId, { kind: "camel.message", model: [message] });
+  }, BACKGROUND_CONTEXT);
+  await agent.prompt("continue");
+  assert.match(agent.state.errorMessage ?? "", /Compaction failed:.*Summarization/);
+  assert.equal(summaries, 3, "neither the callback nor Pi's retry settings can exceed three attempts per chunk");
+  assert.equal(new Set(prompts).size, 1);
+  const page = await storage.scanEntries({ conversationId: agent.conversationId, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT);
+  assert.equal(page.items.filter(entry => entry.kind === "pi.compaction").length, 0);
+  assert.equal(page.items.filter(entry => entry.kind === "camel.compaction.usage").length, 3);
+  assert.deepEqual((await agent.recoverMessages()).slice(0, 40).map(item => item.message), history);
+});
+
+for (const abort of [true, false]) test(abort ? "abort cancels summary backoff without another paid attempt" : "a budget refusal before a retry stops without another paid attempt", async t => {
+  const storage = new MemoryStorage();
+  let summaries = 0, checks = 0;
+  const waiting = Promise.withResolvers<void>();
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { assert.fail("no generation"); },
+    durable: { storage,
+      beforeSummary: () => { if (++checks > 1) throw new Error("Summary budget exhausted"); },
+      retrySummary: () => { waiting.resolve(); return { retry: true, delayMs: abort ? 60_000 : 0 }; },
+      summaryStream: () => { summaries++; return stream(fauxAssistantMessage("")); },
+    },
+  });
+  t.after(() => agent.close());
+  await agent.replaceContext(summaryHistory());
+  const running = agent.prompt("continue");
+  await waiting.promise;
+  if (abort) agent.abort();
+  await running;
+  assert.equal(summaries, 1);
+  assert.equal(checks, abort ? 1 : 2);
+  assert.match(agent.state.errorMessage ?? "", abort ? /abort/i : /budget exhausted/);
+  const page = await storage.scanEntries({ conversationId: agent.conversationId, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT);
+  assert.equal(page.items.filter(entry => entry.kind === "camel.compaction.usage").length, 1);
+  assert.equal(page.items.filter(entry => entry.kind === "pi.compaction").length, 0);
+});
+
+for (const stopReason of ["error", "aborted"] as const) test(`a permanent ${stopReason} summary is never retried`, async t => {
+  let summaries = 0;
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { assert.fail("no generation"); },
+    durable: { storage: new MemoryStorage(), summaryStream: () => {
+      summaries++;
+      return stream({ ...fauxAssistantMessage("", { stopReason }), errorMessage: stopReason === "error" ? "402 credit exhausted" : "aborted" });
+    } },
+  });
+  t.after(() => agent.close());
+  await agent.replaceContext(summaryHistory());
+  await agent.prompt("continue");
+  assert.equal(summaries, 1);
+  assert.match(agent.state.errorMessage ?? "", /Compaction failed/);
+});
+
+test("summary accounting failure propagates without retrying the paid call", async t => {
+  const storage = new MemoryStorage();
+  let summaries = 0;
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { assert.fail("no generation"); },
+    durable: { storage,
+      retrySummary: () => ({ retry: true, delayMs: 0 }),
+      summaryStream: () => { summaries++; return stream(fauxAssistantMessage("")); },
+      onSummary: () => { throw new Error("accounting unavailable"); },
+    },
+  });
+  t.after(() => agent.close());
+  await agent.replaceContext(summaryHistory());
+  await agent.prompt("continue");
+  assert.equal(summaries, 1);
+  assert.match(agent.state.errorMessage ?? "", /accounting unavailable/);
+  const page = await storage.scanEntries({ conversationId: agent.conversationId }, 1000, undefined, BACKGROUND_CONTEXT);
+  assert.equal(page.items.filter(entry => entry.kind === "camel.compaction.usage").length, 1);
+  assert.equal(page.items.filter(entry => entry.kind === "pi.compaction").length, 0);
+});

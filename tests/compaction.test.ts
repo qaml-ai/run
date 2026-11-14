@@ -34,7 +34,7 @@ const isSummarization = (body: Body) => text(body).includes("context summarizati
  * An OpenAI-compatible provider that reports no usage, like some proxies, unless `usage` is set. With `gated`,
  * summaries wait until `release()`; `inflight` counts summaries asked for and not yet answered.
  */
-async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowFirst?: number; overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number } = {}) {
+async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowFirst?: number; overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number; emptySummaries?: number } = {}) {
   const requests: Body[] = [];
   let summaries = 0;
   let gate = Promise.withResolvers<void>();
@@ -53,7 +53,7 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
       res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: `This endpoint's maximum context length is 8000 tokens. However, you requested about ${Math.round(text(body).length / 4)} tokens`, type: "invalid_request_error" } }));
       return;
     }
-    const reply = isSummarization(body) ? `## Goal\nSUMMARY-MARKER-${++summaries}` : "ack";
+    const reply = isSummarization(body) ? (++summaries <= (options.emptySummaries ?? 0) ? "" : `## Goal\nSUMMARY-MARKER-${summaries}`) : "ack";
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }] })}\n\n`);
     const usage = options.usage ? { usage: isSummarization(body) ? { prompt_tokens: 3000, completion_tokens: 200 } : { prompt_tokens: options.turnInput?.(body) ?? 10, completion_tokens: 1 } } : {};
@@ -662,4 +662,41 @@ test("a 60-image history is capped on the wire, including summary requests", asy
   }
   assert.equal(fake.summarizations().length, 1);
   assert.deepEqual(messages, before);
+});
+
+test("an exhausted summary fails its run, preserves queued briefs and bills every attempt once", async t => {
+  const fake = await provider(t, { usage: true, emptySummaries: 3, turnInput: body => Math.ceil(text(body).length / 4) });
+  const supervisor = await fixture(t);
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db });
+  const root = await mkdtemp(join(tmpdir(), "queued-compaction-"));
+  const sessions = new ClientSessions(supervisor, { db, root, secret: "queued-compaction-secret-32-characters", apiKeyFor: () => "fixture",
+    retry: { maxAttempts: 3, baseDelayMs: 0 }, onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message) });
+  t.after(async () => { await sessions.close(); await rm(root, { recursive: true, force: true }); });
+  const { id } = await sessions.create([], { model: fake.model(8000, "queued"), codeMode: false, fileTools: false }, "queued", {}, "acme");
+  const request = (key: string) => sessions.sessions.get(id)!.requests.get(key)!;
+  const completed = (key: string) => until(() => request(key)?.state === "completed", `${key} completes`);
+  for (let i = 0; i < 2; i++) {
+    await sessions.submit(id, "acme", { id: `seed-${i}`, method: "prompt", params: { text: turn(i) } });
+    await completed(`seed-${i}`);
+    assert.equal((request(`seed-${i}`).outcome as any).result.error, null);
+  }
+  assert.equal(fake.summarizations().length, 0);
+  await sessions.submit(id, "acme", { id: "failed-brief", method: "prompt", params: { text: turn(2) } });
+  await sessions.submit(id, "acme", { id: "queued-brief", method: "prompt", params: { text: "Next manager brief" } });
+  await completed("failed-brief");
+  await completed("queued-brief");
+  const failed = (request("failed-brief").outcome as any).result;
+  assert.match(failed.error, /Compaction failed: Summarization produced no text/);
+  assert.equal((request("queued-brief").outcome as any).result.error, null);
+  assert.equal(fake.chat().length, 3, "the failed run never sends its oversized generation or reruns automatically");
+  assert.ok(fake.summarizations().length > 3, "the next queued run retries compaction on the preserved context");
+  const history = await supervisorMessages(supervisor, id) as any[];
+  assert.equal(history.length, 7);
+  assert.equal(history.filter(message => message.requestId === "failed-brief").length, 1);
+  assert.equal(history.filter(message => message.requestId === "queued-brief").length, 1);
+  const count = fake.summarizations().length;
+  await until(async () => (await accounts.usage("acme", Date.now() - 86_400_000)).totals.responses === 3 + count, "all usage receipts settle");
+  const usage = await accounts.usage("acme", Date.now() - 86_400_000);
+  assert.deepEqual(usage.days.filter(row => row.kind === "compaction").map(row => [row.responses, row.input, row.output]), [[count, count * 3000, count * 200]]);
 });
