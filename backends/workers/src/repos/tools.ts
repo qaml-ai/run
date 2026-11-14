@@ -75,7 +75,7 @@ export function repoTools(
   const writeFile = async (t: Awaited<ReturnType<typeof target>>, bytes: Uint8Array, contentType: string, expected?: string) => {
     if (!t.vm) return t.v.write(t.path, bytes, contentType, expected);
     const vm = t.vm, path = vmRepoPath(t.path);
-    const written = await vmOperation(t.ref, () => vm.write(path, bytes, { expectSha256: expected }));
+    const written = await vmOperation(t.ref, () => vm.write(path, bytes, { expectSha256: expected }), t.show(t.path));
     return { ...vmEntry(t.path, written), contentType };
   };
   const output = (value: unknown) => ({
@@ -360,7 +360,7 @@ export function repoTools(
         const version = await guard(t, async () => {
           if (t.vm) {
             const vm = t.vm;
-            await vmOperation(t.ref, () => vm.delete([p], expect ? { expectSha256: expect } : undefined));
+            await vmOperation(t.ref, () => vm.delete([p], expect ? { expectSha256: expect } : undefined), t.show(t.path));
             return undefined;
           }
           return (await t.v.commit({ [p]: null }, expect, `delete ${p}`)).version;
