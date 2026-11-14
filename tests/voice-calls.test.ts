@@ -81,7 +81,7 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
     return result.json;
   };
   const event = (type: WebhookEvent["type"], id: string) => until(() => events.find(e => e.type === type && e.data.session === id)?.data, type);
-  return { openai, http, create, live, events, event, usage, calls: node!.calls! };
+  return { openai, http, create, live, events, event, usage, calls: nodes[0].calls! };
 }
 
 test("client-held call brokers SDP and exposes the live row with AGENT_VOICE unset", async t => {
