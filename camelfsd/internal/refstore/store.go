@@ -3,6 +3,7 @@ package refstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -32,6 +33,7 @@ type Store struct {
 	table   *string
 	now     func() time.Time
 	commits Commits
+	guard   *string
 }
 
 func New(client Client, table string, now func() time.Time, commits Commits) *Store {
@@ -41,12 +43,21 @@ func New(client Client, table string, now func() time.Time, commits Commits) *St
 	return &Store{client: client, table: aws.String(table), now: now, commits: commits}
 }
 
+// GuardLineages prevents ref updates once a lineage deletion has begun.
+func (s *Store) GuardLineages(table string) {
+	s.guard = aws.String(table)
+}
+
+type transactionClient interface {
+	TransactWriteItems(context.Context, *dynamodb.TransactWriteItemsInput, ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+}
+
 type Target struct {
 	Version, Tree, Root string
 }
 
 type Ref struct {
-	Lineage, Name string
+	Lineage, Name, CreatedBy string
 	Target
 	Owner, Holder                    *string
 	ExpiresAt, LeaseDeadline         *int64
@@ -105,6 +116,8 @@ func ValidName(name string) bool {
 	return true
 }
 
+func ValidOwner(owner string) bool { return ownerPattern.MatchString(owner) }
+
 func validate(lineage, name string) error {
 	if !store.Lineage(lineage) || !ValidName(name) {
 		return failure("invalid", 400)
@@ -151,7 +164,7 @@ func decode(item attributes) (Ref, error) {
 		return &n
 	}
 	r := Ref{
-		Lineage: aws.ToString(stringPtr("lineage")), Name: aws.ToString(stringPtr("name")),
+		Lineage: aws.ToString(stringPtr("lineage")), Name: aws.ToString(stringPtr("name")), CreatedBy: aws.ToString(stringPtr("createdBy")),
 		Target: Target{Version: aws.ToString(stringPtr("version")), Tree: aws.ToString(stringPtr("tree")), Root: aws.ToString(stringPtr("root"))},
 		Owner:  stringPtr("owner"), Holder: stringPtr("holder"),
 		ExpiresAt: numberPtr("expiresAt"), LeaseDeadline: numberPtr("leaseDeadline"),
@@ -198,6 +211,27 @@ func (s *Store) update(ctx context.Context, lineage, name, condition, update str
 	for _, alias := range attributeAlias.FindAllString(condition+" "+update, -1) {
 		names[alias] = alias[1:]
 	}
+	if s.guard != nil {
+		_, err := s.client.(transactionClient).TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+			TransactItems: []types.TransactWriteItem{
+				{ConditionCheck: &types.ConditionCheck{
+					TableName: s.guard, Key: attributes{"lineage": str(lineage)},
+					ConditionExpression:      aws.String("attribute_exists(#lineage) AND attribute_not_exists(#deletion) AND attribute_not_exists(#deletedAt)"),
+					ExpressionAttributeNames: map[string]string{"#lineage": "lineage", "#deletion": "deletion", "#deletedAt": "deletedAt"},
+				}},
+				{Update: &types.Update{
+					TableName: s.table, Key: key(lineage, name), ConditionExpression: aws.String(condition),
+					UpdateExpression: aws.String(update), ExpressionAttributeNames: names, ExpressionAttributeValues: values,
+				}},
+			},
+		})
+		var canceled *types.TransactionCanceledException
+		if errors.As(err, &canceled) && len(canceled.CancellationReasons) > 0 &&
+			aws.ToString(canceled.CancellationReasons[0].Code) == "ConditionalCheckFailed" {
+			return nil, failure("lineage_blocked", 409)
+		}
+		return &dynamodb.UpdateItemOutput{}, err
+	}
 	return s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: s.table, Key: key(lineage, name), ConditionExpression: aws.String(condition),
 		UpdateExpression: aws.String(update), ExpressionAttributeNames: names, ExpressionAttributeValues: values,
@@ -240,16 +274,34 @@ func targetUpdate(t Target, owner *string, expiresAt *int64, now int64, create b
 }
 
 func (s *Store) Create(ctx context.Context, lineage, name string, t Target, owner *string, expiresAt *int64) error {
+	_, err := s.CreateBy(ctx, lineage, name, t, owner, expiresAt, "")
+	return err
+}
+
+func (s *Store) CreateBy(ctx context.Context, lineage, name string, t Target, owner *string, expiresAt *int64, subject string) (Ref, error) {
 	if err := validate(lineage, name); err != nil {
-		return err
+		return Ref{}, err
 	}
 	if err := validateTarget(t.Version, t.Tree, t.Root, owner); err != nil {
-		return err
+		return Ref{}, err
 	}
-	update, values := targetUpdate(t, owner, expiresAt, s.now().UnixMilli(), true)
-	_, err := s.update(ctx, lineage, name, absent, update, values, types.ReturnValueNone)
-	if ddb.IsConditionFailed(err) {
-		return failure("exists", 409)
+	for {
+		r, err := s.read(ctx, lineage, name)
+		if err != nil {
+			return Ref{}, err
+		}
+		now := s.now().UnixMilli()
+		if r.live(now) {
+			return Ref{}, failure("exists", 409)
+		}
+		update, values := targetUpdate(t, owner, expiresAt, now, true)
+		values[":subject"], values[":epoch"] = str(subject), num(r.LeaseEpoch)
+		update = strings.Replace(update, "SET ", "SET #createdBy = :subject, ", 1)
+		_, err = s.update(ctx, lineage, name, absent+" AND (#leaseEpoch = :epoch OR attribute_not_exists(#leaseEpoch))", update, values, types.ReturnValueNone)
+		if ddb.IsConditionFailed(err) {
+			continue
+		}
+		return Ref{Lineage: lineage, Name: name, Target: t, Owner: owner, ExpiresAt: expiresAt,
+			LeaseEpoch: r.LeaseEpoch, CreatedAt: now, UpdatedAt: now, CreatedBy: subject}, err
 	}
-	return err
 }

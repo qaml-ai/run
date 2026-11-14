@@ -380,6 +380,8 @@ jobs:
       - uses: ./.github/actions/node-dependencies
       - name: Real camelfsd contract
         working-directory: .
+        # The api role's refs routes run against the job's DynamoDB Local service (tables made per test).
+        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
         run: CAMELFSD_BIN="$RUNNER_TEMP/camelfsd" CAMELFS_CONTRACT_REQUIRED=1 node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/camelfs-contract.test.ts
       - name: Node and Go guest compatibility
         working-directory: .
