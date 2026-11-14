@@ -29,7 +29,6 @@ const tool = (id: string, name = "ask_agent") => ({
 async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"] = {}, discord = false) {
   const openai = await fakeOpenAICalls(t);
   const root = await mkdtemp(join(tmpdir(), "agent-voice-calls-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const { url } = await testDatabase();
   await writeFile(join(root, "tenants.json"), JSON.stringify({ tenants: {
     alice: { tokenSha256: sha(token), apiKeys: { openai: "fixture-key", openrouter: "fixture-key" } },
@@ -37,7 +36,10 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
   const events: WebhookEvent[] = [];
   const usage: UsageRecord[] = [];
   let node: RuntimeNode | undefined;
-  t.after(async () => { await node?.close(); });
+  // The node is closed before its data directory goes: under process hosting its children still write until then.
+  t.after(async () => {
+    try { await node?.close(); } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); }
+  });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,

@@ -78,7 +78,8 @@ export async function enqueueEvents(sql: Sql, events: WebhookEvent[]) {
   if (legacy.length) await sql.query(`
     insert into usage_webhook_outbox (id, tenant, body, due, created_at)
     select (e->>'id')::uuid, e->>'tenant', e, $2, $2 from jsonb_array_elements($1::jsonb) as e
-    where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')`, [JSON.stringify(legacy), Date.now()]);
+    where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')
+    on conflict (id) do nothing`, [JSON.stringify(legacy), Date.now()]);
   recordEventMetrics(events);
 }
 
