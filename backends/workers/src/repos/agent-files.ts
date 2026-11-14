@@ -61,7 +61,7 @@ async function handleVmFile(request: Request, vm: VmFiles, ref: string, t: Retur
       if (length <= 0 || match[3] === '0')
         return new Response(null, { status: 416, headers: { 'content-range': `bytes */${stat.size}` } });
     }
-    const read = await vmOperation(ref, () => vm.read(path, range ? { offset, length } : undefined));
+    const read = await vmOperation(ref, () => vm.read(path, range ? { offset, length } : undefined), t.path);
     // Range offsets were computed against this version's size.
     if (range && read.sha256 !== stat.sha256) throw new FileError('File changed since the version given', 412);
     const file = vmEntry(t.inside, read, read.bytes);
@@ -84,11 +84,11 @@ async function handleVmFile(request: Request, vm: VmFiles, ref: string, t: Retur
     if (old && old.sha256 !== header) throw new FileError('File changed since the version given', 412);
     const expected = request.headers.get('if-none-match') === '*' ? 'none' : old?.sha256;
     if (request.method === 'DELETE') {
-      await vmOperation(ref, () => vm.delete([path], expected ? { expectSha256: { [path]: expected } } : undefined));
+      await vmOperation(ref, () => vm.delete([path], expected ? { expectSha256: { [path]: expected } } : undefined), t.path);
       return Response.json({ deleted: true, version: null });
     }
     const bytes = await boundedBytes(request.body, 256 * 2 ** 20);
-    const written = await vmOperation(ref, () => vm.write(path, bytes, { expectSha256: expected }));
+    const written = await vmOperation(ref, () => vm.write(path, bytes, { expectSha256: expected }), t.path);
     return Response.json({ ...vmEntry(t.path, written, bytes), by: agent }, { status: 201 });
   }
   throw new FileError('Method not allowed', 405);
