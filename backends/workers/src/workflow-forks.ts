@@ -1,5 +1,6 @@
-import { WORKFLOW_COMMIT_PREFIX } from "./workflow-commits.ts";
-
+/** A commit() in flight (workflow-commits.ts): its fork must outlive it. Here, not there, so this module imports nothing
+ * (tests mock repo services through a loader hook that a static import of the repo stack would bypass). */
+export const WORKFLOW_COMMIT_PREFIX = "workflow-commit:";
 const ROW = "workflow-repo:";
 const RETRY = "workflow-repo-retry";
 const FIRST_RETRY_MS = 60_000, MAX_RETRY_MS = 3_600_000;

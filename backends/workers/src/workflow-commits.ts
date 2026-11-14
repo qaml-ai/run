@@ -1,11 +1,12 @@
 import { StorageError } from "./repos/storage.ts";
+import { WORKFLOW_COMMIT_PREFIX } from "./workflow-forks.ts";
+export { WORKFLOW_COMMIT_PREFIX };
 import { repoContext, type RepoEnv } from "./repos/registry.ts";
 import { mergeRefs } from "./repos/merge.ts";
 import { repoErrorFrom } from "./repos/repo-policy.ts";
 import type { WorkflowFork } from "./workflow-branches.ts";
 import type { EffectExecutor, EffectOutcome, StartedEffect } from "./workflow-runner.ts";
 
-export const WORKFLOW_COMMIT_PREFIX = "workflow-commit:";
 
 interface WorkflowCommitsHost {
   tenant(): string;
