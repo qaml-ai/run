@@ -113,10 +113,15 @@ func TestDDBLoop(t *testing.T) {
 
 	f.now = f.now.Add(time.Second)
 	v := must[VM](t)(f.End(ctx, job.ID, EndRequest{At: f.now, Code: Stopped}))
-	if v.Code != Timeout || v.StopRequestedAt == nil || *v.StopRequestedAt != cutoff {
+	// The timeout stop bills to the deadline it enforced, not to when the sweep ran.
+	jobDeadline := epoch.Add(5*time.Minute+2*time.Second).UnixMilli() + 1000 + JobDeadlineGrace.Milliseconds()
+	if jobDeadline >= cutoff {
+		t.Fatalf("test setup: deadline %d not before the sweep %d", jobDeadline, cutoff)
+	}
+	if v.Code != Timeout || v.StopRequestedAt == nil || *v.StopRequestedAt != jobDeadline {
 		t.Fatalf("timeout: %+v", v)
 	}
-	f.assertOutcome(v, cutoff)
+	f.assertOutcome(v, jobDeadline)
 }
 
 func TestDDBReconcile(t *testing.T) {

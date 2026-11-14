@@ -162,7 +162,9 @@ func (l *Loop) sweepVMs(ctx context.Context, h Host, now time.Time) error {
 			_, err = l.C.stop(ctx, v, now, v.LeaseDeadline, LeaseExpired, true)
 			result = errors.Join(result, l.record("vm_lease_expired", id, err))
 		case v.Mode == JobMode && v.Phase == Running && v.DeadlineAt != nil && *v.DeadlineAt <= now.UnixMilli():
-			_, err = l.C.stop(ctx, v, now, now.UnixMilli(), Timeout, false)
+			// MONEY: like a lease stop, a timeout stop bills to the deadline it enforces (startedAt + timeoutS + grace),
+			// never to whenever this sweep happened to run.
+			_, err = l.C.stop(ctx, v, now, *v.DeadlineAt, Timeout, false)
 			result = errors.Join(result, l.record("vm_timed_out", id, err))
 		}
 	}
