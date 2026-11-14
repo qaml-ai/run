@@ -54,7 +54,7 @@ function fixture(t: TestContext) {
   const sessions = new BashSessions(storage, env, work => pending.push(work), async () => {}, async () => {}, async () => {});
   const activity: { event: string; execId: string; at: number }[] = [];
   const ops: string[] = [];
-  const flags = { checkpoints: 0, create: 0, stopped: false, changed: false, checkpointGate: undefined as Promise<void> | undefined };
+  const flags = { checkpoints: 0, create: 0, stopped: false, changed: false, checkpointGate: undefined as Promise<void> | undefined, bashGate: undefined as Promise<void> | undefined };
   let lastActivity = Date.now();
   t.mock.method(globalThis, "fetch", async (url: URL, init: RequestInit) => {
     const [, , resource, id, op] = url.pathname.split("/");
@@ -85,7 +85,10 @@ function fixture(t: TestContext) {
       const result = spawnSync("bash", ["-lc", body.command], { cwd: dir, input: body.stdin, encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 2000 });
       assert.equal(result.status, 0, result.stderr);
       stdout = result.stdout;
-    } else assert.equal(body.shell, "agent-shell");
+    } else {
+      assert.equal(body.shell, "agent-shell");
+      await flags.bashGate;
+    }
     lastActivity = Date.now();
     activity.push({ event: "ExecEnded", execId: body.execId, at: lastActivity });
     return new Response(frame("stdout", { offset: 0, data: Buffer.from(stdout).toString("base64") }) +
@@ -186,6 +189,41 @@ test("dirty writes checkpoint asynchronously and an explicit checkpoint waits fo
   assert.deepEqual(await vm.checkpoint(), head);
   assert.equal(f.flags.checkpoints, 3);
   assert.equal(f.db.prepare("SELECT version FROM agent_vm_heads").get()?.version, head.version);
+});
+
+test("file ops run beside a running bash command and wait only for a checkpoint in flight", async t => {
+  const f = fixture(t);
+  await f.bash("boot");
+  await f.flush();
+  const vm = (await f.get())!;
+  await vm.write("a", Buffer.from("a"));
+  await f.flush();
+  const bashGate = Promise.withResolvers<void>();
+  f.flags.bashGate = bashGate.promise;
+  let bashDone = false;
+  const long = f.bash("long").then(result => { bashDone = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(Buffer.from((await vm.read("a")).bytes).toString(), "a");
+  await vm.write("b", Buffer.from("b"));
+  assert.equal(bashDone, false);
+  bashGate.resolve();
+  f.flags.bashGate = undefined;
+  await long;
+  await f.flush();
+  const checkpointGate = Promise.withResolvers<void>();
+  f.flags.checkpointGate = checkpointGate.promise;
+  f.flags.changed = true;
+  const checkpoints = f.flags.checkpoints;
+  await vm.write("c", Buffer.from("c"));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.flags.checkpoints, checkpoints + 1);
+  let readDone = false;
+  const read = vm.read("b").then(result => { readDone = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(readDone, false);
+  checkpointGate.resolve();
+  assert.equal(Buffer.from((await read).bytes).toString(), "b");
+  await f.flush();
 });
 
 test("file exec resets idle activity, and a stopped VM fails without changing backend", async t => {

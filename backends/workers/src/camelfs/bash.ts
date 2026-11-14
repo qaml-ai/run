@@ -125,6 +125,31 @@ export class BashSessions {
     finally { if (this.locks.get(branch) === settled) this.locks.delete(branch); }
   }
 
+  // File-tool ops (VmFiles) do not queue behind bash: each is its own one-off exec, so they run concurrently with a bash
+  // command and serialize only against a checkpoint in flight, so that a checkpoint sees a consistent tree. A checkpoint
+  // waits for the file ops already running; a file op waits for the checkpoint already running.
+  private readonly checkpointLocks = new Map<string, Promise<unknown>>();
+  private readonly fileOps = new Map<string, Set<Promise<unknown>>>();
+  private async checkpointLocked<T>(branch: string, action: () => Promise<T>): Promise<T> {
+    const next = (this.checkpointLocks.get(branch) ?? Promise.resolve())
+      .then(() => Promise.allSettled([...this.fileOps.get(branch) ?? []]))
+      .then(action);
+    const settled = next.catch(() => {});
+    this.checkpointLocks.set(branch, settled);
+    try { return await next; }
+    finally { if (this.checkpointLocks.get(branch) === settled) this.checkpointLocks.delete(branch); }
+  }
+  private async fileOp<T>(branch: string, action: () => Promise<T>): Promise<T> {
+    await this.checkpointLocks.get(branch);
+    const ops = this.fileOps.get(branch) ?? new Set<Promise<unknown>>();
+    this.fileOps.set(branch, ops);
+    const running = action();
+    const settled = running.catch(() => {});
+    ops.add(settled);
+    try { return await running; }
+    finally { ops.delete(settled); if (!ops.size && this.fileOps.get(branch) === ops) this.fileOps.delete(branch); }
+  }
+
   private row(branch: string) {
     return this.sql.exec<Vm>("SELECT * FROM agent_vms WHERE branch=?", branch).toArray()[0];
   }
@@ -241,7 +266,7 @@ export class BashSessions {
     return this.serial(branch.branch, async () => {
       const previous = this.receipt(key);
       if (previous?.result) return previous.result;
-      await this.checkpoints(branch.branch);
+      await this.checkpointLocked(branch.branch, () => this.checkpoints(branch.branch));
       let intent = previous?.intent;
       const replay = !!intent;
       for (let attempt = 0; ; attempt++) {
@@ -306,7 +331,7 @@ export class BashSessions {
       const current = this.row(branch);
       if (current?.state !== "running" || current.vm_id !== vm.vm_id) throw new HttpError(409, "the VM stopped; retry");
     };
-    const onVm = <T>(work: () => Promise<T>) => this.serial(branch, async () => {
+    const onVm = <T>(work: () => Promise<T>) => this.fileOp(branch, async () => {
       ensureRunning();
       try {
         const value = await work();
@@ -340,7 +365,8 @@ export class BashSessions {
           if (mutation) this.scheduleCheckpoint(branch);
         }
       }),
-      () => onVm(async () => {
+      () => this.checkpointLocked(branch, async () => {
+        ensureRunning();
         await this.checkpoints(branch);
         ensureRunning();
         const saved = this.savedHeads.get(vm.vm_id);
@@ -355,7 +381,7 @@ export class BashSessions {
   }
 
   private scheduleCheckpoint(branch: string) {
-    this.defer(sleep(0).then(() => this.serial(branch, () => this.checkpoints(branch))).catch(() => this.arm(Date.now() + 1_000)));
+    this.defer(sleep(0).then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch)))).catch(() => this.arm(Date.now() + 1_000)));
   }
 
   private rememberHead(vm: Vm, { version, tree }: Head) {
@@ -422,7 +448,7 @@ export class BashSessions {
   async wake(conf: Config) {
     if (!bashEnabled(this.env)) return;
     for (const { branch } of this.sql.exec<{ branch: string }>("SELECT DISTINCT branch FROM agent_vm_calls WHERE checkpoint=1").toArray())
-      this.defer(this.serial(branch, () => this.checkpoints(branch)));
+      this.defer(this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))));
     if (this.renewing) return;
     this.renewing = true;
     try { await this.renew(conf); }
