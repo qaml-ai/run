@@ -177,11 +177,11 @@ resource "aws_ecs_task_definition" "api" {
     cpu_architecture        = "ARM64"
   }
 
-  # The only writable path: the task's ephemeral storage, for the daemon's host-local SQLite caches (CAMELFS_DATA).
-  # Nothing on it is truth (camel-fs.md §1.11); a replaced task starts empty.
-  volume {
-    name = "data"
-  }
+  # No bind volume and no read-only root (2026-11-14): a Fargate bind mount (`host {}`) is an empty root-owned
+  # directory, so the daemon (uid 1000) could not create storage.db under it and every task crash-looped with
+  # "unable to open database file". The daemon writes only under --data, which is the image's own
+  # /var/lib/camelfs (owned by camelfs) on the task's ephemeral storage; nothing on it is truth (camel-fs.md
+  # §1.11), and a replaced task starts empty.
 
   container_definitions = jsonencode([{
     name         = local.container_name
