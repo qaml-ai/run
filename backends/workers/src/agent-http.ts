@@ -692,7 +692,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           }
           throw error;
         });
-        return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
+        const requests = answered.requests.map(({ limitsSnapshot: _limitsSnapshot, ...record }) => record);
+        return json(batch ? { inputs: answered.inputs, requests } : { input: answered.inputs[0], request: requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
         const params = object(await body(request, 32 * 1024, true), ['queued', 'children']);

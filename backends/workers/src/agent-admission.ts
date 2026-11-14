@@ -547,10 +547,10 @@ export async function admitImpl(this: AgentRuntime,
       : undefined;
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
-    if (preparing) {
-      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined));
-      await this.arm();
-    }
+    const preparedLimits = preparing
+      ? await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined))
+      : undefined;
+    if (preparing) await this.arm();
     let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
     try {
     const audioRunLimit = (params.spendLimit as { usd?: number } | undefined)?.usd;
@@ -614,6 +614,7 @@ export async function admitImpl(this: AgentRuntime,
       startedAt: old?.startedAt ?? Date.now(),
     };
     delete record.noticeQueued;
+    if (preparedLimits) record.limitsSnapshot = preparedLimits;
     // Keep the suspended call live. Input settlement retries admission, without a polling alarm.
     if (request.method === "prompt" && shared) {
       const inputs = await (await this.harness.pi()).snapshot(HumanInputs, BACKGROUND_CONTEXT);
@@ -621,8 +622,9 @@ export async function admitImpl(this: AgentRuntime,
         delete record.inputAdmissionRetry;
         record.state = "queued";
         record.heldForInput = true;
-        if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+        if (preparing) record.admitted = true;
         await this.ctx.storage.put(reqKey(id), record);
+        if (preparing) await this.promptPreparations.finish(id);
         return record;
       }
     }
@@ -651,7 +653,7 @@ export async function admitImpl(this: AgentRuntime,
     }
     const configurationWait = record.configurationWait ?? await this.configurationQueue.pendingOrder();
     if (configurationWait > await this.configurationQueue.completedOrder()) {
-      if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+      if (preparing) record.admitted = true;
       record.configurationWait = configurationWait;
       record.state = 'queued';
       record.configurationWaitSequence = await this.ctx.storage.transaction(async tx => {
@@ -664,6 +666,7 @@ export async function admitImpl(this: AgentRuntime,
         await tx.put(reqKey(id), saved);
         return sequence;
       });
+      if (preparing) await this.promptPreparations.finish(id);
       await this.arm(Date.now() + 1000);
       return record;
     }
@@ -711,7 +714,7 @@ export async function admitImpl(this: AgentRuntime,
     if (noTurn && notice) return landWithoutTurn(noTurn);
     await this.arm(Date.now() + 1000);
     if (!record.admitted) {
-      await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
+      record.limitsSnapshot = await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
       record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);
