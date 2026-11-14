@@ -98,3 +98,51 @@ func TestAPIRole(t *testing.T) {
 		t.Fatalf("claims context = %+v, %v", got, ok)
 	}
 }
+
+// The runtime's usage token (no lineage; auth.UsageSubject) passes authentication and is served only GET /v1/usage:
+// every other route answers 403 before any handler runs.
+func TestUsageTokenServesOnlyUsage(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := base64.RawURLEncoding.EncodeToString
+	raw, _ := json.Marshal(map[string]any{"keys": []map[string]string{
+		{"kty": "OKP", "crv": "Ed25519", "kid": "test", "alg": "EdDSA", "use": "sig", "x": encode(pub)},
+	}})
+	inline := string(raw)
+	keys, err := auth.Load("", &inline, auth.Options{Typ: auth.RuntimeType, Audience: auth.RuntimeAudience, Issuer: "runtime", MaxTTL: auth.DefaultMaxTTL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	payload, _ := json.Marshal(map[string]any{"iss": "runtime", "aud": "camelrun:camelfs", "sub": auth.UsageSubject,
+		"iat": now, "exp": now + 120, "acc": "r", "refs": []string{}, "jti": "j"})
+	signed := encode([]byte(`{"alg":"EdDSA","kid":"test","typ":"camelfs+jwt"}`)) + "." + encode(payload)
+	usage := signed + "." + encode(ed25519.Sign(priv, []byte(signed)))
+	db, err := refs.OpenStorage(filepath.Join(t.TempDir(), "storage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewStorageServer(&objects.Repository{DB: db, Store: store.Local{Dir: t.TempDir()}}, "test-version", keys)
+	for _, tc := range []struct {
+		method, path string
+		status       int
+	}{
+		{"GET", "/v0/stats", 403},
+		{"GET", "/v1/lineages/a/trees/abc", 403},
+		{"PUT", "/v1/lineages/a/blobs", 403},
+		{"GET", "/v1/lineages/a/refs", 403},
+		// The VM and usage routes exist only with compute: TestDDBUsageTokenContract covers them. The host routes are
+		// on the mutual-TLS host listener, where a bearer token never authenticates (TestUnitHostIdentity, missing cert).
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+usage)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		if w.Code != tc.status {
+			t.Errorf("%s %s: %d %s; want %d", tc.method, tc.path, w.Code, w.Body.String(), tc.status)
+		}
+	}
+}

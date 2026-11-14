@@ -200,3 +200,57 @@ func TestKeySourcesAndReload(t *testing.T) {
 	check(envKeys, oldToken, nil)
 	check(envKeys, newToken, UnknownKey)
 }
+
+// The runtime's usage poller token (backends/workers usage.ts pollUsage: claims {sub: "runtime:usage", acc: "r"},
+// which runtime-identity camelfsToken extends with refs [], iss, aud, iat, exp and jti): no lineage. It verifies, and
+// the exemption is exact: any other subject, a write token, refs or a fence without a lineage is still refused.
+func usageClaims(now time.Time) map[string]any {
+	return map[string]any{"iss": issuer, "aud": "camelrun:camelfs", "sub": UsageSubject, "acc": "r", "refs": []string{},
+		"iat": now.Unix(), "exp": now.Unix() + 300, "jti": "11111111-2222-4333-8444-555555555555"}
+}
+
+func TestVerifyUsageToken(t *testing.T) {
+	priv, key := testKey(t, "active")
+	inline := jwks(key)
+	keys, err := Load("", &inline, runtimeOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0)
+	header := []byte(`{"alg":"EdDSA","typ":"camelfs+jwt","kid":"active"}`)
+	sign := func(claims map[string]any) string {
+		raw, _ := json.Marshal(claims)
+		return jwt(priv, header, raw)
+	}
+	got, err := keys.Verify(sign(usageClaims(now)), now)
+	want := Claims{Subject: UsageSubject, Access: "r", KeyID: "active", IssuedAt: now.Unix(), ExpiresAt: now.Unix() + 300, Refs: []string{}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("usage token: %+v, %v", got, err)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(map[string]any)
+		want   Reason
+	}{
+		{"write access", func(c map[string]any) { c["acc"] = "w" }, BadLineage},
+		{"another subject", func(c map[string]any) { c["sub"] = "runtime:bash" }, BadLineage},
+		{"an agent subject", func(c map[string]any) { c["sub"] = "agent:1" }, BadLineage},
+		{"empty lineage string", func(c map[string]any) { c["lin"] = "" }, BadLineage},
+		{"null lineage", func(c map[string]any) { c["lin"] = nil }, BadLineage},
+		{"refs", func(c map[string]any) { c["refs"] = []string{"heads/*"} }, BadRefs},
+		{"no refs", func(c map[string]any) { delete(c, "refs") }, BadRefs},
+		{"a fence", func(c map[string]any) { c["fence"] = map[string]any{"holder": "x", "epoch": 1} }, BadFence},
+	} {
+		claims := usageClaims(now)
+		tc.change(claims)
+		if _, err := keys.Verify(sign(claims), now); !errors.Is(err, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, err, tc.want)
+		}
+	}
+	// A usage subject with a lineage is an ordinary token, scoped as any other.
+	claims := usageClaims(now)
+	claims["lin"] = "tenant:repo"
+	if got, err := keys.Verify(sign(claims), now); err != nil || got.Lineage != "tenant:repo" {
+		t.Fatalf("usage subject with a lineage: %+v, %v", got, err)
+	}
+}

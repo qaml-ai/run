@@ -29,7 +29,7 @@ export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0,
   const wall = Object.fromEntries(ROUTES.map(route => [route, [] as number[]])) as Record<string, number[]>;
   const statuses = Object.fromEntries(ROUTES.map(route => [route, {} as Record<string, number>]));
   const twoCall: number[] = [];
-  let completed = 0, failure: TierError | undefined, refCreated = false, tierRegion: string | undefined;
+  let completed = 0, failure: TierError | undefined, refCreated = false;
   let op: string = "seed";
   async function measure<T>(route: (typeof ROUTES)[number], run: () => Promise<T>) {
     op = route;
@@ -66,12 +66,11 @@ export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0,
         ...meta, parents: [], changes: [{ path: file, blob: blob.blob }],
       }));
       twoCall.push(wall.putBlob[round] + wall.commit[round]);
-      const result = await measure("write", () => tierRequest<{ version: string; tree: string; region?: string }>(env, {
+      const result = await measure("write", () => tierRequest<{ version: string; tree: string }>(env, {
         method: "POST", path: refPath + "/write", claims: refClaims,
         body: { ...meta, time: Math.floor(Date.now() / 1000), expect: head, changes: [{ path: file, text: inline }] },
       }));
       head = result.version;
-      if (typeof result.region === "string" && /^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(result.region)) tierRegion = result.region;
       const [entry] = await measure("readBatch", () => storage.readBatch(lineage, result.tree, [file]));
       if (!entry || !("bytes" in entry) || !Buffer.from(inline).equals(entry.bytes))
         throw new TierError(502, "read_mismatch", "camelFS smoke read did not match", undefined, op);
@@ -103,12 +102,12 @@ export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0,
   const error = failure && { status: failure.status, code: failure.code, op: failure.op };
   return {
     ok: !failure && cleanup.deleted, lineage, iterations, completed, window, routes, twoCall: timing(twoCall), statuses, cleanup,
-    ...(tierRegion ? { tierRegion } : {}), ...(error ? { error } : {}),
+    ...(error ? { error } : {}),
   };
 }
 
 async function smokeReply(env: TierEnv, iterations: number, minSeconds: number, tenant: string,
-  location: { colo: string | null; loc?: string; rayColo?: string }) {
+  location: { colo: string | null; rayColo?: string }) {
   try {
     const result = await camelfsSmoke(env, iterations, minSeconds, tenant);
     return Response.json({ ...result, ...location }, { status: result.ok ? 200 : 502, headers: NO_STORE });
@@ -121,7 +120,7 @@ async function smokeReply(env: TierEnv, iterations: number, minSeconds: number, 
 
 export class CamelfsSmoke extends DurableObject<TierEnv> {
   async run(iterations: number, minSeconds: number, tenant: string): Promise<Response> {
-    let colo: string | undefined, loc: string | undefined, rayColo: string | undefined;
+    let colo: string | undefined, rayColo: string | undefined;
     try {
       const trace = await fetchWithoutRedirects(fetch, "https://www.cloudflare.com/cdn-cgi/trace", {
         cache: "no-store", signal: AbortSignal.timeout(10_000),
@@ -129,15 +128,14 @@ export class CamelfsSmoke extends DurableObject<TierEnv> {
       if (trace.ok) {
         const body = await trace.text();
         colo = /^colo=([A-Z]{3})$/m.exec(body)?.[1];
-        loc = /^loc=([A-Z]{2})$/m.exec(body)?.[1];
         rayColo = /^[0-9a-f]+-([A-Z]{3})$/i.exec(trace.headers.get("cf-ray") ?? "")?.[1];
       }
     } catch {
       // A hinted run needs location evidence. Fail before creating a lineage.
     }
-    if (!colo || !loc || !rayColo)
+    if (!colo || !rayColo)
       return Response.json({ error: { status: 502, code: "trace_unavailable", op: "trace" } }, { status: 502, headers: NO_STORE });
-    return smokeReply(this.env, iterations, minSeconds, tenant, { colo, loc, rayColo });
+    return smokeReply(this.env, iterations, minSeconds, tenant, { colo, rayColo });
   }
 }
 
