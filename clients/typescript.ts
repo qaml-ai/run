@@ -1855,7 +1855,7 @@ export interface WorkflowItem {
   attempt: number;
   /** Whether this attempt is the one that counts. */
   current: boolean;
-  kind: "agent" | "commit";
+  kind: "agent" | "job" | "commit" | "push";
   /** `script`, `reissue`, or `cache`: its result was reused from an earlier workflow of the same owner (see `cachedFrom`), at no cost. */
   origin: string;
   /** Where a reused result came from: `workflowId:key:attempt`. */
@@ -1902,7 +1902,7 @@ export class Workflows {
   }
   /** Its status, counts, spend and, once it ends, its result. */
   get(id: string): Promise<WorkflowSummary> { return this.transport.json(this.path(id), this.key()); }
-  /** Its effects (agents and commits) in journal order, a page at a time (`limit` at most 500); pass `next` back as `after`. */
+  /** Its effects (agents, jobs, commits, pushes) in journal order, a page at a time (`limit` at most 500); pass `next` back as `after`. */
   items(id: string, query: WorkflowItemsQuery = {}): Promise<{ items: WorkflowItem[]; next?: number }> {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
     return this.transport.json(`${this.path(id, "/items")}${params.size ? `?${params}` : ""}`, this.key());
