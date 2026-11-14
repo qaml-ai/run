@@ -36,7 +36,7 @@ type VmFilesEnv = Env & { bashSessions: Pick<BashSessions, "runningFiles"> };
 export async function vmFiles(env: VmFilesEnv, scope: VmFilesScope): Promise<VmFiles | undefined> {
   if (!tierConfigured(env)) return;
   const { lineage, repo } = await repoContext(env as RepoEnv, scope.tenant, scope.repo, `agent:${scope.agent}`);
-  if (repo instanceof HttpRepoClient) return env.bashSessions.runningFiles(lineage, repo.tierRefName(scope.ref));
+  if (repo instanceof HttpRepoClient) return env.bashSessions.runningFiles(lineage, repo.tierRefName(scope.ref), scope.agent);
 }
 
 type StdinBlob = Awaited<ReturnType<StoragePlane["putBlob"]>>;
