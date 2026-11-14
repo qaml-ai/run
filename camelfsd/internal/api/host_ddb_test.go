@@ -35,7 +35,7 @@ func hostTable(t *testing.T, keys ...string) (*dynamodb.Client, string) {
 }
 
 func TestDDBHostChannel(t *testing.T) {
-	db, vms := hostTable(t, "id")
+	db, vms := ddbtest.VMTable(t)
 	_, hosts := hostTable(t, "pool", "host")
 	_, deliveries := hostTable(t, "shard", "id")
 	_, usage := hostTable(t, "shard", "ulid")
@@ -47,7 +47,7 @@ func TestDDBHostChannel(t *testing.T) {
 	ca := newHostTestCA(t)
 	credentials := testHostTLS(t, ca, ca.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier"), t.TempDir())
 	pusher := HostPusher{TLS: credentials}
-	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries, Usage: usage},
+	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries, Usage: usage},
 		Now: clock, Refs: refstore.New(db, refs, clock, nil), Pusher: pusher, RuntimeURL: "https://runtime.example/ended", Objects: objects}
 	c.EnableClockCheck()
 	pools := []string{"pool"}

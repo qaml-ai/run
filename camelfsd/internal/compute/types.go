@@ -12,7 +12,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
-type Tables struct{ VMs, Hosts, Deliveries, Usage string }
+type Tables struct{ VMs, VMLineageIndex, Hosts, Deliveries, Usage string }
 
 type Controller struct {
 	DB         *dynamodb.Client

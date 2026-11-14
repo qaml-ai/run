@@ -52,7 +52,7 @@ for setting in "$@"; do
 done
 if ! diff -q "$tfvars.orig" "$tfvars" >/dev/null; then echo "    prod.tfvars change:"; diff "$tfvars.orig" "$tfvars" | sed 's/^/      /' || true; fi
 
-"$(dirname "$0")/check-sg-descriptions.sh"
+"$here/check-sg-descriptions.sh"
 echo "==> tofu init"; tofu init -input=false >/dev/null
 plan=$work/plan
 echo "==> tofu plan"

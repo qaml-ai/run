@@ -19,12 +19,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
+	"github.com/qaml-ai/run/camelfsd/internal/ddb/ddbtest"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 func TestDDBVMSessionProxy(t *testing.T) {
-	db, vms := hostTable(t, "id")
+	db, vms := ddbtest.VMTable(t)
 	_, hosts := hostTable(t, "pool", "host")
 	_, usage := hostTable(t, "shard", "ulid")
 	_, deliveries := hostTable(t, "shard", "id")
@@ -36,7 +37,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	ca := newHostTestCA(t)
 	credentials := testHostTLS(t, ca, ca.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier"), t.TempDir())
 	c := &compute.Controller{
-		DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Usage: usage, Deliveries: deliveries},
+		DB: db, Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Usage: usage, Deliveries: deliveries},
 		Now: now, Pusher: HostPusher{TLS: credentials}, RuntimeURL: "https://runtime.example/ended",
 		HostFresh: 10 * time.Minute,
 	}

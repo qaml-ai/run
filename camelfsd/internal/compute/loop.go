@@ -327,31 +327,3 @@ func (l *Loop) record(event, id string, err error) error {
 	}
 	return err
 }
-
-// EndDeletedWaiters is best-effort cleanup after a ref or lineage deletion.
-func (c *Controller) EndDeletedWaiters(ctx context.Context, pools []string, lineage, ref, reason string) {
-	now := c.now()
-	logFailure := func(pool, id string, err error) {
-		c.log("vm_delete_cleanup_failed", map[string]any{"vm": id, "pool": pool, "lineage": lineage, "ref": ref,
-			"reason": reason, "error": err.Error()})
-	}
-	for _, pool := range pools {
-		waiters, err := c.Waiting(ctx, pool)
-		if err != nil {
-			logFailure(pool, "", err)
-			continue
-		}
-		for _, w := range waiters {
-			v, err := c.Get(ctx, w.VM)
-			if err == nil && v.Lineage == lineage && (ref == "" || v.Ref == ref) {
-				switch v.Phase {
-				case Requested, Placed:
-					_, err = c.end(ctx, v, EndRequest{At: now, Code: StartFailed, Reason: reason}, now, nil)
-				}
-			}
-			if err != nil {
-				logFailure(pool, w.VM, err)
-			}
-		}
-	}
-}

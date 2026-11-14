@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
+	"github.com/qaml-ai/run/camelfsd/internal/ddb/ddbtest"
 	"github.com/qaml-ai/run/camelfsd/internal/delivery"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
@@ -148,14 +149,14 @@ func TestUnitVMStatus(t *testing.T) {
 }
 
 func TestDDBVMClientAPI(t *testing.T) {
-	db, vms := hostTable(t, "id")
+	db, vms := ddbtest.VMTable(t)
 	_, hosts := hostTable(t, "pool", "host")
 	_, deliveries := hostTable(t, "shard", "id")
 	_, usage := hostTable(t, "shard", "ulid")
 	now := time.Now().Truncate(time.Millisecond)
 	sha := strings.Repeat("a", 64)
 	objects := &guestObjects{manifests: map[string][]byte{"guest/" + sha + ".json": []byte(fmt.Sprintf(`{"sha256":%q,"bytes":1}`, sha))}}
-	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries, Usage: usage}, Objects: objects,
+	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries, Usage: usage}, Objects: objects,
 		Now: func() time.Time { return now }, RuntimeURL: "https://runtime.example/ended"}
 	c.EnableClockCheck()
 	var unplaceable int
