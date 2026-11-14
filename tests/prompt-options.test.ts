@@ -46,16 +46,35 @@ test("a prompt's requestId and metadata are kept on its user message and its req
 const byId = async (r: Awaited<ReturnType<typeof runtime>>, agent: string, id: string) => (await r.call(`/v1/agents/${agent}/requests/${id}`)).json;
 const userTexts = (body: any) => body.messages.filter((message: any) => message.role === "user").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""));
 
-test("a message sent just after a first prompt joins its turn, though the agent is still starting", async t => {
-  const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}`, ...(index === 0 ? { delayMs: 1_500 } : {}) }));
-  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
-  const first = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "first", requestId: "turn-1" } });
-  // At once: the turn has not begun, and its agent's process takes longer to start than this takes to arrive.
-  const steered = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "also this", requestId: "steer-1", whileRunning: "steer" } });
-  assert.equal(steered.json.steer, "accepted", "not queued behind the whole turn");
-  const turn = await until(async () => { const record = await byId(r, agent, first.json.id); return record.state === "completed" && record; }, "the turn");
-  assert.match(turn.outcome.result.reply, /also this/);
-});
+for (const [delayMs, expected] of [[0, "accepted"], [50, "accepted"], [500, "accepted"], [2_000, "accepted"], [6_000, "queued"]] as const) {
+  test(`a steer during agent startup with a ${delayMs} ms delay is ${expected}`, async t => {
+    const steerAnswered = Promise.withResolvers<void>();
+    const r = await runtime(t, (body, index) => ({
+      role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}`,
+      ...(index === 0 ? { wait: steerAnswered.promise } : {}),
+    }), { TEST_STEER_START_DELAY_MS: String(delayMs) }, undefined, {
+      execArgv: ["--import", new URL("./fixtures/steer-start-delay.mjs", import.meta.url).href],
+    });
+    const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+    const first = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "first", requestId: "turn-1" } });
+    assert.equal(first.status, 202, first.text);
+    const steered = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "also this", requestId: "steer-1", whileRunning: "steer" } })
+      .finally(() => steerAnswered.resolve());
+    assert.equal(steered.status, 202, steered.text);
+    assert.equal(steered.json.steer, expected);
+
+    const turn = await until(async () => { const record = await byId(r, agent, "turn-1"); return record.state === "completed" && record; }, "the first turn");
+    const steer = await until(async () => { const record = await byId(r, agent, "steer-1"); return record.state === "completed" && record; }, "the steer request");
+    if (expected === "accepted") {
+      assert.equal(steer.steeredInto, "turn-1");
+      assert.match(turn.outcome.result.reply, /also this/);
+    } else {
+      assert.equal(turn.outcome.result.reply, "answer 0: first");
+      assert.equal(steer.steeredInto, undefined);
+      assert.equal(steer.outcome.result.reply, "answer 1: also this");
+    }
+  });
+}
 
 test("whileRunning: steer hands a running turn the message; with no turn running it starts one; retries are idempotent", async t => {
   const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}`, ...(index === 0 ? { delayMs: 1_500 } : {}) }));

@@ -202,6 +202,16 @@ export const VoiceRecording = z.object({
   error: z.string().optional(),
   expiresAt: z.number().nullable().openapi({ description: "When its files are deleted (retentionHours after it ended)" }),
 }).openapi("VoiceRecording");
+const callFacts = z.object({
+  provider: z.literal("openai"), session: z.string(), agent: z.string(), subject: z.string(), metadata: z.record(z.string(), z.unknown()),
+});
+const callEnded = callFacts.extend({
+  reason: z.string(), detail: z.string().optional(), limit: z.literal("end_user").optional(), endUserReason: creditReason.optional(), bucket: creditBucket.optional(),
+  startedAt: z.number().nullable(), endedAt: z.number(), turns: z.number(), asks: z.number(), audioSeconds: z.number(), costUsd: z.number(),
+});
+const callUtterance = callFacts.extend({
+  reported: z.literal("sideband"), text: z.string(), seconds: z.number(), seq: z.number(),
+});
 export const WebhookEvents = {
   "run.started": envelope("run.started", z.object({ ...runFacts, resumes: z.number().optional().openapi({ description: "Set when a node resumed a turn whose node was lost" }) }), "A run began"),
   "run.completed": envelope("run.completed", z.object({
@@ -234,8 +244,8 @@ export const WebhookEvents = {
     reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed; for speech: the seconds of speech made" }), images: z.number().optional().openapi({ description: "For images made: how many" }), decisions: z.number().optional().openapi({ description: "For decisions: the questions answered" }), seconds: z.number().optional().openapi({ description: "For computer time: the seconds this charge covers" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
     superseded: z.enum(["content_filter", "unavailable"]).optional().openapi({ description: "A response that is not the answer, and not charged: unavailable, a virtual model's member could not take the request, which the next did; content_filter, its provider's content filter blocked it and the request was made again on the same model elsewhere (AGENT_CONTENT_FILTER_FALLBACKS), whose own usage.recorded follows. Its usage and cost are what the blocked call took, for your books; do not charge your users for it" }),
   }), "A model response's usage and cost, a transcription's, images', decisions', or computer time's"),
-  "voice.session.started": envelope("voice.session.started", z.object(voiceFacts), "A voice session connected and is listening (once per session)"),
-  "voice.session.ended": envelope("voice.session.ended", z.object({
+  "voice.session.started": envelope("voice.session.started", z.union([z.object(voiceFacts), callFacts]), "A voice session connected and is listening (once per session)"),
+  "voice.session.ended": envelope("voice.session.ended", z.union([z.object({
     ...voiceFacts, reason: z.enum(VOICE_END_REASONS).openapi({ description: "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed" }),
     detail: z.string().optional().openapi({ description: "Failure classification, for example realtime_failed, realtime_credit_failed, media_crashed or realtime_unavailable. Omitted on normal endings" }),
     error: z.string().max(300).optional().openapi({ description: "Privacy-safe provider error summary: classification and message length only, never raw provider text, credentials or user content" }),
@@ -243,7 +253,13 @@ export const WebhookEvents = {
     endUserReason: creditReason.optional().openapi({ description: "With limit end_user: why, one of the credit reasons a run's end_user_credit has (balance, daily_limit, bucket_limit)" }),
     bucket: creditBucket.optional().openapi({ description: "With limit end_user: the bucket refused" }),
     startedAt: z.number().nullable(), endedAt: z.number(), utterances: z.number(), speechSeconds: z.number(), costUsd: z.number(),
-  }), "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"),
+  }), callEnded]), "A voice session or call ended"),
+  "voice.agent.asked": envelope("voice.agent.asked", callFacts.extend({
+    request: z.string(), from: z.object({ id: z.string(), name: z.string().optional() }).optional(),
+  }), "The call asked its agent to do something"),
+  "voice.agent.replied": envelope("voice.agent.replied", callFacts.extend({
+    outcome: z.enum(["ok", "empty", "error", "timeout"]), ms: z.number(), late: z.boolean(), replyChars: z.number(),
+  }), "The call's agent finished its request"),
   "voice.session.error": envelope("voice.session.error", z.object({
     ...voiceFacts,
     code: z.enum(["media_crashed", "credentials_needed"]).openapi({ description: "media_crashed: the session's audio processing failed (its worker crashed, ran out of memory or stopped answering); speech it was saying ended, and what people were saying but had not finished may be lost. credentials_needed: Discord no longer takes the session's voice credentials (close 4006 and the like: its voice session ended, as after a move between nodes); send OP 4 for the same channel again on your gateway, and PATCH the session with what Discord answers (sessionId, endpoint, token) within waitMs, or it ends (voice.session.ended, reason credentials)" }),
@@ -252,7 +268,7 @@ export const WebhookEvents = {
     attempt: z.number().optional().openapi({ description: "media_crashed: failures in the last 5 minutes, this one included" }),
     waitMs: z.number().optional().openapi({ description: "credentials_needed: how long the session waits for new credentials" }),
   }), "A voice session's audio failed, or it needs new Discord credentials: it reconnects, or ends"),
-  "voice.utterance": envelope("voice.utterance", z.object({
+  "voice.utterance": envelope("voice.utterance", z.union([z.object({
     ...voiceFacts,
     speakerId: z.string().openapi({ description: "The Discord user who spoke" }),
     seq: z.number().openapi({ description: "The utterance's number in the session, from 1, in the order transcripts were made" }),
@@ -264,7 +280,7 @@ export const WebhookEvents = {
     addressedBy: z.enum(["always", "alone", "named", "conversation", "not_addressed"]).openapi({ description: "Why: always (mode); alone (no one else in the call); named (it said one of names); conversation (the bot was talking with its speaker); not_addressed" }),
     brain: z.enum(["realtime", "listen"]).openapi({ description: "realtime: the session's realtime brain heard (and answered) this itself, your app need not; listen: a listening session transcribed it, and nothing answered" }),
     speakers: z.array(z.string()).optional().openapi({ description: "When people spoke at once: everyone whose audio is in it (speakerId is the first)" }),
-  }), "A person's utterance in a voice session, transcribed"),
+  }), callUtterance]), "A person's utterance in a voice session or call, transcribed"),
   "voice.speech.started": envelope("voice.speech.started", z.object({
     ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the brain asking for the answer to its first audio going out" }),
     startedAt: z.number().openapi({ description: "When its first audio went out (ms)" }),
@@ -1938,8 +1954,50 @@ export const VoiceRecordingStarted = VoiceRecording.extend({
   }),
 }).openapi("VoiceRecordingStarted");
 export const VoiceRecordingDeleted = z.object({ id: z.string(), deleted: z.literal(true) }).openapi("VoiceRecordingDeleted");
+const callMetadata = z.record(z.string(), z.unknown()).refine(value => Buffer.byteLength(JSON.stringify(value)) <= VOICE_LIMITS.metadataBytes, "metadata must be at most 4 KB of JSON");
+const callSpeakers = z.record(z.string().min(1).max(100), z.string().min(1).max(VOICE_LIMITS.speakerNameChars))
+  .refine(value => Object.keys(value).length <= VOICE_LIMITS.speakers, `speakers must name at most ${VOICE_LIMITS.speakers} users`);
+export const VoiceCallInput = z.strictObject({
+  agent: z.string().regex(/^client_[a-f0-9]{40}$/),
+  provider: z.enum(["openai", "elevenlabs"]),
+  model: z.string().optional(),
+  voice: z.string().optional(),
+  instructions: z.string().max(8_000).optional(),
+  language: z.string().regex(/^[a-z]{2,3}(-[a-z0-9]{2,8})?$/i).optional(),
+  subject: z.string().min(1).max(200).refine(value => !!value.trim(), "subject is required"),
+  bucket: z.string().optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
+  keyScope: z.string().min(1).max(100).optional(),
+  maxMinutes: z.number().int().min(VOICE_LIMITS.maxMinutes.min).max(VOICE_LIMITS.maxMinutes.max).default(VOICE_LIMITS.maxMinutes.default),
+  metadata: callMetadata.optional(),
+  speakers: callSpeakers.optional(),
+  sdp: z.string().min(1).max(64 * 1024).refine(value => Buffer.byteLength(value) <= 64 * 1024, "sdp must be at most 64 KB").optional()
+    .openapi({ description: "The client's WebRTC offer. Required for OpenAI." }),
+}).refine(value => value.provider !== "openai" || value.sdp !== undefined, { path: ["sdp"], message: "sdp is required for OpenAI calls" }).openapi("VoiceCallInput");
+export type VoiceCallInput = z.output<typeof VoiceCallInput>;
+
+export const VoiceCall = z.object({
+  id: z.string(), state: z.enum(["connecting", "live", "ending", "ended"]), provider: z.enum(["openai", "elevenlabs"]),
+  model: z.string(), voice: z.string(), agent: z.string(), subject: z.string(),
+  startedAt: z.number().nullable(), endedAt: z.number().nullable(), expiresAt: z.number(), reason: z.string().nullable(),
+  turns: z.number(), asks: z.number(), audioSeconds: z.number(), costUsd: z.number(),
+  metadata: z.record(z.string(), z.unknown()), speakers: z.record(z.string(), z.string()),
+}).openapi("VoiceCall");
+export type VoiceCall = z.output<typeof VoiceCall>;
+
+export const VoiceCallCreated = VoiceCall.extend({
+  connect: z.union([z.object({ sdpAnswer: z.string() }), z.object({ signedUrl: z.string(), conversationId: z.string() })]),
+}).openapi("VoiceCallCreated");
+export type VoiceCallCreated = z.output<typeof VoiceCallCreated>;
+
+export const VoiceCallUpdate = z.strictObject({ speakers: callSpeakers.optional(), metadata: callMetadata.optional() }).openapi("VoiceCallUpdate");
+export type VoiceCallUpdate = z.output<typeof VoiceCallUpdate>;
+export const VoiceCallEndInput = z.strictObject({ reason: z.string().max(100).optional() }).openapi("VoiceCallEndInput");
+export const VoiceCallList = z.object({ calls: z.array(VoiceCall), next: z.string().optional() }).openapi("VoiceCallList");
+
 export const VoiceSessionList = z.object({
   sessions: z.array(VoiceSession), next: z.string().nullable().openapi({ description: "Pass as after for the next page; null at the end" }),
+  calls: VoiceCallList.shape.calls.optional(),
 }).openapi("VoiceSessionList");
 
 export const GitHubAppInput = z.strictObject({

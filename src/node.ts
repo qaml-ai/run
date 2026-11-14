@@ -27,7 +27,7 @@ import type { NodeConfig } from "./node-config.ts";
 import { configuredModel, contentFilterFallbacks, defaultModels } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
-import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
+import { enqueueEvents, ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, ROBOTS_TXT, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
@@ -119,6 +119,8 @@ import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
 import { DEFAULT_VOICES, speechProvider } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
+import { VoiceCalls, type VoiceCallsOptions } from "./voice-calls.ts";
+import { openaiCalls } from "./voice/calls/openai.ts";
 import { VOICE_CHANNEL, VoiceSessions, type VoiceTransport } from "./voice-sessions.ts";
 import { openaiRealtime } from "./voice/realtime/openai.ts";
 import { grokRealtime } from "./voice/realtime/grok.ts";
@@ -181,6 +183,8 @@ export type NodeDeps = {
    * simulation's in-memory store).
    */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
+  /** Test hooks for client-held calls. */
+  voiceCallOverrides?: Partial<Pick<VoiceCallsOptions, "admit" | "credit" | "enqueue" | "now" | "pendingMs" | "lateMs" | "record" | "retiring" | "submitStreaming">>;
   /** Voice connections by provider (src/voice-sessions.ts): Discord's (src/voice-discord.ts) with AGENT_VOICE=true, unless given (a test's fake). */
   voiceTransports?: Partial<Record<"discord", VoiceTransport> & { browser: BrowserTransport }>;
   /** What a voice server's host must match, when a test serves its own. */
@@ -234,6 +238,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
 
 /** A runtime node: its HTTP surface, and the handles that start it and take it out of the cluster. */
 export type RuntimeNode = {
+  calls?: VoiceCalls;
   /** The URL peers reach this node at, which it heartbeats and owns actors under. */
   node: string;
   app: Hono<Env>;
@@ -1018,6 +1023,23 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       },
     } : {}),
   });
+  const calls = config.voice.realtime.includes("openai") ? new VoiceCalls({
+    db, node, admit: admitVoice, agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+    submitStreaming: submitStreamingAnywhere, credit: endUsers,
+    creditEnabled: deps.voiceCallOverrides && "credit" in deps.voiceCallOverrides ? undefined : tenant => endUsers.enabled(tenant),
+    providers: { openai: openaiCalls({ baseUrl: config.voice.realtimeUrl }) },
+    key: async (tenant, keyScope, provider) => {
+      const key = await providerKey(tenant, keyScope, provider);
+      return key?.apiKey && !("baseUrl" in key && key.baseUrl) ? { apiKey: key.apiKey, platform: key.platform } : undefined;
+    },
+    perTenant: async tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant,
+    liveSessions: async (tenant, sql) => voice?.countLive(tenant, sql) ?? Number((await (sql ?? db).query(
+      "select count(*) as count from voice_sessions where tenant = $1 and state <> 'ended'", [tenant])).rows[0].count),
+    enqueue: (events, sql) => enqueueEvents(sql ?? db, events), kickWebhooks: () => webhooks.kick(),
+    publicUrl: links.publicUrl, retiring: () => retiringSince !== undefined || closing,
+    ...deps.voiceCallOverrides,
+  }) : undefined;
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
   const loads = await deps.listen({
@@ -1369,7 +1391,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     await rateLimits.run(tenant);
   };
   app.route("/", api({ dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
-    rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
+    rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}), ...(calls ? { calls } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
       admit: admitAlone,
@@ -1504,6 +1526,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
       if (!config.publicUrlSet) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+      calls?.start();
       resolve(server.address() as AddressInfo);
     });
     // As soon as it listens, as before: whether a newer deployment replaced this task (ECS only).
@@ -1608,7 +1631,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     }
     if (retiringSince !== undefined) {
       void clients.releaseIdle().then(() => volumes.releaseIdle()).catch(error => console.error(JSON.stringify({ type: "retire_release_failed", error: errorText(error) })));
-      if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size && !voice?.size) {
+      if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size && !voice?.size && !calls?.size) {
         retired = true;
         console.log(JSON.stringify({ type: "retired", node, ms: Date.now() - retiringSince }));
       }
@@ -1627,7 +1650,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       }
     }
     const capped = retiringSince !== undefined && Date.now() - retiringSince > retireMaxMs;
-    void protection.update(clients.inFlight() > 0 && !capped);
+    void protection.update((clients.inFlight() > 0 || !!calls?.size) && !capped);
   }, 1_000);
   workTimer.unref();
   let retireTimer: ReturnType<typeof setInterval> | undefined;
@@ -1737,6 +1760,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     scheduler.stop();
     await scheduleMailer?.stop();
     channels.stop();
+    await calls?.close();
     await voice?.stop();
     await voiceHost?.close();
     await turnHost?.close();
@@ -1833,7 +1857,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   };
 
   return {
-    node, app, clients, server, start,
+    node, app, clients, server, calls, start,
     reloadTenants: () => reloadTenants(true),
     run: work => work(),
     drain: (signal = "drain") => leave(signal, config.drainMs),
