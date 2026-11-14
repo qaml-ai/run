@@ -260,3 +260,75 @@ func TestBoundedLine(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelRoutesConcurrentExecEvents(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	c := newChannel(host, bufio.NewReader(host))
+	wireErr := make(chan error, 1)
+	go func() {
+		dec := json.NewDecoder(guest)
+		enc := json.NewEncoder(guest)
+		for range 2 {
+			var req Reply
+			if err := dec.Decode(&req); err != nil {
+				wireErr <- err
+				return
+			}
+			if err := enc.Encode(Reply{"ok": true, "execId": req["execId"], "accepted": true}); err != nil {
+				wireErr <- err
+				return
+			}
+		}
+		for _, m := range []Reply{
+			{"event": "exec_output", "execId": "second"},
+			{"event": "tail_truncated", "execId": "first"},
+			{"event": "exec_exit", "execId": "second"},
+			{"event": "exec_exit", "execId": "first"},
+		} {
+			if err := enc.Encode(m); err != nil {
+				wireErr <- err
+				return
+			}
+		}
+		wireErr <- nil
+	}()
+	first, second := make(chan Reply, 2), make(chan Reply, 2)
+	v := &VM{channel: c}
+	requestErr := make(chan error, 2)
+	for id, output := range map[string]chan Reply{"first": first, "second": second} {
+		go func() {
+			_, err := v.Request(ctx, Reply{"op": "exec", "execId": id, "shell": id}, nil, func(m Reply) { output <- m })
+			requestErr <- err
+		}()
+	}
+	for range 2 {
+		if err := <-requestErr; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := <-wireErr; err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id         string
+		out        chan Reply
+		firstEvent string
+	}{
+		{"first", first, "tail_truncated"}, {"second", second, "exec_output"},
+	} {
+		for _, event := range []string{tc.firstEvent, "exec_exit"} {
+			select {
+			case got := <-tc.out:
+				if got["execId"] != tc.id || got["event"] != event {
+					t.Fatal(got)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
+	}
+}

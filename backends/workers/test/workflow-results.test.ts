@@ -28,45 +28,44 @@ function cache(t: { after(fn: () => void): void }, env = {} as any) {
   return { object, state, db };
 }
 
-test("a result is kept once per kind and key: the first stays, a hit answers it with its source, too large is not kept", async t => {
+test("a result is kept once per key: the first stays, a hit answers it with its source, too large is not kept", async t => {
   const { object } = cache(t);
   const key = cacheKey('{"prompt":"review a"}');
   assert.equal(await object.lookup("agent", key), undefined);
   assert.deepEqual(await object.put({ kind: "agent", key, source: "wf1:review:a:1", workflow: "wf1", value: { text: "first" } }), { stored: true });
   assert.deepEqual(await object.put({ kind: "agent", key, source: "wf2:review:a:1", workflow: "wf2", value: { text: "second" } }), { stored: false });
   assert.deepEqual(await object.lookup("agent", key), { value: { text: "first" }, source: "wf1:review:a:1" });
-  assert.equal(await object.lookup("job", key), undefined, "the kind is part of the key");
   // Different base trees have different keys.
-  assert.notEqual(cacheKey('{"prompt":"x","repo":"vol_1"}', 5), cacheKey('{"prompt":"x","repo":"vol_1"}', 6));
-  assert.equal(await object.lookup("agent", cacheKey('{"prompt":"review a"}', 5)), undefined);
+  assert.notEqual(cacheKey('{"prompt":"x","repo":"vol_1"}', "tree-a"), cacheKey('{"prompt":"x","repo":"vol_1"}', "tree-b"));
+  assert.equal(await object.lookup("agent", cacheKey('{"prompt":"review a"}', "tree-a")), undefined);
   const big = "x".repeat(RESULT_CACHE_LIMITS.entryBytes);
-  assert.deepEqual(await object.put({ kind: "job", key: "big", source: "wf1:big:1", workflow: "wf1", value: big }), { stored: false });
-  assert.equal(await object.lookup("job", "big"), undefined);
+  assert.deepEqual(await object.put({ kind: "agent", key: "big", source: "wf1:big:1", workflow: "wf1", value: big }), { stored: false });
+  assert.equal(await object.lookup("agent", "big"), undefined);
 });
 
 
 test("an entry lives 7 days from its last hit", async t => {
   const { object, state } = cache(t);
-  await object.put({ kind: "job", key: "k", source: "wf1:k:1", workflow: "wf1", value: 1 });
+  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: 1 });
   assert.equal(state.alarm, state.clock + RESULT_CACHE_LIMITS.ttlMs);
   state.clock += RESULT_CACHE_LIMITS.ttlMs - 1;
-  assert.ok(await object.lookup("job", "k"), "a hit just before the expiry");
+  assert.ok(await object.lookup("agent", "k"), "a hit just before the expiry");
   state.clock += RESULT_CACHE_LIMITS.ttlMs - 1;
   await object.alarm();
-  assert.ok(await object.lookup("job", "k"), "the hit gave it another 7 days");
+  assert.ok(await object.lookup("agent", "k"), "the hit gave it another 7 days");
   state.clock += RESULT_CACHE_LIMITS.ttlMs;
   await object.alarm();
-  assert.equal(await object.lookup("job", "k"), undefined);
+  assert.equal(await object.lookup("agent", "k"), undefined);
   assert.equal(state.alarm, null, "nothing left");
 });
 
 test("past its caps a scope drops the least recently hit first", async t => {
   const { object, state } = cache(t);
   await object.put({ kind: "agent", key: "old", source: "wf1:old:1", workflow: "wf1", value: 1 });
-  for (let i = 0; i < RESULT_CACHE_LIMITS.entries - 1; i++) { state.clock += 1; await object.put({ kind: "job", key: `k${i}`, source: `wf1:k${i}:1`, workflow: "wf1", value: i }); }
+  for (let i = 0; i < RESULT_CACHE_LIMITS.entries - 1; i++) { state.clock += 1; await object.put({ kind: "agent", key: `k${i}`, source: `wf1:k${i}:1`, workflow: "wf1", value: i }); }
   assert.equal(Number((await object.stats()).n), RESULT_CACHE_LIMITS.entries);
   state.clock += 1;
-  assert.deepEqual(await object.put({ kind: "job", key: "one more", source: "wf2:x:1", workflow: "wf2", value: "x" }), { stored: true });
+  assert.deepEqual(await object.put({ kind: "agent", key: "one more", source: "wf2:x:1", workflow: "wf2", value: "x" }), { stored: true });
   assert.equal(await object.lookup("agent", "old"), undefined, "the least recently hit went");
 });
 

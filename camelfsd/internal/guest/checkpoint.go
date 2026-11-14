@@ -61,28 +61,43 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 	if g.pending != nil {
 		return nil, errors.New("checkpoint already pending")
 	}
-	start := time.Now()
 	ctx, cancel := streamContext(parent, req.TimeoutMs)
 	defer cancel()
 	defer func() { err = streamError(ctx, err, "checkpoint") }()
 	if err = g.checkMount(); err != nil {
 		return nil, err
 	}
-	streamStart := time.Now()
-	c, err := g.checkpointConn(ctx, start)
-	if err != nil {
-		return nil, err
+	var c transport
+	var streamStart time.Time
+	var stop func() bool
+	connect := func() error {
+		streamStart = time.Now()
+		conn, err := g.checkpointConn(ctx, streamStart)
+		if err != nil {
+			return err
+		}
+		c = conn
+		stop = interruptRead(ctx, c)
+		return c.SetDeadline(deadline(ctx))
 	}
-	defer c.Close()
-	c.SetDeadline(deadline(ctx))
-	stop := interruptRead(ctx, c)
-	defer stop()
 	trailerSent := false
 	defer func() {
+		if c == nil {
+			return
+		}
+		defer c.Close()
+		defer stop()
 		if err != nil && ctx.Err() == nil && time.Now().Before(deadline(ctx)) && !trailerSent {
 			wire.Send(c, message{"end": true, "error": errorText(err)})
 		}
 	}()
+	// Legacy jobhost arms port 5200 first and expects the connect wait to
+	// stay outside freezeMs. Session checkpoints walk before opening it.
+	if req.LegacyCheckpoint {
+		if err = connect(); err != nil {
+			return nil, err
+		}
+	}
 	frozenAt := time.Now()
 	freeze := g.freeze
 	if freeze == nil && g.vsock {
@@ -114,6 +129,14 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 		return nil, err
 	}
 	walkMs := elapsed(walkStart)
+	if len(ops) == 0 && !req.LegacyCheckpoint {
+		return message{"changed": false, "files": 0, "bytes": 0, "walkMs": walkMs}, nil
+	}
+	if !req.LegacyCheckpoint {
+		if err = connect(); err != nil {
+			return nil, err
+		}
+	}
 	if err = wire.Send(c, message{"v": 1, "kind": "checkpoint", "jobId": req.JobID, "baseTree": g.index.Tree, "walkMs": walkMs}); err != nil {
 		return nil, err
 	}
@@ -153,7 +176,11 @@ func (g *guest) checkpoint(parent context.Context, req request) (result message,
 		return nil, err
 	}
 	g.pending = ops
-	return message{"walkMs": walkMs, "streamMs": streamMs, "files": len(ops), "bytes": bytes, "skipped": skipped}, nil
+	result = message{"walkMs": walkMs, "streamMs": streamMs, "files": len(ops), "bytes": bytes, "skipped": skipped}
+	if !req.LegacyCheckpoint {
+		result["changed"] = true
+	}
+	return result, nil
 }
 
 func (g *guest) diff(ctx context.Context) ([]operation, int64, int, error) {

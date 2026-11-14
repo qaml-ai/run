@@ -44,10 +44,10 @@ standard library has JSON and needs no vendored modules, so its judge builds off
 toml-test's protocol directly. A task with its own toolchain names its image directory in `judgeImage`; `run.ts`
 builds it once (tagged by the directory's hash) and its fixtures are checked by `run.ts check` in docker, not in CI.
 
-Dry-mode agents have no compiler, and a Go port that does not build scores 0. Until `job()` exists, a task can ask
-for dry mode's stand-in (`"jobs": ["go"]`): the harness serves the orchestrator `go_build` and `go_decode` tools that
+Dry-mode agents have no compiler, and a Go port that does not build scores 0. A task can request
+`"jobs": ["go"]` to give the dry-mode orchestrator `go_build` and `go_decode` tools that
 build the volume as it is in the judge image (never running toml-test) and answer the compiler's output. Sub-agents
-do not get them, so the orchestrator runs the build round, as a workflow's `job()` would.
+do not get them, so the orchestrator runs the build round.
 
 **Tier L** needs infrastructure phase 1 does not have (see each `task.json`'s `needs`):
 
@@ -100,9 +100,7 @@ not (a typo, a one-file question, a local rename, a one-doc summary, one table's
 gets generated files, and each run stops at the agent's first decision, so the work is never paid for (about $0.05
 a prompt). The decision is `split` when the agent:
 
-- started a workflow whose script calls `agent()` (workflow mode). Agents also start workflows to run one command
-  (only `job()`) or to look around (a script that lists its globals); those are counted (`otherWorkflows`) and the run
-  goes on. Splitting with `delegate` instead is reported apart; or
+- started a workflow whose script calls `agent()` (workflow mode). Workflows without child agents are counted in `otherWorkflows`. Splitting with `delegate` instead is reported apart; or
 - started at least two sub-agents in its first turn (dry mode).
 
 The summary gives accuracy, how often the agent split when it should, and how often it split when it should not, for
@@ -113,8 +111,7 @@ wording to the orchestrator's prompt, to compare drafts before one ships. `choic
 `no-poll.md`, for waiting on notifications). `run.ts run --guidance <file>` gives a task run the same wording, so a
 wording that wins the choice eval can be checked on a real task.
 
-`run.ts polling [--guidance …]` counts how the owner waits (`choice/polling.json`: a one-job workflow, two jobs of
-different lengths, three worker agents). Each prompt runs to its end, and the summary reports `workflow_status`
+`run.ts polling [--guidance …]` counts how the owner waits (`choice/polling.json`: three worker agents). Each prompt runs to its end, and the summary reports `workflow_status`
 calls per workflow against the notifications the owner got, and whether it replied after the last one.
 
 `run.ts run --wall-minutes <n>` tightens a task's wall cap, for runs where splitting the work has to win on time.
@@ -127,15 +124,13 @@ calls per workflow against the notifications the owner got, and whether it repli
 ## Workflow mode
 
 The agent gets the task, delegate settings (so the `workflows` builtin is on) and one added sentence: which volume its
-`/workspace` is, since `agent(…, { repo })` and `job({ at })` take a volume id; plus the task's `workflowNote` (what a
-job's container has). Whether it writes a workflow is its own choice. The harness reads each workflow id from
+`/workspace` is. Whether it writes a workflow is its own choice. The harness reads each workflow id from
 `workflow_start`'s answer, waits for every workflow to end, then for the agent to go idle, and reads its history:
 
 - `notifications`: the workflow notifications it got (user messages the runtime writes with `metadata.kind:
   "workflow"`), whether it wrote text after the last one (it reported back), and its `workflow_status` calls (polling);
-- `choice.workflowAgents`, `choice.workflowJobs`: a workflow with jobs and no agents ran commands; it did not split
-  the work;
-- the cost is the tenant's spend across the run (runs are serialized), so children, jobs (`computer:cloudflare/…`)
+- `choice.workflowAgents` counts child agents across its workflows.
+- the cost is the tenant's spend across the run (runs are serialized), so children
   and the owner all count once, however usage rolls up;
 - `failures`: model errors and retries, failed sub-agents, failed or refused effects, faults, and with
   `--runtime-log` the runtime's own error lines during the run.
@@ -161,7 +156,7 @@ down by a third or more at quality within 2%.
 | `integrity` | What the output did to dodge the judge: test files deleted, cases removed, skip/todo/only markers added (`node:test`, Jest/Mocha, Rust `#[ignore]`, pytest, Go `t.Skip`), stubs (`not implemented` throws, `todo!()`, `unimplemented!()`, `NotImplementedError`), `@ts-ignore`/`@ts-nocheck`/`as any`, protected files edited; for rubric tasks, a shotgun list. `gamingSuspected` if any. The judge never counts a skipped test as a pass, and runs its own copy of the tests, so an edited test changes the flag, not the score |
 | `cost` | Total USD, by agent type (orchestrator, worker, critic, lead), by served model and by model class, tokens, `cacheShare` (cache reads over all input). From `GET /v1/agents/:id/usage?groupBy=definition,model&rollup=true`, plus the workflow ledger in workflow modes |
 | `wallMs`, `status` | Wall time; completed, budget (the spend cap stopped it), timeout, failed, unavailable or error |
-| `effects` | Children and grandchildren and their statuses; in workflow modes, effects and jobs too |
+| `effects` | Children and grandchildren and their statuses; in workflow modes, workflow effects too |
 | `conflicts`, `retries` | Write conflicts the agents' tools reported; effects re-run under a later attempt (workflow modes; null in dry mode) |
 | `choice` | Whether it delegated, how many delegate calls, whether it started a workflow, and every tool it called |
 
@@ -178,7 +173,7 @@ know (`--allow-host` for another dev runtime). Keys come from the environment on
 - **The pilot** (`https://run-pilot.camelai.dev`): `AGENT_RUNTIME_TOKEN` is a pilot tenant API key. An operator mints
   one with `node backends/workers/scripts/pilot-admin-key.mjs` in their own terminal (see `backends/workers/PILOT.md`)
   and keeps it in a password manager. The pilot's platform OpenRouter key pays for model calls.
-- **A local Workers dev runtime** with workflows on and `job()` on local Docker (`local-runtime.ts`):
+- **A local Workers dev runtime** with workflows and native computers on local Docker (`local-runtime.ts`):
 
   ```sh
   (cd backends/workers && npm ci)
@@ -188,9 +183,8 @@ know (`--allow-host` for another dev runtime). Keys come from the environment on
   node … evals/workflows/local-runtime.ts --stop        # removes the database, and the key stored in it
   ```
 
-  It derives a config from `wrangler.computers.test.jsonc` (the jobs e2e's) into `backends/workers/.wrangler/evals/`
-  (gitignored): real models, `AGENT_WORKFLOW_TENANTS` for the local tenant, a throwaway `.dev.vars` encryption key, and
-  a job image that adds Go 1.27.3 to the computers image (phase 1's `job()` has one image; the pilot's has no Go yet).
+  It derives a config from `wrangler.computers.test.jsonc` into `backends/workers/.wrangler/evals/`
+  (gitignored): real models, `AGENT_WORKFLOW_TENANTS` for the local tenant, a throwaway `.dev.vars` encryption key.
   It stores `OPENROUTER_API_KEY` on the local tenant through the API. The token is the local fixture operator token,
   not a credential. `--checkout <dir>` runs another checkout's Workers app, e.g. an unmerged branch.
 

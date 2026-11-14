@@ -29,9 +29,8 @@ const (
 )
 
 var (
-	jobID                  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,96}$`)
-	jailerID               = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
-	ErrAdoptNotImplemented = errors.New("VM adoption is not implemented")
+	jobID    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,96}$`)
+	jailerID = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 )
 
 // Launcher owns one work directory and the host's job tap and UID range.
@@ -79,7 +78,28 @@ type VM struct {
 func (v *VM) ID() string { return v.record.ID }
 
 func (l *Launcher) Adopt(id string) (*VM, error) {
-	return nil, ErrAdoptNotImplemented
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if v := l.live[id]; v != nil {
+		return v, nil
+	}
+	r, err := l.readRecord(id)
+	if err != nil {
+		return nil, err
+	}
+	fc, err := filepath.EvalSymlinks(l.Firecracker)
+	if err != nil {
+		return nil, err
+	}
+	v := &VM{
+		host: l, record: r, root: jailRoot(r, fc),
+		scopeAttempted: true, tapOwned: true, jailOwned: true,
+	}
+	if l.live == nil {
+		l.live = make(map[string]*VM)
+	}
+	l.live[id] = v
+	return v, nil
 }
 
 func (l *Launcher) Boot(ctx context.Context, id string, shape Shape, boot Boot) (*VM, error) {
@@ -117,14 +137,42 @@ func (l *Launcher) Boot(ctx context.Context, id string, shape Shape, boot Boot) 
 	return v, nil
 }
 
-func (v *VM) Request(ctx context.Context, req any, onLog LogFunc) (Reply, error) {
+func (v *VM) Request(ctx context.Context, req any, onLog LogFunc, events ...EventFunc) (Reply, error) {
 	v.mu.Lock()
 	c := v.channel
 	v.mu.Unlock()
 	if c == nil {
 		return nil, errors.New("guest channel is closed")
 	}
-	return c.request(ctx, req, onLog)
+	return c.request(ctx, req, onLog, events...)
+}
+
+// Reconnect replaces the current channel and returns the guest's session inventory.
+func (v *VM) Reconnect(ctx context.Context) (Reply, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.gone || v.root == "" {
+		return nil, errors.New("VM has no guest socket")
+	}
+	if v.channel != nil {
+		v.channel.conn.Close()
+	}
+	ctx, cancel := context.WithTimeout(ctx, bootDeadline)
+	defer cancel()
+	c, err := connectGuest(ctx, filepath.Join(v.root, "guest.vsock"), bootDeadline)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := c.request(ctx, map[string]string{"op": "sessions"}, nil)
+	if err != nil || reply["ok"] != true {
+		c.conn.Close()
+		if err == nil {
+			err = errors.New("guest refused sessions request")
+		}
+		return nil, err
+	}
+	v.channel = c
+	return reply, nil
 }
 
 func (l *Launcher) validate(id string, shape Shape) (int64, error) {
@@ -298,14 +346,21 @@ func (l *Launcher) start(ctx context.Context, id string, shape Shape, boot Boot)
 	return v, nil
 }
 
+func jailerVMID(id string) string {
+	if jailerID.MatchString(id) {
+		return id
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(id)))
+}
+
+func jailRoot(r VMRecord, fc string) string {
+	return filepath.Join(r.Jail, filepath.Base(fc), jailerVMID(r.ID), "root")
+}
+
 func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot Boot) error {
 	l, r := v.host, v.record
 	uid := l.uidBase() + r.Slot
-	fcID := r.ID
-	if !jailerID.MatchString(fcID) {
-		fcID = fmt.Sprintf("%x", sha256.Sum256([]byte(r.ID)))
-	}
-	v.root = filepath.Join(r.Jail, filepath.Base(fc), fcID, "root")
+	v.root = jailRoot(r, fc)
 	if err := os.MkdirAll(filepath.Dir(r.Jail), 0700); err != nil {
 		return err
 	}
@@ -367,7 +422,7 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	uidArg := strconv.Itoa(uid)
 	cmd := exec.Command("systemd-run", "--scope", "--slice=system.slice", "--unit="+r.Scope,
 		"--property=KillMode=control-group", "--property=TimeoutStopSec=3s",
-		"--", l.Jailer, "--id", fcID, "--exec-file", fc, "--uid", uidArg, "--gid", uidArg,
+		"--", l.Jailer, "--id", jailerVMID(r.ID), "--exec-file", fc, "--uid", uidArg, "--gid", uidArg,
 		"--chroot-base-dir", r.Jail, "--cgroup-version", "2", "--parent-cgroup", "system.slice/"+r.Scope,
 		"--", "--no-api", "--config-file", "/config.json", "--level", "Warning")
 	cmd.Stdout, cmd.Stderr = log, log
