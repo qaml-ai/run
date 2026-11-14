@@ -73,8 +73,6 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
     if (smokeWrite && failSmokeWrite)
       return Response.json({ error: { code: "stale", details: { current: "a".repeat(40) } } }, { status: 412 });
     const response = await fetchReal(url, init);
-    if (smokeWrite && response.ok)
-      return Response.json({ ...await response.json(), region: "us-west-2" }, { status: response.status });
     return response;
   };
   t.after(() => { globalThis.fetch = fetchReal; });
@@ -93,9 +91,8 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   assert.equal(smoke.ok, true);
   assert.match(smoke.lineage, /^smoke:/);
   assert.equal(smoke.colo, "SIN");
-  assert.equal(smoke.tierRegion, "us-west-2");
   assert.deepEqual(Object.keys(smoke).sort(),
-    ["cleanup", "colo", "completed", "iterations", "lineage", "ok", "routes", "statuses", "tierRegion", "twoCall", "window"]);
+    ["cleanup", "colo", "completed", "iterations", "lineage", "ok", "routes", "statuses", "twoCall", "window"]);
   assert.deepEqual(Object.keys(smoke.routes), ["putBlob", "commit", "write", "readBatch", "getCommit"]);
   for (const timing of [...Object.values(smoke.routes), smoke.twoCall] as { count: number; p50: number; p95: number; p99: number }[]) {
     assert.equal(timing.count, 2);
@@ -125,7 +122,6 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   assert.equal(failed.status, 502);
   const failedSmoke = await failed.json();
   assert.equal(failedSmoke.colo, null);
-  assert.equal(failedSmoke.tierRegion, undefined);
   assert.equal(failedSmoke.completed, 0);
   assert.deepEqual(failedSmoke.error, { status: 412, code: "stale", op: "write" });
   assert.deepEqual(failedSmoke.cleanup, { deleted: true });
@@ -155,11 +151,9 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const hinted = await handleCamelfsSmoke(hintedRequest("weur"), hintedEnv, auth);
   const far = await hinted.json();
   assert.equal(hinted.status, 200);
-  assert.deepEqual(Object.keys(far).sort(), [...Object.keys(smoke), "loc", "rayColo"].sort());
+  assert.deepEqual(Object.keys(far).sort(), [...Object.keys(smoke), "rayColo"].sort());
   assert.equal(far.colo, "FRA");
-  assert.equal(far.loc, "DE");
   assert.equal(far.rayColo, "AMS");
-  assert.equal(far.tierRegion, "us-west-2");
   assert.equal(far.completed, 1);
   assert.deepEqual(far.cleanup, { deleted: true });
   assert.ok(Object.values(far.routes).every(route => (route as { count: number }).count === 1));
