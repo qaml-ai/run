@@ -23,7 +23,6 @@ type sessionPeer struct {
 func sessionPeerFor(t *testing.T, g *guest) *sessionPeer {
 	t.Helper()
 	host, guest := net.Pipe()
-	host.SetDeadline(time.Now().Add(15 * time.Second))
 	p := &sessionPeer{t, host, json.NewDecoder(host), make(chan error, 1)}
 	go func() {
 		defer guest.Close()
@@ -33,8 +32,13 @@ func sessionPeerFor(t *testing.T, g *guest) *sessionPeer {
 	return p
 }
 
+// peerStepTimeout bounds one exchange, not the whole test: a test may make dozens of exec round trips
+// (TestExecRetention runs execExits+1 bash processes), which can exceed any fixed total on a loaded runner.
+const peerStepTimeout = 15 * time.Second
+
 func (p *sessionPeer) send(m message) {
 	p.t.Helper()
+	p.conn.SetWriteDeadline(time.Now().Add(peerStepTimeout))
 	if err := json.NewEncoder(p.conn).Encode(m); err != nil {
 		p.t.Fatal(err)
 	}
@@ -43,6 +47,7 @@ func (p *sessionPeer) send(m message) {
 func (p *sessionPeer) read() message {
 	p.t.Helper()
 	var m message
+	p.conn.SetReadDeadline(time.Now().Add(peerStepTimeout))
 	if err := p.dec.Decode(&m); err != nil {
 		p.t.Fatal(err)
 	}
