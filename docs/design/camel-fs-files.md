@@ -319,7 +319,8 @@ and delete are outside history: `createdAt` and `createdBy` sit on the item, and
 `version = :expect AND holder = :holder AND leaseEpoch = :epoch`, where holder and epoch come **only from the
 verified token's `fence` claim**, never from a request body (§9.10). An API writer's CAS is conditioned on
 `attribute_not_exists(holder)`.
-A lease is taken with `attribute_not_exists(holder) OR leaseDeadline < :now`, and the new epoch is the old one + 1.
+A lease is live while `now < leaseDeadline`: it expires **at** its deadline. So a lease is taken with
+`attribute_not_exists(holder) OR leaseDeadline <= :now`, and the new epoch is the old one + 1.
 `:now` is the tier node's clock (AWS Time Sync, sub-millisecond skew between nodes) against a 10-minute lease
 renewed every TTL/3, so skew is noise. A node whose clock disagrees with DynamoDB's own write time by more than a
 second refuses lease operations loudly. The rules of camel-fs.md §1.2 hold unchanged: one writer per branch,
@@ -336,7 +337,8 @@ contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` wi
   repos.
 - The tier refuses `507 storage_limit` with `{ limit }`, with **no** ref change, when
   `otherBytes + repoBytesAfter > limitBytes`.
-- `files` is the entry count of `main`. `bytes` and `files` come back in every write's result.
+- Every write's result carries `bytes` (the lineage's usage, `markedBytes + writtenSince`, below) and `files` (the
+  recursive file count of the moved-to tree).
 
 **How repo bytes are kept: decided (Miguel, 2026-11-13 ~17:40), the mark count plus bytes written since.**
 `repoBytes` is the exact distinct-blob bytes reachable from all of the repo's heads, as measured by the last GC mark
@@ -777,16 +779,25 @@ The runtime calls it at repo creation, before the first commit. `GET` returns th
 the partition (`refs?prefix=published/` lists a repo's publishes).
 
 **Create.** `POST /v1/lineages/{lineage}/refs` `{ "name", "version", "owner", "expiresAt"? }` → `201` with the
-item. Condition: `attribute_not_exists(name)`, else `409 ref_exists`. `version` must be a commit of the lineage
+item. Condition: `attribute_not_exists(name)`, or an expired unheld ref (`expiresAt <= :now`, no live lease), else
+`409 ref_exists`. `version` must be a commit of the lineage
 (`400 unknown_commit`). A branch copies nothing, whatever the tree's size, and may be created at any commit (rule 4). The owner prefix set and the name
 alphabet of §1 are enforced here.
 
-**Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. Condition: `version = :expect`
-and no live lease (`held` otherwise). Final: the ref's history stays reachable only from other refs.
+**Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. `expect` is optional: with it the
+condition includes `version = :expect` (`412 stale`); without it, only that no lease is live (`409 held`). Final:
+the ref's history stays reachable only from other refs.
+
+**Expiry and epochs, everywhere in this section:**
+- An unheld ref whose `expiresAt <= now` reads as **absent** on every route (`404 ref_not_found`, missing from
+  listings) and may be re-created.
+- `leaseEpoch` **never decreases** for a ref name, across delete and re-create, so a fence from a ref's earlier life
+  can never match a later one. C2 carries the epoch across the delete.
 
 **CAS (hosts, and any caller that wrote its own commit or moves to a recorded one).**
 `POST /v1/lineages/{lineage}/refs/{name}/cas` `{ "commit", "expect", "root"?, "quota"? }` →
 `200 { "version", "tree", "parents", "diff": [ …9.4's change shape… ], "bytes", "files" }`.
+- `expect` is required: `cas` never creates a ref (`400 invalid_request`; creation is `POST refs`).
 - The commit must be the lineage's (`400 unknown_commit`).
 - `expect` must be current (`412 stale`). `commit == expect` is a no-op (rule 3).
 - A commit made for this move must pass rule 1 (`409 bad_parent`); any other recorded commit must pass rule 2
@@ -831,9 +842,10 @@ never rewritten.
 
 **Leases.** `POST /v1/lineages/{lineage}/refs/{name}/lease` `{ "holder": { "host", "boot", "mount" }, "ttlMs" }`
 (`ttlMs` ≤ 600,000) → `200 { "epoch", "deadline", "version", "tree" }`. Condition:
-`attribute_not_exists(holder) OR leaseDeadline < :now`, else `409 held`; the epoch is the previous epoch + 1.
+`attribute_not_exists(holder) OR leaseDeadline <= :now` (a lease is live while `now < leaseDeadline`), else `409 held`;
+the epoch is the previous epoch + 1.
 `POST …/lease/renew` `{ "ttlMs" }` → `200 { "deadline" }`, with the condition `holder = :holder
-AND leaseEpoch = :epoch AND leaseDeadline >= :now`, where holder and epoch come from the token's `fence` claim
+AND leaseEpoch = :epoch AND leaseDeadline > :now`, where holder and epoch come from the token's `fence` claim
 (`409 fenced`). `DELETE …/lease` → `204`, under the same condition. The lease's `POST` needs a runtime token (§9.10); the
 runtime then mints the fence-scoped token from its answer. A host's pre-checkpoint check is a `GET` of the ref, comparing `holder` and
 `leaseEpoch`.
