@@ -31,7 +31,6 @@ interface __BaseEnv_PilotEnv {
 	AGENT_FREE_HOURLY_SPEND_USD: "100";
 	AGENTS: DurableObjectNamespace<import("./src/index").CamelAgent>;
 	TENANTS: DurableObjectNamespace<import("./src/index").TenantAdmission>;
-	VOLUMES: DurableObjectNamespace<import("./src/index").Volume>;
 	WORKFLOW_CAPACITY: DurableObjectNamespace<import("./src/index").WorkflowCapacity>;
 	JOB_HOSTS: DurableObjectNamespace<import("./src/index").JobHost>;
 	HOST_JOBS: DurableObjectNamespace<import("./src/index").HostJob>;
