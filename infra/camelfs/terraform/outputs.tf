@@ -3,26 +3,35 @@ output "public_url" {
   value       = "https://${var.hostname}"
 }
 
-output "internal_url" {
-  description = "The internal ALB, in-VPC: https://<internal_hostname>:<enroll_listener_port> is enrollment (plain TLS); nothing else is served there."
-  value       = "https://${var.internal_hostname}"
+output "enroll_endpoint" {
+  description = "Where camelfsd --role host enrolls (TIER_ENROLL_URL): the hosts NLB in TCP passthrough to the tier's --listen-enroll port; the tier serves its Private-CA certificate, which the host verifies against the pinned tier_ca (SAN spiffe://camelfs/tier)."
+  value       = "https://${aws_lb.hosts.dns_name}:${var.enroll_listener_port}"
 }
 
 output "hosts_endpoint" {
-  description = "Where camelfsd --role host dials the tier for every call after enrollment: the hosts NLB (TCP passthrough; the tier terminates mutual TLS and the host verifies spiffe://camelfs/tier against its enroll reply's caPem)."
+  description = "Where camelfsd --role host dials the tier for every call after enrollment (TIER_HOSTS_ENDPOINT): the hosts NLB, TCP passthrough; the tier terminates mutual TLS and the host verifies spiffe://camelfs/tier against the pinned tier_ca."
   value       = "${aws_lb.hosts.dns_name}:${var.hosts_port}"
 }
 
+output "tier_ca_s3" {
+  description = "The hosts' CA certificate (PEM) in the trust bucket, which host-setup installs as --tier-ca (TIER_CA_S3); the host policy may read exactly this object."
+  value       = "s3://${aws_s3_bucket.trust.bucket}/${aws_s3_object.hosts_ca.key}"
+}
+
+output "tier_ca_sha256" {
+  description = "sha256 of that PEM as stored, for TIER_CA_SHA256 in kvm-host.conf: host-setup refuses a CA whose hash differs."
+  value       = sha256(aws_acmpca_certificate.hosts_root.certificate)
+}
+
 output "load_balancer_dns_names" {
-  description = "The two balancers' own names, by key (public, internal): the CNAME targets of hostname (proxied) and internal_hostname (DNS only) in Cloudflare."
-  value       = { for key, balancer in aws_lb.api : key => balancer.dns_name }
+  description = "The balancers' own names: public (the CNAME target of hostname in Cloudflare, proxied) and hosts (the NLB hosts dial directly; no DNS record)."
+  value       = merge({ for key, balancer in aws_lb.api : key => balancer.dns_name }, { hosts = aws_lb.hosts.dns_name })
 }
 
 output "dns_records" {
-  description = "The two CNAMEs to create in Cloudflare by hand: hostname → the public balancer (proxied), internal_hostname → the internal balancer (DNS only)."
+  description = "The one CNAME to keep in Cloudflare by hand: hostname → the public balancer (proxied). internal_hostname's record points at nothing now (the internal ALB is gone) and can be removed."
   value = {
-    (var.hostname)          = { type = "CNAME", target = aws_lb.api["public"].dns_name, proxied = true }
-    (var.internal_hostname) = { type = "CNAME", target = aws_lb.api["internal"].dns_name, proxied = false }
+    (var.hostname) = { type = "CNAME", target = aws_lb.api["public"].dns_name, proxied = true }
   }
 }
 
@@ -103,7 +112,7 @@ output "token_verify_keys_secret_arn" {
 }
 
 output "hosts_ca_arn" {
-  description = "The hosts' Private CA (short-lived mode): camelfsd api --hosts-ca. Hosts trust its certificate, delivered in their enroll reply, for the tier on the NLB and on --listen-compute."
+  description = "The hosts' Private CA (short-lived mode): camelfsd api --hosts-ca. Hosts pin its certificate at install (tier_ca_s3 / tier_ca_sha256) and trust nothing else for the tier."
   value       = aws_acmpca_certificate_authority.hosts.arn
 }
 
@@ -123,9 +132,10 @@ output "aop_ca_secret_arn" {
 }
 
 output "mtls" {
-  description = "Mutual TLS status: the public listener's mode (off until aop_ca_version pins the AOP CA); host routes behind the NLB where the tier terminates mTLS itself; the enrollment listener and port."
+  description = "Mutual TLS status: the public listener's mode (off until aop_ca_version pins the AOP CA); enrollment and host routes behind the NLB where the tier terminates TLS itself with its Private-CA certificate."
   value = {
     public_mode          = var.aop_ca_version == null ? "off" : "verify"
+    enroll_endpoint      = "https://${aws_lb.hosts.dns_name}:${var.enroll_listener_port}"
     hosts_endpoint       = "${aws_lb.hosts.dns_name}:${var.hosts_port}"
     aop_ca_version       = var.aop_ca_version
     enroll_listener_port = var.enroll_listener_port

@@ -16,11 +16,14 @@
 #      own certificate (spiffe://camelfs/tier, server + client EKU) comes from the same CA; it serves it on
 #      --listen-hosts and presents it on --listen-compute, and hosts verify it by SAN against the CA certificate
 #      their enroll reply carries (the host side is K2, not here; no host reads the trust bucket).
-#   3. Enrollment: a new host has no certificate yet, so it presents its STS attestation once on a SEPARATE
-#      internal listener without client certificates (enroll_listener_port), which forwards only
-#      POST /v1/hosts/enroll, to a SEPARATE container port (enroll_port) where the tier serves only that route and
-#      trusts no mTLS header. Two ports, so a request can never arrive on the mTLS-trusting port without having
-#      passed the verify-mode listener.
+#   3. Enrollment: a new host has no certificate yet, so it presents its STS attestation once to a SEPARATE
+#      container port (enroll_port) where the tier serves only POST /v1/hosts/enroll over TLS with its own
+#      Private-CA certificate and asks for no client certificate. The host reaches it through the same NLB in TCP
+#      passthrough on enroll_listener_port, and verifies the tier against the CA certificate it PINS at install
+#      (tier_ca_s3 / tier_ca_sha256 below; the lead's ruling, 2026-11-14): never public roots, nothing learned from
+#      the network. (Until then enrollment sat behind an internal ALB with the public ACM certificate, which a
+#      pinning host refuses; that ALB is gone.) Two container ports, so a request can never arrive on the
+#      mTLS-trusting hosts port without having presented a host certificate.
 #   4. The camelfs-host+jwt family (service-signing-key, service-verify-keys) is replaced by this and removed.
 
 # --- Trust stores' bucket: public CA certificates only, versioned so a trust store pins one object version ---
@@ -160,10 +163,25 @@ resource "aws_acmpca_certificate_authority_certificate" "hosts" {
 
 data "aws_partition" "current" {}
 
-# --- Host → tier: an internal NLB in TCP passthrough to the tier's --listen-hosts port ---
+# --- The hosts' CA certificate, pinned by hosts at install (TIER_CA_S3 / TIER_CA_SHA256 in kvm-host.conf) ---
 #
-# No TLS termination and no header: the tier sees the host's client certificate itself. The NLB carries a security
-# group (hosts' groups in on hosts_port; api tasks out on hosts_port), the tasks admit hosts_port from that group
+# The host policy may read this one object (iam.tf); host-setup verifies its sha256 against the value pinned in the
+# host's config (output tier_ca_sha256) before installing it as --tier-ca. A CA rotation is a new object version, a
+# new pinned hash and a host-setup run — deliberately not automatic.
+resource "aws_s3_object" "hosts_ca" {
+  bucket       = aws_s3_bucket.trust.bucket
+  key          = "hosts-ca.pem"
+  content      = aws_acmpca_certificate.hosts_root.certificate
+  content_type = "application/x-pem-file"
+
+  depends_on = [aws_s3_bucket_versioning.trust]
+}
+
+# --- Host → tier: an internal NLB in TCP passthrough to the tier's --listen-hosts and --listen-enroll ports ---
+#
+# No TLS termination and no header: the tier sees the host's client certificate itself on the hosts port and serves
+# its own certificate on both. The NLB carries a security group (hosts' groups in on hosts_port and
+# enroll_listener_port; api tasks out on hosts_port and enroll_port), the tasks admit those ports from that group
 # alone, and cross-zone balancing is on so any AZ's hosts reach any AZ's tasks. Client addresses are preserved to
 # the tasks, as NLBs do for IP targets, so the tier's logs carry the host's address.
 
@@ -184,6 +202,16 @@ resource "aws_vpc_security_group_ingress_rule" "nlb_hosts_from_hosts" {
   description                  = "Host routes (mutual TLS, terminated by the tier) from camelfsd --role host"
 }
 
+resource "aws_vpc_security_group_ingress_rule" "nlb_hosts_from_hosts_enroll" {
+  for_each                     = toset(var.host_security_group_ids)
+  security_group_id            = aws_security_group.nlb_hosts.id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = var.enroll_listener_port
+  to_port                      = var.enroll_listener_port
+  description                  = "Enrollment (STS attestation, tier TLS, no client certificate) from camelfsd --role host"
+}
+
 resource "aws_vpc_security_group_egress_rule" "nlb_hosts_to_api" {
   security_group_id            = aws_security_group.nlb_hosts.id
   referenced_security_group_id = aws_security_group.api.id
@@ -191,6 +219,24 @@ resource "aws_vpc_security_group_egress_rule" "nlb_hosts_to_api" {
   from_port                    = var.hosts_port
   to_port                      = var.hosts_port
   description                  = "API tasks, hosts port"
+}
+
+resource "aws_vpc_security_group_egress_rule" "nlb_hosts_to_enroll" {
+  security_group_id            = aws_security_group.nlb_hosts.id
+  referenced_security_group_id = aws_security_group.api.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.enroll_port
+  to_port                      = var.enroll_port
+  description                  = "API tasks, enrollment port"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_enroll_from_nlb" {
+  security_group_id            = aws_security_group.api.id
+  referenced_security_group_id = aws_security_group.nlb_hosts.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.enroll_port
+  to_port                      = var.enroll_port
+  description                  = "hosts NLB, enrollment port"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "api_hosts_from_nlb" {
@@ -248,23 +294,25 @@ resource "aws_lb_listener" "hosts" {
   }
 }
 
-# --- 3. Enrollment: a plain-TLS internal listener for POST /v1/hosts/enroll, to its own container port ---
+# --- 3. Enrollment: TCP passthrough on the NLB to the tier's --listen-enroll port ---
 
 resource "aws_lb_target_group" "enroll" {
   name        = "${var.name}-${var.env}-enroll"
   target_type = "ip"
-  protocol    = "HTTP"
+  protocol    = "TCP"
   port        = var.enroll_port
   vpc_id      = data.aws_vpc.default.id
 
   deregistration_delay = 30
 
+  # The same health route the balancers probe, on the api port (the enrollment port serves one route, over TLS).
   health_check {
-    path                = var.api_health_path
+    protocol            = "HTTP"
     port                = tostring(var.api_port)
+    path                = var.api_health_path
     matcher             = "200"
-    interval            = 5
-    timeout             = 4
+    interval            = 10
+    timeout             = 6
     healthy_threshold   = 2
     unhealthy_threshold = 3
   }
@@ -273,56 +321,18 @@ resource "aws_lb_target_group" "enroll" {
 }
 
 resource "aws_lb_listener" "enroll" {
-  count = var.certificate_issued ? 1 : 0
-
-  load_balancer_arn = aws_lb.api["internal"].arn
+  load_balancer_arn = aws_lb.hosts.arn
   port              = var.enroll_listener_port
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.api[0].certificate_arn
-
-  # No client certificate here, by design: the only route is the one that gets a host its first certificate.
-  mutual_authentication {
-    mode = "off"
-  }
+  protocol          = "TCP"
 
   default_action {
-    type = "fixed-response"
-    fixed_response {
-      content_type = "text/plain"
-      message_body = "not found"
-      status_code  = "404"
-    }
-  }
-}
-
-resource "aws_lb_listener_rule" "enroll" {
-  count = var.certificate_issued ? 1 : 0
-
-  listener_arn = aws_lb_listener.enroll[0].arn
-  priority     = 10
-
-  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.enroll.arn
   }
-
-  condition {
-    path_pattern {
-      values = ["/v1/hosts/enroll"]
-    }
-  }
-  condition {
-    http_request_method {
-      values = ["POST"]
-    }
-  }
 }
 
-# Host routes are reachable only through the internal balancer (wf-durable, 2026-11-13: two locks, not one). The
-# public listener runs verify mode too, against the AOP CA, and sets the same X-Amzn-Mtls-Clientcert-* headers from
-# Cloudflare's leaf; the tier refuses any /v1/hosts/* whose leaf does not chain to the private CA with a host SAN,
-# and this rule makes the public path a 404 before the tier ever sees it.
+# Host routes are reachable only through the NLB (wf-durable, 2026-11-13: two locks, not one). The tier serves
+# host routes on their own port alone, and this rule makes the public path a 404 before the tier ever sees it.
 resource "aws_lb_listener_rule" "public_no_host_routes" {
   count = var.certificate_issued ? 1 : 0
 
@@ -345,30 +355,3 @@ resource "aws_lb_listener_rule" "public_no_host_routes" {
   }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_internal_hosts_enroll" {
-  for_each                     = toset(var.host_security_group_ids)
-  security_group_id            = aws_security_group.alb_internal.id
-  referenced_security_group_id = each.value
-  ip_protocol                  = "tcp"
-  from_port                    = var.enroll_listener_port
-  to_port                      = var.enroll_listener_port
-  description                  = "Enrollment (no client certificate) from camelfsd --role host"
-}
-
-resource "aws_vpc_security_group_egress_rule" "alb_internal_to_enroll" {
-  security_group_id            = aws_security_group.alb_internal.id
-  referenced_security_group_id = aws_security_group.api.id
-  ip_protocol                  = "tcp"
-  from_port                    = var.enroll_port
-  to_port                      = var.enroll_port
-  description                  = "API tasks, enrollment port"
-}
-
-resource "aws_vpc_security_group_ingress_rule" "api_enroll_from_alb_internal" {
-  security_group_id            = aws_security_group.api.id
-  referenced_security_group_id = aws_security_group.alb_internal.id
-  ip_protocol                  = "tcp"
-  from_port                    = var.enroll_port
-  to_port                      = var.enroll_port
-  description                  = "internal load balancer, enrollment port"
-}

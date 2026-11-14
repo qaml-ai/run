@@ -100,8 +100,8 @@ run "first_apply_before_the_certificate" {
   command = plan
 
   assert {
-    condition     = length(aws_acm_certificate_validation.api) == 0 && length(aws_lb_listener.api_https) == 0 && length(aws_lb_listener.enroll) == 0 && length(aws_ecs_service.api) == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
-    error_message = "Before certificate_issued there is no validation wait, no HTTPS or enrollment listener, no service, no autoscaling and no service alarm: the first apply never hangs on DNS."
+    condition     = length(aws_acm_certificate_validation.api) == 0 && length(aws_lb_listener.api_https) == 0 && length(aws_ecs_service.api) == 0 && length(aws_appautoscaling_target.api) == 0 && length(aws_cloudwatch_metric_alarm.running_tasks) == 0
+    error_message = "Before certificate_issued there is no validation wait, no HTTPS listener, no service, no autoscaling and no service alarm: the first apply never hangs on DNS."
   }
   assert {
     condition     = length(aws_lb_trust_store.aop) == 0 && aws_acmpca_certificate_authority.hosts.usage_mode == "SHORT_LIVED_CERTIFICATE" && aws_acmpca_certificate_authority.hosts.type == "ROOT"
@@ -112,13 +112,19 @@ run "first_apply_before_the_certificate" {
       aws_lb.hosts.load_balancer_type == "network" && aws_lb.hosts.internal == true && aws_lb.hosts.enable_cross_zone_load_balancing == true
       && aws_lb_listener.hosts.protocol == "TCP" && aws_lb_listener.hosts.port == 8794
       && aws_lb_target_group.hosts.protocol == "TCP" && aws_lb_target_group.hosts.port == 8794 && aws_lb_target_group.hosts.health_check[0].path == "/v0/health" && aws_lb_target_group.hosts.health_check[0].port == "8790"
-      && length(aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts) == 0
+      && aws_lb_listener.enroll.protocol == "TCP" && aws_lb_listener.enroll.port == 8443 && aws_lb_listener.enroll.load_balancer_arn == aws_lb.hosts.arn
+      && aws_lb_target_group.enroll.protocol == "TCP" && aws_lb_target_group.enroll.port == 8793 && aws_lb_target_group.enroll.health_check[0].port == "8790"
+      && length(aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts) == 0 && length(aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts_enroll) == 0
     )
-    error_message = "Host routes: an internal NLB in TCP passthrough on 8794 to the tier (the tier terminates mTLS), health-checked on the api port; no host admitted until the host groups are named."
+    error_message = "Enrollment (8443 → 8793) and host routes (8794 → 8794) both go through the NLB in TCP passthrough, health-checked on the api port; no host admitted until the host groups are named."
   }
   assert {
-    condition     = keys(aws_lb_target_group.api) == ["public"] && keys(aws_vpc_security_group_ingress_rule.api_from_alb) == ["public"]
-    error_message = "The api target group and the api-port ingress exist for the public balancer only: the internal ALB keeps the enrollment path alone."
+    condition     = keys(aws_lb.api) == ["public"] && keys(aws_lb_target_group.api) == ["public"] && keys(aws_vpc_security_group_ingress_rule.api_from_alb) == ["public"]
+    error_message = "One ALB, the public one: the internal ALB is gone (hosts pin the Private CA and refuse public certificates)."
+  }
+  assert {
+    condition     = aws_s3_object.hosts_ca.key == "hosts-ca.pem" && output.tier_ca_sha256 == sha256(aws_acmpca_certificate.hosts_root.certificate) && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "TierCaRead"] == [["arn:aws:s3:::camelfs-prod-904534089871/hosts-ca.pem"]]
+    error_message = "The hosts' CA PEM is in the trust bucket with its sha256 output for the host's pin, and the host policy reads exactly that object (the mock gives both buckets one ARN)."
   }
   assert {
     condition     = output.service_name == "" && aws_acm_certificate.api.validation_method == "DNS" && aws_acm_certificate.api.domain_name == "fs.camelai.dev" && aws_acm_certificate.api.subject_alternative_names == toset(["fs-internal.camelai.dev"])
@@ -179,8 +185,8 @@ run "balancers" {
     error_message = "HTTP/2 is off on both load balancers (the 2026-10-24 stall)."
   }
   assert {
-    condition     = aws_lb.api["public"].internal == false && aws_lb.api["internal"].internal == true
-    error_message = "One internet-facing balancer for the runtime, one internal balancer for the hosts."
+    condition     = aws_lb.api["public"].internal == false && aws_lb.hosts.internal == true && aws_lb.hosts.load_balancer_type == "network"
+    error_message = "One internet-facing ALB for the runtime, one internal NLB for the hosts."
   }
   assert {
     condition     = length(aws_lb_listener.api_https) == 0
@@ -191,12 +197,12 @@ run "balancers" {
     error_message = "The public balancer admits 443 from each Cloudflare IPv4 range and nothing else."
   }
   assert {
-    condition     = length(aws_vpc_security_group_ingress_rule.alb_internal_hosts_enroll) == 0
-    error_message = "With no host security groups named, the internal balancer admits nothing."
+    condition     = length(aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts_enroll) == 0
+    error_message = "With no host security groups named, the NLB admits nothing on the enrollment port."
   }
   assert {
-    condition     = output.dns_records["fs.camelai.dev"].proxied == true && output.dns_records["fs-internal.camelai.dev"].proxied == false && output.dns_records["fs.camelai.dev"].type == "CNAME"
-    error_message = "The DNS records to make by hand: the public name proxied, the internal name DNS only."
+    condition     = keys(output.dns_records) == ["fs.camelai.dev"] && output.dns_records["fs.camelai.dev"].proxied == true && output.dns_records["fs.camelai.dev"].type == "CNAME"
+    error_message = "One DNS record to keep by hand: the public name, proxied."
   }
   assert {
     condition     = alltrue([for group in aws_lb_target_group.api : group.health_check[0].path == "/v0/health" && group.health_check[0].matcher == "200"])
@@ -212,12 +218,12 @@ run "internal_balancer_admits_the_hosts" {
 
   assert {
     condition = (
-      toset([for rule in aws_vpc_security_group_ingress_rule.alb_internal_hosts_enroll : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
-      && alltrue([for rule in aws_vpc_security_group_ingress_rule.alb_internal_hosts_enroll : rule.from_port == 8443])
+      toset([for rule in aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts_enroll : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
+      && alltrue([for rule in aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts_enroll : rule.from_port == 8443])
       && toset([for rule in aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
       && alltrue([for rule in aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts : rule.from_port == 8794])
     )
-    error_message = "Each host security group gets the enrollment port on the internal ALB and the hosts port on the NLB, nothing on 443."
+    error_message = "Each host security group gets the enrollment and hosts ports on the NLB, nothing on 443."
   }
   assert {
     condition = (
@@ -327,21 +333,13 @@ run "second_apply_with_the_certificate" {
 
   assert {
     condition     = length(aws_acm_certificate_validation.api) == 1 && keys(aws_lb_listener.api_https) == ["public"] && aws_lb_listener.api_https["public"].protocol == "HTTPS" && aws_lb_listener.api_https["public"].port == 443
-    error_message = "With the certificate issued: the validation wait and the public HTTPS listener on 443 (the internal ALB has only the enrollment listener)."
+    error_message = "With the certificate issued: the validation wait and the public HTTPS listener on 443."
   }
   assert {
     condition     = aws_lb_listener.api_https["public"].mutual_authentication[0].mode == "off"
     error_message = "The public listener runs off until the AOP CA is pinned."
   }
-  assert {
-    condition = (
-      length(aws_lb_listener.enroll) == 1 && aws_lb_listener.enroll[0].port == 8443 && aws_lb_listener.enroll[0].mutual_authentication[0].mode == "off"
-      && aws_lb_listener.enroll[0].default_action[0].type == "fixed-response"
-      && anytrue([for condition in aws_lb_listener_rule.enroll[0].condition : try(tolist(condition.path_pattern)[0].values, toset([])) == toset(["/v1/hosts/enroll"])])
-      && aws_lb_target_group.enroll.port == 8793
-    )
-    error_message = "The enrollment listener (8443, no client certificate) forwards only POST /v1/hosts/enroll to the enrollment port (8793); everything else is 404."
-  }
+
   assert {
     condition = (
       length(aws_lb_listener_rule.public_no_host_routes) == 1
@@ -426,8 +424,8 @@ run "service_with_every_feature" {
     error_message = "With \"compute\" the service registers the enrollment and hosts groups too."
   }
   assert {
-    condition     = length(aws_vpc_security_group_ingress_rule.api_health_from_internal) == 2 && alltrue([for rule in aws_vpc_security_group_ingress_rule.api_health_from_internal : rule.from_port == 8790]) && length(aws_vpc_security_group_egress_rule.internal_health_to_api) == 2
-    error_message = "The internal ALB and the NLB reach the tasks on the api port for health checks, both directions."
+    condition     = keys(aws_vpc_security_group_ingress_rule.api_health_from_internal) == ["nlb_hosts"] && alltrue([for rule in aws_vpc_security_group_ingress_rule.api_health_from_internal : rule.from_port == 8790]) && keys(aws_vpc_security_group_egress_rule.internal_health_to_api) == ["nlb_hosts"]
+    error_message = "The NLB reaches the tasks on the api port for health checks, both directions."
   }
   assert {
     condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--lineages-table", "camelfs-prod-lineages", "--marks-table", "camelfs-prod-marks", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]

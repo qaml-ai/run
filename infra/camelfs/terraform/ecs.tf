@@ -1,5 +1,5 @@
-# The api tier: camelfsd api as an autoscaled Fargate service (Graviton) behind the public ALB (alb.tf), the
-# hosts' NLB and the enrollment listener of the internal ALB (mtls.tf).
+# The api tier: camelfsd api as an autoscaled Fargate service (Graviton) behind the public ALB (alb.tf) and the
+# hosts' NLB (mtls.tf: enrollment and host routes, TCP passthrough).
 #
 # Fargate over an ASG (the README weighs it): the tier is a stateless Go process that needs no NVMe, no KVM and no
 # host-level anything, so the only things an ASG would add are an AMI to bake, a host to patch and an agent to
@@ -156,12 +156,11 @@ resource "aws_vpc_security_group_egress_rule" "api_https" {
 }
 
 # Health checks of the enrollment and hosts target groups probe /v0/health on the API PORT (the enrollment and hosts
-# ports serve no unauthenticated route), so the internal ALB's and the NLB's groups must reach the tasks on 8790
-# for that one purpose. No listener forwards host traffic to 8790 (the internal ALB's only listener forwards
-# POST /v1/hosts/enroll to the enrollment port; the NLB forwards to the hosts port), so these rules carry health
-# checks and nothing else.
+# ports serve no unauthenticated plain-HTTP route), so the NLB's group must reach the tasks on 8790 for that one
+# purpose. No NLB listener forwards to 8790 (they forward to the enrollment and hosts ports), so these rules carry
+# health checks and nothing else.
 resource "aws_vpc_security_group_ingress_rule" "api_health_from_internal" {
-  for_each                     = { alb_internal = aws_security_group.alb_internal.id, nlb_hosts = aws_security_group.nlb_hosts.id }
+  for_each                     = { nlb_hosts = aws_security_group.nlb_hosts.id }
   security_group_id            = aws_security_group.api.id
   referenced_security_group_id = each.value
   ip_protocol                  = "tcp"
@@ -171,7 +170,7 @@ resource "aws_vpc_security_group_ingress_rule" "api_health_from_internal" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "internal_health_to_api" {
-  for_each                     = { alb_internal = aws_security_group.alb_internal.id, nlb_hosts = aws_security_group.nlb_hosts.id }
+  for_each                     = { nlb_hosts = aws_security_group.nlb_hosts.id }
   security_group_id            = each.value
   referenced_security_group_id = aws_security_group.api.id
   ip_protocol                  = "tcp"
@@ -291,8 +290,8 @@ resource "aws_ecs_service" "api" {
     }
   }
 
-  # The enrollment port, behind the internal balancer's plain-TLS listener, and the hosts port, behind the NLB in
-  # TCP passthrough (mtls.tf): registered once "compute" is on and the daemon listens there.
+  # The enrollment and hosts ports, both behind the NLB in TCP passthrough (mtls.tf): registered once "compute" is
+  # on and the daemon listens there.
   dynamic "load_balancer" {
     for_each = local.compute_enabled ? { enroll = { group = aws_lb_target_group.enroll.arn, port = var.enroll_port }, hosts = { group = aws_lb_target_group.hosts.arn, port = var.hosts_port } } : {}
     content {

@@ -39,7 +39,7 @@ variable "hostname" {
 }
 
 variable "internal_hostname" {
-  description = "The in-VPC hostname of the API tier (a DNS-only record to the internal load balancer; its name resolves to private addresses): what camelfsd --role host on the job hosts calls. In the cloudflare_zone_id zone."
+  description = "A SAN kept on the certificate (changing a certificate's names replaces it). The internal ALB it named is gone: hosts dial the NLB by its own name and pin the Private CA; the Cloudflare CNAME can be removed."
   type        = string
   default     = "fs-internal.camelai.dev"
   validation {
@@ -190,7 +190,7 @@ variable "aop_ca_version" {
 }
 
 variable "enroll_listener_port" {
-  description = "The internal ALB's plain-TLS listener for host enrollment (no client certificate; serves only POST /v1/hosts/enroll). Hosts need egress to it and to hosts_port (job-hosts allows 443 only today)."
+  description = "The NLB's TCP-passthrough listener for host enrollment, to the tier's --listen-enroll port (the tier serves TLS with its Private-CA certificate; no client certificate; only POST /v1/hosts/enroll). Hosts need egress to it and to hosts_port (job-hosts allows 443 only today)."
   type        = number
   default     = 8443
 }
@@ -202,7 +202,7 @@ variable "hosts_port" {
 }
 
 variable "enroll_port" {
-  description = "The container port the tier serves enrollment on (camelfsd api --listen-enroll); separate from api_port so a request can never reach the mTLS-trusting port without passing the verify-mode listener."
+  description = "The container port the tier serves enrollment on (camelfsd api --listen-enroll, TLS with its own certificate); separate from the hosts port so an unenrolled host can never reach a route that trusts a client certificate."
   type        = number
   default     = 8793
 }
