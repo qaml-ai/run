@@ -23,6 +23,8 @@ export class CamelAgent extends RuntimeAgent {
   async fetch(request: Request) {
     const path = new URL(request.url).pathname;
     if (this.env.TEST_HOOKS === "1") {
+      if (path === "/__test/computer-hint" && request.method === "DELETE")
+        return Response.json(await this.clearComputerAttached());
       if (path === "/__test/computer-hint" && request.method === "GET")
         return Response.json({
           afterConfiguration: await this.ctx.storage.get("test:after-configuration"),
