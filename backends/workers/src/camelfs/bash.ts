@@ -56,7 +56,16 @@ type Branch = { branch: string; lineage: string; ref: string };
 type Vm = Branch & { vm_id: string; shell: string | null; state: "creating" | "running" | "stopped"; deadline: number; created_at: number };
 type Boot = ReturnType<typeof bootSpec> & { id: string; lineage: string; ref: string; deadline: number };
 type Intent = { vm: Vm; first: boolean; body: { execId: string; command: string; shell: string; cwd?: string; timeoutS: number } };
-type Checkpoint = { vm: Vm; callId: string; requestId?: string; message: string; time: number; started?: boolean };
+type Checkpoint = { vm: Vm; callId: string; requestId?: string; agent?: string; message: string; time: number; started?: boolean };
+/**
+ * The body of POST /v1/vms/{id}/checkpoint, as the compute host decodes it: hostwire.CheckpointRequest with its
+ * trailers as camelfsd's image.Trailers, which refuses any key it does not know (agent, run, turn, job, kind,
+ * exitCode). The host writes them as Camel-Agent / Camel-Run / Camel-Checkpoint / Camel-Op: turn and authors the
+ * commit as agent:<id>. tests/contract/checkpoint-body.json pins this shape for camelfsd's own validator test.
+ */
+export function checkpointBody(c: { message: string; time: number; agent?: string; requestId?: string }) {
+  return { message: c.message, time: c.time, trailers: { kind: "auto", ...(c.agent ? { agent: c.agent } : {}), ...(c.requestId ? { run: c.requestId } : {}) } };
+}
 type SessionResult = BashResult & { checkpointWarning?: string };
 type Receipt = { intent?: Intent; result?: SessionResult; checkpoint?: Checkpoint };
 type Args = { command: string; cwd?: string; timeoutSeconds?: number };
@@ -328,7 +337,7 @@ export class BashSessions {
         }
         const { bytes, ms } = streamed;
         const result: SessionResult = streamed.result;
-        const checkpoint = { vm, callId, requestId, message: (`bash: ${body.command.split(/\r?\n/, 1)[0]}`).slice(0, 72), time: Date.now() };
+        const checkpoint = { vm, callId, requestId, agent: conf.id, message: (`bash: ${body.command.split(/\r?\n/, 1)[0]}`).slice(0, 72), time: Date.now() };
         // The wake is durable before the receipt leaves a pending checkpoint.
         await this.arm(Date.now() + 1_000, invocation);
         this.storage.transactionSync(() => {
@@ -349,7 +358,7 @@ export class BashSessions {
     });
   }
 
-  runningFiles(lineage: string, ref: string): VmFiles | undefined {
+  runningFiles(lineage: string, ref: string, agent?: string): VmFiles | undefined {
     const branch = JSON.stringify([lineage, ref]);
     const vm = this.row(branch);
     if (vm?.state !== "running") return;
@@ -374,7 +383,7 @@ export class BashSessions {
       (execId, command, input, mutation) => onVm(async () => {
         const timeoutS = 120;
         const body = { execId, command, ...input, cwd: BASH_WORKDIR, timeoutS };
-        const checkpoint = { vm, callId: execId, message: "Save VM file changes", time: Date.now() };
+        const checkpoint = { vm, callId: execId, ...(agent ? { agent } : {}), message: "Save VM file changes", time: Date.now() };
         const key = JSON.stringify(["vmfiles", vm.vm_id]);
         if (mutation) {
           await AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope));
@@ -424,14 +433,14 @@ export class BashSessions {
     const rows = this.sql.exec<{ id: string; receipt: string }>("SELECT id,receipt FROM agent_vm_calls WHERE branch=? AND checkpoint=1 ORDER BY rowid", branch).toArray();
     for (const row of rows) {
       const { result, checkpoint } = JSON.parse(row.receipt) as { result?: SessionResult; checkpoint: Checkpoint };
-      const { vm, callId, requestId, message, time } = checkpoint;
+      const { vm, callId, requestId } = checkpoint;
       const started = Date.now();
       let failure = result?.checkpointError;
       let changed: boolean | undefined;
       try {
         if (!result?.checkpointError) {
           if (!checkpoint.started) this.save(row.id, branch, { result, checkpoint: { ...checkpoint, started: true } });
-          const reply = await this.request<Head & { diff: unknown; changed: boolean }>(vm, "POST", "/checkpoint", { message, trailers: { "Camel-Tool-Call": callId }, time });
+          const reply = await this.request<Head & { diff: unknown; changed: boolean }>(vm, "POST", "/checkpoint", checkpointBody(checkpoint));
           changed = reply.changed;
           this.rememberHead(vm, reply);
           if (changed) this.recordHead(vm, reply);

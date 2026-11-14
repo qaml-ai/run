@@ -2,13 +2,13 @@ import { AgentInvocation } from "./agent-invocation.ts";
 import { agentRepoId } from "./repos/identity.ts";
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { compile } from "@earendil-works/pi-schema";
-import { GENERATE_IMAGE, generateImage, Imager, openaiImages, type Hold } from "./media/images.ts";
+import { GENERATE_IMAGE, generateImage, Imager, openaiImages } from "./media/images.ts";
 import type { AgentIdentity, ToolFiles, UsageRecord } from "./media/types.ts";
 import type { MediaBindings } from "./media-api.ts";
 import { mediaAzure } from "./media-azure.ts";
 import { keyServices, type KeyServices, type KeyEnv } from "./security-services.ts";
 import { database, transaction } from "./postgres.ts";
-import { EndUserCredits } from "./end-user-credits.ts";
+import { utcDay, creditError, EndUserCredits } from "./end-user-credits.ts";
 import { publishPending } from "./webhooks.ts";
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from "./auxiliary-usage.ts";
 import type { FileBindings, Mount, WrittenRepoFile } from "./files.ts";
@@ -22,7 +22,7 @@ export type AgentMediaScope = {
 };
 type CallScope = AgentMediaScope & { callId: string; startedAt: number };
 type UsageScope = Pick<CallScope, "tenant" | "agent" | "requestId" | "callId" | "startedAt" | "identity" | "actor" | "keyScope" | "bucket">;
-type MediaReceipt = { scope: UsageScope; usage: UsageRecord };
+type MediaReceipt = { scope: UsageScope; usage: UsageRecord; debitEndUser?: true };
 type Host = {
   storage?: DurableObjectStorage;
   onWrite?: (file: WrittenRepoFile, scope: CallScope) => Promise<void>;
@@ -31,7 +31,7 @@ type Host = {
   imager?: (scope: CallScope) => Promise<Imager>;
   admit?: (scope: CallScope) => Promise<void>;
   record?: (scope: CallScope, usage: UsageRecord) => Promise<void>;
-  hold?: (scope: CallScope) => Hold | undefined;
+  refusal?: (scope: CallScope) => Promise<void>;
 };
 type Env = FileBindings & MediaBindings & KeyEnv;
 
@@ -79,11 +79,13 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host, invoc
   };
 }
 
-async function recordImage(env: Env, services: KeyServices, scope: UsageScope, usage: UsageRecord, invocation?: AgentInvocation) {
+async function recordImage(env: Env, services: KeyServices, { scope, usage, debitEndUser }: MediaReceipt, invocation?: AgentInvocation) {
   const facts = { ...usage, bucket: scope.bucket, ...(scope.identity ? { identity: scope.identity } : {}), ...(scope.actor ? { actor: scope.actor } : {}), ...(scope.keyScope ? { keyScope: scope.keyScope } : {}), ...(scope.requestId ? { requestId: scope.requestId } : {}) };
   await transaction(env, async sql => {
-    if (await recordAuxiliaryUsage(sql, { ...scope, kind: "image" }, { costUsd: usage.usage.cost.total, provider: usage.provider, model: usage.model }))
-      await services.accounts.recordUsageIn(sql, scope.tenant, scope.agent, facts);
+    if (!await recordAuxiliaryUsage(sql, { ...scope, kind: "image" }, { costUsd: usage.usage.cost.total, provider: usage.provider, model: usage.model })) return;
+    if (debitEndUser && scope.identity?.subject) await new EndUserCredits(services.accounts.db).debit(scope.tenant, scope.identity.subject, scope.bucket ?? "default",
+      usage.usage.cost.total, `image:${scope.callId}`, { call: "image", agent: scope.agent, requestId: scope.requestId, usageDay: utcDay(scope.startedAt) }, { sql });
+    await services.accounts.recordUsageIn(sql, scope.tenant, scope.agent, facts);
   }, {}, invocation);
   await services.accounts.usageCommitted(scope.tenant);
   await publishPending(env, invocation);
@@ -96,7 +98,7 @@ export async function flushAgentMediaUsage(env: Env, storage: DurableObjectStora
   const services = record ? undefined : await keyServices(env, invocation);
   for (const [key, receipt] of receipts) {
     if (record) await record(receipt);
-    else await recordImage(env, services!, receipt.scope, receipt.usage, invocation);
+    else await recordImage(env, services!, receipt, invocation);
     await storage.delete(key);
   }
 }
@@ -133,14 +135,19 @@ export async function agentMediaTools(env: Env, context: (api?: ToolExecutionApi
       const { tenant, agent, requestId, callId, startedAt, identity, actor, keyScope, bucket } = scope;
       const receiptScope: UsageScope = { tenant, agent, requestId, callId, startedAt, identity, actor, keyScope, bucket };
       const billingKey = `image-billing:${scope.callId}`;
-      const hold = host.hold ? host.hold(scope) : scope.identity?.subject
-        ? (usd: number) => new EndUserCredits(database(env, invocation)).hold(scope.tenant, scope.identity!.subject!, scope.bucket ?? "default", usd, "image", { agent: scope.agent, ...(scope.requestId ? { requestId: scope.requestId } : {}) })
-        : undefined;
+      const checkCredit = async () => {
+        if (host.refusal) await host.refusal(scope);
+        else if (scope.identity?.subject) {
+          const refused = await new EndUserCredits(database(env, invocation)).refusal(scope.tenant, scope.identity.subject, scope.bucket ?? "default");
+          if (refused) throw creditError(refused);
+        }
+        return undefined;
+      };
       try {
-        const result = await generateImage(imager, { tenant: scope.tenant, keyScope: scope.keyScope, budget: scope.budget, files: { read: (path, limit) => files.read(path, limit), save: async (...args) => { await Promise.all(durable); return files.save(...args); } }, hold, record: usage => {
+        const result = await generateImage(imager, { tenant: scope.tenant, keyScope: scope.keyScope, budget: scope.budget, files: { read: (path, limit) => files.read(path, limit), save: async (...args) => { await Promise.all(durable); return files.save(...args); } }, admitCredit: checkCredit, record: usage => {
           usages.push(usage);
           if (host.storage) {
-            const persist = host.storage.put(billingKey, { scope: receiptScope, usage });
+            const persist = host.storage.put(billingKey, { scope: receiptScope, usage, debitEndUser: true });
             void persist.catch(() => {});
             durable.push(persist);
           }
@@ -151,7 +158,7 @@ export async function agentMediaTools(env: Env, context: (api?: ToolExecutionApi
       } finally {
         await Promise.all(durable);
         for (const usage of usages) {
-          await (host.record ? host.record(scope, usage) : recordImage(env, services!, scope, usage, invocation));
+          await (host.record ? host.record(scope, usage) : recordImage(env, services!, { scope: receiptScope, usage, debitEndUser: true }, invocation));
           await host.storage?.delete(billingKey);
         }
       }

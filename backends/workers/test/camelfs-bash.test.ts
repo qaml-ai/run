@@ -12,7 +12,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
     return { url: 'data:text/javascript,export const runtimeSigner=async()=>({camelfsToken:async()=> "test"})', shortCircuit: true };
   return next(specifier, context);
 } });
-const { BashSessions, BASH_WORKDIR, bashTool } = await import("../src/camelfs/bash.ts");
+const { BashSessions, BASH_WORKDIR, bashTool, checkpointBody } = await import("../src/camelfs/bash.ts");
 const { agentRepoId } = await import("../src/repos/identity.ts");
 const { BASH_OUTPUT_KEEP } = await import("../src/camelfs/bash-stream.ts");
 const { handleCamelfsNotify } = await import("../src/camelfs/notify.ts");
@@ -147,6 +147,13 @@ test("creates once, reuses its shell, checkpoints after the result, and replaces
   assert.equal(f.calls.filter(c => c.path.endsWith("/checkpoint")).length, 0);
   await f.flush();
   assert.equal(f.db.prepare("SELECT version FROM agent_vm_heads").get()?.version, "version");
+  // The host refuses unknown trailer keys (camelfsd image.Trailers): the checkpoint body is checkpointBody's shape.
+  const sent = f.calls.find(c => c.path.endsWith("/checkpoint"))!.body;
+  assert.deepEqual(Object.keys(sent).sort(), ["message", "time", "trailers"]);
+  assert.equal(sent.trailers.kind, "auto");
+  assert.equal(sent.trailers.agent, "agent-with-dash");
+  assert.equal(sent.trailers.run, "run");
+  assert.deepEqual(Object.keys(sent.trailers).sort().filter(k => !["agent", "kind", "run"].includes(k)), []);
   await f.run("two");
   await f.flush();
   assert.equal(f.flags.runs, 2);
@@ -394,4 +401,13 @@ test("bash reports a requested VM at the deadline and reuses it on retry", async
   assert.equal(f.row()?.state, "running");
   assert.deepEqual(f.calls.filter(call => call.path === "/v1/vms").map(call => call.body.id), [id, id]);
   await f.flush();
+});
+
+// The cross-language contract: camelfsd's TestRuntimeCheckpointBodyContract runs this exact body through the host's
+// own checkpoint validation (internal/computehost/testdata/runtime-checkpoint.json).
+test("checkpointBody matches the body the host's contract test validates", async () => {
+  const { readFileSync } = await import("node:fs");
+  const fixture = JSON.parse(readFileSync(new URL("../../../camelfsd/internal/computehost/testdata/runtime-checkpoint.json", import.meta.url), "utf8"));
+  assert.deepEqual(checkpointBody({ message: "bash: echo hi", time: 1794672935561, agent: "client_b456abcd", requestId: "run_01JD7Q2W3E4R5T6Y" }), fixture);
+  assert.deepEqual(checkpointBody({ message: "Save VM file changes", time: 1 }), { message: "Save VM file changes", time: 1, trailers: { kind: "auto" } });
 });

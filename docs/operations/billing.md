@@ -79,8 +79,8 @@ A **prepaid tenant** pays for:
   charges each the difference since the last charge, in one transaction, so a rerun or another node charges nothing more.
   Boat no longer says what a machine has cost once it is gone, so one that ends at its TTL isn't charged for the time
   since the last pass: at most about 30 seconds, about $0.00015. A stop reads the cost first. The pass stops a tenant's
-  machines once its credit is spent, an overdraft of about one pass's time per machine: small enough that charges aren't
-  held against model calls' `credit_holds`, though a start counts them. The hour's usage entry counts it apart (`computer`,
+  machines once spendable credit reaches zero or goes negative. A new prepaid platform machine needs purchased credit
+  and positive spendable credit. The hour's usage entry counts it apart (`computer`,
   `computerSeconds`), and `/v1/usage` has rows with `kind: "computer"`; `usage.recorded` does not carry them. An end
   user, where the tenant meters them, has the computer's idle time held at its start (a refusal refuses the start) and
   more as it is kept, and pays what it cost when it ends. A machine on an admin's key for the tenant isn't charged.
@@ -183,22 +183,15 @@ there rather than at the next model request (a refused render returns the plain 
 The balance counts this node's unwritten charges
 at once and other nodes' within about five seconds.
 
-**Holds.** A model call on the platform's keys holds its estimate of a prepaid tenant's
-credit before it is made (`credit_holds`, `src/credit-holds.ts`), as an end user's call
-holds theirs: its input at the catalog's rate, long-context tier included, and about a
-reply's output, more as it streams. Room is the balance less what other calls hold, and
-on free credit no more than is left of the hour's allowance. A call that does not fit
-is not made, and ends the turn with `stopped: "spend_limit"`, `limit: "credit"`. Credit
-can all be spent: a last call starts if its estimate is within $0.25 of what is left.
-Each call asks for at most the output what is left pays for (`max_tokens`), so the
-provider also ends reasoning that never streams. A call settles at what the provider
-reported, and its hold goes.
-
-An overdraft remains possible in small ways, on the platform's account: a last call's
-$0.25; a provider charging more than listed; a model with no price or a router, held at
-$3/$15 per million; a Claude model before adaptive thinking, whose budget comes on top
-of `max_tokens`; and several reasoning calls at once, each sized to all that is left.
-Agent time, computer and browser leases, `web_search` and other tools are charged as before and not held.
+**Prepaid model calls.** A call on the platform's key can start whenever the
+account has positive spendable credit. This counts pending usage and, for accounts
+on free credit, the remaining hourly allowance. A disputed account has no spendable
+credit. An admitted call runs without a tenant-balance output cap and settles its
+full cost, which can make the balance negative. Once spendable credit reaches zero
+or less, new calls are refused. Several calls can start against the same positive
+balance before any of them settles. The existing busy-agent and run-concurrency
+limits bound concurrent calls. The existing run, agent and tenant spend limits
+still apply. End-user credit holds still apply where enabled.
 
 **Metering storage.** Storage is not listed to charge it. Every object Storage
 creates or deletes (log segments, snapshots and blobs, volume snapshot file maps,
