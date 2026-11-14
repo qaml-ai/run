@@ -41,10 +41,10 @@ func TestUnitWireJSON(t *testing.T) {
 		{&HeartbeatReply{2, []string{"v"}, []BootSpec{}}, `{"bootEpoch":2,"stop":["v"],"boot":[]}`},
 		{&BootSpec{ID: "v", Lineage: "lin", Ref: "main", Version: "c", Tree: "t", Parent: "c", Image: "i",
 			Lease: Lease{Holder{"h", 2, "v"}, 5, 6}, Shape: Shape{1, 2, 3}, Internet: true,
-			Job: &Job{"true", 8, map[string]string{"a": "b"}, []string{"out"}, true, 10}, Session: &Session{11}, Deadline: 12},
-			`{"id":"v","lineage":"lin","ref":"main","version":"c","tree":"t","parent":"c","image":"i","lease":{"holder":{"host":"h","boot":2,"mount":"v"},"epoch":5,"deadline":6},"shape":{"vcpus":1,"memoryMiB":2,"diskMiB":3},"internet":true,"job":{"command":"true","timeoutS":8,"env":{"a":"b"},"outputs":["out"],"commit":true,"pids":10},"session":{"idleStopS":11},"deadline":12}`},
+			Session: &Session{11}, Deadline: 12},
+			`{"id":"v","lineage":"lin","ref":"main","version":"c","tree":"t","parent":"c","image":"i","lease":{"holder":{"host":"h","boot":2,"mount":"v"},"epoch":5,"deadline":6},"shape":{"vcpus":1,"memoryMiB":2,"diskMiB":3},"internet":true,"session":{"idleStopS":11},"deadline":12}`},
 		{&Started{2, 3}, `{"bootEpoch":2,"at":3}`},
-		{&Ended{2, 3, "exit", 4, true, "c", "error", "results/lin/v", "sha", 6}, `{"bootEpoch":2,"at":3,"code":"exit","exit":4,"timedOut":true,"version":"c","checkpointError":"error","resultKey":"results/lin/v","resultSha256":"sha","resultBytes":6}`},
+		{&Ended{2, 3, "stopped", "c", "error"}, `{"bootEpoch":2,"at":3,"code":"stopped","version":"c","checkpointError":"error"}`},
 		{&Stop{true}, `{"checkpoint":true}`},
 	}
 	for _, tc := range cases {

@@ -78,7 +78,7 @@ func (c *Controller) Reconcile(ctx context.Context, pool, host string, bootEpoch
 				_, err = c.endWithHostSnapshot(ctx, v, EndRequest{Code: HostLost}, c.now(), nil, &h)
 			}
 		}
-		if err != nil && !errors.Is(err, ErrCondition) {
+		if err != nil && !errors.Is(err, ErrCondition) && !errors.Is(err, ErrClockSkew) {
 			return Reconcile{}, err
 		}
 	}
@@ -129,5 +129,9 @@ func (c *Controller) reconcileListed(ctx context.Context, h Host, at time.Time, 
 		}
 	}
 	v, err = c.Listed(ctx, v.ID, h.Host, h.BootEpoch, at)
+	// MONEY: keep delivering heartbeat instructions while usage waits for the clock.
+	if errors.Is(err, ErrClockSkew) {
+		return false, nil
+	}
 	return v.Phase == Ended || v.Phase == Stopping, err
 }

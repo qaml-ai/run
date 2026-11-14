@@ -30,6 +30,7 @@ export const jobLifetimeMs = (timeoutSeconds: number) => timeoutSeconds * 1000 +
 export const JOB_INSTANCES: readonly InstanceType[] = INSTANCE_TYPES.filter(type => type !== "lite");
 
 export type JobLimits = { cpus?: number; memoryMiB?: number; diskMiB?: number; pids?: number };
+// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
 /** What a job's files come from: given inline (path to bytes), or a volume snapshot (its whole tree). */
 export type JobFiles = Record<string, Uint8Array>;
 export type JobVolumeSource = { tenant: string; volume: string; snapshot: string };

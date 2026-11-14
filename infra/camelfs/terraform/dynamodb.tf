@@ -21,6 +21,8 @@
 #                                        unfindable without an index), then claim with a conditional claimedUntil
 #   hosts       pool (S) + host (S)     bootEpoch, shape, slots, free, vms, features, lastSeenAt, draining
 #   vms         id (S)                  the phase row: phase, host, lineage, ref, leaseEpoch, timestamps, result, payer
+#   marks       lineage (S)             the per-lineage mark of the quota/GC walk (C3b, option B of #973): what the
+#                                        refs routes read and write to account bytes; Put/Get/Delete by the tier
 #   usage       shard (S) + ulid (S)    usage events the runtime PULLS (Miguel, 2026-11-13 ~18:50; not webhooked):
 #                                        eventId, vm, seq, body, expiresAt; written in the same TransactWriteItems
 #                                        as vms. The ONE table with a DynamoDB TTL (expiresAt, 35 days): its rows
@@ -71,6 +73,12 @@ locals {
       range_key = "ulid"
       ttl       = "expiresAt"
       purpose   = "usage events the runtime pulls - copies with a 35 day TTL"
+    }
+    marks = {
+      hash_key  = "lineage"
+      range_key = null
+      ttl       = null
+      purpose   = "per-lineage quota marks of the refs routes - C3b"
     }
   }
   table_names = { for table in keys(local.tables) : table => "${var.name}-${var.env}-${table}" }

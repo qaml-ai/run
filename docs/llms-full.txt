@@ -661,6 +661,11 @@ Python's `AgentRuntime.create_agent` and `Agents.upsert` accept `metadata`;
 
 # Projects
 
+On Workers, create a keyed repo with `POST /v1/repos` and mount it with
+`{ repo, path, mode }`. Publish a version by advancing a ref such as
+`published` via `PUT /v1/repos/{id}/refs/published` with `{ version, expect }`.
+Serve the tree at that ref. The project SDK below uses the Node volume API.
+
 A project is something an agent builds for your users, a bot, a site, a report,
 that your application then runs or serves. The agent works on the files with its
 file tools; your application checks them and publishes versions. The pattern:
@@ -4309,9 +4314,14 @@ internet (three redirects at most). As multipart, each is a file part named `ima
 (`context` as JSON). A `mask` (a part, or `{data}`/`{url}`) says where the first image may change: transparent there,
 an image with an alpha channel in that image's format and size.
 
-## Saving to a volume
+## Saving images to files
 
-With `volumeId` (one of your [volumes](https://run.camelai.com/docs/guides/files.md)), the images are saved there, under `path` (a directory, default
+On Workers, send a `repo` ID and optional directory `path` (default `images`).
+The response includes `repo`, `path`, `size`, and the repo commit `version`.
+Read the file with `GET /v1/repos/{id}/files/{path}` or sign a link with
+`POST /v1/repos/{id}/links`. Workers returns 400 for `volumeId`.
+
+On the Node runtime, with `volumeId` (one of your [volumes](https://run.camelai.com/docs/guides/files.md)), the images are saved there, under `path` (a directory, default
 `/images`), and the answer gives their paths instead of their bytes:
 
 ```json
@@ -4580,6 +4590,11 @@ request is a `usage.recorded` event with `decisions`.
 <!-- https://run.camelai.com/docs/guides/files.md -->
 
 # Files
+
+On Workers, use `POST /v1/repos` to create a repo and mount it with
+`{ repo, path, mode }`. Reads can name a ref or an immutable version.
+`/v1/volumes` and its subpaths return 410 on Workers. The volume API and SDK
+examples below apply to the Node runtime.
 
 Every agent has files: its own workspace at `/workspace` by default, or the
 **volumes** you mount. Files you attach to a message land there, the model works
@@ -8978,6 +8993,10 @@ memory. Keep transcripts private: they can contain user content and tool output.
 
 # Exporting your data
 
+On Workers, the archive holds `repos/<id>/repo.json` with the name, key, refs
+and creation time, and `repos/<id>/main/…` with the files from one immutable
+version of `main`. The volume entries below apply to the Node runtime.
+
 `GET /v1/account/export` (the console's **Account → Export data**) answers with a
 zip of everything camelRun stores for your account. Any API token of the account
 can call it; a browser token cannot.
@@ -9122,6 +9141,10 @@ Before you ship an application on the runtime, check each of these.
 <!-- https://run.camelai.com/docs/reference/apply.md -->
 
 # Provision an application
+
+On Workers, create repos with `POST /v1/repos` and set agent mounts to
+`{ repo, path, mode }`. Apply returns 400 for a `volumes` declaration,
+including in dry runs. The manifest below applies to the Node runtime.
 
 `POST /v1/apply` accepts objects keyed by resource key. Volumes are processed first, then definitions, then agents. Each group follows JSON property order. References must point to an earlier resource in the same manifest. All resources belong to the authenticated tenant.
 
