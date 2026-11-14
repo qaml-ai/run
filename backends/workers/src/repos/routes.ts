@@ -157,7 +157,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   const number = (k: string) => s.has(k) ? Number(s.get(k)) : undefined;
   if (path === '/v1/repos') {
     if (method === 'POST') {
-      const r = await createRepo(env, tenant, { ...await readJson(request), author: `api:${tenant}` });
+      const r = await createRepo(env, tenant, { ...await readJson(request), ...(tierConfigured(env) ? { author: `api:${tenant}` } : {}) });
       return json(r.info, r.existing ? 200 : 201);
     }
     if (method === 'GET') {

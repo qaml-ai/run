@@ -109,7 +109,7 @@ function multipart(bytes: Uint8Array, contentType: string): BatchEntry[] {
 }
 export function camelfsStorage(env: CamelfsEnv, sub?: string): StoragePlane {
   if (!camelfsConfigured(env)) throw new StorageError(0, "not_configured");
-  const token = env.CAMELFS_API_TOKEN!;
+  const token = tierConfigured(env) ? undefined : env.CAMELFS_API_TOKEN;
   const redact = (s: string) => token ? s.split(token).join("***") : s;
   const scrub = (v: unknown): unknown => typeof v === "string" ? redact(v) : Array.isArray(v) ? v.map(scrub) :
     v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [redact(k), scrub(x)])) : v;

@@ -6,10 +6,12 @@ export type Fence = { holder: string; epoch: number };
 export class RepoError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly reason: string;
   readonly detail?: Record<string, unknown>;
   constructor(message: string, status: number, code: string, detail?: Record<string, unknown>) {
     super(`repo:${status}:${code}:${JSON.stringify(detail ?? {})}`);
     this.name = "RepoError";
+    this.reason = message;
     this.status = status;
     this.code = code;
     this.detail = detail;

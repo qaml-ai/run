@@ -59,11 +59,14 @@ export async function quota(ctx: RepoContext, bytes: number) {
 /** RepoDO accounts for each blob once across all heads. */
 export const addedBytes = (ctx: RepoContext, incoming: Entry[]) => ctx.repo.unseenBytes(incoming.map(({ blob, size }) => ({ blob, size })));
 export async function commitChanges(ctx: RepoContext, input: WriteInput) {
+  check(input.changes && typeof input.changes === 'object' && !Array.isArray(input.changes));
+  const changes = Object.entries(input.changes);
+  check(changes.length <= 1000, 'too_many_paths');
   const inline = new Set<string>();
   if (ctx.repo instanceof HttpRepoClient) {
     let remaining = 8 * 2 ** 20;
-    for (const [path, change] of Object.entries(input.changes ?? {})) {
-      if (change && 'bytes' in change && change.bytes.byteLength <= remaining) {
+    for (const [path, change] of changes) {
+      if (change && typeof change === 'object' && 'bytes' in change && change.bytes.byteLength <= remaining) {
         inline.add(path);
         remaining -= change.bytes.byteLength;
       }
@@ -75,9 +78,6 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
     base64?: string;
     mode?: Mode;
   } | null> = Object.create(null);
-  check(input.changes && typeof input.changes === 'object' && !Array.isArray(input.changes));
-  const changes = Object.entries(input.changes);
-  check(changes.length <= 1000, 'too_many_paths');
   let offset = 0;
   await Promise.all(Array.from({ length: Math.min(8, changes.length) }, async () => {
     while (offset < changes.length) {
@@ -155,6 +155,10 @@ export async function setRefToVersion(ctx: RepoContext, input: {
     if (!target)
       throw new RepoError('no_commit', 404, 'no_commit');
     if (ctx.repo instanceof HttpRepoClient) {
+      if (!head && !input.newCommit) {
+        await ctx.repo.createRef({ name: input.ref, from: { version: target.version }, who: input.who, why: input.why });
+        return { version: target.version, tree: target.tree, previous: null, watchers: [] as string[], changed: true };
+      }
       const quota = await tierQuota(ctx);
       const restored = input.newCommit
         ? await ctx.repo.restore(input.ref, {

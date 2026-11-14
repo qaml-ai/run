@@ -36,7 +36,9 @@ export async function tierFetch(env: TierEnv, request: TierRequest, raw?: Reques
   const op = `${method} ${path}`;
   const signal = raw?.signal ?? AbortSignal.timeout(timeoutMs);
   try {
-    const url = new URL(path, env.CAMELFS_URL);
+    const origin = new URL(env.CAMELFS_URL!);
+    const url = new URL(path, origin);
+    if (origin.origin !== url.origin || !path.startsWith("/")) throw new Error("Invalid camelFS path");
     for (const [key, value] of Object.entries(request.query ?? {}))
       if (value !== undefined) url.searchParams.set(key, String(value));
     const issuer = env.AGENT_PUBLIC_URL;
@@ -60,5 +62,8 @@ export async function tierRequest<T>(env: TierEnv, request: TierRequest): Promis
   try { value = await response.json() as typeof value; }
   catch { throw new TierError(response.ok ? 502 : response.status, "invalid_response", "Invalid camelFS response", undefined, op); }
   if (response.ok) return value as T;
-  throw new TierError(response.status, value?.error?.code ?? "invalid_response", value?.error?.message ?? "Invalid camelFS response", value?.error?.details, op);
+  const error = value?.error;
+  const code = typeof error?.code === "string" ? error.code : "invalid_response";
+  const message = typeof error?.message === "string" ? error.message : "Invalid camelFS response";
+  throw new TierError(response.status, code, message, error?.details, op);
 }

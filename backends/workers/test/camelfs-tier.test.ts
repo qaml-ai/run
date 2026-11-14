@@ -22,7 +22,11 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test", alg: "EdDSA" };
   const issuer = "https://run-pilot.camelai.dev";
-  const fake = await serveFakeCamelfsd("old-token", { issuer, jwks: { keys: [jwk] } });
+  let beforeMove: (() => Promise<void>) | undefined;
+  const fake = await serveFakeCamelfsd("old-token", {
+    issuer, jwks: { keys: [jwk] },
+    beforeWriteMove: async () => { const hook = beforeMove; beforeMove = undefined; await hook?.(); },
+  });
   t.after(() => fake.close());
   const env = {
     AGENT_PUBLIC_URL: issuer, CAMELFS_URL: fake.url, ADMIN_TENANTS: "t",
@@ -77,6 +81,8 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const storage = camelfsStorage(env, "agent:caller");
   const meta = { author: "agent:caller", message: "test", time: 1763046000, trailers: { "Camel-Op": "api" } };
   await repo.prepareLineage();
+  const foreign = new HttpRepoClient(env, "another", row, "api:another");
+  await assert.rejects(foreign.prepareLineage(), { code: "lineage_conflict", status: 409, detail: { tenant: "t" } });
   const seed = await storage.commit(row.lineage, { ...meta, parents: [], changes: [] });
   await repo.init({ ...row, tenant: "t", seed: { version: { ...meta, version: seed.commit, tree: seed.tree, at: seed.time * 1000, parents: [] }, entries: [] } });
   assert.equal((await repo.info()).name, "r3");
@@ -96,26 +102,50 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const lease = await repo.acquire({ ref: "job/test", holder, ttlMs: 1000 });
   const fence = { ref: "job/test", holder, epoch: lease.epoch };
   await repo.renew(fence, 1000);
-  await repo.cas({ ...fence, expect: moved.version, commit: (await repo.commit(moved.version!))!, who: meta.author, why: "test" });
-  assert.deepEqual(calls.at(-1)?.claims.fence, { holder, epoch: lease.epoch });
+  await repo.cas({ ref: fence.ref, fence, expect: moved.version, commit: (await repo.commit(moved.version!))!, who: meta.author, why: "test" });
+  assert.deepEqual(calls.at(-1)?.claims.fence, { holder: "host:1:mount", epoch: lease.epoch });
   assert.deepEqual(calls.at(-1)?.claims.refs, ["job/test"]);
   await assert.rejects(repo.delete(), { code: "held", status: 409 });
   await repo.release(fence);
   await repo.watch("job/test", "workflow:x");
   await repo.unwatch("job/test", "workflow:x");
-  await repo.merge("job/test", { ...meta, theirs: moved.version!, mode: "ff-only" });
+  const ff = await repo.merge("job/test", { ...meta, theirs: moved.version!, mode: "ff-only" });
+  assert.deepEqual(ff.merged, []);
   await repo.restore("job/test", { ...meta, version: seed.commit });
   await repo.deleteRef("job/test");
   assert.deepEqual(await repo.deleteOwned("agent:unused"), { deleted: [], held: [] });
-  await repo.delete();
+  await repo.delete("delete");
+  await repo.delete("delete");
+  await assert.rejects(repo.delete("new-delete"), { code: "lineage_deleted", status: 410 });
   await assert.rejects(repo.ref("main"), { code: "lineage_deleted", status: 410 });
+  const another = { ...row, id: "repo_retry", lineage: "t:repo_retry" };
+  const retry = new HttpRepoClient(env, "t", another, "agent:caller");
+  await retry.prepareLineage();
+  const retrySeed = await storage.commit(another.lineage, { ...meta, parents: [], changes: [] });
+  await retry.createRef({ name: "main", from: { version: retrySeed.commit }, who: meta.author, why: "test" });
+  const repos = fixtureIndex(t);
+  repos.register({ ...row, bytes: 5, files: 1 });
+  repos.register({ ...row, id: "fork", bytes: 5, files: 1 });
+  repos.register(another);
+  assert.equal(repos.used(), 5);
+  const fitted = await retry.write({
+    ...meta, ref: "main", changes: [{ path: "fit", text: "fits" }],
+    quota: { limitBytes: 9, otherBytes: repos.used(another.lineage) },
+  });
+  assert.equal(fitted.bytes, 4);
+  assert.equal((await retry.ref("main"))?.version, fitted.version);
+  let concurrentVersion: string | null = null;
+  beforeMove = async () => { concurrentVersion = (await retry.write({ ...meta, ref: "main", changes: [{ path: "concurrent", text: "one" }] })).version; };
+  const retried = await retry.write({ ...meta, ref: "main", changes: [{ path: "probe", text: "two", expectBlob: "none" }] });
+  assert.equal(retried.previous, concurrentVersion);
+  assert.equal((await retry.ref("main"))?.version, retried.version);
   assert.equal(new Set(calls.map(c => c.token)).size, calls.length);
   for (const call of calls.filter(c => c.path.includes("repo_r3"))) {
     assert.equal(call.claims.lin, row.lineage);
     assert.equal(call.claims.acc, call.method === "GET" ? "r" : "w");
     const service = /\/lease(?:\/renew)?$/.test(call.path) ? "runtime:repo-leases"
       : call.path.includes("/watchers/") ? "runtime:repo-watchers"
-        : call.path.endsWith(encodeURIComponent(row.lineage)) && call.method === "DELETE" ? "runtime:repo-delete" : "agent:caller";
+        : call.path.endsWith(encodeURIComponent(row.lineage)) && call.method === "DELETE" ? "runtime:repo-delete" : call.claims.sub === "api:another" ? "api:another" : "agent:caller";
     assert.equal(call.claims.sub, service, call.path);
   }
 });
@@ -162,7 +192,7 @@ test("notify requires a fresh signature and type, and records each watcher's del
   assert.ok([...inboxes.values()].every(rows => rows.size === 1 && rows.has("camelfs:seen:one")));
 });
 
-test("quota counts each live lineage once and can exclude the caller's lineage", t => {
+function fixtureIndex(t: import("node:test").TestContext) {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
   const storage = {
@@ -173,9 +203,5 @@ test("quota counts each live lineage once and can exclude the caller's lineage",
     } },
   } as unknown as DurableObjectStorage;
   const repos = new TenantRepos(storage);
-  for (const [id, lineage, bytes] of [["repo", "one", 5], ["fork", "one", 5], ["other", "two", 2]] as const)
-    repos.register({ id, lineage, bytes, files: 1, name: id, key: null, createdAt: 1, deletedAt: null });
-  assert.equal(repos.used(), 7);
-  assert.equal(repos.used("two"), 5);
-  assert.ok(repos.used("two") + 4 <= 9);
-});
+  return repos;
+}

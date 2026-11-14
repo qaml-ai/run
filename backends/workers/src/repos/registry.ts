@@ -47,7 +47,10 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
     check(metadata);
     seed = { version: metadata, entries: tierConfigured(env) ? [] : await versionEntries(src, v.tree) };
     lineage = src.lineage;
-    if (tierConfigured(env)) { const { bytes, files } = await src.repo.info(); usage = { bytes, files }; }
+    if (tierConfigured(env)) {
+      const source = await env.TENANTS.getByName(tenant).repoRow(src.repoId);
+      if (source) usage = { bytes: source.bytes, files: source.files };
+    }
   }
   const index = env.TENANTS.getByName(tenant);
   const { row, existing } = await index.registerRepo({ id, name, key: input.key ?? null, lineage, createdAt: Date.now(), deletedAt: null, ...usage });
@@ -73,7 +76,10 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
 export const agentRepo = (env: RepoEnv, tenant: string, agentId: string) => createRepo(env, tenant, { key: `agent:${agentId}`, name: `agent ${agentId}`, author: `agent:${agentId}` });
 export async function deleteRepo(env: RepoEnv, tenant: string, id: string) {
   const ctx = await repoContext(env, tenant, id);
-  try { await ctx.repo.delete(); }
+  try {
+    if (ctx.repo instanceof HttpRepoClient) await ctx.repo.delete(`delete:${ctx.lineage}`);
+    else await ctx.repo.delete();
+  }
   catch (e) { if (!(ctx.repo instanceof HttpRepoClient) || repoErrorFrom(e)?.code !== 'lineage_deleted') throw e; }
   await env.TENANTS.getByName(tenant).markRepoDeleted(id, ctx.repo instanceof HttpRepoClient);
   return { deleted: true };

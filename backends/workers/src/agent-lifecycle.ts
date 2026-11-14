@@ -337,7 +337,7 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.limits.check(Date.now(), false)) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain();
-    await drainRepoMoves(this.ctx.storage, async moves => deliverRepoMoves(this.env as RepoEnv, await this.config(), moves))
+    await drainRepoMoves(this.ctx.storage, async moves => deliverRepoMoves(this.env as RepoEnv, await this.config(), moves, request => this.fetch(request)))
       .catch(error => console.error("Repo watcher delivery failed", String(error)));
     await this.outbox.flush();
     this.batchQueue.kick();

@@ -1,3 +1,4 @@
+import { HttpRepoClient, needsK5 } from "../repos/http-client.ts";
 import { repoContext, type RepoEnv, type RepoContext } from "../repos/registry.ts";
 import { branch, advanceRef } from "../repos/write.ts";
 import type { JobSpec, JobResult } from "./job.ts";
@@ -8,6 +9,7 @@ type Measure = <T>(name: string, run: () => Promise<T>) => Promise<T>;
 const log = (type: string, id: string, error: unknown) => console.error(JSON.stringify({ type, job: id, error: (error instanceof Error ? error.message : String(error)).slice(0, 300) }));
 
 export async function prepareRepo(ctx: RepoContext, spec: JobSpec, host: string, measure: Measure): Promise<RepoDispatch> {
+  if (ctx.repo instanceof HttpRepoClient) throw needsK5();
   const repo = spec.repo!, ref = `job/${spec.id}`;
   const target = await measure("resolveMs", async () => await ctx.repo.resolve(repo.ref ?? repo.version ?? "main"));
   const head = await measure("branchMs", async () => await ctx.repo.ref(ref) ?? await branch(ctx, { name: ref, from: { version: target.version }, owner: repo.owner, who: `job:${spec.id}` }));

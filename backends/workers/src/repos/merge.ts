@@ -13,7 +13,7 @@ export async function mergeRefs(ctx: RepoContext, input: {
   check(['ff', 'merge', 'squash'].includes(mode), 'bad_mode');
   if (ctx.repo instanceof HttpRepoClient) {
     const [ours, theirs, quota] = await Promise.all([ctx.repo.resolve(input.into), ctx.repo.resolve(input.from), tierQuota(ctx)]);
-    if (ours.version === theirs.version) return { version: ours.version, changed: false };
+    if (ours.version === theirs.version || await ctx.storage.isAncestor(ctx.lineage, theirs.version, ours.version)) return { version: ours.version, changed: false };
     const result = await ctx.repo.merge(input.into, {
       theirs: theirs.version, quota, mode: mode === 'ff' ? 'ff-only' : mode,
       author: ctx.sub, message: input.message ?? `merge ${input.from}`, time: Math.floor(Date.now() / 1000),

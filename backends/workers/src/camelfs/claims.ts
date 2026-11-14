@@ -5,5 +5,5 @@ export type TierClaims = {
   lin?: string;
   acc: "r" | "w";
   refs?: string[];
-  fence?: TierFence;
+  fence?: { holder: string; epoch: number };
 };

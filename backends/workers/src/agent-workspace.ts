@@ -50,7 +50,7 @@ export async function claimAgentWorkspace(env: FileBindings, tenant: string, sou
     return {legacyVolume:legacy.volumeId,files:(await v.claimReadSet(`fork:${targetId}`,expiresAt)).files};
   }
   const source = await agentRepo(env as RepoEnv,tenant,sourceId);
-  const ctx=await repoContext(env as RepoEnv,tenant,source.info.id);
+  const ctx=await repoContext(env as RepoEnv,tenant,source.info.id,`agent:${sourceId}`);
   const head=await ctx.repo.ref('main');
   return {repo:source.info.id,version:head?.version};
 }
@@ -96,7 +96,7 @@ export async function copyAgentWorkspace(env: FileBindings, tenant: string, sour
   const seed=captured ?? await claimAgentWorkspace(env,tenant,sourceId,targetId,0);
   // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
   if('legacyVolume'in seed) {
-    const made=await agentRepo(env as RepoEnv,tenant,targetId),ctx=await repoContext(env as RepoEnv,tenant,made.info.id);
+    const made=await agentRepo(env as RepoEnv,tenant,targetId),ctx=await repoContext(env as RepoEnv,tenant,made.info.id,`agent:${targetId}`);
     // Every repo is born with an empty main; a main that already holds files means this import already ran.
     const main=await ctx.repo.ref('main');
     if(main&&main.tree!=='4b825dc642cb6eb9a060e54bf8d69288fbee4904')return;
@@ -106,5 +106,5 @@ export async function copyAgentWorkspace(env: FileBindings, tenant: string, sour
     return;
   }
   if (!seed.version) { await agentRepo(env as RepoEnv,tenant,targetId); return; }
-  await createRepo(env as RepoEnv,tenant,{key:`agent:${targetId}`,name:`agent ${targetId}`,from:{repo:seed.repo,version:seed.version}});
+  await createRepo(env as RepoEnv,tenant,{key:`agent:${targetId}`,name:`agent ${targetId}`,author:`agent:${targetId}`,from:{repo:seed.repo,version:seed.version}});
 }
