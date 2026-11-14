@@ -467,7 +467,7 @@ func TestRefsRoutes(t *testing.T) {
 	for _, id := range []string{"running", "booting"} {
 		vm := getVM(id)
 		if vm.Phase != compute.Stopping || vm.StopRequestedAt == nil || *vm.StopRequestedAt != now.UnixMilli() ||
-			vm.StopCheckpoint || vm.StopReason != "lineage_deleted" {
+			vm.StopCheckpoint || vm.StopReason != compute.Stopped {
 			t.Fatalf("stop after lineage delete: %+v", vm)
 		}
 	}

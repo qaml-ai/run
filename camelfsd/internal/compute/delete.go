@@ -50,7 +50,12 @@ func (c *Controller) endDeletedVM(ctx context.Context, id, reason string) error 
 		case Requested, Placed:
 			_, err = c.end(ctx, v, EndRequest{At: now, Code: StartFailed, Reason: reason}, now, nil)
 		case Booting, Running:
-			_, err = c.stop(ctx, v, now, now.UnixMilli(), EndCode(reason), false)
+			// MONEY: billing ends at the stop request (now). No checkpoint: its ref is gone, so a CAS could not land.
+			// The stop's code stays in the EndCode set (Stopped); the delete reason is in the log line below.
+			_, err = c.stop(ctx, v, now, now.UnixMilli(), Stopped, false)
+			if err == nil {
+				c.log("vm_stopped_for_delete", map[string]any{"vm": id, "reason": reason})
+			}
 		case Stopping, Ended:
 			return nil
 		default:
