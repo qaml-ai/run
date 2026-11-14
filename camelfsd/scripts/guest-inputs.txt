@@ -2,7 +2,6 @@
 # slash means the directory. CI builds and publishes a guest image only when one of these changes, and the image's
 # SOURCE_DATE_EPOCH is the last commit touching them, so unchanged inputs rebuild the same image.
 # cmd/camelfsd: TestGuestInputs keeps this list equal to `go list -deps -tags guest ./cmd/camelfsd`.
-.github/workflows/ci.yml
 camelfsd/go.mod
 camelfsd/go.sum
 camelfsd/cmd/camelfsd/guest.go
@@ -12,5 +11,6 @@ camelfsd/internal/hostwire/
 camelfsd/internal/root/
 camelfsd/internal/wire/
 camelfsd/scripts/build-guest-image.sh
+camelfsd/scripts/build-guest-image-container.sh
 camelfsd/scripts/publish-guest-image.sh
 camelfsd/scripts/guest-inputs.txt
