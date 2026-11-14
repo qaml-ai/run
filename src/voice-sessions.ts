@@ -19,7 +19,7 @@ import { BARGE_IN_LIMITS, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/e
 import type { TurnModels } from "./voice/turns/inference.ts";
 import { assemble, Recorder, RECORDING_LIMITS, type RecordedPacket, type RecordingFile, type RecordingTracks } from "./voice/recorder.ts";
 import type { Storage } from "../shared/storage.ts";
-import { RealtimeBrain, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
+import { RealtimeBrain, spendRefusal, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
 import { Jukebox, AUDIO_LIMITS, type AudioSource } from "./voice/jukebox.ts";
 import { speechRequest, type SpeechService } from "./speech-api.ts";
 import type { Outbound } from "./outbound.ts";
@@ -1562,7 +1562,12 @@ export class VoiceSessions {
     try {
       try { await this.options.admit(origin.tenant); }
       catch (error) {
-        if (![402, 429].includes((error as HttpError).status)) throw error;
+        if ((error as HttpError).status === 429 && !spendRefusal(error)) {
+          // A rate or concurrency refusal: this utterance goes untranscribed; the session goes on.
+          console.error(JSON.stringify({ type: "voice_utterance_dropped", session: origin.id, reason: "refused", seconds: cut.seconds }));
+          return;
+        }
+        if (!spendRefusal(error)) throw error;
         await this.endFor(origin, { reason: "budget", limit: "tenant" });
         return;
       }

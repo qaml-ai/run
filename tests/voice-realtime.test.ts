@@ -437,6 +437,24 @@ test("the money: a refused admission cancels the response and ends the session (
   brain.close();
 });
 
+test("the money: the free hourly allowance (429 FREE_HOURLY_LIMIT) ends the session as budget, as a 402 does", async () => {
+  const { brain, connection, budget } = testBrain({ admitError: Object.assign(new Error("Free credit limit"), { status: 429, code: "FREE_HOURLY_LIMIT" }) });
+  await utter(brain, "1", 300);
+  await until(() => budget.length === 1, "budget");
+  assert.deepEqual(budget, ["tenant"]);
+  assert.ok(connection().of("cancel").length >= 1);
+  brain.close();
+});
+
+test("the money: any other 429 (a rate or concurrency limit) refuses only that response; the session goes on", async () => {
+  const { brain, connection, budget, logs } = testBrain({ admitError: Object.assign(new Error("Too many"), { status: 429, code: "VOICE_SESSION_LIMIT" }) });
+  await utter(brain, "1", 300);
+  await until(() => logs.some(log => log.type === "voice_realtime_response_refused"), "the refused response");
+  assert.deepEqual(budget, [], "no budget ending for a rate or concurrency refusal");
+  assert.ok(connection().of("cancel").length >= 1, "only that response is cancelled");
+  brain.close();
+});
+
 test("two people at once: one turn ends while the other talks; one answer, to both, once both are done", async () => {
   const { brain, connection } = testBrain({ humans: 2 });
   brain.speechStart("1");

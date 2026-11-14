@@ -790,6 +790,7 @@ test("free credit brings fewer busy agents (its usage tier) and an hourly spend 
   const limited = await call(`/v1/agents/${agent.id}/prompt`, { body: { text: "again" }, token });
   assert.equal(limited.status, 429);
   assert.match(limited.json.error, /try again later$/);
+  assert.equal(limited.json.code, "FREE_HOURLY_LIMIT", "the free hourly allowance names its refusal, so voice decides by code");
   assert.doesNotMatch(limited.json.error, /console|buy/i);
 
   // The first purchase lifts both limits at once.

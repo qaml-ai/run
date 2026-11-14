@@ -120,7 +120,7 @@ export function fakePlayer(everyMs = 2) {
 }
 
 /** A brain over a fake provider and player, with hooks recording what it reports. */
-export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; tenantCreditExhausted?: BrainHooks["tenantCreditExhausted"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean; language?: string; synthesize?: BrainHooks["synthesize"]; failed?: BrainHooks["failed"]; speaking?: BrainHooks["speaking"] } = {}) {
+export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; tenantCreditExhausted?: BrainHooks["tenantCreditExhausted"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean; admitError?: unknown; language?: string; synthesize?: BrainHooks["synthesize"]; failed?: BrainHooks["failed"]; speaking?: BrainHooks["speaking"] } = {}) {
   const realtime = fakeRealtimeProvider();
   const playback = fakePlayer();
   const usage: Parameters<BrainHooks["usage"]>[0][] = [];
@@ -143,7 +143,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
     player: () => playback.player, resumeMedia: () => playback.resume(), humans: () => state.humans, name: speaker => names[speaker] ?? speaker,
     ...(options.askAgent ? { askAgent: options.askAgent } : {}),
     ...(options.synthesize ? { synthesize: options.synthesize } : {}), ...(options.speaking ? { speaking: options.speaking } : {}),
-    admit: async () => { if (options.refuse) throw Object.assign(new Error("No credit"), { status: 402 }); },
+    admit: async () => { if (options.admitError) throw options.admitError; if (options.refuse) throw Object.assign(new Error("No credit"), { status: 402 }); },
     tenantCreditExhausted: options.tenantCreditExhausted,
     hold: options.hold ?? (async () => undefined),
     budget: limit => { budget.push(limit); },

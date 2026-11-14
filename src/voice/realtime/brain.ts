@@ -1,5 +1,6 @@
 import { clock as nodeClock, type Clock } from "../../node-context.ts";
 import { HttpError } from "../../http.ts";
+import { FREE_HOURLY_LIMIT } from "../../billing.ts";
 import { errorClass, metricLine, safeError, writeMetricLine } from "../../metrics.ts";
 import type { Playback, Player } from "../../voice-speech.ts";
 import type { Cut } from "../../voice-audio.ts";
@@ -42,6 +43,13 @@ import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type 
 
 /** An ask_agent call with no request: answered to the model, never sent to the agent nor counted as its failure. */
 const EMPTY_REQUEST = new Error("empty request");
+
+/**
+ * A refusal that ends the call as `budget`: credit or a spend limit (402), or the free hourly allowance, decided by its
+ * code and never by its status. Any other refusal (a rate or concurrency limit, a 429) refuses only one response or slice.
+ */
+export const spendRefusal = (error: unknown) =>
+  (error as HttpError | undefined)?.status === 402 || (error as HttpError | undefined)?.code === FREE_HOURLY_LIMIT;
 
 export const REALTIME_LIMITS = Object.freeze({
   /** How long ask_agent waits for the agent's reply before the model is told it is still working. */
@@ -575,9 +583,13 @@ export class RealtimeBrain {
       return await this.hooks.hold(REALTIME_LIMITS.holdUsd);
     } catch (error) {
       const refused = error as HttpError;
-      if (refused.status === 402 || refused.status === 429) {
+      if (spendRefusal(refused)) {
         const endUser = refused.code === "END_USER_CREDIT";
         this.hooks.budget(endUser ? "end_user" : "tenant", endUser ? refused.details?.reason as string : undefined, endUser ? refused.details?.bucket as string : undefined);
+      } else if (refused?.status === 429) {
+        // A rate or concurrency refusal: this slice goes unheld, and the next metering checkpoint asks again.
+        this.hooks.log("voice_realtime_slice_refused", { error: safeError(refused) });
+        return undefined;
       } else this.hooks.failed("realtime_credit_failed");
       throw error;
     }
@@ -605,7 +617,7 @@ export class RealtimeBrain {
       return closing || this.closed ? undefined : this.holdSlice();
     })();
     void this.meteredHold.catch(error => {
-      if ([402, 429].includes((error as HttpError)?.status)) return;
+      if (spendRefusal(error)) return;
       this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) });
       if (!this.closed) this.hooks.failed("realtime_credit_failed");
     });
@@ -924,7 +936,13 @@ export class RealtimeBrain {
       return this.hooks.hold(REALTIME_LIMITS.holdUsd);
     })();
     response.hold.catch((refused: HttpError) => {
-      if (refused?.status !== 402 && refused?.status !== 429) { this.hooks.log("voice_realtime_hold_failed", { error: safeError(refused) }); return; }
+      if (refused?.status === 429 && !spendRefusal(refused)) {
+        // A rate or concurrency refusal: only this response is refused; the call goes on.
+        this.hooks.log("voice_realtime_response_refused", { error: safeError(refused) });
+        this.cancel(response, "requested", 0);
+        return;
+      }
+      if (!spendRefusal(refused)) { this.hooks.log("voice_realtime_hold_failed", { error: safeError(refused) }); return; }
       this.cancel(response, "budget", 0);
       const endUser = refused.code === "END_USER_CREDIT";
       const reason = refused.details?.reason;
