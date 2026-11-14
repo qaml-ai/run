@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -115,6 +116,30 @@ func vmLogRoute(pattern string) string {
 	return "/v1/vms"
 }
 
+type readTimingKey struct{}
+
+type readTiming struct {
+	lineage, membership, tree, blob time.Duration
+	trees, blobs                    readCacheCounts
+}
+
+type readCacheCounts struct {
+	hits, misses atomic.Int64
+}
+
+func (c *readCacheCounts) record(hit bool) {
+	if hit {
+		c.hits.Add(1)
+	} else {
+		c.misses.Add(1)
+	}
+}
+
+func readTimingFrom(ctx context.Context) *readTiming {
+	t, _ := ctx.Value(readTimingKey{}).(*readTiming)
+	return t
+}
+
 // usageCount carries how many events a GET /v1/usage page returned into its access log line.
 type usageCount struct{ events int }
 type usageCountKey struct{}
@@ -126,6 +151,11 @@ func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string,
 	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/commits" {
 		timing = &commitTiming{}
 		r = r.WithContext(context.WithValue(r.Context(), commitTimingKey{}, timing))
+	}
+	var reads *readTiming
+	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/read" {
+		reads = &readTiming{}
+		r = r.WithContext(context.WithValue(r.Context(), readTimingKey{}, reads))
 	}
 	var moves *refTiming
 	switch route {
@@ -150,8 +180,16 @@ func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string,
 				ms(timing.prechecks), ms(timing.read), timing.readWaves, ms(timing.build), ms(timing.Put), timing.PutKeys, ms(timing.Cache))
 		}
 		if moves != nil {
-			phases = fmt.Sprintf(" objectsMs=%.3f putKeys=%d buildMs=%.3f ddbMs=%.3f ddbRetries=%d",
-				ms(moves.objects.Put), moves.objects.PutKeys, ms(moves.build), ms(moves.ddb), moves.retries)
+			phases = fmt.Sprintf(" objectsMs=%.3f putKeys=%d buildMs=%.3f ddbMs=%.3f ddbRetries=%d headMs=%.3f readTreeMs=%.3f diffMs=%.3f cacheMs=%.3f usageMs=%.3f casMs=%.3f",
+				ms(moves.objects.Put), moves.objects.PutKeys, ms(moves.build), ms(moves.ddb), moves.retries,
+				ms(moves.head), ms(moves.treeRead.read), ms(moves.diff), ms(moves.objects.Cache), ms(moves.usage), ms(moves.cas))
+		}
+		if reads != nil {
+			treeHits, treeMisses := reads.trees.hits.Load(), reads.trees.misses.Load()
+			blobHits, blobMisses := reads.blobs.hits.Load(), reads.blobs.misses.Load()
+			phases = fmt.Sprintf(" lineageMs=%.3f treeMembershipMs=%.3f treeMs=%.3f treeReads=%d treeCacheHits=%d treeCacheMisses=%d blobMs=%.3f blobReads=%d blobCacheHits=%d blobCacheMisses=%d",
+				ms(reads.lineage), ms(reads.membership), ms(reads.tree), treeHits+treeMisses, treeHits, treeMisses,
+				ms(reads.blob), blobHits+blobMisses, blobHits, blobMisses)
 		}
 		if usage != nil {
 			phases = fmt.Sprintf(" events=%d", usage.events)
