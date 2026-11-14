@@ -13,8 +13,10 @@ import { keyServices } from "./security-services.ts";
 import type { SecurityEnv } from "./security-services.ts";
 import { agentCacheSalt, WorkflowAgents, workflowChildren, type AgentArgs } from "./workflow-agents.ts";
 import { WorkflowJobs, type WorkflowJobsEnv } from "./workflow-jobs.ts";
-import { copyFork, deleteFork, forkForChild, forkId } from "./workflow-volumes.ts";
-import { ForkJanitor } from "./workflow-forks.ts";
+import { childBranch, repoAt, type WorkflowFork } from "./workflow-branches.ts";
+import { repoContext, type RepoEnv } from "./repos/registry.ts";
+import { repoErrorFrom } from "./repos/repo-policy.ts";
+import { BranchJanitor } from "./workflow-forks.ts";
 import { cacheKey, type CachedResult, type WorkflowResults } from "./workflow-results.ts";
 import { volume } from "./files.ts";
 
@@ -177,7 +179,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   /** What the owner agent hears (workflow-endings.ts): its endings and its budget or payer stops, as a child's. */
   private readonly endings: WorkflowEndings;
   readonly agents: WorkflowAgents;
-  private readonly forks: ForkJanitor;
+  private readonly forks: BranchJanitor;
 
   constructor(ctx: DurableObjectState, env: WorkflowEnv) {
     super(ctx, env);
@@ -187,7 +189,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
     };
     const self = this;
-    this.forks = new ForkJanitor({ storage: ctx.storage, deleteFork: id => deleteFork(env, self.runner.identity().tenant!, id), adopt: fork => self.adopt(fork) });
+    this.forks = new BranchJanitor({ storage: ctx.storage, deleteOwned: id => env.REPOS.getByName(`${self.runner.identity().tenant!}:${id}`).deleteOwned(`workflow:${name!}`) });
     this.agents = new WorkflowAgents({
       storage: ctx.storage,
       get workflow() { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant!, ...(identity.bucket ? { bucket: identity.bucket } : {}) }; },
@@ -199,14 +201,10 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       usageRoot: () => { const owner = self.settings().owner; return owner?.kind === "agent" ? owner.id : undefined; },
       classes: () => { const settings = self.settings(); return { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) }; },
       // A child of a repo (`agent(..., { repo })`) edits a fork of it at /repo, and answers with the fork, for commit().
-      childVolume: async (effect, args) => {
+      childMounts: async (effect, args) => {
         if (args.repo === undefined) return undefined;
-        if (typeof args.repo !== "string") throw Object.assign(new Error("agent() repo is a volume id"), { status: 400 });
-        const identity = self.runner.identity();
-        // Recorded before it is made, so the workflow's end deletes it whatever happens in between.
-        await self.forks.made(await forkId(identity.tenant!, { workflow: name!, key: effect.key, attempt: effect.attempt }));
-        const fork = await forkForChild(env, identity.tenant!, { workflow: name!, key: effect.key, attempt: effect.attempt, repo: args.repo });
-        return { mounts: [{ volumeId: fork.volume, path: FORK_MOUNT_PATH, mode: "rw" }], result: { fork: { volume: fork.volume, base: fork.base } } };
+        const fork = await childBranch(env as unknown as RepoEnv, self.runner.identity().tenant!, ctx.storage, { workflow: name!, ...effect }, repoAt(args.repo));
+        return { mounts: [{ repo: fork.repo, ref: fork.ref, path: FORK_MOUNT_PATH, mode: "rw" }], result: { fork } };
       },
       children: workflowChildren(env as unknown as Env, () => { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant! }; }, { runtimeOrigin: () => (env as { AGENT_PUBLIC_URL?: string }).AGENT_PUBLIC_URL || self.settings().runtimeOrigin }),
     });
@@ -249,69 +247,50 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     return { tenant, cache: env.WORKFLOW_RESULTS.getByName(`${tenant}:${owner?.kind === "agent" ? owner.id : "api"}`) };
   }
 
-  /**
-   * The owner's result cache, as the runner uses it (workflow-results.ts). An effect that reads a volume (an agent() on a
-   * fork of `repo`, a job() `at` one) is keyed with that volume's version at lookup, which the runner keeps for its
-   * landing (`ResultCache`); an agent() also with what decides its answer beyond its arguments (`agentCacheSalt`).
-   * Forks: a landing offers its fork with the result only for an agent() with `repo`, whose `fork` is the runtime's
-   * (spread over the child's answer, workflow-agents.ts); the cache takes it over at this workflow's end (`adopt`, the
-   * janitor). A hit with a fork gets a copy of its own, made as one of this workflow's forks.
-   */
+  /** Results reading repos key on their base tree; volume jobs still key on seq. */
   private resultCache(env: WorkflowEnv, name: string): ResultCache {
     const scope = () => { const found = this.results(env); if (!found) throw new Error("The workflow has no tenant: no result cache"); return found; };
-    const parse = (args: string) => { try { return JSON.parse(args) as Record<string, unknown>; } catch { return {}; } };
-    const read = (kind: string, parsed: Record<string, unknown>) => {
-      const source = kind === "agent" ? parsed.repo : kind === "job" ? parsed.at : undefined;
-      return typeof source === "string" ? source : undefined;
-    };
+    const parse = (args: string) => JSON.parse(args) as Record<string, unknown>;
     return {
       lookup: async (kind, args, effect) => {
-        const { tenant, cache } = scope();
-        const parsed = parse(args), source = read(kind, parsed);
-        let key = cacheKey(args, source === undefined ? undefined : (await (await volume(env, tenant, source)).info()).seq);
+        const { tenant, cache } = scope(), parsed = parse(args);
+        const source = kind === "agent" ? parsed.repo : kind === "job" ? parsed.at : undefined;
+        let base: string | number | undefined;
+        if (kind === 'job' && typeof source === 'string') base = (await (await volume(env, tenant, source)).info()).seq;
+        else if (source !== undefined) {
+          const at = repoAt(source), ctx = await repoContext(env as unknown as RepoEnv, tenant, at.repo);
+          base = (await ctx.repo.resolve(at.ref ?? at.version ?? 'main')).tree;
+        }
+        let key = cacheKey(args, base);
         if (kind === "agent") {
           const settings = this.settings();
           key += `\n@agent:${await agentCacheSalt(env as unknown as Env, tenant, parsed as AgentArgs, { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) })}`;
         }
         const hit = await cache.lookup(kind, key) as CachedResult | undefined;
         if (!hit) return { key };
-        const cached = kind === "agent" && source !== undefined ? (hit.value as { fork?: { volume?: unknown } } | null)?.fork : undefined;
-        if (typeof cached?.volume !== "string") return { key, hit };
-        // Its own copy, recorded first as a fork this workflow made (its end deletes it). Gone meanwhile: a miss.
+        if (kind !== 'agent' || !hit.fork) return { key, hit };
         try {
-          await this.forks.made(await forkId(tenant, { workflow: name, key: effect.key, attempt: effect.attempt }));
-          const copy = await copyFork(env, tenant, cached.volume, { workflow: name, key: effect.key, attempt: effect.attempt });
-          return { key, hit: { ...hit, value: { ...(hit.value as object), fork: { ...cached, volume: copy } } } };
+          const fork = await childBranch(env as unknown as RepoEnv, tenant, this.ctx.storage, { workflow: name, ...effect }, repoAt(source), hit.fork.version);
+          return { key, hit: { ...hit, value: { ...(hit.value as object), fork } } };
         } catch (error) {
-          console.error(JSON.stringify({ type: "workflow_cache_fork_copy_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+          if ((repoErrorFrom(error)?.status ?? (error as { status?: number }).status) !== 404) throw error;
+          console.error(JSON.stringify({ type: 'workflow_cache_fork_missing', workflow: name, key: effect.key }));
           return { key };
         }
       },
-      landed: effect => {
-        const trusted = effect.kind === "agent" && read("agent", parse(effect.args)) !== undefined;
-        const named = trusted ? (effect.value as { fork?: { volume?: unknown } } | null)?.fork?.volume : undefined;
-        this.ctx.waitUntil((async () => {
-          const { tenant, cache } = scope();
-          await cache.put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(typeof named === "string" ? { fork: { tenant, volume: named } } : {}) });
-        })().catch(error => console.error(JSON.stringify({ type: "workflow_cache_put_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }))));
+      landed: async effect => {
+        const { tenant, cache } = scope();
+        const fork = effect.kind === 'agent' && parse(effect.args).repo !== undefined ? (effect.value as { fork?: WorkflowFork })?.fork : undefined;
+        // Awaited so the cache ref exists before the end deletes the fork branch; a cache failure only loses the entry.
+        try {
+          const version = fork ? (await (await repoContext(env as unknown as RepoEnv, tenant, fork.repo)).repo.resolve(fork.ref)).version : undefined;
+          const owner = this.settings().owner;
+          await cache.put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(fork ? { fork: { tenant, owner: owner?.kind === 'agent' ? owner.id : 'api', repo: fork.repo, version: version! } } : {}) });
+        } catch (error) {
+          console.error(JSON.stringify({ type: 'workflow_cache_put_failed', workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+        }
       },
     };
-  }
-
-  /**
-   * At the end, fork `fork` goes to the owner's result cache if an entry names it (`adopt`). One whose base moved on
-   * since it was made (a commit landed there) can never be found by its entries again: the cache drops them and the
-   * fork is deleted now.
-   */
-  private async adopt(fork: string) {
-    const env = this.env as WorkflowEnv, found = this.results(env);
-    if (!found) return false;
-    let moved = false;
-    try {
-      const origin = (await (await volume(env, found.tenant, fork)).info()).origin;
-      moved = origin !== undefined && (await (await volume(env, found.tenant, origin.volume)).info()).seq > origin.seq;
-    } catch { /* unreadable: the cache decides from its entries alone */ }
-    return await found.cache.adopt(fork, found.tenant, moved);
   }
 
   /**

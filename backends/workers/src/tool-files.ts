@@ -1,4 +1,3 @@
-import { LegacyToolFiles, serveLegacyToolFile } from "./legacy-tool-files.ts";
 import { agentStore, insideRepo } from "./repos/agent-store.ts";
 import { repoContext, type RepoEnv } from "./repos/registry.ts";
 import { versionEntries } from "./repos/reads.ts";
@@ -16,13 +15,13 @@ import type { AttachedFile } from './attachment-markers.ts';
 import { isFileArgument, type FileSpec, type FileValue } from './tool-file-schema.ts';
 
 type Env = FileBindings & IdentityEnv;
-type Scope = { tenant: string; agent: string; mounts: import("./repos/mounts.ts").AgentMount[]; tool: string; call: string; requestId?:string; origin: string; refuse?: string; reference(path: string): Promise<AttachedFile>; onWrite(file: { path: string; version: string; size: number; contentType: string }): Promise<void>; budget?: { left: number } };
+type Scope = { tenant: string; agent: string; mounts: import("./repos/mounts.ts").Mount[]; tool: string; call: string; requestId?:string; origin: string; refuse?: string; reference(path: string): Promise<AttachedFile>; onWrite(file: { path: string; version: string; size: number; contentType: string }): Promise<void>; budget?: { left: number } };
 const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 const relative = (path: string, root: string) => root?path.slice(root === '/' ? 1 : root.length + 1):path;
 const status = (error: unknown) => error instanceof HttpError ? error.status : Number(/FILE_(\d{3}):/.exec(String(error))?.[1]);
 
 /** One call's mount-limited transport. The repo orders writes and keeps immutable versions. */
-class RepoToolFiles {
+export class ToolFiles {
   private left = TOOL_FILE_LIMITS.callBytes;
   private directory?: string;
   private names = new Set<string>();
@@ -48,7 +47,7 @@ class RepoToolFiles {
     }
     return { ...target, entry, name: nameOf(target.path), size: entry.size, contentType: entry.contentType };
   }
-  private async bytes(file: Awaited<ReturnType<RepoToolFiles['open']>>) {
+  private async bytes(file: Awaited<ReturnType<ToolFiles['open']>>) {
     const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo), v=await ctx.repo.resolve(file.entry.version);
     return Buffer.from(await ctx.storage.readBlob(ctx.lineage,file.entry.blob,v.tree,insideRepo(file.path)));
   }
@@ -121,8 +120,6 @@ export async function serveToolFile(request: Request, env: Env): Promise<Respons
   if (!match || match[1].split('.').length === 2) return;
   if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed');
   const grant = await (await runtimeSigner(env, url.origin)).verifyFileToken(match[1]);
-  // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-  if('volume' in grant)return serveLegacyToolFile(request,env);
   const ctx=await repoContext(env as RepoEnv,grant.tenant,grant.repo), v=await ctx.repo.resolve(grant.version);
   const entries=(await versionEntries(ctx,v.tree)).filter(e=>!grant.path||e.path===grant.path||e.path.startsWith(grant.path+'/'));
   if(grant.kind==='archive') {
@@ -140,16 +137,3 @@ export async function serveToolFile(request: Request, env: Env): Promise<Respons
 export { savedContent } from "./tool-content.ts";
 
 export { multipartBody } from "./tool-multipart.ts";
-
-// TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-export class ToolFiles extends RepoToolFiles {
-  private legacy: LegacyToolFiles;
-  constructor(env:Env,private original:Scope) {super(env,{...original,mounts:original.mounts.filter((m):m is Mount=>'repo'in m)});this.legacy=new LegacyToolFiles(env,{...original,mounts:original.mounts.filter(m=>'volumeId'in m)} as never);}
-  override get hasWorkspace() {return this.original.mounts.some(m=>m.mode==='rw');}
-  private usesLegacy(path:string) {const absolute=path.startsWith('/')?path:`${this.original.mounts[0]?.path}/${path}`;return this.original.mounts.some(m=>'volumeId'in m&&(absolute===m.path||absolute.startsWith(m.path+'/')));}
-  override open(path:string):ReturnType<RepoToolFiles['open']> {return this.usesLegacy(path)?this.legacy.open(path) as never:super.open(path);}
-  override read(path:string) {return this.usesLegacy(path)?this.legacy.read(path):super.read(path);}
-  override send(path:string,directory:boolean,spec:FileSpec,describe:boolean) {return this.usesLegacy(path)?this.legacy.send(path,directory,spec,describe):super.send(path,directory,spec,describe);}
-  override save(name:string,source:Uint8Array|AsyncIterable<Uint8Array>,contentType?:string) {return 'volumeId' in (this.original.mounts.find(m=>m.path==='/workspace'&&m.mode==='rw')??this.original.mounts.find(m=>m.mode==='rw')??{})?this.legacy.save(name,source,contentType):super.save(name,source,contentType);}
-  override bodyFile(input:unknown):ReturnType<RepoToolFiles['bodyFile']> {return isFileArgument(input)&&this.usesLegacy(input.$file)?this.legacy.bodyFile(input) as never:super.bodyFile(input);}
-}

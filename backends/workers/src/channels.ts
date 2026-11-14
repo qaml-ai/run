@@ -17,9 +17,8 @@ import { provisionDefinition, resolveDefinition } from "./definitions.ts";
 import { configuration } from "./api-contract.ts";
 import { keyServices } from "./security-services.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
-import { handleAgentFilesRoute, volume, type AgentMount as Mount } from "./files.ts";
+import { handleAgentFilesRoute, type Mount } from "./files.ts";
 import { normalizePath } from "./volume-policy.ts";
-import { signVolumeLink } from "./file-links.ts";
 import { transaction, withSql, type Sql } from "./postgres.ts";
 import { safeError } from "./observability.ts";
 import { SendError } from "../../../src/core/channels/channels.ts";
@@ -233,12 +232,7 @@ export async function workerChannels(env: Env, background?: (work: Promise<unkno
       },
       async ref(agent, tenant, path) {
         const { mount, absolute, inside } = resolve(await mountsOf(env, agent, tenant), path);
-        // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-        if('volumeId'in mount) {
-          const v=await volume(env,tenant,mount.volumeId,mount.volumeId===`agent:${agent}`),file=await v.stat(inside);
-          await v.pin(`agent:${agent}`,[file.key]);
-          return {type:'file',path:absolute,volume:mount.volumeId,version:file.version,key:file.key,size:file.size,contentType:file.contentType} as Presented;
-        }
+
         const v = await agentStore(env as RepoEnv, tenant, mount.repo, mount.ref??"main",agent);
         let file;
         try { file = await v.stat(inside); }
@@ -250,8 +244,6 @@ export async function workerChannels(env: Env, background?: (work: Promise<unkno
       },
       async link(agent, tenant, path) {
         const { mount, inside } = resolve(await mountsOf(env, agent, tenant), path);
-        // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-        if('volumeId'in mount)return signVolumeLink(env,publicUrl,tenant,mount.volumeId,{path:inside,expiresIn:FILE_LIMITS.maxLinkSeconds}).url;
         const ctx=await repoContext(env as RepoEnv,tenant,mount.repo),v=await ctx.repo.resolve(mount.ref??"main");
         return (await signRepoLink(ctx,publicUrl,{path:insideRepo(inside),version:v.version,expiresIn:FILE_LIMITS.maxLinkSeconds})).url;
       },

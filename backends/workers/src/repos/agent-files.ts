@@ -1,15 +1,14 @@
 import { agentStore, insideRepo, globMatch } from './agent-store.ts';
-import { agentRepoId, type AgentMount, type Mount } from './mounts.ts';
+import { agentRepoId, type Mount } from './mounts.ts';
 import type { FileBindings } from '../files.ts';
-import { legacyAgentFileRequest, legacyAgentFilesRoute } from '../files.ts';
 import type { RepoEnv } from './registry.ts';
 import { FileError, normalizePath } from '../volume.ts';
 import { safeName } from '../file-policy.ts';
 import { boundedBytes } from '../images.ts';
 import { streamFile, repoFailure } from './routes.ts';
 import { signRepoLink } from './links.ts';
-export type WrittenRepoFile = {path:string; version:string | number; size:number; contentType:string};
-export type PresentedRepoFile = (WrittenRepoFile & {type:'file'; repo:string; repoPath?:string; blob:string; caption?:string}) | import('../files.ts').PresentedVolumeFile;
+export type WrittenRepoFile = {path:string; version:string; size:number; contentType:string};
+export type PresentedRepoFile = (WrittenRepoFile & {type:'file'; repo:string; repoPath?:string; blob:string; caption?:string});
 export function mountTarget(mounts: Mount[], tenant: string, agent: string, raw?: string) {
   const own = mounts.find(m=>m.repo===agentRepoId(tenant,agent));
   const path = normalizePath(raw === undefined ? own?.path ?? '' : raw.startsWith('/') ? raw : (own?.path ?? '') + '/' + raw);
@@ -17,12 +16,9 @@ export function mountTarget(mounts: Mount[], tenant: string, agent: string, raw?
   if (!mount) throw new FileError('Path is not inside a mount',403);
   return { mount, path, inside: normalizePath((mount.subpath??'/')+'/'+path.slice(mount.path.length)) };
 }
-export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: AgentMount[] = [], op: 'api' | 'turn' = 'turn'): Promise<Response> {
+export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: Mount[] = [], op: 'api' | 'turn' = 'turn'): Promise<Response> {
   try {
     path=normalizePath(path);
-    const legacy=mounts.find(m=>!('repo' in m)&&(path===m.path||path.startsWith(m.path+'/')));
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    if (legacy && 'volumeId' in legacy) return legacyAgentFileRequest(request,env,tenant,agent,path,[legacy]);
     const t=mountTarget(mounts.filter((m):m is Mount=>'repo' in m),tenant,agent,path);
     if(request.method!=='GET' && t.mount.mode!=='rw') throw new FileError('Mount is read-only',403);
     const store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent, { ...(request.headers.get("x-camel-run") ? {"Camel-Run":request.headers.get("x-camel-run")!} : {}), ...(request.headers.get("x-camel-call") ? {"Camel-Call":request.headers.get("x-camel-call")!} : {}) }), p=insideRepo(t.inside);
@@ -44,18 +40,13 @@ export async function handleAgentFileRequest(request: Request, env: FileBindings
   } catch(e) {return failure(e);}
 }
 function failure(e:unknown) {const m=/FILE_(\d{3}):([^]*)/.exec(String(e));return m?Response.json({error:m[2]},{status:Number(m[1])}):repoFailure(e);}
-export async function handleAgentFilesRoute(request:Request,env:FileBindings,tenant:string,agent:string,mounts:AgentMount[],path=new URL(request.url).pathname):Promise<Response|null> {
+export async function handleAgentFilesRoute(request:Request,env:FileBindings,tenant:string,agent:string,mounts:Mount[],path=new URL(request.url).pathname):Promise<Response|null> {
   if(path!=='/files'&&path!=='/links'&&!path.startsWith('/uploads/'))return null;
   try {
     const url=new URL(request.url);
     if(path.startsWith('/uploads/')) {
       const match=/^\/uploads\/([A-Za-z0-9_-]{1,80})\/([^/]+)$/.exec(path);
       if(!match)throw new FileError('Invalid upload path');
-      // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-      if (!mounts.some(m=>'repo'in m && m.repo===agentRepoId(tenant,agent)&&m.mode==='rw')) {
-        const legacy=mounts.filter((m):m is import('../files.ts').LegacyVolumeMount=>'volumeId'in m);
-        if(legacy.length) return legacyAgentFilesRoute(request,env,tenant,agent,legacy,path);
-      }
       const own=mounts.find(m=>'repo'in m&&m.repo===agentRepoId(tenant,agent)&&m.mode==='rw');
       if(!own)throw new FileError('Attaching files needs a writable mount, like the default /workspace');
       const headers=new Headers(request.headers);headers.set('x-camel-run',match[1]);
@@ -63,9 +54,6 @@ export async function handleAgentFilesRoute(request:Request,env:FileBindings,ten
     }
     const body=path==='/links'?await request.clone().json() as any:undefined;
     const asked=body?.path??url.searchParams.get('path')??undefined;
-    const legacy=mounts.find(m=>!('repo'in m)&&(asked ? asked===m.path||asked.startsWith(m.path+'/') : !mounts.some(m=>'repo'in m)));
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    if(legacy&&'volumeId'in legacy)return legacyAgentFilesRoute(request,env,tenant,agent,[legacy],path);
     const t=mountTarget(mounts.filter((m):m is Mount=>'repo'in m),tenant,agent,asked), store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent);
     if(path==='/links') {
       if(body.method==='PUT'&&t.mount.mode!=='rw')throw new FileError('Mount is read-only',403);

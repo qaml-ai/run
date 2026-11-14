@@ -17,9 +17,9 @@ test('definition children retain the resolved definition configuration', () => {
   assert.deepEqual(childConfig({ model: 'parent/model', subject: 'end-user' }, target), { ...target, subject: 'end-user' });
 });
 
-test('inline children retain stored legacy mounts without exposing them as new input', () => {
-  const mount={volumeId:'agent:pilot',path:'/workspace',mode:'rw',notify:true};
-  assert.deepEqual(childConfig({mounts:[mount]}).mounts,[{volumeId:mount.volumeId,path:mount.path,mode:mount.mode},{workspace:false}]);
+test('inline children inherit repo refs and omit watches', () => {
+  const mount={repo:'repo_pilot',ref:'fork/work',path:'/workspace',mode:'rw',notify:true};
+  assert.deepEqual(childConfig({mounts:[mount]}).mounts,[{repo:mount.repo,ref:mount.ref,path:mount.path,mode:mount.mode},{workspace:false}]);
 });
 
 test('child tool identity stays the owner when the run has another payer', () => {

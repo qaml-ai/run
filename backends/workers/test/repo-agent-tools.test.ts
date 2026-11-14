@@ -19,7 +19,7 @@ const { createRepo, repoContext, deleteRepo } = await import('../src/repos/regis
 const { repoTools } = await import("../src/repos/tools.ts");
 const { agentRepoId, releaseAgentFiles } = await import("../src/repos/mounts.ts");
 const { PromptAttachments } = await import("../src/prompt-attachments.ts");
-const {inheritLegacyHistoryPins}=await import('../src/legacy-prompt-attachments.ts');
+const {configImpl}=await import('../src/agent-config.ts');
 const {readDreamMemory,publishDreamMemory}=await import('../src/repos/dream-memory.ts');
 const {authorizedAttachment}=await import('../src/repos/attachments.ts');
 const {configuration,storedConfiguration}=await import('../src/api-contract.ts');
@@ -113,23 +113,20 @@ test('attachments of a message are one commit; fork and deletion preserve the pa
   await assert.rejects(repoContext(env,'t',fork.info.id),err('no_repo'));
   assert.ok(await ctx.repo.ref('main'));
 });
-test('stored legacy volume mounts still read and write through volume tools',async()=>{
-  const files=new Map<string,any>();let reads=0,writes=0;
-  const volume={initialize:async()=>{},stat:async(path:string)=>{const f=files.get(path);if(!f)throw new Error('FILE_404:missing');return f;},read:async(path:string)=>{reads++;return {file:files.get(path),bytes:bytes(files.get(path).text)};},write:async(path:string,data:Uint8Array,contentType:string)=>{writes++;const file={path,text:new TextDecoder().decode(data),version:writes,size:data.length,contentType,key:'legacy'};files.set(path,file);return file;}};
-  const env:any={VOLUMES:{getByName:(id:string)=>{assert.equal(id,'t:agent:stored');return volume;}},REPOS:{getByName:()=>{throw new Error('Legacy mount must not access repos');}}};
-  const tools=repoTools(env,'t','stored',async()=>[{volumeId:'agent:stored',path:'/workspace',mode:'rw'}]);
-  await tools.find(t=>t.name==='write')!.execute({path:'/workspace/old.txt',content:'still works'},{} as never,{} as never);
-  const result=await tools.find(t=>t.name==='read')!.execute({path:'/workspace/old.txt'},{} as never,{} as never);
-  assert.equal((result.output[0] as any).text,'still works');assert.equal(writes,1);assert.equal(reads,1);
-});
-
-test('legacy fork history retains only source-authorized pins, and repo refs need no pins',async()=>{
-  const pinned:unknown[]=[],key='files/t/vol_legacy/blob';
-  const env:any={VOLUMES:{getByName:(id:string)=>{assert.equal(id,'t:vol_legacy');return {hasPin:async(owner:string,k:string)=>owner==='agent:parent'&&k===key,pin:async(owner:string,keys:string[])=>{pinned.push({owner,keys});}};}}};
-  assert.deepEqual(await inheritLegacyHistoryPins(env,'t','parent','child',[{content:[{type:'file',repo:'repo_new',blob:'a'.repeat(40),version:'b'.repeat(40)}]}]),[]);
-  assert.deepEqual(pinned,[]);
-  assert.deepEqual(await inheritLegacyHistoryPins(env,'t','parent','child',[{content:[{type:'file',key}]}]),['vol_legacy']);
-  assert.deepEqual(pinned,[{owner:'agent:child',keys:[key]}]);
+test('stored volume mounts are refused with a counted log and a repair route', async () => {
+  const lines: string[] = [], original = console.error;
+  console.error = line => lines.push(line);
+  try {
+    const stored = {id:'stored', config:{mounts:[{volumeId:'vol_old',path:'/workspace'}, {volumeId:'vol_other',path:'/data'}]}};
+    const host = {ctx:{storage:{get:async(key:string)=>key==='configuration'?stored:undefined}},env:new Proxy({}, {get:()=>assert.fail('refusal must not read volumes')})};
+    await assert.rejects(configImpl.call(host as never), (error: any) => {
+      assert.equal(error.status, 409);
+      assert.match(error.message, /Mount of volume vol_old at \/workspace is retired/);
+      assert.match(error.message, /PUT \/v1\/agents\/stored\/mounts with the full mounts array and remount: true/);
+      return true;
+    });
+    assert.deepEqual(lines.map(line => JSON.parse(line)), [{type:'legacy_volume_mount_refused',agent:'stored',volumes:2}]);
+  } finally { console.error = original; }
 });
 
 test('dream memory publishes versioned refs and retries restore without new versions',async t=>{
@@ -158,10 +155,10 @@ test('repo attachment markers require mounted ancestry and respect subpaths',asy
   assert.equal(await authorizedAttachment(env,'t',[{...mount,subpath:'/other'}],ref),false);
   assert.equal(await authorizedAttachment(env,'t',[mount],{...ref,repo:fork.repoId,version:privateWrite.version}),false);
 });
-test('new mount input rejects volumes while stored mounts remain valid; dreaming keeps its HTTP shape',()=>{
+test('new and stored mount inputs reject volumes; dreaming keeps its HTTP shape',()=>{
   const legacy={volumeId:'vol_'+ 'a'.repeat(24),path:'/workspace',mode:'rw'};
-  assert.throws(()=>configuration({mounts:[legacy]},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
-  assert.deepEqual(storedConfiguration({mounts:[legacy]},'camel-test/deterministic').config.mounts,[legacy]);
+  assert.throws(()=>configuration({mounts:[legacy] as never},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
+  assert.throws(()=>storedConfiguration({mounts:[legacy] as never},'camel-test/deterministic'),/Volumes are replaced by repos: mount { repo }/);
   const config={enabled:true,volumeId:'repo_'+'a'.repeat(24),schedule:{time:'03:00',timeZone:'UTC'},budgetUsd:1,instructions:''};
   assert.equal(dreamConfig(config).volumeId,config.volumeId);
   assert.throws(()=>dreamConfig({...config,volumeId:legacy.volumeId}),/Invalid dreaming configuration/);

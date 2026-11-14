@@ -1,3 +1,4 @@
+export { configImpl } from './agent-config.ts';
 import { ChildOutbox, deletedDeadline, settleDeleted } from "./ending-outbox.ts";
 import { goneStart, stageMissedEndings } from "./agent-endings.ts";
 import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
@@ -18,7 +19,7 @@ import { nextOccurrence, retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts
 import { metric, errorClass, failure } from "./observability.ts";
 import { TERMINAL_EVENTS_PREFIX } from "./event-log.ts";
 import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
-import { Config } from "./agent-types.ts";
+import type { Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 import { purgeStart } from "./account-purge.ts";
 
@@ -42,18 +43,6 @@ export async function purgeAccountDataImpl(this: AgentRuntime,
     await this.ctx.storage.put("deleted", true);
   }
 
-export async function configImpl(this: AgentRuntime) {
-    if (await this.ctx.storage.get("deleted"))
-      throw Object.assign(new Error("Agent deleted"), { status: 410 });
-    const config = await this.ctx.storage.get<Config>("configuration");
-    if (!config)
-      throw Object.assign(new Error("Agent not found"), { status: 404 });
-    // Pi reads its queue modes synchronously (agent-tools.ts `settings`): an agent whose queue batches takes all at a boundary.
-    this.batching = config.config.queue?.mode === "batch" && config.config.type !== "subagent";
-    if (config.expiresAt && config.expiresAt <= Date.now())
-      throw Object.assign(new Error("Agent expired"), { status: 410 });
-    return config;
-  }
 
 export function scheduleToolsImpl(this: AgentRuntime): ScheduleToolsHost {
     return {

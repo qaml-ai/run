@@ -11,14 +11,16 @@ ARG BASE_REGISTRY=public.ecr.aws/docker/library
 
 FROM --platform=$BUILDPLATFORM ${BASE_REGISTRY}/golang:1.24-bookworm AS build
 ARG TARGETARCH
+# The package is gcc-x86-64-linux-gnu but the compiler is x86_64-linux-gnu-gcc, so each arm names both (RUN is
+# /bin/sh, not bash: no ${var//…} substitution).
 RUN set -eux; case "$TARGETARCH" in \
-      arm64) gnu=aarch64-linux-gnu; deb=arm64 ;; \
-      amd64) gnu=x86-64-linux-gnu; deb=amd64 ;; \
+      arm64) pkg=gcc-aarch64-linux-gnu; cc=aarch64-linux-gnu-gcc; deb=arm64 ;; \
+      amd64) pkg=gcc-x86-64-linux-gnu; cc=x86_64-linux-gnu-gcc; deb=amd64 ;; \
       *) echo "unsupported TARGETARCH $TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    apt-get update; apt-get install -y --no-install-recommends "gcc-$gnu" "libc6-dev-$deb-cross"; \
+    apt-get update; apt-get install -y --no-install-recommends "$pkg" "libc6-dev-$deb-cross"; \
     rm -rf /var/lib/apt/lists/*; \
-    echo "${gnu//x86-64/x86_64}-gcc" > /cc
+    echo "$cc" > /cc
 WORKDIR /src
 COPY camelfsd/go.mod camelfsd/go.sum ./
 RUN go mod download

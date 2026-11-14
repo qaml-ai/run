@@ -317,8 +317,6 @@ export async function fetchRequestImpl(this: AgentRuntime,
           await this.flushBilling(true);
           await this.ctx.storage.put("deleted", true);
           if (conf) await this.closeWatchers(conf.tenantId, conf.id);
-          // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-          if(conf) await (await import('./file-output.ts')).releaseLegacyPresentedFiles(this.ctx.storage,this.env,conf.tenantId,conf.id);
           for (const listener of this.listeners) listener(0, null);
           // Planned as a deleted agent now: it wakes only for what it still owes, or goes quiet (settleDeleted).
           await this.arm();
@@ -591,13 +589,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
         return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
       }
       if (path === "/context/import" && request.method === "POST") {
-        const input = object(await body(request, 17 * 1024 * 1024), ["model", "legacyPinnedVolumes"]);
+        const input = object(await body(request, 17 * 1024 * 1024), ["model"]);
         if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
-        // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-        if(Array.isArray(input.legacyPinnedVolumes)&&input.legacyPinnedVolumes.length) {
-          const pinned=await this.ctx.storage.get<string[]>('file-pin-volumes')??[];
-          await this.ctx.storage.put('file-pin-volumes',[...new Set([...pinned,...input.legacyPinnedVolumes])]);
-        }
         if (!await this.ctx.storage.get("fork-context-imported")) {
           await writeModelContext(await (await this.harness.pi()).root(BACKGROUND_CONTEXT), input.model as Message[]);
           await this.ctx.storage.put("fork-context-imported", true);
@@ -692,7 +685,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           }
           throw error;
         });
-        return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
+        const requests = answered.requests.map(({ limitsSnapshot: _limitsSnapshot, ...record }) => record);
+        return json(batch ? { inputs: answered.inputs, requests } : { input: answered.inputs[0], request: requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
         const params = object(await body(request, 32 * 1024, true), ['queued', 'children']);

@@ -10,7 +10,7 @@ import { billingRunStop } from "./billing-run-stop.ts";
 import { usageCost } from "./webhook-policy.ts";
 import { BatchRuns } from "./batch-runs.ts";
 import { RunProjection } from "./run-projection.ts";
-import { AgentRunLimits } from "./run-limits.ts";
+import { AgentRunLimits, type RunLimitsSnapshot } from "./run-limits.ts";
 import { EndUserCredits, creditError } from "./end-user-credits.ts";
 import { auxiliaryRunCosts } from "./auxiliary-usage.ts";
 import { readAgentSpendLimit, agentSpendRefusal } from "./agent-spend.ts";
@@ -28,9 +28,11 @@ export function createLimits(this: AgentRuntime): AgentRunLimits {
       config: conf.config,
       run,
       agentId: conf.id,
-      spend: await this.agentSpend(conf),
-      childCost: await this.delegation.cost(run.id),
-      most: await tenantRunCaps(this.env, conf.tenantId),
+      childCost: () => this.delegation.cost(run.id),
+      authoritative: async () => ({
+        spend: await this.agentSpend(conf),
+        most: await tenantRunCaps(this.env, conf.tenantId),
+      }),
     };
   }, async () => {
     const conf = await this.config(), run = await this.currentRun();
@@ -42,26 +44,24 @@ export function createLimits(this: AgentRuntime): AgentRunLimits {
 }
 
 export async function agentSpendImpl(this: AgentRuntime,
-  conf: Config) {
+  conf: Config, requestId?: string) {
     const spend = await readAgentSpendLimit(this.env, conf.tenantId, conf.id, { includeRevoked: this.shuttingDown });
-    return spend
-      ? {
-          ...spend,
-          spent: spend.spent + (await this.delegation.costSince(spend.setAt)),
-        }
-      : null;
+    if (!spend) return null;
+    const { total, forRequest } = await this.delegation.spendSince(spend.setAt, requestId);
+    return { ...spend, spent: spend.spent + total, childCostAtAdmission: forRequest };
   }
 
 export async function admitRequestImpl(this: AgentRuntime,
   conf: Config,
   id: string,
-  bucket?: string, endUser?: string) {
+  bucket?: string, endUser?: string): Promise<RunLimitsSnapshot> {
     let acquired = false;
     try {
       // A monitor's check takes none of the tenant's runs per minute.
       const rate = checkRequest(id) ? undefined : await runAdmission(this.env, conf.tenantId);
       if (rate) this.runRates.set(id, rate);
-      const refusal = agentSpendRefusal(conf.id, await this.agentSpend(conf));
+      const spend = await this.agentSpend(conf, id);
+      const refusal = agentSpendRefusal(conf.id, spend);
       if (refusal)
         throw Object.assign(new Error(refusal.error), {
           status: 402,
@@ -78,6 +78,7 @@ export async function admitRequestImpl(this: AgentRuntime,
         if (broke) throw creditError(broke);
       }
       const { limit } = await accounts.billing.busyLimit(conf.tenantId);
+      const most = await tenantRunCaps(this.env, conf.tenantId);
       acquired = await this.env.TENANTS.getByName(conf.tenantId).acquire(
         `${conf.id}:${id}`,
         Math.min(
@@ -91,6 +92,9 @@ export async function admitRequestImpl(this: AgentRuntime,
           code: "BUSY_AGENT_LIMIT",
         });
       await dbPhase("hold", () => reserveTurn(this.env, conf.tenantId, conf.id, id));
+      if (!spend) return { spend: null, childCostAtAdmission: 0, most };
+      const { childCostAtAdmission, ...counter } = spend;
+      return { spend: counter, childCostAtAdmission, most };
     } catch (error) {
       if (acquired)
         await this.env.TENANTS.getByName(conf.tenantId).release(
