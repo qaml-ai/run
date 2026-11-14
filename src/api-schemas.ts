@@ -1975,7 +1975,8 @@ export const VoiceCallInput = z.strictObject({
   bucket: z.string().optional(),
   context: z.record(z.string(), z.unknown()).optional(),
   keyScope: z.string().min(1).max(100).optional(),
-  maxMinutes: z.number().int().min(VOICE_LIMITS.maxMinutes.min).max(VOICE_LIMITS.maxMinutes.max).optional(),
+  maxMinutes: z.number().int().min(VOICE_LIMITS.maxMinutes.min).max(VOICE_LIMITS.maxMinutes.max).optional()
+    .openapi({ description: "For ElevenLabs, defaults to 30 and is capped at 30. Sets the call's expiry in camelRun. The provider enforces a fixed 30-minute limit." }),
   metadata: callMetadata.optional(),
   speakers: callSpeakers.optional(),
   sdp: z.string().min(1).max(64 * 1024).refine(value => Buffer.byteLength(value) <= 64 * 1024, "sdp must be at most 64 KB").optional()

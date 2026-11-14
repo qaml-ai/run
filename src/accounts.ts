@@ -668,18 +668,6 @@ export class Accounts {
     return await this.spendLimit(tenant) ?? await this.billing.creditLimit(tenant);
   }
 
-  /** How much (USD) the tenant may spend now under its monthly cap and prepaid credit, if either bounds it. */
-  async spendRoom(tenant: string): Promise<{ usd: number; limit: "spend_limit" | "credit" } | undefined> {
-    if (this.flushedDurableUsageVersion !== this.durableUsageVersion) await this.flushUsage();
-    const cap = this.tenants.maxMonthlyCost(tenant);
-    const monthlyRoom = cap === undefined ? undefined : cap - await this.monthSpend(tenant);
-    if (await this.billing.mode(tenant) === "prepaid") {
-      const creditRoom = await this.billing.spendable(tenant, this.db) / MICROS;
-      if (monthlyRoom === undefined || creditRoom <= monthlyRoom) return { usd: creditRoom, limit: "credit" };
-    }
-    if (monthlyRoom !== undefined) return { usd: monthlyRoom, limit: "spend_limit" };
-  }
-
   /** Usage since `since`, summed per UTC day and model. */
   async usage(tenant: string, since: number, workspace?: string) {
     await this.flushUsage();

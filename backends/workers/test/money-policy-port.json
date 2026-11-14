@@ -269,6 +269,11 @@
   },
   {
     "file": "tests/end-user-credits.test.ts",
+    "test": "a completed usage debit can overdraw a balance and posts once per key",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
     "test": "a user's overrides merge key by key and never touch what they spent",
     "included": true
   },

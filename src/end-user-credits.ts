@@ -759,12 +759,12 @@ export class EndUserCredits {
   /**
    * Hold `usd` of `endUser`'s credit for work that is not a model call (audio to transcribe, images), before it is sent:
    * all of it, or as much as is left when that is within LAST_CALL_SHORTFALL of it, else a 402 END_USER_CREDIT. Settle it
-   * with what the work cost, or release it if none was done. With full, require the whole amount.
+   * with what the work cost, or release it if none was done.
    * Undefined: the tenant does not meter its end users.
    */
-  async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}, options: { now?: number; sql?: Sql; full?: boolean } = {}): Promise<CreditHold | undefined> {
+  async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}): Promise<CreditHold | undefined> {
     const id = randomUUID(), want = Math.ceil(usd * MICROS);
-    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: options.full ? want : lastCallMin(want) }, options.now, options.sql);
+    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: lastCallMin(want) });
     if (!reserved) return undefined;
     if (reserved.refused) throw creditError(reserved.refused);
     return {
@@ -793,11 +793,11 @@ export class EndUserCredits {
    * (balance, daily limit), after holds. Undefined when they may, or the tenant does not meter its end users. A read, for
    * refusing a run before it starts: the hold its first call takes is what decides.
    */
-  async refusal(tenant: string, endUser: string, bucket: string, { now = Date.now() }: { now?: number } = {}): Promise<CreditRefusal | undefined> {
-    if (!await this.enabled(tenant)) return undefined;
-    const user = (await this.db.query("select * from end_users where tenant = $1 and id = $2", [tenant, endUser])).rows[0]
+  async refusal(tenant: string, endUser: string, bucket: string, { now = Date.now(), sql = this.db }: { now?: number; sql?: Sql } = {}): Promise<CreditRefusal | undefined> {
+    if (!await this.enabled(tenant, sql)) return undefined;
+    const user = (await sql.query("select * from end_users where tenant = $1 and id = $2", [tenant, endUser])).rows[0]
       ?? { id: endUser, balance: 0, allowances: {}, bucket_limits: {}, daily_limit: null };
-    const left = await room(this.db, tenant, user, await this.settings(tenant), bucket, now);
+    const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
     return left.allowanceLeft > 0 || left.paidRoom > 0 ? undefined : refusal(endUser, bucket, left);
   }
 
@@ -812,6 +812,19 @@ export class EndUserCredits {
       if ((await sql.query("select 1 from end_user_ledger where tenant = $1 and idempotency_key = $2", [tenant, key])).rowCount) return;
       await settleUsage(sql, { tenant, endUser, bucket, day: utcDay(now), raw, key, metadata }, now);
     });
+  }
+
+  /** Post the USD cost of completed work once per key, even if the balance goes below zero. */
+  async debit(tenant: string, endUser: string, bucket: string, usd: number, key: string, metadata: Record<string, unknown> = {}, { now = Date.now(), sql: existingSql }: { now?: number; sql?: Sql } = {}): Promise<void> {
+    const raw = Math.round(usd * MICROS);
+    if (!(raw > 0)) return;
+    const settle = async (sql: Sql) => {
+      if (!await this.enabled(tenant, sql)) return;
+      await sql.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`end-user-debit:${JSON.stringify([tenant, key])}`]);
+      if ((await sql.query("select 1 from end_user_ledger where tenant = $1 and idempotency_key = $2", [tenant, key])).rowCount) return;
+      await settleUsage(sql, { tenant, endUser, bucket, day: utcDay(now), raw, key, metadata, uncapped: true }, now);
+    };
+    await (existingSql ? settle(existingSql) : transaction(this.db, settle));
   }
 
   /** Settle a hold that is not a model attempt's (a transcription, images): what the call cost (`raw`), posted once per `key`. */
@@ -942,9 +955,10 @@ export const NOTHING_POSTED: Readonly<Posted> = Object.freeze({ raw: 0, allowanc
  * longer counting against it), the rest charged to the balance at the markup, at most the room left for it (`room`: the
  * balance, the daily limit and the bucket's own limit, less what other calls hold); what does not fit is written off,
  * and never charged later. Less: the write-off goes down first, then the balance is refunded, then the allowance. In the
- * caller's transaction, which this locks the user in; returns what the call has posted now.
+ * caller's transaction, which this locks the user in; returns what the call has posted now. With `uncapped` the whole
+ * amount owed is charged even past the balance and spending limits.
  */
-export async function settleUsage(sql: Sql, call: { tenant: string; endUser: string; bucket: string; day: string; raw: number; key: string; hold?: string; previous?: Partial<Posted>; metadata?: Record<string, unknown> }, now = Date.now(), locked?: { sql: Sql; user: any }): Promise<Posted> {
+export async function settleUsage(sql: Sql, call: { tenant: string; endUser: string; bucket: string; day: string; raw: number; key: string; hold?: string; previous?: Partial<Posted>; metadata?: Record<string, unknown>; uncapped?: boolean }, now = Date.now(), locked?: { sql: Sql; user: any }): Promise<Posted> {
   const { tenant, endUser, bucket, day } = call;
   const previous: Posted = { ...NOTHING_POSTED, ...call.previous };
   if (locked && (locked.sql !== sql || locked.user.tenant !== tenant || locked.user.id !== endUser)) throw new Error("End-user lock belongs to another transaction or user");
@@ -963,7 +977,7 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
     const more = raw - previous.raw;
     const covered = Math.min(more, left.allowanceLeft);
     const owed = marked(more - covered, markupBps);
-    const charged = Math.min(owed, left.paidRoom);
+    const charged = call.uncapped ? owed : Math.min(owed, left.paidRoom);
     const lost = charged < owed ? more - covered - unmarked(charged, markupBps) : 0;
     allowance = previous.allowance + covered;
     paid = previous.paid + charged;

@@ -417,13 +417,11 @@ function discordInput(value: unknown, endpoints: RegExp, partial = false): Parti
  */
 export interface VoiceCredit {
   /** With `usd`, also refused when the subject cannot cover that much (a realtime brain's first response hold). */
-  refusal(tenant: string, endUser: string, bucket: string): Promise<{ reason: string; message: string } | undefined>;
+  refusal(tenant: string, endUser: string, bucket: string, options?: { sql?: Sql }): Promise<{ reason: string; message: string } | undefined>;
   /** Throws 402 END_USER_CREDIT (`details.reason`) when the subject has too little left to start work costing `usd`. */
-  hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>, options?: { now?: number; sql?: Sql; full?: boolean }): Promise<{ id?: string; settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
-  /** Durable holds for calls that can finish on another node. Amounts passed to settleHold are raw micro-USD. */
-  settleHold?(tenant: string, endUser: string, bucket: string, id: string, rawMicros: number, key: string, metadata: Record<string, unknown>, now?: number, sql?: Sql): Promise<void>;
-  release?(id: string, sql?: Sql): Promise<void>;
-  renew?(tenant: string, endUser: string, id: string, now?: number, sql?: Sql): Promise<void>;
+  hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>): Promise<{ id?: string; settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+  /** Post the USD cost of completed work, even when it exceeds the balance. */
+  debit?(tenant: string, endUser: string, bucket: string, usd: number, key: string, metadata: Record<string, unknown>, options?: { now?: number; sql?: Sql }): Promise<void>;
 }
 
 export interface VoiceSessionsOptions {

@@ -9,7 +9,7 @@ import { DEFAULT_VOICE } from "./speech.ts";
 import { VOICE_LIMITS, type VoiceCredit } from "./voice-sessions.ts";
 import { redactDetail } from "./voice-providers/socket.ts";
 import { ASK_LIMITS, askAgent, TRANSCRIPT_CHARS, TRANSCRIPT_LINES } from "./voice/calls/bridge.ts";
-import { ELEVENLABS_BUCKETS_MINUTES, terminationReasonToEnd, type ElevenLabsCalls } from "./voice/calls/elevenlabs.ts";
+import { terminationReasonToEnd, type ElevenLabsCalls } from "./voice/calls/elevenlabs.ts";
 import type { OpenAICalls, Sideband, SidebandEvents } from "./voice/calls/openai.ts";
 import { ASK_AGENT, ASK_FAILED, EMPTY_REPLY, EMPTY_REQUEST, lateFailure, lateReply, LATE_FAILURE, LATE_REPLY, PENDING, realtimeInstructions, STAY_SILENT } from "./voice/calls/prompts.ts";
 import { NO_USAGE, realtimeCost, realtimePrice, realtimeVoice, type RealtimeUsage } from "./voice/realtime/provider.ts";
@@ -17,20 +17,19 @@ import { webhookEvent, type EventType, type WebhookEvent } from "./webhooks.ts";
 
 export type VoiceCallOptions = {
   subject: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; metadata?: Record<string, unknown>;
-  elevenlabsAgent?: string; transcript?: string[]; deadlineSettled?: boolean;
+  elevenlabsAgent?: string; elevenlabsEndUserCredit?: boolean; transcript?: string[]; deadlineSettled?: boolean;
   speakers: Record<string, string>; maxMinutes: number; language?: string; instructions?: string;
 };
 export type VoiceCallsOptions = {
   db: Db; node: string;
   admit(tenant: string): Promise<void>;
-  spendRoom(tenant: string): Promise<{ usd: number; limit: "spend_limit" | "credit" } | undefined>;
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   record(tenant: string, usage: UsageRecord): void;
   recordIn?(sql: Sql, tenant: string, usage: UsageRecord): Promise<void>;
   usageCommitted?(tenant: string): Promise<void>;
   submitStreaming(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncIterable<string>;
   credit?: VoiceCredit;
-  creditEnabled?(tenant: string): Promise<boolean>;
+  creditEnabled?(tenant: string, sql?: Sql): Promise<boolean>;
   providers: { openai?: OpenAICalls; elevenlabs?: ElevenLabsCalls };
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<{ apiKey: string; platform: boolean } | undefined>;
   perTenant(tenant: string): Promise<number>;
@@ -45,13 +44,11 @@ export type VoiceCallsOptions = {
 type Row = {
   id: string; tenant: string; agent: string; provider: VoiceCall["provider"]; model: string; voice: string;
   state: VoiceCall["state"]; end_reason: string | null; provider_call: string | null; options: VoiceCallOptions;
-  hold: CallHold | null;
   turns: number; asks: number; audio_seconds: string; cost: number;
   started_at: Date | null; ended_at: Date | null;
-  // The call's fixed end (start + maxMinutes). The sweeper renews the separate expiry in end_user_holds.
+  // The call's fixed end (start + maxMinutes).
   expires_at: Date;
 };
-type CallHold = { id: string; endUser: string; bucket: string; usd: number; heldAt: number };
 type Ending = { reason: string; detail?: string; limit?: "end_user"; endUserReason?: string; bucket?: string };
 type Hold = Awaited<ReturnType<VoiceCredit["hold"]>>;
 type ToolCall = Parameters<SidebandEvents["toolCall"]>[0];
@@ -148,16 +145,22 @@ export class VoiceCalls {
     if (!key) throw new HttpError(400, name === "elevenlabs" ? "No platform ElevenLabs key for voice calls" :
       "No OpenAI key for voice calls: add one under Models & keys (PUT /v1/providers/openai/key)", "REALTIME_UNAVAILABLE");
     if (name === "openai" && !sdp) throw new HttpError(400, "sdp is required for OpenAI calls");
+    // Tenant admission can flush usage in its own transaction.
     await this.options.admit(tenant);
     const bucket = options.bucket ?? DEFAULT_BUCKET;
-    const credit = !this.options.creditEnabled || await this.options.creditEnabled(tenant) ? this.options.credit : undefined;
-    const refused = name === "openai" ? await credit?.refusal(tenant, options.subject, bucket) : undefined;
-    if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket, reason: refused.reason });
+    const admitEndUser = async (sql?: Sql) => {
+      const credit = !this.options.creditEnabled || await this.options.creditEnabled(tenant, sql) ? this.options.credit : undefined;
+      const refused = await credit?.refusal(tenant, options.subject, bucket, sql ? { sql } : undefined);
+      if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket, reason: refused.reason });
+      return credit;
+    };
+    const credit = name === "openai" ? await admitEndUser() : undefined;
 
     const id = `vc_${randomBytes(12).toString("hex")}`;
     await transaction(this.options.db, async sql => {
       // Share the existing session lock, so an in-flight Discord insert counts here.
       await sql.query("select pg_advisory_xact_lock(hashtext('voice-sessions:' || $1))", [tenant]);
+      if (name === "elevenlabs") options.elevenlabsEndUserCredit = Boolean(await admitEndUser(sql));
       const limit = await this.options.perTenant(tenant);
       const sessions = await this.options.liveSessions(tenant, sql);
       const calls = (await sql.query("select count(*) as count from voice_calls where tenant = $1 and state <> 'ended'", [tenant])).rows[0].count;
@@ -165,51 +168,13 @@ export class VoiceCalls {
       if (live >= limit) throw new HttpError(429, `This account has ${live} live voice sessions, its limit: end one first`, "VOICE_SESSION_LIMIT", { limit });
       this.checkRetiring();
       const now = this.now();
-      let hold: CallHold | undefined;
       if (name === "elevenlabs") {
         const price = realtimePrice(`elevenlabs/${model}`);
         if (!price || !("perMinute" in price)) throw new HttpError(400, `Realtime model elevenlabs/${model} has no price configured`, "REALTIME_UNPRICED");
-        const cap = Math.min(given.maxMinutes ?? 30, 30);
-        const candidates = ELEVENLABS_BUCKETS_MINUTES.filter(minutes => minutes <= cap).reverse();
-        if (!candidates.length) throw new HttpError(400, "ElevenLabs calls require maxMinutes of at least 5");
-        options.maxMinutes = candidates[0];
-        if (credit) {
-          if (!credit.settleHold || !credit.renew || !credit.release) throw new Error("Voice credit does not support durable holds");
-          let refusal: HttpError | undefined;
-          for (const minutes of candidates) {
-            const usd = minutes * price.perMinute / 1_000_000;
-            options.maxMinutes = minutes;
-            try {
-              const reservation = await credit.hold(tenant, options.subject, bucket, usd, "voice_elevenlabs", { session: id }, { now, sql, full: true });
-              if (reservation) {
-                if (!reservation.id) throw new Error("Voice credit returned no hold id");
-                hold = { id: reservation.id, endUser: options.subject, bucket, usd, heldAt: now };
-              }
-              refusal = undefined;
-              break;
-            } catch (error) {
-              if (!(error instanceof HttpError) || error.status !== 402) throw error;
-              refusal = error;
-            }
-          }
-          if (refusal) throw refusal;
-        } else {
-          const room = await this.options.spendRoom(tenant);
-          if (room) {
-            const minutes = candidates.find(minutes => minutes * price.perMinute / 1_000_000 <= room.usd);
-            if (minutes === undefined) {
-              if (room.limit === "credit") {
-                throw new HttpError(402, `This account's credit covers less than 5 minutes of an ElevenLabs call ($${room.usd.toFixed(2)} left)`, "INSUFFICIENT_CREDIT");
-              }
-              throw new HttpError(402, "This account's monthly spend limit leaves less than 5 minutes of an ElevenLabs call", "SPEND_LIMIT");
-            }
-            options.maxMinutes = minutes;
-          }
-        }
       }
-      await sql.query(`insert into voice_calls (id, tenant, agent, provider, model, voice, state, options, expires_at, created_at, updated_at, hold)
-        values ($1, $2, $3, $4, $5, $6, 'connecting', $7, $8, $9, $9, $10)`,
-      [id, tenant, agent, name, model, voice, JSON.stringify(options), new Date(now + options.maxMinutes * 60_000), new Date(now), hold ?? null]);
+      await sql.query(`insert into voice_calls (id, tenant, agent, provider, model, voice, state, options, expires_at, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, 'connecting', $7, $8, $9, $9)`,
+      [id, tenant, agent, name, model, voice, JSON.stringify(options), new Date(now + options.maxMinutes * 60_000), new Date(now)]);
     });
 
     if (name === "elevenlabs") return this.connectElevenLabs(id, this.options.providers.elevenlabs!, key.apiKey, model, voice, options);
@@ -268,7 +233,7 @@ export class VoiceCalls {
   private async connectElevenLabs(id: string, provider: ElevenLabsCalls, apiKey: string, model: string, voice: string, options: VoiceCallOptions): Promise<VoiceCallCreated> {
     try {
       const { agentId } = await provider.provision({
-        apiKey, model, voiceId: voice, language: options.language, maxMinutes: options.maxMinutes,
+        apiKey, model, voiceId: voice, language: options.language,
         instructions: realtimeInstructions(options.instructions, { agent: true, group: true }),
       });
       const connect = await provider.signedUrl({ apiKey, agentId });
@@ -287,7 +252,6 @@ export class VoiceCalls {
       const failed = await transaction(this.options.db, async sql => {
         const { rows } = await sql.query<Row>("select * from voice_calls where id = $1 and state = 'connecting' for update", [id]);
         if (!rows[0]) return;
-        await this.releaseElevenLabs(rows[0], sql);
         await this.finishElevenLabs(sql, rows[0], "error", { detail });
         return rows[0];
       });
@@ -502,7 +466,6 @@ export class VoiceCalls {
         return;
       }
       if (type === "call_initiation_failure") {
-        await this.releaseElevenLabs(row, sql);
         const detail = typeof data.failure_reason === "string" ? detailOf(data.failure_reason) : undefined;
         await this.finishElevenLabs(sql, row, "error", { detail });
         return { row };
@@ -544,28 +507,18 @@ export class VoiceCalls {
     }
   }
 
-  private async releaseElevenLabs(row: Row, sql: Sql) {
-    if (!row.hold) return;
-    const credit = this.options.credit;
-    if (!credit?.release) throw new Error("Voice credit does not support durable holds");
-    await credit.release(row.hold.id, sql);
-  }
-
   private async settleElevenLabs(sql: Sql, row: Row, seconds: number, deadline: boolean): Promise<UsageRecord> {
     const cost = realtimeCost(`elevenlabs/${row.model}`, NO_USAGE, seconds);
-    const hold = row.hold;
-    const usd = Math.min(cost, hold?.usd ?? cost);
-    const credit = this.options.credit;
-    if (hold) {
-      if (!credit?.settleHold) throw new Error("Voice credit does not support durable holds");
-      await credit.settleHold(row.tenant, hold.endUser, hold.bucket, hold.id, Math.round(usd * 1_000_000),
-        `voice_elevenlabs:${hold.id}`, { call: "voice_elevenlabs", session: row.id }, this.now(), sql);
+    const { bucket, subject, context, elevenlabsEndUserCredit } = row.options;
+    const now = this.now();
+    if (elevenlabsEndUserCredit) {
+      await this.options.credit?.debit?.(row.tenant, subject, bucket ?? DEFAULT_BUCKET, cost,
+        `voice_elevenlabs:${row.id}`, { call: "voice_elevenlabs", session: row.id }, { now, sql });
     }
-    const { bucket, subject, context } = row.options;
     const usage: UsageRecord = {
       provider: "elevenlabs", model: row.model, kind: "speech", platform: true, speeches: 1,
-      audioSeconds: deadline ? seconds : Math.ceil(seconds), timestamp: this.now(),
-      usage: { input: 0, output: 0, cacheRead: 0, cost: { total: deadline ? usd : cost }, ...(deadline ? { settled: "deadline" } : {}) },
+      audioSeconds: deadline ? seconds : Math.ceil(seconds), timestamp: now,
+      usage: { input: 0, output: 0, cacheRead: 0, cost: { total: cost }, ...(deadline ? { settled: "deadline" } : {}) },
       bucket, identity: { subject, context: { ...context, voiceCall: row.id } },
     };
     await this.options.recordIn?.(sql, row.tenant, usage);
@@ -575,7 +528,7 @@ export class VoiceCalls {
   private async finishElevenLabs(sql: Sql, row: Row, reason: string, result: { detail?: string; turns?: number; usage?: UsageRecord; deadline?: boolean }) {
     const now = new Date(this.now());
     const { rows } = await sql.query<Row>(`update voice_calls set state = 'ended', end_reason = $2,
-      ended_at = coalesce(ended_at, $3), updated_at = $3, turns = $4, audio_seconds = $5, cost = $6, hold = null,
+      ended_at = coalesce(ended_at, $3), updated_at = $3, turns = $4, audio_seconds = $5, cost = $6,
       options = (options - 'transcript') || jsonb_build_object('deadlineSettled', $7::boolean)
       where id = $1 returning *`, [row.id, reason, now, result.turns ?? row.turns,
       result.usage?.audioSeconds ?? row.audio_seconds, Math.round((result.usage?.usage.cost.total ?? view(row).costUsd) * 1_000_000), result.deadline ?? false]);
@@ -593,27 +546,21 @@ export class VoiceCalls {
   private async sweepElevenLabs(now: number) {
     const deadline = new Date(now - POST_CALL_GRACE_MS);
     const { rows } = await this.options.db.query<Row>(`select * from voice_calls
-      where provider = 'elevenlabs' and state <> 'ended' and (hold is not null or coalesce(ended_at, expires_at) < $1)`, [deadline]);
+      where provider = 'elevenlabs' and state <> 'ended' and coalesce(ended_at, expires_at) < $1`, [deadline]);
     for (const candidate of rows) {
       const { id } = candidate;
       try {
-        const conversation = candidate.started_at && (candidate.ended_at ?? candidate.expires_at) < deadline
-          ? await this.elevenLabsConversation(candidate) : undefined;
+        const conversation = candidate.started_at ? await this.elevenLabsConversation(candidate) : undefined;
         const result = await transaction(this.options.db, async sql => {
           const { rows } = await sql.query<Row>("select * from voice_calls where id = $1 and state <> 'ended' for update", [id]);
           const row = rows[0];
           if (!row) return;
           const fixedEnd = row.ended_at ?? row.expires_at;
-          if (fixedEnd >= deadline) {
-            if (row.hold) await this.options.credit?.renew?.(row.tenant, row.hold.endUser, row.hold.id, now, sql);
-            return;
-          }
+          if (fixedEnd >= deadline) return;
           if (!row.started_at) {
-            await this.releaseElevenLabs(row, sql);
             await this.finishElevenLabs(sql, row, "error", { detail: "The call did not connect" });
             return { row };
           }
-          if ((candidate.ended_at ?? candidate.expires_at) >= deadline) return;
           const elapsedSeconds = Math.max(0, (fixedEnd.getTime() - row.started_at.getTime()) / 1000);
           const source = conversation?.durationSeconds === undefined ? "elapsed" : "conversation";
           const usage = await this.settleElevenLabs(sql, row, conversation?.durationSeconds ?? elapsedSeconds, true);
