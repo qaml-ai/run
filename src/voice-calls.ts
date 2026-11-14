@@ -514,7 +514,11 @@ export class VoiceCalls {
     const { bucket, subject, context, elevenlabsEndUserCredit } = row.options;
     const now = this.now();
     if (elevenlabsEndUserCredit) {
-      await this.options.credit?.debit?.(row.tenant, subject, bucket ?? DEFAULT_BUCKET, cost,
+      // A paying subject is never skipped silently: without the credit service the settle fails, the transaction
+      // rolls back, and the sweep retries it (voice_call_expire_failed).
+      const credit = this.options.credit;
+      if (!credit) throw new Error("end-user credit missing for a paying call");
+      await credit.debit(row.tenant, subject, bucket ?? DEFAULT_BUCKET, cost,
         `voice_elevenlabs:${row.id}`, { call: "voice_elevenlabs", session: row.id }, { now, sql });
     }
     const usage: UsageRecord = {
