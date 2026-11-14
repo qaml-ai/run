@@ -344,7 +344,8 @@ contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` wi
   recursive file count of the moved-to tree).
 
 **How repo bytes are kept: decided (Miguel, 2026-11-13 ~17:40), the mark count plus bytes written since.**
-`repoBytes` is the exact distinct-blob bytes reachable from all of the repo's heads, as measured by the last GC mark
+A repo's size is its lineage's usage: forks share their source's lineage and so share its size, and there is no
+per-ref size. `repoBytes` is the exact distinct-blob bytes reachable from all of the repo's heads, as measured by the last GC mark
 pass (camel-fs.md §1.9), plus the bytes written since that pass. It lives on the `lineages` item as
 `markedBytes`, `markedAt` and `writtenSince`.
 
@@ -764,6 +765,7 @@ the image; the ref item carries `root?` (§6).
 | `too_deep` | 413 | a history walk (`is-ancestor`, `merge-base`) past 50,000 commits visited; not provable, not a negative answer |
 | `conflict` | 409 | a merge with conflicts (body lists them) |
 | `no_fence` | 409 | a checkpoint on a mount without a fence |
+| `lineage_deleted` | 410 | any route on a lineage whose `lineages` item carries `deletedAt` (§9.9 `DELETE /v1/lineages/{lineage}`) |
 | `unavailable` | 503 | S3 or DynamoDB unreachable, or throttled past the tier's retries; safe to retry with the same `Idempotency-Key` |
 
 **These snake_case codes are canonical**, like every existing daemon code (`unknown_commit`, `too_deep`). The
@@ -784,6 +786,14 @@ success.
 **Lineages.** `PUT /v1/lineages/{lineage}` `{ "tenant", "kind": "workspace" | "image", "defaultBranch": "main" }` → `201`, or `200` when it already exists with the same tenant (anything else `409`).
 The runtime calls it at repo creation, before the first commit. `GET` returns the item.
 
+**Delete a lineage.** `DELETE /v1/lineages/{lineage}`, with a runtime token only (`sub` in `runtime:*`).
+- While any ref is held, it answers `409 held` with `{ "held": [names] }` and changes nothing.
+- Otherwise it deletes every ref (their epochs kept, so no fence from before can match later) and marks the
+  `lineages` item `deletedAt`, in one conditional write.
+- The objects are left to GC: the mark finds them unreachable. Results under `results/<lineage>/` follow the same
+  path (L102).
+- From then on every route on that lineage answers `410 lineage_deleted`.
+
 **Read and list.** `GET /v1/lineages/{lineage}/refs/{name}` → `{ "name", "version", "tree", "root"?, "owner",
 "expiresAt"?, "holder"?, "leaseEpoch"?, "leaseDeadline"?, "createdAt", "createdBy", "updatedAt" }`.
 `GET /v1/lineages/{lineage}/refs?prefix=<p>&after=<name>&limit=1000` → `{ "refs": [ … ], "next"? }`, a `Query` on
@@ -798,6 +808,11 @@ alphabet of §1 are enforced here.
 **Delete.** `DELETE /v1/lineages/{lineage}/refs/{name}?expect=<version>` → `204`. `expect` is optional: with it the
 condition includes `version = :expect` (`412 stale`); without it, only that no lease is live (`409 held`). Final:
 the ref's history stays reachable only from other refs.
+
+**Delete by owner.** `DELETE /v1/lineages/{lineage}/refs?owner=<owner-form id>` (a `w` token) →
+`200 { "deleted": [names], "held": [names] }`. It deletes every live, unheld ref with that owner (an agent's,
+workflow's or job's refs when it ends) and reports the held ones untouched, for the caller to retry after their
+leases end.
 
 **Expiry and epochs, everywhere in this section:**
 - An unheld ref whose `expiresAt <= now` reads as **absent** on every route (`404 ref_not_found`, missing from
