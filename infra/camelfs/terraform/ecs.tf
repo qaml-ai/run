@@ -47,10 +47,20 @@ locals {
       "--token-issuer", var.token_issuer,
     ],
     contains(var.api_features, "refs") ? ["--refs-table", local.table_names["refs"]] : [],
+    # K4c (wf-durable's flag set, 2026-11-14): the four compute tables, the pools and their enrollment roles, the
+    # enrollment and hosts listeners, the CA, and the notify webhook (its HMAC key is injected as CAMELFS_NOTIFY_KEY).
     contains(var.api_features, "compute") ? [
-      "--listen-enroll", "0.0.0.0:${var.enroll_port}",
+      "--vms-table", local.table_names["vms"],
+      "--hosts-table", local.table_names["hosts"],
+      "--deliveries-table", local.table_names["deliveries"],
+      "--usage-table", local.table_names["usage"],
+      "--pools", join(",", var.pools),
       "--listen-hosts", "0.0.0.0:${var.hosts_port}",
       "--hosts-ca", aws_acmpca_certificate_authority.hosts.arn,
+      "--listen-enroll", "0.0.0.0:${var.enroll_port}",
+      "--enroll-audience", "camelfs:enroll",
+      "--enroll-roles", join(",", [for pool in sort(keys(var.enroll_roles)) : "${pool}=${var.enroll_roles[pool]}"]),
+      "--runtime-notify-url", "${var.token_issuer}/v1/internal/camelfs/notify",
     ] : [],
     var.api_extra_args,
   )

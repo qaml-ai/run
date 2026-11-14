@@ -86,6 +86,25 @@ variable "api_features" {
   }
 }
 
+variable "pools" {
+  description = "The host pools the compute plane places VMs on (camelfsd api --pools; K4c): the job-hosts pools."
+  type        = list(string)
+  default     = ["build", "test"]
+}
+
+variable "enroll_roles" {
+  description = "Per pool, the instance role a host of that pool attests with at enrollment (camelfsd api --enroll-roles pool=arn,…; K4c): the job-hosts roles by their fixed names (infra/job-hosts/terraform/iam.tf), which need not exist yet. The tier takes a host's pool from the role it attests with, never from what the host says."
+  type        = map(string)
+  default = {
+    build = "arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod"
+    test  = "arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod"
+  }
+  validation {
+    condition     = alltrue([for arn in values(var.enroll_roles) : can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", arn))])
+    error_message = "enroll_roles values are IAM role ARNs."
+  }
+}
+
 variable "api_extra_args" {
   description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)
