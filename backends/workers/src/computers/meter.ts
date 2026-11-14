@@ -108,14 +108,7 @@ export class ComputerMeter {
   /** What the sessions this instance closed since its last `started` cost (USD): a job's whole run. */
   private spent = 0;
   spentUsd() { return this.spent; }
-  /**
-   * What a closed session costs. By default Cloudflare's rates for its instance type (sessionCost); our own hosts price
-   * theirs from the instance name the session keeps (jobs/host-pricing.ts).
-   */
-  private readonly price: (instance: string, seconds: number, cpuSeconds: number, unmeasuredSeconds: number) => number;
-  constructor(options: { store: MeterStore; billing: MeterBilling; idleMs: number; now?: () => number; schedule: (at: number) => Promise<void>;
-    price?: (instance: string, seconds: number, cpuSeconds: number, unmeasuredSeconds: number) => number }) {
-    this.price = options.price ?? ((instance, seconds, cpuSeconds, unmeasuredSeconds) => sessionCost(instance as InstanceType, seconds, cpuSeconds, unmeasuredSeconds));
+  constructor(options: { store: MeterStore; billing: MeterBilling; idleMs: number; now?: () => number; schedule: (at: number) => Promise<void> }) {
     this.store = options.store;
     this.billing = options.billing;
     this.idleMs = options.idleMs;
@@ -246,7 +239,7 @@ export class ComputerMeter {
       Math.max(0, (open.cpuUsec ?? 0) - (open.cpuBaseUsec ?? 0)) / 1e6);
     const charge: ComputerCharge = { id: open.id, tenant: open.tenant, agent: open.agent, ...(open.kind ? { kind: open.kind } : {}), instance: open.instance,
       startedAt: open.startedAt, endedAt, seconds, cpuSeconds, unmeasuredSeconds,
-      costUsd: open.rate !== undefined ? seconds * open.rate : this.price(open.instance, seconds, cpuSeconds, unmeasuredSeconds) };
+      costUsd: open.rate !== undefined ? seconds * open.rate : sessionCost(open.instance as InstanceType, seconds, cpuSeconds, unmeasuredSeconds) };
     // A session that ended as it started costs nothing and records nothing.
     if (seconds > 0) await this.store.put(`${UNSETTLED}${open.id}`, charge);
     this.spent += seconds > 0 ? charge.costUsd : 0;

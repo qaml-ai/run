@@ -67,10 +67,9 @@ test("a session's rate fixed at its start, and its span as reported, are what it
     async delete(key) { return data.delete(key); },
     async list<T>({ prefix }: { prefix: string }) { return new Map([...data].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value) as T])); },
   };
-  // A price hook that would fail (a setting broken since the start) is never called: the fixed rate is used.
+  // A session opened with a fixed rate is charged at that rate, not by its instance type.
   const meter = new ComputerMeter({ store, idleMs: 3_600_000, now: () => now, schedule: async () => {},
-    billing: { async admit() {}, async charge(charge) { charges.push(charge); } },
-    price: () => { throw new Error("JOB_HOST_PRICE_MARKUP must be a number"); } });
+    billing: { async admit() {}, async charge(charge) { charges.push(charge); } } });
   now += 60_000;
   await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j2", { at: now - 50_000, rate: 0.001 });
   await meter.stopped(undefined, now - 20_000);

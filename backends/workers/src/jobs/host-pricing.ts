@@ -1,6 +1,6 @@
 // What a job on our own hosts costs (docs/design/job-hosts-plan.md, slice 8), from what the host costs us.
 //
-// Two pools (infra/job-hosts/terraform):
+// Two pools (the tier's pools, CAMELFS_POOLS):
 // - build: `r8gd.4xlarge`. A host runs one build sandbox and nothing else, so a build job has the whole host and is
 //   charged the whole host's time;
 // - test: `c8gd.4xlarge`. Its sandboxes share the host, so a test job is charged its share of the host: the larger of its
@@ -26,9 +26,8 @@ export type HostShape = { vcpus: number; memoryMiB: number; diskMiB: number };
 /**
  * Each pool's host and what it costs an hour (on-demand list, us-west-2, 2026-11; check before relying on it):
  * the instance, plus its public IPv4 address ($0.005/h) and its 30 GiB gp3 root volume ($2.40 a month, $0.0033/h).
- * `vcpus` is the host's, and `memoryGiB` the memory pool its image reserves for sandboxes (infra/job-hosts/image/
- * versions.env NE_MEMPOOL_BUILD and NE_MEMPOOL_TEST: a test checks they agree). They are also what placement packs a
- * host to (hosts.ts) and what a host must have to join its pool.
+ * `vcpus` is the host's, and `memoryGiB` the memory its VMs may have; a VM's share of a test host is priced against
+ * them.
  */
 export const HOST_POOL_PRICES: Readonly<Record<HostPool, { instance: string; hostUsdPerHour: number; vcpus: number; memoryGiB: number; wholeHost: boolean }>> = {
   build: { instance: "r8gd.4xlarge", hostUsdPerHour: 1.176 + 0.005 + 0.0033, vcpus: 16, memoryGiB: 100, wholeHost: true },
