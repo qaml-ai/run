@@ -67,7 +67,12 @@ func TestDDBVMSessionProxy(t *testing.T) {
 			jsonReply(w, 201, hostwire.ShellCreated{ShellID: "sh"})
 		case vmPath + "/exec":
 			var q hostwire.ExecRequest
-			if err := json.NewDecoder(r.Body).Decode(&q); err != nil || q.Shell != "sh" {
+			err := json.NewDecoder(r.Body).Decode(&q)
+			wantShell := "sh"
+			if q.ExecID == "one-off" {
+				wantShell = ""
+			}
+			if err != nil || q.Shell != wantShell {
 				t.Errorf("exec request: %+v, %v", q, err)
 				w.WriteHeader(400)
 				return
@@ -227,7 +232,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 		t.Fatalf("host shell requests: %v, want {} and shellKey %q", gotShellRequests, shellKey)
 	}
 	call(post("/exec", `{"command":"true","shell":"sh","timeoutS":1}`), 400, "execId")
-	call(post("/exec", `{"execId":"e","command":"true","timeoutS":1}`), 400, "shell")
+	call(post("/exec", `{"execId":"one-off","command":"true","timeoutS":1}`), 200, strings.Join(sessionFrames, ""))
 	call(post("/exec", execBody("e", "true")), 200, strings.Join(sessionFrames, ""))
 
 	clock.Add(5_000)
@@ -303,8 +308,8 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	mu.Lock()
 	runs := len(executions)
 	mu.Unlock()
-	if runs != 2 {
-		t.Fatalf("host ran %d distinct commands, want 2", runs)
+	if runs != 3 { // the one-off exec, the session exec "e", and the disconnected exec
+		t.Fatalf("host ran %d distinct commands, want 3", runs)
 	}
 
 	clock.Add(1_000)

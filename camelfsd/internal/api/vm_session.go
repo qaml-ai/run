@@ -95,9 +95,6 @@ func (v *vmAPI) exec(w http.ResponseWriter, r *http.Request, claims auth.Claims)
 	if !hostwire.MountID.MatchString(q.ExecID) {
 		return invalid("execId: required, must match %s", hostwire.MountID)
 	}
-	if q.Shell == "" {
-		return invalid("shell: required")
-	}
 	if q.TimeoutS < 1 || q.TimeoutS > 600 {
 		return invalid("timeoutS: must be between 1 and 600")
 	}
