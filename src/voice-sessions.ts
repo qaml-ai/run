@@ -771,6 +771,11 @@ export class VoiceSessions {
 
   async get(tenant: string, id: string) { return sessionView(await this.row(tenant, id)); }
 
+  /** Open sessions count against the tenant's voice limit. */
+  async countLive(tenant: string, sql: Sql = this.db): Promise<number> {
+    return Number((await sql.query("select count(*) as count from voice_sessions where tenant = $1 and state <> 'ended'", [tenant])).rows[0].count);
+  }
+
   /** A tenant's sessions, newest first: live, ended or all of them, a page at a time (`after`: the last id seen). */
   async list(tenant: string, query: { state?: string; limit?: number; after?: string } = {}) {
     const limit = Math.min(100, Math.max(1, query.limit ?? 50));
