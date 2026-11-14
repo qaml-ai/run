@@ -16,7 +16,7 @@ type treeRead struct {
 }
 
 // readTreeLevel reads each distinct tree at this depth once.
-func (r *Repository) readTreeLevel(ctx context.Context, ids []string) (map[string]*treeRead, error) {
+func (r *Repository) readTreeLevel(ctx context.Context, ids []string, observeCache func(hit bool)) (map[string]*treeRead, error) {
 	results := make(map[string]*treeRead, len(ids))
 	keys := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -37,7 +37,7 @@ func (r *Repository) readTreeLevel(ctx context.Context, ids []string) (map[strin
 	}
 	err := store.Parallel(ctx, min(64, len(keys)), keys, func(id string) error {
 		result := results[id]
-		result.entries, result.err = reader.SizedTree(ctx, id)
+		result.entries, result.err = reader.sizedTree(ctx, id, observeCache)
 		return nil
 	})
 	return results, err
@@ -45,7 +45,7 @@ func (r *Repository) readTreeLevel(ctx context.Context, ids []string) (map[strin
 
 // SizedTrees reads one depth level, returning results keyed by tree id.
 func (r *Repository) SizedTrees(ctx context.Context, ids []string) (map[string][]Entry, error) {
-	results, err := r.readTreeLevel(ctx, ids)
+	results, err := r.readTreeLevel(ctx, ids, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +97,11 @@ type FileResult struct {
 
 // Files resolves paths in depth order and returns results in request order.
 func (r *Repository) Files(ctx context.Context, id string, paths []string) ([]FileResult, error) {
+	return r.FilesObserved(ctx, id, paths, nil)
+}
+
+// FilesObserved also reports each tree content cache lookup. The callback can run concurrently.
+func (r *Repository) FilesObserved(ctx context.Context, id string, paths []string, observeCache func(hit bool)) ([]FileResult, error) {
 	type lookup struct {
 		index int
 		id    string
@@ -116,7 +121,7 @@ func (r *Repository) Files(ctx context.Context, id string, paths []string) ([]Fi
 		for i, item := range level {
 			ids[i] = item.id
 		}
-		trees, err := r.readTreeLevel(ctx, ids)
+		trees, err := r.readTreeLevel(ctx, ids, observeCache)
 		if err != nil {
 			return nil, err
 		}

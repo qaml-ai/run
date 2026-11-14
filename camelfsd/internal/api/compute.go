@@ -71,11 +71,9 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	start = time.Now()
 	tree, paths := commitPaths(q.Changes, base)
 	timing.build = time.Since(start)
-	start = time.Now()
 	if len(q.Changes) > 0 {
 		err = tree.read(ctx, r, timing)
 	}
-	timing.read = time.Since(start)
 	if err != nil {
 		return nil, err
 	}

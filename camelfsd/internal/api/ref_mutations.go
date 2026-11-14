@@ -67,6 +67,8 @@ func (m *commitMetadata) refOperation(op string) error {
 }
 
 func (s *StorageServer) writableHead(ctx context.Context, l, name string) (refstore.Ref, error) {
+	start := time.Now()
+	defer func() { refTimingFrom(ctx).head += time.Since(start) }()
 	head, err := s.refs.Get(ctx, l, name)
 	if err == nil && head.Holder != nil && head.LeaseDeadline != nil && *head.LeaseDeadline > s.lineages.now().UnixMilli() {
 		return head, &storageError{409, "held", nil}
@@ -74,12 +76,18 @@ func (s *StorageServer) writableHead(ctx context.Context, l, name string) (refst
 	return head, err
 }
 
-// refTiming is one write/merge/restore's phases for the access log: object PUT wave, tree build, and the
-// DynamoDB ref move (with the write route's one retry counted).
+// refTiming accumulates the access-log phases across both write attempts.
 type refTiming struct {
-	objects    objects.FlushTiming
-	build, ddb time.Duration
-	retries    int
+	objects                            objects.FlushTiming
+	build, ddb, head, diff, usage, cas time.Duration
+	treeRead                           commitTiming
+	retries                            int
+}
+
+func (t *refTiming) addFlush(flushed objects.FlushTiming) {
+	t.objects.Put += flushed.Put
+	t.objects.PutKeys += flushed.PutKeys
+	t.objects.Cache += flushed.Cache
 }
 
 type refTimingKey struct{}
@@ -98,13 +106,16 @@ func (s *StorageServer) moveHead(ctx context.Context, head refstore.Ref, kind, v
 	defer func() { timing.ddb += time.Since(start) }()
 	_, err := s.refs.Cas(ctx, head.Lineage, head.Name, refstore.Move{
 		Kind: kind, Version: version, Tree: tree, Parents: parents, Expect: &head.Version, RequireExisting: true, APIWrite: true, Known: &head,
+		ObserveTransaction: func(elapsed time.Duration) { timing.cas += elapsed },
 		Prepare: func(refstore.Ref) error {
 			var usage refstore.Usage
 			var err error
 			if snapshot != nil {
 				usage = *snapshot
 			} else {
+				start := time.Now()
 				usage, err = s.refs.ReadUsage(ctx, head.Lineage)
+				timing.usage += time.Since(start)
 				if err != nil {
 					return err
 				}
@@ -186,6 +197,7 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 	if err != nil {
 		return err
 	}
+	timing := refTimingFrom(ctx)
 	for attempt := range 2 {
 		head, err := s.writableHead(ctx, l, name)
 		if err != nil {
@@ -196,7 +208,7 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		}
 		dir, paths := commitPaths(changes, head.Tree)
 		if len(changes) != 0 {
-			if err := dir.read(ctx, repo, &commitTiming{}); err != nil {
+			if err := dir.read(ctx, repo, &timing.treeRead); err != nil {
 				return err
 			}
 		}
@@ -242,7 +254,6 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		if _, _, err := applyCommitChanges(paths, edits, blobs); err != nil {
 			return err
 		}
-		timing := refTimingFrom(ctx)
 		built := time.Now()
 		tree, err := dir.build(ctx, batch, true)
 		if err != nil {
@@ -259,12 +270,11 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 		timing.build += time.Since(built)
 		var flushed objects.FlushTiming
 		usage, err := s.flushRefWrite(ctx, l, batch, &flushed)
+		timing.addFlush(flushed)
 		if err != nil {
 			return err
 		}
-		timing.objects.Put += flushed.Put
-		timing.objects.PutKeys += flushed.PutKeys
-		diff, err := treeDiff(ctx, repo, head.Tree, tree, "")
+		diff, err := refTreeDiff(ctx, repo, head.Tree, tree)
 		if err != nil {
 			return err
 		}
@@ -276,14 +286,14 @@ func (s *StorageServer) refWrite(w http.ResponseWriter, r *http.Request, l, name
 			}
 			changed = append(changed, writeDiff{d.Path, d.Status, d.OldBlob, d.NewBlob, d.OldSize, d.NewSize, mode})
 		}
-		files, err := repo.TreeFileCount(ctx, tree)
+		files, err := refTreeFileCount(ctx, repo, tree)
 		if err != nil {
 			return err
 		}
 		bytes, err := s.moveHead(ctx, head, "commit", version, tree, parents, q.Quota, &usage)
 		var failure *refstore.Error
 		if attempt == 0 && q.Expect == nil && errors.As(err, &failure) && failure.Code == "stale" {
-			refTimingFrom(ctx).retries++
+			timing.retries++
 			continue
 		}
 		if err != nil {
@@ -300,9 +310,12 @@ func (s *StorageServer) flushRefWrite(ctx context.Context, lineage string, batch
 	var usage refstore.Usage
 	var usageErr error
 	usageDone := make(chan struct{})
+	var usageTime time.Duration
 	go func() {
 		defer close(usageDone)
+		start := time.Now()
 		usage, usageErr = s.refs.ReadUsage(ctx, lineage)
+		usageTime = time.Since(start)
 	}()
 
 	var createdBytes atomic.Int64
@@ -317,6 +330,7 @@ func (s *StorageServer) flushRefWrite(ctx context.Context, lineage string, batch
 	})
 	err := batch.FlushTimed(ctx, flushed)
 	<-usageDone
+	refTimingFrom(ctx).usage += usageTime
 	if err != nil {
 		return refstore.Usage{}, err
 	}
@@ -359,7 +373,7 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 	if q.Mode != "squash" {
 		err = s.refs.CheckFastForward(ctx, l, head.Version, q.Theirs)
 		if err == nil {
-			diff, err := treeDiff(ctx, repo, head.Tree, theirs.tree, "")
+			diff, err := refTreeDiff(ctx, repo, head.Tree, theirs.tree)
 			if err != nil {
 				return err
 			}
@@ -367,7 +381,7 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 			if err != nil {
 				return err
 			}
-			files, err := repo.TreeFileCount(ctx, theirs.tree)
+			files, err := refTreeFileCount(ctx, repo, theirs.tree)
 			if err != nil {
 				return err
 			}
@@ -399,15 +413,16 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 		return err
 	}
 	var flushed objects.FlushTiming
-	if err := batch.FlushTimed(ctx, &flushed); err != nil {
+	err = batch.FlushTimed(ctx, &flushed)
+	refTimingFrom(ctx).addFlush(flushed)
+	if err != nil {
 		return err
 	}
-	refTimingFrom(ctx).objects = flushed
 	bytes, err := s.moveHead(ctx, head, "commit", version, result.Tree, parents, q.Quota, nil)
 	if err != nil {
 		return err
 	}
-	files, err := repo.TreeFileCount(ctx, result.Tree)
+	files, err := refTreeFileCount(ctx, repo, result.Tree)
 	if err != nil {
 		return err
 	}
@@ -446,10 +461,22 @@ func (s *StorageServer) refRestore(w http.ResponseWriter, r *http.Request, l, na
 	if err != nil {
 		return err
 	}
-	files, err := repo.TreeFileCount(ctx, target.tree)
+	files, err := refTreeFileCount(ctx, repo, target.tree)
 	if err != nil {
 		return err
 	}
 	jsonReply(w, 201, map[string]any{"version": version, "tree": target.tree, "bytes": bytes, "files": files})
 	return nil
+}
+
+func refTreeDiff(ctx context.Context, repo *objects.Repository, from, to string) ([]diffChange, error) {
+	start := time.Now()
+	defer func() { refTimingFrom(ctx).diff += time.Since(start) }()
+	return treeDiff(ctx, repo, from, to, "")
+}
+
+func refTreeFileCount(ctx context.Context, repo *objects.Repository, tree string) (int64, error) {
+	start := time.Now()
+	defer func() { refTimingFrom(ctx).diff += time.Since(start) }()
+	return repo.TreeFileCount(ctx, tree)
 }

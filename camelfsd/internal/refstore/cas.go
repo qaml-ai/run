@@ -3,6 +3,7 @@ package refstore
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/ddb"
@@ -24,6 +25,8 @@ type Move struct {
 	APIWrite                  bool // Unfenced tier mutation; a live lease is reported as held.
 	// Known may supply the API write's head for a conditional move.
 	Known *Ref
+	// ObserveTransaction receives the guarded write's wall time, including failures.
+	ObserveTransaction func(time.Duration)
 	// Prepare computes the response after validation but before the conditional write.
 	Prepare func(previous Ref) error
 	Fence   *Fence
@@ -144,7 +147,7 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 			condition += live + " AND " + unheld
 		}
 	}
-	old, err := s.update(ctx, lineage, name, condition, update, values, types.ReturnValueAllOld)
+	old, err := s.updateTimed(ctx, lineage, name, condition, update, values, types.ReturnValueAllOld, m.ObserveTransaction)
 	if ddb.IsConditionFailed(err) {
 		return Result{}, casConflict
 	}
