@@ -106,7 +106,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 			if r.URL.RawQuery != "offset=2" {
 				t.Errorf("tail query: %q", r.URL.RawQuery)
 			}
-			jsonReply(w, 410, map[string]any{"error": "tail_truncated", "firstOffset": 3})
+			jsonReply(w, 410, map[string]any{"error": map[string]any{"code": "tail_truncated", "message": "tail truncated", "details": map[string]any{"firstOffset": 3}}})
 		case vmPath + "/exec/missing":
 			authFail(w, 404, "exec_unknown", "unknown")
 		case vmPath + "/checkpoint":

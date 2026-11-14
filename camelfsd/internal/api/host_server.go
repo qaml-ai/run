@@ -68,7 +68,7 @@ func (s *HostServer) authenticated(handler func(http.ResponseWriter, *http.Reque
 			slog.Warn("host_request_failed", "host", id, "error", err)
 			reply = hostError{500, "internal"}
 		}
-		jsonReply(w, reply.status, map[string]string{"error": reply.code})
+		storageFail(w, &storageError{reply.status, reply.code, nil})
 	}
 }
 
