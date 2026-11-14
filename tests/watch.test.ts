@@ -404,6 +404,33 @@ test("a stream that never delivers its first frame is cut after firstFrameMs, an
   assert.equal(streams, 1);
 });
 
+test("a failed eager read is only a missed head start: nothing is reported, and the stream's own read loads the watcher", async t => {
+  const warned: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => { warned.push(args); };
+  t.after(() => { console.warn = warn; });
+  const errors: Error[] = [];
+  let histories = 0;
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.split("/").pop();
+    // The eager read (the first) fails; the read after the snapshot answers.
+    if (path === "history") return ++histories === 1 ? new Response("down", { status: 503 }) : Response.json({ entries: [{ index: 0, message: { role: "user", content: "hi", timestamp: 1 } }], next: null });
+    if (path === "state") return Response.json({ requests: [] });
+    if (path === "events") return new Response(new ReadableStream({ start(controller) {
+      setTimeout(() => controller.enqueue(new TextEncoder().encode(`event: ready\ndata: {}\n\nid: 5\ndata: ${JSON.stringify({ type: "snapshot", turn: null })}\n\n`)), 50);
+      init?.signal?.addEventListener("abort", () => controller.close());
+    } }), { headers: { "Content-Type": "text/event-stream" } });
+    return Response.json([]);
+  };
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "t", fetch, onError: error => errors.push(error) });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.loaded, "the stream's read to load", 2_000);
+  assert.equal(histories, 2);
+  assert.equal(watcher.state.messages.length, 1);
+  assert.deepEqual(errors, [], "a failed eager read is not an error of the chat's");
+  assert.equal(warned.length, 1);
+});
+
 test("a snapshot that arrives before the eager reads land wins", async t => {
   const eager = Promise.withResolvers<void>();
   const stale = { role: "assistant", content: [{ type: "text", text: "stale" }], timestamp: 1 };

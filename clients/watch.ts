@@ -474,7 +474,11 @@ export function watchAgent(options: WatchOptions): Watcher {
       state.running = running;
       state.loaded = true;
       changed();
-    }, report);
+    }, error => {
+      // A head start only: the stream path owns loading and reports its own failures, so a failed eager read is noted
+      // here and changes nothing (no onError: the chat would show an error to someone whose stream is about to load).
+      if (!closed.signal.aborted) console.warn("eager history read failed; the stream's own read follows", error);
+    });
     let mode: "sse" | "poll" = options.transport === "poll" ? "poll" : "sse";
     let empty = 0, failures = 0, backoff = 500;
     while (!closed.signal.aborted) {
