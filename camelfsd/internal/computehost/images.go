@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -22,13 +24,21 @@ import (
 type images struct {
 	dir      string
 	store    store.Store
+	diskMiB  int
+	verified atomic.Pointer[map[string]int64]
 	mu       sync.Mutex
-	fetch    sync.Mutex
-	verified map[string]bool
+	inflight map[string]*imageDownload
+}
+
+type imageDownload struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int
+	err     error
 }
 
 func (i *images) scan() {
-	i.verified = make(map[string]bool)
+	verified := make(map[string]int64)
 	files, _ := os.ReadDir(i.dir)
 	for _, file := range files {
 		sha, ok := strings.CutSuffix(file.Name(), ".ext4")
@@ -39,17 +49,19 @@ func (i *images) scan() {
 		if err != nil {
 			continue
 		}
-		i.verified[sha] = checkHash(f, io.Discard, sha) == nil
+		info, statErr := f.Stat()
+		if statErr == nil && checkHash(f, io.Discard, sha) == nil {
+			verified[sha] = info.Size()
+		}
 		f.Close()
 	}
+	i.verified.Store(&verified)
 }
 
 func (i *images) list() []string {
-	i.mu.Lock()
-	defer i.mu.Unlock()
 	list := []string{}
-	for sha, ok := range i.verified {
-		if ok {
+	if verified := i.verified.Load(); verified != nil {
+		for sha := range *verified {
 			list = append(list, sha)
 		}
 	}
@@ -61,29 +73,100 @@ func (i *images) ensure(ctx context.Context, sha string, diskMiB int) (string, e
 	if !root.Hex(sha, 64) || diskMiB <= 0 || int64(diskMiB) > math.MaxInt64>>20 {
 		return "", errors.New("invalid image or disk size")
 	}
-	i.fetch.Lock()
-	defer i.fetch.Unlock()
-	i.mu.Lock()
-	cached := i.verified[sha]
-	i.mu.Unlock()
 	path := filepath.Join(i.dir, sha+".ext4")
-	if cached {
-		st, err := os.Stat(path)
-		if err != nil {
+	for {
+		if verified := i.verified.Load(); verified != nil {
+			if size, ok := (*verified)[sha]; ok {
+				if size > int64(diskMiB)<<20 {
+					return "", errors.New("guest image exceeds VM disk")
+				}
+				return path, nil
+			}
+		}
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if st.Size() > int64(diskMiB)<<20 {
-			return "", errors.New("guest image exceeds VM disk")
+		flight, joined := i.join(ctx, sha, path)
+		if flight == nil {
+			continue
+		} // A concurrent download published this SHA.
+		select {
+		case <-ctx.Done():
+			if joined {
+				i.leave(flight)
+			}
+			return "", ctx.Err()
+		case <-flight.done:
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if joined && flight.err != nil {
+				return "", flight.err
+			}
 		}
-		return path, nil
 	}
-	if err := i.download(ctx, path, sha, int64(diskMiB)<<20); err != nil {
-		return "", err
+}
+
+func (i *images) join(ctx context.Context, sha, path string) (*imageDownload, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if verified := i.verified.Load(); verified != nil {
+		if _, ok := (*verified)[sha]; ok {
+			return nil, false
+		}
+	}
+	if flight := i.inflight[sha]; flight != nil {
+		// Let a flight with no remaining callers finish cleaning up before retrying.
+		if flight.waiters == 0 {
+			return flight, false
+		}
+		flight.waiters++
+		return flight, true
+	}
+	if i.inflight == nil {
+		i.inflight = make(map[string]*imageDownload)
+	}
+	shared, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	flight := &imageDownload{done: make(chan struct{}), cancel: cancel, waiters: 1}
+	i.inflight[sha] = flight
+	go i.fetch(shared, sha, path, flight)
+	return flight, true
+}
+
+func (i *images) leave(flight *imageDownload) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	flight.waiters--
+	if flight.waiters == 0 {
+		flight.cancel()
+	}
+}
+
+func (i *images) fetch(ctx context.Context, sha, path string, flight *imageDownload) {
+	defer flight.cancel()
+	maxBytes := min(int64(i.diskMiB), math.MaxInt64>>20) << 20
+	err := i.download(ctx, path, sha, maxBytes)
+	var size int64
+	if err == nil {
+		var info os.FileInfo
+		info, err = os.Stat(path)
+		if err == nil {
+			size = info.Size()
+		}
 	}
 	i.mu.Lock()
-	i.verified[sha] = true
-	i.mu.Unlock()
-	return path, nil
+	defer i.mu.Unlock()
+	if err == nil {
+		verified := map[string]int64{}
+		if current := i.verified.Load(); current != nil {
+			verified = maps.Clone(*current)
+		}
+		verified[sha] = size
+		i.verified.Store(&verified)
+	}
+	flight.err = err
+	delete(i.inflight, sha)
+	close(flight.done)
 }
 
 func (i *images) download(ctx context.Context, path, sha string, maxBytes int64) error {

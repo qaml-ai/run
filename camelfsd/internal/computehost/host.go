@@ -78,7 +78,7 @@ func Open(ctx context.Context, c Config) (*Host, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	h := &Host{Config: c, ctx: ctx, cancel: cancel, db: db, vms: make(map[string]*session), images: images{dir: filepath.Join(c.Data, "images"), store: c.Images}}
+	h := &Host{Config: c, ctx: ctx, cancel: cancel, db: db, vms: make(map[string]*session), images: images{dir: filepath.Join(c.Data, "images"), store: c.Images, diskMiB: c.Shape.DiskMiB}}
 	if err := h.load(); err != nil {
 		h.Close()
 		return nil, err
