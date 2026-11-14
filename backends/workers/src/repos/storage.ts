@@ -1,4 +1,4 @@
-import { tierConfigured, tierFetch, type TierEnv } from "../camelfs/tier.ts";
+import { tierConfigured, tierFetch, TierError, type TierEnv } from "../camelfs/tier.ts";
 import { gitBlobSha1, sha256Hex } from "./git.ts";
 export type CamelfsEnv = TierEnv & { CAMELFS?: { fetch(input: Request | string, init?: RequestInit): Promise<Response> }; CAMELFS_API_TOKEN?: string };
 export const camelfsConfigured = (env: CamelfsEnv): boolean => tierConfigured(env) || (!!env.CAMELFS && !!env.CAMELFS_API_TOKEN);
@@ -38,8 +38,8 @@ export class StorageError extends Error {
   /** The daemon's own message (redacted, bounded), and the StoragePlane call that failed: what makes a 4xx diagnosable. */
   readonly reason: string;
   op?: string;
-  constructor(status: number, code: string, message = code, details?: unknown) {
-    super(`camelFS status ${status}: ${message}`); this.name = "StorageError";
+  constructor(status: number, code: string, message = code, details?: unknown, cause?: unknown) {
+    super(`camelFS status ${status}: ${message}`, { cause }); this.name = "StorageError";
     this.status = status; this.code = code; this.details = details; this.reason = message;
   }
 }
@@ -121,7 +121,10 @@ export function camelfsStorage(env: CamelfsEnv, sub?: string): StoragePlane {
       const method = init.method ?? "GET";
       const acc = method !== "GET" && route !== "read" ? "w" : "r";
       try { return await tierFetch(env, { method, path, claims: { sub, lin: decodeURIComponent(encoded), acc } }, init); }
-      catch { throw new StorageError(0, "transport_error"); }
+      catch (error) {
+        if (error instanceof TierError) throw new StorageError(error.status, error.code, error.message, error.details, error);
+        throw error;
+      }
     }
     try { return await env.CAMELFS!.fetch(`http://camelfs${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(60_000), headers: { authorization: `Bearer ${token}`, ...init.headers } }); }
     catch { throw new StorageError(0, "transport_error"); }

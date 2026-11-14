@@ -11,7 +11,7 @@ export async function camelfsSmoke(env: TierEnv) {
     const start = performance.now();
     try { return await run(); }
     catch (e) {
-      if (e instanceof StorageError) throw new TierError(e.status || 502, e.code, e.reason, e.details, op);
+      if (e instanceof StorageError) throw new TierError(e.status || 502, e.code, e.reason, e.details, op, e);
       throw e;
     } finally { timings[op] = performance.now() - start; }
   }
