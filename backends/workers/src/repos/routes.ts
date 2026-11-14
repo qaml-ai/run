@@ -11,8 +11,11 @@ import { commitChanges, setRefToVersion, branch, reportUsage, type WriteInput } 
 import { repoHistory } from './history.ts';
 import { mergeRefs } from './merge.ts';
 import { signRepoLink } from './links.ts';
+import { heldFileError } from './vm-route.ts';
 export const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 export function repoFailure(e: unknown): Response {
+  const held = heldFileError(e);
+  if (held) return json({ error: held.message, code: held.code }, held.status);
   const r = repoErrorFrom(e);
   if (r)
     return json({ error: r.code === 'transport_error' ? r.reason : r.code, code: r.code, ...r.detail }, r.status);
