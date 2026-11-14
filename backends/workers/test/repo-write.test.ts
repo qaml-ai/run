@@ -152,6 +152,21 @@ test('commitChanges retries a concurrent move without uploading blobs again', as
   assert.ok((await ctx.stub.stat('main', ['other'])).entries.other);
   assert.equal(fake.calls.filter(c => c.startsWith('PUT ')).length, 3);
 });
+test('a keyed commitChanges that loses the ref to a concurrent write commits again on the new head', async (t) => {
+  const { create, write } = fixture(t), ctx = await create();
+  await write(ctx, { a: { bytes: bytes('base') } });
+  const original = ctx.stub.cas.bind(ctx.stub);
+  let raced = false;
+  (ctx.stub as any).cas = async (input: any) => {
+    if (!raced) { raced = true; await write(ctx, { other: { bytes: bytes('winner') } }); }
+    return original(input);
+  };
+  const keyed = await write(ctx, { a: { bytes: bytes('keyed') } }, { idempotencyKey: 'keep:job-1' });
+  assert.equal(keyed.changed, true);
+  const head = (await ctx.stub.ref('main'))!;
+  assert.equal(head.version, keyed.version);
+  assert.ok((await ctx.stub.stat('main', ['other'])).entries.other, 'the winner is kept under the keyed write');
+});
 for (const operation of ['setRefToVersion', 'branch', 'advanceRef', 'mergeRefs'])
   test(`${operation} detects a concurrent ref move`, async (t) => {
     const { create, write } = fixture(t), ctx = await create(), a = await write(ctx, { a: { bytes: bytes('base') } });

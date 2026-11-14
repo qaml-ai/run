@@ -134,7 +134,10 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
       return { changed: false, version: current, tree: head?.tree ?? null, previous: current, watchers: [], files: delta };
     await quota(ctx, await addedBytes(ctx, Object.values(delta).filter((entry): entry is Entry => entry !== null)));
     const parents = current ? [current] : [], trailers = input.trailers ?? {};
-    const c = await ctx.storage.commit(ctx.lineage, { parents, changes: storageChanges, author: input.author, message: input.message, trailers }, input.idempotencyKey);
+    // The daemon replays a key's first answer whatever the body, so the key names the parent too: a retry after a crash
+    // (same parent) gets the same commit, and a retry after losing the ref to a concurrent write commits on the new head.
+    const key = input.idempotencyKey === undefined ? undefined : `${input.idempotencyKey}@${current ?? 'root'}`;
+    const c = await ctx.storage.commit(ctx.lineage, { parents, changes: storageChanges, author: input.author, message: input.message, trailers }, key);
     try {
       const result = await ctx.stub.cas({ ref: input.ref, expect: current, commit: { version: c.commit, tree: c.tree, parents, author: input.author, message: input.message, trailers, at: c.time * 1000 }, changes: { ...delta }, pathExpect: { ...pathExpect }, fence: input.fence, who: input.who, why: input.why });
       await reportUsage(ctx);
