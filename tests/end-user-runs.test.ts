@@ -34,11 +34,11 @@ test("an end user's allowance pays first, then their balance; out of both, the t
   const allowance = entries.reduce((total: number, entry: any) => total + entry.allowance, 0);
   const paid = entries.reduce((total: number, entry: any) => total - entry.amount, 0);
   assert.equal(allowance, 250_000, "the allowance is spent first, all of it");
-  assert.equal(paid, 100_000, "the rest from the balance, all of it");
+  assert.equal(paid, (entries.length * 100_000 - 250_000) * 1.25, "the full marked-up remainder");
   const writtenOff = entries.reduce((total: number, entry: any) => total + entry.writtenOff, 0);
-  assert.equal(writtenOff, entries.length * 100_000 - 250_000 - 80_000, "the last call's cost past what was left is written off, at the balance's rate");
+  assert.equal(writtenOff, 0);
   const person = (await r.call("/v1/end-users/person?buckets=builder")).json;
-  assert.equal(person.balance, 0, "spent to nothing, never past it");
+  assert.equal(person.balance, 100_000 - paid);
   assert.equal(person.today.buckets[0].allowanceLeft, 0);
 
   // Nothing left at all: the next run is refused before it starts, with why.
@@ -46,7 +46,7 @@ test("an end user's allowance pays first, then their balance; out of both, the t
   assert.deepEqual([refused.status, refused.json.code, refused.json.reason, refused.json.endUser, refused.json.bucket], [402, "END_USER_CREDIT", "balance", "person", "builder"], refused.text);
 
   // Credit added after a payment lets them go on; the agent's own token cannot pick a bucket with more allowance.
-  await grant(r, "person", 50_000, "pay-2");
+  await grant(r, "person", 100_000, "pay-2");
   assert.equal((await r.call(`/clients/${id}/requests`, { token, body: { id: "own", method: "prompt", params: { text: "x", bucket: "rich" } } })).status, 403);
   assert.equal((await r.call(`/clients/${id}/requests`, { token, body: { id: "conf", method: "configure", params: { bucket: "rich" } } })).status, 403);
   const again = await r.prompt(id, "go on");
@@ -103,7 +103,7 @@ test("a run's own bucket is what its start is checked against, and the runs afte
   assert.deepEqual([refused.status, refused.json.code, refused.json.bucket], [402, "END_USER_CREDIT", "default"], refused.text);
 });
 
-test("a long reply stops at the end of its end user's credit, mid-stream, and is not retried", async t => {
+test("an admitted long reply finishes after crossing zero and the next run is refused", async t => {
   let requests = 0, closed = false;
   const chunk = "x".repeat(100);
   const url = await listen(t, async (req, res) => {
@@ -124,31 +124,23 @@ test("a long reply stops at the end of its end user's credit, mid-stream, and is
   await grant(r, "reader", 500_000, "pay");
   const { id } = (await r.call("/v1/agents", { body: { subject: "reader" } })).json;
   const run = await r.prompt(id, "write a lot");
-  const result = run.outcome.result;
-  assert.deepEqual([result.stopped, result.code, result.reason], ["spend_limit", "end_user_credit", "balance"], JSON.stringify(result));
-  assert.equal(requests, 1, "a turn its end user's credit stopped is not retried");
-  await until(() => closed, "the provider's stream to be cut");
+  assert.equal(run.outcome.result.reply.length, 50_000);
+  assert.equal(requests, 1);
+  await until(() => closed, "the provider's stream to finish");
   const [entry] = await usage(r, "reader");
-  // $0.50 at 90 micro-USD a character (2 characters a token) is about 5,500 characters, less the input's estimate. What
-  // the provider streams while the line's credit check is answered is billed too (it was generated): a slow machine's
-  // round trip, at this stream's pace, is a few chunks at most.
-  const slack = 3 * 100 * 90;
-  assert.ok(entry.raw > 300_000 && entry.raw <= 500_000 + slack, `charged ${entry.raw} for what streamed before the line`);
+  assert.ok(entry.raw > 500_000);
+  assert.equal(entry.writtenOff, 0);
   const person = (await r.call("/v1/end-users/reader")).json;
-  assert.ok(person.balance >= -slack, `balance ${person.balance}: at most a few chunks past zero`);
-  assert.equal(person.held, 0);
-  const history = (await r.call(`/v1/agents/${id}/history`)).json;
-  const reply = JSON.stringify(history).match(/x{100,}/)?.[0] ?? "";
-  assert.ok(reply.length > 1_000 && reply.length < 10_000, `what streamed before the cut is kept (${reply.length} characters)`);
+  assert.deepEqual([person.balance, person.held], [500_000 + entry.amount, 0]);
+  assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: "again" } })).status, 402);
 });
 
-test("concurrent replies for one end user share their credit: their holds never add up to more than it", async t => {
+test("concurrent replies for one end user share their credit: all admitted replies settle in full", async t => {
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
   const r = await runtime(t, () => ({ content: "ok", wait: barrier, usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { ...AT_COST, AGENT_MODEL: "openai/gpt-4.1" });
   await settings(r, {});
-  // A gpt-4.1 call holds its input and 2,048 tokens of output at $8 a million: under $0.02 to start. $0.04 holds two and a bit.
-  await grant(r, "shared", 40_000, "pay");
+  await grant(r, "shared", 1, "pay");
   const agents: string[] = [];
   for (let index = 0; index < 4; index++) {
     const made = await r.call("/v1/agents", { body: { subject: "shared" } });
@@ -157,21 +149,11 @@ test("concurrent replies for one end user share their credit: their holds never 
   }
   const accepted = await Promise.all(agents.map(agent => r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go" } })));
   assert.ok(accepted.every(answer => answer.status === 202), accepted.map(answer => answer.text).join("\n"));
-  // Each call that could hold is waiting at the provider before any finishes; the rest were refused before theirs.
-  await until(async () => r.model.bodies.length >= 2, "calls to reach the provider");
-  await sleep(500);
-  const reached = r.model.bodies.length;
-  const held = Number((await r.db.query("select coalesce(sum(paid), 0)::bigint as paid from end_user_holds where end_user = 'shared'")).rows[0].paid);
-  assert.ok(held <= 40_000, `${held} held of 40000`);
+  await until(() => r.model.bodies.length === 4, "all admitted calls to reach the provider");
   release();
-  const runs = await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
-  // Refused at its model call, or as its run started, when the others' holds already took what there was: either way
-  // before the provider was asked, and coded alike (end_user_credit, with why), whatever the words.
-  const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit" && run.outcome.result.reason === "balance" && run.outcome.result.endUser === "shared");
-  assert.ok(runs.every(run => run.outcome.result), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
-  assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome))}`);
+  await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
   const person = (await r.call("/v1/end-users/shared")).json;
-  assert.deepEqual([person.balance, person.held], [40_000 - reached * 10_000, 0]);
+  assert.deepEqual([person.balance, person.held], [-39_999, 0]);
 });
 
 test("the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit", async t => {

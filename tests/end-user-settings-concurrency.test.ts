@@ -88,7 +88,7 @@ test("a PATCH past 100 keys is refused and changes nothing", async () => {
   assert.deepEqual([Object.keys(swapped.allowances).length, swapped.allowances["bot:new"], swapped.allowances["bot:0"]], [100, 1, undefined]);
 });
 
-test("holds and charges go through while a writer holds the settings row", async () => {
+test("admission and debits go through while a writer holds the settings row", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);
   await credits.setSettings("a", { enabled: true, allowances: { builder: USD } });
@@ -98,9 +98,8 @@ test("holds and charges go through while a writer holds the settings row", async
     await holder.query("begin");
     await holder.query("select * from end_user_settings where tenant = 'a' for update");
     const within = <T>(work: Promise<T>) => Promise.race([work, sleep(5_000).then(() => { throw new Error("blocked on the settings row"); })]);
-    const reserved = await within(credits.reserve("a", "u", "builder", { id: crypto.randomUUID(), want: 1_000, min: 1 }));
-    assert.equal(reserved?.hold?.raw, 1_000);
-    await within(credits.charge("a", "u", "builder", 2 * USD, "charge:1"));
+    assert.equal(await within(credits.refusal("a", "u", "builder")), undefined);
+    await within(credits.debit("a", "u", "builder", (2 * USD) / 1_000_000, "charge:1"));
     assert.ok((await within(credits.get("a", "u"))).balance < 10 * USD);
     await holder.query("rollback");
   } finally { holder.release(); }

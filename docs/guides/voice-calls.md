@@ -164,7 +164,7 @@ When a request is refused, check the HTTP status and error code.
 
 ### Billing
 
-- OpenAI bills per-response tokens at `REALTIME_PRICES`, with a $0.05 hold per response when end-user credits are on.
+- OpenAI bills per-response tokens at `REALTIME_PRICES`; with end-user credits on, each response is charged to the subject in full after it finishes (nothing is held), and when the payer has nothing left the call ends after the current response (`voice.session.ended` with `reason: "budget"`).
 - ElevenLabs bills by the minute, after the call: nothing is held up front. A call starts when the payer has something
   left (the subject with end-user credits on, else the account), and its minutes are charged from the post-call report
   (or, when ElevenLabs sends none within 15 minutes of the end, from the conversation's duration as ElevenLabs reports
@@ -189,8 +189,8 @@ does not say it may speak.
 A listening session takes `language`, `prompt` (words to expect), `endOfTurn`, `silenceMs` and the session's limits; it
 ignores `speak`, `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` and `deliver.agent` if sent, and needs
 `deliver.webhooks` on (a browser session's page gets every utterance itself). Each utterance is billed as a
-transcription (`usage.recorded` `kind: "transcription"`), held against the subject's credit first with end-user credits
-on. `DELETE …/speak` is a 409 `VOICE_SPEAK_DISABLED`.
+transcription (`usage.recorded` `kind: "transcription"`), debited from the subject's credit after transcription when end-user credits are
+enabled. `DELETE …/speak` is a 409 `VOICE_SPEAK_DISABLED`.
 
 ## Keep it connected, and end it
 
@@ -352,7 +352,7 @@ Only `gemini-2.5-flash-lite` and `gemini-3.1-flash-lite` receive `thinking_budge
 
 The runtime lazily creates or reuses one private agent per credential and model, with per-session overrides and signed URLs
 (see [configuration](../operations/configuration.md)). Conversation token counts are unavailable. Connection duration is billed through the normal speech usage records
-and end-user credit holds, including silent time and interrupted responses. Configure both
+and end-user debits, including silent time and interrupted responses. Configure both
 `AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD`: the former from the
 [Agents pricing page](https://elevenlabs.io/pricing/agents), the latter from Gemini Flash Lite's Detailed costs estimate
 in the agent settings. `claude-haiku-5-5` and `gemini-3.1-flash-lite` take their own LLM rates, `AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD`. LLM usage is billed separately by ElevenLabs; this runtime uses the configured per-minute
@@ -522,6 +522,25 @@ The socket carries:
 
 The socket may reach any node: one that does not hold the session relays it to the one that does.
 
+## Calls your app holds
+
+For an OpenAI WebRTC call, send your app's SDP offer to `POST /v1/voice/sessions`:
+
+```json
+{
+  "provider": "openai",
+  "agent": "client_…",
+  "subject": "user-1",
+  "sdp": "<WebRTC SDP offer>"
+}
+```
+
+Apply the returned `connect.sdpAnswer` as the remote description. Set `interruptResponse: false` when your app's echo guard decides barge-in.
+
+| Field | Meaning |
+|---|---|
+| `interruptResponse` | Defaults to `true`. When `false`, OpenAI still detects turns and starts responses, and your app controls interruptions. ElevenLabs ignores this field. |
+
 ## Latency
 
 Each answer's first audio is timed: `voice_turn_latency` with `Path=realtime`, in ms from the end of speech
@@ -542,9 +561,12 @@ at the [transcription price](../pricing.md), as `kind: "transcription"`. `ask_ag
 your own key the provider bills you directly; the usage record still carries the cost. Holding the call itself costs
 nothing.
 
-A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise). An account that runs out during a call
-ends it: `reason: "budget"`, `limit: "tenant"`. With end-user credits on, a subject with nothing left is refused at the start (402 `END_USER_CREDIT`), each answer holds $0.05 of the subject's credit, or what is left if that is less, before it is asked for and settles at
-what it cost, and running out ends the session (`limit: "end_user"`).
+A session starts only when the account may spend: otherwise 402 `SPEND_LIMIT`, 402 `INSUFFICIENT_CREDIT`, or 429 `FREE_HOURLY_LIMIT` past the free hourly allowance. With end-user credits enabled,
+a subject out of credit is refused at the start (402 `END_USER_CREDIT`). Each response, metering interval, `say`
+request and listen-only transcription is charged in full. The next budget checkpoint ends the session with
+`reason: "budget"` and `limit: "tenant"` or `"end_user"`, according to which payer ran out. A response already
+in progress finishes. For OpenAI calls held by the client, the provider starts the response before camelRun
+receives the checkpoint event. If credit is exhausted, camelRun charges that response on completion and hangs up.
 
 ## Privacy and your duties
 

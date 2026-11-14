@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fakeCredit } from "./voice-calls-fakes.ts";
 import { HttpError } from "../src/http.ts";
 import { AGENT, discordGrant, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
 
@@ -89,6 +90,63 @@ test("a listening session whose tenant may not spend ends (budget) at its next u
   assert.deepEqual([ended.data.reason, ended.data.limit], ["budget", "tenant"]);
   await sleep(50);
   assert.equal(transcription.calls.length, 0);
+  assert.equal((await a.voice.get("alice", created.id)).state, "ended");
+});
+
+test("a listening session past its free hourly allowance (429 FREE_HOURLY_LIMIT) ends (budget, tenant), as a 402 does", async t => {
+  let spent = false;
+  const { node, fake, transcription, events } = await voiceCluster(t, { admit: async () => { if (spent) throw new HttpError(429, "free credit limit; try again later", "FREE_HOURLY_LIMIT"); } });
+  const a = await node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "listen", silenceMs: 200 });
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.others = [ANA];
+  connection.handlers.ready();
+  spent = true;
+  speak(connection, ANA, 0.6);
+  const [ended] = await until(async () => { const found = await events("voice.session.ended"); return found.length ? found : undefined; }, "the end");
+  assert.deepEqual([ended.data.reason, ended.data.limit], ["budget", "tenant"]);
+  await sleep(50);
+  assert.equal(transcription.calls.length, 0);
+  assert.equal((await a.voice.get("alice", created.id)).state, "ended");
+});
+
+test("a listening session refused by a rate or concurrency limit (any other 429) drops that utterance and goes on", async t => {
+  let refusals = 0;
+  const { node, fake, transcription, events } = await voiceCluster(t, { admit: async () => { if (refusals > 0) { refusals--; throw new HttpError(429, "too many at once", "RATE_LIMITED"); } } });
+  const a = await node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "listen", silenceMs: 200 });
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.others = [ANA];
+  connection.handlers.ready();
+  refusals = 1;
+  speak(connection, ANA, 0.6);
+  await until(() => refusals === 0 ? true : undefined, "the refused admission");
+  await sleep(300);
+  assert.equal(transcription.calls.length, 0, "the refused utterance is not transcribed");
+  assert.equal((await events("voice.session.ended")).length, 0, "no budget ending");
+  assert.notEqual((await a.voice.get("alice", created.id)).state, "ended");
+  speak(connection, ANA, 0.6);
+  const [utterance] = await until(async () => { const found = await events("voice.utterance"); return found.length ? found : undefined; }, "the next utterance");
+  assert.equal(utterance.data.brain, "listen");
+  assert.equal(transcription.calls.length, 1);
+});
+
+test("listen-only debits the full transcription cost and refuses the next utterance", async t => {
+  const credit = fakeCredit(0.000001);
+  const { node, fake, transcription, events } = await voiceCluster(t, { credit: credit.credit });
+  const a = await node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "listen", subject: "ada", silenceMs: 200 });
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.others = [ANA];
+  connection.handlers.ready();
+  speak(connection, ANA, 0.6);
+  const utterance = await until(async () => (await events("voice.utterance"))[0], "the utterance");
+  assert.equal(credit.balance(), 0.000001 - utterance.data.costUsd);
+  assert.ok(credit.balance() < 0);
+  speak(connection, ANA, 0.6);
+  const ended = await until(async () => (await events("voice.session.ended"))[0], "the end");
+  assert.deepEqual([ended.data.reason, ended.data.limit], ["budget", "end_user"]);
+  assert.equal(transcription.calls.length, 1);
   assert.equal((await a.voice.get("alice", created.id)).state, "ended");
 });
 

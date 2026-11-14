@@ -75,10 +75,10 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; balance?:
       order.push("refusal");
       return refusal(...args);
     });
-    const hold = credits.hold.bind(credits);
-    t.mock.method(credits, "hold", async (...args: Parameters<EndUserCredits["hold"]>) => {
-      order.push("hold");
-      return hold(...args);
+    const debit = credits.debit.bind(credits);
+    t.mock.method(credits, "debit", async (...args: Parameters<EndUserCredits["debit"]>) => {
+      order.push("debit");
+      return debit(...args);
     });
     const made = await createNode(config, {
       ...deps, voiceCallOverrides: {
@@ -216,12 +216,24 @@ test("a tenant-paid call defaults to thirty minutes and preserves a shorter cap"
   assert.equal(shorter.maxMinutes, 4);
   assert.equal(shorter.expiresAt - f.initial, 4 * minute);
   assert.equal(f.order.includes("refusal"), false);
-  assert.equal(f.order.includes("hold"), false);
+  assert.equal(f.order.includes("debit"), false);
   assert.equal(f.eleven.agents.length, 1);
   assert.equal(f.eleven.agents[0].conversation_config.conversation.max_duration_seconds, 1800);
   assert.equal((await f.post(call.connect.conversationId)).status, 200);
   assert.equal(f.usage[0].usage.cost.total, 1.20);
   assert.deepEqual(await f.ledger(call.id), []);
+
+  // A call marked as paid by its subject is never settled without the credit service: the settle throws, the
+  // transaction rolls back, and the sweep logs it and leaves the call for the next pass.
+  const paying = await f.live({ maxMinutes: 4 });
+  await f.db.query("update voice_calls set options = options || '{\"elevenlabsEndUserCredit\": true}'::jsonb where id = $1", [paying.id]);
+  const error = t.mock.method(console, "error", () => {});
+  f.advance(4 + 16);
+  await f.calls.sweep();
+  const failed = error.mock.calls.map(entry => JSON.parse(String(entry.arguments[0]))).find(entry => entry.type === "voice_call_expire_failed" && entry.session === paying.id);
+  assert.match(String(failed?.detail), /end-user credit missing for a paying call/);
+  assert.notEqual((await f.http("GET", `/v1/voice/sessions/${paying.id}`)).json.state, "ended");
+  assert.equal(f.usage.filter(record => record.identity?.context?.voiceCall === paying.id).length, 0);
 });
 
 test("client transcripts feed authenticated tools and late replies are sent as events", async t => {

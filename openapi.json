@@ -13922,11 +13922,11 @@
           },
           "balance": {
             "type": "integer",
-            "description": "Paid credit left (charged units); usage never takes it below zero (a negative adjustment of yours may), in micro-USD (1 USD = 1000000)"
+            "description": "Signed paid balance in charged units, which can go below zero when usage posts, in micro-USD (1 USD = 1000000)"
           },
           "held": {
             "type": "integer",
-            "description": "Of the balance, what calls in flight hold, in micro-USD (1 USD = 1000000)"
+            "description": "Always zero, in micro-USD (1 USD = 1000000)"
           },
           "lots": {
             "type": "array",
@@ -13937,7 +13937,7 @@
           },
           "available": {
             "type": "integer",
-            "description": "What paid spend may still take today: the balance less holds, within the daily limit, in micro-USD (1 USD = 1000000)"
+            "description": "Signed paid spendable credit within the daily limit, in micro-USD (1 USD = 1000000)"
           },
           "dailyLimit": {
             "type": [
@@ -14034,15 +14034,15 @@
                     },
                     "writtenOff": {
                       "type": "integer",
-                      "description": "Cost past what was left for this bucket today (the balance, the daily limit, the bucket's limit), raw: not charged to the user; the tenant bears it, in micro-USD (1 USD = 1000000)"
+                      "description": "Historical cost written off for this bucket today (raw cost), in micro-USD (1 USD = 1000000)"
                     },
                     "held": {
                       "type": "integer",
-                      "description": "Held for calls in flight (allowance and balance), in micro-USD (1 USD = 1000000)"
+                      "description": "Always zero, in micro-USD (1 USD = 1000000)"
                     },
                     "allowanceLeft": {
                       "type": "integer",
-                      "description": "Left of the allowance today, after holds, in micro-USD (1 USD = 1000000)"
+                      "description": "Allowance remaining after posted spend today, in micro-USD (1 USD = 1000000)"
                     },
                     "paidLimit": {
                       "type": [
@@ -14168,11 +14168,11 @@
           },
           "held": {
             "type": "integer",
-            "description": "Allowance reserved by pool members today, in micro-USD (1 USD = 1000000)"
+            "description": "Always zero, in micro-USD (1 USD = 1000000)"
           },
           "allowanceLeft": {
             "type": "integer",
-            "description": "Pool allowance remaining after spend and holds, in micro-USD (1 USD = 1000000)"
+            "description": "Pool allowance remaining after posted spend, in micro-USD (1 USD = 1000000)"
           }
         },
         "required": [
@@ -14597,7 +14597,7 @@
               "adjustment",
               "spend"
             ],
-            "description": "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); spend: takes amount for something you sell other than metered usage (a month of a feature, an item); a refund or a spend takes at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount"
+            "description": "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); spend: takes amount for something you sell other than metered usage (a month of a feature, an item); a refund or a spend takes at most the current balance (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount"
           },
           "amount": {
             "type": "integer",
@@ -15153,6 +15153,9 @@
           "subject": {
             "type": "string"
           },
+          "interruptResponse": {
+            "type": "boolean"
+          },
           "startedAt": {
             "type": [
               "number",
@@ -15208,6 +15211,7 @@
           "voice",
           "agent",
           "subject",
+          "interruptResponse",
           "startedAt",
           "endedAt",
           "expiresAt",
@@ -15609,6 +15613,11 @@
               "minLength": 1,
               "maxLength": 40
             }
+          },
+          "interruptResponse": {
+            "type": "boolean",
+            "default": true,
+            "description": "OpenAI only: whether the model stops its own answer when someone speaks (semantic_vad interrupt_response). Set false when your app handles barge-in itself (an echo guard); the model still takes turns. ElevenLabs ignores this field because interruptions are client events."
           },
           "sdp": {
             "type": "string",

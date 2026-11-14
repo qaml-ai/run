@@ -13,13 +13,13 @@ import type { UsageRecord } from "./client-sessions/state.ts";
 import { oggOpus, type Cut } from "./voice-audio.ts";
 import { inlineMedia, type Media, type MediaFactory, type MediaOptions } from "./voice/media.ts";
 import { DEFAULT_VOICE } from "./speech.ts";
-import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
+import { utcDay, admitEndUser, bucketInput, creditError, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-credits.ts";
 import { DEFAULT_ADDRESSING, Floor, type AddressingPolicy } from "./voice/turns/floor.ts";
 import { BARGE_IN_LIMITS, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/echo-guard.ts";
 import type { TurnModels } from "./voice/turns/inference.ts";
 import { assemble, Recorder, RECORDING_LIMITS, type RecordedPacket, type RecordingFile, type RecordingTracks } from "./voice/recorder.ts";
 import type { Storage } from "../shared/storage.ts";
-import { RealtimeBrain, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
+import { RealtimeBrain, spendRefusal, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
 import { Jukebox, AUDIO_LIMITS, type AudioSource } from "./voice/jukebox.ts";
 import { speechRequest, type SpeechService } from "./speech-api.ts";
 import type { Outbound } from "./outbound.ts";
@@ -415,14 +415,7 @@ function discordInput(value: unknown, endpoints: RegExp, partial = false): Parti
  * when the subject has nothing left in its bucket, and each response of the brain held before it is asked for and
  * settled with what it cost. Undefined answers: the tenant does not meter end users.
  */
-export interface VoiceCredit {
-  /** With `usd`, also refused when the subject cannot cover that much (a realtime brain's first response hold). */
-  refusal(tenant: string, endUser: string, bucket: string, options?: { sql?: Sql }): Promise<{ reason: string; message: string } | undefined>;
-  /** Throws 402 END_USER_CREDIT (`details.reason`) when the subject has too little left to start work costing `usd`. */
-  hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>): Promise<{ id?: string; settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
-  /** Post the USD cost of completed work, even when it exceeds the balance. */
-  debit?(tenant: string, endUser: string, bucket: string, usd: number, key: string, metadata: Record<string, unknown>, options?: { now?: number; sql?: Sql }): Promise<void>;
-}
+export type VoiceCredit = Pick<EndUserCredits, "refusal" | "debit">;
 
 export interface VoiceSessionsOptions {
   db: Db;
@@ -437,6 +430,7 @@ export interface VoiceSessionsOptions {
   transports: Partial<Record<typeof VOICE_PROVIDERS[number], VoiceTransport>>;
   /** Refuses a tenant that may not start paid work now (spent credit, monthly cap); throws an HttpError. */
   admit(tenant: string): Promise<void>;
+  tenantCreditExhausted?(tenant: string): Promise<boolean>;
   /** Whether an agent is the tenant's (and not deleted), for `deliver.agent`. */
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   /** Speech to text for listening sessions, as `POST /v1/transcriptions` makes it; without it, brain listen is refused. */
@@ -537,6 +531,16 @@ type Held = {
   /** Audio the bot plays into the call (POST …/audio), once it has played any. */
   jukebox?: Jukebox;
 };
+/**
+ * The one admission for every voice path (calls, realtime and listening sessions, each response or metering
+ * checkpoint): the account's spend limit (402 SPEND_LIMIT), then its credit (Billing.creditLimit: 402 out of credit or
+ * disputed, 429 FREE_HOURLY_LIMIT past the free hourly allowance), all spend refusals that end a call as budget.
+ */
+export const voiceAdmission = (accounts: { runLimit(tenant: string): Promise<string | HttpError | undefined> }) => async (tenant: string) => {
+  const refused = await accounts.runLimit(tenant);
+  if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+};
+
 export class VoiceSessions {
   readonly db: Db;
   private readonly options: VoiceSessionsOptions;
@@ -1544,7 +1548,7 @@ export class VoiceSessions {
 
   /**
    * Transcribe a listening session's utterance and send it: the tenant's run limit first (past it the session ends,
-   * `budget`), the subject's credit held, then a fresh lease, then the provider; its usage recorded as the session's
+   * `budget`), the subject's credit checked, then a fresh lease, then the provider; its usage recorded as the session's
    * subject's; its transcript counted and sent (the webhook event in the same transaction as the count). An utterance
    * is at most once until its transcript is written (its audio lives only in the node's memory), at least once after.
    */
@@ -1562,21 +1566,24 @@ export class VoiceSessions {
     try {
       try { await this.options.admit(origin.tenant); }
       catch (error) {
-        if ((error as HttpError).status !== 402) throw error;
+        if ((error as HttpError).status === 429 && !spendRefusal(error)) {
+          // A rate or concurrency refusal: this utterance goes untranscribed; the session goes on.
+          console.error(JSON.stringify({ type: "voice_utterance_dropped", session: origin.id, reason: "refused", seconds: cut.seconds }));
+          return;
+        }
+        if (!spendRefusal(error)) throw error;
         await this.endFor(origin, { reason: "budget", limit: "tenant" });
         return;
       }
-      // The subject's credit: what the audio costs, held before it is sent (refused: the session ends).
-      let hold: Awaited<ReturnType<VoiceCredit["hold"]>>;
       const { credit } = this.options;
-      try {
-        hold = options.subject !== undefined && credit
-          ? await credit.hold(origin.tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, transcriber.cost(cut.seconds), "voice", { session: origin.id })
-          : undefined;
-      } catch (error) {
-        if ((error as HttpError).code !== "END_USER_CREDIT") throw error;
-        const { reason, bucket } = (error as HttpError).details ?? {};
-        await this.endFor(origin, { reason: "budget", limit: "end_user", ...(typeof reason === "string" ? { endUserReason: reason } : {}), ...(typeof bucket === "string" ? { bucket } : {}) });
+      const bucket = options.bucket ?? DEFAULT_BUCKET;
+      const refused = options.subject === undefined ? undefined : await credit?.refusal(origin.tenant, options.subject, bucket, { now: started });
+      if (refused) {
+        await this.endFor(origin, { reason: "budget", limit: "end_user", endUserReason: refused.reason, bucket });
+        return;
+      }
+      if (await this.options.tenantCreditExhausted?.(origin.tenant)) {
+        await this.endFor(origin, { reason: "budget", limit: "tenant" });
         return;
       }
       const bytes = oggOpus(cut.packets);
@@ -1585,7 +1592,6 @@ export class VoiceSessions {
         done = await transcriber.transcribe({ tenant: origin.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { bytes, header: checkedAudio(bytes) },
           { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}) }, AbortSignal.timeout(5 * 60_000));
       } catch (error) {
-        await hold?.release().catch(() => {});
         const code = (error as HttpError).code;
         // No key any more (deleted), or no credit: nothing more can be transcribed.
         if (code === "TRANSCRIPTION_UNAVAILABLE") await this.endFor(origin, { reason: "error", detail: "no transcription key" });
@@ -1593,8 +1599,8 @@ export class VoiceSessions {
         else console.error(JSON.stringify({ type: "voice_transcription_failed", session: origin.id, seconds: cut.seconds, error: safeError(error) }));
         return;
       }
-      // Settled with what it cost; a hold that cannot be settled expires, as a model call's does.
-      await hold?.settle(done.usage.usage.cost.total as number).catch(error =>
+      if (options.subject !== undefined) await credit?.debit(origin.tenant, options.subject, bucket, done.usage.usage.cost.total as number,
+        `voice:${origin.id}:${cut.speaker}:${cut.startedAt}:${cut.endedAt}`, { call: "voice", session: origin.id, usageDay: utcDay(started) }).catch(error =>
         console.error(JSON.stringify({ type: "voice_credit_settle_failed", session: origin.id, error: safeError(error) })));
     } finally { free(); }
     const { transcript, usage } = done;
@@ -1718,7 +1724,7 @@ export class VoiceSessions {
       const made = await speechRequest(tts, held.tenant, {
         text, voice: provider.id === "openai" ? realtime.voice : DEFAULT_VOICE, format: "pcm", ...(keyScope ? { keyScope } : {}),
         ...(choice.providers ? { choice } : {}), identity: identity(), actor: `voice:${held.id}`,
-        ...(subject !== undefined && this.options.credit ? { hold: (usd: number) => this.options.credit!.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_say", { session: held.id }) } : {}),
+        ...(subject !== undefined && this.options.credit ? { admitCredit: () => admitEndUser(this.options.credit!, held.tenant, subject, bucket ?? DEFAULT_BUCKET, "voice_say", { session: held.id }) } : {}),
         settled: ({ costUsd }) => {
           settled(costUsd);
           if (costUsd > 0) void write("update voice_sessions set cost = cost + $2, updated_at = $3 where id = $1 returning *", [Math.round(costUsd * 1_000_000), Date.now()]);
@@ -1775,9 +1781,17 @@ export class VoiceSessions {
         },
       } : {}),
       admit: () => this.options.admit(held.tenant),
-      hold: async usd => {
+      ...(credentials.platform && this.options.tenantCreditExhausted ? { tenantCreditExhausted: () => this.options.tenantCreditExhausted!(held.tenant) } : {}),
+      refusal: async () => {
         const { subject, bucket } = options();
-        return subject !== undefined && this.options.credit ? this.options.credit.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_realtime", { session: held.id }) : undefined;
+        if (subject === undefined) return;
+        const refused = await this.options.credit?.refusal(held.tenant, subject, bucket ?? DEFAULT_BUCKET);
+        if (refused) throw creditError(refused);
+      },
+      debit: async (usd, key, now) => {
+        const { subject, bucket } = options();
+        if (subject !== undefined) await this.options.credit?.debit(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd,
+          `voice_realtime:${held.id}:${key}`, { call: "voice_realtime", session: held.id, usageDay: utcDay(now) });
       },
       budget: (limit, endUserReason, bucket) => {
         void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}), ...(bucket ? { bucket } : {}) })
