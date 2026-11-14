@@ -66,7 +66,8 @@ function client(target: Target) {
     request<Moved>("POST", "/refs/main/write", 201, { ...meta("write"), changes, ...extra }, opts);
   const acquire = (ttlMs = 60_000, name = "main") =>
     request<Lease>("POST", refPath(name) + "/lease", 200, { holder, ttlMs });
-  const fenced = (epoch: number, who = holder, name = "main") => ({ claims: { refs: [name], fence: { holder: who, epoch } } });
+  // The fence claim carries the holder as its canonical string <host>:<boot>:<mount>; bodies carry the object.
+  const fenced = (epoch: number, who = holder, name = "main") => ({ claims: { refs: [name], fence: { holder: `${who.host}:${who.boot}:${who.mount}`, epoch } } });
   const release = (epoch: number, name = "main") => request("DELETE", refPath(name) + "/lease", 204, undefined, fenced(epoch, holder, name));
   const fail = (method: string, path: string, status: number, code: string, body?: unknown, opts = {}) =>
     request<{ error: { details?: unknown; message: string } }>(method, path, status, body, { ...opts, code });
@@ -88,7 +89,8 @@ export async function runCamelfsRefsCases(t: TestContext, target: Target) {
   await run("lineage PUT and GET, ref create/read/pagination and strict name/owner rules", async c => {
     const base = await c.seed();
     await c.request("PUT", "", 200, c.lineage);
-    await c.request("PUT", "", 409, { ...c.lineage, tenant: "another" });
+    const conflict = await c.fail("PUT", "", 409, "lineage_conflict", { ...c.lineage, tenant: "another" });
+    assert.deepEqual(conflict.error.details, { tenant: c.lineage.tenant });
     const item = await c.request<typeof c.lineage>("GET", "", 200);
     for (const key of Object.keys(c.lineage) as (keyof typeof item)[]) assert.equal(item[key], c.lineage[key]);
     await c.create(base.commit, "pub/a");
@@ -312,6 +314,7 @@ export async function runCamelfsRefsCases(t: TestContext, target: Target) {
     const merge = (mode: string, version = theirs.commit) => ({ ...meta(mode), theirs: version, mode });
     const ff = await c.request<Moved>("POST", "/refs/main/merge", 201, merge("ff-only", ours.commit));
     assert.equal(ff.ff, true);
+    assert.deepEqual((ff as Moved & { merged: string[] }).merged, []);
     assert.equal(ff.version, ours.commit);
     assert.equal(ff.bytes, target.advance ? 1 : 2);
     assert.equal(ff.files, 1);
@@ -437,8 +440,9 @@ export async function runCamelfsRefsCases(t: TestContext, target: Target) {
     assert.deepEqual(error.error.details, { held: ["main"] });
     assert.equal((await c.get("other")).version, base.commit);
     await c.release(epoch);
-    await c.request("DELETE", "", [200, 204], undefined, { key: "delete-lineage" });
-    await c.fail("DELETE", "", 410, "lineage_deleted", undefined, { key: "delete-lineage" });
+    await c.request("DELETE", "", 204, undefined, { key: "delete-lineage" });
+    await c.request("DELETE", "", 204, undefined, { key: "delete-lineage" });
+    await c.fail("DELETE", "", 410, "lineage_deleted", undefined, { key: "delete-lineage-again" });
     for (const [method, path, body] of [
       ["GET", "", undefined], ["PUT", "", c.lineage], ["DELETE", "", undefined], ["GET", "/refs", undefined],
       ["DELETE", "/refs?owner=" + encodeURIComponent(owner), undefined], ["GET", "/refs/main", undefined],
