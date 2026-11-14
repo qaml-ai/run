@@ -12,7 +12,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
-type Tables struct{ VMs, Hosts, Deliveries, Usage string }
+type Tables struct{ VMs, VMLineageIndex, Hosts, Deliveries, Usage string }
 
 type Controller struct {
 	DB         *dynamodb.Client
@@ -25,6 +25,10 @@ type Controller struct {
 	CommitTree func(ctx context.Context, lineage, version string) (string, error)
 	Log        func(event string, fields map[string]any)
 	HostFresh  time.Duration
+	// UsageWriteTimeout bounds one usage transaction (default UsageWriteBound). GET /v1/usage's watermark (now − 20 s)
+	// relies on a ULID's time being within this bound of its commit, so production never raises it; only tests whose
+	// DynamoDB Local runs on a loaded machine and that never read usage through the watermark do.
+	UsageWriteTimeout time.Duration
 	// clock is shared by every Controller copy that uses the same instrumented client (EnableClockCheck).
 	clock *clockObservation
 
@@ -59,14 +63,15 @@ const (
 )
 
 var (
-	ErrNotFound     = errors.New("compute item not found")
-	ErrConflict     = errors.New("VM id already used by another request")
-	ErrTooManyExecs = errors.New("too many in-flight execs")
-	ErrNoHost       = errors.New("no host available")
-	ErrCondition    = errors.New("compute condition lost")
-	ErrPhase        = errors.New("invalid VM phase for operation")
-	ErrHost         = errors.New("host or boot epoch does not match")
-	ErrInvalid      = errors.New("invalid compute request")
+	ErrNotFound      = errors.New("compute item not found")
+	ErrConflict      = errors.New("VM id already used by another request")
+	ErrTooManyExecs  = errors.New("too many in-flight execs")
+	ErrNoHost        = errors.New("no host available")
+	ErrCondition     = errors.New("compute condition lost")
+	ErrPhase         = errors.New("invalid VM phase for operation")
+	ErrHost          = errors.New("host or boot epoch does not match")
+	ErrCapacityInUse = errors.New("host capacity is in use")
+	ErrInvalid       = errors.New("invalid compute request")
 	// ErrLeaseExpired: a lapsed lease is final. A renewal that arrives after the deadline never revives it.
 	ErrLeaseExpired = errors.New("VM lease has expired")
 )
@@ -113,24 +118,25 @@ type VM struct {
 	StopRequestedAt, EndedAt                *int64
 	StopCheckpoint                          bool
 	StopReason, Code                        EndCode
+	Reason                                  string
 	FirstExecAt                             *int64
 	execs                                   []string
 	LastCheckpoint                          *Checkpoint
 	RequestedVersion                        string
 	RequestedDeadline                       int64
-	ResultRef, EndVersion                   string
+	EndVersion                              string
 	CheckpointError                         string
 	Tree, RefLeaseHolder                    string
 	RefLeaseEpoch, RefLeaseDeadline         int64
 	RefLeaseReleased                        bool
-	ResultSha256                            string
-	ResultBytes                             int64
 	BilledTo, UsageSeq                      int64
 }
 
 type EndRequest struct {
 	At              time.Time
 	Code            EndCode
+	Reason          string
+	refErr          error
 	EndVersion      string
 	CheckpointError string
 }

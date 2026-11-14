@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { agentStore, insideRepo } from "./repos/agent-store.ts";
 import { repoContext, type RepoEnv } from "./repos/registry.ts";
 import { versionEntries } from "./repos/reads.ts";
@@ -25,7 +26,7 @@ export class ToolFiles {
   private left = TOOL_FILE_LIMITS.callBytes;
   private directory?: string;
   private names = new Set<string>();
-  constructor(private env: Env, private scope: Omit<Scope,'mounts'> & {mounts:Mount[]}) {}
+  constructor(private env: Env, private scope: Omit<Scope,'mounts'> & {mounts:Mount[]}, private invocation?: AgentInvocation) {}
   private target(input: string) {
     if (this.scope.refuse) throw new Error(this.scope.refuse);
     const mounts = this.scope.mounts;
@@ -48,7 +49,7 @@ export class ToolFiles {
     return { ...target, entry, name: nameOf(target.path), size: entry.size, contentType: entry.contentType };
   }
   private async bytes(file: Awaited<ReturnType<ToolFiles['open']>>) {
-    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo), v=await ctx.repo.resolve(file.entry.version);
+    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo,`agent:${this.scope.agent}`), v=await ctx.repo.resolve(file.entry.version);
     return Buffer.from(await ctx.storage.readBlob(ctx.lineage,file.entry.blob,v.tree,insideRepo(file.path)));
   }
   async read(path: string) {
@@ -94,7 +95,8 @@ export class ToolFiles {
     const iterator = source instanceof Uint8Array ? (async function* () { yield source; })() : source[Symbol.asyncIterator]();
     const body = new ReadableStream<Uint8Array>({ async pull(controller) { const next = await iterator.next(); if (next.done) return controller.close(); size += next.value.byteLength; if (size > budget) { await iterator.return?.(); return controller.error(new Error(`it is larger than the ${budget} bytes the tool may still save`)); } controller.enqueue(next.value); }, async cancel() { await iterator.return?.(); } });
     const path = `${this.directory}/${unique}`;
-    const response = await handleAgentFileRequest(new Request('https://agent.invalid/files', { method: 'PUT', headers: { ...(contentType ? { 'Content-Type': contentType } : {}), 'x-camel-call': this.scope.call,...(this.scope.requestId?{'x-camel-run':this.scope.requestId}:{}) }, body }), this.env, this.scope.tenant, this.scope.agent, path, this.scope.mounts);
+    const write = (invocation: AgentInvocation) => handleAgentFileRequest(new Request('https://agent.invalid/files', { method: 'PUT', headers: { ...(contentType ? { 'Content-Type': contentType } : {}), 'x-camel-call': this.scope.call,...(this.scope.requestId?{'x-camel-run':this.scope.requestId}:{}) }, body }), this.env, this.scope.tenant, this.scope.agent, path, this.scope.mounts, "turn", undefined, undefined, invocation);
+    const response = await (this.invocation ? write(this.invocation) : AgentInvocation.run(write));
     const saved = await response.json() as any;
     if (!response.ok) throw new Error(saved.error ?? 'Tool output could not be saved');
     this.left -= saved.size; if (this.scope.budget) this.scope.budget.left -= saved.size;
@@ -104,7 +106,7 @@ export class ToolFiles {
   async bodyFile(input: unknown) {
     if (!isFileArgument(input)) throw new Error('A binary request body needs {$file: path}');
     const file = await this.open(input.$file);
-    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo), v=await ctx.repo.resolve(file.entry.version);
+    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo,`agent:${this.scope.agent}`), v=await ctx.repo.resolve(file.entry.version);
     const response=await ctx.storage.openBlob(ctx.lineage,file.entry.blob,v.tree,insideRepo(file.path));
     return {...file,stream:response.body!};
   }
@@ -120,7 +122,7 @@ export async function serveToolFile(request: Request, env: Env): Promise<Respons
   if (!match || match[1].split('.').length === 2) return;
   if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed');
   const grant = await (await runtimeSigner(env, url.origin)).verifyFileToken(match[1]);
-  const ctx=await repoContext(env as RepoEnv,grant.tenant,grant.repo), v=await ctx.repo.resolve(grant.version);
+  const ctx=await repoContext(env as RepoEnv,grant.tenant,grant.repo,`agent:${grant.agent}`), v=await ctx.repo.resolve(grant.version);
   const entries=(await versionEntries(ctx,v.tree)).filter(e=>!grant.path||e.path===grant.path||e.path.startsWith(grant.path+'/'));
   if(grant.kind==='archive') {
     const archive=tar(entries.map(file=>({name:relative(file.path,grant.path),size:file.size,mtime:0,async *stream(){yield await ctx.storage.readBlob(ctx.lineage,file.blob,v.tree,file.path);}})));

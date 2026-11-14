@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"golang.org/x/sys/unix"
 )
 
@@ -33,15 +34,23 @@ type request struct {
 		Data   string
 		Append bool
 	}
-	JobID          string
-	TimeoutMs      float64
-	Tree           string
-	Error          json.RawMessage
-	Command        string
-	TimeoutSeconds float64
-	Pids           float64
-	Env            map[string]string
-	Outputs        []string
+	JobID                     string
+	TimeoutMs                 float64
+	Tree                      string
+	Error                     json.RawMessage
+	Command                   string
+	TimeoutSeconds            float64
+	Pids                      float64
+	Env                       map[string]string
+	Outputs                   []string
+	ExecID, Shell, Stdin, Cwd string
+	StdinBlob                 *hostwire.ExecBlob
+	StdinToken                string
+	ShellKey                  string
+	TimeoutS                  float64
+	Offset                    int64
+	LegacyCheckpoint          bool
+	BaselineIfUnchanged       bool
 }
 
 type guest struct {
@@ -52,32 +61,56 @@ type guest struct {
 	reaper          *reaper
 	index           *index
 	pending         []operation
+	pendingEntries  map[string]entry
 	freeze          func() (func() error, error)
+	syncWorkspace   func(string) error
+	sessions        sessionState
+	vm              bool
+	session         bool
 }
 
 func ServeStdio(ctx context.Context, root string) error {
-	return serve(ctx, os.Stdin, os.Stdout, &guest{root: root, uds: os.Getenv("CAMEL_VSOCK_UDS")})
+	g := &guest{root: root, uds: os.Getenv("CAMEL_VSOCK_UDS")}
+	defer g.sessions.close()
+	return serve(ctx, os.Stdin, os.Stdout, g)
 }
 
 func serve(ctx context.Context, input io.Reader, output io.Writer, g *guest) error {
-	ctx, cancel := context.WithCancel(ctx)
+	_, err := g.serveChannel(ctx, input, output)
+	return err
+}
+
+func (g *guest) serveChannel(lifetime context.Context, input io.Reader, output io.Writer) (bool, error) {
+	ctx, cancel := context.WithCancel(lifetime)
 	defer cancel()
-	g.repo, g.out = filepath.Join(g.root, "repo"), filepath.Join(g.root, "out")
+	if g.repo == "" {
+		g.repo, g.out = filepath.Join(g.root, "repo"), filepath.Join(g.root, "out")
+	}
 	enc := json.NewEncoder(output)
 	enc.SetEscapeHTML(false)
 	var mu sync.Mutex
-	g.send = func(m message) error {
+	channel := &sessionChannel{send: func(m message) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if conn, ok := output.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		}
 		err := enc.Encode(m)
 		if err != nil {
 			cancel()
 		}
 		return err
-	}
+	}}
+	g.send = channel.send
+	stop := context.AfterFunc(ctx, func() {
+		if c, ok := output.(io.Closer); ok {
+			c.Close()
+		}
+	})
+	defer func() { cancel(); stop() }()
 
 	// Keep reading while the command runs so EOF cancels even a silent command.
 	lines := make(chan []byte, 1)
@@ -85,8 +118,8 @@ func serve(ctx context.Context, input io.Reader, output io.Writer, g *guest) err
 		defer close(lines)
 		reader := bufio.NewReader(input)
 		for {
-			line, err := reader.ReadBytes('\n')
-			if len(line) != 0 {
+			line, err := readRequest(reader)
+			if err == nil {
 				select {
 				case lines <- line:
 				case <-ctx.Done():
@@ -102,10 +135,10 @@ func serve(ctx context.Context, input io.Reader, output io.Writer, g *guest) err
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return false, nil
 		case line, ok := <-lines:
 			if !ok {
-				return nil
+				return false, nil
 			}
 			if strings.TrimSpace(string(line)) == "" {
 				continue
@@ -113,13 +146,24 @@ func serve(ctx context.Context, input io.Reader, output io.Writer, g *guest) err
 			var req request
 			if json.Unmarshal(line, &req) != nil {
 				if err := g.send(message{"ok": false, "error": "Invalid request"}); err != nil {
-					return err
+					return false, err
 				}
 				continue
 			}
-			result, err := g.handle(ctx, req)
+			if g.sessionRequest(channel, req) {
+				continue
+			}
+			commandCtx := ctx
+			if g.vm && req.Op == "run" {
+				commandCtx = lifetime
+			}
+			result, err := g.handle(commandCtx, req)
+			if req.Op == "exit" {
+				// Once decoded, exit is explicit even if its acknowledgement is lost.
+				return true, g.send(message{"ok": true})
+			}
 			if ctx.Err() != nil {
-				return nil
+				return false, nil
 			}
 			if err != nil {
 				result = message{"ok": false, "error": errorText(err)}
@@ -127,11 +171,23 @@ func serve(ctx context.Context, input io.Reader, output io.Writer, g *guest) err
 				result["ok"] = true
 			}
 			if err := g.send(result); err != nil {
-				return err
+				return false, err
 			}
-			if req.Op == "exit" {
-				return nil
-			}
+		}
+	}
+}
+
+func readRequest(r *bufio.Reader) ([]byte, error) {
+	const max = 32 << 20
+	var line []byte
+	for {
+		part, err := r.ReadSlice('\n')
+		if len(part) > max-len(line) {
+			return nil, errors.New("request line too long")
+		}
+		line = append(line, part...)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
 		}
 	}
 }
@@ -180,7 +236,7 @@ func (g *guest) handle(ctx context.Context, req request) (message, error) {
 		return message{"freeBytes": st.Bavail * uint64(st.Bsize)}, err
 	case "camelfs_apply":
 		return g.apply(ctx, req)
-	case "camelfs_checkpoint":
+	case "camelfs_checkpoint", "camelfs_baseline":
 		return g.checkpoint(ctx, req)
 	case "camelfs_checkpointed":
 		return g.checkpointed(req)

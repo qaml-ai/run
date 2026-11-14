@@ -21,6 +21,8 @@
 #                                        unfindable without an index), then claim with a conditional claimedUntil
 #   hosts       pool (S) + host (S)     bootEpoch, shape, slots, free, vms, features, lastSeenAt, draining
 #   vms         id (S)                  the phase row: phase, host, lineage, ref, leaseEpoch, timestamps, result, payer
+#   marks       lineage (S)             the per-lineage mark of the quota/GC walk (C3b, option B of #973): what the
+#                                        refs routes read and write to account bytes; Put/Get/Delete by the tier
 #   usage       shard (S) + ulid (S)    usage events the runtime PULLS (Miguel, 2026-11-13 ~18:50; not webhooked):
 #                                        eventId, vm, seq, body, expiresAt; written in the same TransactWriteItems
 #                                        as vms. The ONE table with a DynamoDB TTL (expiresAt, 35 days): its rows
@@ -65,12 +67,22 @@ locals {
       range_key = null
       ttl       = null
       purpose   = "VM phase rows - compute control K4"
+      # L127: a lineage or ref delete ends that lineage's VMs. Keys plus the two fields the delete filters on.
+      indexes = {
+        lineage = { hash_key = "lineage", include = ["phase", "ref"] }
+      }
     }
     usage = {
       hash_key  = "shard"
       range_key = "ulid"
       ttl       = "expiresAt"
       purpose   = "usage events the runtime pulls - copies with a 35 day TTL"
+    }
+    marks = {
+      hash_key  = "lineage"
+      range_key = null
+      ttl       = null
+      purpose   = "per-lineage quota marks of the refs routes - C3b"
     }
   }
   table_names = { for table in keys(local.tables) : table => "${var.name}-${var.env}-${table}" }
@@ -95,6 +107,27 @@ resource "aws_dynamodb_table" "camelfs" {
     content {
       name = attribute.value
       type = "S"
+    }
+  }
+
+  # Index key attributes (a table's own keys are declared above).
+  dynamic "attribute" {
+    for_each = setsubtract(toset([for index in values(lookup(each.value, "indexes", {})) : index.hash_key]), toset(compact([each.value.hash_key, each.value.range_key])))
+    content {
+      name = attribute.value
+      type = "S"
+    }
+  }
+
+  # PAY_PER_REQUEST: an index needs no capacity. Adding one is an in-place UpdateTable; DynamoDB backfills it from
+  # the existing items (status CREATING, then ACTIVE) without blocking writes.
+  dynamic "global_secondary_index" {
+    for_each = lookup(each.value, "indexes", {})
+    content {
+      name               = global_secondary_index.key
+      hash_key           = global_secondary_index.value.hash_key
+      projection_type    = "INCLUDE"
+      non_key_attributes = global_secondary_index.value.include
     }
   }
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,23 +40,9 @@ func validHostAddr(addr string) bool {
 }
 
 func (p HostPusher) post(ctx context.Context, host compute.Host, path string, body any) error {
-	if !validHostAddr(host.Addr) {
-		return errors.New("invalid host address")
-	}
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+host.Addr+path, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	transport := &http.Transport{DisableKeepAlives: true, TLSClientConfig: p.tlsConfig(host.Host)}
-	client := http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := client.Do(req)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	resp, err := p.request(ctx, host, http.MethodPost, path, body)
 	if err != nil {
 		return err
 	}
@@ -64,6 +51,35 @@ func (p HostPusher) post(ctx context.Context, host compute.Host, path string, bo
 		return fmt.Errorf("host returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func (p HostPusher) request(ctx context.Context, host compute.Host, method, path string, body any) (*http.Response, error) {
+	if !validHostAddr(host.Addr) {
+		return nil, errors.New("invalid host address")
+	}
+	if p.TLS == nil || p.TLS.current.Load() == nil {
+		return nil, errors.New("host TLS unavailable")
+	}
+	var input io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		input = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "https://"+host.Addr+path, input)
+	if err != nil {
+		return nil, err
+	}
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	transport := &http.Transport{DisableKeepAlives: true, TLSClientConfig: p.tlsConfig(host.Host)}
+	client := http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	return client.Do(req)
 }
 
 func (p HostPusher) tlsConfig(hostID string) *tls.Config {

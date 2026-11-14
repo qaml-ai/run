@@ -85,6 +85,14 @@ func failure(code string, status int) *Error {
 	return &Error{Code: code, Status: status}
 }
 
+func fenced(r Ref, now int64) *Error {
+	var holder, epoch any
+	if r.held(now) {
+		holder, epoch = *r.Holder, r.LeaseEpoch
+	}
+	return &Error{Code: "fenced", Status: 409, Details: map[string]any{"holder": holder, "epoch": epoch}}
+}
+
 func stale(r Ref, now int64) *Error {
 	var version any
 	if r.live(now) {
@@ -207,12 +215,16 @@ const heldBy = "(#holder = :holder AND #leaseEpoch = :epoch AND #leaseDeadline >
 var attributeAlias = regexp.MustCompile(`#[a-zA-Z]+`)
 
 func (s *Store) update(ctx context.Context, lineage, name, condition, update string, values attributes, returns types.ReturnValue) (*dynamodb.UpdateItemOutput, error) {
+	return s.updateTimed(ctx, lineage, name, condition, update, values, returns, nil)
+}
+
+func (s *Store) updateTimed(ctx context.Context, lineage, name, condition, update string, values attributes, returns types.ReturnValue, observe func(time.Duration)) (*dynamodb.UpdateItemOutput, error) {
 	names := map[string]string{}
 	for _, alias := range attributeAlias.FindAllString(condition+" "+update, -1) {
 		names[alias] = alias[1:]
 	}
 	if s.guard != nil {
-		_, err := s.client.(transactionClient).TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		input := &dynamodb.TransactWriteItemsInput{
 			TransactItems: []types.TransactWriteItem{
 				{ConditionCheck: &types.ConditionCheck{
 					TableName: s.guard, Key: attributes{"lineage": str(lineage)},
@@ -224,7 +236,12 @@ func (s *Store) update(ctx context.Context, lineage, name, condition, update str
 					UpdateExpression: aws.String(update), ExpressionAttributeNames: names, ExpressionAttributeValues: values,
 				}},
 			},
-		})
+		}
+		start := time.Now()
+		_, err := s.client.(transactionClient).TransactWriteItems(ctx, input)
+		if observe != nil {
+			observe(time.Since(start))
+		}
 		var canceled *types.TransactionCanceledException
 		if errors.As(err, &canceled) && len(canceled.CancellationReasons) > 0 &&
 			aws.ToString(canceled.CancellationReasons[0].Code) == "ConditionalCheckFailed" {

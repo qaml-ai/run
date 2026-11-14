@@ -79,6 +79,7 @@ test("every computer operation clears the attachment hint before it runs", async
       const fetch = method("agent-http", "fetchRequestImpl", {
         URL, body: (request: Request) => request.json(),
         json: (value: unknown, status = 200) => Response.json(value, { status }),
+        admissionError: (error: unknown) => { throw error; },
         forkComputerInto: check,
         ComputerService: class { sweepAgent = check; remove = check; release = check; confirmCleanup = check; call = check; },
       });
@@ -86,7 +87,7 @@ test("every computer operation clears the attachment hint before it runs", async
         env: {}, config: async () => conf, refreshComputerTools: check, arm: check,
         serializeComputer: async (run: () => Promise<unknown>) => run(),
         ctx: { storage: { get: async () => conf, delete: async (key: string) => data.delete(key) } } };
-      const response = await fetch.call(runtime, new Request("https://computer.internal/__computer", {
+      const response = await fetch.call(runtime, {}, new Request("https://computer.internal/__computer", {
         method: "POST", body: JSON.stringify({ tenant: "tenant", operation, args: { agents: [] } }),
       }));
       assert.equal(response.status, operation === "fork" ? 201 : 200);
@@ -105,11 +106,12 @@ test("arming skips only a known absent computer and preserves live lease deadlin
       COMPUTER_ATTACHED: key, TERMINAL_EVENTS_PREFIX: "terminal:",
       ComputerService: class { async nextDeadline() { queries++; return due; } },
       inputAdmissionDeadline: () => Infinity, checkGcDeadline: async () => Infinity,
+      repoMoveDeadline: async () => undefined, bashEnabled: () => false,
     });
     const runtime = {
       invalidateMaintenance() {}, maintenanceGeneration: 0,
       ctx: { storage: {
-        get: async (name: string) => name === key ? attached : name === "configuration" ? { id: "agent", tenantId: "tenant" } : name === key ? attached : undefined,
+        get: async (name: string) => name === key ? attached : name === "configuration" ? { id: "agent", tenantId: "tenant" } : undefined,
         list: async () => new Map(),
       }, getWebSockets: () => [] },
       env: {}, records: async () => [], delegation: { children: async () => [] },
@@ -131,6 +133,7 @@ test("wake skips sweep only for a false attachment hint and processes only due d
     let expirations = 0, sweeps = 0;
     const wake = method("agent-lifecycle", "wakeImpl", {
       COMPUTER_ATTACHED: key, Date: { now: () => now }, restageInputMirrors: noop, flushScheduleOutcomes: noop,
+      bashEnabled: () => false, drainRepoMoves: noop,
       expireDecisions: async () => { expirations++; }, flushMonitors: noop, collectChecks: noop,
       ComputerService: class { async sweepAgent() { sweeps++; } },
     });

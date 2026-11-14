@@ -16,8 +16,25 @@ import (
 )
 
 type Schema struct {
-	Keys       []types.KeySchemaElement
-	Attributes []types.AttributeDefinition
+	Keys                   []types.KeySchemaElement
+	Attributes             []types.AttributeDefinition
+	GlobalSecondaryIndexes []types.GlobalSecondaryIndex
+}
+
+func VMTable(t *testing.T) (*dynamodb.Client, string) {
+	t.Helper()
+	return Table(t, Schema{
+		Keys: []types.KeySchemaElement{{AttributeName: aws.String("id"), KeyType: types.KeyTypeHash}},
+		Attributes: []types.AttributeDefinition{
+			{AttributeName: aws.String("id"), AttributeType: types.ScalarAttributeTypeS},
+			{AttributeName: aws.String("lineage"), AttributeType: types.ScalarAttributeTypeS},
+		},
+		GlobalSecondaryIndexes: []types.GlobalSecondaryIndex{{
+			IndexName:  aws.String("lineage"),
+			KeySchema:  []types.KeySchemaElement{{AttributeName: aws.String("lineage"), KeyType: types.KeyTypeHash}},
+			Projection: &types.Projection{ProjectionType: types.ProjectionTypeInclude, NonKeyAttributes: []string{"phase", "ref"}},
+		}},
+	})
 }
 
 func Table(t *testing.T, schema Schema) (*dynamodb.Client, string) {
@@ -37,7 +54,7 @@ func Table(t *testing.T, schema Schema) (*dynamodb.Client, string) {
 	name := fmt.Sprintf("camelfs-test-%x", suffix)
 	_, err = client.CreateTable(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(name), KeySchema: schema.Keys, AttributeDefinitions: schema.Attributes,
-		BillingMode: types.BillingModePayPerRequest,
+		BillingMode: types.BillingModePayPerRequest, GlobalSecondaryIndexes: schema.GlobalSecondaryIndexes,
 	})
 	if err != nil {
 		t.Fatal(err)

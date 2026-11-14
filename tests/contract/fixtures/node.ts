@@ -252,7 +252,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       return `ar_session=${raw}`;
     },
     async seedEndUserUsage({ tenant, endUser, bucket, amount, key, metadata, at }) {
-      await new EndUserCredits(db).charge(tenant, endUser, bucket, amount, key, metadata, at);
+      await new EndUserCredits(db).debit(tenant, endUser, bucket, (amount) / 1_000_000, key, metadata, { now: at });
     },
     async seedStripeCustomer(tenant, { customer, legacyCustomer }) {
       await db.query("insert into billing_stripe_customers(tenant,livemode,request_id,customer,created_at) values($1,false,$2,$3,$4)", [tenant, crypto.randomUUID(), customer, Date.now()]);

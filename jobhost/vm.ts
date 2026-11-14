@@ -126,7 +126,9 @@ export function fakeLauncher(options: { base?: string; work?: string } = {}): Vm
       let gone = false;
       return {
         id,
-        request: (request, onLog) => channel.request(request, onLog),
+        // The legacy jobhost checkpoint adapter arms a daemon stream even for an empty diff.
+        request: (request, onLog) => channel.request(
+          guestBin && request.op === "camelfs_checkpoint" ? { ...request, legacyCheckpoint: true } : request, onLog),
         async destroy() {
           if (gone) return;
           gone = true;

@@ -299,7 +299,7 @@ func parseHostLeaf(t *testing.T, cert string) *x509.Certificate {
 }
 
 func TestUnitEnrollmentRouteIsolation(t *testing.T) {
-	host := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, time.Minute)
+	host := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, nil, time.Minute)
 	storage := NewStorageServer(nil, "test", nil)
 	for _, handler := range []http.Handler{host, storage} {
 		w := httptest.NewRecorder()
@@ -362,7 +362,7 @@ func tierTestClient(t *testing.T, ca *x509.CertPool, host tls.Certificate) *http
 
 func TestUnitHostRenewal(t *testing.T) {
 	enroll, issuer := enrollmentServer(t, nil)
-	server := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, time.Minute)
+	server := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, nil, time.Minute)
 	server.EnableRenewal(enroll.Certificates)
 	tier := testTier(t, enroll.Certificates.TLS, server)
 	host, _ := fakeIssuedHost(t, issuer, enrollmentHost)

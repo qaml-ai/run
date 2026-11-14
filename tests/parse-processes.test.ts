@@ -154,3 +154,18 @@ test("whatever a parse job answers is checked, and one that dies reads as could 
   const fitted = await fitImage(big);
   assert.ok("omitted" in fitted && fitted.transient && /the parser sent too much/.test(fitted.omitted), JSON.stringify(fitted));
 });
+
+test("a parse's deadline is its caller's: a request's is inspectMs + 2 s, the startup check's is longer", async t => {
+  let answerAfterMs = 0;
+  await fakeLauncher(t, (kind, socket) => {
+    socket.resume();
+    const send = frames(socket, (message: any) => {
+      if (message.type === "request") setTimeout(() => send({ type: "response", id: message.id, result: { media: { kind: "image", mimeType: "image/png", width: 1, height: 1 } } }), answerAfterMs);
+    });
+    return true;
+  });
+  // A parser slower than the deadline it was given fails it; given a longer one, the same parser answers.
+  answerAfterMs = 400;
+  await assert.rejects(parse(PNG, false, false, { deadlineMs: 100 }), /the parser took too long/);
+  assert.equal((inspection(await parse(PNG, false, false, { deadlineMs: 2_000 })).media as { width?: number }).width, 1);
+});

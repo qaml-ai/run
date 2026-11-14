@@ -407,3 +407,73 @@ func TestApplyProgressOutlivesIdleBudget(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// A session's base tree usually comes from another writer (the tier's write route): its blobs are in the store and
+// in that writer's database, not in this host's. Checkpointing such a mount resolves them through the store.
+func TestCheckpointBaseBlobsFromAnotherWriter(t *testing.T) {
+	m, _ := unit3(t)
+	writer, e := refs.Open(filepath.Join(t.TempDir(), "writer.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer writer.Close()
+	repo := &objects.Repository{DB: writer, Store: m.Store, TempDir: t.TempDir()}
+	content := []byte("base file\n")
+	hash := sha256Hex(content)
+	if _, e := repo.Upload(t.Context(), "l", hash, int64(len(content)), bytes.NewReader(content)); e != nil {
+		t.Fatal(e)
+	}
+	base, e := repo.Import(t.Context(), objects.Request{Lineage: "l", Files: map[string]objects.File{"base.txt": {SHA256: hash}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var rows int
+	m.objects("l").DB.DB.QueryRow("SELECT COUNT(*) FROM lineage_blobs WHERE lineage='l'").Scan(&rows)
+	if rows != 0 {
+		t.Fatalf("host already knows %d blobs; the test needs a foreign writer", rows)
+	}
+	v := mount3(t, m, base.Tree, "j")
+	if e := testguest.Apply(v.Vsock, "j", t.TempDir(), filepath.Join(t.TempDir(), "idx.json")); e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 100; i++ {
+		if s, _ := m.Status(context.Background(), "j"); s.Applied {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	done := make(chan error, 1)
+	go func() {
+		c := armed3(t, v)
+		defer c.Close()
+		wire.Send(c, wire.Header{V: 1, Kind: "checkpoint", JobID: "j", BaseTree: base.Tree, WalkMs: 1})
+		wire.Send(c, wire.Op{Path: "hello", Op: "put", Mode: "100644", Size: 5})
+		wire.Write(c, []byte("world"))
+		wire.Send(c, wire.Op{End: true, Files: 1, Bytes: 5})
+		var ack struct {
+			Ack bool `json:"ack"`
+		}
+		e := wire.JSON(c, &ack)
+		if !ack.Ack && e == nil {
+			e = errors.New("no ack")
+		}
+		done <- e
+	}()
+	msg := "save"
+	out, e := m.StreamCheckpoint(context.Background(), "j", 10000, CheckpointRequest{Message: &msg, Trailers: &Trailers{Agent: "bot", Kind: "manual"}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = <-done; e != nil {
+		t.Fatal(e)
+	}
+	if out.Tree == base.Tree || out.FilesChanged != 1 {
+		t.Fatal(out)
+	}
+	entries, e := m.objects("l").Entries(t.Context(), out.Tree)
+	if e != nil || len(entries) != 2 {
+		t.Fatalf("checkpoint tree %v: %v", entries, e)
+	}
+}
+
+func sha256Hex(b []byte) string { return root.Hash(b) }

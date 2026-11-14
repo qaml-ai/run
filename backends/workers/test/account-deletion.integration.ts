@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { unzip } from "../../../tests/unzip.ts";
 import { startFixture } from "./fixture.ts";
 
@@ -14,12 +14,10 @@ const AGENTS = process.env.WORKERS_SLOW_TESTS === "1" ? 2001 : 101;
 test(`queued account deletion resumes after interruption with ${AGENTS} agents and retains accounting`, { timeout: 900_000 }, async t => {
   const operator = "large-account-deletion-operator-token-32-characters";
   const otherToken = "other-pending-account-token-at-least-32-characters";
-  const daemon = await serveFakeCamelfsd("account-repos");
-  t.after(() => daemon.close());
-  const r = await startFixture({ tenants: [{ id: "camelrun-proto-local", token: "local-integration-only-token-with-at-least-32-characters" }, { id: "other-pending", token: otherToken }], camelfsStub: true, entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
-    TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: "account-repos",
+  const r = await startFixture({ tenants: [{ id: "camelrun-proto-local", token: "local-integration-only-token-with-at-least-32-characters" }, { id: "other-pending", token: otherToken }], entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
     AGENT_TENANTS_JSON: JSON.stringify({ tenants: { ops: { tokenSha256: createHash("sha256").update(operator).digest("hex"), apiKeys: {} } } }),
     AGENT_BILLING_ADMINS: "ops",
+    AGENT_CREATE_DIAGNOSTICS: "1",
     AGENT_MAX_AGENTS: "2100", AGENT_MAX_AGENTS_PER_TENANT: "2100",
   } });
   t.after(() => r.stop());
@@ -29,16 +27,48 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const created = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
-  assert.equal(created.status, 201);
-  const { id } = await created.json() as { id: string };
-  const ids = [id];
-  let next = 0;
-  await Promise.all(Array.from({ length: 10 }, async () => {
-    while (next++ < AGENTS - 1) {
-      const response = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
-      assert.equal(response.status, 201);
-      ids.push((await response.json() as { id: string }).id);
+  const createLogs = () => r.worker.logs().split("\n")
+    .filter(line => /agent_create_(?:db|rpc)_failed|agent_http_failed|agent_start_(?:slow|stuck)|http_failed/.test(line))
+    .join("\n");
+  const createAgent = async (index: number) => {
+    const key = `account-deletion-${index}`;
+    const timeoutMs = 60_000;
+    const signal = AbortSignal.timeout(timeoutMs);
+    // Keep the one-day lifetime that unkeyed creates default to.
+    const body = JSON.stringify({ model: "test/echo", spendLimit: { usd: 3 }, ttlSeconds: 86_400 });
+    let lastPending = "";
+    try {
+      for (;;) {
+        const response = await fetch(r.url + "/v1/agents", {
+          method: "POST",
+          headers: { authorization: `Bearer ${r.token}`, "content-type": "application/json", "Idempotency-Key": key },
+          body,
+          signal,
+        });
+        if (response.status === 201) return (await response.json() as { id: string }).id;
+        const failure = await response.text();
+        let code: unknown;
+        if (response.status === 503) {
+          try { code = JSON.parse(failure)?.code; } catch { /* Report the response body below. */ }
+        }
+        if (code !== "CONFIGURATION_PENDING") {
+          assert.fail(`create ${key} returned ${response.status}: ${failure}\n${createLogs()}`);
+        }
+        lastPending = ` Last response: 503 ${failure}`;
+        // The directory row was saved. Replay this keyed create to apply its configuration.
+        await delay(250, undefined, { signal });
+      }
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      assert.fail(`create ${key} did not return 201 within ${timeoutMs} ms.${lastPending}\n${createLogs()}`);
+    }
+  };
+  const ids = [await createAgent(0)];
+  let next = 1;
+  // Limit concurrent creates because first agent starts are CPU-heavy in the single-threaded workerd fixture.
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (next < AGENTS) {
+      ids.push(await createAgent(next++));
     }
   }));
   assert.equal(ids.length, AGENTS);
@@ -66,10 +96,6 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
   const otherRepo = await otherCreated.json() as { id: string };
   // Another deletion with no agents must retain its index until its own repos are removed.
   await r.db.query("insert into account_deletions(tenant,requested_at,requested_by,claimed_until) values($1,$2,'test',now()+interval '1 day')", ["other-pending", Date.now()]);
-  // Legacy Volume objects in R2 (files/<tenant>/): the deleted account's go with it, another account's stay.
-  const r2 = (method: string, key: string) => fetch(`${r.url}/__test/r2?key=${encodeURIComponent(key)}`, { method, headers: { authorization: `Bearer ${r.token}` }, ...(method === "PUT" ? { body: "legacy volume bytes" } : {}) });
-  const legacyKeys = Array.from({ length: 3 }, (_, i) => `files/${encodeURIComponent(tenant)}/legacy-${i}`);
-  for (const key of [...legacyKeys, "files/other-pending/kept"]) assert.equal((await r2("PUT", key)).status, 201);
   const started = Date.now();
   assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE")).status, 202);
   assert.equal((await call("/v1/agents", "GET", token)).status, 401, "credentials stop authenticating before cleanup finishes");
@@ -93,8 +119,6 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
   }
   assert.equal(status.state, "deleted", "queue continues without a client waiting on cleanup");
   assert.equal(await count(), 0);
-  assert.deepEqual((await (await r2("GET", `files/${encodeURIComponent(tenant)}/`)).json() as { keys: string[] }).keys, [], "a deleted account's legacy Volume objects are removed");
-  assert.deepEqual((await (await r2("GET", "files/other-pending/")).json() as { keys: string[] }).keys, ["files/other-pending/kept"]);
   await r.db.query("delete from account_deletions where tenant=$1", ["other-pending"]);
   const otherRead = await call(`/v1/repos/${otherRepo.id}`, "GET", otherToken);
   assert.equal(otherRead.status, 200, "deleting one account must not purge another pending account's repo index");

@@ -32,6 +32,16 @@ RUN_REF=main CAMELFSD_REF=main
 # shellcheck source=/dev/null
 source /etc/camel/kvm-host.conf
 [[ -n ${RUNTIME_URL:-} && -n ${CAMELFSD_STORE:-} ]] || fail 'Set RUNTIME_URL and CAMELFSD_STORE'
+compute=0
+if [[ -n ${TIER_ENROLL_URL:-}${TIER_HOSTS_ENDPOINT:-} ]]; then
+  compute=1
+  [[ -n ${TIER_ENROLL_URL:-} && -n ${TIER_HOSTS_ENDPOINT:-} ]] || fail 'Set both tier endpoints for compute'
+  [[ ${CAMELFSD_IMAGES_STORE:-} == s3://?* ]] || fail 'Set CAMELFSD_IMAGES_STORE to s3://bucket[/prefix]'
+  [[ ${TIER_CA_S3:-} =~ ^s3://[^/]+/.+ && ${TIER_CA_S3:-} != */ ]] || fail 'Set TIER_CA_S3 to an S3 object'
+  [[ ${TIER_CA_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || fail 'Set TIER_CA_SHA256 to a lowercase SHA-256'
+elif [[ -n ${CAMELFSD_COMPUTE_FLAGS:-} ]]; then
+  fail 'Replace CAMELFSD_COMPUTE_FLAGS with the tier settings in kvm-host.conf.example'
+fi
 source "$here/guest-image.conf"
 [[ $GUEST_IMAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || fail 'Pin the published GUEST_IMAGE_SHA256 in guest-image.conf'
 GUEST_IMAGE_S3_PREFIX=${GUEST_IMAGE_S3_PREFIX:-$CAMELFSD_STORE}
@@ -54,12 +64,23 @@ verify() {
 }
 echo '== Packages'
 export DEBIAN_FRONTEND=noninteractive
-packages=(xfsprogs nbd-client dmsetup thin-provisioning-tools nftables iproute2 socat awscli zstd e2fsprogs curl jq git ca-certificates build-essential unzip rsync openssl xz-utils)
+packages=(xfsprogs nbd-client dmsetup thin-provisioning-tools nftables iproute2 socat zstd e2fsprogs curl jq git ca-certificates build-essential unzip rsync openssl xz-utils)
 missing=()
 for package in "${packages[@]}"; do
   [[ $(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true) == 'install ok installed' ]] || missing+=("$package")
 done
 if ((${#missing[@]})); then apt-get update -qq; apt-get install -y -qq "${missing[@]}"; fi
+# Ubuntu 24.04 has no awscli package: the host uses AWS CLI v2 from AWS's installer (aws.amazon.com/cli).
+aws --version 2>/dev/null | grep -q '^aws-cli/2\.' || fail 'Install AWS CLI v2 (https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)'
+ca_changed=0
+if (( compute )); then
+  echo '== Tier CA'
+  aws s3 cp --region "${AWS_REGION:-us-west-2}" --only-show-errors "$TIER_CA_S3" "$work/tier-ca.pem"
+  verify TIER_CA_SHA256 "$TIER_CA_SHA256" "$work/tier-ca.pem"
+  changed=0
+  put "$work/tier-ca.pem" "${TIER_CA:-/etc/camel/tier-ca.pem}"
+  ca_changed=$changed
+fi
 if ! command -v node >/dev/null || [[ $(node --version) != v22.* ]]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x -o "$work/nodesource.sh"
   bash "$work/nodesource.sh"
@@ -186,7 +207,7 @@ restart[camel-kvm-prep]=$changed
 changed=0
 if [[ -e /usr/local/sbin/camelfsd-cleanup ]]; then rm -f /usr/local/sbin/camelfsd-cleanup; changed=1; fi
 put "$here/systemd/camelfsd.service" /etc/systemd/system/camelfsd.service
-restart[camelfsd]=$((changed | daemon_changed))
+restart[camelfsd]=$((changed | daemon_changed | ca_changed))
 changed=0
 put "$here/systemd/camel-jobhost.service" /etc/systemd/system/camel-jobhost.service
 restart[camel-jobhost]=$((changed | agent_changed | vm_changed))

@@ -29,9 +29,8 @@ const (
 )
 
 var (
-	jobID                  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,96}$`)
-	jailerID               = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
-	ErrAdoptNotImplemented = errors.New("VM adoption is not implemented")
+	jobID    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,96}$`)
+	jailerID = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 )
 
 // Launcher owns one work directory and the host's job tap and UID range.
@@ -74,12 +73,48 @@ type VM struct {
 	mu                                  sync.Mutex
 	gone                                bool
 	scopeAttempted, tapOwned, jailOwned bool
+	timings                             BootTimings
 }
+
+// BootTimings are one boot's phases for the compute_boot log line: disk (reflink clone plus
+// grow and resize2fs), assets (kernel/initrd/branch disk into the jail), tap, policy,
+// scope (systemd-run → jailer → Firecracker exec) and vsock (exec → first CONNECT 5000 OK).
+type BootTimings struct {
+	Disk, Assets, Tap, Policy, Scope, Vsock time.Duration
+}
+
+// BootTimings returns the phases of the boot that created v (zero for an adopted VM).
+func (v *VM) BootTimings() BootTimings { return v.timings }
+
+func (v *VM) Slot() int           { return v.record.Slot }
+func (v *VM) GuestSocket() string { return filepath.Join(v.root, "guest.vsock") }
+func (v *VM) GuestUID() int       { return v.host.uidBase() + v.record.Slot }
 
 func (v *VM) ID() string { return v.record.ID }
 
 func (l *Launcher) Adopt(id string) (*VM, error) {
-	return nil, ErrAdoptNotImplemented
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if v := l.live[id]; v != nil {
+		return v, nil
+	}
+	r, err := l.readRecord(id)
+	if err != nil {
+		return nil, err
+	}
+	fc, err := filepath.EvalSymlinks(l.Firecracker)
+	if err != nil {
+		return nil, err
+	}
+	v := &VM{
+		host: l, record: r, root: jailRoot(r, fc),
+		scopeAttempted: true, tapOwned: true, jailOwned: true,
+	}
+	if l.live == nil {
+		l.live = make(map[string]*VM)
+	}
+	l.live[id] = v
+	return v, nil
 }
 
 func (l *Launcher) Boot(ctx context.Context, id string, shape Shape, boot Boot) (*VM, error) {
@@ -102,7 +137,9 @@ func (l *Launcher) Boot(ctx context.Context, id string, shape Shape, boot Boot) 
 		case <-guestCtx.Done():
 		}
 	}()
+	vsock := time.Now()
 	v.channel, err = connectGuest(guestCtx, filepath.Join(v.root, "guest.vsock"), bootDeadline)
+	v.timings.Vsock = time.Since(vsock)
 	cancel()
 	<-watched
 	select {
@@ -117,21 +154,70 @@ func (l *Launcher) Boot(ctx context.Context, id string, shape Shape, boot Boot) 
 	return v, nil
 }
 
-func (v *VM) Request(ctx context.Context, req any, onLog LogFunc) (Reply, error) {
-	v.mu.Lock()
-	c := v.channel
-	v.mu.Unlock()
-	if c == nil {
-		return nil, errors.New("guest channel is closed")
+func (v *VM) Request(ctx context.Context, req any, onLog LogFunc, events ...EventFunc) (Reply, error) {
+	c, err := v.getChannel(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return c.request(ctx, req, onLog)
+	return c.request(ctx, req, onLog, events...)
 }
 
-func (l *Launcher) validate(id string, shape Shape) (int64, error) {
+func (v *VM) getChannel(ctx context.Context) (*channel, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.channel != nil {
+		select {
+		case <-v.channel.closed:
+		default:
+			return v.channel, nil
+		}
+	}
+	_, err := v.reconnect(ctx)
+	return v.channel, err
+}
+
+// Reconnect replaces the current channel and returns the guest's session inventory.
+func (v *VM) Reconnect(ctx context.Context) (Reply, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.gone || v.root == "" {
+		return nil, errors.New("VM has no guest socket")
+	}
+	return v.reconnect(ctx)
+}
+
+func (v *VM) reconnect(ctx context.Context) (Reply, error) {
+	if v.channel != nil {
+		_ = v.channel.conn.Close()
+		v.channel = nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, bootDeadline)
+	defer cancel()
+	c, err := connectGuest(ctx, filepath.Join(v.root, "guest.vsock"), bootDeadline)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := c.request(ctx, map[string]string{"op": "sessions"}, nil)
+	if err != nil || reply["ok"] != true {
+		c.conn.Close()
+		if err == nil {
+			err = errors.New("guest refused sessions request")
+		}
+		return nil, err
+	}
+	v.channel = c
+	return reply, nil
+}
+
+func (l *Launcher) validate(id string, shape Shape, imagePath ...string) (int64, error) {
 	if !jobID.MatchString(id) {
 		return 0, errors.New("invalid job id")
 	}
-	image, err := os.Stat(l.Image)
+	path := l.Image
+	if len(imagePath) > 0 {
+		path = imagePath[0]
+	}
+	image, err := os.Stat(path)
 	if err != nil {
 		return 0, err
 	}
@@ -185,7 +271,7 @@ func (l *Launcher) jailPath(id string) string {
 	return filepath.Join(l.Work, "jail", id)
 }
 
-func (l *Launcher) reserve(id string, shape Shape) (*VM, error) {
+func (l *Launcher) reserve(id string, shape Shape, imageSHA string) (*VM, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	dir := filepath.Dir(l.recordPath(id))
@@ -228,7 +314,7 @@ func (l *Launcher) reserve(id string, shape Shape) (*VM, error) {
 			}
 			continue
 		}
-		r := VMRecord{id, slot, addr.Tap, l.jailPath(id), scopeName(id), time.Now().UTC(), l.imageSHA, shape}
+		r := VMRecord{id, slot, addr.Tap, l.jailPath(id), scopeName(id), time.Now().UTC(), imageSHA, shape}
 		if err := writeJSON(l.recordPath(id), r, 0600); err != nil {
 			return nil, err
 		}
@@ -265,7 +351,14 @@ func (l *Launcher) readRecord(id string) (VMRecord, error) {
 }
 
 func (l *Launcher) start(ctx context.Context, id string, shape Shape, boot Boot) (*VM, error) {
-	size, err := l.validate(id, shape)
+	if boot.Session && boot.Repo == "" {
+		return nil, errors.New("session requires a branch disk")
+	}
+	path := boot.Image
+	if path == "" {
+		path = l.Image
+	}
+	size, err := l.validate(id, shape, path)
 	if err != nil {
 		return nil, err
 	}
@@ -276,18 +369,25 @@ func (l *Launcher) start(ctx context.Context, id string, shape Shape, boot Boot)
 	if !filepath.IsAbs(fc) || !filepath.IsAbs(l.Jailer) {
 		return nil, errors.New("Firecracker and jailer paths must be absolute")
 	}
-	l.imageOnce.Do(func() { l.imageSHA, l.imageErr = imageSHA(l.Image) })
-	if l.imageErr != nil {
-		return nil, l.imageErr
+	var sha string
+	if boot.Image == "" {
+		l.imageOnce.Do(func() { l.imageSHA, l.imageErr = imageSHA(path) })
+		sha, err = l.imageSHA, l.imageErr
+	} else {
+		// The compute host verified and atomically published this image by SHA.
+		sha = strings.TrimSuffix(filepath.Base(path), ".ext4")
+	}
+	if err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	v, err := l.reserve(id, shape)
+	v, err := l.reserve(id, shape, sha)
 	if err != nil {
 		return nil, err
 	}
-	err = v.prepareAndLaunch(ctx, fc, size, boot)
+	err = v.prepareAndLaunch(ctx, fc, path, size, boot)
 	if err != nil {
 		err = errors.Join(err, v.destroyLocked(context.Background()))
 	}
@@ -298,14 +398,21 @@ func (l *Launcher) start(ctx context.Context, id string, shape Shape, boot Boot)
 	return v, nil
 }
 
-func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot Boot) error {
+func jailerVMID(id string) string {
+	if jailerID.MatchString(id) {
+		return id
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(id)))
+}
+
+func jailRoot(r VMRecord, fc string) string {
+	return filepath.Join(r.Jail, filepath.Base(fc), jailerVMID(r.ID), "root")
+}
+
+func (v *VM) prepareAndLaunch(ctx context.Context, fc, imagePath string, size int64, boot Boot) error {
 	l, r := v.host, v.record
 	uid := l.uidBase() + r.Slot
-	fcID := r.ID
-	if !jailerID.MatchString(fcID) {
-		fcID = fmt.Sprintf("%x", sha256.Sum256([]byte(r.ID)))
-	}
-	v.root = filepath.Join(r.Jail, filepath.Base(fc), fcID, "root")
+	v.root = jailRoot(r, fc)
 	if err := os.MkdirAll(filepath.Dir(r.Jail), 0700); err != nil {
 		return err
 	}
@@ -318,9 +425,12 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	}
 	files := configFiles{kernel: "/kernel", disk: "/root.ext4", vsock: "guest.vsock"}
 	disk := filepath.Join(v.root, files.disk)
-	if err := cloneDisk(ctx, l.Image, disk, size, l.Reflink); err != nil {
+	phase := time.Now()
+	lap := func(d *time.Duration) { *d, phase = time.Since(phase), time.Now() }
+	if err := cloneDisk(ctx, imagePath, disk, size, l.Reflink); err != nil {
 		return err
 	}
+	lap(&v.timings.Disk)
 	if err := os.Chown(disk, uid, uid); err != nil {
 		return err
 	}
@@ -335,19 +445,27 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	}
 	if boot.Repo != "" {
 		files.repo = "/repo"
+		if boot.Session {
+			if err := os.Chown(boot.Repo, uid, uid); err != nil {
+				return err
+			}
+		}
 		if err := mountAsset(boot.Repo, filepath.Join(v.root, files.repo), false, uid); err != nil {
 			return err
 		}
 	}
+	lap(&v.timings.Assets)
 	addr, _ := JobAddress(r.Slot)
 	if err := TapUp(addr, uid); err != nil {
 		return fmt.Errorf("tap %s: %w", addr.Tap, err)
 	}
 	v.tapOwned = true
+	lap(&v.timings.Tap)
 	if err := writePolicy(l.PolicyDir, addr.GuestIP, l.policy(r.ID, boot.Internet)); err != nil {
 		return err
 	}
-	config := firecrackerConfig(files, addr, r.Shape, l.Build, l.KVM, boot.Internet)
+	lap(&v.timings.Policy)
+	config := firecrackerConfig(files, addr, r.Shape, l.Build, l.KVM, boot.Internet, boot.Session)
 	if err := writeJSON(filepath.Join(v.root, "config.json"), config, 0644); err != nil {
 		return err
 	}
@@ -367,7 +485,7 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	uidArg := strconv.Itoa(uid)
 	cmd := exec.Command("systemd-run", "--scope", "--slice=system.slice", "--unit="+r.Scope,
 		"--property=KillMode=control-group", "--property=TimeoutStopSec=3s",
-		"--", l.Jailer, "--id", fcID, "--exec-file", fc, "--uid", uidArg, "--gid", uidArg,
+		"--", l.Jailer, "--id", jailerVMID(r.ID), "--exec-file", fc, "--uid", uidArg, "--gid", uidArg,
 		"--chroot-base-dir", r.Jail, "--cgroup-version", "2", "--parent-cgroup", "system.slice/"+r.Scope,
 		"--", "--no-api", "--config-file", "/config.json", "--level", "Warning")
 	cmd.Stdout, cmd.Stderr = log, log
@@ -375,6 +493,7 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc string, size int64, boot B
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	lap(&v.timings.Scope)
 	v.scopeAttempted = true
 	v.cmd = cmd
 	v.exited = make(chan struct{})
@@ -396,4 +515,30 @@ func imageSHA(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Exited reports an exited child or an adopted scope that is no longer present.
+func (v *VM) Exited() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.exited != nil {
+		select {
+		case <-v.exited:
+			return true
+		default:
+			return false
+		}
+	}
+	_, err := os.Stat(filepath.Join("/sys/fs/cgroup/system.slice", v.record.Scope, "cgroup.events"))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// Subscribe returns a stream completion signal for this exec attachment. A
+// replacement attachment or a disconnected guest channel also closes it.
+func (v *VM) Subscribe(ctx context.Context, req any, event EventFunc) (Reply, <-chan struct{}, error) {
+	c, err := v.getChannel(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.exchange(ctx, req, nil, event)
 }

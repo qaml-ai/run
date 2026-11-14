@@ -1,4 +1,4 @@
-import { DoRepoClient } from "./repos/client.ts";
+import { repoContext } from "./repos/registry.ts";
 import { applyResources, validateApply } from '../../../shared/apply.ts';
 import { applyScope, applyPreparation, ApplyChanged } from '../../../shared/apply-scope.ts';
 import { transaction } from './postgres.ts';
@@ -65,7 +65,7 @@ export async function apply(request: Request, env: ControlEnv, auth: AuthContext
         const result = await execute(false);
         // Initialize committed records only. Existing initialized agents receive no configuration call.
         for (const repo of repos.values()) await createRepo(env as RepoEnv,auth.tenantId,{key:repo.key,name:repo.name});
-        for (const entry of agents.values()) for(const mount of entry.config.mounts??[]) if(mount.repo&&mount.notify) await new DoRepoClient(env as RepoEnv, auth.tenantId, mount.repo).watch(mount.ref??'main',entry.id);
+        for (const entry of agents.values()) for(const mount of entry.config.mounts??[]) if(mount.repo&&mount.notify) await (await repoContext(env as RepoEnv, auth.tenantId, mount.repo, `agent:${entry.id}`)).repo.watch(mount.ref??'main',entry.id);
         for (const entry of agents.values()) {
           const saved = await directory.initializeCommitted(entry, origin);
           if ('failed' in saved) throw new ApiError(saved.status, saved.error);

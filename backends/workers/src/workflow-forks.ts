@@ -1,7 +1,8 @@
+/** A commit() in flight (workflow-commits.ts): its fork must outlive it. Here, not there, so this module imports nothing
+ * (tests mock repo services through a loader hook that a static import of the repo stack would bypass). */
+export const WORKFLOW_COMMIT_PREFIX = "workflow-commit:";
 const ROW = "workflow-repo:";
 const RETRY = "workflow-repo-retry";
-/** Kept while a commit() is in flight (WorkflowJobs' rows): its fork must outlive it. */
-const IN_FLIGHT = "workflow-job:";
 const FIRST_RETRY_MS = 60_000, MAX_RETRY_MS = 3_600_000;
 
 export interface BranchJanitorHost {
@@ -25,7 +26,7 @@ export class BranchJanitor {
   async ended(): Promise<number | undefined> {
     const forks = [...(await this.host.storage.list({ prefix: ROW })).keys()];
     if (!forks.length) { await this.host.storage.delete(RETRY); return undefined; }
-    const committing = [...(await this.host.storage.list<{ kind?: string }>({ prefix: IN_FLIGHT })).values()].some(row => row.kind === "commit");
+    const committing = (await this.host.storage.list({ prefix: WORKFLOW_COMMIT_PREFIX, limit: 1 })).size > 0;
     let failed = committing;
     if (!committing) for (const key of forks) {
       try {

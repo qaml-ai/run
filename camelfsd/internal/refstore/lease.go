@@ -87,10 +87,11 @@ func (s *Store) fencedUpdate(ctx context.Context, lineage, name string, fence Fe
 	values[":holder"], values[":epoch"], values[":now"] = str(fence.Holder), num(fence.Epoch), num(now)
 	_, err := s.update(ctx, lineage, name, heldBy+" AND attribute_exists(#version)", update, values, types.ReturnValueNone)
 	if ddb.IsConditionFailed(err) {
-		if _, err := s.Get(ctx, lineage, name); err != nil {
+		r, err := s.Get(ctx, lineage, name)
+		if err != nil {
 			return err
 		}
-		return failure("fenced", 409)
+		return fenced(r, s.now().UnixMilli())
 	}
 	return err
 }

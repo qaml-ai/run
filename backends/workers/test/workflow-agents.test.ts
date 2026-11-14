@@ -175,8 +175,8 @@ test('abort: queued children never start, running ones are stopped', async () =>
 test('agent() options a workflow child cannot have are refused on the effect', async () => {
   const w = world();
   await w.agents.start(effect('c', { prompt: 'x', computer: 'fork' }));
-  assert.match(String((w.landed[0]!.outcome as { error: string }).error), /no computer/);
-  await assert.rejects(w.agents.start({ key: 's', attempt: 1, kind: 'job', args: { command: 'true' } }), /agent\(\) effects/);
+  assert.match(String((w.landed[0]!.outcome as { error: string }).error), /cannot set computer configuration/);
+  await assert.rejects(w.agents.start({ key: 's', attempt: 1, kind: 'commit', args: {} }), /agent\(\) effects/);
 });
 
 test('a definition cannot bill a workflow child to an end user: its subject (and agent spend limit) are not taken', async () => {

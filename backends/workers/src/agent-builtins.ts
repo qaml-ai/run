@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { agentMonitorTools, type MonitorToolsHost } from './agent-monitors.ts';
 import type { Networking } from "../../../src/core/vault.ts";
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
@@ -35,13 +36,13 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const pricing = pricingFromEnvironment(pricingEnv);
   return [...agentScheduleTools(initial.builtins, host.schedules), ...agentMonitorTools(initial.builtins, host.monitors), ...builtinDefinitions(initial.builtins).map(definition => {
     const check = compile(definition.parameters as never);
-    return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, structuredOutputSchema: {}, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
+    return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, structuredOutputSchema: {}, replay: 'safe', execute: (args: Record<string, unknown>, api, call) => AgentInvocation.run(async invocation => {
       if (!(check.check as (value: unknown) => boolean)(args)) throw new HttpError(400, `Invalid ${definition.name} arguments`);
       const scope = { ...await context(api), callId: `${api.conversationId}:${api.taskId}:${api.callId}`, startedAt: Date.now() }, usages: UsageRecord[] = [];
       const key = async (_tenant: string, provider: string) => {
-        const credential = host.key ? await host.key(scope, provider) : await resolveProviderKey(env, scope.tenant, provider, scope.keyScope);
+        const credential = host.key ? await host.key(scope, provider) : await resolveProviderKey(env, scope.tenant, provider, scope.keyScope, invocation);
         const found = credential && ('key' in credential ? credential : credential.apiKey ? { key: credential.apiKey, platform: credential.platform } : undefined);
-        if (found) await (host.admit ? host.admit(scope, found.platform) : admitWebUsage(env, scope, found.platform));
+        if (found) await (host.admit ? host.admit(scope, found.platform) : admitWebUsage(env, scope, found.platform, invocation));
         return found;
       };
       const record = (_tenant: string, _agent: string, usage: UsageRecord) => { usages.push(usage); };
@@ -60,8 +61,8 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
         if (signal.aborted) throw error;
         return { output: [{ type: 'text' as const, text: error instanceof Error ? error.message : String(error) }], isError: true };
       } finally {
-        for (const [index, usage] of usages.entries()) await (host.record ?? ((scope, usage) => recordWebUsage(env, scope, usage)))({ ...scope, callId: `${scope.callId}:${index}` }, usage);
+        for (const [index, usage] of usages.entries()) await (host.record ?? ((scope, usage) => recordWebUsage(env, scope, usage, invocation)))({ ...scope, callId: `${scope.callId}:${index}` }, usage);
       }
-    } });
+    }) });
   })];
 }

@@ -23,6 +23,9 @@ import (
 
 const intervalMS = int64(60_000)
 
+// UsageWriteBound: a usage ULID is minted at most this long before its commit (see writeWithUsage and the watermark).
+const UsageWriteBound = 5 * time.Second
+
 type UsageShape struct {
 	VCPUs     int `json:"vcpus"`
 	MemoryMiB int `json:"memoryMiB"`
@@ -116,7 +119,11 @@ func (c *Controller) writeWithUsage(ctx context.Context, event *UsageEvent, seq 
 	// GET /v1/usage uses a watermark of now minus two heartbeats (20s), which
 	// relies on the ULID time being within 5s of commit. The 5s deadline
 	// covers the entire call, including any SDK retries.
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	bound := c.UsageWriteTimeout
+	if bound <= 0 {
+		bound = UsageWriteBound
+	}
+	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	now := c.now()
 	id, err := mintULID(now)

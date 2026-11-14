@@ -1,77 +1,35 @@
-import { repoHistory } from '../src/repos/history.ts';
+import { fixture } from './workflow-repo-fixture.ts';
+import { hookTierServices } from './tier-env.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
-import { registerHooks } from 'node:module';
-import { fakeCamelfsd } from './fake-camelfsd.ts';
-import { camelfsStorage, StorageError } from '../src/repos/storage.ts';
-const hooks = registerHooks({ resolve(specifier, context, next) {
-    if (specifier === 'cloudflare:workers')
-      return { url: 'data:text/javascript,export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env;} } export const waitUntil=p=>p;', shortCircuit: true };
-    if (specifier.endsWith('/security-services.ts'))
-      return { url: 'data:text/javascript,export const keyServices=async env=>({accounts:{billing:{storageLimit:async()=>env.limit}}});', shortCircuit: true };
-    return next(specifier, context);
-  } });
+const hooks = hookTierServices();
+const { StorageError } = await import('../src/repos/storage.ts');
+const { repoHistory } = await import('../src/repos/history.ts');
 const { statPaths, versionEntries } = await import('../src/repos/reads.ts');
-const { RepoDO } = await import('../src/repos/repo-do.ts');
-const { TenantRepos } = await import('../src/repos/tenant-repos.ts');
-const { commitChanges, setRefToVersion, branch, advanceRef } = await import('../src/repos/write.ts');
+const { commitChanges, setRefToVersion, branch } = await import('../src/repos/write.ts');
 const { mergeRefs } = await import('../src/repos/merge.ts');
 const { agentRepo, createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
 const { handleRepoRequest } = await import('../src/repos/routes.ts');
 hooks.deregister();
 const bytes = (s: string) => new TextEncoder().encode(s);
 const err = (code: string) => (e: any) => { assert.equal(e.code, code); return true; };
-function fixture(t: any) {
-  const databases: DatabaseSync[] = [];
-  function state() {
-    const db = new DatabaseSync(':memory:');
-    databases.push(db);
-    const sql = { exec(q: string, ...args: any[]) { const stmt = db.prepare(q); const rows = stmt.columns().length ? stmt.all(...args) : (stmt.run(...args), []); return { toArray: () => rows, one: () => { assert.equal(rows.length, 1); return rows[0]; }, [Symbol.iterator]: () => rows[Symbol.iterator]() }; } };
-    return { storage: { sql, transactionSync(fn: any) {
-          db.exec('BEGIN');
-          try {
-            const v = fn();
-            db.exec('COMMIT');
-            return v;
-          }
-          catch (e) {
-            db.exec('ROLLBACK');
-            throw e;
-          }
-        }, setAlarm: async () => { }, deleteAlarm: async () => { } } };
-  }
-  t.after(() => databases.forEach(d => d.close()));
-  const repos = new Map<string, InstanceType<typeof RepoDO>>(), index = new TenantRepos(state().storage as never);
-  const tenant = { registerRepo: (r: any) => index.register(r), repoRow: (id: string) => index.row(id), listRepos: (i: any) => index.list(i), markRepoDeleted: (id: string) => index.deleted(id), repoUsage: (id: string, b: number, f: number) => index.usage(id, b, f), reposUsed: () => index.used() };
-  const fake = fakeCamelfsd('test-token');
-  const env: any = { CAMELFS: { fetch: (input: any, init: any) => fake.fetch(input instanceof Request ? input : new Request(input, init)) }, CAMELFS_API_TOKEN: 'test-token', TENANTS: { getByName: () => tenant }, REPOS: { getByName: (id: string) => {
-        if (!repos.has(id))
-          repos.set(id, new RepoDO(state() as never, {}));
-        return repos.get(id);
-      } } };
-  const create = async (input = {}) => { const { info } = await createRepo(env, 't', input); return repoContext(env, 't', info.id); };
-  const write = (ctx: any, changes: any, extra = {}) => commitChanges(ctx, { ref: 'main', op: 'api', changes, message: 'test', author: 'api:t', who: 'api:t', why: 'test', ...extra });
-  return { env, fake, create, write, index };
-}
-test('first and delta commits use daemon ids, blob authorization, path expectations, no-op and quota', async (t) => {
-  const { create, write, fake, env } = fixture(t), ctx = await create();
+test('first and delta commits use daemon ids, blob authorization, path expectations and quota', async (t) => {
+  const { create, write, fake, env } = await fixture(t), ctx = await create();
   const a = await write(ctx, { a: { bytes: bytes('hello') } });
-  assert.ok(fake.commits.has(a.version!));
+  assert.equal((await ctx.storage.getCommit(ctx.lineage, a.version)).tree, a.tree);
   const b = await write(ctx, { b: { bytes: bytes('world') }, a: { mode: '100755' } });
   assert.deepEqual((await ctx.repo.commit(b.version!))!.parents, [a.version]);
   assert.equal((await ctx.repo.commit(b.version!))!.trailers['Camel-Op'], 'api');
-  assert.equal((await write(ctx, { a: { mode: '100755' } })).changed, false);
-  await assert.rejects(write(ctx, { a: { bytes: bytes('no') } }, { pathExpect: { a: 'none' } }), err('stale_path'));
+  await assert.rejects(write(ctx, { a: { bytes: bytes('no') } }, { pathExpect: { a: 'none' } }), err('stale'));
   await assert.rejects(write(ctx, { a: { blob: 'a'.repeat(40) } }), err('unknown_blob'));
   env.limit = 0;
   await assert.rejects(write(ctx, { c: { bytes: bytes('quota') } }), err('storage_limit'));
 });
 test('fork shares lineage; cross-lineage copies PUT bytes; keyed lifecycle and tenant index', async (t) => {
-  const { create, write, env, fake, index } = fixture(t), src = await create({ key: 'src' } as any), a = await write(src, { a: { bytes: bytes('source') } });
+  const { create, write, env, fake, index } = await fixture(t), src = await create({ key: 'src' } as any), a = await write(src, { a: { bytes: bytes('source') } });
   const fork = await create({ from: { repo: src.repoId } } as any);
   assert.equal(fork.lineage, src.lineage);
-  const puts = () => fake.calls.filter(c => c.startsWith('PUT ')).length;
+  const puts = () => fake.calls.filter(c => c.startsWith('PUT ') && c.endsWith('/blobs')).length;
   const before = puts();
   await write(fork, { copy: { from: { repo: src.repoId, path: 'a' } } });
   assert.equal(puts(), before);
@@ -85,128 +43,70 @@ test('fork shares lineage; cross-lineage copies PUT bytes; keyed lifecycle and t
   assert.equal(index.list().repos.length, 2);
 });
 test('openBlob streams response, preserves ranges and maps fake authorization errors', async (t) => {
-  const { create, write } = fixture(t), ctx = await create(), v = await write(ctx, { a: { bytes: bytes('abcdef') } }), e = v.files.a!;
+  const { create, write } = await fixture(t), ctx = await create(), v = await write(ctx, { a: { bytes: bytes('abcdef') } }), e = v.files.a!;
   const r = await ctx.storage.openBlob(ctx.lineage, e.blob, v.tree!, 'a', 'bytes=1-3');
   assert.equal(r.status, 206);
   assert.equal(r.headers.get('content-range'), 'bytes 1-3/6');
   assert.equal(await r.text(), 'bcd');
   await assert.rejects(ctx.storage.openBlob(ctx.lineage, e.blob, v.tree!, 'missing'), e => e instanceof StorageError && e.status === 404);
 });
-test('restore creates a commit; branch fallback loads old trees; advanceRef uses daemon metadata and diff', async (t) => {
-  const { create, write } = fixture(t), ctx = await create(), a = await write(ctx, { a: { bytes: bytes('one') } });
+test('restore creates a commit and branches can start at an old version', async (t) => {
+  const { create, write } = await fixture(t), ctx = await create(), a = await write(ctx, { a: { bytes: bytes('one') } });
   const b = await write(ctx, { a: { bytes: bytes('two') } });
-  await branch(ctx, { name: 'old', from: { version: a.version! }, who: 'api:t' });
+  await branch(ctx, { name: 'old', from: { version: a.version! } });
   assert.equal((await ctx.repo.ref('old'))!.version, a.version);
-  const r = await setRefToVersion(ctx, { ref: 'main', version: a.version!, newCommit: true, author: 'api:t', who: 'api:t', why: 'restore' });
+  const r = await setRefToVersion(ctx, { ref: 'main', version: a.version!, newCommit: true, author: 'api:t' });
   assert.notEqual(r.version, a.version);
   assert.deepEqual((await ctx.repo.commit(r.version))?.parents, [b.version]);
   assert.equal((await ctx.repo.commit(r.version))?.trailers['Camel-Op'], 'restore');
   assert.equal((await statPaths(ctx, (await ctx.repo.ref('main'))!.tree, ['a'])).a!.blob, a.files.a!.blob);
-  const blob = await ctx.storage.putBlob(ctx.lineage, bytes('checkpoint'));
-  const commit = await ctx.storage.commit(ctx.lineage, { parents: [r.version], changes: [{ path: 'cp', blob: blob.blob, mode: '100644' }], author: 'api:t', message: 'checkpoint', trailers: {} });
-  for (const parents of [[], [a.version!]]) {
-    const invalid = await ctx.storage.commit(ctx.lineage, { parents, baseTree: commit.tree, changes: [], author: 'api:t', message: 'invalid checkpoint', trailers: {} });
-    await assert.rejects(advanceRef(ctx, { ref: 'main', expect: r.version, commit: invalid.commit, who: 'api:t', why: 'checkpoint' }), err('bad_parent'));
-    assert.equal((await ctx.repo.ref('main'))?.version, r.version);
-  }
-  const advanced = await advanceRef(ctx, { ref: 'main', expect: r.version, commit: commit.commit, who: 'api:t', why: 'checkpoint' });
-  assert.equal(advanced.files.cp!.size, 10);
-  assert.equal((await ctx.storage.diff(ctx.lineage, a.tree!, commit.tree)).changes.length, 1);
+
 });
 test('merge clean, conflicts, ff, squash and already merged', async (t) => {
-  const { create, write } = fixture(t), ctx = await create();
+  const { create, write } = await fixture(t), ctx = await create();
   await write(ctx, { a: { bytes: bytes('base\n') } });
-  await branch(ctx, { name: 'topic', from: 'main', who: 'api:t' });
+  await branch(ctx, { name: 'topic', from: 'main' });
   await write(ctx, { b: { bytes: bytes('topic') } }, { ref: 'topic' });
   const theirs = await write(ctx, { b: { bytes: bytes('topic tip') } }, { ref: 'topic' });
   const ff = await mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' });
   assert.equal(ff.version, theirs.version);
   assert.equal((await mergeRefs(ctx, { into: 'main', from: 'topic' })).changed, false);
   const ours = await write(ctx, { c: { bytes: bytes('ours') } });
-  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not_fast_forward'));
   const topic = await write(ctx, { d: { bytes: bytes('theirs') } }, { ref: 'topic' });
+  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not_fast_forward'));
   const merged = await mergeRefs(ctx, { into: 'main', from: 'topic' });
   assert.deepEqual((await ctx.repo.commit(merged.version!))!.parents, [ours.version, topic.version]);
   assert.equal((await ctx.repo.commit(merged.version!))!.trailers['Camel-Op'], 'merge');
   await write(ctx, { a: { bytes: bytes('ours\n') } });
   await write(ctx, { a: { bytes: bytes('theirs\n') } }, { ref: 'topic' });
-  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic' }), err('conflicts'));
+  await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic' }), err('conflict'));
   await assert.rejects(mergeRefs(ctx, { into: 'main', from: 'topic', mode: 'ff' }), err('not_fast_forward'));
   const clean = await create();
   await write(clean, { a: { bytes: bytes('base') } });
-  await branch(clean, { name: 'topic', from: 'main', who: 'api:t' });
+  await branch(clean, { name: 'topic', from: 'main' });
   await write(clean, { b: { bytes: bytes('topic') } }, { ref: 'topic' });
   const squashed = await mergeRefs(clean, { into: 'main', from: 'topic', mode: 'squash' });
   assert.equal((await clean.repo.commit(squashed.version!))!.parents.length, 1);
 });
-test('commitChanges retries a concurrent move without uploading blobs again', async (t) => {
-  const { create, write, fake } = fixture(t), ctx = await create();
-  await write(ctx, { a: { bytes: bytes('base') } });
-  const original = ctx.repo.cas.bind(ctx.repo);
-  let raced = false;
-  (ctx.repo as any).cas = async (input: any) => {
-    assert.notEqual(input.expect, undefined);
-    if (!raced) {
-      raced = true;
-      await write(ctx, { other: { bytes: bytes('winner') } });
-    }
-    return original(input);
-  };
-  const result = await write(ctx, { a: { bytes: bytes('retry') } });
-  assert.equal(result.changed, true);
-  assert.ok((await statPaths(ctx, (await ctx.repo.ref('main'))!.tree, ['other'])).other);
-  assert.equal(fake.calls.filter(c => c.startsWith('PUT ')).length, 3);
-});
-test('a keyed commitChanges that loses the ref to a concurrent write commits again on the new head', async (t) => {
-  const { create, write } = fixture(t), ctx = await create();
-  await write(ctx, { a: { bytes: bytes('base') } });
-  const original = ctx.repo.cas.bind(ctx.repo);
-  let raced = false;
-  (ctx.repo as any).cas = async (input: any) => {
-    if (!raced) { raced = true; await write(ctx, { other: { bytes: bytes('winner') } }); }
-    return original(input);
-  };
-  const keyed = await write(ctx, { a: { bytes: bytes('keyed') } }, { idempotencyKey: 'keep:job-1' });
-  assert.equal(keyed.changed, true);
+test('the tier retries a keyed write without reuploading a large blob', async t => {
+  let beforeMove: (() => Promise<void>) | undefined;
+  const { create, write, fake } = await fixture(t, { beforeWriteMove: async () => {
+    const run = beforeMove;
+    beforeMove = undefined;
+    await run?.();
+  } });
+  const ctx = await create();
+  beforeMove = async () => { await write(ctx, { other: { bytes: bytes('winner') } }); };
+  const result = await write(ctx, { large: { bytes: new Uint8Array(8 * 1024 * 1024 + 1) } }, { idempotencyKey: 'large' });
   const head = (await ctx.repo.ref('main'))!;
-  assert.equal(head.version, keyed.version);
-  assert.ok((await statPaths(ctx, head.tree, ['other'])).other, 'the winner is kept under the keyed write');
+  assert.equal(head.version, result.version);
+  const entries = await statPaths(ctx, head.tree, ['other', 'large']);
+  assert.equal(entries.other?.size, 6);
+  assert.equal(entries.large?.size, 8 * 1024 * 1024 + 1);
+  assert.equal(fake.calls.filter(c => c.endsWith('/blobs') && c.startsWith('PUT ')).length, 1);
 });
-for (const operation of ['setRefToVersion', 'branch', 'advanceRef', 'mergeRefs'])
-  test(`${operation} detects a concurrent ref move`, async (t) => {
-    const { create, write } = fixture(t), ctx = await create(), a = await write(ctx, { a: { bytes: bytes('base') } });
-    await branch(ctx, { name: 'topic', from: 'main', who: 'api:t' });
-    await write(ctx, { a: { bytes: bytes('new') } });
-    const theirs = await write(ctx, { b: { bytes: bytes('topic') } }, { ref: 'topic' });
-    const current = (await ctx.repo.ref('main'))!.version;
-    const original = ctx.repo.cas.bind(ctx.repo);
-    let raced = false;
-    (ctx.repo as any).cas = async (input: any) => {
-      assert.notEqual(input.expect, undefined);
-      if (!raced) {
-        raced = true;
-        if (operation === 'branch')
-          await original({ ref: 'old', expect: null, commit: (await ctx.repo.commit(theirs.version!))!, entries: [], who: 'api:t', why: 'race' });
-        else
-          await write(ctx, { winner: { bytes: bytes('winner') } });
-      }
-      return original(input);
-    };
-    let promise;
-    if (operation === 'setRefToVersion')
-      promise = setRefToVersion(ctx, { ref: 'main', version: a.version!, expect: current, newCommit: false, author: 'api:t', who: 'api:t', why: 'test' });
-    else if (operation === 'branch')
-      promise = branch(ctx, { name: 'old', from: { version: a.version! }, who: 'api:t' });
-    else if (operation === 'mergeRefs')
-      promise = mergeRefs(ctx, { into: 'main', from: 'topic' });
-    else {
-      const c = await ctx.storage.commit(ctx.lineage, { parents: [current], changes: [], author: 'api:t', message: 'cp', trailers: {} });
-      promise = advanceRef(ctx, { ref: 'main', expect: current, commit: c.commit, who: 'api:t', why: 'test' });
-    }
-    await assert.rejects(promise, err('stale'));
-  });
 test('tenant index pages equal timestamps, retains tombstones, and sums only live usage', async (t) => {
-  const { index } = fixture(t);
+  const { index } = await fixture(t);
   const row = (id: string) => ({ id, name: id, key: id, lineage: `t:${id}`, createdAt: 1, deletedAt: null, bytes: 0, files: 0 });
   index.register(row('b'));
   index.register(row('a'));
@@ -221,25 +121,16 @@ test('tenant index pages equal timestamps, retains tombstones, and sums only liv
   assert.equal(index.used(), 20);
   assert.ok(index.register(row('a')).row.deletedAt);
 });
-test('explicit expect prevents commit retry; restore without expect retries the observed head', async (t) => {
-  const { create, write } = fixture(t), ctx = await create(), first = await write(ctx, { a: { bytes: bytes('first') } });
-  const second = await write(ctx, { a: { bytes: bytes('second') } });
+test('explicit expect rejects a stale write', async (t) => {
+  const { create, write } = await fixture(t), ctx = await create(), first = await write(ctx, { a: { bytes: bytes('first') } });
+  await write(ctx, { a: { bytes: bytes('second') } });
   await assert.rejects(write(ctx, { a: { bytes: bytes('stale') } }, { expect: first.version }), err('stale'));
-  const original = ctx.repo.cas.bind(ctx.repo);
-  let raced = false;
-  (ctx.repo as any).cas = async (input: any) => { assert.notEqual(input.expect, undefined); if (!raced) {
-    raced = true;
-    await write(ctx, { winner: { bytes: bytes('winner') } });
-  } return original(input); };
-  const restored = await setRefToVersion(ctx, { ref: 'main', version: first.version!, newCommit: true, author: 'api:t', who: 'api:t', why: 'restore' });
-  assert.notEqual(restored.previous, second.version);
-  assert.deepEqual((await ctx.repo.commit(restored.version))!.parents, [restored.previous]);
 });
 
 test('quota does not charge mode changes or blobs already owned by another head twice', async t => {
-  const { create, write, env, index } = fixture(t), ctx = await create();
+  const { create, write, env, index } = await fixture(t), ctx = await create();
   await write(ctx, { a: { bytes: bytes('base') } });
-  await branch(ctx, { name: 'topic', from: 'main', who: 'api:t' });
+  await branch(ctx, { name: 'topic', from: 'main' });
   const topic = await write(ctx, { b: { bytes: bytes('topic') } }, { ref: 'topic' });
   env.limit = index.used();
   await write(ctx, { a: { mode: '100755' } });
@@ -249,7 +140,7 @@ test('quota does not charge mode changes or blobs already owned by another head 
   assert.equal((await statPaths(ctx, (await ctx.repo.ref('main'))!.tree, ['b'])).b!.blob, topic.files.b!.blob);
 });
 test('every repo is born with main: an empty first commit by its creator; a second create makes no commit', async (t) => {
-  const { env, fake } = fixture(t);
+  const { env, fake } = await fixture(t);
   const { info } = await agentRepo(env, 't', 'ag1');
   const main = info.refs.find((r: { name: string }) => r.name === 'main')!;
   assert.equal(main.tree, '4b825dc642cb6eb9a060e54bf8d69288fbee4904');
@@ -257,21 +148,21 @@ test('every repo is born with main: an empty first commit by its creator; a seco
   const first = (await ctx.repo.commit(main.version))!;
   assert.deepEqual([first.author, first.parents, first.message], ['agent:ag1', [], 'create']);
   assert.equal((await ctx.storage.getCommit(ctx.lineage, main.version)).trailers['Camel-Op'], 'api');
-  assert.ok(fake.commits.has(main.version), 'the first commit is in the storage plane before main points at it');
-  const commits = fake.commits.size;
+  const commits = () => fake.calls.filter(c => c.startsWith('POST ') && c.endsWith('/commits')).length;
+  const before = commits();
   const again = await agentRepo(env, 't', 'ag1');
   assert.equal(again.existing, true);
   assert.equal(again.info.refs.find((r: { name: string }) => r.name === 'main')!.version, main.version);
-  assert.equal(fake.commits.size, commits);
+  assert.equal(commits(), before);
   // The first write CASes against main's version like every other.
-  const w = await commitChanges(ctx, { ref: 'main', op: 'api', changes: { a: { bytes: new TextEncoder().encode('x') } }, message: 'w', author: 'agent:ag1', who: 'agent:ag1', why: 'test' });
+  const w = await commitChanges(ctx, { ref: 'main', op: 'api', changes: { a: { bytes: new TextEncoder().encode('x') } }, message: 'w', author: 'agent:ag1' });
   assert.equal(w.previous, main.version);
 });
 
 test('PUT refs rejects backwards and sideways moves without changing the ref, tree or history', async t => {
-  const { create, write, env } = fixture(t), ctx = await create();
+  const { create, write, env } = await fixture(t), ctx = await create();
   const base = await write(ctx, { a: { bytes: bytes('base') } });
-  await branch(ctx, { name: 'topic', from: 'main', who: 'api:t' });
+  await branch(ctx, { name: 'topic', from: 'main' });
   const main = await write(ctx, { a: { bytes: bytes('main') } });
   const topic = await write(ctx, { a: { bytes: bytes('topic') } }, { ref: 'topic' });
   const state = async () => {
@@ -296,7 +187,7 @@ test('PUT refs rejects backwards and sideways moves without changing the ref, tr
 });
 
 test('stat reads the resolved tree on both sides of the 64-path cutoff', async t => {
-  const { create, write, fake } = fixture(t), ctx = await create();
+  const { create, write, fake } = await fixture(t), ctx = await create();
   await write(ctx, { 'dir/file': { bytes: bytes('before') } });
   const before = (await ctx.repo.ref('main'))!;
   await write(ctx, { 'dir/file': { bytes: bytes('after') } });

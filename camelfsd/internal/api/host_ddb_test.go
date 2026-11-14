@@ -35,7 +35,7 @@ func hostTable(t *testing.T, keys ...string) (*dynamodb.Client, string) {
 }
 
 func TestDDBHostChannel(t *testing.T) {
-	db, vms := hostTable(t, "id")
+	db, vms := ddbtest.VMTable(t)
 	_, hosts := hostTable(t, "pool", "host")
 	_, deliveries := hostTable(t, "shard", "id")
 	_, usage := hostTable(t, "shard", "ulid")
@@ -47,12 +47,12 @@ func TestDDBHostChannel(t *testing.T) {
 	ca := newHostTestCA(t)
 	credentials := testHostTLS(t, ca, ca.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier"), t.TempDir())
 	pusher := HostPusher{TLS: credentials}
-	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries, Usage: usage},
+	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries, Usage: usage},
 		Now: clock, Refs: refstore.New(db, refs, clock, nil), Pusher: pusher, RuntimeURL: "https://runtime.example/ended", Objects: objects}
 	c.EnableClockCheck()
 	pools := []string{"pool"}
 	loop := compute.Loop{C: c, Pools: func(context.Context) ([]string, error) { return pools, nil }}
-	server := NewHostServer(c, pools, 30*time.Second)
+	server := NewHostServer(c, pools, []string{strings.Repeat("d", 64)}, 30*time.Second)
 	tier := testTier(t, credentials, server)
 	var mu sync.Mutex
 	var boots []hostwire.BootSpec
@@ -116,6 +116,45 @@ func TestDDBHostChannel(t *testing.T) {
 		Shape: hostwire.Shape{VCPUs: 4, MemoryMiB: 4096, DiskMiB: 1024}, Slots: 1, Images: []string{image}}
 	var registered hostwire.Registered
 	post(clientA, "a/register", register, 200, &registered)
+
+	// Host checkpoint CAS passes the authenticated host's current boot to storage, regardless of the body's boot.
+	type casCall struct {
+		lineage, name, commit, expect, root, holder string
+		epoch                                       int64
+	}
+	var cas []casCall
+	server.EnableCAS(func(_ context.Context, lineage, name, commit, expect, root, holder string, epoch int64) (map[string]any, error) {
+		cas = append(cas, casCall{lineage, name, commit, expect, root, holder, epoch})
+		if expect == strings.Repeat("9", 40) {
+			return nil, &refstore.Error{Status: 412, Code: "stale", Details: map[string]any{"current": strings.Repeat("8", 40)}}
+		}
+		return map[string]any{"version": commit, "tree": tree, "diff": []any{}}, nil
+	})
+	holder := hostwire.Holder{Host: "a", Boot: registered.BootEpoch, Mount: "m1"}
+	casBody := map[string]any{"commit": commit, "expect": strings.Repeat("e", 40), "root": image, "holder": holder, "epoch": 3}
+	var moved hostwire.CheckpointReply
+	post(clientA, "a/lineages/lin/refs/heads%2Fmain/cas", casBody, 200, &moved)
+	if moved.Version != commit || moved.Tree != tree || moved.Diff == nil || len(cas) != 1 ||
+		cas[0] != (casCall{"lin", "heads/main", commit, strings.Repeat("e", 40), image, holder.String(), 3}) {
+		t.Fatalf("host cas: %+v %+v", moved, cas)
+	}
+	foreign := map[string]any{"commit": commit, "expect": strings.Repeat("e", 40), "holder": hostwire.Holder{Host: "b", Boot: registered.BootEpoch, Mount: "m1"}, "epoch": 3}
+	post(clientA, "a/lineages/lin/refs/main/cas", foreign, 403, nil)
+	otherBoot := map[string]any{"commit": commit, "expect": strings.Repeat("e", 40), "holder": hostwire.Holder{Host: "a", Boot: registered.BootEpoch + 1, Mount: "m1"}, "epoch": 3}
+	post(clientA, "a/lineages/lin/refs/main/cas", otherBoot, 200, nil)
+	if len(cas) != 2 || cas[1].holder != holder.String() {
+		t.Fatalf("host CAS must use the current boot: %+v", cas)
+	}
+	stale := map[string]any{"commit": commit, "expect": strings.Repeat("9", 40), "holder": holder, "epoch": 3}
+	if got := post(clientA, "a/lineages/lin/refs/main/cas", stale, 412, nil); !strings.Contains(got, `"current":"`+strings.Repeat("8", 40)+`"`) {
+		t.Fatalf("stale cas reply: %s", got)
+	}
+	if len(cas) != 3 {
+		t.Fatalf("forbidden holders must not reach the CAS: %+v", cas)
+	}
+	if len(registered.Images) != 1 || registered.Images[0] != strings.Repeat("d", 64) {
+		t.Fatalf("registered images = %v", registered.Images)
+	}
 	post(clientB, "b/register", register, 200, nil)
 	heartbeat := func(epoch int64, free int, running ...hostwire.Running) hostwire.HeartbeatReply {
 		t.Helper()
@@ -183,7 +222,7 @@ func TestDDBHostChannel(t *testing.T) {
 	if len(gotStops) != 1 || !gotStops[0].Checkpoint {
 		t.Fatal(gotStops)
 	}
-	if reply := heartbeat(1, 0, hostwire.Running{ID: "life"}); len(reply.Stop) != 1 || reply.Stop[0] != "life" {
+	if reply := heartbeat(1, 0, hostwire.Running{ID: "life"}); len(reply.Stop) != 1 || reply.Stop[0] != (hostwire.StopOrder{ID: "life", Checkpoint: true}) {
 		t.Fatal(reply)
 	}
 	end := hostwire.Ended{BootEpoch: 1, At: now.UnixMilli(), Code: "stopped"}
@@ -193,7 +232,7 @@ func TestDDBHostChannel(t *testing.T) {
 	post(clientA, path, end, 204, nil)
 	post(clientA, path, end, 204, nil)
 	v = get("life")
-	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.ResultRef != "" || v.UsageSeq != 5 {
+	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.UsageSeq != 5 {
 		t.Fatalf("ended: %+v", v)
 	}
 	h, err := c.Host(ctx, "pool", "a")

@@ -87,22 +87,27 @@ func (c *Controller) Place(ctx context.Context, id string) (VM, error) {
 }
 
 func (c *Controller) place(ctx context.Context, v VM, now int64) (VM, error) {
-	id := v.ID
 	hosts, err := c.Hosts(ctx, v.Pool)
 	if err != nil {
 		return VM{}, err
 	}
+	return c.placeOnHosts(ctx, v, now, hosts)
+}
+
+func (c *Controller) placeOnHosts(ctx context.Context, v VM, now int64, hosts []Host) (VM, error) {
+	id := v.ID
 	for _, h := range rankImage(hosts, v.Shape, c.hostCutoff(now), v.Image) {
 		vm := change(c.Tables.VMs, vmKey(id), "#phase = :requested AND #leaseDeadline > :now",
 			"SET #phase = :placed, #host = :host, #hostEpoch = :epoch, #placedAt = :now",
 			attrs{":requested": s(string(Requested)), ":placed": s(string(Placed)), ":host": s(h.Host),
 				":epoch": n(h.BootEpoch), ":now": n(now)})
 		host := change(c.Tables.Hosts, hostKey(h.Pool, h.Host),
-			"#free > :zero AND #freeMiB >= :mem AND #bootEpoch = :epoch AND #draining = :false AND #lastSeenAt > :cutoff",
+			"#free > :zero AND #freeMiB >= :mem AND #bootEpoch = :epoch AND #draining = :false AND #lastSeenAt > :cutoff"+
+				" AND #shape = :shape",
 			"SET #free = #free - :one, #freeMiB = #freeMiB - :mem ADD #vms :vm",
 			attrs{":zero": n(0), ":epoch": n(h.BootEpoch), ":false": b(false), ":cutoff": n(c.hostCutoff(now)),
-				":one": n(1), ":mem": n(int64(v.Shape.MemoryMiB)), ":vm": ss(id)})
-		err = c.transact(ctx, types.TransactWriteItem{Update: vm}, types.TransactWriteItem{Update: host}, c.deleteWaiter(v))
+				":one": n(1), ":mem": n(int64(v.Shape.MemoryMiB)), ":vm": ss(id), ":shape": shapeItem(h.Shape)})
+		err := c.transact(ctx, types.TransactWriteItem{Update: vm}, types.TransactWriteItem{Update: host}, c.deleteWaiter(v))
 		if err == nil {
 			return c.Get(ctx, id)
 		}
@@ -143,9 +148,9 @@ func (c *Controller) markBooting(ctx context.Context, v VM) (VM, error) {
 			var refErr *refstore.Error
 			switch {
 			case errors.As(err, &refErr) && refErr.Code == "held":
-				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, CheckpointError: "ref is leased by another holder"}, c.now(), nil)
-			case errors.As(err, &refErr) && refErr.Code == "no_ref", errors.Is(err, os.ErrNotExist), errors.Is(err, ErrInvalid):
-				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, CheckpointError: "mount version or ref unavailable"}, c.now(), nil)
+				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, Reason: "ref_held", refErr: err, CheckpointError: "ref is leased by another holder"}, c.now(), nil)
+			case errors.As(err, &refErr) && (refErr.Code == "no_ref" || refErr.Code == "lineage_blocked"), errors.Is(err, os.ErrNotExist), errors.Is(err, ErrInvalid):
+				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, Reason: "ref_unavailable", refErr: err, CheckpointError: "mount version or ref unavailable"}, c.now(), nil)
 			default:
 				return VM{}, err
 			}
@@ -336,7 +341,7 @@ func (c *Controller) ExpireWaiting(ctx context.Context, id string, waitMs int64)
 	if err != nil || v.Phase != Requested || now.UnixMilli()-v.CreatedAt <= waitMs {
 		return v, err
 	}
-	return c.end(ctx, v, EndRequest{At: now, Code: StartFailed}, now, nil)
+	return c.end(ctx, v, EndRequest{At: now, Code: StartFailed, Reason: "no_capacity"}, now, nil)
 }
 
 type stopIntent struct {
@@ -356,7 +361,9 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 		values := attrs{":phase": s(string(v.Phase)), ":stopping": s(string(Stopping)), ":at": n(at),
 			":checkpoint": b(checkpoint), ":reason": s(string(reason)), ":lease": n(v.LeaseDeadline)}
 		if reason == Idle {
-			cond += " AND #lastActivityAt = :activity AND attribute_not_exists(#execs)"
+			cond += " AND #lastActivityAt = :activity AND attribute_not_exists(#execs)" +
+				" AND (attribute_not_exists(#checkpointing) OR #checkpointing.#at < :staleCheckpoint)"
+			values[":staleCheckpoint"] = n(now.Add(-CheckpointWindow).UnixMilli())
 			values[":activity"] = n(*v.LastActivityAt)
 		}
 		updated, err := c.updateVM(ctx, v.ID, cond,
@@ -373,38 +380,45 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 
 // ExecStarted tracks an exec until its exit arrives, including on reattachment.
 func (c *Controller) ExecStarted(ctx context.Context, id, execID string, at time.Time) error {
-	return c.execActivity(ctx, id, execID, at, true)
+	_, err := c.TrackExecStart(ctx, id, execID, at)
+	return err
 }
 
 func (c *Controller) ExecEnded(ctx context.Context, id, execID string, at time.Time) error {
-	return c.execActivity(ctx, id, execID, at, false)
+	_, err := c.execActivity(ctx, id, execID, at, false)
+	return err
 }
 
-func (c *Controller) execActivity(ctx context.Context, id, execID string, at time.Time, start bool) error {
+// TrackExecStart reports whether this caller added a new in-flight entry.
+func (c *Controller) TrackExecStart(ctx context.Context, id, execID string, at time.Time) (bool, error) {
+	return c.execActivity(ctx, id, execID, at, true)
+}
+
+func (c *Controller) execActivity(ctx context.Context, id, execID string, at time.Time, start bool) (bool, error) {
 	if !hostwire.MountID.MatchString(execID) {
-		return ErrInvalid
+		return false, ErrInvalid
 	}
 	for {
 		v, err := c.Get(ctx, id)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if v.Phase != Running {
 			if !start && (v.Phase == Stopping || v.Phase == Ended) {
-				return nil
+				return false, nil
 			}
-			return ErrPhase
+			return false, ErrPhase
 		}
 		cond := "#phase = :running"
 		values := attrs{":running": s(string(Running)), ":id": s(execID), ":set": ss(execID)}
 		expr := "DELETE #execs :set"
 		inFlight := slices.Contains(v.execs, execID)
 		if start == inFlight {
-			return nil
+			return false, nil
 		}
 		if start {
 			if len(v.execs) >= maxExecsInFlight {
-				return ErrTooManyExecs
+				return false, ErrTooManyExecs
 			}
 			// Fence concurrent starts even if they have the same activity timestamp.
 			cond += " AND (attribute_not_exists(#execs) OR (size(#execs) < :max AND NOT contains(#execs, :id)))"
@@ -434,16 +448,19 @@ func (c *Controller) execActivity(ctx context.Context, id, execID string, at tim
 			continue
 		}
 		if err == nil && first {
-			c.firstExecLog(map[string]any{
-				"vm": id, "exec": execID, "createdAt": v.CreatedAt, "placedAt": v.PlacedAt,
-				"bootingAt": v.BootingAt, "runningAt": v.StartedAt, "latencyMs": max(0, at.UnixMilli()-v.CreatedAt),
-			})
+			c.firstExecLog(v, execID, at.UnixMilli())
 		}
-		return err
+		return err == nil, err
 	}
 }
 
-func (c *Controller) firstExecLog(fields map[string]any) {
+func (c *Controller) firstExecLog(v VM, execID string, now int64) {
+	fields := map[string]any{"vm": v.ID, "exec": execID, "createdAt": v.CreatedAt, "latencyMs": max(0, now-v.CreatedAt)}
+	for key, value := range map[string]*int64{"placedAt": v.PlacedAt, "bootingAt": v.BootingAt, "runningAt": v.StartedAt} {
+		if value != nil {
+			fields[key] = *value
+		}
+	}
 	const event = "vm_first_exec"
 	if c.Log != nil {
 		c.Log(event, fields)

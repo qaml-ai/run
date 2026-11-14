@@ -17,8 +17,16 @@ type Listed struct {
 
 // Reconcile carries instructions for the boot epoch named by the request.
 type Reconcile struct {
-	Stop []string
+	Stop []StopOrder
 	Boot []VM
+}
+
+// StopOrder is a heartbeat stop. Checkpoint is the VM's own StopCheckpoint while it is
+// Stopping, and false for a VM the tier no longer places on this host (unknown, moved
+// or ended): the host must not commit a branch whose stop discarded its work.
+type StopOrder struct {
+	ID         string
+	Checkpoint bool
 }
 
 // Reconcile applies one heartbeat. The host sends one heartbeat at a time,
@@ -43,8 +51,8 @@ func (c *Controller) Reconcile(ctx context.Context, pool, host string, bootEpoch
 		if err != nil {
 			return Reconcile{}, err
 		}
-		if stop {
-			reply.Stop = append(reply.Stop, entry.ID)
+		if stop != nil {
+			reply.Stop = append(reply.Stop, *stop)
 		}
 	}
 	cutoff := at.Add(-grace).UnixMilli()
@@ -105,33 +113,39 @@ func missingSince(v VM, cutoff int64) bool {
 	return false
 }
 
-func (c *Controller) reconcileListed(ctx context.Context, h Host, at time.Time, entry Listed) (bool, error) {
+func (c *Controller) reconcileListed(ctx context.Context, h Host, at time.Time, entry Listed) (*StopOrder, error) {
+	stop := func(v VM) *StopOrder {
+		return &StopOrder{ID: entry.ID, Checkpoint: v.onHost(h) && v.Phase == Stopping && v.StopCheckpoint}
+	}
 	v, err := c.Get(ctx, entry.ID)
 	if errors.Is(err, ErrNotFound) {
-		return true, nil
+		return &StopOrder{ID: entry.ID}, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if !v.onHost(h) || v.Phase == Ended || v.Phase == Stopping {
-		return true, nil
+		return stop(v), nil
 	}
 	if entry.Finished {
-		return false, nil
+		return nil, nil
 	}
 	if entry.StartedAt != nil && v.StartedAt == nil {
 		v, err = c.StartedFromHost(ctx, v.ID, h, *entry.StartedAt)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if v.Phase == Ended || v.Phase == Stopping {
-			return true, nil
+			return stop(v), nil
 		}
 	}
 	v, err = c.Listed(ctx, v.ID, h.Host, h.BootEpoch, at)
 	// MONEY: keep delivering heartbeat instructions while usage waits for the clock.
 	if errors.Is(err, ErrClockSkew) {
-		return false, nil
+		return nil, nil
 	}
-	return v.Phase == Ended || v.Phase == Stopping, err
+	if err == nil && (v.Phase == Ended || v.Phase == Stopping) {
+		return stop(v), nil
+	}
+	return nil, err
 }

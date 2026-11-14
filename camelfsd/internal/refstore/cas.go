@@ -3,6 +3,7 @@ package refstore
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/ddb"
@@ -21,6 +22,11 @@ type Move struct {
 	Expect                    *string
 	ExpectAbsent              bool
 	RequireExisting           bool
+	APIWrite                  bool // Unfenced tier mutation; a live lease is reported as held.
+	// Known may supply the API write's head for a conditional move.
+	Known *Ref
+	// ObserveTransaction receives the guarded write's wall time, including failures.
+	ObserveTransaction func(time.Duration)
 	// Prepare computes the response after validation but before the conditional write.
 	Prepare func(previous Ref) error
 	Fence   *Fence
@@ -45,12 +51,30 @@ func (s *Store) Cas(ctx context.Context, lineage, name string, m Move) (Result, 
 	if err := validateTarget(m.Version, m.Tree, m.Root, m.Owner); err != nil {
 		return Result{}, err
 	}
-	for range 2 {
-		r, err := s.read(ctx, lineage, name)
-		if err != nil {
-			return Result{}, err
+	attempts := 2
+	if m.APIWrite {
+		attempts = 1 // The API rebuilds a write once, against the newly read head.
+	}
+	known := m.Known
+	for range attempts {
+		var r Ref
+		now := s.now().UnixMilli()
+		// The supplied head serves the first attempt only; a later attempt rereads.
+		if known != nil && m.APIWrite &&
+			known.Lineage == lineage && known.Name == name && known.live(now) && !known.held(now) &&
+			m.Fence == nil && m.Version != known.Version {
+			r = *known
+			known = nil
+		} else {
+			// No-ops and an expired or held snapshot need a fresh read.
+			var err error
+			r, err = s.read(ctx, lineage, name)
+			if err != nil {
+				return Result{}, err
+			}
+			now = s.now().UnixMilli()
 		}
-		result, err := s.cas(ctx, lineage, name, r, m, s.now().UnixMilli())
+		result, err := s.cas(ctx, lineage, name, r, m, now)
 		if err != casConflict {
 			return result, err
 		}
@@ -59,7 +83,11 @@ func (s *Store) Cas(ctx context.Context, lineage, name string, m Move) (Result, 
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{}, stale(r, s.now().UnixMilli())
+	now := s.now().UnixMilli()
+	if m.APIWrite && r.held(now) {
+		return Result{}, failure("held", 409)
+	}
+	return Result{}, stale(r, now)
 }
 
 func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, now int64) (Result, error) {
@@ -73,10 +101,13 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 	isHeld := r.held(now)
 	if isHeld {
 		if m.Fence == nil || m.Fence.Holder != *r.Holder || m.Fence.Epoch != r.LeaseEpoch {
-			return Result{}, failure("fenced", 409)
+			if m.APIWrite {
+				return Result{}, failure("held", 409)
+			}
+			return Result{}, fenced(r, now)
 		}
 	} else if m.Fence != nil {
-		return Result{}, failure("fenced", 409)
+		return Result{}, fenced(r, now)
 	}
 	result := Result{Version: m.Version, Previous: prev}
 	if prev != nil && *prev == m.Version {
@@ -96,7 +127,7 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 					"current": *prev, "parents": append([]string{}, m.Parents...),
 				}}
 			}
-		} else if err := s.fastForward(ctx, lineage, *prev, m.Version); err != nil {
+		} else if err := s.CheckFastForward(ctx, lineage, *prev, m.Version); err != nil {
 			return Result{}, err
 		}
 	}
@@ -119,7 +150,7 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 			condition += live + " AND " + unheld
 		}
 	}
-	old, err := s.update(ctx, lineage, name, condition, update, values, types.ReturnValueAllOld)
+	old, err := s.updateTimed(ctx, lineage, name, condition, update, values, types.ReturnValueAllOld, m.ObserveTransaction)
 	if ddb.IsConditionFailed(err) {
 		return Result{}, casConflict
 	}
@@ -127,7 +158,11 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 		return Result{}, err
 	}
 	if prev != nil {
-		result.Watchers = r.Watchers
+		// A guarded transaction returns no old attributes. Its callers
+		// receive the same advisory snapshot as before.
+		if s.guard != nil {
+			result.Watchers = r.Watchers
+		}
 		if watchers, ok := old.Attributes["watchers"].(*types.AttributeValueMemberSS); ok {
 			result.Watchers = watchers.Value
 		}
@@ -137,7 +172,7 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 
 const ancestryLimit = 50_000
 
-func (s *Store) fastForward(ctx context.Context, lineage, current, target string) error {
+func (s *Store) CheckFastForward(ctx context.Context, lineage, current, target string) error {
 	if s.commits == nil {
 		return failure("invalid", 400)
 	}

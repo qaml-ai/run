@@ -121,6 +121,11 @@ func (s *Uploaded) rememberRoot(ctx context.Context, k string, b []byte) error {
 	return e
 }
 func (s *Uploaded) Put(ctx context.Context, k string, b []byte) error {
+	// The key identifies the tree, so successive writers can propose
+	// distinct bodies. Let the underlying store arbitrate by key.
+	if _, kind, _, _ := splitKey(k); kind == "tr" {
+		return s.Store.Put(ctx, k, b)
+	}
 	ok, e := s.known(ctx, k)
 	if e != nil || ok {
 		return e
@@ -183,20 +188,10 @@ func (s *Uploaded) PutBatch(ctx context.Context, puts map[string][]byte) ([]stri
 	return written, err
 }
 
-func (s *Uploaded) putFile(ctx context.Context, k string, f *os.File, metadata ...string) error {
-	ok, e := s.known(ctx, k)
-	if e != nil || ok {
-		return e
+func (s *Uploaded) putFile(ctx context.Context, k string, f *os.File, metadata ...string) (bool, error) {
+	created, err := PutBlobFileIfAbsent(ctx, s.Store, k, f, metadata...)
+	if err != nil {
+		return false, err
 	}
-	exists, e := s.Store.Has(ctx, k)
-	if e != nil {
-		return e
-	}
-	if exists {
-		return s.record(ctx, k)
-	}
-	if e = PutBlobFile(ctx, s.Store, k, f, metadata...); e != nil {
-		return e
-	}
-	return s.record(ctx, k)
+	return created, s.record(ctx, k)
 }

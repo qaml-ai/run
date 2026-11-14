@@ -34,6 +34,10 @@ type invalidRequest string
 func (e invalidRequest) Error() string         { return string(e) }
 func invalid(format string, args ...any) error { return invalidRequest(fmt.Sprintf(format, args...)) }
 
+type forbidden string
+
+func (e forbidden) Error() string { return string(e) }
+
 type storageError struct {
 	status  int
 	code    string
@@ -57,10 +61,13 @@ func storageFail(w http.ResponseWriter, e error) {
 	var re *refstore.Error
 	var ae *apierr.Error
 	var validation invalidRequest
+	var denied forbidden
 	var missingSizes *objects.MissingTreeSizes
 	message := ""
 	if errors.As(e, &missingSizes) {
 		message = missingSizes.Error()
+	} else if errors.As(e, &denied) {
+		status, code, message = 403, "forbidden", denied.Error()
 	} else if errors.As(e, &validation) {
 		status, code, message = 400, "invalid_request", validation.Error()
 	} else if errors.As(e, &re) {
@@ -176,10 +183,13 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 	handler := func(w http.ResponseWriter) { s.storageRoute(w, r, l, route, repo) }
 	idemRoute := route
 	var replayRefMatches func(string) bool
-	var replayOwnerMatches func(string) bool
 	if s.lineages != nil {
 		claims, _ := ClaimsFromContext(r.Context())
+		start := time.Now()
 		item, err := s.lineages.get(r.Context(), l)
+		if timing := readTimingFrom(r.Context()); timing != nil {
+			timing.lineage = time.Since(start)
+		}
 		if err != nil {
 			storageFail(w, ddbUnavailable(err))
 			return
@@ -189,12 +199,26 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 			storageFail(w, lineageDeleted())
 			return
 		}
+		if route == "blobs" && r.Method == "PUT" {
+			if item.Lineage == "" {
+				storageFail(w, lineageMissing())
+				return
+			}
+			if item.Deletion != "" {
+				storageFail(w, &storageError{503, "unavailable", nil})
+				return
+			}
+		}
 		if route == "" || route == "refs" || strings.HasPrefix(route, "refs/") {
 			idemRoute = r.Method + " " + route
 			var request refRequest
 			if route == "" {
-				if (isDelete && !runtimeSubject(claims)) || (write && claims.Fence != nil) {
-					storageFail(w, &storageError{403, "forbidden", nil})
+				if isDelete && !runtimeSubject(claims) {
+					storageFail(w, forbidden("runtime token required"))
+					return
+				}
+				if write && claims.Fence != nil {
+					storageFail(w, forbidden("fence requires one exact ref"))
 					return
 				}
 			} else {
@@ -205,9 +229,6 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 				request, err = parseRefRequest(r, route, claims)
 				if request.action == "create" {
 					replayRefMatches = request.matches
-				}
-				if request.action == "deleteOwned" {
-					replayOwnerMatches = request.matches
 				}
 				if request.name != "" && request.action != "create" {
 					idemRoute = r.Method + " " + request.action + " " + request.name + " " + request.watcher
@@ -226,7 +247,7 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 				if route == "" {
 					err = s.lineageRoute(w, r, l, item)
 				} else {
-					err = s.refRoute(w, r, l, request, item, repo)
+					err = s.refRoute(w, r, l, request, repo)
 				}
 				if err != nil {
 					s.refRouteError(w, r, l, err)
@@ -255,21 +276,8 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if !replayRefMatches(original.Name) {
-					storageFail(w, &storageError{403, "forbidden", nil})
+					storageFail(w, refOutsideScope(original.Name))
 					return
-				}
-			}
-			if replayOwnerMatches != nil {
-				var original struct{ Deleted, Held []string }
-				if err := json.Unmarshal(body, &original); err != nil {
-					storageFail(w, err)
-					return
-				}
-				for _, name := range append(original.Deleted, original.Held...) {
-					if !replayOwnerMatches(name) {
-						storageFail(w, &storageError{403, "forbidden", nil})
-						return
-					}
 				}
 			}
 			if status != http.StatusNoContent {
@@ -315,6 +323,10 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 		b, e := repo.Upload(ctx, l, expected, r.ContentLength, r.Body)
 		if e != nil {
 			fail(e)
+			return
+		}
+		if err := s.countUpload(ctx, l, b); err != nil {
+			s.refRouteError(w, r, l, err)
 			return
 		}
 		status := 201
@@ -476,7 +488,14 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			fail(e)
 			return
 		}
-		if e := require(ctx, repo, l, v.Tree, "tree", false); e != nil {
+		timing := readTimingFrom(ctx)
+		if timing == nil {
+			timing = &readTiming{}
+		}
+		start := time.Now()
+		e := require(ctx, repo, l, v.Tree, "tree", false)
+		timing.membership = time.Since(start)
+		if e != nil {
 			fail(e)
 			return
 		}
@@ -492,7 +511,9 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			}
 			cap = min(cap, *v.MaxBytes)
 		}
-		files, e := repo.Files(ctx, v.Tree, v.Paths)
+		start = time.Now()
+		files, e := repo.FilesObserved(ctx, v.Tree, v.Paths, timing.trees.record)
+		timing.tree = time.Since(start)
 		if e != nil {
 			fail(e)
 			return
@@ -514,7 +535,9 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 				fail(e)
 				return
 			}
+			start := time.Now()
 			b, e := repo.BlobInfo(ctx, l, f.SHA1)
+			timing.blob += time.Since(start)
 			if e != nil {
 				fail(e)
 				return
@@ -527,12 +550,14 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			entries[i] = f
 			keys = append(keys, strconv.Itoa(i))
 		}
+		start = time.Now()
 		e = store.Parallel(ctx, 64, keys, func(k string) error {
 			i, _ := strconv.Atoi(k)
 			b, e := blobBytes(ctx, repo, l, entries[i].SHA1)
 			data[i] = b
 			return e
 		})
+		timing.blob += time.Since(start)
 		if e != nil {
 			fail(e)
 			return
@@ -568,9 +593,14 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			fail(e)
 			return
 		}
-		out, e := mergeTrees(ctx, repo, l, v)
+		batch := repo.BeginPublication()
+		batch.OnBlobUpload(func(ctx context.Context, blob objects.Blob) error { return s.countUpload(ctx, l, blob) })
+		out, e := stageMerge(ctx, batch, l, v, false)
+		if e == nil {
+			e = batch.Flush(ctx)
+		}
 		if e != nil {
-			fail(e)
+			s.refRouteError(w, r, l, e)
 			return
 		}
 		jsonReply(w, 200, out)
@@ -598,6 +628,9 @@ func blobBytes(ctx context.Context, r *objects.Repository, l, id string) ([]byte
 	e := r.DB.DB.QueryRowContext(ctx, "SELECT bytes FROM objects WHERE id=? AND kind='blob'", id).Scan(&b)
 	if e != nil && e != sql.ErrNoRows {
 		return nil, e
+	}
+	if timing := readTimingFrom(ctx); timing != nil {
+		timing.blobs.record(b != nil)
 	}
 	if b == nil {
 		b, e = r.Store.Get(ctx, "o/"+id)

@@ -6,8 +6,8 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
-	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
@@ -140,7 +139,7 @@ func TestUnitHostIdentity(t *testing.T) {
 	tierCert := ca.leaf(t, auth, "spiffe://camelfs/tier")
 	certA := ca.leaf(t, auth, hostSANPrefix+"a")
 	certB := ca.leaf(t, auth, hostSANPrefix+"b")
-	s := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, time.Minute)
+	s := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, nil, time.Minute)
 	// Exercise the authentication wrapper without a DynamoDB controller.
 	s.routes.HandleFunc("POST /v1/hosts/{host}/stub", s.authenticated(func(w http.ResponseWriter, _ *http.Request, _ string) error {
 		w.WriteHeader(http.StatusNoContent)
@@ -167,6 +166,7 @@ func TestUnitHostIdentity(t *testing.T) {
 		{name: "forged header", path: "/v1/hosts/a/stub", certs: []tls.Certificate{certB}, forged: true, status: 403},
 		{name: "storage", path: "/v1/lineages/a/trees/x", certs: []tls.Certificate{certA}, status: 404},
 		{name: "health", path: "/v0/health", certs: []tls.Certificate{certA}, status: 404},
+		{name: "v1 health", path: "/v1/health", certs: []tls.Certificate{certA}, status: 404},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, tier.URL+tc.path, nil)
@@ -197,42 +197,51 @@ func TestUnitHostIdentity(t *testing.T) {
 
 func TestUnitHolderIdentity(t *testing.T) {
 	ca := newHostTestCA(t)
-	s := &HostServer{findHost: func(_ context.Context, _ []string, id string) (compute.Host, error) {
-		return compute.Host{HostInfo: compute.HostInfo{Host: id}, BootEpoch: 5}, nil
-	}}
-	holder := hostwire.Holder{Host: "a", Boot: 5, Mount: "vm"}
-	if err := s.checkHolder(t.Context(), "a", holder); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.checkHolder(t.Context(), "b", holder); !errors.Is(err, errHostForbidden) {
-		t.Fatal(err)
-	}
-	if err := s.checkHolder(t.Context(), "a", hostwire.Holder{Host: "a", Boot: 4, Mount: "vm"}); !errors.Is(err, errHostForbidden) {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/hosts/{host}/stub-cas", s.authenticated(func(w http.ResponseWriter, r *http.Request, host string) error {
-		var h hostwire.Holder
-		if err := readHostRequest(w, r, &h); err != nil {
-			return err
+	s := NewHostServer(&compute.Controller{}, []string{"pool"}, nil, 0)
+	s.findHost = func(_ context.Context, _ []string, id string) (compute.Host, error) {
+		if id == "unknown" {
+			return compute.Host{}, compute.ErrHost
 		}
-		if err := s.checkHolder(r.Context(), host, h); err != nil {
-			return err
-		}
-		w.WriteHeader(204)
-		return nil
-	}))
+		return compute.Host{BootEpoch: 5, Restarting: id == "restarting", Lost: id == "lost"}, nil
+	}
+	s.EnableCAS(func(_ context.Context, _, _, _, _, _, holder string, epoch int64) (map[string]any, error) {
+		return map[string]any{"holder": holder, "epoch": epoch}, nil
+	})
 	tierCert := ca.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier")
-	tier := testTier(t, testHostTLS(t, ca, tierCert, t.TempDir()), mux)
-	client := testHostClient(t, ca.pool, ca.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+"b"))
-	resp, err := client.Post(tier.URL+"/v1/hosts/b/stub-cas", "application/json",
-		strings.NewReader(`{"host":"a","boot":5,"mount":"vm"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 403 {
-		t.Fatalf("HTTP %d", resp.StatusCode)
+	tier := testTier(t, testHostTLS(t, ca, tierCert, t.TempDir()), s)
+	for _, tc := range []struct {
+		name, host, holder string
+		status             int
+	}{
+		{"current boot", "a", `{"host":"a","boot":5,"mount":"vm"}`, 200},
+		{"other boot", "a", `{"host":"a","boot":4,"mount":"vm"}`, 200},
+		{"foreign holder", "b", `{"host":"a","boot":5,"mount":"vm"}`, 403},
+		{"invalid holder", "a", `{"host":"a","boot":5,"mount":"invalid:mount"}`, 403},
+		{"unknown host", "unknown", `{"host":"unknown","boot":5,"mount":"vm"}`, 403},
+		{"restarting host", "restarting", `{"host":"restarting","boot":5,"mount":"vm"}`, 403},
+		{"lost host", "lost", `{"host":"lost","boot":5,"mount":"vm"}`, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := testHostClient(t, ca.pool, ca.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+tc.host))
+			resp, err := client.Post(tier.URL+"/v1/hosts/"+tc.host+"/lineages/lin/refs/main/cas",
+				"application/json", strings.NewReader(`{"holder":`+tc.holder+`,"epoch":3}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.status {
+				t.Fatalf("HTTP %d, want %d", resp.StatusCode, tc.status)
+			}
+			if tc.status == 200 {
+				var got struct {
+					Holder string
+					Epoch  int64
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || got.Holder != "a:5:vm" || got.Epoch != 3 {
+					t.Fatalf("CAS forwarded %+v, %v", got, err)
+				}
+			}
+		})
 	}
 }
 
@@ -356,12 +365,64 @@ func TestUnitStorageListener(t *testing.T) {
 		method, path string
 		status       int
 	}{
-		{"GET", "/v0/health", 200}, {"GET", "/v1/lineages/a/trees/x", 401},
+		{"GET", "/v0/health", 200}, {"GET", "/v1/health", 200}, {"GET", "/v1/lineages/a/trees/x", 401},
 	} {
 		w := httptest.NewRecorder()
 		storage.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
 		if w.Code != tc.status {
 			t.Fatalf("%s: HTTP %d, %s", tc.path, w.Code, w.Body)
+		}
+	}
+}
+
+func TestUnitEnrollListenerTLS(t *testing.T) {
+	oldCA, newCA := newHostTestCA(t), newHostTestCA(t)
+	oldTier := oldCA.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier")
+	newTier := newCA.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier")
+	dir := t.TempDir()
+	credentials := testHostTLS(t, oldCA, oldTier, dir)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) != 0 {
+			t.Errorf("enrollment must be TLS without a client certificate")
+		}
+		w.WriteHeader(204)
+	}))
+	server.TLS = credentials.EnrollServerConfig()
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	// A new host has no certificate: it pins the tier's certificate (here by its exact bytes) and presents none.
+	served := func() []byte {
+		t.Helper()
+		var got []byte
+		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true, TLSClientConfig: &tls.Config{
+			InsecureSkipVerify:    true, // the test checks the served leaf itself
+			VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error { got = raw[0]; return nil },
+		}}}
+		resp, err := client.Post(server.URL+"/v1/hosts/enroll", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 204 {
+			t.Fatalf("HTTP %d", resp.StatusCode)
+		}
+		return got
+	}
+	if !bytes.Equal(served(), oldTier.Certificate[0]) {
+		t.Fatal("enroll listener does not serve the tier certificate")
+	}
+	writeHostTLS(t, newCA, newTier, dir)
+	if err := credentials.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(served(), newTier.Certificate[0]) {
+		t.Fatal("enroll listener did not pick up the rotated tier certificate")
+	}
+	// Plain HTTP to the TLS listener is refused.
+	if resp, err := http.Post(strings.Replace(server.URL, "https://", "http://", 1)+"/v1/hosts/enroll", "application/json", nil); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Fatalf("plain HTTP accepted: %d", resp.StatusCode)
 		}
 	}
 }

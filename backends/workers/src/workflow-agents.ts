@@ -98,7 +98,7 @@ type Row = DelegatedChild & { landed?: true; effectKey: string; args?: AgentArgs
 function owner(id: string): Owner { return { kind: "workflow", id }; }
 
 /**
- * Configuration a workflow's child never takes from a definition: no computer (`job()` is a workflow's compute), no
+ * Configuration a workflow's child never takes from a definition: no computer configuration, no
  * `subject` (admission and billing charge an agent's subject's end-user pool: a workflow's children bill its tenant),
  * and no agent spend limit of its own (each run's spend limit is its share of the workflow's budget).
  */
@@ -163,7 +163,7 @@ export class WorkflowAgents implements EffectExecutor {
       this.later(row);
     };
     if (!args || typeof args.prompt !== "string" || !args.prompt) return refuse("agent() needs a prompt");
-    if (args.computer !== undefined) return refuse("A workflow's agents have no computer: run a job() for compute");
+    if (args.computer !== undefined) return refuse("A workflow's agents cannot set computer configuration.");
     let resolved: { type?: AgentType; modelClass?: ModelClass };
     try { resolved = resolveAgentOptions(args, this.host.classes?.() ?? {}); }
     catch (error) { if (error instanceof AgentOptionsError) return refuse(error.message); throw error; }

@@ -16,8 +16,10 @@ manifests=("$dir"/guest-*.json)
 manifest=${manifests[0]}
 sha=$(jq -er '.sha256 | select(test("^[0-9a-f]{64}$"))' "$manifest")
 zsha=$(jq -er '.zstdSha256 | select(test("^[0-9a-f]{64}$"))' "$manifest")
+zbytes=$(jq -er '.zstdBytes | numbers | select(. > 0 and . == floor) | tostring' "$manifest")
 [[ ${manifest##*/} == "guest-$sha.json" ]]
 blob=$dir/guest-$sha.ext4.zst
+[[ $(stat -c %s "$blob") == "$zbytes" ]] || { echo 'Compressed image size mismatch' >&2; exit 1; }
 [[ $(sha256sum "$blob" | cut -d ' ' -f1) == "$zsha" ]] || { echo 'Compressed image SHA-256 mismatch' >&2; exit 1; }
 actual=$(zstd -qdc "$blob" | sha256sum | cut -d ' ' -f1)
 [[ $actual == "$sha" ]] || { echo 'Raw image SHA-256 mismatch' >&2; exit 1; }

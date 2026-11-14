@@ -143,13 +143,17 @@ test(
           `/experimental/agents/${alpha.id}/__test/crash-next-settlement`,
           {},
         );
-        const result = await alpha.run("charge once", {
+        // The injected crash leaves this workerd unable to acknowledge the settlement: until it is
+        // restarted, reading the completed request fails (its settlement is retried and fails again),
+        // as it would on a crashed instance. So the run's outcome is awaited only after the restart;
+        // awaiting it first hung whenever the client read the outcome after completion (CI, 168 s).
+        const first = alpha.run("charge once", {
           idempotencyKey: "charge-once",
-          timeoutMs: 15000,
+          signal: AbortSignal.timeout(60000),
         });
-        assert.equal(result.text, "Echo: charge once");
+        first.catch(() => {});
         let checkpoint: any;
-        for (let i = 0; i < 100; i++) {
+        for (let i = 0; i < 1000; i++) {
           checkpoint = await request(
             `/experimental/agents/${alpha.id}/__test/settlement-state`,
           );
@@ -164,6 +168,7 @@ test(
         assert.equal(checkpoint.pending, 1);
         await fixture.worker.stop(true);
         await fixture.worker.start();
+        assert.equal((await first).text, "Echo: charge once");
         await request(
           `/experimental/agents/${alpha.id}/__test/flush-billing`,
           {},
@@ -174,7 +179,7 @@ test(
         assert.equal(Number(after.held), 0);
         await alpha.run("charge once", {
           idempotencyKey: "charge-once",
-          timeoutMs: 15000,
+          signal: AbortSignal.timeout(15000),
         });
         assert.equal(
           Number((await request("/v1/credits")).balance),

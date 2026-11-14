@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,10 +25,29 @@ const (
 type Reply map[string]any
 type LogFunc func(stream, data string)
 
+// EventFunc receives events for a successful exec or exec_tail request,
+// including events that arrive after Request returns. Callbacks run in wire
+// order on the channel reader and must return promptly without calling Request.
+type EventFunc func(Reply)
+
 type channel struct {
-	conn net.Conn
-	in   *bufio.Reader
-	busy chan struct{}
+	conn    net.Conn
+	in      *bufio.Reader
+	busy    chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	pending *exchange
+	closed  chan struct{}
+	err     error
+	events  map[string]*exchange
+}
+
+type exchange struct {
+	reply  chan Reply
+	log    LogFunc
+	execID string
+	event  EventFunc
+	done   chan struct{}
 }
 
 var connectOK = regexp.MustCompile(`^OK [0-9]+$`)
@@ -98,7 +118,7 @@ func openGuest(ctx context.Context, path string) (*channel, error) {
 		return nil, err
 	}
 	ok = true
-	return &channel{conn: conn, in: reader, busy: make(chan struct{}, 1)}, nil
+	return newChannel(conn, reader), nil
 }
 
 func boundedLine(in *bufio.Reader, limit int) ([]byte, error) {
@@ -118,60 +138,145 @@ func boundedLine(in *bufio.Reader, limit int) ([]byte, error) {
 	}
 }
 
-func (c *channel) request(ctx context.Context, req any, onLog LogFunc) (Reply, error) {
+func newChannel(conn net.Conn, reader *bufio.Reader) *channel {
+	return &channel{conn: conn, in: reader, busy: make(chan struct{}, 1), closed: make(chan struct{}), events: make(map[string]*exchange)}
+}
+
+func (c *channel) request(ctx context.Context, req any, onLog LogFunc, events ...EventFunc) (Reply, error) {
+	reply, _, err := c.exchange(ctx, req, onLog, events...)
+	return reply, err
+}
+
+func (c *channel) exchange(ctx context.Context, req any, onLog LogFunc, events ...EventFunc) (Reply, <-chan struct{}, error) {
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
+	case <-c.closed:
+		return nil, nil, c.err
 	case c.busy <- struct{}{}:
 	}
 	defer func() { <-c.busy }()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	x := &exchange{reply: make(chan Reply, 1), log: onLog}
+	if len(events) > 0 {
+		var meta struct{ Op, ExecID string }
+		if err := json.Unmarshal(payload, &meta); err != nil {
+			return nil, nil, err
+		}
+		if (meta.Op != "exec" && meta.Op != "exec_tail") || meta.ExecID == "" {
+			return nil, nil, errors.New("guest event handler requires exec or exec_tail with an execId")
+		}
+		x.execID, x.event, x.done = meta.ExecID, events[0], make(chan struct{})
+	}
+	c.mu.Lock()
+	c.pending = x
+	c.mu.Unlock()
+	c.once.Do(func() { go c.read() })
+
 	// A canceled in-flight request has no response ID to resynchronize on.
 	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
 	defer stop()
-	reply, err := c.exchange(payload, onLog)
-	if err != nil {
+	if _, err := c.conn.Write(append(payload, '\n')); err != nil {
 		c.conn.Close()
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
+		return nil, nil, err
 	}
-	return reply, err
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-c.closed:
+		// An explicit exit can close the connection immediately after its reply.
+		select {
+		case reply := <-x.reply:
+			return reply, x.done, nil
+		default:
+			return nil, nil, c.err
+		}
+	case reply := <-x.reply:
+		return reply, x.done, nil
+	}
 }
 
-func (c *channel) exchange(payload []byte, onLog LogFunc) (Reply, error) {
-	if _, err := c.conn.Write(append(payload, '\n')); err != nil {
-		return nil, err
-	}
+func (c *channel) read() {
+	defer func() {
+		c.conn.Close()
+		c.mu.Lock()
+		for _, x := range c.events {
+			close(x.done)
+		}
+		c.events = nil
+		c.mu.Unlock()
+		close(c.closed)
+	}()
 	for {
 		line, err := boundedLine(c.in, guestLineBytes)
 		if errors.Is(err, io.EOF) {
-			return nil, errors.New("the guest stopped answering")
-		}
-		if err != nil {
-			return nil, err
+			err = errors.New("the guest stopped answering")
 		}
 		var reply Reply
-		if err := json.Unmarshal(line, &reply); err != nil {
-			return nil, err
+		if err == nil {
+			err = json.Unmarshal(line, &reply)
 		}
-		if reply["event"] == "log" {
-			if onLog != nil {
-				stream, _ := reply["stream"].(string)
-				data, _ := reply["data"].(string)
-				onLog(stream, data)
-			}
-			continue
+		if err == nil {
+			err = c.route(reply)
 		}
-		if _, ok := reply["ok"].(bool); !ok {
-			return nil, errors.New("invalid guest reply")
+		if err != nil {
+			c.err = err
+			return
 		}
-		return reply, nil
 	}
+}
+
+func (c *channel) route(reply Reply) error {
+	c.mu.Lock()
+	x := c.pending
+	switch reply["event"] {
+	case "log":
+		c.mu.Unlock()
+		if x != nil && x.log != nil {
+			stream, _ := reply["stream"].(string)
+			data, _ := reply["data"].(string)
+			x.log(stream, data)
+		}
+		return nil
+	case "exec_output", "exec_exit", "tail_truncated":
+		id, _ := reply["execId"].(string)
+		fn := c.events[id]
+		if reply["event"] == "exec_exit" {
+			delete(c.events, id)
+		}
+		c.mu.Unlock()
+		if fn != nil {
+			fn.event(reply)
+			if reply["event"] == "exec_exit" {
+				close(fn.done)
+			}
+		}
+		return nil
+	}
+	defer c.mu.Unlock()
+	ok, valid := reply["ok"].(bool)
+	if !valid || x == nil {
+		return errors.New("invalid guest reply")
+	}
+	if ok && x.event != nil {
+		if reply["execId"] != x.execID {
+			return errors.New("invalid guest exec reply")
+		}
+		if old := c.events[x.execID]; old != nil {
+			close(old.done)
+		}
+		c.events[x.execID] = x
+	}
+	c.pending = nil
+	x.reply <- reply
+	return nil
 }

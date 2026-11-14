@@ -17,10 +17,9 @@ elif [ "$GITHUB_EVENT_NAME" = push ]; then
 fi
 range="${base:-}...${head:-}"
 if [ "$GITHUB_EVENT_NAME" = push ]; then range="$base..$head"; fi
-if [ -n "${base:-}" ] && guest_paths=$(git diff --no-renames --name-only "$range"); then
-  if ! grep -Eq '^(camelfsd/|\.github/workflows/ci\.yml$)' <<< "$guest_paths"; then
-    guest_image=false
-  fi
+if [ -n "${base:-}" ]; then
+  op=...; if [ "$GITHUB_EVENT_NAME" = push ]; then op=..; fi
+  if ! "$(dirname "$0")/guest-image-changed.sh" "$base" "$head" "$op"; then guest_image=false; fi
 fi
 if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
   if git diff --no-renames --name-only -z "$base...$head" | python3 -c '

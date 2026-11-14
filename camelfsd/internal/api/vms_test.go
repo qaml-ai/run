@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
+	"github.com/qaml-ai/run/camelfsd/internal/ddb/ddbtest"
 	"github.com/qaml-ai/run/camelfsd/internal/delivery"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
@@ -59,7 +60,7 @@ func vmTestServer(c *compute.Controller, images []string, idle map[string]int64)
 		}
 		return r.WithContext(context.WithValue(r.Context(), claimsKey{}, claims))
 	}
-	s.EnableCompute(c, images, []string{"build", "other"}, idle, 10*time.Second)
+	s.EnableCompute(&compute.Loop{C: c}, images, []string{"build", "other"}, idle, 10*time.Second)
 	return s
 }
 
@@ -139,19 +140,34 @@ func TestUnitVMStatus(t *testing.T) {
 	if err != nil || string(body) != want {
 		t.Fatalf("VM status: %s, %v", body, err)
 	}
+	for _, reason := range []string{"no_host_fits", "ref_held", "ref_unavailable"} {
+		vm := compute.VM{Phase: compute.Ended, Code: compute.StartFailed, Reason: reason}
+		if got := vmStatus(vm)["reason"]; got != reason {
+			t.Errorf("reason = %v, want %s", got, reason)
+		}
+	}
 }
 
 func TestDDBVMClientAPI(t *testing.T) {
-	db, vms := hostTable(t, "id")
+	db, vms := ddbtest.VMTable(t)
 	_, hosts := hostTable(t, "pool", "host")
 	_, deliveries := hostTable(t, "shard", "id")
 	_, usage := hostTable(t, "shard", "ulid")
 	now := time.Now().Truncate(time.Millisecond)
 	sha := strings.Repeat("a", 64)
 	objects := &guestObjects{manifests: map[string][]byte{"guest/" + sha + ".json": []byte(fmt.Sprintf(`{"sha256":%q,"bytes":1}`, sha))}}
-	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries, Usage: usage}, Objects: objects,
+	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries, Usage: usage}, Objects: objects,
 		Now: func() time.Time { return now }, RuntimeURL: "https://runtime.example/ended"}
 	c.EnableClockCheck()
+	var unplaceable int
+	c.Log = func(event string, fields map[string]any) {
+		if event == "vm_unplaceable" && fields["vm"] == "vm" {
+			unplaceable++
+			if fields["reason"] != "no_host_fits" || fields["hosts"] != 0 {
+				t.Fatal(fields)
+			}
+		}
+	}
 	s := vmTestServer(c, []string{sha}, map[string]int64{"build": 42})
 	call := func(method, path, body, subject string, status int, want string) string {
 		t.Helper()
@@ -169,6 +185,9 @@ func TestDDBVMClientAPI(t *testing.T) {
 	call("POST", "/v1/vms", body, "", 202, `"phase":"requested"`)
 	call("POST", "/v1/vms", body, "", 202, `"phase":"requested"`)
 	call("POST", "/v1/vms", strings.Replace(body, `"payer":"p"`, `"payer":"x"`, 1), "", 409, "conflict")
+	if unplaceable != 1 {
+		t.Fatalf("create and replay logged %d times", unplaceable)
+	}
 	checkIdle := func(id string, want int64) {
 		t.Helper()
 		vm, err := c.Get(ctx, id)
@@ -204,14 +223,18 @@ func TestDDBVMClientAPI(t *testing.T) {
 	call("POST", "/v1/vms/vm/deadline", fmt.Sprintf(`{"deadline":%d}`, now.Add(time.Minute).UnixMilli()), "", 200, strconv.FormatInt(until.UnixMilli(), 10))
 	now = now.Add(time.Minute)
 	call("POST", "/v1/vms", body, "", 202, `"phase":"running"`)
-	call("POST", "/v1/vms/extra/deadline", fmt.Sprintf(`{"deadline":%d}`, until.UnixMilli()), "", 409, `{"error":"lease_expired"}`)
+	call("POST", "/v1/vms/extra/deadline", fmt.Sprintf(`{"deadline":%d}`, until.UnixMilli()), "", 409, `{"error":{"code":"lease_expired","message":"lease_expired"}}`)
 	call("POST", "/v1/vms/vm/stop", `{"checkpoint":true}`, "", 202, "stopping")
 	call("POST", "/v1/vms/vm/stop", `{"checkpoint":false}`, "", 202, "stopping")
 	if _, err := c.End(ctx, "vm", compute.EndRequest{At: now, Code: compute.Stopped}); err != nil {
 		t.Fatal(err)
 	}
 	call("GET", "/v1/vms/vm", "", "", 200, `"phase":"ended"`)
-	call("POST", "/v1/vms/vm/deadline", fmt.Sprintf(`{"deadline":%d}`, until.UnixMilli()), "", 409, `{"error":"ended"}`)
+	if _, err := c.End(ctx, "extra", compute.EndRequest{At: now, Code: compute.StartFailed, Reason: "no_host_fits"}); err != nil {
+		t.Fatal(err)
+	}
+	call("GET", "/v1/vms/extra", "", "", 200, `"reason":"no_host_fits"`)
+	call("POST", "/v1/vms/vm/deadline", fmt.Sprintf(`{"deadline":%d}`, until.UnixMilli()), "", 409, `{"error":{"code":"ended","message":"ended"}}`)
 	call("GET", "/v1/usage", "", "runtime:usage", 200, `"events":[]`)
 	now = now.Add(21 * time.Second)
 	call("GET", "/v1/usage", "", "runtime:usage", 200, `"eventId":"vm:0"`)

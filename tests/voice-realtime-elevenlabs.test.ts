@@ -363,26 +363,22 @@ test("ElevenLabs meters wall time once, including silence, interruption and the 
   assert.equal(metered.reduce((sum, seconds) => sum + seconds, 0), 1.5);
 });
 
-test("ElevenLabs bills final connection time through a rolling hold and releases no extra response holds", async t => {
+test("ElevenLabs bills final connection time through the metering checkpoint", async t => {
   const fake = await fakeElevenLabs(t);
-  let now = 0, holds = 0;
+  let now = 0, checks = 0;
   const settlements: number[] = [];
   const state = testBrain({
     reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true,
     provider: elevenlabsAgents({ baseUrl: fake.base, now: () => now }),
-    hold: async () => {
-      holds++;
-      return { settle: async cost => { settlements.push(cost); }, release: async () => {} };
-    },
+    refusal: async () => { checks++; }, debit: async cost => { settlements.push(cost); },
   });
   t.after(() => state.brain.close());
-  await until(() => fake.seen.events.some(event => event.type === "conversation_initiation_client_data"), "connection after hold");
+  await until(() => fake.seen.events.some(event => event.type === "conversation_initiation_client_data"), "connection after admission");
   fake.send(audio());
-  await until(() => state.brain.stats.responses === 1, "provider response");
-  assert.equal(holds, 1);
+  await until(() => state.brain.stats.responses === 1 && checks === 2, "provider response checked");
   now = 100;
   state.brain.close();
-  await until(() => settlements.length === 1, "final hold settled");
+  await until(() => settlements.length === 1, "final usage posted");
   const expected = realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, now / 1_000);
   assert.equal(settlements[0], expected);
   assert.equal(state.usage.reduce((sum, usage) => sum + usage.costUsd, 0), expected);
@@ -390,17 +386,14 @@ test("ElevenLabs bills final connection time through a rolling hold and releases
 });
 
 
-test("ElevenLabs lost connections settle once and reconnect behind a renewed hold", async t => {
+test("ElevenLabs lost connections settle once and reconnect behind an admission check", async t => {
   const fake = await fakeElevenLabs(t);
-  let now = 0, holds = 0;
+  let now = 0, checks = 0;
   const settlements: number[] = [];
   const state = testBrain({
     reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true,
     provider: elevenlabsAgents({ baseUrl: fake.base, now: () => now }),
-    hold: async () => {
-      holds++;
-      return { settle: async cost => { settlements.push(cost); }, release: async () => {} };
-    },
+    refusal: async () => { checks++; }, debit: async cost => { settlements.push(cost); },
   });
   t.after(() => state.brain.close());
   await until(() => state.logs.some(log => log.type === "voice_realtime_ready"), "first connection");
@@ -408,7 +401,7 @@ test("ElevenLabs lost connections settle once and reconnect behind a renewed hol
   fake.connections[0].close();
   await until(() => fake.connections.length === 2, "replacement connection");
   await until(() => state.logs.filter(log => log.type === "voice_realtime_ready").length === 2, "replacement ready");
-  assert.equal(holds, 2);
+  assert.equal(checks, 2);
   assert.equal(settlements.length, 1);
   now = 200;
   state.brain.close();

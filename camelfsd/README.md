@@ -276,8 +276,13 @@ holder sends explicit null for a read-only mount. Image import returns a root an
 without creating a ref. Import paths must resolve under --data, /nvme, or
 a repeatable --import-allow directory.
 
-Tree mounts still resolve the newest lineage/tree root, then up to 64
-tree_parents ancestors, then the blank image (--virtual-size, default 1 GiB).
+Tree mounts resolve the newest local lineage/tree root, then the exact shared
+root, then up to 64 local tree_parents ancestors, then the blank image
+(--virtual-size, default 1 GiB). A session that applies a nonempty file delta
+captures a baseline before first exec. One publisher per host processes these
+snapshots after thaw, including after the VM stops. --baseline-disk-max caps
+the total logical size of pending workspace snapshots and defaults to twice
+--virtual-size. A full queue skips the capture.
 Apply uses the guest Unix endpoints <vsock>_5201 and checkpoint <vsock>_5200,
 mode 0600. Frames have a four-byte big-endian length, at most 64 KiB of JSON
 or 1 MiB of data. Header baseTree/fromTree/toTree are always present,
@@ -288,14 +293,11 @@ metadata, sends ready, validates the stream, then sends ack before uploading.
 The guest thaws on ack, nack, EOF or deadline. After ack the daemon writes
 blobs, trees, the commit and the image root; records lineage_objects and
 tree_roots; and returns {tree,root,commit,timings}. Flat timing fields remain
-for one release. Today's order, for jobs: jobhost sends `checkpointed{tree}` to
-the guest as soon as the daemon answers (`jobhost/agent.ts`), and the runtime
-(`HostJob` → `RepoDO`) performs the CAS after the result arrives
-(`backends/workers/src/jobs/hosts.ts`, `finishJobRepo`); that is safe only
-because a job's VM is destroyed right after. Option C's order (camel-fs-files.md
-§9.7), required for computers and `bash` VMs: the host calls the tier's `cas`
-in-VPC first and sends `checkpointed{tree}` (or `{error}`) only after the ref
-moved. Publication failure leaves tree_roots unchanged.
+for one release. The [camel-fs compute design](../docs/design/camel-fs-compute.md)
+describes the replacement for the Workers job-host plane. For `bash` VMs, the
+host calls the tier's `cas` in-VPC first and sends `checkpointed{tree}` (or
+`{error}`) only after the ref moved. Publication failure leaves tree_roots
+unchanged.
 
 Stream defaults: --stream-idle 30s, --apply-max 30m, checkpoint timeoutMs
 120000 (maximum 600000), --max-files 200000, --max-bytes 8589934592,

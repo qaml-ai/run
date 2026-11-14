@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
@@ -19,6 +22,8 @@ type cachedObject struct {
 }
 type publication struct {
 	puts         map[string][]byte
+	blobs        map[string][]byte
+	onBlob       func(context.Context, Blob) error
 	objects      map[string]cachedObject
 	memberships  []membership
 	tree, parent string
@@ -58,6 +63,38 @@ func (r *Repository) StageSizedTree(ctx context.Context, entries []Entry) (strin
 	return id, r.Record(ctx, r.lineage, id, "tree", nil)
 }
 
+// StageBlob provides the builder with a size and ID before publication.
+func (r *Repository) StageBlob(raw []byte) Blob {
+	id := store.GitHash("blob", raw)
+	if r.publication.blobs == nil {
+		r.publication.blobs = make(map[string][]byte)
+	}
+	r.publication.blobs[id] = raw
+	return Blob{SHA1: id, Size: int64(len(raw))}
+}
+
+func (r *Repository) OnBlobUpload(callback func(context.Context, Blob) error) {
+	r.publication.onBlob = callback
+}
+
+func (r *Repository) flushBlobs(ctx context.Context) error {
+	p := r.publication
+	ids := make([]string, 0, len(p.blobs))
+	for id := range p.blobs {
+		ids = append(ids, id)
+	}
+	repo := *r
+	repo.publication = nil
+	return store.Parallel(ctx, min(16, len(ids)), ids, func(id string) error {
+		raw := p.blobs[id]
+		blob, err := repo.Upload(ctx, repo.lineage, root.Hash(raw), int64(len(raw)), bytes.NewReader(raw))
+		if err == nil && p.onBlob != nil {
+			err = p.onBlob(ctx, blob)
+		}
+		return err
+	})
+}
+
 func (r *Repository) StageTreeParent(tree, parent string) {
 	r.publication.tree, r.publication.parent = tree, parent
 }
@@ -85,7 +122,18 @@ func (r *Repository) FlushTimed(ctx context.Context, timing *FlushTiming) error 
 	}
 	start := time.Now()
 	uploaded := &store.Uploaded{Store: r.Store, DB: r.DB.DB}
+	var wg sync.WaitGroup
+	var blobErr error
+	if len(p.blobs) != 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			blobErr = r.flushBlobs(ctx)
+		}()
+	}
 	written, err := uploaded.PutBatch(ctx, p.puts)
+	wg.Wait()
+	err = errors.Join(err, blobErr)
 	timing.Put = time.Since(start)
 	timing.PutKeys = len(written)
 	if err != nil {

@@ -39,7 +39,7 @@ variable "hostname" {
 }
 
 variable "internal_hostname" {
-  description = "The in-VPC hostname of the API tier (a DNS-only record to the internal load balancer; its name resolves to private addresses): what camelfsd --role host on the job hosts calls. In the cloudflare_zone_id zone."
+  description = "A SAN kept on the certificate (changing a certificate's names replaces it). The internal ALB it named is gone: hosts dial the NLB by its own name and pin the Private CA; the Cloudflare CNAME can be removed."
   type        = string
   default     = "fs-internal.camelai.dev"
   validation {
@@ -105,6 +105,16 @@ variable "enroll_roles" {
   }
 }
 
+variable "guest_images" {
+  description = "The guest image SHA-256s the tier allows hosts to boot (camelfsd api --guest-images; K4c/K2c2), newest first. Each is a manifest published to <bucket>/guest/ by publish-guest-image.sh; a host that offers an image not in this list is refused. Empty with \"compute\" on refuses every boot, so set it with the flip."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for sha in var.guest_images : can(regex("^[0-9a-f]{64}$", sha))])
+    error_message = "guest_images are 64-hex SHA-256 digests."
+  }
+}
+
 variable "api_extra_args" {
   description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)
@@ -128,9 +138,9 @@ variable "api_port" {
 }
 
 variable "api_health_path" {
-  description = "The unauthenticated health route both target groups probe; must answer 200 on a ready node."
+  description = "The unauthenticated health route every target group and aop.sh probe; must answer 200 on a ready node. /v1/health since unit 11 (the /v0 surface is deleted; the image must serve /v1/health before this is applied)."
   type        = string
-  default     = "/v0/health"
+  default     = "/v1/health"
 }
 
 variable "api_cpu" {
@@ -190,7 +200,7 @@ variable "aop_ca_version" {
 }
 
 variable "enroll_listener_port" {
-  description = "The internal ALB's plain-TLS listener for host enrollment (no client certificate; serves only POST /v1/hosts/enroll). Hosts need egress to it and to hosts_port (job-hosts allows 443 only today)."
+  description = "The NLB's TCP-passthrough listener for host enrollment, to the tier's --listen-enroll port (the tier serves TLS with its Private-CA certificate; no client certificate; only POST /v1/hosts/enroll). Hosts need egress to it and to hosts_port (job-hosts allows 443 only today)."
   type        = number
   default     = 8443
 }
@@ -202,7 +212,7 @@ variable "hosts_port" {
 }
 
 variable "enroll_port" {
-  description = "The container port the tier serves enrollment on (camelfsd api --listen-enroll); separate from api_port so a request can never reach the mTLS-trusting port without passing the verify-mode listener."
+  description = "The container port the tier serves enrollment on (camelfsd api --listen-enroll, TLS with its own certificate); separate from the hosts port so an unenrolled host can never reach a route that trusts a client certificate."
   type        = number
   default     = 8793
 }
@@ -231,12 +241,6 @@ variable "guest_image_prefix" {
     condition     = var.guest_image_prefix == "" || can(regex("^[a-z0-9-]+/$", var.guest_image_prefix))
     error_message = "guest_image_prefix is empty or one lowercase path segment with a trailing slash."
   }
-}
-
-variable "results_expiry_days" {
-  description = "VM results hosts write to S3 (results/<lineage>/<vm>; K4) are deleted after this many days (a prefix lifecycle rule)."
-  type        = number
-  default     = 7
 }
 
 variable "github_subjects" {

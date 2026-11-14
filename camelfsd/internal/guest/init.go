@@ -15,7 +15,10 @@ import (
 
 const guestPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-type bootConfig struct{ ip, gw, proxy, repo string }
+type bootConfig struct {
+	ip, gw, proxy, repo, workspace string
+	workspaceFailed                bool
+}
 
 func parseCmdline(line string) bootConfig {
 	var c bootConfig
@@ -28,6 +31,8 @@ func parseCmdline(line string) bootConfig {
 			c.gw = value
 		case "camel.proxy":
 			c.proxy = value
+		case "camel.workspace":
+			c.workspace = value
 		case "camel.repo":
 			c.repo = value
 		}
@@ -63,6 +68,8 @@ type bootSystem struct {
 	report      func(error)
 }
 
+const workspacePath = "/workspace"
+
 func setupBoot(s bootSystem) bootConfig {
 	for _, m := range earlyMounts {
 		if err := s.mount(m); err != nil && err != unix.EBUSY {
@@ -84,7 +91,13 @@ func setupBoot(s bootSystem) bootConfig {
 			s.report(err)
 		}
 	}
-	if c.repo != "" {
+	if c.workspace != "" {
+		if err := s.mount(mount{c.workspace, workspacePath, "ext4", unix.MS_NOATIME}); err != nil {
+			s.report(fmt.Errorf("camelFS workspace disk mount failed: %w", err))
+			c.workspace = ""
+			c.workspaceFailed = true
+		}
+	} else if c.repo != "" {
 		if err := s.mount(mount{c.repo, "/repo", "ext4", unix.MS_NOATIME}); err != nil {
 			s.report(fmt.Errorf("camelFS repo disk mount failed: %w", err))
 		}
@@ -135,11 +148,23 @@ func Init(ctx context.Context) error {
 		writeFile: os.WriteFile,
 		report:    console,
 	})
-	if cfg.repo != "" {
+	if cfg.workspaceFailed {
+		return fmt.Errorf("session requires a branch disk")
+	}
+	if cfg.repo != "" || cfg.workspace != "" {
 		os.Setenv("CAMEL_VSOCK_CONNECT", "1")
 	}
-	if err := ServeVM(ctx, cfg.repo != "" || os.Getenv("CAMEL_VSOCK_CONNECT") == "1", r); err != nil {
+	if cfg.proxy != "" {
+		for _, key := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"} {
+			os.Setenv(key, cfg.proxy)
+		}
+		os.Setenv("no_proxy", "localhost,127.0.0.1")
+	}
+	if err := ServeVM(ctx, cfg.repo != "" || cfg.workspace != "" || os.Getenv("CAMEL_VSOCK_CONNECT") == "1", r, cfg.workspace != ""); err != nil {
 		console(err)
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 	unix.Sync()
 	// x86 Firecracker exits on the emulated i8042 reset triggered by reboot=k.

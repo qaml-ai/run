@@ -86,11 +86,13 @@ func host(args []string) error {
 	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	virtualSize := f.Int64("virtual-size", 1<<30, "blank image size")
+	baselineDiskMax := f.Int64("baseline-disk-max", 0, "maximum queued baseline image bytes (default twice the workspace virtual size)")
 	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
 	maxBytes := f.Int64("max-bytes", 8<<30, "checkpoint byte cap")
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
 	streamIdle := f.Duration("stream-idle", 30*time.Second, "guest stream idle timeout")
 	applyMax := f.Duration("apply-max", 30*time.Minute, "apply overall cap")
+	compute := addHostComputeFlags(f)
 	var allow dirs
 	f.Var(&allow, "import-allow", "allowed import directory (repeatable)")
 	if e := f.Parse(args); e != nil {
@@ -98,6 +100,9 @@ func host(args []string) error {
 	}
 	if !filepath.IsAbs(*data) || !filepath.IsAbs(*socket) || *url == "" || *depth < 1 || *fetchDepth < 1 {
 		return fmt.Errorf("invalid host flags")
+	}
+	if e := compute.validate(); e != nil {
+		return e
 	}
 	if e := os.MkdirAll(*data, 0700); e != nil {
 		return e
@@ -133,7 +138,7 @@ func host(args []string) error {
 	if e = image.ProbeDeviceMapper(ctx); e != nil {
 		return e
 	}
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	m, e := image.New(image.Config{RecoverSessions: compute.enabled, StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}
@@ -191,6 +196,13 @@ func host(args []string) error {
 				cancel()
 			}
 		}()
+	}
+	if compute.enabled {
+		stop, err := compute.start(ctx, *data, *region, m, cancel)
+		if err != nil {
+			return err
+		}
+		defer stop()
 	}
 	server := http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 

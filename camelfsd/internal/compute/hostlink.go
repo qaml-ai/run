@@ -81,3 +81,21 @@ func (c *Controller) pushStop(ctx context.Context, v VM) {
 		c.log("host_stop_push_failed", map[string]any{"vm": v.ID, "host": v.Host, "error": err.Error()})
 	}
 }
+
+// RunningHost resolves the current boot of a running VM for session requests.
+func (c *Controller) RunningHost(ctx context.Context, v VM) (Host, error) {
+	if v.Phase != Running {
+		return Host{}, ErrPhase
+	}
+	h, err := c.Host(ctx, v.Pool, v.Host)
+	if errors.Is(err, ErrNotFound) {
+		return Host{}, ErrPhase
+	}
+	if err != nil {
+		return Host{}, err
+	}
+	if !v.onHost(h) || h.Lost || h.Restarting || h.LastSeenAt <= c.hostCutoff(c.now().UnixMilli()) {
+		return Host{}, ErrPhase
+	}
+	return h, nil
+}

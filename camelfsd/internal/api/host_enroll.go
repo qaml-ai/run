@@ -30,7 +30,7 @@ func (s EnrollmentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if refusal := s.enroll(w, r); refusal != nil {
 		slog.Warn("host_enroll_refused", "reason", refusal.code)
-		jsonReply(w, refusal.status, map[string]string{"error": refusal.code})
+		storageFail(w, &storageError{refusal.status, refusal.code, nil})
 	}
 }
 

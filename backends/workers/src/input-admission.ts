@@ -1,4 +1,4 @@
-import { releaseTurn } from "./control.ts";
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { enqueueTerminalEvents } from "./event-log.ts";
 import { reqKey, type RequestRecord } from "./agent-types.ts";
 import { retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
@@ -10,13 +10,13 @@ export function inputAdmissionDeadline(records: RequestRecord[]): number {
 }
 
 /** Called under admission serialization. A refused prompt must not block later senders. */
-export async function releaseInputPrompts(runtime: AgentRuntime) {
+export async function releaseInputPrompts(runtime: AgentRuntime, invocation: AgentInvocation) {
   let changed = false, completed = false;
   for (const record of await runtime.records()) {
     if (!record.heldForInput || record.state === "completed" || (record.inputAdmissionRetry?.at ?? 0) > Date.now()) continue;
     const attempts = record.inputAdmissionRetry?.attempts ?? 0;
     try {
-      await runtime.admit({ id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint);
+      await runtime.admit(invocation, { id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint);
     } catch (error) {
       const current = await runtime.ctx.storage.get<RequestRecord>(reqKey(record.id)) ?? record;
       if (current.state === "completed") continue;
@@ -30,7 +30,6 @@ export async function releaseInputPrompts(runtime: AgentRuntime) {
         // Release before completing: an interrupted release remains a held request and is safe to repeat.
         if (current.admitted) {
           const conf = await runtime.config();
-          await releaseTurn(runtime.env, conf.tenantId, conf.id, record.id);
           await runtime.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
         }
         const outcome = { error: error instanceof Error ? error.message : String(error) };
@@ -49,6 +48,6 @@ export async function releaseInputPrompts(runtime: AgentRuntime) {
   try {
     if (completed) await runtime.flushTerminalEvents();
   } finally {
-    if (changed) await runtime.arm();
+    if (changed) await runtime.arm(undefined, invocation);
   }
 }

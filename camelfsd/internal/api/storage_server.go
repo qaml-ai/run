@@ -16,8 +16,10 @@ import (
 )
 
 type StorageServer struct {
-	compute     http.Handler
+	compute     *http.ServeMux
+	vmAPI       *vmAPI
 	refs        *refstore.Store
+	marksTable  string
 	lineages    *lineageStore
 	repo        func() *objects.Repository
 	version     string
@@ -37,18 +39,23 @@ func NewStorageServer(repo *objects.Repository, version string, keys *auth.Keys)
 }
 
 // ConfigureRefs enables the tier's DynamoDB-backed lineage and ref routes.
-func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineagesTable string, now func() time.Time) {
+func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineagesTable string, now func() time.Time, marksTable ...string) {
 	if now == nil {
 		now = time.Now
 	}
 	s.lineages = &lineageStore{client: client, table: aws.String(lineagesTable), now: now}
 	s.refs = refstore.New(client, refsTable, now, commitParents{s.repo()})
 	s.refs.GuardLineages(lineagesTable)
+	s.marksTable = "marks"
+	if len(marksTable) != 0 {
+		s.marksTable = marksTable[0]
+	}
 }
 
 func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/v0/health":
+	// /v1/health is the target-group probe; /v0/health stays until the probes move (expand/contract).
+	case r.Method == http.MethodGet && (r.URL.Path == "/v1/health" || r.URL.Path == "/v0/health"):
 		jsonReply(w, http.StatusOK, map[string]string{"version": s.version})
 	case r.Method == http.MethodGet && r.URL.Path == "/v0/stats":
 		r = s.authorize(w, r)
@@ -57,14 +64,29 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		stats := s.repo().DB.DB.Stats()
 		jsonReply(w, http.StatusOK, map[string]int{"cacheConnections": stats.OpenConnections, "cacheInUse": stats.InUse})
-	case s.compute != nil && (r.URL.Path == "/v1/usage" || r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/")):
-		if r = s.authorize(w, r); r != nil {
-			s.compute.ServeHTTP(w, r)
+	case r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/"):
+		route := "/v1/vms"
+		if s.compute != nil {
+			_, pattern := s.compute.Handler(r)
+			route = vmLogRoute(pattern)
 		}
+		loggedAccess(w, r, route, "", s.serveCompute)
+	case s.compute != nil && r.URL.Path == "/v1/usage":
+		loggedAccess(w, r, "/v1/usage", "", s.serveCompute)
 	case strings.HasPrefix(r.URL.Path, "/v1/lineages/"):
 		s.loggedStorage(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (s *StorageServer) serveCompute(w http.ResponseWriter, r *http.Request) {
+	if s.compute == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r = s.authorize(w, r); r != nil {
+		s.compute.ServeHTTP(w, r)
 	}
 }
 
@@ -88,6 +110,11 @@ func authorizeToken(w http.ResponseWriter, r *http.Request, keys *auth.Keys) *ht
 	claims, err := keys.Verify(token, time.Now())
 	if err != nil {
 		authFail(w, http.StatusUnauthorized, "unauthorized", err.Error())
+		return nil
+	}
+	// The lineage-less usage token (auth.UsageSubject) is good for the usage ledger and nothing else.
+	if claims.Lineage == "" && !(r.Method == http.MethodGet && r.URL.Path == "/v1/usage") {
+		authFail(w, http.StatusForbidden, "forbidden", "a usage token reads only GET /v1/usage")
 		return nil
 	}
 	log.Printf("op=token sub=%q lin=%q acc=%q kid=%q", claims.Subject, claims.Lineage, claims.Access, claims.KeyID)
