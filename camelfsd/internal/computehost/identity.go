@@ -339,6 +339,9 @@ func (ca *TierCA) client(certs []tls.Certificate) *http.Client {
 		// Verify the private certificate chain and SPIFFE URI in place of DNS.
 		InsecureSkipVerify: true,
 		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("tier presented no certificate")
+			}
 			leaf := cs.PeerCertificates[0]
 			if err := hostcert.CheckLeaf(leaf, hostcert.TierURI); err != nil {
 				return err
