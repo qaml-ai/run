@@ -25,7 +25,8 @@ Compute hosts run `camelfsd host --compute`.
 - Each Firecracker runs under the jailer in its own systemd scope, not as a child that dies with the daemon.
 - `camelfsd host` persists its mount and VM state (`mounts`, `vms` tables in the host-local SQLite).
 - On start it re-adopts running VMs and their mounts instead of refusing a non-empty `mounts/`.
-- The lazy origin moves to ublk with user recovery, so a restart stalls a cold guest's I/O instead of failing it.
+- There is no lazy origin left (unit 11, #1093): a cold mount hydrates fully to a local file before Firecracker
+  starts, so no guest's I/O goes through `camelfsd` and a restart cannot fail it. ublk recovery (K2d) is obsolete.
 
 That is L15's v1 fix, and compute makes it a prerequisite rather than a wish (§5).
 
@@ -245,7 +246,7 @@ swap) and C4 (hosts do the CAS in-VPC, notify, `RepoDO` deleted). Compute slots 
 | K2a | **proto-block**: the launcher in `camelfsd host --compute`: Firecracker + jailer with each VM in its own systemd scope, taps and slots, the vsock guest channel | K1 | now |
 | K2b | **proto-block**: the egress proxy in Go | K2a, C3 | |
 | K2c | **proto-block**: the hostwire host side (#1016), and **only hostwire**: there is no Go port of today's runtime WebSocket, and the TypeScript `jobhost` keeps serving the pilot until K5 cuts over. It covers mTLS terminated in the Go server verifying `spiffe://camelfs/tier` (camel-fs-files.md §9.12), results to `results/<lineage>/<vm id>`, a persistent `vms` table with re-adoption on restart (L15's state half, L16), and the deletion of the `camelfs-host+jwt` code and of L101's host image pin. Tested end to end against K4c's tier | K2b, K4c | |
-| K2d | **proto-block**: ublk with user recovery (L15's restart-is-a-stall half), measured on the host before it is committed to | K2c | |
+| K2d | ~~**proto-block**: ublk with user recovery (L15's restart-is-a-stall half)~~ **obsolete**: unit 11 (#1093) deleted the NBD lazy origin, so nothing is left for ublk to recover | K2c | L15 closed, L19 obsolete |
 | K3 | **proto-block**: the synchronous checkpoint for sessions (per `bash` call that changed the tree, §6) | K2c, C4 (the in-VPC `cas`) | L45 obsolete |
 | K4 | **wf-durable**: the compute API (§2) and control in Go on the tier: `hosts`/`vms` on DynamoDB, phases, placement, host channel in-VPC, reconcile, host-lost sweep, `vm.*` hints; K4b the `usage` table and the deadline lease; K4d `GET /v1/usage` | C1, C2 | — |
 | K5 | **wf-durable**: the runtime side: the agent's VM row (§6), admission (balance > 0, no holds), the leased usage poller and settlement from pulled `usage.*` events, deadline extension, durable landing of `vm.*` events as outbox rows; `JobHost`, the registry and the WebSocket deleted | K4, C3 | — |
@@ -262,7 +263,7 @@ K4 starts after C2. Storage stays independent of all of K: a deployment without
 | L62 guest kernel panic instead of poweroff | open, next guest change | fixed by K1: the Go init calls `reboot(LINUX_REBOOT_CMD_POWER_OFF)` and verifies the guest exited |
 | L64 every host rebuilds the guest image with `debootstrap` | open | fixed by K1: built once in CI, content-addressed in the bucket, sha256-pinned; no Node in the guest |
 | L32 placement is not feature- or lineage-aware | open | fixed by K4 (warm-aware placement in the tier) |
-| L15 a daemon restart ends every cold-mounted job | open (v1 half) | **required** by K2c (state, re-adoption) and K2d (ublk recovery): one process owns VMs and devices, so restarts must re-adopt (persistent state, VMs in their own scopes, ublk recovery) |
+| L15 a daemon restart ends every cold-mounted job | open (v1 half) | closed: re-adoption by K2c (persistent state, VMs in their own scopes); the EIO half by deletion in unit 11 (#1093: no lazy origin, so no ublk recovery needed) |
 | L16 crash fencing waits out the 5-minute lease | open | fixed by K2c + C2: the host's boot epoch is in its lease holder, and the tier fences a restarted host's old leases on sight |
 | L45 one checkpoint at job end | open | obsolete under §6: no jobs; sessions checkpoint per call |
 
