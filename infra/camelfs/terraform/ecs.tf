@@ -177,11 +177,11 @@ resource "aws_ecs_task_definition" "api" {
     cpu_architecture        = "ARM64"
   }
 
-  # The only writable path: the task's ephemeral storage, for the daemon's host-local SQLite caches (CAMELFS_DATA).
-  # Nothing on it is truth (camel-fs.md §1.11); a replaced task starts empty.
-  volume {
-    name = "data"
-  }
+  # No bind volume and no read-only root (2026-11-14): a Fargate bind mount (`host {}`) is an empty root-owned
+  # directory, so the daemon (uid 1000) could not create storage.db under it and every task crash-looped with
+  # "unable to open database file". The daemon writes only under --data, which is the image's own
+  # /var/lib/camelfs (owned by camelfs) on the task's ephemeral storage; nothing on it is truth (camel-fs.md
+  # §1.11), and a replaced task starts empty.
 
   container_definitions = jsonencode([{
     name         = local.container_name
@@ -196,9 +196,8 @@ resource "aws_ecs_task_definition" "api" {
       { name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn },
       { name = "CAMELFS_NOTIFY_KEY", valueFrom = aws_secretsmanager_secret.notify_key.arn },
     ]
-    mountPoints = [{ sourceVolume = "data", containerPath = local.api_data_dir, readOnly = false }]
-    # The image runs as a non-root user; everything but the data volume is read-only.
-    readonlyRootFilesystem = true
+    # The image runs as a non-root user that owns /var/lib/camelfs (the Dockerfile); see the volume note above.
+    readonlyRootFilesystem = false
     # SIGTERM: finish in-flight requests (seconds); SIGKILL after this.
     stopTimeout     = 30
     linuxParameters = { initProcessEnabled = true }
