@@ -121,7 +121,7 @@ func readVM(i item) VM {
 		Host: i.text("host"), HostEpoch: i.number("hostEpoch"), PlacedAt: i.timestamp("placedAt"),
 		BootingAt: i.timestamp("bootingAt"), StartedAt: i.timestamp("startedAt"),
 		LastListedAt: i.timestamp("lastListedAt"), LastActivityAt: i.timestamp("lastActivityAt"), StopRequestedAt: i.timestamp("stopRequestedAt"), EndedAt: i.timestamp("endedAt"),
-		StopCheckpoint: i.flag("stopCheckpoint"), StopReason: EndCode(i.text("stopReason")), Code: EndCode(i.text("code")),
+		StopCheckpoint: i.flag("stopCheckpoint"), StopReason: EndCode(i.text("stopReason")), Code: EndCode(i.text("code")), Reason: i.text("reason"),
 		EndVersion: i.text("endVersion"), CheckpointError: i.text("checkpointError"),
 		FirstExecAt: i.timestamp("firstExecAt"), execs: i.set("execs"), LastCheckpoint: checkpoint,
 		RequestedVersion: i.text("requestedVersion"), RequestedDeadline: i.number("requestedDeadline"),

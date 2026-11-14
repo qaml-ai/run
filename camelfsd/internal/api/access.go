@@ -103,8 +103,20 @@ func refLogAction(method, path string) string {
 }
 
 func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
 	route, lineage := storageLogRoute(r.Method, r.URL)
+	loggedAccess(w, r, route, lineage, s.storage)
+}
+
+func vmLogRoute(pattern string) string {
+	_, route, _ := strings.Cut(pattern, " ")
+	if strings.HasPrefix(route, "/v1/vms/{id}") {
+		return strings.NewReplacer("{id}", ":id", "{execId}", ":execId").Replace(route)
+	}
+	return "/v1/vms"
+}
+
+func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string, serve http.HandlerFunc) {
+	start := time.Now()
 	rw := &statusWriter{ResponseWriter: w}
 	var timing *commitTiming
 	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/commits" {
@@ -132,7 +144,10 @@ func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
 			phases = fmt.Sprintf(" objectsMs=%.3f putKeys=%d buildMs=%.3f ddbMs=%.3f ddbRetries=%d",
 				ms(moves.objects.Put), moves.objects.PutKeys, ms(moves.build), ms(moves.ddb), moves.retries)
 		}
-		log.Printf("op=%s:%s lineage=%s status=%d ms=%.3f%s", r.Method, route, lineage, status, ms(time.Since(start)), phases)
+		if lineage != "" {
+			route += " lineage=" + lineage
+		}
+		log.Printf("op=%s:%s status=%d ms=%.3f%s", r.Method, route, status, ms(time.Since(start)), phases)
 	}()
-	s.storage(rw, r)
+	serve(rw, r)
 }

@@ -79,7 +79,7 @@ func TestDDBLoop(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !slices.Equal(events, []string{"vm_wait_expired", "vm_lease_expired", "vm_idle", "host_lost"}) {
+	if !slices.Equal(events, []string{"vm_wait_expired", "vm_placed", "vm_lease_expired", "vm_idle", "host_lost"}) {
 		t.Fatal(events)
 	}
 	for id, code := range map[string]EndCode{expired.ID: StartFailed, "lease-expired": LeaseExpired, lost.ID: HostLost} {
@@ -88,15 +88,8 @@ func TestDDBLoop(t *testing.T) {
 			t.Fatalf("end: %+v", v)
 		}
 	}
-	if v := must[VM](t)(f.Get(ctx, "fits")); v.Phase != Requested {
-		t.Fatal(v.Phase)
-	}
-	must[VM](t)(f.End(ctx, "too-big", EndRequest{Code: StartFailed, At: f.now}))
-	if err := l.Pass(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if v := must[VM](t)(f.Get(ctx, "fits")); v.Phase != Booting || events[len(events)-1] != "vm_placed" {
-		t.Fatalf("placement: %+v, events %v", v, events)
+	if v := must[VM](t)(f.Get(ctx, "fits")); v.Phase != Booting {
+		t.Fatalf("placement: %+v", v)
 	}
 	f.assertOutcome(must[VM](t)(f.Get(ctx, lost.ID)), lastListed)
 	h := must[[]Host](t)(f.Hosts(ctx, "lost"))[0]
@@ -415,5 +408,133 @@ func TestDDBExecTrackingIsBounded(t *testing.T) {
 	check(f.ExecStarted(ctx, req.ID, "active-0", f.now))
 	if len(row().set("execs")) != maxExecsInFlight {
 		t.Fatal("reattachment did not reclaim a slot")
+	}
+}
+
+func TestDDBUnplaceable(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	var reasons []string
+	var events []string
+	f.Log = func(event string, fields map[string]any) {
+		if event == "vm_unplaceable" {
+			reasons = append(reasons, fields["vm"].(string)+":"+fields["reason"].(string))
+		}
+	}
+	l := Loop{C: &f.Controller, Wait: 90 * time.Second,
+		Pools: func(context.Context) ([]string, error) { return []string{"queue"}, nil },
+		Log:   func(event string, fields map[string]any) { events = append(events, event+":"+fields["vm"].(string)) }}
+	f.HostFresh = 3 * time.Minute
+	f.register("queue", "boot", 1)
+	create := func(id string, mem int) {
+		req := f.request(id, "queue")
+		req.Shape.MemoryMiB = mem
+		must[VM](t)(l.Create(ctx, req))
+	}
+	pass := func(offset time.Duration) {
+		t.Helper()
+		f.now = epoch.Add(offset)
+		if err := l.Pass(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(id string, phase Phase, reason string) {
+		t.Helper()
+		v := must[VM](t)(f.Get(ctx, id))
+		if v.Phase != phase || v.Reason != reason || (phase == Ended && v.Code != StartFailed) {
+			t.Fatalf("unexpected phase or end: %+v", v)
+		}
+	}
+	create("a-unfit", 9000)
+	create("b-fits", 1024)
+	create("c-full", 1024)
+	create("d-fits", 1024)
+	if !slices.Equal(reasons, []string{"a-unfit:no_host_fits"}) {
+		t.Fatal(reasons)
+	}
+	pass(0)
+	check("a-unfit", Requested, "")
+	check("b-fits", Booting, "")
+	check("c-full", Requested, "")
+	check("d-fits", Requested, "")
+	pass(29 * time.Second)
+	if !slices.Equal(reasons, []string{"a-unfit:no_host_fits", "c-full:full", "d-fits:full"}) {
+		t.Fatal(reasons)
+	}
+	pass(30 * time.Second)
+	check("a-unfit", Ended, "no_host_fits")
+	if !slices.Contains(events, "vm_unfit_ended:a-unfit") || len(l.unplaceable["queue"]) != 2 {
+		t.Fatalf("events=%v rate limit=%v", events, l.unplaceable)
+	}
+	pass(60 * time.Second)
+	check("c-full", Requested, "")
+	if !slices.Equal(reasons, []string{"a-unfit:no_host_fits", "c-full:full", "d-fits:full", "c-full:full", "d-fits:full"}) {
+		t.Fatal(reasons)
+	}
+	pass(91 * time.Second)
+	check("c-full", Ended, "no_capacity")
+	check("d-fits", Ended, "no_capacity")
+}
+
+func TestDDBUnfitHostArrives(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	f.register("queue", "boot", 1)
+	l := Loop{C: &f.Controller, Pools: func(context.Context) ([]string, error) { return []string{"queue"}, nil }}
+	req := f.request("unfit", "queue")
+	req.Shape.MemoryMiB = 9000
+	must[VM](t)(l.Create(ctx, req))
+	if err := l.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(29 * time.Second)
+	must[int64](t)(f.Register(ctx, HostInfo{Pool: "queue", Host: "new", BootID: "boot", Slots: 1, Shape: req.Shape}))
+	if err := l.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v := must[VM](t)(f.Get(ctx, req.ID)); v.Phase != Booting || v.Host != "new" {
+		t.Fatal(v)
+	}
+}
+
+func TestDDBReregisterCapacity(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	f.register("queue", "boot", 1)
+	req := f.request("vm", "queue")
+	must[VM](t)(f.Create(ctx, req))
+	must[VM](t)(f.Place(ctx, req.ID))
+	h := must[Host](t)(f.Host(ctx, "queue", "host"))
+	info := h.HostInfo
+	info.Slots += 2
+	info.Shape.MemoryMiB += 2048
+	info.Shape.VCPUs += 2
+	if got := must[int64](t)(f.Register(ctx, info)); got != h.BootEpoch {
+		t.Fatal(got)
+	}
+	updated := must[Host](t)(f.Host(ctx, "queue", "host"))
+	if updated.Shape != info.Shape || updated.Slots != info.Slots || updated.Free != h.Free+2 || updated.FreeMiB != h.FreeMiB+2048 {
+		t.Fatal(updated)
+	}
+	f.checkHost("queue", 2, req.ID)
+
+	shrink := info
+	shrink.Slots = 0
+	if _, err := f.Register(ctx, shrink); !errors.Is(err, ErrCapacityInUse) {
+		t.Fatalf("slot shrink: %v", err)
+	}
+	shrink = info
+	shrink.Shape.MemoryMiB = req.Shape.MemoryMiB - 1
+	if _, err := f.Register(ctx, shrink); !errors.Is(err, ErrCapacityInUse) {
+		t.Fatalf("memory shrink: %v", err)
+	}
+	f.checkHost("queue", 2, req.ID)
+	shrink.BootID = "new-boot"
+	if got := must[int64](t)(f.Register(ctx, shrink)); got != h.BootEpoch+1 {
+		t.Fatal(got)
+	}
+	f.checkHost("queue", shrink.Slots)
+	if v := must[VM](t)(f.Get(ctx, req.ID)); v.Phase != Ended || v.Code != HostLost {
+		t.Fatal(v)
 	}
 }
