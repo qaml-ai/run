@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { stageMonitorSettle, flushMonitors } from "./agent-monitors.ts";
 import { stageEnding } from "./agent-endings.ts";
 import { stageScheduleOutcome, flushScheduleOutcomes } from './schedule-outcomes.ts';
@@ -74,7 +75,10 @@ export async function emitImpl(this: AgentRuntime,
       });
       if (cursor === undefined) return;
       // Outside this chain: the message is a prompt of the agent's own, which publishes events here.
-      if (monitorOwes) this.ctx.waitUntil(flushMonitors(this).then(() => this.arm()).catch(() => {}));
+      if (monitorOwes) {
+        const invocation = new AgentInvocation();
+        this.ctx.waitUntil(flushMonitors(this, invocation).then(() => this.arm(undefined, invocation)).catch(() => {}));
+      }
       this.channels.observe(committed.owner, event as { type?: string; event?: { type?: string } }, committed.record && (event as { type?: string }).type === "response"
         ? { ...committed.record, outcome: (event as { outcome?: RequestRecord["outcome"] }).outcome ?? committed.record.outcome } : committed.record);
       for (const listener of this.listeners) listener(cursor, event);
@@ -154,6 +158,7 @@ export async function checkWatchersImpl(this: AgentRuntime,
   }
 
 export async function webSocketEventsImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   request: Request): Promise<Response> {
     const url = new URL(request.url);
     const bearer = request.headers.get("authorization") ?? "";
@@ -165,7 +170,7 @@ export async function webSocketEventsImpl(this: AgentRuntime,
       throw Object.assign(new Error("This agent has too many event stream subscribers; retry later"), { status: 429 });
     await this.observe();
     const runId = url.searchParams.get("runId");
-    const replay = runId ? { snapshot: undefined, events: this.runReplay(request, runId) } : await this.replayEvents(request);
+    const replay = runId ? { snapshot: undefined, events: this.runReplay(request, runId) } : await this.replayEvents(invocation, request);
     const conf = await this.config();
     const subscription: EventSubscription = { type: watch ? "camel.watcher" : "camel.application",
       subagents: url.searchParams.get("subagents") === "1", request: runId ?? url.searchParams.get("request") ?? undefined,
@@ -263,13 +268,14 @@ export async function webSocketEventsImpl(this: AgentRuntime,
 /** Check ownership before returning the capability response: upgrade failures
    * cannot carry the SDK's typed HTTP refusal. */
 export async function negotiateAgentEventsImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   request: Request): Promise<Response | undefined> {
     const selected = negotiateEvents(request);
     if (!selected) return;
     const url = new URL(request.url);
     // The capability request preserves typed HTTP refusals before upgrade.
     if (url.searchParams.has("runId")) this.runReplay(request, url.searchParams.get("runId")!).next();
-    else await this.replayEvents(request);
+    else await this.replayEvents(invocation, request);
     if (url.searchParams.get("watch") === "1" && this.ctx.getWebSockets().filter(socket => socket.readyState === 1 &&
         (socket.deserializeAttachment() as EventSubscription)?.type === "camel.watcher").length >= 32)
       throw Object.assign(new Error("This agent has too many event stream subscribers; retry later"), { status: 429 });
@@ -371,13 +377,15 @@ export async function webSocketCloseImpl(this: AgentRuntime,
   }
 
 export async function webSocketErrorImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   socket: WebSocket) {
-    await this.webSocketClose(socket, 1011);
+    await this.webSocketClose(invocation, socket, 1011);
   }
 
 export async function replayEventsImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   request: Request) {
-    const state = await this.state();
+    const state = await this.state(invocation);
     const watch = new URL(request.url).searchParams.get("watch") === "1";
     const asked = new URL(request.url).searchParams.get("snapshot");
     const replay = replayEvents({ cursor: state.cursor, events: state.events,
@@ -402,11 +410,12 @@ export function* runReplayImpl(this: AgentRuntime,
   }
 
 export async function eventsImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   request: Request): Promise<Response> {
     if (new URL(request.url).searchParams.get("poll") !== "1") return webSocketRequired();
     await this.observe();
-    const state = await this.state();
-    let replay = await this.replayEvents(request);
+    const state = await this.state(invocation);
+    let replay = await this.replayEvents(invocation, request);
     if (new URL(request.url).searchParams.get("poll") === "1") {
       const seconds = Number(new URL(request.url).searchParams.get("wait") ?? 0);
       if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
@@ -418,7 +427,7 @@ export async function eventsImpl(this: AgentRuntime,
           this.listeners.add(wake);
           request.signal.addEventListener("abort", wake, { once: true });
         });
-        replay = await this.replayEvents(request);
+        replay = await this.replayEvents(invocation, request);
       }
       return json({ cursor: replay.cursor || state.cursor, events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
     }

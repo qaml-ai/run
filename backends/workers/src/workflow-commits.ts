@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { StorageError } from "./repos/storage.ts";
 import { WORKFLOW_COMMIT_PREFIX } from "./workflow-forks.ts";
 export { WORKFLOW_COMMIT_PREFIX };
@@ -73,7 +74,7 @@ export class WorkflowCommits implements EffectExecutor {
       if (!fork.base.ref) return { ok: false, error: 'A fork of a version has no branch to merge into; start the agent from a ref to commit its changes' };
       const ctx = await repoContext(this.env, this.host.tenant(), fork.repo);
       try {
-        const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref });
+        const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref }, new AgentInvocation());
         return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed, ...('files' in merged ? { files: Object.keys(merged.files) } : {}) } };
       } catch (error) {
         const found = repoErrorFrom(error);

@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { madePlace, recordChildParent } from "./child-parent.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, body } from "./validation.ts";
@@ -25,12 +26,13 @@ export async function admitDelegateWakeImpl(this: AgentRuntime,
   }
 
 export async function receiveAgentMessageImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   request: NoticeRequest,
   notice: RuntimeNotice): Promise<unknown> {
     // Gone (deleted, expired): `{ gone: true }`, and the sender drops it rather than retrying what can never land.
     if (await this.gone("receiveAgentMessage", String(notice?.metadata?.kind ?? notice?.source?.kind ?? "message"))) return { gone: true };
     this.invalidateMaintenance();
-    return this.notifications.deliverMessage(request, notice);
+    return this.notifications.deliverMessage(request, notice, invocation);
   }
 
 /** A child's progress report, from its outbox. */
@@ -44,13 +46,14 @@ export async function receiveProgressImpl(this: AgentRuntime,
 
 /** A child's ending, from its outbox: taken once, however often it is delivered. */
 export async function receiveEndingImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   ending: ChildEnding): Promise<Receipt> {
     // A gone owner acknowledges it: its child's outbox drops the row.
     if (await this.gone("receiveEnding", "child")) return { accepted: true };
     this.invalidateMaintenance();
     const receipt = await this.delegation.receiveEnding(ending);
     // The ending may owe a notification, or free a slot a start waits on: plan the next wake.
-    this.ctx.waitUntil(this.arm().catch(() => {}));
+    this.ctx.waitUntil(this.arm(undefined, invocation).catch(() => {}));
     return receipt;
   }
 
@@ -112,15 +115,15 @@ export function createNotifications(this: AgentRuntime): DelegationNotifications
       await this.emit({ type: 'response', id: request.id, outcome: done.outcome });
     },
     wakeLimit: this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined,
-    submit: (request, notice, delivery) =>
+    submit: (request, notice, delivery, invocation) =>
       !delivery.run && delivery.stopped === 'aborted'
-        ? this.admit(request, notice, delivery)
-        : this.submit(request, notice, delivery),
+        ? this.admit(invocation, request, notice, delivery)
+        : this.submit(invocation, request, notice, delivery),
     // The chain's root counts its wakes. A workflow's chain (its ids are wf_…) counts them at its child, the first agent
     // below it: a workflow has no notifications of its own to loop on.
-    admitWake: (root, id) =>
+    admitWake: (root, id, invocation) =>
       root === this.ctx.id.name || root.startsWith("wf_")
-        ? this.admitDelegateWake(id)
+        ? this.admitDelegateWake(invocation, id)
         : this.env.AGENTS.getByName(root).admitDelegateWake(id),
     humanPending: async () => {
       const pi = await this.harness.pi(),
@@ -234,7 +237,7 @@ export function createDelegation(this: AgentRuntime): Delegation {
     },
     emit: (event) => this.emit(event),
     waitUntil: (promise) => this.ctx.waitUntil(promise),
-    notify: (child) => this.notifications.deliver(child),
+    notify: (child) => this.notifications.deliver(child, new AgentInvocation()),
     sendMessage: (id, request, notice) =>
       this.env.AGENTS.getByName(id).receiveAgentMessage(request, notice),
     reportProgress: (owner, report) => this.outbox.report(owner, report),

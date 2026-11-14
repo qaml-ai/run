@@ -1,3 +1,4 @@
+import { AgentInvocation } from "../src/agent-invocation.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -41,7 +42,7 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
     constructor(ctx: unknown, env: unknown) { this.ctx = ctx; this.env = env; }
   }
   const script = outputText.replace(/\bexport \{\};?\s*$/, "");
-  const Agent = runInNewContext(`${script}\nCamelAgent`, { DurableObject: Host, AgentRuntime: Runtime, ARM_AGENT, DUE_HUMAN_INPUTS, guardAlarms: () => {} });
+  const Agent = runInNewContext(`${script}\nCamelAgent`, { DurableObject: Host, AgentRuntime: Runtime, AgentInvocation, ARM_AGENT, DUE_HUMAN_INPUTS, guardAlarms: () => {} });
   const ctx = {}, env = { PILOT_DB_PROFILE: "1" }, agent = new Agent(ctx, env);
   assert.deepEqual(Object.getOwnPropertyNames(Agent.prototype), ["constructor", ...methods]);
   assert.deepEqual(Object.getOwnPropertySymbols(Agent.prototype), [ARM_AGENT, DUE_HUMAN_INPUTS]);
@@ -51,15 +52,23 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   for (const name of methods) assert.equal(agent[name](...inputs), result, name);
   assert.deepEqual(calls.map(call => call.name), methods);
   assert.ok(calls.every(call => call.receiver instanceof Runtime));
-  assert.deepEqual(calls[0].args, [inputs[0]], "member removal forwards only the member ID");
-  assert.equal(calls[1].args[0], inputs[0], "the profiling reset argument is preserved");
-  assert.equal(calls[2].args[0], inputs[0], "argument identity is preserved");
-  assert.equal(calls[2].args[1], inputs[1]);
+  const scopes = calls.map(call => call.args[0]);
+  assert.ok(scopes.every(scope => scope instanceof AgentInvocation));
+  assert.equal(new Set(scopes).size, methods.length, "every entry point owns its scope");
+  assert.deepEqual(calls[0].args.slice(1), [inputs[0]], "member removal forwards the member ID");
+  assert.equal(calls[1].args[1], inputs[0], "the profiling reset argument is preserved");
+  assert.equal(calls[2].args[1], inputs[0], "argument identity is preserved");
+  assert.equal(calls[2].args[2], inputs[1]);
+  assert.equal(agent.fetch(inputs[0]), result);
+  assert.ok(calls.at(-1)?.args[0] instanceof AgentInvocation);
+  assert.ok(!scopes.includes(calls.at(-1)?.args[0]), "repeated calls get a fresh scope");
   assert.equal(agent[ARM_AGENT](123), result);
-  assert.deepEqual(calls.at(-1)?.args, [123]);
+  assert.equal(calls.at(-1)?.args[0], 123);
+  assert.ok(calls.at(-1)?.args[1] instanceof AgentInvocation);
   assert.equal(calls.at(-1)?.name, "arm", "the subclass capability uses the runtime alarm implementation");
   assert.equal(agent[DUE_HUMAN_INPUTS](456), result);
-  assert.deepEqual([calls.at(-1)?.name, calls.at(-1)?.args], ["dueHumanInputs", [456]], "the fixture capability uses the runtime's own expiry");
+  assert.ok(calls.at(-1)?.args[0] instanceof AgentInvocation);
+  assert.deepEqual([calls.at(-1)?.name, calls.at(-1)?.args[1]], ["dueHumanInputs", 456]);
   const disabled = new Agent(ctx, {});
   await assert.rejects(disabled.databaseProfile(), /Pilot database profiling is disabled/);
   assert.equal(calls.at(-1)?.name, "dueHumanInputs", "disabled profiling never reaches the runtime");

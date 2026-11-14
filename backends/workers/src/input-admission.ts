@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { releaseTurn } from "./control.ts";
 import { enqueueTerminalEvents } from "./event-log.ts";
 import { reqKey, type RequestRecord } from "./agent-types.ts";
@@ -10,13 +11,13 @@ export function inputAdmissionDeadline(records: RequestRecord[]): number {
 }
 
 /** Called under admission serialization. A refused prompt must not block later senders. */
-export async function releaseInputPrompts(runtime: AgentRuntime) {
+export async function releaseInputPrompts(runtime: AgentRuntime, invocation: AgentInvocation) {
   let changed = false, completed = false;
   for (const record of await runtime.records()) {
     if (!record.heldForInput || record.state === "completed" || (record.inputAdmissionRetry?.at ?? 0) > Date.now()) continue;
     const attempts = record.inputAdmissionRetry?.attempts ?? 0;
     try {
-      await runtime.admit({ id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint);
+      await runtime.admit(invocation, { id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint);
     } catch (error) {
       const current = await runtime.ctx.storage.get<RequestRecord>(reqKey(record.id)) ?? record;
       if (current.state === "completed") continue;
@@ -49,6 +50,6 @@ export async function releaseInputPrompts(runtime: AgentRuntime) {
   try {
     if (completed) await runtime.flushTerminalEvents();
   } finally {
-    if (changed) await runtime.arm();
+    if (changed) await runtime.arm(undefined, invocation);
   }
 }

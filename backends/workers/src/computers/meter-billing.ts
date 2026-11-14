@@ -24,15 +24,15 @@ export const CONTAINER_PROVIDER = "cloudflare";
  */
 export function meterBilling(env: KeyEnv & WebhookEnv, provider = CONTAINER_PROVIDER): MeterBilling {
   return {
-    async admit(payer: ComputerPayer) {
+    async admit(payer: ComputerPayer, invocation) {
       const { accounts } = await keyServices(env);
       if (payer.kind === "workflow") {
-        const refused = await accounts.runLimit(payer.tenant);
+        const refused = await accounts.runLimit(payer.tenant, invocation?.tenant(accounts.billing, payer.tenant));
         if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
         return;
       }
       await admitAuxiliaryUsage(env, payer, true, async () => {
-        const refused = await accounts.runLimit(payer.tenant);
+        const refused = await accounts.runLimit(payer.tenant, invocation?.tenant(accounts.billing, payer.tenant));
         if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
       });
     },

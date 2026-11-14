@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import { HttpRepoClient } from "./http-client.ts";
 import { RepoError, check, type Entry } from './repo-policy.ts';
 import type { RepoContext } from './registry.ts';
@@ -8,11 +9,11 @@ export async function mergeRefs(ctx: RepoContext, input: {
   from: string;
   mode?: 'ff' | 'merge' | 'squash';
   message?: string;
-}) {
+}, invocation?: AgentInvocation) {
   const mode = input.mode ?? 'merge';
   check(['ff', 'merge', 'squash'].includes(mode), 'bad_mode');
   if (ctx.repo instanceof HttpRepoClient) {
-    const [ours, theirs, quota] = await Promise.all([ctx.repo.resolve(input.into), ctx.repo.resolve(input.from), tierQuota(ctx)]);
+    const [ours, theirs, quota] = await Promise.all([ctx.repo.resolve(input.into), ctx.repo.resolve(input.from), tierQuota(ctx, invocation)]);
     if (ours.version === theirs.version || await ctx.storage.isAncestor(ctx.lineage, theirs.version, ours.version)) return { version: ours.version, changed: false };
     const result = await ctx.repo.merge(input.into, {
       theirs: theirs.version, quota, mode: mode === 'ff' ? 'ff-only' : mode,
@@ -31,7 +32,7 @@ export async function mergeRefs(ctx: RepoContext, input: {
   if (mode === 'ff' || (mode === 'merge' && base?.base === ours.version)) {
     if (base?.base !== ours.version)
       throw new RepoError('not_fast_forward', 409, 'not_fast_forward');
-    return setRefToVersion(ctx, { ref: input.into, version: theirs.version, expect: ours.version, newCommit: false, author, who: author, why: 'merge' });
+    return setRefToVersion(ctx, { ref: input.into, version: theirs.version, expect: ours.version, newCommit: false, author, who: author, why: 'merge' }, invocation);
   }
   const baseTree = base?.tree ?? EMPTY_TREE;
   const merged = await ctx.storage.merge(ctx.lineage, { base: baseTree, ours: ours.tree, theirs: theirs.tree, mode });
@@ -39,7 +40,7 @@ export async function mergeRefs(ctx: RepoContext, input: {
     throw new RepoError('conflicts', 409, 'conflicts', { conflicts: merged.conflicts });
   const parents = mode === 'squash' ? [ours.version] : [ours.version, theirs.version], message = input.message ?? `merge ${input.from}`, trailers = { 'Camel-User': author, 'Camel-Checkpoint': 'api', 'Camel-Op': 'merge' };
   const changes = await diffEntries(ctx, ours.tree, merged.tree);
-  await quota(ctx, await addedBytes(ctx, Object.values(changes).filter((entry): entry is Entry => entry !== null)));
+  await quota(ctx, await addedBytes(ctx, Object.values(changes).filter((entry): entry is Entry => entry !== null)), invocation);
   const c = await ctx.storage.commit(ctx.lineage, { parents, baseTree: merged.tree, changes: [], author, message, trailers });
   const result = await ctx.repo.cas({ ref: input.into, expect: ours.version, commit: { version: c.commit, tree: c.tree, parents, author, message, trailers, at: c.time * 1000 }, changes: { ...changes }, who: author, why: 'merge' });
   await reportUsage(ctx);

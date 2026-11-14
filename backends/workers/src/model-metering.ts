@@ -11,7 +11,7 @@ import { billingRunStop, creditRunStop, type BillingRunStop } from './billing-ru
 import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
 import type { Account } from './billing.ts';
-import type { AgentInvocation } from './agent-invocation.ts';
+import { AgentInvocation } from './agent-invocation.ts';
 import { MODEL_INVOCATION, PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 import { accountingModel, modelCallKind } from './model-call-context.ts';
 import { logUntrustedModelUsage } from './model-usage-log.ts';
@@ -51,10 +51,10 @@ export function meterProvider<P extends Provider<any>>(
     void profile(async () => {
       const identity = await context();
       const service = await modelAttempts(env);
-      const invocation: AgentInvocation | undefined = options[MODEL_INVOCATION];
+      const invocation: AgentInvocation = options[MODEL_INVOCATION] ?? new AgentInvocation();
       const billing = service.accounts.billing;
       let balance: Promise<Account> | undefined;
-      const reads = { ...invocation?.tenant(billing, identity.tenant), account: () => balance ??= billing.readAccount(identity.tenant) };
+      const reads = { ...invocation.tenant(billing, identity.tenant), account: () => balance ??= billing.readAccount(identity.tenant) };
       const credentials = Object.hasOwn(options, PREPARED_MODEL_CREDENTIALS)
         ? options[PREPARED_MODEL_CREDENTIALS]
         : await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope, reads);

@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { batchedEnding, childNotice, MULTI_AGENT_LIMITS, withBatch, type BatchedEnding } from './multi-agent-policy.ts';
 import { childUsageCost, readChildPayload, type DelegatedChild } from './delegation.ts';
 import type { Placement } from '../../../shared/owner.ts';
@@ -47,8 +48,8 @@ export interface NotificationHost {
   /** The owner's children table; one is made over `storage` when left out. */
   children?: ChildRows;
   /** This is an internal call. A public request cannot provide its own RuntimeNotice. */
-  submit(request: NoticeRequest, notice: RuntimeNotice, delivery: NoticeDelivery): Promise<unknown>;
-  admitWake(root: string, requestId: string): Promise<WakeDecision>;
+  submit(request: NoticeRequest, notice: RuntimeNotice, delivery: NoticeDelivery, invocation: AgentInvocation): Promise<unknown>;
+  admitWake(root: string, requestId: string, invocation: AgentInvocation): Promise<WakeDecision>;
   /** A human prompt must remain pending; a child finishing cannot supersede it. */
   humanPending?(): Promise<boolean>;
   /** Completion notices land between turns; a running wait may take the ending first. */
@@ -88,24 +89,24 @@ export class DelegationNotifications {
   private host: NotificationHost;
   private rows: ChildRows;
   constructor(host: NotificationHost) { this.host = host; this.rows = host.children ?? new ChildRows(host.storage); }
-  async deliver(child: DelegatedChild): Promise<void> {
+  async deliver(child: DelegatedChild, invocation = new AgentInvocation()): Promise<void> {
     const key = prefix + child.key;
     if (!await this.host.storage.get(key, { noCache: true })) await this.host.storage.put(key, outboxEntry(child), { noCache: true });
-    await this.send(key);
+    await this.send(key, invocation);
   }
-  async deliverMessage(request: NoticeRequest, notice: RuntimeNotice): Promise<unknown> {
+  async deliverMessage(request: NoticeRequest, notice: RuntimeNotice, invocation = new AgentInvocation()): Promise<unknown> {
     const key = prefix + request.id;
     if (!await this.host.storage.get(key, { noCache: true })) await this.host.storage.put(key, { request, notice } satisfies PendingNotice, { noCache: true });
-    return this.send(key);
+    return this.send(key, invocation);
   }
-  private send(key: string): Promise<unknown> {
+  private send(key: string, invocation: AgentInvocation): Promise<unknown> {
     const previous = this.active.get(key);
     if (previous) return previous;
-    const sending = this.sendPending(key).finally(() => { this.active.delete(key); });
+    const sending = this.sendPending(key, invocation).finally(() => { this.active.delete(key); });
     this.active.set(key, sending);
     return sending;
   }
-  private async sendPending(key: string) {
+  private async sendPending(key: string, invocation: AgentInvocation) {
     let pending = await this.host.storage.get<PendingNotice>(key, { noCache: true });
     if (!pending || pending.delivered) {
       // Carried by another notice's turn: a staged copy left by a crash before its discard goes now (discard is idempotent).
@@ -186,11 +187,11 @@ export class DelegationNotifications {
         // operation receipt alone does not prove that it can still take a steer.
         pending.wake = pending.notice.metadata.kind === 'message'
           ? { allowed: true, hour: Math.floor(Date.now() / 3_600_000) }
-          : await this.host.admitWake(pending.notice.root, pending.request.id);
+          : await this.host.admitWake(pending.notice.root, pending.request.id, invocation);
         await this.host.storage.put(key, pending, { noCache: true });
       }
       const delivery: NoticeDelivery = pending.delivery ?? (pending.wake!.allowed ? { run: true, ...(pending.steer ? { steer: true as const } : {}) } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.host.wakeLimit ?? MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` });
-      const receipt = await this.host.submit(pending.request, withBatch(pending.notice, pending.batch ?? []), delivery);
+      const receipt = await this.host.submit(pending.request, withBatch(pending.notice, pending.batch ?? []), delivery, invocation);
       await this.host.storage.put(key, { ...pending, delivered: true, receipt }, { noCache: true });
       return receipt;
     } catch (error) {
@@ -202,19 +203,19 @@ export class DelegationNotifications {
     }
   }
   /** An aborted parent still records queued child endings, without starting another turn. */
-  async abortPending() {
+  async abortPending(invocation = new AgentInvocation()) {
     for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
       if (notice.delivered) continue;
       await this.active.get(key);
       const pending = await this.host.storage.get<PendingNotice>(key, { noCache: true });
       if (!pending || pending.delivered) continue;
       await this.host.storage.put(key, { ...pending, delivery: { run: false, stopped: 'aborted', message: 'Aborted' } }, { noCache: true });
-      await this.send(key);
+      await this.send(key, invocation);
     }
   }
-  async drain() {
+  async drain(invocation = new AgentInvocation()) {
     for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
-      if (!notice.delivered || (notice.batch?.length && !notice.carriedDiscarded)) await this.send(key);
+      if (!notice.delivered || (notice.batch?.length && !notice.carriedDiscarded)) await this.send(key, invocation);
       else if (notice.batchedInto && !notice.discarded) await this.discardCarried(key, notice);
     }
   }

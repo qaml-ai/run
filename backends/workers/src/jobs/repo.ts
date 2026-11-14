@@ -1,3 +1,4 @@
+import { AgentInvocation } from "../agent-invocation.ts";
 import { HttpRepoClient, needsK5 } from "../repos/http-client.ts";
 import { repoContext, type RepoEnv, type RepoContext } from "../repos/registry.ts";
 import { branch, advanceRef } from "../repos/write.ts";
@@ -32,7 +33,7 @@ export async function finishJobRepo(ctx: RepoContext, spec: JobSpec, saved: Repo
     try {
       // The host's checkpoint commit is the job's result as it is (host authority): never re-committed here. It is
       // marked by the daemon's own trailers (Camel-Checkpoint: job, Camel-Job); Camel-Op on it is the daemon's to add.
-      const advanced = await measure("advanceMs", () => advanceRef(ctx, { ref: `job/${spec.id}`, expect: saved.expect, commit: result.camelfs!.commit!, root: result.camelfs!.root, fence: saved.fence, who: `job:${spec.id}`, why: "job checkpoint" }));
+      const advanced = await measure("advanceMs", () => advanceRef(ctx, { ref: `job/${spec.id}`, expect: saved.expect, commit: result.camelfs!.commit!, root: result.camelfs!.root, fence: saved.fence, who: `job:${spec.id}`, why: "job checkpoint" }, new AgentInvocation()));
       const version = advanced.version;
       result.camelfs.ref = `job/${spec.id}`;
       result.camelfs.version = result.camelfs.commit = version;

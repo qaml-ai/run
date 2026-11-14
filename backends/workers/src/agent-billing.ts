@@ -23,8 +23,7 @@ import type { AgentRuntime } from "./agent-runtime.ts";
 import { dbPhase } from "./db-profile.ts";
 
 export function createLimits(this: AgentRuntime): AgentRunLimits {
-  return new AgentRunLimits(this.ctx.storage, async () => {
-    const invocation = this.invocation();
+  return new AgentRunLimits(this.ctx.storage, async invocation => {
     const conf = await this.config();
     const run = await this.currentRun();
     return {
@@ -37,10 +36,10 @@ export function createLimits(this: AgentRuntime): AgentRunLimits {
         most: await tenantRunCaps(this.env, conf.tenantId, invocation),
       }),
     };
-  }, async () => {
+  }, async invocation => {
     const conf = await this.config(), run = await this.currentRun();
     const { accounts } = await keyServices(this.env);
-    const refusal = await accounts.runLimit(conf.tenantId, this.invocation().tenant(accounts.billing, conf.tenantId));
+    const refusal = await accounts.runLimit(conf.tenantId, invocation.tenant(accounts.billing, conf.tenantId));
     if (typeof refusal === "string") return { error: refusal, code: "spend_limit", stopped: "spend_limit", limit: "tenant" };
     return billingRunStop(refusal ?? await this.endUserLimit(conf, "params" in run ? run.params?.bucket as string | undefined : undefined, "params" in run ? run.params?.endUser as string | undefined : undefined));
   });
@@ -55,12 +54,12 @@ export async function agentSpendImpl(this: AgentRuntime,
   }
 
 export async function admitRequestImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   conf: Config,
   id: string,
   bucket?: string, endUser?: string): Promise<RunLimitsSnapshot> {
     let acquired = false;
     try {
-      const invocation = this.invocation();
       const { accounts } = await keyServices(this.env);
       const tenant = conf.tenantId;
       const policy = invocation.tenant(accounts.billing, tenant);
@@ -239,8 +238,8 @@ export async function usageForRequestImpl(this: AgentRuntime,
   }
 
 export async function flushBillingImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   propagate = false) {
-    const invocation = this.invocation();
     const run = () => flushBillingPass.call(this, propagate, invocation);
     const previous = this.billingFlush;
     // A failed pass still hands off the queue. Only its caller sees its error.
@@ -258,7 +257,7 @@ async function flushBillingPass(this: AgentRuntime, propagate: boolean, invocati
       await flushAttachmentTranscriptions(this.env, this.ctx.storage);
       await flushAgentMediaUsage(this.env, this.ctx.storage);
     } catch (error) {
-      await this.arm(Date.now() + 1000);
+      await this.arm(Date.now() + 1000, invocation);
       if (propagate) throw error;
     }
     for (const [key, receipt] of await this.ctx.storage.list<ModelReceipt>({
@@ -268,7 +267,7 @@ async function flushBillingPass(this: AgentRuntime, propagate: boolean, invocati
         await this.dbProfile.run("settle", () => applyModelReceipt(this.env, receipt));
         await this.ctx.storage.delete(key);
       } catch (error) {
-        await this.arm(Date.now() + 1000);
+        await this.arm(Date.now() + 1000, invocation);
         if (propagate) throw error;
       }
     }
@@ -297,7 +296,7 @@ async function flushBillingPass(this: AgentRuntime, propagate: boolean, invocati
         );
         await this.ctx.storage.delete(key);
       } catch (error) {
-        await this.arm(Date.now() + 1000);
+        await this.arm(Date.now() + 1000, invocation);
         if (propagate) throw error;
       }
     }

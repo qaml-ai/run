@@ -1,5 +1,6 @@
 import { agentRepoId } from "./repos/identity.ts";
 import { workspaceRefKey } from "./repos/tree-cache.ts";
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { placementOf, type Placement } from "../../../shared/owner.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { monitorRoutes, monitorToolsHost } from "./agent-monitors.ts";
@@ -67,7 +68,7 @@ export async function activityImpl(this: AgentRuntime) {
     return { busy: records.length > 0, activeRun: active?.id ?? null, queuedRuns: records.filter(record => record !== active).length };
   }
 
-export async function stateImpl(this: AgentRuntime) {
+export async function stateImpl(this: AgentRuntime, invocation: AgentInvocation) {
     const records = await this.records();
     for (const record of records)
       if (record.method === "execute" && record.state !== "completed")
@@ -78,7 +79,7 @@ export async function stateImpl(this: AgentRuntime) {
           (record) => record.state === "running" && record.method !== "execute",
         )
         .slice(0, 100)
-        .map((record) => this.settle(record.id, 1)),
+        .map((record) => this.settle(record.id, 1, invocation)),
     );
     const activity = await this.activity();
     const spend = await this.agentSpend(await this.config());
@@ -108,17 +109,17 @@ export async function historyImpl(this: AgentRuntime,
     return this.historyIndex.read(url);
   }
 
-export async function fetchImpl(this: AgentRuntime,
+export async function fetchImpl(this: AgentRuntime, invocation: AgentInvocation,
   request: Request): Promise<Response> {
     this.invalidateMaintenance();
-    return withMoneyMetrics(this.env, () => this.fetchRequest(request));
+    return withMoneyMetrics(this.env, () => this.fetchRequest(invocation, request));
   }
 
 /**
  * A child run its owner starts (delegation.ts `submitChild`): admitted like a prompt, with its placement stored on the
  * run. Binding-only, so a placement never comes from a public request. Refusals answer as the HTTP route would.
  */
-export async function admitDelegatedImpl(this: AgentRuntime,
+export async function admitDelegatedImpl(this: AgentRuntime, invocation: AgentInvocation,
   input: unknown, placement: Placement): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
     this.invalidateMaintenance();
     return withMoneyMetrics(this.env, async () => {
@@ -126,7 +127,7 @@ export async function admitDelegatedImpl(this: AgentRuntime,
         await this.config();
         // As the HTTP path did for a child's start (`fetch POST https://agent/requests` stored its request's origin).
         await this.ctx.storage.put("file-origin", "https://agent");
-        await this.submit(input, undefined, undefined, undefined, undefined, placementOf(placement));
+        await this.submit(invocation, input, undefined, undefined, undefined, undefined, placementOf(placement));
         return { ok: true as const };
       } catch (error) {
         const limited = admissionError(error);
@@ -141,7 +142,7 @@ export async function admitDelegatedImpl(this: AgentRuntime,
     });
   }
 
-export async function fetchRequestImpl(this: AgentRuntime,
+export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvocation,
   request: Request): Promise<Response> {
     try {
       const url = new URL(request.url),
@@ -286,7 +287,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             BACKGROUND_CONTEXT,
           );
           await this.ctx.storage.put("configuration", incoming);
-          await this.arm();
+          await this.arm(undefined, invocation);
           await this.observe();
           return json(incoming);
         });
@@ -301,7 +302,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           await this.promptPreparations.cancel();
           const conf = await this.ctx.storage.get<Config>("configuration");
           await this.markCancelledRequests();
-          await this.abortExecutions();
+          await this.abortExecutions(invocation);
           if (conf)
             await this.serializeComputer(() =>
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
@@ -319,13 +320,13 @@ export async function fetchRequestImpl(this: AgentRuntime,
           await this.eventsProcessed;
           if ((await this.records()).some(record => record.accepted && record.state !== "completed"))
             throw new Error("Agent shutdown is still settling accepted operations");
-          await this.flushBilling(true);
+          await this.flushBilling(invocation, true);
           await this.ctx.storage.put("deleted", true);
           this.repoTrees.retainHeads([]);
           if (conf) await this.closeWatchers(conf.tenantId, conf.id);
           for (const listener of this.listeners) listener(0, null);
           // Planned as a deleted agent now: it wakes only for what it still owes, or goes quiet (settleDeleted).
-          await this.arm();
+          await this.arm(undefined, invocation);
           return json({ deleted: true });
         });
         this.admission = deletion.catch(() => {});
@@ -350,7 +351,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           const service = new ComputerService(this.env, conf.tenantId);
           if (input.operation === "sweep") {
             await service.sweepAgent(conf.id);
-            await this.arm();
+            await this.arm(undefined, invocation);
             return json({ swept: true });
           }
           if (input.operation === "refresh") {
@@ -366,7 +367,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             return json(await service.confirmCleanup(conf.id));
           if (input.operation === "release") {
             await service.release(conf.id);
-            await this.arm();
+            await this.arm(undefined, invocation);
             return json({ released: true });
           }
           try {
@@ -379,7 +380,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
               ),
             );
           } finally {
-            await this.arm();
+            await this.arm(undefined, invocation);
           }
         });
       }
@@ -395,7 +396,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         this.env.TEST_HOOKS === "1" &&
         request.method === "POST"
       ) {
-        await this.flushBilling(true);
+        await this.flushBilling(invocation, true);
         return json({
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
         });
@@ -481,13 +482,13 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const schedule=await this.ctx.storage.get<Schedule>(`schedule:${decodeURIComponent(path.split('/')[2])}`);
         // A monitor's check is never run as a plain schedule, as on Node.
         if(!schedule || schedule.monitor) throw new HttpError(404,'Unknown schedule');
-        return json(await deliverScheduledRun(this.env,schedule,`schedule-run-${crypto.randomUUID()}`,input=>this.submit(input),work=>this.ctx.waitUntil(work)),202);
+        return json(await deliverScheduledRun(this.env,schedule,`schedule-run-${crypto.randomUUID()}`,input=>this.submit(invocation, input),work=>this.ctx.waitUntil(work)),202);
       }
       if (path.startsWith("/schedules/") && request.method === "DELETE") {
         const deleted = await this.ctx.storage.delete(
           `schedule:${decodeURIComponent(path.slice(11))}`,
         );
-        await this.arm();
+        await this.arm(undefined, invocation);
         return json({ deleted });
       }
       // Internal lineage for transcript consolidation includes every retained child, including named targets.
@@ -518,7 +519,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         ]);
         const { idempotencyKey, requestId, ...params } = input;
         return this.requestResponse(
-            await this.submit({
+            await this.submit(invocation, {
               id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
               method: "prompt",
               params,
@@ -551,7 +552,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           (await this.enabledTools(conf.config)).tools,
           this.attached.connected,
           this.sourceFailures,
-          refresh === "true" || (await this.state()).running,
+          refresh === "true" || (await this.state(invocation)).running,
         );
         if (url.searchParams.get("schemas") !== "true")
           for (const source of sources)
@@ -566,14 +567,14 @@ export async function fetchRequestImpl(this: AgentRuntime,
         return json(sources);
       }
       if (path === "/state" && request.method === "GET")
-        return json(await this.state());
+        return json(await this.state(invocation));
       if (path === "/requests" && request.method === "POST")
-        return this.requestResponse(await this.submit(await body(request, 6 * 1024 * 1024)));
+        return this.requestResponse(await this.submit(invocation, await body(request, 6 * 1024 * 1024)));
       if (path.startsWith("/requests/") && request.method === "GET") {
         const seconds = Number(url.searchParams.get("wait") ?? 0);
         if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
         const id = decodeURIComponent(path.slice(10));
-        const record = await waitForRequest(() => this.settle(id, 1), wake => {
+        const record = await waitForRequest(() => this.settle(id, 1, invocation), wake => {
           this.listeners.add(wake);
           return () => this.listeners.delete(wake);
         }, Math.min(25000, seconds * 1000), request.signal);
@@ -650,7 +651,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const conf = await this.config();
         const internal = (method: string, pathname: string, data?: unknown) => {
           const url = new URL(request.url); url.pathname = pathname;
-          return this.fetch(new Request(url, { method, headers: { "Content-Type": "application/json" }, ...(data ? { body: JSON.stringify(data) } : {}) }));
+          return this.fetch(invocation, new Request(url, { method, headers: { "Content-Type": "application/json" }, ...(data ? { body: JSON.stringify(data) } : {}) }));
         };
         const read = async (id: string) => {
           const decision = await decisionInputs(this).get(id);
@@ -683,7 +684,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const decision = answers.every((entry: { id: string }) => entry.id.startsWith("inp_"));
         // Decisions live in Postgres; blocking inputs live in Pi. The inbox answers route must partition these authorities.
         if (!decision && answers.some((entry: { id: string }) => entry.id.startsWith("inp_"))) throw new BadRequest("Answer decisions and blocking inputs in separate batches");
-        const answering = this.admission.then(async () => (decision ? answerDecisions(this, answers, request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api") : this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api")));
+        const answering = this.admission.then(async () => (decision ? answerDecisions(this, invocation, answers, request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api") : this.answerHumanInputs(invocation, answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api")));
         this.admission = answering.catch(() => {});
         const answered = await answering.catch(async error => {
           if (errorStatus(error, 500) === 409) {
@@ -700,8 +701,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
         // abort is the documented value (as on Node and in the SDKs); cancel, which this backend took first, stays an alias.
         if (params.children !== undefined && !['abort', 'keep', 'cancel'].includes(String(params.children))) throw new BadRequest('children is abort or keep');
         const aborting = this.admission.then(async () => {
-          const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
-          await this.state();
+          const stopped = await this.abortRequests(invocation, params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
+          await this.state(invocation);
           return json(stopped);
         });
         this.admission = aborting.catch(() => {});
@@ -747,11 +748,11 @@ export async function fetchRequestImpl(this: AgentRuntime,
         return json({ rotated: true });
       }
       if (path === "/events" && request.method === "GET") {
-        const selected = await this.negotiateAgentEvents(request);
+        const selected = await this.negotiateAgentEvents(invocation, request);
         if (selected) return selected;
         return request.headers.get("upgrade")?.toLowerCase() === "websocket"
-          ? await this.webSocketEvents(request)
-          : await this.events(request);
+          ? await this.webSocketEvents(invocation, request)
+          : await this.events(invocation, request);
       }
       if (path === "/computer" && request.method === "POST") {
         const inputBody = await body(request, 1100 * 1024);
@@ -786,6 +787,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           (conf.config.mounts ?? []) as never,
           path,
           this.repoTrees,
+          invocation,
         ))!;
       }
       if (path.startsWith("/files/")) {
@@ -799,6 +801,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.config.mounts as never,
           "turn",
           this.repoTrees,
+          invocation,
         );
       }
       return json({ error: "Unsupported backend operation", code: "NOT_FOUND" }, 404);

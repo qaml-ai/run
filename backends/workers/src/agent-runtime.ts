@@ -1,7 +1,6 @@
 import { BashSessions } from "./camelfs/bash.ts";
 import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { AgentInvocation } from "./agent-invocation.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
@@ -84,22 +83,11 @@ export class AgentRuntime extends AgentContext {
   }
 
   readonly repoTrees = new RepoTreeCache(this.ctx.storage);
-  // Pi and Lifecycle invoke long-lived callbacks without an invocation parameter.
-  // Keep their context isolated at the DO boundary, then pass policy reads explicitly.
-  private readonly invocations = new AsyncLocalStorage<AgentInvocation>();
-
-  invoke<T>(action: () => T): T {
-    return this.invocations.run(new AgentInvocation(), action);
-  }
-
-  invocation(): AgentInvocation {
-    return this.invocations.getStore() ?? new AgentInvocation();
-  }
 
   readonly sharedAgents = new SharedAgents(database(this.env));
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
 
-  async databaseProfile(reset = false) {
+  async databaseProfile(_invocation: AgentInvocation, reset = false) {
     if (!this.dbProfile.enabled) throw new Error("Pilot database profiling is disabled");
     await this.serial;
     await this.eventsProcessed;
@@ -107,8 +95,8 @@ export class AgentRuntime extends AgentContext {
     return { epoch: this.instanceId, ...this.dbProfile.snapshot(reset) };
   }
 
-  purgeAccountData(tenant: string, id: string) {
-    return purgeAccountDataImpl.call(this, tenant, id);
+  purgeAccountData(invocation: AgentInvocation, tenant: string, id: string) {
+    return purgeAccountDataImpl.call(this, invocation, tenant, id);
   }
 
   instanceId = crypto.randomUUID();
@@ -150,7 +138,7 @@ export class AgentRuntime extends AgentContext {
   delegateWakeLimit = (this.env as Env & { AGENT_WAKES_PER_HOUR?: string }).AGENT_WAKES_PER_HOUR;
 
   wakeBudget = new DelegationWakeBudget(this.ctx.storage, this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined);
-  admitDelegateWake(id: string): Promise<WakeDecision> {
+  admitDelegateWake(_invocation: AgentInvocation, id: string): Promise<WakeDecision> {
     return admitDelegateWakeImpl.call(this, id);
   }
 
@@ -177,21 +165,22 @@ export class AgentRuntime extends AgentContext {
   }
 
   receiveAgentMessage(
+    invocation: AgentInvocation,
     request: NoticeRequest,
     notice: RuntimeNotice,
   ): Promise<unknown> {
-    return receiveAgentMessageImpl.call(this, request, notice);
+    return receiveAgentMessageImpl.call(this, invocation, request, notice);
   }
 
-  receiveProgress(report: ChildProgressReport): Promise<Receipt> {
+  receiveProgress(_invocation: AgentInvocation, report: ChildProgressReport): Promise<Receipt> {
     return receiveProgressImpl.call(this, report);
   }
 
-  receiveEnding(ending: ChildEnding): Promise<Receipt> {
-    return receiveEndingImpl.call(this, ending);
+  receiveEnding(invocation: AgentInvocation, ending: ChildEnding): Promise<Receipt> {
+    return receiveEndingImpl.call(this, invocation, ending);
   }
 
-  hasChild(id: string): Promise<boolean> {
+  hasChild(_invocation: AgentInvocation, id: string): Promise<boolean> {
     return hasChildImpl.call(this, id);
   }
 
@@ -218,8 +207,8 @@ export class AgentRuntime extends AgentContext {
     return imageToolsImpl.call(this);
   }
 
-  admitRequest(conf: Config, id: string, bucket?: string, endUser?: string) {
-    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, conf, id, bucket, endUser));
+  admitRequest(invocation: AgentInvocation, conf: Config, id: string, bucket?: string, endUser?: string) {
+    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, invocation, conf, id, bucket, endUser));
   }
 
   toolFileBudgets = new Map<string, { left: number }>();
@@ -282,7 +271,7 @@ export class AgentRuntime extends AgentContext {
 
   private sessions?: BashSessions;
   get bashSessions() {
-    return this.sessions ??= new BashSessions(this.ctx.storage, this.env, work => this.ctx.waitUntil(work), at => this.arm(at),
+    return this.sessions ??= new BashSessions(this.ctx.storage, this.env, work => this.ctx.waitUntil(work), (at, invocation) => this.arm(at, invocation),
       (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
   }
 
@@ -406,18 +395,19 @@ export class AgentRuntime extends AgentContext {
   }
 
   onHuman(doc: { requests: Record<string, HumanInput> }) {
-    return onHumanImpl.call(this, doc);
+    return onHumanImpl.call(this, new AgentInvocation(), doc);
   }
 
   track(id: string) {
     return trackImpl.call(this, id);
   }
 
-  settle(id: string, waitMs: number): Promise<RequestRecord> {
-    return settleImpl.call(this, id, waitMs);
+  settle(id: string, waitMs: number, invocation?: AgentInvocation): Promise<RequestRecord> {
+    return settleImpl.call(this, id, waitMs, invocation);
   }
 
   submit(
+    invocation: AgentInvocation,
     input: unknown,
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
@@ -425,22 +415,22 @@ export class AgentRuntime extends AgentContext {
     member?: string,
     placement?: Placement,
   ) {
-    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint, member, placement);
+    return submitImpl.call(this, invocation, input, notice, delivery, acceptedFingerprint, member, placement);
   }
 
-  admitDelegated(input: unknown, placement: Placement) {
-    return admitDelegatedImpl.call(this, input, placement);
+  admitDelegated(invocation: AgentInvocation, input: unknown, placement: Placement) {
+    return admitDelegatedImpl.call(this, invocation, input, placement);
   }
 
   /** A settled input, including cancellation or expiry, releases prompts waiting behind it. */
   kickInputPrompts() {
-    const work = this.admission.then(() => releaseInputPrompts(this));
+    const work = this.admission.then(() => releaseInputPrompts(this, new AgentInvocation()));
     this.admission = work.catch(() => {});
     this.ctx.waitUntil(work);
   }
 
-  abortRequests(queued: 'cancel' | 'keep' = 'cancel', keepChildren = false) {
-    return abortRequestsImpl.call(this, queued, keepChildren);
+  abortRequests(invocation: AgentInvocation, queued: 'cancel' | 'keep' = 'cancel', keepChildren = false) {
+    return abortRequestsImpl.call(this, invocation, queued, keepChildren);
   }
 
   resumeKeptQueue() {
@@ -448,56 +438,56 @@ export class AgentRuntime extends AgentContext {
   }
 
   /** A notify delivery for a repo this agent watches: an idempotent outbox row, drained by the alarm. */
-  async stageRepoMove(move: RefMove) {
+  async stageRepoMove(_invocation: AgentInvocation, move: RefMove) {
     await stageRepoMove(this.ctx.storage, move);
     // A foreign move updates reachability only; it never derives a tree (R4).
     this.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
   }
-  vmEnded(delivery: string, vm: string) { return this.bashSessions.ended(delivery, vm); }
+  vmEnded(_invocation: AgentInvocation, delivery: string, vm: string) { return this.bashSessions.ended(delivery, vm); }
 
-  removeMember(member: string) {
+  removeMember(_invocation: AgentInvocation, member: string) {
     return removeMemberImpl.call(this, member);
   }
 
-  cancelRequest(id: string) {
-    return cancelRequestImpl.call(this, id);
+  cancelRequest(invocation: AgentInvocation, id: string) {
+    return cancelRequestImpl.call(this, invocation, id);
   }
 
   cancellations = new Set<string>();
-  resumeCancellation(record: RequestRecord) {
-    return resumeCancellationImpl.call(this, record);
+  resumeCancellation(invocation: AgentInvocation, record: RequestRecord) {
+    return resumeCancellationImpl.call(this, invocation, record);
   }
 
-  restoreCancellations() {
-    return restoreCancellationsImpl.call(this);
+  restoreCancellations(invocation: AgentInvocation) {
+    return restoreCancellationsImpl.call(this, invocation);
   }
 
-  abortExecutions() {
-    return abortExecutionsImpl.call(this);
+  abortExecutions(invocation: AgentInvocation) {
+    return abortExecutionsImpl.call(this, invocation);
   }
 
   markCancelledRequests() {
     return markCancelledRequestsImpl.call(this);
   }
 
-  cancelHostIntent(record: RequestRecord) {
-    return cancelHostIntentImpl.call(this, record);
+  cancelHostIntent(invocation: AgentInvocation, record: RequestRecord) {
+    return cancelHostIntentImpl.call(this, invocation, record);
   }
 
   cancelHumanInputs(requestId?: string) {
     return cancelHumanInputsImpl.call(this, requestId);
   }
 
-  startHostRequest(intent: RequestRecord) {
-    return startHostRequestImpl.call(this, intent);
+  startHostRequest(invocation: AgentInvocation, intent: RequestRecord) {
+    return startHostRequestImpl.call(this, invocation, intent);
   }
 
-  restoreHostAdmissions() {
-    return restoreHostAdmissionsImpl.call(this);
+  restoreHostAdmissions(invocation: AgentInvocation) {
+    return restoreHostAdmissionsImpl.call(this, invocation);
   }
 
-  releaseConfigurationWaiters(order: number) {
-    return releaseConfigurationWaitersImpl.call(this, order);
+  releaseConfigurationWaiters(invocation: AgentInvocation, order: number) {
+    return releaseConfigurationWaitersImpl.call(this, invocation, order);
   }
 
   configureRequest(input: unknown, replacement = false, origin?: string) {
@@ -517,6 +507,7 @@ export class AgentRuntime extends AgentContext {
   }
 
   admit(
+    invocation: AgentInvocation,
     input: unknown,
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
@@ -524,39 +515,39 @@ export class AgentRuntime extends AgentContext {
     member?: string,
     placement?: Placement,
   ) {
-    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint, member, placement);
+    return admitImpl.call(this, invocation, input, notice, delivery, acceptedFingerprint, member, placement);
   }
 
   activity() {
     return activityImpl.call(this);
   }
 
-  state() {
-    return stateImpl.call(this);
+  state(invocation: AgentInvocation) {
+    return stateImpl.call(this, invocation);
   }
 
   history(url: URL) {
     return historyImpl.call(this, url);
   }
 
-  answerHumanInputs(answers: Array<{ id: string; body: unknown }>, via: "api" | "agent" | "channel", system?: "expired" | "superseded") {
-    return answerHumanInputsImpl.call(this, answers, via, system);
+  answerHumanInputs(invocation: AgentInvocation, answers: Array<{ id: string; body: unknown }>, via: "api" | "agent" | "channel", system?: "expired" | "superseded") {
+    return answerHumanInputsImpl.call(this, invocation, answers, via, system);
   }
 
-  closeHumanInputs(system: "expired" | "superseded", sender?: string, shared = false) {
-    return closeHumanInputsImpl.call(this, system, sender, shared);
+  closeHumanInputs(invocation: AgentInvocation, system: "expired" | "superseded", sender?: string, shared = false) {
+    return closeHumanInputsImpl.call(this, invocation, system, sender, shared);
   }
 
-  dueHumanInputs(at: number) {
-    return dueHumanInputsImpl.call(this, at);
+  dueHumanInputs(invocation: AgentInvocation, at: number) {
+    return dueHumanInputsImpl.call(this, invocation, at);
   }
 
-  fetch(request: Request): Promise<Response> {
-    return this.dbProfile.run(new URL(request.url).pathname === "/history" ? "history" : "other", () => fetchImpl.call(this, request));
+  fetch(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return this.dbProfile.run(new URL(request.url).pathname === "/history" ? "history" : "other", () => fetchImpl.call(this, invocation, request));
   }
 
-  fetchRequest(request: Request): Promise<Response> {
-    return fetchRequestImpl.call(this, request);
+  fetchRequest(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return fetchRequestImpl.call(this, invocation, request);
   }
 
   requestUsage(record: RequestRecord, usage: Awaited<ReturnType<AgentRuntime["usageForRequest"]>>) {
@@ -571,8 +562,8 @@ export class AgentRuntime extends AgentContext {
     return usageForRequestImpl.call(this, id);
   }
 
-  flushBilling(propagate = false) {
-    return flushBillingImpl.call(this, propagate);
+  flushBilling(invocation: AgentInvocation, propagate = false) {
+    return flushBillingImpl.call(this, invocation, propagate);
   }
 
   scheduleTools(): ScheduleToolsHost {
@@ -583,24 +574,24 @@ export class AgentRuntime extends AgentContext {
     return createScheduleImpl.call(this, raw);
   }
 
-  arm(retry?: number) {
-    return armImpl.call(this, retry);
+  arm(retry?: number, invocation = new AgentInvocation()) {
+    return armImpl.call(this, invocation, retry);
   }
 
-  onStart() {
-    return this.dbProfile.run("other", () => onStartImpl.call(this));
+  onStart(invocation: AgentInvocation) {
+    return this.dbProfile.run("other", () => onStartImpl.call(this, invocation));
   }
 
-  restorePending() {
-    return restorePendingImpl.call(this);
+  restorePending(invocation: AgentInvocation) {
+    return restorePendingImpl.call(this, invocation);
   }
 
-  onJob(context: { job: { fn: string } }) {
-    return this.dbProfile.run("other", () => onJobImpl.call(this, context));
+  onJob(invocation: AgentInvocation, context: { job: { fn: string } }) {
+    return this.dbProfile.run("other", () => onJobImpl.call(this, invocation, context));
   }
 
-  wake() {
-    return wakeImpl.call(this);
+  wake(invocation: AgentInvocation) {
+    return wakeImpl.call(this, invocation);
   }
 
   recoverWatchers() {
@@ -615,14 +606,15 @@ export class AgentRuntime extends AgentContext {
     return checkWatchersImpl.call(this, tenant, agent);
   }
 
-  webSocketEvents(request: Request): Promise<Response> {
-    return webSocketEventsImpl.call(this, request);
+  webSocketEvents(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return webSocketEventsImpl.call(this, invocation, request);
   }
 
   negotiateAgentEvents(
+    invocation: AgentInvocation,
     request: Request,
   ): Promise<Response | undefined> {
-    return negotiateAgentEventsImpl.call(this, request);
+    return negotiateAgentEventsImpl.call(this, invocation, request);
   }
 
   restoreWebSockets() {
@@ -641,28 +633,28 @@ export class AgentRuntime extends AgentContext {
     return retireAttachedSocketImpl.call(this, socket);
   }
 
-  webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) {
+  webSocketMessage(_invocation: AgentInvocation, socket: WebSocket, _data: string | ArrayBuffer) {
     return webSocketMessageImpl.call(this, socket, _data);
   }
 
-  webSocketClose(socket: WebSocket, code: number) {
+  webSocketClose(_invocation: AgentInvocation, socket: WebSocket, code: number) {
     return webSocketCloseImpl.call(this, socket, code);
   }
 
-  webSocketError(socket: WebSocket) {
-    return webSocketErrorImpl.call(this, socket);
+  webSocketError(invocation: AgentInvocation, socket: WebSocket) {
+    return webSocketErrorImpl.call(this, invocation, socket);
   }
 
-  replayEvents(request: Request) {
-    return replayEventsImpl.call(this, request);
+  replayEvents(invocation: AgentInvocation, request: Request) {
+    return replayEventsImpl.call(this, invocation, request);
   }
 
   runReplay(request: Request, id: string): Generator<{ id: number; data: unknown }> {
     return runReplayImpl.call(this, request, id);
   }
 
-  events(request: Request): Promise<Response> {
-    return eventsImpl.call(this, request);
+  events(invocation: AgentInvocation, request: Request): Promise<Response> {
+    return eventsImpl.call(this, invocation, request);
   }
 
 }

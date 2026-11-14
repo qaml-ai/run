@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { Buffer } from 'node:buffer';
 import { Imager, imageRequest, imageOptions, type ImageSource } from './media/images.ts';
 import { Transcriber, openaiTranscription, transcribeRequest, languageInput } from './media/transcription.ts';
@@ -40,7 +41,7 @@ const json = (value: unknown) => Response.json(value, { headers: { 'cache-contro
 const testConfig = (env: MediaBindings) => env.TEST_MODE === '1' ? JSON.parse(env.TEST_MEDIA_TENANTS ?? '{}') : {};
 
 /** Credentials resolve at call time; they never enter agent history or public responses. */
-export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string) {
+export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string, invocation?: AgentInvocation) {
   const { accounts, keyScopes } = services ?? await keyServices(env);
   // Match src/node.ts's standalone media resolution: an address-only scope is
   // a gateway that needs no key, while an absent entry falls back to the account.
@@ -49,10 +50,11 @@ export async function mediaKey(env: MediaBindings, tenant: string, scope: string
     apiKey: entry.apiKey ?? '', ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
     ...(entry.headers ? { headers: entry.headers } : {}), platform: false,
   };
-  const resolved = await accounts.providerKey(tenant, provider);
+  const reads = invocation?.tenant(accounts.billing, tenant);
+  const resolved = await accounts.providerKey(tenant, provider, reads);
   if (resolved) {
     const platform = chargesPlatform(resolved.source);
-    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    if (platform) { const limited = await accounts.billing.creditLimit(tenant, reads); if (limited) throw limited; }
     const azure = platform && provider === 'openai' && azureDeployment ? mediaAzure(env) : undefined;
     if (azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform: true };
     return { apiKey: resolved.key, platform };

@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import {
   GenerationTask,
   hook,
@@ -76,25 +77,25 @@ export function runLimit(
 
 export class AgentRunLimits {
   private storage: DurableObjectStorage;
-  private current: () => Promise<{
+  private current: (invocation: AgentInvocation) => Promise<{
     config: AgentConfiguration;
     run: Run;
     agentId?: string;
     childCost?: () => Promise<number>;
     authoritative?: () => Promise<{ spend: SpendLimit | null; most: typeof defaults }>;
   }>;
-  private billing?: () => Promise<BillingRunStop | undefined>;
+  private billing?: (invocation: AgentInvocation) => Promise<BillingRunStop | undefined>;
   constructor(
     storage: DurableObjectStorage,
     current: AgentRunLimits["current"],
-    billing?: () => Promise<BillingRunStop | undefined>,
+    billing?: (invocation: AgentInvocation) => Promise<BillingRunStop | undefined>,
   ) {
     this.storage = storage;
     this.current = current;
     this.billing = billing;
   }
-  async check(now = Date.now(), billing: boolean | "metered" = true) {
-    const { config, run, agentId, authoritative, childCost: readChildCost } = await this.current();
+  async check(now = Date.now(), billing: boolean | "metered" = true, invocation = new AgentInvocation()) {
+    const { config, run, agentId, authoritative, childCost: readChildCost } = await this.current(invocation);
     if (!run.state || run.state === "completed") return;
     const snapshot = billing === false ? run.limitsSnapshot : undefined;
     const { spend, most } = snapshot ?? await authoritative?.() ?? {};
@@ -108,12 +109,12 @@ export class AgentRunLimits {
     const stopped =
       runLimit(config, run, { ...usage, costUsd: usage.costUsd + childCost }, now, most) ??
       (agentId ? agentSpendRefusal(agentId, spend ?? null, pending) : undefined) ??
-      (billing === true ? await this.billing?.() : undefined);
+      (billing === true ? await this.billing?.(invocation) : undefined);
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;
   }
-  async deadline() {
-    const { config, run, authoritative } = await this.current();
+  async deadline(invocation = new AgentInvocation()) {
+    const { config, run, authoritative } = await this.current(invocation);
     if (run.state !== "running" || run.began === undefined) return Infinity;
     const most = run.limitsSnapshot?.most ?? (await authoritative?.())?.most;
     return run.began + runCaps(config, run, most).maxSeconds * 1000;
@@ -123,15 +124,9 @@ export class AgentRunLimits {
       name: "camel.run-limits",
       hooks: [
         hook(GenerationTask, {
-          beforeRequest: async () => {
-            // The metered stream checks tenant and end-user credit immediately before each provider call.
-            const stopped = await this.check(Date.now(), "metered");
-            if (stopped) throw new Error(stopped.error);
-            return undefined;
-          },
           afterResponse: async (message, api, context) => {
             if (message.stopReason === "error" && !(message.usage as { billingAttemptId?: string }).billingAttemptId) return;
-            const { run } = await this.current();
+            const { run } = await this.current(new AgentInvocation());
             const key = `run-response:${run.id}:${api.taskId}:${message.timestamp}`;
             if (await this.storage.get(key)) return;
             await this.storage.transaction(async (tx) => {

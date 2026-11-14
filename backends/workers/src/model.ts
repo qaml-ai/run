@@ -97,10 +97,9 @@ export function modelRuntime(
       catalog.set(providerId, entries);
       const provider: Provider = {
         id: providerId, name: providerId,
-        auth: { apiKey: { name: providerId, resolve: async () => {
-          const credential = await hooks.credentials?.(providerId);
-          return credential ? { auth: { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless", baseUrl: credential.baseUrl, headers: credential.headers } } : { auth: {} };
-        } } },
+        // Pi resolves auth before calling the stream. withSettings prepares
+        // credentials inside the provider step, with the same policy as billing.
+        auth: { apiKey: { name: providerId, resolve: async () => ({ auth: {} }) } },
         getModels: () => [...entries.values()],
         stream: (model, context, options) => streamApi(model, false, context, options),
         streamSimple: (model, context, options) => streamApi(model, true, context, options),

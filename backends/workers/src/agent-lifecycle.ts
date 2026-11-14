@@ -2,6 +2,7 @@ import { bashEnabled } from "./camelfs/bash.ts";
 import { drainRepoMoves, repoMoveDeadline } from "./camelfs/notify.ts";
 import { deliverRepoMoves } from "./repos/notify.ts";
 import type { RepoEnv } from "./repos/registry.ts";
+import type { AgentInvocation } from "./agent-invocation.ts";
 export { configImpl } from './agent-config.ts';
 import { ChildOutbox, deletedDeadline, settleDeleted } from "./ending-outbox.ts";
 import { goneStart, stageMissedEndings } from "./agent-endings.ts";
@@ -28,7 +29,7 @@ import type { AgentRuntime } from "./agent-runtime.ts";
 import { purgeStart } from "./account-purge.ts";
 
 /** Erase a revoked account's journal only after the normal shutdown completed. */
-export async function purgeAccountDataImpl(this: AgentRuntime,
+export async function purgeAccountDataImpl(this: AgentRuntime, invocation: AgentInvocation,
   tenant: string,
   id: string) {
     await this.admission;
@@ -38,7 +39,7 @@ export async function purgeAccountDataImpl(this: AgentRuntime,
     for (;;) {
       const pending = await Promise.all(["billing:", "model-billing:", "image-billing:", "transcription-billing:"].map(prefix => this.ctx.storage.list({ prefix, limit: 1 })));
       if (pending.every(rows => rows.size === 0)) break;
-      await this.flushBilling(true);
+      await this.flushBilling(invocation, true);
     }
     await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
     await this.closeWatchers(tenant, id);
@@ -78,7 +79,7 @@ export async function createScheduleImpl(this: AgentRuntime,
     return schedule;
   }
 
-export async function armImpl(this: AgentRuntime,
+export async function armImpl(this: AgentRuntime, invocation: AgentInvocation,
   retry?: number) {
     this.invalidateMaintenance();
     const generation = this.maintenanceGeneration;
@@ -146,7 +147,7 @@ export async function armImpl(this: AgentRuntime,
       await this.batchQueue.deadline(config),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       await this.ctx.storage.get<number>("decision-input-deadline") ?? Infinity,
-      deleted || (config.expiresAt && config.expiresAt <= Date.now()) ? Infinity : await this.limits.deadline(),
+      deleted || (config.expiresAt && config.expiresAt <= Date.now()) ? Infinity : await this.limits.deadline(invocation),
       ...this.ctx.getWebSockets().filter(socket => socket.readyState === 1).map(socket => (socket.deserializeAttachment() as EventSubscription)?.browser?.exp ?? Infinity),
     );
     const current = generation === this.maintenanceGeneration;
@@ -167,9 +168,9 @@ export async function armImpl(this: AgentRuntime,
       });
   }
 
-export async function onStartImpl(this: AgentRuntime) {
+export async function onStartImpl(this: AgentRuntime, invocation: AgentInvocation) {
     const began = Date.now(), stuck = startStuck(this, "onStart");
-    try { return await withMoneyMetrics(this.env, () => this.restorePending()); }
+    try { return await withMoneyMetrics(this.env, () => this.restorePending(invocation)); }
     finally { clearTimeout(stuck); slowStart(this, "onStart", began); }
   }
 
@@ -195,7 +196,7 @@ export function startStuck(runtime: AgentRuntime, step: string) {
   return setTimeout(() => console.warn(JSON.stringify({ type: "agent_start_stuck", step, sinceConstructedMs: Date.now() - runtime.constructedAt })), 10_000);
 }
 
-export async function restorePendingImpl(this: AgentRuntime) {
+export async function restorePendingImpl(this: AgentRuntime, invocation: AgentInvocation) {
     const sinceConstructed = Date.now() - this.constructedAt;
     if (sinceConstructed > SLOW_START_STEP_MS) console.warn(JSON.stringify({ type: "agent_start_slow", step: "before onStart", ms: sinceConstructed, sinceConstructedMs: sinceConstructed }));
     // A deleted or expired agent restores nothing: none of its work runs again, and each step reads its configuration,
@@ -212,10 +213,10 @@ export async function restorePendingImpl(this: AgentRuntime) {
     this.configurationQueue.kick();
     await timed(this, "promptPreparations.sweep", () => this.promptPreparations.sweep(Date.now(), true));
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
-    await timed(this, "restoreCancellations", () => this.restoreCancellations());
-    await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
+    await timed(this, "restoreCancellations", () => this.restoreCancellations(invocation));
+    await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions(invocation));
     await timed(this, "delegation.recover", () => this.delegation.recover());
-    await timed(this, "notifications.drain", () => this.notifications.drain());
+    await timed(this, "notifications.drain", () => this.notifications.drain(invocation));
     await timed(this, "outbox", async () => { await stageMissedEndings(this, await this.records()); await this.outbox.flush(); });
     // Pi restores its own work on startup. Restore the adapter's result/receipt
     // waiters too, so completion is billed without requiring a client poll.
@@ -230,7 +231,7 @@ export async function restorePendingImpl(this: AgentRuntime) {
         .size ||
       (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 })).size
     )
-      this.ctx.waitUntil(this.flushBilling());
+      this.ctx.waitUntil(this.flushBilling(invocation));
     // The Pi commit precedes stream emission. A crash in between leaves no outbox row.
     // Re-stage retained inputs, including settled ones, before flushing on every start.
     const mirrorConfig = await this.ctx.storage.get<Config>("configuration");
@@ -240,20 +241,20 @@ export async function restorePendingImpl(this: AgentRuntime) {
     this.batchQueue.kick();
     // Recover a settlement whose admission kick was interrupted by an eviction.
     this.kickInputPrompts();
-    await timed(this, "arm", () => this.arm());
+    await timed(this, "arm", () => this.arm(undefined, invocation));
     // A cold-start watchdog still performs the complete recovery pass. Its
     // waiters and maintenance schedule have only just been restored.
     this.invalidateMaintenance();
   }
 
-export async function onJobImpl(this: AgentRuntime,
+export async function onJobImpl(this: AgentRuntime, invocation: AgentInvocation,
   context: { job: { fn: string } }) {
     return withMoneyMetrics(this.env, async () => {
       if (context.job.fn !== "camel-wake") return;
       const maintenance = this.maintenance;
       if (maintenance?.tracksRuns && Date.now() < maintenance.at &&
           !await this.notifications.pending() && (await this.delegation.children()).length === 0 &&
-          !await this.limits.check(Date.now(), false) && this.maintenance === maintenance && Date.now() < maintenance.at) {
+          !await this.limits.check(Date.now(), false, invocation) && this.maintenance === maintenance && Date.now() < maintenance.at) {
         await this.lifecycle.jobs.push({
           id: "camel-wake",
           fn: "camel-wake",
@@ -261,15 +262,15 @@ export async function onJobImpl(this: AgentRuntime,
         });
         return;
       }
-      await this.wake();
+      await this.wake(invocation);
     });
   }
 
-export async function wakeImpl(this: AgentRuntime) {
+export async function wakeImpl(this: AgentRuntime, invocation: AgentInvocation) {
     if (await this.ctx.storage.get("deleted")) {
       // Each step logs and goes on: whatever fails, arm() below (in deletedWake) still plans the next wake for what is
       // owed, so a failed billing flush is retried rather than left until the account's purge.
-      await this.flushBilling().catch(error => failure(this.env, "deleted_agent_billing_flush_failed", error));
+      await this.flushBilling(invocation).catch(error => failure(this.env, "deleted_agent_billing_flush_failed", error));
       await this.flushTerminalEvents().catch(error => failure(this.env, "deleted_agent_events_flush_failed", error));
       await stageMissedEndings(this, await this.records()).catch(error => failure(this.env, "deleted_agent_stage_endings_failed", error));
       // A child deleted or expired mid-run staged a failed ending for its owner: deliver it, and keep retrying (the
@@ -289,7 +290,7 @@ export async function wakeImpl(this: AgentRuntime) {
       this.configurationQueue.kick();
       await this.promptPreparations.sweep();
       await this.resumeKeptQueue();
-      await this.restoreCancellations();
+      await this.restoreCancellations(invocation);
     }
     if (conf)
       await this.serializeComputer(() =>
@@ -302,34 +303,34 @@ export async function wakeImpl(this: AgentRuntime) {
     if (conf?.expiresAt && conf.expiresAt <= Date.now()) {
       await this.promptPreparations.cancel();
       await this.markCancelledRequests();
-      await this.abortExecutions();
+      await this.abortExecutions(invocation);
       await this.ctx.storage.put("deleted", true);
       if (conf) await this.closeWatchers(conf.tenantId, conf.id);
       await this.delegation.destroy();
       await this.harness.session().abort();
       await this.cancelHumanInputs();
       // Unsettled turns are still charged from their durable receipts below.
-      await this.flushBilling();
-      await this.arm();
+      await this.flushBilling(invocation);
+      await this.arm(undefined, invocation);
       return;
     }
-    if (conf && bashEnabled(this.env)) await this.bashSessions.wake(conf);
+    if (conf && bashEnabled(this.env)) await this.bashSessions.wake(conf, invocation);
     await restageInputMirrors(this);
-    await this.flushBilling();
+    await this.flushBilling(invocation);
     await this.flushTerminalEvents();
     this.ctx.waitUntil(flushScheduleOutcomes(this));
-    const expire = this.admission.then(() => this.closeHumanInputs("expired"));
+    const expire = this.admission.then(() => this.closeHumanInputs(invocation, "expired"));
     this.admission = expire.catch(() => {});
     await expire;
-    await expireDecisions(this);
+    await expireDecisions(this, invocation);
     this.kickInputPrompts();
-    await this.restoreHostAdmissions();
+    await this.restoreHostAdmissions(invocation);
     // A call's live credit hold reserves its funds. Only check available credit
     // between calls; checking here could abort work that already reserved it.
-    if (await this.limits.check(Date.now(), false)) await this.harness.session().abort();
+    if (await this.limits.check(Date.now(), false, invocation)) await this.harness.session().abort();
     await this.delegation.recover();
-    await this.notifications.drain();
-    await drainRepoMoves(this.ctx.storage, async moves => deliverRepoMoves(this.env as RepoEnv, await this.config(), moves, request => this.fetch(request)))
+    await this.notifications.drain(invocation);
+    await drainRepoMoves(this.ctx.storage, async moves => deliverRepoMoves(this.env as RepoEnv, await this.config(), moves, request => this.fetch(invocation, request)))
       .catch(error => console.error("Repo watcher delivery failed", String(error)));
     await this.outbox.flush();
     this.batchQueue.kick();
@@ -338,7 +339,7 @@ export async function wakeImpl(this: AgentRuntime) {
         this.track(record.id);
       if (record.method === "prompt" && !record.accepted && !record.noticeQueued && !record.heldForInput) {
         try {
-          await this.submit({
+          await this.submit(invocation, {
             id: record.id,
             method: record.method,
             params: record.params,
@@ -348,7 +349,7 @@ export async function wakeImpl(this: AgentRuntime) {
     }
     const now = Date.now();
     // Messages monitors still owe the agent, then their due checks (agent-monitors.ts).
-    await flushMonitors(this).catch(error => failure(this.env, "monitor_flush_failed", error));
+    await flushMonitors(this, invocation).catch(error => failure(this.env, "monitor_flush_failed", error));
     await collectChecks(this, now).catch(error => failure(this.env, "monitor_gc_failed", error));
     for (const [key, schedule] of await this.ctx.storage.list<Schedule>({
       prefix: "schedule:",
@@ -356,12 +357,12 @@ export async function wakeImpl(this: AgentRuntime) {
     })) {
       if ((schedule.retryAt ?? schedule.dueAt) > now) continue;
       if (schedule.monitor) {
-        await monitorDue(this, schedule, now).catch(error => failure(this.env, "monitor_due_failed", error));
+        await monitorDue(this, invocation, schedule, now).catch(error => failure(this.env, "monitor_due_failed", error));
         continue;
       }
       try {
         const occurrence = `schedule-${schedule.id}-${schedule.dueAt}`;
-        await deliverScheduledRun(this.env, schedule, occurrence, input=>this.submit(input), work=>this.ctx.waitUntil(work));
+        await deliverScheduledRun(this.env, schedule, occurrence, input=>this.submit(invocation, input), work=>this.ctx.waitUntil(work));
         if (schedule.cron || schedule.calendar || schedule.everySeconds) {
           delete schedule.retryAt;
           schedule.failures = 0;
@@ -408,5 +409,5 @@ export async function wakeImpl(this: AgentRuntime) {
         );
       }
     }
-    await this.arm();
+    await this.arm(undefined, invocation);
   }

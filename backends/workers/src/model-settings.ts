@@ -12,7 +12,7 @@ import { gatewayUrl } from "./model-gateway.ts";
 import { FETCH_APIS } from "./model-call-fetch.ts";
 import { streamTimeouts, watchedStream, isStalled, type Stall } from "./model-stream.ts";
 import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-options.ts";
-import type { AgentInvocation } from "./agent-invocation.ts";
+import { AgentInvocation } from "./agent-invocation.ts";
 import { MODEL_INVOCATION, PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
 import { modelCallKind } from "./model-call-context.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
@@ -28,15 +28,14 @@ export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Re
 export type ModelHooks = {
   agentId?: () => Promise<string>;
   authorizeRepoFile?: (file:import("./attachment-policy.ts").RepoFileRef)=>Promise<boolean>;
-  beforeRequest?: () => Promise<void>;
+  beforeRequest?: (invocation: AgentInvocation) => Promise<void>;
   onStreamEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
   onDiscardedOutput?: (message: AssistantMessage) => void | Promise<void>;
   onRetryEvent?: (event: ModelRetryEvent) => void | Promise<void>;
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
-  invocation?: () => AgentInvocation;
-  credentials?: (provider: string, invocation?: AgentInvocation) => Promise<ModelCredentials | undefined>;
+  credentials?: (provider: string, invocation: AgentInvocation) => Promise<ModelCredentials | undefined>;
   endpoints?: ModelEndpoints;
   customProviders?: CustomProviders;
 };
@@ -57,11 +56,13 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
   /** Gemini's refusals of another provider's reasoning, remembered for this agent's later Gemini calls (gemini-reasoning.ts). */
   const reasoning = new ReasoningDrop();
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
-  const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}, invocation = hooks.invocation?.()) => {
+  const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {},
+    previous?: { context: TranscriptContext; toolChoice?: unknown }) => {
+    const invocation = new AgentInvocation();
     const callKind = modelCallKind(context);
-    await hooks.beforeRequest?.();
+    await hooks.beforeRequest?.(invocation);
     const config = await hooks.settings?.() ?? {};
-    if (config.model?.startsWith("camelrun/")) {
+    if (!previous && config.model?.startsWith("camelrun/")) {
       const user = config.requestId ?? String([...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0);
       if (!routing || routing.user !== user) routing = { user, failures: [] };
       let selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
@@ -74,6 +75,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       }
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
+    const selected = model;
     const credential = await hooks.credentials?.(model.provider, invocation);
     if (hooks.credentials && !credential && config.keyScope)
       throw new Error(`No ${model.provider} API key is configured for key scope ${config.keyScope} or this tenant; set one with PUT /v1/key-scopes/${config.keyScope}/providers/${model.provider}`);
@@ -89,7 +91,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
     let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
     if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider, invocation))?.apiKey)) fallback = undefined;
     const virtualNext = config.model?.startsWith("camelrun/") ? routeModel(resolveModel(config.model), { reason: "retry", failed: model }) : undefined;
-    const structured = callKind === "compaction" ? { context, toolChoice: undefined } : outputRequest.prepare(model, context, config);
+    const structured = previous ?? (callKind === "compaction" ? { context, toolChoice: undefined } : outputRequest.prepare(model, context, config));
     const { toolChoice } = structured;
     context = structured.context;
     const deployment = credential?.deployments?.[model.id];
@@ -138,7 +140,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
         return await onPayload?.(adjusted, target) ?? adjusted;
       },
     };
-    return { model: credential?.baseUrl && !FETCH_APIS.includes(model.api) ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, transportError: () => transportError };
+    return { model: credential?.baseUrl && !FETCH_APIS.includes(model.api) ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, selected, structured, transportError: () => transportError };
   };
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
@@ -155,6 +157,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
         let retry = false, reasoningDropped = false;
         do {
         retry = false;
+        const attempt = prepared;
         let stalled: Promise<void> | undefined;
         const stream = watchedStream(prepared.model, (signal, activity) => {
           const onProviderStreamEvent = prepared.options.onProviderStreamEvent;
@@ -245,8 +248,12 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           output.push(event);
         }
         const result = await stream.result();
-        if (retry) await hooks.beforeRequest?.();
-        else output.end(result);
+        if (retry && prepared === attempt) {
+          // A transport retry keeps the selected member and payload, but
+          // refreshes preflight, credentials and policy for the new attempt.
+          const { selected, structured } = prepared;
+          prepared = await prepare(selected, history(selected), options, { context: structured.context, toolChoice: prepared.options.toolChoice });
+        } else if (!retry) output.end(result);
         } while (retry);
       } catch (error) {
         const reason = options?.signal?.aborted ? "aborted" : "error";

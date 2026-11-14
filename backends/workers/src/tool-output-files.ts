@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { agentRepoId } from "./repos/identity.ts";
 import { Buffer } from 'node:buffer';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
@@ -8,7 +9,7 @@ import { scratchMount } from './media/files-policy.ts';
 import type { WebFiles } from './web-policy-host.ts';
 
 /** Files returned by a tool share the repo writer and the source's per-call cap. */
-export async function toolResultFiles(env: FileBindings, scope: { tenant: string; agent: string; mounts: Mount[]; tool: string; call: string; requestId?:string }): Promise<WebFiles | undefined> {
+export async function toolResultFiles(env: FileBindings, scope: { tenant: string; agent: string; mounts: Mount[]; tool: string; call: string; requestId?:string }, invocation?: AgentInvocation): Promise<WebFiles | undefined> {
   const own = agentRepoId(scope.tenant, scope.agent);
   const mount = scratchMount(scope.mounts.map(value => ({ ...value, workspace: value.repo === own })));
   if (!mount) return;
@@ -32,7 +33,7 @@ export async function toolResultFiles(env: FileBindings, scope: { tenant: string
     });
     const path = `${directory}/${unique}`;
     const { handleAgentFileRequest } = await import('./files.ts');
-    const response = await handleAgentFileRequest(new Request('https://agent.invalid/files', { method: 'PUT', headers: { 'Content-Type': contentType, 'x-camel-call':scope.call,...(scope.requestId?{'x-camel-run':scope.requestId}:{}) }, body }), env, scope.tenant, scope.agent, path, scope.mounts);
+    const response = await handleAgentFileRequest(new Request('https://agent.invalid/files', { method: 'PUT', headers: { 'Content-Type': contentType, 'x-camel-call':scope.call,...(scope.requestId?{'x-camel-run':scope.requestId}:{}) }, body }), env, scope.tenant, scope.agent, path, scope.mounts, "turn", undefined, invocation);
     const saved = await response.json() as { size: number; version: string; contentType: string; error?: string };
     if (!response.ok) throw new Error(saved.error ?? 'Tool output could not be saved');
     left -= saved.size;

@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { agentRepoId } from "./repos/identity.ts";
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { compile } from "@earendil-works/pi-schema";
@@ -35,7 +36,7 @@ type Host = {
 type Env = FileBindings & MediaBindings & KeyEnv;
 
 /** Mount operations use the platform's normal authorization and bounded streams. */
-async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Promise<ToolFiles> {
+async function imageFiles(env: FileBindings, scope: CallScope, host: Host, invocation: AgentInvocation): Promise<ToolFiles> {
   const { handleAgentFileRequest } = await import("./files.ts");
   const { boundedBytes } = await import("./images.ts");
   const own = agentRepoId(scope.tenant, scope.agent);
@@ -45,7 +46,7 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Prom
   const directory = `${workspace.path}/tool-outputs/generate_image/${Array.from(hash.subarray(0, 12), byte => byte.toString(16).padStart(2, "0")).join("")}`;
   const request = async (path: string, init?: RequestInit) => {
     if (!path.startsWith("/")) path = `${scope.mounts[0].path}/${path}`;
-    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", {...init,headers:{...Object.fromEntries(new Headers(init?.headers)),"x-camel-call":scope.callId,...(scope.requestId?{"x-camel-run":scope.requestId}:{})}}), env, scope.tenant, scope.agent, path, scope.mounts, "api");
+    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", {...init,headers:{...Object.fromEntries(new Headers(init?.headers)),"x-camel-call":scope.callId,...(scope.requestId?{"x-camel-run":scope.requestId}:{})}}), env, scope.tenant, scope.agent, path, scope.mounts, "api", undefined, invocation);
     if (!response.ok) {
       const error = await response.json() as { error?: string };
       throw new HttpError(response.status, error.error ?? "File operation failed");
@@ -109,21 +110,22 @@ export async function agentMediaTools(env: Env, context: (api?: ToolExecutionApi
     structuredOutputSchema: {}, replay: "unsafe",
     async execute(args, api, call) {
       if (!check.check(args)) throw new HttpError(400, "Invalid generate_image arguments");
+      const invocation = new AgentInvocation();
       const scope = { ...await context(api), callId: `${api.conversationId}:${api.taskId}:${api.callId}`, startedAt: Date.now() };
       if (!scope.builtins?.includes("generate_image")) throw new HttpError(403, "generate_image is not enabled");
-      const files = await (host.files?.(scope) ?? imageFiles(env, scope, host));
+      const files = await (host.files?.(scope) ?? imageFiles(env, scope, host, invocation));
       const services = !host.imager || !host.admit || !host.record ? await keyServices(env) : undefined;
       if (host.admit) await host.admit(scope);
       else {
         await admitAuxiliaryUsage(env, scope);
-        const refused = await services!.accounts.runLimit(scope.tenant);
+        const refused = await services!.accounts.runLimit(scope.tenant, invocation.tenant(services!.accounts.billing, scope.tenant));
         if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
       }
       const imager = host.imager ? await host.imager(scope) : await (async () => {
         const { mediaKey, mediaOutbound } = await import("./media-api.ts");
         return new Imager({
           provider: openaiImages({ outbound: mediaOutbound(env), baseUrl: env.MEDIA_BASE_URL }),
-          key: (tenant, keyScope, provider) => mediaKey(env, tenant, keyScope, provider, services, mediaAzure(env)?.imageDeployment),
+          key: (tenant, keyScope, provider) => mediaKey(env, tenant, keyScope, provider, services, mediaAzure(env)?.imageDeployment, invocation),
           price: () => ({ ...services!.accounts.billing.pricing, ...(env.TEST_MODE === "1" ? JSON.parse(env.MEDIA_PRICING ?? "{}") : {}) }).image,
         });
       })();
