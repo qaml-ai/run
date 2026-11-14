@@ -34,6 +34,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -121,7 +122,8 @@
     },
     { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
     // Pilot Volume data is test data and is not migrated.
-    { "tag": "delete-volumes", "deleted_classes": ["Volume"] }
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
   // stopped by its code through ctx.container. Under the durable_object policy

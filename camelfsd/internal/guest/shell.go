@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +38,9 @@ func token() (string, error) {
 }
 
 func (g *guest) workdir() string {
+	if g.session {
+		return workspacePath
+	}
 	if st, err := os.Stat(g.repo); err == nil && st.IsDir() {
 		return g.repo
 	}
@@ -148,6 +152,12 @@ func (g *guest) sessionCommand(e *execution, sh *shell, req request) (any, bool,
 	}
 	cmd := exec.Command("bash", "-lc", req.Command)
 	cmd.Dir, cmd.Env = g.workdir(), append(os.Environ(), env...)
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+		if !filepath.IsAbs(cmd.Dir) {
+			cmd.Dir = filepath.Join(g.workdir(), cmd.Dir)
+		}
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	// Use a file so os/exec does not wait on a stdin copier after the child exits.
 	in, err := commandInput(req.Stdin)
@@ -218,6 +228,9 @@ func (sh *shell) run(req request, env []string, out, errOut *os.File, deadline t
 		return 125, false, err
 	}
 	var wrapper strings.Builder
+	if req.Cwd != "" {
+		req.Command = "builtin cd -- " + quote(req.Cwd) + " && " + req.Command
+	}
 	for _, item := range env {
 		k, v, _ := strings.Cut(item, "=")
 		fmt.Fprintf(&wrapper, "builtin export %s=%s; ", k, quote(v))

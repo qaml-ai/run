@@ -24,6 +24,7 @@ type Checkpoint struct {
 	WalkMs         float64            `json:"walkMs"`
 	StreamMs       float64            `json:"streamMs"`
 	FreezeMs       float64            `json:"freezeMs"`
+	CommitMs       float64            `json:"-"`
 	PublishMs      float64            `json:"publishMs"`
 	Commit         string             `json:"commit"`
 	Root           string             `json:"root"`
@@ -51,6 +52,10 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) (out Checkpoint, er
 	return m.checkpoint(ctx, v, v.Tree)
 }
 func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadata ...CheckpointRequest) (out Checkpoint, err error) {
+	return m.checkpointWithPublish(ctx, v, tree, nil, metadata...)
+}
+
+func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree string, publish func(context.Context, Checkpoint) error, metadata ...CheckpointRequest) (out Checkpoint, err error) {
 	t := time.Now()
 	defer func() { out.Timings = out.timingFields() }()
 	if v.Fence == nil {
@@ -185,13 +190,17 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 		metadata = []CheckpointRequest{{}}
 	}
 	if len(metadata) > 0 {
+		commitStart := time.Now()
 		out.Commit, e = m.writeCommit(ctx, v, tree, metadata[0])
 		if e != nil {
 			return out, e
 		}
 		set.Commit = out.Commit
+		out.CommitMs = ms(commitStart)
 	}
-	m.protect(v.JobID, r, out.Root)
+	if publish == nil {
+		m.protect(v.JobID, r, out.Root)
+	}
 	if e = m.promote(snap, out.Root); e != nil {
 		return out, e
 	}
@@ -205,12 +214,21 @@ func (m *Manager) checkpoint(ctx context.Context, v *Mount, tree string, metadat
 	if e != nil {
 		return out, e
 	}
+	if publish != nil {
+		if e = publish(ctx, out); e != nil {
+			return out, e
+		}
+		m.protect(v.JobID, r, out.Root)
+	}
 	v.pendingRanges = nil
 	v.Parent = set
 	v.Root = out.Root
 	v.Tree = tree
 	v.Promoted = true
 	if e = m.save(v); e != nil {
+		if publish != nil {
+			return out, e
+		}
 		log.Printf("op=checkpoint-state jobId=%s error=%v", v.JobID, e)
 	}
 	if v.Snapshot > 1 {

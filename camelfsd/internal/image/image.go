@@ -9,6 +9,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/nbd"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -37,6 +38,7 @@ var legacyMounts atomic.Uint64
 func LegacyMounts() uint64 { return legacyMounts.Load() }
 
 type Config struct {
+	RecoverSessions         bool
 	StreamIdle, ApplyMax    time.Duration
 	Now                     func() time.Time
 	Origin                  *nbd.Server
@@ -69,6 +71,7 @@ type Request struct {
 	Root        string      `json:"root"`
 	Tree        string      `json:"tree"`
 	Parent      string      `json:"parent,omitempty"`
+	Session     bool        `json:"-"`
 	Hydrate     bool        `json:"hydrate"`
 	Vsock       string      `json:"vsock"`
 }
@@ -159,7 +162,7 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e != nil {
 		return nil, e
 	}
-	if len(entries) > 0 {
+	if len(entries) > 0 && !c.RecoverSessions {
 		return nil, fmt.Errorf("existing mount state requires cleanup before restart")
 	}
 	if c.VirtualSize == 0 {
@@ -187,6 +190,11 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
 	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{})}
+	if c.RecoverSessions {
+		if err := m.recoverSessions(entries); err != nil {
+			return nil, err
+		}
+	}
 	go m.maintain()
 	return m, nil
 }
@@ -207,6 +215,11 @@ func (m *Manager) save(v *Mount) error {
 	if e != nil {
 		return e
 	}
+	if v.Session {
+		if e := store.Atomic(filepath.Join(filepath.Dir(v.Dest), "session"), nil); e != nil {
+			return e
+		}
+	}
 	if e = store.Atomic(filepath.Join(filepath.Dir(v.Dest), "state.json"), b); e != nil {
 		return e
 	}
@@ -220,7 +233,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			forms++
 		}
 	}
-	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || !store.Lineage(q.Lineage) || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
+	if forms != 1 || !(JobID.MatchString(q.JobID) || q.Session && hostwire.MountID.MatchString(q.JobID)) || q.JobID == "." || q.JobID == ".." || !store.Lineage(q.Lineage) || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
 		return nil, apierr.Invalid("invalid mount request")
 	}
 	if q.Fence != nil && q.Parent == "" {
@@ -312,6 +325,11 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 			_ = os.RemoveAll(dir)
 		}
 	}()
+	if q.Session {
+		if e = store.Atomic(filepath.Join(dir, "session"), nil); e != nil {
+			return nil, e
+		}
+	}
 	m.protect(v.JobID, r, v.Root)
 	defer func() {
 		if err != nil {
@@ -329,6 +347,11 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		v.State = "warm"
 	} else if !os.IsNotExist(e) {
 		return nil, e
+	} else if q.Session {
+		// Complete hydration before handing the disk to Firecracker. A live VM's
+		// disk must not depend on an NBD connection owned by this process.
+		e = m.materialize(ctx, v.Lineage, r, v.Dest)
+		v.State = "hydrated"
 	} else {
 		if e = m.sweep(int64(len(r.Chunks)) * chunk.Size); e != nil {
 			return nil, e
@@ -637,6 +660,14 @@ func (m *Manager) Close() {
 	}
 	m.mu.Unlock()
 	for _, id := range ids {
+		if v := m.lookup(id); v != nil && v.Session {
+			v.mu.Lock()
+			if v.streams != nil {
+				v.streams.close()
+			}
+			v.mu.Unlock()
+			continue
+		}
 		if _, e := m.Release(context.Background(), id); e != nil {
 			log.Printf("op=cleanup jobId=%s error=%v", id, e)
 		}

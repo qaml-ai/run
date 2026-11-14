@@ -38,7 +38,7 @@ func TestUnitWireJSON(t *testing.T) {
 			`{"bootId":"boot","pool":"p","addr":"h:8792","shape":{"vcpus":1,"memoryMiB":2,"diskMiB":3},"slots":4,"features":["x"],"images":["img"]}`},
 		{&Registered{2}, `{"bootEpoch":2}`},
 		{&Heartbeat{2, 3, 4, []Running{{"v", &start, true}}}, `{"bootEpoch":2,"at":3,"free":4,"running":[{"id":"v","startedAt":3,"finished":true}]}`},
-		{&HeartbeatReply{2, []string{"v"}, []BootSpec{}}, `{"bootEpoch":2,"stop":["v"],"boot":[]}`},
+		{&HeartbeatReply{2, []StopOrder{{"v", true}}, []BootSpec{}}, `{"bootEpoch":2,"stop":[{"id":"v","checkpoint":true}],"boot":[]}`},
 		{&BootSpec{ID: "v", Lineage: "lin", Ref: "main", Version: "c", Tree: "t", Parent: "c", Image: "i",
 			Lease: Lease{Holder{"h", 2, "v"}, 5, 6}, Shape: Shape{1, 2, 3}, Internet: true,
 			Session: &Session{11}, Deadline: 12},

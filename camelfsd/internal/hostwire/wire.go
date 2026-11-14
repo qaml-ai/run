@@ -49,9 +49,9 @@ type Running struct {
 // HeartbeatReply lists in Boot only placed or booting VMs assigned to this
 // host and epoch and absent from this heartbeat's Running.
 type HeartbeatReply struct {
-	BootEpoch int64      `json:"bootEpoch"`
-	Stop      []string   `json:"stop"`
-	Boot      []BootSpec `json:"boot"`
+	BootEpoch int64       `json:"bootEpoch"`
+	Stop      []StopOrder `json:"stop"`
+	Boot      []BootSpec  `json:"boot"`
 }
 
 // BootSpec is also the body of POST https://<addr>/v1/vms. Image is the only
@@ -99,6 +99,13 @@ type Ended struct {
 // Stop is the body of POST https://<addr>/v1/vms/{id}/stop.
 type Stop struct {
 	Checkpoint bool `json:"checkpoint"`
+}
+
+// StopOrder is one heartbeat-reply stop: the same instruction as a pushed Stop, so a
+// missed push never changes whether the host checkpoints.
+type StopOrder struct {
+	ID         string `json:"id"`
+	Checkpoint bool   `json:"checkpoint"`
 }
 
 // Renew asks for a fresh certificate using the host's current mTLS identity.

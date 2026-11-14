@@ -1,3 +1,4 @@
+import { BashSessions } from "./camelfs/bash.ts";
 import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import type { Placement } from "../../../shared/owner.ts";
@@ -266,6 +267,12 @@ export class AgentRuntime extends AgentContext {
   /** The file tools as made, before wordedFileTools fits their descriptions to the configuration. */
   workspaceFileTools: ToolRegistration[] = [];
 
+  private sessions?: BashSessions;
+  get bashSessions() {
+    return this.sessions ??= new BashSessions(this.ctx.storage, this.env, work => this.ctx.waitUntil(work), at => this.arm(at),
+      (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
+  }
+
   fileVersions = new DurableFileVersions(this.ctx.storage);
 
   // Pi can reopen its Harness after a storage failure without replacing this
@@ -433,6 +440,7 @@ export class AgentRuntime extends AgentContext {
     // A foreign move updates reachability only; it never derives a tree (R4).
     this.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
   }
+  vmEnded(delivery: string, vm: string) { return this.bashSessions.ended(delivery, vm); }
 
   removeMember(member: string) {
     return removeMemberImpl.call(this, member);

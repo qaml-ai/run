@@ -222,10 +222,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - Keys: `<lineage>/{o,t,k,r,c,ts}/<hash>`.
   - The guest image (K1) at `guest/<sha256>…`, put only by the GitHub OIDC role
     `camelfs-prod-guest-image-publisher`.
-    - `results/<lineage>/<vm>` (job results, with a 7-day lifecycle rule; #1003): **retired by the session-only
-    design** (camel-fs-compute.md §2), but still in the infra and in `camelfsd`'s compute code as of 2026-11-14,
-    to be deleted everywhere (the lead, 2026-11-14): proto-block in `camelfsd`, fs-infra in the bucket rule and the
-    host policy (ledger L102).
+    - There is no `results/` prefix any more: the session-only VMs write no results, and the code and infra for
+      it were deleted (#1059, #1060; ledger L102).
 - **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
   - `camelfs-prod-objects` (`lineage` + `id`);
   - `camelfs-prod-refs` (`lineage` + `name`);

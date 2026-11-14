@@ -141,6 +141,47 @@ func TestSessionReconnectAndReplay(t *testing.T) {
 	}
 }
 
+func TestShellKeyReplaysAcrossReconnectAndExit(t *testing.T) {
+	g := fixture(t)
+	t.Cleanup(g.sessions.close)
+	p := sessionPeerFor(t, g)
+	open := func(key string) string {
+		t.Helper()
+		reply := p.req(message{"op": "shell_open", "shellKey": key})
+		id, _ := reply["shellId"].(string)
+		if id == "" || reply["ok"] != true {
+			t.Fatal(reply)
+		}
+		return id
+	}
+	id := open("key-1")
+	p.conn.Close()
+	if err := <-p.done; err != nil {
+		t.Fatal(err)
+	}
+	p = sessionPeerFor(t, g)
+	if replay := open("key-1"); replay != id {
+		t.Fatalf("replay opened %s, want %s", replay, id)
+	}
+	if r := p.req(message{"op": "sessions"}); len(r["shells"].([]any)) != 1 {
+		t.Fatal(r)
+	}
+	if other := open("key-2"); other == id {
+		t.Fatalf("different keys share shell %s", id)
+	}
+	accepted(t, p.req(message{"op": "exec", "execId": "exit", "shell": id, "command": "exit"}))
+	p.end("exit", 0)
+	if replay := open("key-1"); replay != id {
+		t.Fatalf("exited shell replay opened %s, want %s", replay, id)
+	}
+	if r := p.req(message{"op": "exec", "execId": "after-exit", "shell": id, "command": "true"}); r["code"] != "shell_unknown" {
+		t.Fatal(r)
+	}
+	if r := p.req(message{"op": "sessions"}); len(r["shells"].([]any)) != 1 {
+		t.Fatal(r)
+	}
+}
+
 func TestShellPersistenceAndSentinel(t *testing.T) {
 	g := fixture(t)
 	t.Cleanup(g.sessions.close)

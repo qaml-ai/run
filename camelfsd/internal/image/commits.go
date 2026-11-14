@@ -23,6 +23,7 @@ type Trailers struct {
 	ExitCode *int   `json:"exitCode,omitempty"`
 }
 type CheckpointRequest struct {
+	Time      *int64    `json:"-"`
 	TimeoutMs int       `json:"timeoutMs"`
 	Message   *string   `json:"message,omitempty"`
 	Trailers  *Trailers `json:"trailers,omitempty"`
@@ -80,6 +81,9 @@ func (m *Manager) writeCommit(ctx context.Context, v *Mount, tree string, q Chec
 		body += "parent " + v.Parent.Commit + "\n"
 	}
 	now := time.Now().Unix()
+	if q.Time != nil {
+		now = time.UnixMilli(*q.Time).Unix()
+	}
 	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n%s", who, who, now, now, msg, trailers.String())
 	return m.objects(v.Lineage).PutObject(ctx, v.Lineage, "commit", []byte(body))
 }

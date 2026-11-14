@@ -66,6 +66,7 @@ locals {
       "--enroll-audience", "camelfs:enroll",
       "--enroll-roles", join(",", [for pool in sort(keys(var.enroll_roles)) : "${pool}=${var.enroll_roles[pool]}"]),
       "--runtime-notify-url", "${var.token_issuer}/v1/internal/camelfs/notify",
+      "--guest-images", join(",", var.guest_images),
     ] : [],
     var.api_extra_args,
   )
@@ -155,8 +156,8 @@ resource "aws_vpc_security_group_egress_rule" "api_https" {
   description       = "S3, DynamoDB, Secrets Manager, ECR, logs"
 }
 
-# Health checks of the enrollment and hosts target groups probe /v0/health on the API PORT (the enrollment and hosts
-# ports serve no unauthenticated plain-HTTP route), so the NLB's group must reach the tasks on 8790 for that one
+# Health checks of the enrollment and hosts target groups probe /v1/health on the API PORT (the enrollment and hosts
+# ports serve no unauthenticated route), so the NLB's group must reach the tasks on 8790 for that one
 # purpose. No NLB listener forwards to 8790 (they forward to the enrollment and hosts ports), so these rules carry
 # health checks and nothing else.
 resource "aws_vpc_security_group_ingress_rule" "api_health_from_internal" {

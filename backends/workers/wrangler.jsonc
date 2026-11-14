@@ -19,6 +19,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -75,7 +76,8 @@
       ]
     },
     { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
-    { "tag": "delete-volumes", "deleted_classes": ["Volume"] }
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] }
   ],
   "hyperdrive": [
     {

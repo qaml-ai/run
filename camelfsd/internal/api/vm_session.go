@@ -53,12 +53,19 @@ func (v *vmAPI) shell(w http.ResponseWriter, r *http.Request, claims auth.Claims
 	if err != nil {
 		return err
 	}
+	var q hostwire.ShellRequest
+	if keys := r.Header.Values("Idempotency-Key"); len(keys) != 0 {
+		if len(keys) != 1 || !hostwire.MountID.MatchString(keys[0]) {
+			return invalid("Idempotency-Key: must be a single value matching %s", hostwire.MountID)
+		}
+		q.ShellKey = keys[0]
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := v.controller.Touch(ctx, vm.ID, v.controller.Time()); err != nil {
 		return err
 	}
-	resp, err := v.host.request(ctx, host, http.MethodPost, vmHostPath(vm, "/shells"), nil)
+	resp, err := v.host.request(ctx, host, http.MethodPost, vmHostPath(vm, "/shells"), q)
 	if err != nil {
 		return hostUnreachable
 	}

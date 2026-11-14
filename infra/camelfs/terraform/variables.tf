@@ -105,6 +105,16 @@ variable "enroll_roles" {
   }
 }
 
+variable "guest_images" {
+  description = "The guest image SHA-256s the tier allows hosts to boot (camelfsd api --guest-images; K4c/K2c2), newest first. Each is a manifest published to <bucket>/guest/ by publish-guest-image.sh; a host that offers an image not in this list is refused. Empty with \"compute\" on refuses every boot, so set it with the flip."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for sha in var.guest_images : can(regex("^[0-9a-f]{64}$", sha))])
+    error_message = "guest_images are 64-hex SHA-256 digests."
+  }
+}
+
 variable "api_extra_args" {
   description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)
@@ -128,9 +138,9 @@ variable "api_port" {
 }
 
 variable "api_health_path" {
-  description = "The unauthenticated health route both target groups probe; must answer 200 on a ready node."
+  description = "The unauthenticated health route every target group and aop.sh probe; must answer 200 on a ready node. /v1/health since unit 11 (the /v0 surface is deleted; the image must serve /v1/health before this is applied)."
   type        = string
-  default     = "/v0/health"
+  default     = "/v1/health"
 }
 
 variable "api_cpu" {

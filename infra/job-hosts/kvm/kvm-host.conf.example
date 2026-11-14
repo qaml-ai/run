@@ -7,9 +7,9 @@ CAMELFSD_REF=main
 RUNTIME_URL=
 # aws uses the instance role; test needs JOB_HOST_TEST_SECRET in /etc/camel/jobhost-test.env.
 ATTESTOR=aws
-# Runtime scheduling pool: test or build.
+# Scheduling pool for the TypeScript jobhost and the Go compute host: test or build.
 POOL=test
-# Maximum concurrent jobs.
+# Maximum concurrent jobs or sessions per host process.
 SLOTS=1
 # Advertised total host CPU capacity, not a per-guest allocation.
 JOB_VCPUS=2
@@ -29,3 +29,14 @@ AWS_REGION=us-west-2
 NVME_DEVICE=
 # Optional artifact location; defaults to CAMELFSD_STORE.
 GUEST_IMAGE_S3_PREFIX=
+
+# Set both endpoints to enable the Go compute host. Leave both empty for storage-only mode.
+TIER_ENROLL_URL=
+TIER_HOSTS_ENDPOINT=
+TIER_CA=/etc/camel/tier-ca.pem
+# S3 object containing the private tier CA PEM and its pinned lowercase SHA-256.
+TIER_CA_S3=
+TIER_CA_SHA256=
+CAMELFSD_IMAGES_STORE=
+LISTEN_COMPUTE=0.0.0.0:8792
+CAMELFSD_DISK_MIB=8192
