@@ -84,6 +84,19 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
   per tool call with one persistent shell, `checkpoint` per turn that wrote, and the idle stop.
 - A computer is a `session` with a longer idle stop. Its sleep becomes snapshot and restore later.
 
+**Guest images** (the policy, decided 2026-11-14; K1 built the image):
+- **The allowed set lives only in the tier's config:** a list of guest-image sha256s, each published
+  content-addressed in the bucket as `guest/<sha>` with its manifest `guest/<sha>.json`. CI publishes, through the
+  `camelfs-prod-guest-image-publisher` role.
+- **The boot spec carries the image:** `POST /v1/vms`'s `image` names a sha256, and the tier's dispatch to the
+  host (`boot[].image`) carries that sha.
+- **The host verifies and keeps no pin:** it downloads `guest/<sha>` if its cache lacks it, verifies the bytes
+  against `guest/<sha>.json`, and boots only on a match. The interim host-side pin from #979/#1007 is ledger L101
+  and is deleted in K2.
+- **`POST /v1/vms` refuses early, before placement:** `400 invalid_request` when `image` is not in the allowed set,
+  and when `shape.diskGiB` is smaller than the image's filesystem size. The host's own guard (L100, #979) stays as
+  the last line.
+
 **Tokens:** the routes need a token on the VM's lineage with `acc: "w"` and the ref in `refs`. Reading a VM's
 status or its exec tail needs `r`. `POST /v1/vms` is runtime-only (`sub` in `runtime:*`), because it starts a
 metered resource. `exec` on a session is open to the token the runtime hands the agent's tool call. Whether `exec`
