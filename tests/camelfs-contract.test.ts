@@ -131,10 +131,30 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
       controller.enqueue(bytes.subarray(0, 2)); controller.enqueue(bytes.subarray(2)); controller.close();
     } }) };
   } };
-  // Workers has its own TypeScript project and Cloudflare fetch types. Load the
-  // real module at runtime without pulling that project into the Node typecheck.
-  const { importTree } = await import(new URL("../backends/workers/src/jobs/camelfs.ts", import.meta.url).href) as {
-    importTree(environment: typeof env, treeInput: typeof input): Promise<{ tree: string; uploaded: number }>;
+  // The Workers volume import bridge is deleted (spec 5); this test-local phase-1 importer seeds the daemon's
+  // phase-1 mount the same way (POST /v0/trees, PUT only the missing blobs) until unit 11 deletes /v0.
+  // TEMPORARY: removed with jobhost phase 2
+  const importTree = async (environment: typeof env, treeInput: typeof input) => {
+    const auth = { authorization: `Bearer ${environment.CAMELFS_API_TOKEN}` };
+    const byHash = new Map(treeInput.files.map(f => [f.sha256, f]));
+    const files = Object.fromEntries(treeInput.files.map(f => [f.path.replace(/^\/+/, ""), { sha256: f.sha256 }]));
+    let uploaded = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await environment.CAMELFS.fetch("http://camelfs/v0/trees", { method: "POST",
+        headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ lineage: treeInput.lineage, files }) });
+      const value = await response.json() as { tree?: string; missing?: string[] };
+      if (response.status === 200) return { tree: value.tree!, uploaded };
+      assert.equal(response.status, 409, JSON.stringify(value));
+      for (const hash of new Set(value.missing ?? [])) {
+        const { body, size } = await treeInput.read(byHash.get(hash)!);
+        const put = await environment.CAMELFS.fetch(`http://camelfs/v0/blobs/${hash}?lineage=${encodeURIComponent(treeInput.lineage)}`, {
+          method: "PUT", headers: { ...auth, "content-type": "application/octet-stream", "content-length": String(size) },
+          body, duplex: "half" } as RequestInit);
+        assert.ok(put.status === 200 || put.status === 201, `blob ${put.status}`);
+        await put.body?.cancel(); uploaded++;
+      }
+    }
+    throw new Error("tree import retries exhausted");
   };
   const first = await timed("import streamed blobs through proxy", () => importTree(env, input));
   assert.match(first.tree, /^[a-f0-9]{40}$/);
