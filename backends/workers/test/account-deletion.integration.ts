@@ -96,10 +96,6 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
   const otherRepo = await otherCreated.json() as { id: string };
   // Another deletion with no agents must retain its index until its own repos are removed.
   await r.db.query("insert into account_deletions(tenant,requested_at,requested_by,claimed_until) values($1,$2,'test',now()+interval '1 day')", ["other-pending", Date.now()]);
-  // Legacy Volume objects in R2 (files/<tenant>/): the deleted account's go with it, another account's stay.
-  const r2 = (method: string, key: string) => fetch(`${r.url}/__test/r2?key=${encodeURIComponent(key)}`, { method, headers: { authorization: `Bearer ${r.token}` }, ...(method === "PUT" ? { body: "legacy volume bytes" } : {}) });
-  const legacyKeys = Array.from({ length: 3 }, (_, i) => `files/${encodeURIComponent(tenant)}/legacy-${i}`);
-  for (const key of [...legacyKeys, "files/other-pending/kept"]) assert.equal((await r2("PUT", key)).status, 201);
   const started = Date.now();
   assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE")).status, 202);
   assert.equal((await call("/v1/agents", "GET", token)).status, 401, "credentials stop authenticating before cleanup finishes");
@@ -123,8 +119,6 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
   }
   assert.equal(status.state, "deleted", "queue continues without a client waiting on cleanup");
   assert.equal(await count(), 0);
-  assert.deepEqual((await (await r2("GET", `files/${encodeURIComponent(tenant)}/`)).json() as { keys: string[] }).keys, [], "a deleted account's legacy Volume objects are removed");
-  assert.deepEqual((await (await r2("GET", "files/other-pending/")).json() as { keys: string[] }).keys, ["files/other-pending/kept"]);
   await r.db.query("delete from account_deletions where tenant=$1", ["other-pending"]);
   const otherRead = await call(`/v1/repos/${otherRepo.id}`, "GET", otherToken);
   assert.equal(otherRead.status, 200, "deleting one account must not purge another pending account's repo index");

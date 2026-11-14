@@ -94,19 +94,9 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
   repoUsage(id: string, bytes: number, files: number) { return this.repos.usage(id,bytes,files); }
   reposUsed(exclude?: string) { return this.repos.used(exclude); }
-  // Consume any alarm persisted by the old accounting implementation (ledger L90).
+  // The Volume-era TenantStorage left one pending alarm on the pilot (L90 sweep, 2026-11-14). This no-op consumes it
+  // when it fires: no table or state is read, and nothing re-arms it. Remove once no tenant reports a pending alarm.
   async alarm() {}
-  /** TEMPORARY(L90): the Volume-era TenantStorage tables. drop=false only counts. */
-  async legacyVolumeTables(drop: boolean): Promise<{ tables: { name: string; rows: number }[]; alarm: number | null }> {
-    const names = ["storage_objects", "storage_total", "storage_listing"];
-    const sql = this.ctx.storage.sql;
-    const present = sql.exec<{ name: string }>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN (${names.map(() => "?").join(",")})`, ...names,
-    ).toArray().map(row => row.name);
-    const tables = present.map(name => ({ name, rows: Number(sql.exec<{ n: number }>(`SELECT count(*) AS n FROM "${name}"`).one().n) }));
-    if (drop) this.ctx.storage.transactionSync(() => { for (const name of present) sql.exec(`DROP TABLE "${name}"`); });
-    return { tables, alarm: await this.ctx.storage.getAlarm() };
-  }
   /** Called after account deletion has stopped and purged every owned agent. */
   async purgeAccountData() {
     await this.ctx.storage.deleteAlarm();

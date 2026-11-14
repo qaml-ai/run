@@ -193,7 +193,6 @@ export function withAttachmentReferences<A extends Api>(
   provider: Provider<A>,
   env: FileBindings & RepoEnv,
   getTenant: () => Promise<string>,
-  authorizeFile?: (key: string) => Promise<boolean>,
   authorizeRepoFile?: (file:FileRef)=>Promise<boolean>,
 ): Provider<A> {
   const hydrate = async (model: Model<A>, context: TranscriptContext) => {

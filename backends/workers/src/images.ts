@@ -184,19 +184,13 @@ export async function handleSignedFileRequest(
       !claim.tenant ||
       !Number.isFinite(claim.expiresAt) ||
       claim.expiresAt <= Date.now() ||
-      (!claim.key.startsWith(`images/${encodeURIComponent(claim.tenant)}/`) &&
-        !claim.key.startsWith(`files/${encodeURIComponent(claim.tenant)}/`))
+      !claim.key.startsWith(`images/${encodeURIComponent(claim.tenant)}/`)
     )
       throw new FileError("Expired or invalid file capability", 403);
     const object = await env.BUCKET.get(claim.key);
     if (!object) throw new FileError("File not found", 404);
-    const disposition = claim.key.startsWith(`files/${encodeURIComponent(claim.tenant)}/presented/`)
-      ? object.httpMetadata?.contentDisposition : undefined;
     return new Response(object.body, {
       headers: {
-        ...(disposition ? { "content-disposition": disposition } : {}),
-        ...(disposition && !object.httpMetadata?.contentType?.startsWith("application/pdf")
-          ? { "content-security-policy": "sandbox; default-src 'none'" } : {}),
         "content-type":
           object.httpMetadata?.contentType ?? "application/octet-stream",
         "cache-control": "private, no-store",
@@ -274,7 +268,7 @@ export async function imageInputs(
 }
 const MARKER = "[camelrun-image-ref:v1]";
 const ownedImageKey = (tenant: string, key: string) =>
-  key.startsWith(`images/${encodeURIComponent(tenant)}/`) || key.startsWith(`files/${encodeURIComponent(tenant)}/`);
+  key.startsWith(`images/${encodeURIComponent(tenant)}/`);
 export function imageReferenceInput(
   text: string,
   refs: ImageRef[],
@@ -310,7 +304,6 @@ export function withImageReferences<A extends Api>(
   provider: Provider<A>,
   env: ImageBindings,
   getTenant: () => Promise<string>,
-  authorizeFile?: (key: string) => Promise<boolean>,
 ): Provider<A> {
   const hydrate = async (model: Model<A>, context: TranscriptContext) => {
     const locations: {
@@ -372,7 +365,6 @@ export function withImageReferences<A extends Api>(
       } else if (ref) {
         if (ref.type !== "image_ref" || ref.tenant !== tenant || !ownedImageKey(tenant, ref.key) || !Number.isSafeInteger(ref.size) || ref.size < 1 || ref.size > IMAGE_LIMITS.derivativeBytes)
           throw new FileError("Invalid image reference");
-        if (ref.key.startsWith("files/") && !await authorizeFile?.(ref.key)) continue;
         if (canStream) {
           const reference = { key: ref.key, size: ref.size, mimeType: ref.mimeType, nonce: crypto.randomUUID() };
           references.push(reference);
