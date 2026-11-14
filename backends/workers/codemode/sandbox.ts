@@ -5,8 +5,13 @@ import {
 import { FS_SHIM } from "./fs-shim.ts";
 import { SANDBOX_LIMITS } from "../../../src/limits.ts";
 
-/** Calls a script waits on off its clock, as on v8-exec: a sub-agent's answer is not the script's time. */
-const OFF_THE_CLOCK = new Set(["delegate"]);
+/**
+ * Calls a script waits on off its clock, as on v8-exec: a sub-agent's answer is not the script's time, and neither is
+ * a bash command's, which has its own bound (the tool's timeoutSeconds, 1–600 s, plus its stream grace). Counting a
+ * bash wait against the script's 30–60 s deadline cut every longer command short as a codemode timeout (pilot smoke).
+ * Pi's own timeout_ms (the script's deadline from its start) still counts every wait.
+ */
+const OFF_THE_CLOCK = new Set(["delegate", "bash"]);
 
 /**
  * Scripts by their start (`startedAt` and seed, as Pi's code mode run records them): which of their calls wait on a
