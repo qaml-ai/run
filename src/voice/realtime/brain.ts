@@ -589,8 +589,9 @@ export class RealtimeBrain {
         this.meterStartedAt ||= this.clock.now();
         connect();
       }).catch(error => {
-        // A rate or concurrency refusal is not about money: connect, and the debits still follow its usage.
-        if (rateRefusal(error)) { this.hooks.log("voice_realtime_slice_refused", { error: safeError(error) }); this.meterStartedAt ||= this.clock.now(); connect(); return; }
+        // A rate or concurrency refusal at the start refuses the start: connecting past it would bypass the limit.
+        // (Session creation already answers the caller 429 when its own admission is refused.)
+        if (rateRefusal(error)) { this.hooks.failed("realtime_rate_limited", safeError(error)); return; }
         if (!this.budget(error)) this.hooks.failed("realtime_failed", safeError(error));
       });
     } else connect();
