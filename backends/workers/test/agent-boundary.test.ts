@@ -43,7 +43,9 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   const script = outputText.replace(/\bexport \{\};?\s*$/, "");
   const Agent = runInNewContext(`${script}\nCamelAgent`, { DurableObject: Host, AgentRuntime: Runtime, ARM_AGENT, DUE_HUMAN_INPUTS, guardAlarms: () => {} });
   const ctx = {}, env = { PILOT_DB_PROFILE: "1" }, agent = new Agent(ctx, env);
-  assert.deepEqual(Object.getOwnPropertyNames(Agent.prototype), ["constructor", ...methods]);
+  // `note` (the voice call's journal-only write) composes runtime calls rather than forwarding one, so it is on the
+  // boundary but not in the delegation checks below.
+  assert.deepEqual(Object.getOwnPropertyNames(Agent.prototype), ["constructor", "note", ...methods]);
   assert.deepEqual(Object.getOwnPropertySymbols(Agent.prototype), [ARM_AGENT, DUE_HUMAN_INPUTS]);
   assert.deepEqual(Reflect.ownKeys(agent), ["ctx", "env"], "the runtime cannot be read through an RPC property");
   assert.deepEqual(constructed, [ctx, env, agent]);
