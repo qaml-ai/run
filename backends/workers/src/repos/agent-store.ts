@@ -14,7 +14,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
     if (!p) throw new FileError(`File not found: ${path}`, 404);
     let head: { version: string; tree: string; entries: Record<string, Entry | null> };
     try { head = await ctx.stub.stat(ref, [p]); }
-    catch (e) { if (repoErrorFrom(e)?.code === 'no-ref') throw new FileError(`File not found: ${path}`, 404); throw e; }
+    catch (e) { if (repoErrorFrom(e)?.code === 'no_ref') throw new FileError(`File not found: ${path}`, 404); throw e; }
     if (version !== undefined && head.version !== version) {
       const v = await ctx.stub.resolve(version), dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : undefined;
       const found = (await ctx.storage.listAll(ctx.lineage, v.tree, dir)).find((e): e is Entry => 'blob' in e && e.path === p);
@@ -31,7 +31,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
   };
   const commit = async (changes: WriteInput['changes'], pathExpect: WriteInput['pathExpect'] = {}, message = 'files changed', trailers: Record<string,string> = {}) => {
     try { return await commitChanges(ctx, { ref, changes, pathExpect, message, author: `agent:${agent}`, who: `agent:${agent}`, why: 'agent', trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } }); }
-    catch (error) { if (repoErrorFrom(error)?.code === 'stale-path') throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
+    catch (error) { if (repoErrorFrom(error)?.code === 'stale_path') throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
   };
   return { ctx, ref, stat, commit,
     async list(path = '/', _version?: string, pattern?: string) {
@@ -41,7 +41,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
       do {
         let page;
         try { page = await ctx.stub.list({ ref, prefix: prefix || undefined, after, limit: 10000 }); }
-        catch (e) { if (repoErrorFrom(e)?.code === 'no-ref') return []; throw e; }
+        catch (e) { if (repoErrorFrom(e)?.code === 'no_ref') return []; throw e; }
         if (version !== undefined && page.version !== version) { entries.length = 0; after = undefined; version = undefined; continue; }
         version = page.version; entries.push(...page.entries); after = page.next ?? undefined;
       } while (after);
