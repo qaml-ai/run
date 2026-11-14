@@ -366,7 +366,12 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
       const sources = [text, base64, blob].filter(value => value !== undefined).length;
       if (sources > 1 || (c.delete && (sources || mode !== undefined)) ||
           (text !== undefined && typeof text !== "string") || (blob !== undefined && !hash(blob))) return bad();
-      if (base64 !== undefined && (typeof base64 !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64))) return bad();
+      if (base64 !== undefined) {
+        if (typeof base64 !== "string" || base64.length % 4 !== 0) return bad();
+        // Validate the alphabet in one pass, including for multi-megabyte writes.
+        const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+        if (/[^A-Za-z0-9+/]/.test(base64.slice(0, base64.length - padding))) return bad();
+      }
       const bytes = typeof text === "string" ? Buffer.from(text) : typeof base64 === "string" ? Buffer.from(base64, "base64") : undefined;
       inlineBytes += bytes?.length ?? 0;
       return { path, blob: blob as string | undefined, mode, delete: c.delete, expectBlob, bytes };
@@ -837,11 +842,7 @@ export async function serveFakeCamelfsd(token: string, options: FakeOptions = {}
       const response = await fake.fetch(new Request(`http://camelfs${req.url}`, { method: req.method, headers: req.headers as Record<string, string>,
         ...(req.method !== "GET" && req.method !== "HEAD" ? { body: Buffer.concat(chunks) } : {}) }));
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer()));
-    } catch (error) {
-      console.error("camel-fs fake HTTP adapter:", req.method, req.url, error);
-      if (res.headersSent) res.destroy();
-      else res.writeHead(500).end();
-    }
+    } catch { res.writeHead(500).end(); }
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("missing server address");

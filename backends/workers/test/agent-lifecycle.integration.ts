@@ -67,7 +67,7 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
     });
     const value = await response.json() as any;
-    assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}\n${f.camelfsCalls?.slice(-12).join("\n")}\n${f.worker.logs()}`);
+    assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}`);
     return value;
   }
   const shared = await json("/v1/repos", { name: "shared" });
