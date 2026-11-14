@@ -93,9 +93,16 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
 - **The host verifies and keeps no pin:** it downloads `guest/<sha>` if its cache lacks it, verifies the bytes
   against `guest/<sha>.json`, and boots only on a match. The interim host-side pin from #979/#1007 is ledger L101
   and is deleted in K2c.
-- **`POST /v1/vms` refuses early, before placement:** `400 invalid_request` when `image` is not in the allowed set,
-  and when `shape.diskGiB` is smaller than the image's filesystem size. The host's own guard (L100, #979) stays as
-  the last line.
+- **`POST /v1/vms` validates everything before any write**, in this order (K4d):
+  1. `image` is in the allowed set, else `400 invalid_request` ("not allowed");
+  2. `guest/<sha>.json` exists, else `400 invalid_request` ("unknown image"), and its recorded sha matches,
+     else `500` (a corrupt manifest, never the caller's fault);
+  3. the disk is at least the image's bytes, else `400 invalid_request` naming both sizes;
+  4. `deadline` is in `(now, now + 24 h]`, else `400 invalid_request`;
+  5. `mode`, `job` and `session` are coherent (a `job` mode has `job`, a `session` mode has `session`), else
+     `400 invalid_request`.
+
+  The host's own disk guard (L100, #979) stays as the last line.
 
 **Tokens:** the routes need a token on the VM's lineage with `acc: "w"` and the ref in `refs`. Reading a VM's
 status or its exec tail needs `r`. `POST /v1/vms` is runtime-only (`sub` in `runtime:*`), because it starts a
