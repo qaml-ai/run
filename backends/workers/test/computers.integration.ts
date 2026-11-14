@@ -905,17 +905,12 @@ test("jobs: one command in a container of its own, its files synced in and its o
   }
   assert.ok(charged, "the job's container time is a computer usage receipt for its payer");
 
-  // A volume snapshot as the source, and a warm snapshot saved for the next job.
-  const volume = await call("/v1/volumes", { name: "job-source" });
-  await call(`/v1/volumes/${volume.id}/files/pkg/a.txt`, undefined, "from the volume");
-  const snap = await call(`/v1/volumes/${volume.id}/snapshots`, { name: "for-job" });
-  await call(`/v1/volumes/${volume.id}/files/pkg/a.txt`, undefined, "changed after the snapshot");
   const warm = await call("/__test/jobs", {
-    id: "volume-1", payer: { tenant, agent: agent.id }, command: "cat pkg/a.txt; echo warm > /var/tmp/cache", timeoutSeconds: 120,
-    volume: { tenant, volume: volume.id, snapshot: snap.id }, saveSnapshot: "warm-1",
+    id: "warm-1", payer: { tenant, agent: agent.id }, command: "cat pkg/a.txt; echo warm > /var/tmp/cache", timeoutSeconds: 120,
+    files: { "pkg/a.txt": Buffer.from("inline source").toString("base64") }, saveSnapshot: "warm-1",
   });
   assert.equal(warm.ok, true, JSON.stringify(warm));
-  assert.equal(text(warm.stdout), "from the volume");
+  assert.equal(text(warm.stdout), "inline source");
   assert.equal(warm.snapshot?.name, "warm-1");
   const resumed = await call("/__test/jobs", { id: "warm-2", payer: { tenant, agent: agent.id }, snapshot: warm.snapshot, command: "cat /var/tmp/cache; ls", timeoutSeconds: 120 });
   assert.equal(resumed.ok, true, JSON.stringify(resumed));
@@ -1170,7 +1165,7 @@ test("workflows: an API-started workflow's job is paid by its tenant under the w
   assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and expires_at>$2", [poor, Date.now()])).rowCount, 0, "and no computer slot is held");
 });
 
-test("the jobs builtin: an agent runs one command on a volume with job_run, billed as its own computer time", {
+test("the jobs builtin: an agent runs one command with job_run, billed as its own computer time", {
   timeout: 600_000, skip: requireDocker ? false : unavailable,
 }, async (t) => {
   assert.equal(unavailable, undefined, unavailable);
@@ -1215,11 +1210,10 @@ test("the jobs builtin: an agent runs one command on a volume with job_run, bill
     try { return JSON.parse(text); } catch { return text; }
   };
   await call("/v1/providers/job-fixture", { type: "openai-completions", baseUrl: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`, models: [{ id: "job-model", contextWindow: 32768, pricing: { input: 1, output: 1 } }] }, undefined, "PUT");
-  const repo = await call("/v1/volumes", { name: "job-run-repo" });
-  await call(`/v1/volumes/${repo.id}/files/check.sh`, undefined, 'echo "files: $(ls)"; echo checked > "$JOB_OUT/report.txt"; exit 3');
+  const files = { "check.sh": 'echo "files: $(ls)"; echo checked > "$JOB_OUT/report.txt"; exit 3' };
   // An ordinary agent (no delegate settings): it has job_run, not the workflows builtin.
   const agent = await call("/v1/agents", { model: "job-fixture/job-model", codeMode: false, fileTools: false });
-  const prompt = await call(`/v1/agents/${agent.id}/prompt`, { text: `RUN ${JSON.stringify({ command: "bash check.sh", at: repo.id, outputs: ["report.txt"], timeoutSeconds: 120 })}` });
+  const prompt = await call(`/v1/agents/${agent.id}/prompt`, { text: `RUN ${JSON.stringify({ command: "bash check.sh", files, outputs: ["report.txt"], timeoutSeconds: 120 })}` });
   let record: Record<string, any> = {};
   for (let i = 0; i < 900 && record.state !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); record = await call(`/v1/agents/${agent.id}/requests/${prompt.id}`); }
   const reply = String(record.outcome?.result?.reply ?? "");

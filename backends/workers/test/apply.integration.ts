@@ -19,10 +19,10 @@ async function fixture(t: TestContext, vars: Record<string, string> = {}) {
 
 test('apply reserves all creation capacity before committing and releases refused reservations', { timeout: 90_000 }, async t => {
   const f = await fixture(t, { AGENT_USAGE_TIERS: JSON.stringify([{ name: 'Free', paidUsd: 0, busyAgents: 1 }]) });
-  const manifest = { volumes: { project: { name: 'Project' } }, definitions: { lead: { name: 'Lead' } }, agents: { first: {}, last: {} } };
+  const manifest = { definitions: { lead: { name: 'Lead' } }, agents: { first: {}, last: {} } };
   const refused = await f.apply(manifest);
   assert.equal(refused.status, 429, JSON.stringify(refused));
-  for (const table of ['volumes', 'definitions', 'agents'])
+  for (const table of ['definitions', 'agents'])
     assert.equal((await f.db.query(`select count(*)::int n from ${table} where tenant=$1`, ['apply-test'])).rows[0].n, 0, table);
   const saved = await f.apply({ ...manifest, agents: { first: {} } });
   assert.equal(saved.status, 200, JSON.stringify(saved));
@@ -42,24 +42,17 @@ test('apply retries preserve the committed revision and refuse resolved-model ch
   // Simulate an old persisted resolution that no longer matches the model selected by the current runtime.
   await f.db.query("update agents set header=jsonb_set(header::jsonb,'{resolvedModel}',$2::jsonb)::json where id=$1", [id, JSON.stringify({ id: 'old-resolution' })]);
   const old = await snapshot();
-  const refused = await f.apply({ volumes: { extra: {} }, agents: { lead: { name: 'Lead' } } });
+  const refused = await f.apply({ agents: { lead: { name: 'Lead' } } });
   assert.equal(refused.status, 409, JSON.stringify(refused));
   assert.deepEqual(await snapshot(), old);
-  assert.equal((await f.db.query("select count(*)::int n from volumes where tenant=$1 and name='volume'", ['apply-test'])).rows[0].n, 0);
 });
 
-test('apply mounts provision repos and its preview creates none', {timeout:90_000}, async t=>{
+test('apply refuses removed declarations before creating resources, including previews', {timeout:90_000}, async t=>{
   const f=await fixture(t);
-  const manifest={volumes:{shared:{name:'Shared'}},agents:{writer:{mounts:[{repo:{$ref:'volumes.shared'},path:'/shared',mode:'rw'}]}}};
-  const preview=await f.apply({...manifest,dryRun:true});
-  assert.equal(preview.status,200,JSON.stringify(preview));
-  const list=async()=>{const r=await fetch(f.url+'/v1/repos',{headers:{authorization:`Bearer ${f.token}`}});return await r.json() as any;};
-  assert.deepEqual((await list()).repos,[]);
-  const saved=await f.apply(manifest);
-  assert.equal(saved.status,200,JSON.stringify(saved));
-  assert.match(saved.json.volumes.shared,/^repo_/);
-  assert.equal((await list()).repos.length,2);
-  const retry=await f.apply(manifest);
-  assert.equal(retry.status,200,JSON.stringify(retry));
-  assert.deepEqual(retry.json.agents,saved.json.agents);
+  for (const dryRun of [false,true]) {
+    const rejected=await f.apply({volumes:{shared:{name:'Shared'}},agents:{writer:{}},dryRun});
+    assert.equal(rejected.status,400,JSON.stringify(rejected));
+    assert.match(rejected.json.error,/Volumes are replaced by repos/);
+  }
+  assert.equal((await f.db.query('select count(*)::int n from agents where tenant=$1',['apply-test'])).rows[0].n,0);
 });

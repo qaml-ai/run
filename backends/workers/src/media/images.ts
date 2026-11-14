@@ -282,8 +282,8 @@ export type ImageRequest = {
   mask?: ImageSource;
   options: ImageOptions;
   keyScope?: string;
-  /** A volume of the tenant's to save the images into, under `path` (a directory), instead of answering their bytes. */
-  volume?: { id: string; path: string };
+  /** A repo of the tenant's to save the images into, under `path` (a directory), instead of answering their bytes. */
+  repo?: { id: string; path: string };
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
   identity?: AgentIdentity; actor?: string; bucket?: string;
   /** When its end user pays for it: holds the images' estimate (USD) of their credit before they are asked for. */
@@ -298,19 +298,19 @@ export interface ImageService {
   admit(tenant: string): Promise<void>;
   /** Records the images' usage, as a model response's is (billing, usage.recorded). */
   record(tenant: string, usage: UsageRecord): void;
-  /** Whether the tenant owns the volume; without it, images are not saved to volumes. */
-  owns?(tenant: string, volume: string): Promise<boolean>;
-  /** Saves an image to a volume of the tenant's. */
-  save?(tenant: string, volume: string, path: string, bytes: Uint8Array, contentType: string): Promise<{ path: string; size: number; version: number; contentType?: string }>;
+  /** Whether the tenant owns the repo; without it, images are not saved to repos. */
+  owns?(tenant: string, repo: string): Promise<boolean>;
+  /** Saves an image to a repo of the tenant's. */
+  save?(tenant: string, repo: string, path: string, bytes: Uint8Array, contentType: string): Promise<{ path: string; size: number; version: string; contentType?: string }>;
 }
 
-/** Images asked for alone (`POST /v1/images`): answered as base64, or saved to a volume of the tenant's; nothing else is kept. */
+/** Images asked for alone (`POST /v1/images`): answered as base64, or saved to a repo of the tenant's; nothing else is kept. */
 export async function imageRequest(service: ImageService, tenant: string, request: ImageRequest, signal: AbortSignal) {
   const sources = request.images ?? [];
   if (sources.length > IMAGE_LIMITS.inputs) throw new HttpError(400, `Send at most ${IMAGE_LIMITS.inputs} images to edit`);
   if (request.mask && !sources.length) throw new HttpError(400, "A mask needs an image to edit");
-  if (request.volume && !service.save) throw new HttpError(404, "Volumes are not enabled on this runtime");
-  if (request.volume && !await service.owns!(tenant, request.volume.id)) throw new HttpError(404, "Unknown volume");
+  if (request.repo && !service.save) throw new HttpError(404, "Repos are not enabled on this runtime");
+  if (request.repo && !await service.owns!(tenant, request.repo.id)) throw new HttpError(404, "Unknown repo");
   await service.admit(tenant);
   let total = 0;
   const read = async (source: ImageSource, name: string) => {
@@ -333,15 +333,15 @@ export async function imageRequest(service: ImageService, tenant: string, reques
   const { generated, usage } = made;
   service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.bucket === undefined ? {} : { bucket: request.bucket }), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
   await held?.settle(usage.usage.cost.total as number);
-  const volume = request.volume;
+  const repo = request.repo;
   const stamp = `${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}-${randomBytes(3).toString("hex")}`;
   const answered = await Promise.all(generated.images.map(async (image, index) => {
     const size = imageHeader(Buffer.from(image.bytes.buffer, image.bytes.byteOffset, image.bytes.byteLength));
     const facts = { contentType: image.contentType, ...(size ? { width: size.width, height: size.height } : {}) };
-    if (!volume) return { ...facts, data: Buffer.from(image.bytes).toString("base64") };
-    const path = `${volume.path.replace(/\/+$/, "")}/image-${stamp}${generated.images.length > 1 ? `-${index + 1}` : ""}.${EXTENSIONS[image.contentType] ?? "png"}`;
-    const saved = await service.save!(tenant, volume.id, path, image.bytes, image.contentType);
-    return { ...facts, volumeId: volume.id, path: saved.path, size: saved.size, version: saved.version };
+    if (!repo) return { ...facts, data: Buffer.from(image.bytes).toString("base64") };
+    const path = `${repo.path.replace(/\/+$/, "")}/image-${stamp}${generated.images.length > 1 ? `-${index + 1}` : ""}.${EXTENSIONS[image.contentType] ?? "png"}`;
+    const saved = await service.save!(tenant, repo.id, path, image.bytes, image.contentType);
+    return { ...facts, repo: repo.id, path: saved.path, size: saved.size, version: saved.version };
   }));
   return {
     images: answered, model: `${service.imager.provider}/${generated.model}`,

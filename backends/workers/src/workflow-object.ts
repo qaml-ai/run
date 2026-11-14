@@ -18,6 +18,7 @@ import { repoContext, type RepoEnv } from "./repos/registry.ts";
 import { repoErrorFrom } from "./repos/repo-policy.ts";
 import { BranchJanitor } from "./workflow-forks.ts";
 import { cacheKey, type CachedResult, type WorkflowResults } from "./workflow-results.ts";
+// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
 import { volume } from "./files.ts";
 
 const ENDED = new Set(["completed", "failed", "aborted"]);
@@ -256,6 +257,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         const { tenant, cache } = scope(), parsed = parse(args);
         const source = kind === "agent" ? parsed.repo : kind === "job" ? parsed.at : undefined;
         let base: string | number | undefined;
+        // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
         if (kind === 'job' && typeof source === 'string') base = (await (await volume(env, tenant, source)).info()).seq;
         else if (source !== undefined) {
           const at = repoAt(source), ctx = await repoContext(env as unknown as RepoEnv, tenant, at.repo);
