@@ -53,10 +53,60 @@ test("a child's settled cost stops its parent before another model request", asy
     put: async (key: string, value: unknown) => { values.set(key, value); },
   } as unknown as DurableObjectStorage;
   const limits = new AgentRunLimits(storage, async () => ({
-    config: {}, run: { id: 'parent', state: 'running', params: { spendLimit: { usd: 0.4 } } }, childCost: 0.3,
+    config: {}, run: { id: 'parent', state: 'running', params: { spendLimit: { usd: 0.4 } } }, childCost: async () => 0.3,
   }));
   assert.deepEqual(await limits.check(), {
     error: 'This run has reached its spend limit of $0.4 ($0.45 spent)',
     limit: 'run', code: 'spend_limit', stopped: 'spend_limit',
   });
+});
+
+test("a watchdog tick and deadline use the snapshot without SQL", async () => {
+  const values = new Map<string, unknown>([['run-usage:parent', { responses: 1, costUsd: 0.125 }]]);
+  const storage = {
+    get: async (key: string) => values.get(key),
+    put: async (key: string, value: unknown) => { values.set(key, value); },
+  } as unknown as DurableObjectStorage;
+  const limits = new AgentRunLimits(storage, async () => ({
+    config: {},
+    run: {
+      id: "parent", state: "running", began: 1000,
+      limitsSnapshot: {
+        spend: { usd: 1, spent: 0.5, setAt: 0 },
+        childCostAtAdmission: 0.25,
+        most: { maxSeconds: 8, maxResponses: 10 },
+      },
+    },
+    agentId: "agent",
+    childCost: async () => 0.625,
+    authoritative: async () => assert.fail("snapshot checks must not read Postgres"),
+  }));
+  assert.equal(await limits.deadline(), 9000);
+  const stopped = await limits.check(2000, false);
+  assert.equal(stopped?.limit, "agent");
+  assert.match(stopped!.error, /\(\$1 spent since it was set\)/);
+  assert.equal(values.get("run-limit:parent"), stopped);
+});
+
+test("provider preflight and legacy ticks read current spend", async () => {
+  const storage = { get: async () => undefined, put: async () => {} } as unknown as DurableObjectStorage;
+  const snapshot = { spend: null, childCostAtAdmission: 0, most: RUN_LIMITS };
+  const run: { id: string; state: string; limitsSnapshot?: typeof snapshot } = {
+    id: "parent", state: "running", limitsSnapshot: snapshot,
+  };
+  let reads = 0;
+  const limits = new AgentRunLimits(storage, async () => ({
+    config: {}, run, agentId: "agent",
+    authoritative: async () => {
+      reads++;
+      return { spend: { usd: 0, spent: 0, setAt: 0 }, most: RUN_LIMITS };
+    },
+  }));
+  assert.equal(await limits.check(1000, false), undefined);
+  assert.equal(reads, 0);
+  assert.equal((await limits.check())?.limit, "agent");
+  assert.equal(reads, 1);
+  delete run.limitsSnapshot;
+  assert.equal((await limits.check(1000, false))?.limit, "agent");
+  assert.equal(reads, 2);
 });

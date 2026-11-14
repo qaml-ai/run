@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
@@ -66,10 +67,14 @@ func (p HostPusher) post(ctx context.Context, host compute.Host, path string, bo
 }
 
 func (p HostPusher) tlsConfig(hostID string) *tls.Config {
-	credentials := p.TLS.current.Load()
+	// A push uses one fresh connection. Both TLS callbacks must use the
+	// same snapshot even if the tier rotates between them.
+	credentials := sync.OnceValue(p.TLS.current.Load)
 	return &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: credentials.Certificates,
+		MinVersion: tls.VersionTLS12,
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return &credentials().Certificates[0], nil
+		},
 		// Verify the private chain and SPIFFE URI in place of DNS verification.
 		InsecureSkipVerify: true,
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
@@ -88,7 +93,7 @@ func (p HostPusher) tlsConfig(hostID string) *tls.Config {
 				}
 				chain.AddCert(cert)
 			}
-			return verifyHostCertificate(leaf, chain, credentials.ClientCAs, x509.ExtKeyUsageServerAuth, hostID)
+			return verifyHostCertificate(leaf, chain, credentials().ClientCAs, x509.ExtKeyUsageServerAuth, hostID)
 		},
 	}
 }

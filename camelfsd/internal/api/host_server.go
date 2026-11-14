@@ -76,7 +76,11 @@ func (s *HostServer) authenticated(handler func(http.ResponseWriter, *http.Reque
 }
 
 func readHostRequest(w http.ResponseWriter, r *http.Request, body any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
+	return readHostBody(w, r, body, 64<<20)
+}
+
+func readHostBody(w http.ResponseWriter, r *http.Request, body any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(body); err != nil {

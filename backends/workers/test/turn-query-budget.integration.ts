@@ -13,15 +13,14 @@ import test from "node:test";
 import { startFixture } from "./fixture.ts";
 
 const CEILINGS = {
-  // Every turn includes per-second limit ticks (tenants, agents, agentSpend, computer deadline) while the model call
-  // is in flight, so even the simple turn is tick-timed. The slack below exists only until fix 1 (limits read once at
-  // admission) removes those tick statements; then tighten to the measured counts.
-  // One billing flush at a time per agent (no duplicate settlement): measured 103 / 114 / 103 / 103 / 103 (was 110 x5).
-  simple: 118,
-  // Measured 162 / 151 / 151 / 151 / 151 (was 158 x5).
-  tool: 166,
-  // A 3 s model call; measured 139 / 139 / 140 / 136 / 143 (was 134 / 152 / 149 / 149 / 142).
-  slow: 150,
+  // Limit ticks read the admission snapshot (no Postgres per tick), so the remaining variation is run to run, not
+  // per second: a few statements of slack, no tick slack.
+  // Measured 87 / 82 / 93 / 82 / 82 (was 103 / 114 / 103 / 103 / 103 after the single-flight billing flush).
+  simple: 96,
+  // Measured 128 / 123 / 123 / 123 / 123 (was 162 / 151 / 151 / 151 / 151).
+  tool: 132,
+  // A 3 s model call; measured 97 / 96 / 96 / 103 / 97 (was 139 / 139 / 140 / 136 / 143).
+  slow: 108,
 } as const;
 
 test("a turn's Postgres statements stay under the budget", { timeout: 180_000 }, async t => {

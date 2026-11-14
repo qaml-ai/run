@@ -64,8 +64,13 @@ export async function readAgentSpendCounter(env: PostgresEnv, tenant: string, ag
  * including compaction, rather than prepaid funding or active-agent charges.
  * Recomputing makes duplicate settlement and reconciliation corrections safe.
  */
-export async function agentSpend(sql: Sql, tenant: string, agent: string): Promise<AgentSpend | null> {
-  const row = (await sql.query(`update agent_spend_limits as limits set spent = (
+export async function agentSpend(sql: Sql, tenant: string, agent: string, options?: { includeRevoked?: boolean }): Promise<AgentSpend | null> {
+  // A missing owner yields no row. An owned agent without a limit yields null spend fields.
+  // Metering calls without options and retains its existing ownership semantics.
+  const row = (await sql.query(`with owner as (
+    select id from agents where id=$2 and tenant=$1 and ($3 or not revoked)
+  ), recomputed as (
+    update agent_spend_limits as limits set spent = (
       select coalesce(sum((attempt.totals->>'cost')::double precision),0)
       from model_attempts as attempt
       where attempt.tenant=$1 and attempt.agent=limits.agent and attempt.started_at>=limits.set_at
@@ -76,20 +81,19 @@ export async function agentSpend(sql: Sql, tenant: string, agent: string): Promi
       where receipt.tenant=$1 and receipt.session_id=limits.agent and receipt.accounted
         and receipt.entry_id<0 and receipt.message ? '_workersAuxiliary'
         and (receipt.message->'_workersAuxiliary'->>'startedAt')::bigint>=limits.set_at
-    ) where limits.agent=$2
-      and exists(select 1 from agents where agents.id=limits.agent and agents.tenant=$1)
-    returning limits.usd,limits.spent,limits.set_at`, [tenant, agent])).rows[0];
-  return row ? checked({ usd: Number(row.usd), spent: Number(row.spent), setAt: Number(row.set_at) }) : null;
+    ) from owner where limits.agent=owner.id
+    returning limits.usd,limits.spent,limits.set_at
+  )
+  select recomputed.* from owner left join recomputed on true`, [tenant, agent, !options || options.includeRevoked === true])).rows[0];
+  if (!row && options) throw new HttpError(404, "Agent not found", "NOT_FOUND");
+  return row?.set_at != null ? checked({ usd: Number(row.usd), spent: Number(row.spent), setAt: Number(row.set_at) }) : null;
 }
 
 /** Read at admission and between requests. Never add the same run's usage to these already metered totals. */
 export async function readAgentSpendLimit(env: PostgresEnv, tenant: string, agent: string, options: { includeRevoked?: boolean } = {}): Promise<SpendLimit | null> {
-  return withSql(env, async sql => {
-    // Directory revokes first to block new callers. Its DO still needs the
-    // same owned counter while reopening the harness to abort and settle.
-    await owned(sql, tenant, agent, false, options.includeRevoked);
-    return agentSpend(sql, tenant, agent);
-  });
+  // Directory revokes first to block new callers. Its DO still needs the
+  // same owned counter while reopening the harness to abort and settle.
+  return withSql(env, sql => agentSpend(sql, tenant, agent, options));
 }
 
 export async function runSpend(sql: Sql, tenant: string, agent: string, requestId: string): Promise<number> {
