@@ -1003,22 +1003,24 @@ proves only "this came through Cloudflare", and anyone can proxy their own zone 
   then remove the old.
 
 **2. Tier ↔ host, both directions: mutual TLS with a private CA, terminated in `camelfsd` itself.**
-- **Host → tier: `--listen-hosts`** (default `0.0.0.0:8794`) on `camelfsd api`, behind an **internal NLB in TCP
+- **Host → tier: `--listen-hosts`** on `camelfsd api` (required with compute; `0.0.0.0:8794` in deployment), behind an **internal NLB in TCP
   passthrough** (`fs-internal.camelai.dev`).
   - The TLS handshake is the tier's own Go listener, not a load balancer's: `RequireAndVerifyClientCert` against
     `--hosts-ca-pem`. Its server certificate is the same certificate the tier presents as a client to hosts.
   - **Where that certificate comes from:**
     - In production (K4c3) the tier issues its own certificate from the Private CA at start (`--hosts-ca`, the CA's
       ARN), renews it every 8 h, and refreshes the CA bundle hourly.
-    - `--tier-cert`/`--tier-key`/`--hosts-ca-pem` are the dev and test override. They reload on SIGHUP.
+        - `--tier-cert`/`--tier-key`/`--hosts-ca-pem` are the dev and test override. All three reload together on
+      SIGHUP (`host_tls.go`).
   - Expired, not-yet-valid and foreign-CA certificates fail the handshake.
   - **No certificate header is trusted anywhere.** AWS does not guarantee that an ALB strips client-supplied
     `X-Amzn-Mtls-*` headers, so nothing reads them, and no ALB terminates host TLS.
   - Only the host routes live on this listener: `/v1/hosts/{host}/register`, `…/heartbeat`,
-    `…/vms/{id}/started`, `…/vms/{id}/ended` and the host's ref CAS (C4, `POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas`, §9.7). None of them are on the
-    storage or public listener, and none are unauthenticated; the NLB health check is TCP.
+    `…/vms/{id}/started`, `…/vms/{id}/ended` and the host's ref CAS (C4, `POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas`, §9.7). None of them are on the storage listener (`--listen`, 8790), and none are unauthenticated. The NLB health check
+    is `/v0/health` on 8790 (fs-infra #1020), never a route on 8794. K4c3 adds `POST /v1/hosts/{host}/renew` here
+    for certificate renewal.
 - **The host's identity is its certificate.**
-  - The tier takes the leaf of the verified chain (`r.TLS.VerifiedChains[0]`). It must have the client-auth EKU
+    - The tier takes the leaf of the verified chain (`r.TLS.VerifiedChains[0][0]`, `host_identity.go`). It must have the client-auth EKU
     and exactly one URI SAN, `spiffe://camelfs/host/<hostId>`, matching hostwire's host-id pattern.
   - That id must equal the path's `{host}`, else `403 forbidden`. A call from host A about host B's VM is therefore
     refused.
@@ -1041,7 +1043,8 @@ proves only "this came through Cloudflare", and anyone can proxy their own zone 
   `POST /v1/hosts/enroll` only.
   - It trusts **only** the STS attestation (`shared/job-host-attest.ts`): no client certificate exists yet, and no
     header is read.
-  - It issues the host's first certificate (K4c3). Renewal then runs over `--listen-hosts`.
+    - It issues the host's first certificate (K4c3). Renewal then runs over `--listen-hosts` as
+    `POST /v1/hosts/{host}/renew`.
 - **Tier → host** (port 8792, `--listen-compute` on the host, K2c).
   - The tier presents the same certificate: an `EndEntityCertificate/V1` with both server and client EKUs and the
     URI SAN `spiffe://camelfs/tier`.
