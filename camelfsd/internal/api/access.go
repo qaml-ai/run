@@ -60,7 +60,7 @@ func storageLogRoute(method string, u *url.URL) (route, lineage string) {
 	}
 	if len(parts) == 2 {
 		switch parts[1] {
-		case "blobs", "commits", "read", "diff", "merge", "grep":
+		case "blobs", "commits", "read", "diff", "merge", "merge-base", "grep":
 			route = "/v1/lineages/:lineage/" + parts[1]
 		}
 	} else if len(parts) == 3 {
@@ -71,6 +71,13 @@ func storageLogRoute(method string, u *url.URL) (route, lineage string) {
 			route = "/v1/lineages/:lineage/trees/:tree"
 		case "commits":
 			route = "/v1/lineages/:lineage/commits/:commit"
+		}
+	} else if len(parts) == 4 {
+		switch {
+		case parts[1] == "trees" && parts[3] == "entry":
+			route = "/v1/lineages/:lineage/trees/:tree/entry"
+		case parts[1] == "commits" && parts[3] == "is-ancestor":
+			route = "/v1/lineages/:lineage/commits/:commit/is-ancestor"
 		}
 	}
 	return

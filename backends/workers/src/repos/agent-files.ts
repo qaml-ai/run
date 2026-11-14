@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import { agentStore, insideRepo } from './agent-store.ts';
 import { agentRepoId, type Mount } from './mounts.ts';
 import type { FileBindings } from '../files.ts';
@@ -20,16 +21,16 @@ export function mountTarget(mounts: Mount[], tenant: string, agent: string, raw?
   if (!mount) throw new FileError('Path is not inside a mount',403);
   return { mount, path, inside: normalizePath((mount.subpath??'/')+'/'+path.slice(mount.path.length)) };
 }
-export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: Mount[] = [], op: 'api' | 'turn' = 'turn', cache?: RepoTreeCache, vmFiles?: VmFilesProvider): Promise<Response> {
+export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: Mount[] = [], op: 'api' | 'turn' = 'turn', cache?: RepoTreeCache, vmFiles?: VmFilesProvider, invocation?: AgentInvocation): Promise<Response> {
   const scope = cache?.scope();
   try {
     path=normalizePath(path);
     const t=mountTarget(mounts.filter((m):m is Mount=>'repo' in m),tenant,agent,path);
     if(request.method!=='GET' && t.mount.mode!=='rw') throw new FileError('Mount is read-only',403);
     const ref = t.mount.ref ?? 'main';
-    const vm = await resolveVmFiles(env as RepoEnv, { tenant, agent, repo: t.mount.repo, ref }, vmFiles);
+    const vm = await resolveVmFiles(env as RepoEnv, { tenant, agent, repo: t.mount.repo, ref }, vmFiles, invocation);
     if (vm) return await handleVmFile(request, vm, ref, t, agent);
-    const store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent, { ...(request.headers.get("x-camel-run") ? {"Camel-Run":request.headers.get("x-camel-run")!} : {}), ...(request.headers.get("x-camel-call") ? {"Camel-Call":request.headers.get("x-camel-call")!} : {}) }, scope), p=insideRepo(t.inside);
+    const store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent, { ...(request.headers.get("x-camel-run") ? {"Camel-Run":request.headers.get("x-camel-run")!} : {}), ...(request.headers.get("x-camel-call") ? {"Camel-Call":request.headers.get("x-camel-call")!} : {}) }, scope, invocation), p=insideRepo(t.inside);
     if(request.method==='GET') {
       const file=await store.stat(t.inside), v=await store.ctx.repo.resolve(file.version);
       const response=await streamFile(request,store.ctx,v,{path:p,blob:file.blob,size:file.size,mode:'100644'});
@@ -102,7 +103,7 @@ function failure(e: unknown) {
   return repoFailure(error);
 }
 
-export async function handleAgentFilesRoute(request: Request, env: FileBindings, tenant: string, agent: string, mounts: Mount[], path = new URL(request.url).pathname, cache?: RepoTreeCache, vmFiles?: VmFilesProvider): Promise<Response | null> {
+export async function handleAgentFilesRoute(request: Request, env: FileBindings, tenant: string, agent: string, mounts: Mount[], path = new URL(request.url).pathname, cache?: RepoTreeCache, vmFiles?: VmFilesProvider, invocation?: AgentInvocation): Promise<Response | null> {
   if(path!=='/files'&&path!=='/links'&&!path.startsWith('/uploads/'))return null;
   const scope = cache?.scope();
   try {
@@ -113,7 +114,7 @@ export async function handleAgentFilesRoute(request: Request, env: FileBindings,
       const own=mounts.find(m=>'repo'in m&&m.repo===agentRepoId(tenant,agent)&&m.mode==='rw');
       if(!own)throw new FileError('Attaching files needs a writable mount, like the default /workspace');
       const headers=new Headers(request.headers);headers.set('x-camel-run',match[1]);
-      return handleAgentFileRequest(new Request(request,{headers}),env,tenant,agent,`${own.path}/uploads/${match[1]}/${safeName(decodeURIComponent(match[2]))}`,mounts,'turn',cache,vmFiles);
+      return handleAgentFileRequest(new Request(request,{headers}),env,tenant,agent,`${own.path}/uploads/${match[1]}/${safeName(decodeURIComponent(match[2]))}`,mounts,'turn',cache,vmFiles,invocation);
     }
     const body=path==='/links'?await request.clone().json() as any:undefined;
     const asked=body?.path??url.searchParams.get('path')??undefined;
@@ -121,12 +122,12 @@ export async function handleAgentFilesRoute(request: Request, env: FileBindings,
     const ref = t.mount.ref ?? 'main';
     if(path==='/links') {
       if(body.method==='PUT'&&t.mount.mode!=='rw')throw new FileError('Mount is read-only',403);
-      const store = await agentStore(env as RepoEnv, tenant, t.mount.repo, ref, agent, {}, scope);
+      const store = await agentStore(env as RepoEnv, tenant, t.mount.repo, ref, agent, {}, scope, invocation);
       return Response.json({...await signRepoLink(store.ctx,url.origin,{...body,path:insideRepo(t.inside),ref:store.ref,agent,run:request.headers.get("x-camel-run")??undefined,call:request.headers.get("x-camel-call")??undefined}),path:t.path},{status:201});
     }
-    const vm = await resolveVmFiles(env as RepoEnv, { tenant, agent, repo: t.mount.repo, ref }, vmFiles);
+    const vm = await resolveVmFiles(env as RepoEnv, { tenant, agent, repo: t.mount.repo, ref }, vmFiles, invocation);
     const glob = url.searchParams.get('glob') ?? undefined;
-    const files = vm ? undefined : await (await agentStore(env as RepoEnv, tenant, t.mount.repo, ref, agent, {}, scope)).list(t.inside, undefined, glob);
+    const files = vm ? undefined : await (await agentStore(env as RepoEnv, tenant, t.mount.repo, ref, agent, {}, scope, invocation)).list(t.inside, undefined, glob);
     const base = t.mount.subpath ?? '/';
     const show = (p: string) => t.mount.path + (base === '/' ? p : p.slice(base.length));
     const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get('limit') ?? 1000)));

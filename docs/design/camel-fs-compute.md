@@ -356,8 +356,9 @@ scripts.
   > stderr and exit code. Files under /workspace are saved to your branch after every command; everything else on
   > the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps
   > after about 10 seconds with no command running, and a sleep ends every process, including background `&` jobs
-  > and servers; a command that is still running keeps it awake. The first command after a sleep waits a few
-  > seconds while the machine starts. Output over 32 KiB per stream is cut in the middle, and the result says how
+  > and servers; a command that is still running keeps it awake. The first command after a sleep usually starts
+  > within a second; the first command on a new or large repository can take up to half a minute while its files
+  > are copied in. Output over 32 KiB per stream is cut in the middle, and the result says how
   > many bytes were dropped.
   >
   > `command`: The command to run in bash, in a persistent shell: the working directory and environment carry

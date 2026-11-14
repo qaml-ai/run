@@ -302,7 +302,7 @@ export class VoiceCall extends DurableObject<Env> {
   private async conversation(row: Row) {
     if (!row.providerCall) return;
     try {
-      const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "elevenlabs", undefined, undefined, false);
+      const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "elevenlabs", undefined, undefined, undefined, false);
       if (key?.platform) return await (await elevenLabsProvider(this.env)).conversation(key.apiKey, row.providerCall);
     } catch {
       // Use elapsed duration when the provider's conversation cannot be read.
@@ -346,7 +346,7 @@ export class VoiceCall extends DurableObject<Env> {
     if (row.call.provider === "elevenlabs") return row.call;
     if (row.providerCall) {
       try {
-        const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "openai", undefined, undefined, false);
+        const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "openai", undefined, undefined, undefined, false);
         if (!key?.apiKey) throw new Error("No OpenAI key for hanging up the voice call");
         await this.openai().hangup(row.providerCall, key.apiKey);
       } catch (error) {

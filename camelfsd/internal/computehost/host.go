@@ -44,6 +44,8 @@ type Host struct {
 	epoch            int64
 	registered       bool
 	registeredImages []string
+	prewarming       bool
+	prewarmPending   []string
 	vms              map[string]*session
 	work             sync.WaitGroup
 }
@@ -158,6 +160,9 @@ func (h *Host) save(s *session, r record) error {
 
 func (h *Host) Close() {
 	h.cancel()
+	if h.Mounts != nil {
+		h.Mounts.StopBaselines()
+	}
 	h.mu.Lock()
 	h.mu.Unlock()
 	h.work.Wait()
@@ -187,6 +192,7 @@ func (h *Host) register(ctx context.Context) error {
 		h.epoch = result.BootEpoch
 	}
 	h.registered, h.registeredImages = true, q.Images
+	h.queuePrewarmLocked(result.Images)
 	return nil
 }
 
@@ -218,10 +224,7 @@ func (h *Host) Recover(ctx context.Context) error {
 				var inventory vmhost.Reply
 				inventory, err = vm.Reconnect(ctx)
 				if err == nil && r.StartedAt == nil && inventory["tree"] == r.Spec.Tree && r.Stop == nil {
-					now := time.Now().UnixMilli()
-					r.StartedAt = &now
-					r.Slot = vm.Slot()
-					err = h.save(s, r)
+					err = h.startAdopted(ctx, s, r, vm)
 				}
 				if err == nil && r.Pending == nil && inventory["checkpointPending"] == true {
 					err = h.checkpointed(ctx, vm, "", true)
@@ -230,10 +233,7 @@ func (h *Host) Recover(ctx context.Context) error {
 			if err == nil && r.StartedAt == nil && r.Stop == nil {
 				_, err = guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": id, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
 				if err == nil {
-					now := time.Now().UnixMilli()
-					r.StartedAt = &now
-					r.Slot = vm.Slot()
-					err = h.save(s, r)
+					err = h.startAdopted(ctx, s, r, vm)
 				}
 			}
 		}
@@ -423,6 +423,7 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 	ctx, cancel := context.WithTimeout(h.ctx, h.Mounts.ApplyMax+time.Minute)
 	defer cancel()
 	var imageTime, mountTime, firstExec time.Duration
+	var syncMs float64
 	var phases vmhost.BootTimings
 	err := func() error {
 		if !validShape(q.Shape, h.Shape) || q.Session == nil {
@@ -457,11 +458,18 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 		if err := h.Mounts.SessionStreams(ctx, q.ID, vm.GuestSocket(), vm.GuestUID(), true); err != nil {
 			return err
 		}
-		_, err = guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": q.ID, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
-		firstExec = time.Since(start)
+		applied, err := guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": q.ID, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
 		if err != nil {
 			return err
 		}
+		syncMs, _ = applied["syncMs"].(float64)
+		publish, discard := h.captureBaseline(ctx, q.ID, vm)
+		defer func() {
+			if discard != nil {
+				discard()
+			}
+		}()
+		firstExec = time.Since(start)
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		r = s.row
@@ -471,10 +479,14 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 			return err
 		}
 		s.vm = vm
+		if publish != nil {
+			discard = nil
+			go publish()
+		}
 		return nil
 	}()
-	// first_exec spans Launcher.Boot through the first camelfs_apply round trip; disk..vsock are its launcher phases.
-	slog.Info("compute_boot", "vm", q.ID, "image", ms(imageTime), "mount", ms(mountTime), "first_exec", ms(firstExec),
+	// first_exec includes boot, apply and the baseline handshake; disk..vsock are its launcher phases.
+	slog.Info("compute_boot", "vm", q.ID, "image", ms(imageTime), "mount", ms(mountTime), "first_exec", ms(firstExec), "syncMs", syncMs,
 		"disk", ms(phases.Disk), "assets", ms(phases.Assets), "tap", ms(phases.Tap), "policy", ms(phases.Policy),
 		"scope", ms(phases.Scope), "vsock", ms(phases.Vsock), "error", err)
 	if err != nil {
@@ -562,6 +574,29 @@ func (h *Host) stop(s *session) {
 	} else {
 		s.vm = nil
 	}
+}
+
+func (h *Host) startAdopted(ctx context.Context, s *session, r record, vm *vmhost.VM) error {
+	publish, discard := h.captureBaseline(ctx, r.Spec.ID, vm)
+	now := time.Now().UnixMilli()
+	r.StartedAt, r.Slot = &now, vm.Slot()
+	if err := h.save(s, r); err != nil {
+		if discard != nil {
+			discard()
+		}
+		return err
+	}
+	if publish != nil {
+		go publish()
+	}
+	return nil
+}
+
+func (h *Host) captureBaseline(ctx context.Context, id string, vm guestRequester) (func(), func()) {
+	return h.Mounts.SessionBaseline(ctx, id, func(ctx context.Context) error {
+		_, err := guestRequest(ctx, vm, map[string]any{"op": "camelfs_baseline", "jobId": id, "timeoutMs": image.SessionBaselineTimeout.Milliseconds()})
+		return err
+	})
 }
 
 func (h *Host) cleanup(ctx context.Context, id string) error {

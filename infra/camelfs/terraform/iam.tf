@@ -219,6 +219,14 @@ locals {
       Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
       Resource = local.host_object_arns
     },
+    # The hosts' CA certificate a host pins at install (mtls.tf, the lead's ruling 2026-11-14): the one object of the
+    # trust bucket a host may read; the AOP CA next to it is the public listener's business.
+    {
+      Sid      = "TierCaRead"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = ["${aws_s3_bucket.trust.arn}/hosts-ca.pem"]
+    },
     {
       Sid      = "GuestImageRead"
       Effect   = "Allow"

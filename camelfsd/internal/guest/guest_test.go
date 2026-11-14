@@ -374,3 +374,81 @@ func TestSessionWorkspace(t *testing.T) {
 		t.Fatalf("new shell cwd = %q", cwd)
 	}
 }
+
+func TestApplySyncsWorkspaceBeforeReply(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		name := "success"
+		if fail {
+			name = "sync failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			g := fixture(t)
+			tree := strings.Repeat("a", 40)
+			path := filepath.Join(g.repo, "old")
+			if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			synced := make(chan struct{})
+			comingBack := make(chan struct{})
+			g.syncWorkspace = func(dir string) error {
+				if dir != g.repo {
+					t.Errorf("synced %q, expected %q", dir, g.repo)
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("apply had not removed the file before sync: %v", err)
+				}
+				close(synced)
+				<-comingBack
+				if fail {
+					return unix.EIO
+				}
+				return nil
+			}
+			peer := streamListener(t, g, 5201, func(c net.Conn) error {
+				for _, frame := range []any{
+					wire.Header{V: 1, Kind: "apply", JobID: "j", ToTree: tree},
+					message{"indexEnd": true, "count": 0},
+					operation{Path: "old", Op: "del"},
+					operation{End: true},
+				} {
+					if err := wire.Send(c, frame); err != nil {
+						return err
+					}
+				}
+				select {
+				case <-synced:
+				case <-time.After(time.Second):
+					return fmt.Errorf("apply did not reach sync")
+				}
+				c.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
+				var reply struct {
+					Applied bool
+					SyncMs  *float64
+					Error   string
+				}
+				probeErr := wire.JSON(c, &reply)
+				close(comingBack)
+				if timeout, ok := probeErr.(net.Error); !ok || !timeout.Timeout() {
+					return fmt.Errorf("apply replied before sync returned: %+v, %v", reply, probeErr)
+				}
+				c.SetReadDeadline(time.Now().Add(time.Second))
+				if err := wire.JSON(c, &reply); err != nil {
+					return err
+				}
+				if fail && (reply.Applied || !strings.Contains(reply.Error, "sync workspace")) ||
+					!fail && (!reply.Applied || reply.SyncMs == nil) {
+					return fmt.Errorf("bad apply reply: %+v", reply)
+				}
+				return nil
+			})
+			reply, err := g.apply(t.Context(), request{JobID: "j", TimeoutMs: 3000})
+			if fail && !strings.Contains(fmt.Sprint(err), "sync workspace") ||
+				!fail && (err != nil || reply["syncMs"] == nil) {
+				t.Errorf("apply result: %+v, %v", reply, err)
+			}
+			if err := <-peer; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

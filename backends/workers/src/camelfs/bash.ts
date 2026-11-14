@@ -1,3 +1,4 @@
+import { AgentInvocation } from "../agent-invocation.ts";
 import { createHash } from "node:crypto";
 import { defineTool } from "@earendil-works/pi-durable";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
@@ -15,6 +16,7 @@ import type { TierClaims } from "./claims.ts";
 import { TierError, tierConfigured, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
+import { repoStorage } from "./repo-storage.ts";
 import { guestFiles, VM_FILES_STDOUT_BYTES, type VmFiles } from "./vm-files.ts";
 
 export const BASH_WORKDIR = '/workspace';
@@ -82,7 +84,7 @@ export class BashSessions {
   private readonly storage: DurableObjectStorage;
   private readonly env: Env;
   private readonly defer: (work: Promise<unknown>) => void;
-  private readonly arm: (at?: number) => Promise<void>;
+  private readonly arm: (at: number, invocation: AgentInvocation) => Promise<void>;
   private readonly checkpointFailed: (callId: string, requestId: string, error: string) => Promise<void>;
   private readonly admit: ReturnType<typeof meterBilling>["admit"];
   private renewing = false;
@@ -91,7 +93,7 @@ export class BashSessions {
     storage: DurableObjectStorage,
     env: Env,
     defer: (work: Promise<unknown>) => void,
-    arm: (at?: number) => Promise<void>,
+    arm: (at: number, invocation: AgentInvocation) => Promise<void>,
     checkpointFailed: (callId: string, requestId: string, error: string) => Promise<void>,
     admit = meterBilling(env, HOSTS_PROVIDER).admit,
   ) {
@@ -181,9 +183,9 @@ export class BashSessions {
       key, branch, JSON.stringify(receipt), Number(!!receipt.checkpoint));
   }
 
-  private async credit(conf: Config) {
+  private async credit(conf: Config, invocation: AgentInvocation) {
     // MONEY: admission checks spend limits and available credit before create or renewal, without a hold.
-    try { await this.admit({ tenant: conf.tenantId, agent: conf.id }); }
+    try { await this.admit({ tenant: conf.tenantId, agent: conf.id }, invocation); }
     catch (error) {
       const { status, code } = (error ?? {}) as { status?: number; code?: string };
       if (status === 402 || (status === 429 && code === "FREE_HOURLY_LIMIT")) return false;
@@ -193,7 +195,7 @@ export class BashSessions {
     return true;
   }
 
-  private async ready(conf: Config, branch: Branch) {
+  private async ready(conf: Config, branch: Branch, invocation: AgentInvocation) {
     let vm = this.row(branch.branch);
     if (vm?.state === "running") return vm;
     const creating = vm?.state === "creating" ? vm : undefined;
@@ -206,7 +208,7 @@ export class BashSessions {
     } else {
       const spec = bootSpec(this.env, conf);
       // MONEY: no VM row or create request is issued on refusal. Persist the original priced boot spec for replay.
-      if (!await this.credit(conf)) throw new Error("no credit for compute");
+      if (!await this.credit(conf, invocation)) throw new Error("no credit for compute");
       const created_at = Date.now();
       const seq = (boot?.seq ?? 0) + 1;
       const n = seq.toString(36);
@@ -253,7 +255,7 @@ export class BashSessions {
       if (isTier(error, 409, "not_running")) this.stop(vm.vm_id);
       throw error;
     }
-    await this.arm(Date.now() + 1_000);
+    await this.arm(Date.now() + 1_000, invocation);
     const running = this.sql.exec<Vm>("UPDATE agent_vms SET state='running', shell=? WHERE vm_id=? AND state='creating' RETURNING *", shell, vm.vm_id).toArray()[0];
     if (!running) throw new Error("Bash VM stopped during startup");
     console.log(JSON.stringify({ type: "bash_vm_created", vm: vm.vm_id, runningMs: Date.now() - vm.created_at }));
@@ -262,7 +264,8 @@ export class BashSessions {
 
   completed(key: string) { return this.receipt(key)?.result; }
 
-  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args): Promise<SessionResult> {
+  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args, invocation?: AgentInvocation): Promise<SessionResult> {
+    if (!invocation) return AgentInvocation.run(scope => this.execute(conf, branch, key, callId, requestId, args, scope));
     return this.serial(branch.branch, async () => {
       const previous = this.receipt(key);
       if (previous?.result) return previous.result;
@@ -271,7 +274,7 @@ export class BashSessions {
       const replay = !!intent;
       for (let attempt = 0; ; attempt++) {
         if (!intent) {
-          const vm = await this.ready(conf, branch);
+          const vm = await this.ready(conf, branch, invocation);
           // An abandoned invocation can no longer be safely reissued after later commands may have evicted its guest receipt.
           this.sql.exec(`UPDATE agent_vm_calls SET receipt=? WHERE branch=? AND id<>? AND json_type(receipt,'$.intent')='object'`,
             JSON.stringify({ result: { stdout: "", stderr: "", exitCode: null, timedOut: false, truncated: true, error: "Bash result was interrupted and could not be recovered" } }), branch.branch, key);
@@ -304,7 +307,7 @@ export class BashSessions {
         const result: SessionResult = streamed.result;
         const checkpoint = { vm, callId, requestId, message: (`bash: ${body.command.split(/\r?\n/, 1)[0]}`).slice(0, 72), time: Date.now() };
         // The wake is durable before the receipt leaves a pending checkpoint.
-        await this.arm(Date.now() + 1_000);
+        await this.arm(Date.now() + 1_000, invocation);
         this.storage.transactionSync(() => {
           const warning = this.sql.exec<{ reason: string }>(
             "DELETE FROM agent_vm_checkpoint_warnings WHERE branch=? RETURNING reason", branch.branch,
@@ -345,13 +348,13 @@ export class BashSessions {
       }
     });
     return guestFiles(
-      (execId, command, stdin, mutation) => onVm(async () => {
+      (execId, command, input, mutation) => onVm(async () => {
         const timeoutS = 120;
-        const body = { execId, command, stdin, cwd: BASH_WORKDIR, timeoutS };
+        const body = { execId, command, ...input, cwd: BASH_WORKDIR, timeoutS };
         const checkpoint = { vm, callId: execId, message: "Save VM file changes", time: Date.now() };
         const key = JSON.stringify(["vmfiles", vm.vm_id]);
         if (mutation) {
-          await this.arm(Date.now() + 1_000);
+          await AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope));
           this.savedHeads.delete(vm.vm_id);
           // Record the pending save before dispatch. The mutation can succeed even if its response is lost.
           this.save(key, branch, { checkpoint });
@@ -377,11 +380,14 @@ export class BashSessions {
         if (reply.changed) this.recordHead(vm, reply);
         return this.rememberHead(vm, reply);
       }),
+      bytes => onVm(() => repoStorage(this.env, claims(vm).sub).putBlob(vm.lineage, bytes)),
     );
   }
 
   private scheduleCheckpoint(branch: string) {
-    this.defer(sleep(0).then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch)))).catch(() => this.arm(Date.now() + 1_000)));
+    this.defer(sleep(0)
+      .then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))))
+      .catch(() => AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope))));
   }
 
   private rememberHead(vm: Vm, { version, tree }: Head) {
@@ -445,17 +451,18 @@ export class BashSessions {
       FROM agent_vms v LEFT JOIN agent_vm_renewal r ON v.vm_id=r.vm_id WHERE v.state='running'`, LEASE_MS - RENEW_MS).one().at ?? Infinity;
   }
 
-  async wake(conf: Config) {
+  async wake(conf: Config, invocation?: AgentInvocation): Promise<void> {
+    if (!invocation) return AgentInvocation.run(scope => this.wake(conf, scope));
     if (!bashEnabled(this.env)) return;
     for (const { branch } of this.sql.exec<{ branch: string }>("SELECT DISTINCT branch FROM agent_vm_calls WHERE checkpoint=1").toArray())
       this.defer(this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))));
     if (this.renewing) return;
     this.renewing = true;
-    try { await this.renew(conf); }
+    try { await this.renew(conf, invocation); }
     finally { this.renewing = false; }
   }
 
-  private async renew(conf: Config) {
+  private async renew(conf: Config, invocation: AgentInvocation) {
     // MONEY: renew independently of a running command or a checkpoint on this branch.
     const due = this.sql.exec<Vm & { refused: number; proposed: number | null }>(`SELECT v.*,coalesce(r.refused,0) AS refused,r.proposed
       FROM agent_vms v LEFT JOIN agent_vm_renewal r ON v.vm_id=r.vm_id
@@ -470,7 +477,7 @@ export class BashSessions {
           else retry(Date.now() + RENEW_MS);
           return;
         }
-        if (!await this.credit(conf)) {
+        if (!await this.credit(conf, invocation)) {
           retry(Math.max(Date.now() + 1, vm.proposed ?? vm.deadline), 1, null);
           return;
         }
@@ -499,7 +506,7 @@ export class BashSessions {
 export function bashTool(runtime: AgentRuntime) {
   return defineTool({
     name: "bash",
-    description: `Runs a shell command on your machine, a Linux VM attached to your current branch, and returns its stdout, stderr and exit code. Files under ${BASH_WORKDIR} are saved to your branch after every command; everything else on the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps after about 10 seconds with no command running, and a sleep ends every process, including background \`&\` jobs and servers; a command that is still running keeps it awake. The first command after a sleep waits a few seconds while the machine starts. Output over 32 KiB per stream is cut in the middle, and the result says how many bytes were dropped.`,
+    description: `Runs a shell command on your machine, a Linux VM attached to your current branch, and returns its stdout, stderr and exit code. Files under ${BASH_WORKDIR} are saved to your branch after every command; everything else on the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps after about 10 seconds with no command running, and a sleep ends every process, including background \`&\` jobs and servers; a command that is still running keeps it awake. The first command after a sleep usually starts within a second; the first command on a new or large repository can take up to half a minute while its files are copied in. Output over 32 KiB per stream is cut in the middle, and the result says how many bytes were dropped.`,
     parameters: obj({
       command: str({ description: "The command to run in bash, in a persistent shell: the working directory and environment carry over between calls until the machine sleeps." }),
       cwd: opt(str({ description: "Directory to run in; defaults to the shell's current directory." })),

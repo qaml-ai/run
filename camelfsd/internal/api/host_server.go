@@ -19,13 +19,14 @@ import (
 type HostServer struct {
 	controller *compute.Controller
 	pools      []string
+	images     []string
 	grace      time.Duration
 	routes     *http.ServeMux
 	findHost   func(context.Context, []string, string) (compute.Host, error)
 }
 
-func NewHostServer(c *compute.Controller, pools []string, grace time.Duration) *HostServer {
-	s := &HostServer{controller: c, pools: slices.Clone(pools), grace: grace, routes: http.NewServeMux(),
+func NewHostServer(c *compute.Controller, pools, images []string, grace time.Duration) *HostServer {
+	s := &HostServer{controller: c, pools: slices.Clone(pools), images: uniqueStrings(append([]string{}, images...)), grace: grace, routes: http.NewServeMux(),
 		findHost: c.FindHost}
 	s.routes.HandleFunc("POST /v1/hosts/{host}/register", s.authenticated(s.register))
 	s.routes.HandleFunc("POST /v1/hosts/{host}/heartbeat", s.authenticated(s.heartbeat))
@@ -114,7 +115,7 @@ func (s *HostServer) register(w http.ResponseWriter, r *http.Request, id string)
 		Shape: compute.Shape{VCPUs: q.Shape.VCPUs, MemoryMiB: q.Shape.MemoryMiB, DiskMiB: q.Shape.DiskMiB},
 		Slots: q.Slots, Features: uniqueStrings(q.Features), Images: uniqueStrings(q.Images)})
 	if err == nil {
-		jsonReply(w, http.StatusOK, hostwire.Registered{BootEpoch: epoch})
+		jsonReply(w, http.StatusOK, hostwire.Registered{BootEpoch: epoch, Images: s.images})
 	}
 	return err
 }

@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { HttpError } from "./errors.ts";
 import { modelSpendLimit } from "./agent-spend.ts";
 import { withSql, type PostgresEnv, type Sql } from "./postgres.ts";
@@ -18,13 +19,13 @@ export type AuxiliaryCost = { costUsd: number; provider?: string; model?: string
  * Check before sending any external request. A platform call must first acquire
  * its existing billing hold; absence of that integration is a refusal, not free use.
  */
-export async function admitAuxiliaryUsage(env: PostgresEnv, call: Omit<AuxiliaryCall, "callId" | "kind" | "startedAt"> & { spendLimit?: number }, platform = false, admitPlatform?: () => Promise<void>) {
+export async function admitAuxiliaryUsage(env: PostgresEnv, call: Omit<AuxiliaryCall, "callId" | "kind" | "startedAt"> & { spendLimit?: number }, platform = false, admitPlatform?: () => Promise<void>, invocation?: AgentInvocation) {
   await withSql(env, async sql => {
     const owned = (await sql.query("select id from agents where id=$1 and tenant=$2 and not revoked", [call.agent, call.tenant])).rows[0];
     if (!owned) throw new HttpError(404, "Agent not found", "NOT_FOUND");
     const limit = await modelSpendLimit(sql, call);
     if (limit) throw limit;
-  });
+  }, invocation);
   if (platform) {
     if (!admitPlatform) throw new HttpError(503, "Platform auxiliary usage requires billing admission", "BILLING_UNAVAILABLE");
     await admitPlatform();
@@ -71,7 +72,7 @@ export async function recordAuxiliaryUsage(sql: Sql, call: AuxiliaryCall, cost: 
 }
 
 /** Public run usage keeps the raw tool subtotals alongside the model token cost. */
-export async function auxiliaryUsageCosts(env: PostgresEnv, tenant: string, agent: string, requestId: string) {
+export async function auxiliaryUsageCosts(env: PostgresEnv, tenant: string, agent: string, requestId: string, invocation?: AgentInvocation) {
   return withSql(env, async sql => {
     const row = (await sql.query(`select
       coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind'='decision'),0) as decision,
@@ -81,7 +82,7 @@ export async function auxiliaryUsageCosts(env: PostgresEnv, tenant: string, agen
       from pi_usage_receipts where tenant=$1 and session_id=$2 and accounted and entry_id<0
       and message ? '_workersAuxiliary' and message->'_workersAuxiliary'->>'requestId'=$3`, [tenant, agent, requestId])).rows[0];
     return { decisionCostUsd: Number(row.decision), imageCostUsd: Number(row.image), webCostUsd: Number(row.web), transcriptionCostUsd: Number(row.transcription) };
-  });
+  }, invocation);
 }
 
 export const auxiliaryRunCosts = auxiliaryUsageCosts;

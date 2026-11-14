@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"sync"
 	"time"
 )
@@ -139,7 +140,16 @@ func (g *guest) acceptExec(c *sessionChannel, req request) {
 	if len(req.Env) == 0 {
 		req.Env = nil
 	}
-	args, _ := json.Marshal([]any{req.Command, req.Shell, req.Env, req.Stdin, req.Cwd})
+	argsFields := []any{req.Command, req.Shell, req.Env, req.Stdin, req.Cwd}
+	if req.StdinBlob != nil {
+		if req.Stdin != "" || !req.StdinBlob.Valid() || !root.Hex(req.StdinToken, 32) {
+			c.send(failure("invalid_request"))
+			return
+		}
+		// The stream token is per HTTP attempt. The blob defines replay identity.
+		argsFields = append(argsFields, req.StdinBlob)
+	}
+	args, _ := json.Marshal(argsFields)
 	digest := sha256.Sum256(args)
 	ack := message{"ok": true, "execId": req.ExecID, "accepted": true}
 	if e := s.execs[req.ExecID]; e != nil {

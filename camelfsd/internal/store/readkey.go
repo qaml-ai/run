@@ -6,7 +6,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 )
 
-// validReadKey admits the immutable object namespace and the content-addressed guest
+// validReadKey admits lineage objects (including tree-root mappings) and the content-addressed guest
 // images (guest/<sha256>.json manifests and guest/<sha256>.ext4.zst).
 func validReadKey(key string) bool {
 	if valid(key) || guestManifest(key) {

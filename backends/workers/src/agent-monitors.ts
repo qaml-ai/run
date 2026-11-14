@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { defineTool, type ToolRegistration } from '@earendil-works/pi-durable';
 import { compile } from '@earendil-works/pi-schema';
 import {
@@ -132,13 +133,13 @@ export async function stageMonitorSettle(tx: DurableObjectTransaction, record: {
 }
 
 /** Send the messages monitors owe the agent (as prompts of its own queue); an ended monitor that owes none goes. */
-export async function flushMonitors(runtime: AgentRuntime) {
+export async function flushMonitors(runtime: AgentRuntime, invocation: AgentInvocation) {
   for (const schedule of (await runtime.ctx.storage.list<Schedule>({ prefix: 'schedule:', limit: 100 })).values()) {
     if (!schedule.monitor) continue;
     const done = new Set<string>(), failed = new Set<string>();
     for (const wake of schedule.monitor.outbox ?? []) {
       try {
-        await runtime.submit({ id: wake.id, method: 'prompt', params: { text: wake.text, allowDisconnected: true, ...(wake.budget ? { spendLimit: wake.budget } : {}) } });
+        await runtime.submit(invocation, { id: wake.id, method: 'prompt', params: { text: wake.text, allowDisconnected: true, ...(wake.budget ? { spendLimit: wake.budget } : {}) } });
         done.add(wake.id);
       } catch (error) {
         failure(runtime.env, 'monitor_wake_failed', error);
@@ -156,7 +157,7 @@ export async function flushMonitors(runtime: AgentRuntime) {
 }
 
 /** A monitor's due occurrence, from the alarm: send its check or skip it, having moved to the next occurrence first. */
-export async function monitorDue(runtime: AgentRuntime, schedule: Schedule, now = Date.now()) {
+export async function monitorDue(runtime: AgentRuntime, invocation: AgentInvocation, schedule: Schedule, now = Date.now()) {
   const action = beforeCheck(schedule.monitor!, now);
   if (action === 'expire' || action === 'remove') { await forget(runtime.ctx.storage, schedule); await runtime.ctx.storage.delete(key(schedule.id)); return; }
   // One open request a monitor: a check still in flight is sent again under its own id, never beside a new one.
@@ -168,15 +169,15 @@ export async function monitorDue(runtime: AgentRuntime, schedule: Schedule, now 
   await runtime.ctx.storage.put(key(schedule.id), next);
   if (action !== 'run') return;
   try {
-    const record = await runtime.submit({ id: checkRequestId(schedule.id, due), method: 'execute', params: { code: checkCode(schedule.code!, schedule.monitor!.state), timeoutMs: MONITOR_LIMITS.timeoutMs, maxOutputCharacters: 16_000, allowDisconnected: true } }) as { id?: string; state?: string } | undefined;
+    const record = await runtime.submit(invocation, { id: checkRequestId(schedule.id, due), method: 'execute', params: { code: checkCode(schedule.code!, schedule.monitor!.state), timeoutMs: MONITOR_LIMITS.timeoutMs, maxOutputCharacters: 16_000, allowDisconnected: true } }) as { id?: string; state?: string } | undefined;
     // It had ended already (its settling was lost): settle it from its record.
-    if (record?.id && record.state === 'completed' && await runtime.ctx.storage.transaction(tx => stageMonitorSettle(tx, record as { id: string }))) await flushMonitors(runtime);
+    if (record?.id && record.state === 'completed' && await runtime.ctx.storage.transaction(tx => stageMonitorSettle(tx, record as { id: string }))) await flushMonitors(runtime, invocation);
   } catch (error) {
     failure(runtime.env, 'monitor_check_not_sent', error);
     // Refused for good (the account is out of credit, a spend limit): a failed check, which backs off and in the end
     // stops the monitor. Not sent otherwise: nothing is in flight, and the next occurrence tries again.
     const refused = !wakeRetryable((error as { status?: number }).status);
-    if (refused && await runtime.ctx.storage.transaction(tx => stageMonitorSettle(tx, { id: checkRequestId(schedule.id, due), state: 'refused' }))) await flushMonitors(runtime);
+    if (refused && await runtime.ctx.storage.transaction(tx => stageMonitorSettle(tx, { id: checkRequestId(schedule.id, due), state: 'refused' }))) await flushMonitors(runtime, invocation);
     if (!refused) await runtime.ctx.storage.transaction(async tx => {
       const current = await tx.get<Schedule>(key(schedule.id));
       if (current?.monitor?.pending?.key !== due) return;

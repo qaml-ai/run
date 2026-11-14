@@ -140,7 +140,7 @@ func TestUnitHostIdentity(t *testing.T) {
 	tierCert := ca.leaf(t, auth, "spiffe://camelfs/tier")
 	certA := ca.leaf(t, auth, hostSANPrefix+"a")
 	certB := ca.leaf(t, auth, hostSANPrefix+"b")
-	s := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, time.Minute)
+	s := NewHostServer(&compute.Controller{Objects: store.Local{}}, nil, nil, time.Minute)
 	// Exercise the authentication wrapper without a DynamoDB controller.
 	s.routes.HandleFunc("POST /v1/hosts/{host}/stub", s.authenticated(func(w http.ResponseWriter, _ *http.Request, _ string) error {
 		w.WriteHeader(http.StatusNoContent)

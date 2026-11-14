@@ -1,3 +1,4 @@
+import type { AgentInvocation } from '../agent-invocation.ts';
 import { check, RepoError, repoErrorFrom, normalizeRepoPath, type Entry, type Mode } from "./repo-policy.ts";
 import type { RepoContext } from "./registry.ts";
 import type { Change } from "./storage.ts";
@@ -5,7 +6,7 @@ import { statPaths } from "./reads.ts";
 import { quota, addedBytes } from "./write.ts";
 import type { RepoWrite, WriteResult } from "./write-input.ts";
 
-export async function doWrite(ctx: RepoContext, input: RepoWrite): Promise<WriteResult> {
+export async function doWrite(ctx: RepoContext, input: RepoWrite, invocation?: AgentInvocation): Promise<WriteResult> {
   const prepared: Record<string, { blob?: string; size?: number; mode?: Mode } | null> = Object.create(null);
   const expectations = { ...input.legacy?.pathExpect };
   for (const change of input.changes) {
@@ -58,7 +59,7 @@ export async function doWrite(ctx: RepoContext, input: RepoWrite): Promise<Write
       const { bytes, files } = await ctx.repo.info();
       return { bytes, files, moved: false, version: current, tree: head?.tree ?? null, previous: current, watchers: [], changed: delta, parents: [], time: input.time };
     }
-    await quota(ctx, await addedBytes(ctx, Object.values(delta).filter((entry): entry is Entry => entry !== null)));
+    await quota(ctx, await addedBytes(ctx, Object.values(delta).filter((entry): entry is Entry => entry !== null)), invocation);
     const parents = current ? [current] : [], trailers = input.trailers;
     // A retry on a different head must build a new commit, even with the same caller key.
     const key = input.idempotencyKey === undefined ? undefined : `${input.idempotencyKey}@${current ?? 'root'}`;
