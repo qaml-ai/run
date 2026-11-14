@@ -33,6 +33,7 @@ func Run(args []string, out io.Writer) error {
 	epoch := g.Int64("epoch", 0, "runtime fence epoch")
 	root := g.String("root", "", "root id")
 	tree := g.String("tree", "", "git tree SHA")
+	parent := g.String("parent", "", "git parent commit SHA")
 	vsock := g.String("vsock", "", "vsock path")
 	hydrate := g.Bool("hydrate", true, "hydrate")
 	path := g.String("path", "", "import image")
@@ -47,6 +48,9 @@ func Run(args []string, out io.Writer) error {
 	case "mount":
 		route = "/v0/mounts"
 		body = map[string]any{"jobId": *job, "lineage": *lineage, "root": *root, "tree": *tree, "hydrate": *hydrate, "vsock": *vsock, "fence": nil}
+		if *parent != "" {
+			body.(map[string]any)["parent"] = *parent
+		}
 		if *holder != "" {
 			body.(map[string]any)["fence"] = map[string]any{"holder": *holder, "epoch": *epoch}
 		}

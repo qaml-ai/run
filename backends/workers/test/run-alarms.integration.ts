@@ -6,6 +6,7 @@ import { startFixture } from "./fixture.ts";
 
 async function fixture(t: TestContext) {
   const f = await startFixture({
+    signal: t.signal,
     entrypoint: fileURLToPath(new URL("./alarm-entry.ts", import.meta.url)),
     vars: { PILOT_DB_PROFILE: "1" },
   });
@@ -31,14 +32,13 @@ async function fixture(t: TestContext) {
   return { f, call, receiptCount, waitForReceipt };
 }
 
-test("a tracked slow turn only checks live limits between deadlines and settles without polling", { timeout: 60000 }, async t => {
+test("a tracked slow turn checks its admission limits between deadlines and settles without polling", { timeout: 60000 }, async t => {
   const { call, receiptCount, waitForReceipt } = await fixture(t);
   const { id } = await call("/v1/agents", { model: "test/echo" });
   await call(`/v1/agents/${id}/requests`, {
     id: "slow-tracked", method: "prompt", params: { text: "slow:6500:tracked completion" },
   });
-  // Let any alarm armed before the tracker was attached finish. Keep live
-  // policy checks without repeating maintenance or its duplicate limit reads.
+  // Let any alarm armed before the tracker was attached finish.
   await delay(1700);
   const before = await call(`/experimental/agents/${id}/__test/alarm-state`);
   await delay(2200);
@@ -46,8 +46,7 @@ test("a tracked slow turn only checks live limits between deadlines and settles 
   assert.ok(after.wakes > before.wakes, "the durable watchdog must remain armed for a crash");
   const queries = (state: any) => Object.values(state.profile.phases).reduce((sum: number, phase: any) => sum + phase.queries, 0);
   const idleQueries = queries(after) - queries(before);
-  assert.ok(idleQueries > 0 && idleQueries <= 3 * (after.wakes - before.wakes),
-    `only three live-limit reads per watchdog: ${idleQueries} queries in ${after.wakes - before.wakes} wakes`);
+  assert.equal(idleQueries, 0, `Postgres statements in ${after.wakes - before.wakes} watchdog wakes`);
   assert.equal(await receiptCount(), 0);
   await waitForReceipt();
   assert.equal(await receiptCount(), 1);
@@ -56,11 +55,11 @@ test("a tracked slow turn only checks live limits between deadlines and settles 
   assert.equal(result.status, "completed");
 });
 
-test("a live tenant time-limit change stops a tracked model without an agent request", { timeout: 60000 }, async t => {
+test("a tracked model keeps its admission time limit when tenant policy changes", { timeout: 60000 }, async t => {
   const { f, call, waitForReceipt } = await fixture(t);
   const { id } = await call("/v1/agents", { model: "test/echo", runLimits: { maxSeconds: 60 } });
   await call(`/v1/agents/${id}/requests`, {
-    id: "live-limit", method: "prompt", params: { text: "slow:15000:must observe tenant policy" },
+    id: "live-limit", method: "prompt", params: { text: "slow:4000:keeps its admitted time limit" },
   });
   let started = false;
   for (let i = 0; i < 100; i++) {
@@ -69,12 +68,10 @@ test("a live tenant time-limit change stops a tracked model without an agent req
   }
   assert.ok(started, "the provider call must start before the tenant limit changes");
   await delay(1200);
-  const updated = Date.now();
   await f.db.query("update tenants set limits=coalesce(limits,'{}'::jsonb) || '{\"maxRunSeconds\":1}'::jsonb where id=$1", ["camelrun-proto-local"]);
   await waitForReceipt();
-  assert.ok(Date.now() - updated < 6000, "the one-second watchdog must observe the tighter tenant cap");
   const result = await call(`/v1/agents/${id}/requests/live-limit`);
-  assert.equal(result.outcome.result.code, "turn_limit", JSON.stringify(result));
+  assert.equal(result.status, "completed", JSON.stringify(result));
 });
 
 test("an interrupted result waiter re-arms durable settlement recovery", { timeout: 60000 }, async t => {
@@ -92,24 +89,41 @@ test("an interrupted result waiter re-arms durable settlement recovery", { timeo
   assert.equal(result.status, "completed");
 });
 
-test("a tracked turn retains its elapsed-time deadline after a hard restart", { timeout: 60000 }, async t => {
+test("a tracked turn retains its elapsed-time deadline after a hard restart", { timeout: 120000 }, async t => {
   const { f, call, waitForReceipt, receiptCount } = await fixture(t);
   const { id } = await call("/v1/agents", { model: "test/echo", runLimits: { maxSeconds: 4 } });
-  const started = Date.now();
+  const requestPath = `/v1/agents/${id}/requests/restart-deadline`;
+  // Far longer than the 4 s limit: the test ends at the deadline, and no machine is slow enough for the provider to win.
+  const providerDelayMs = 60000;
   await call(`/v1/agents/${id}/requests`, {
-    id: "restart-deadline", method: "prompt", params: { text: "slow:15000:must stop at deadline" },
+    id: "restart-deadline", method: "prompt", params: { text: `slow:${providerDelayMs}:must stop at deadline` },
   });
+  let attemptStartedAt: number | undefined;
   for (let i = 0; i < 100; i++) {
-    if (Number((await f.db.query("select count(*) n from model_attempts where agent=$1", [id])).rows[0].n)) break;
+    const { rows } = await f.db.query("select min(started_at) as started_at from model_attempts where agent=$1", [id]);
+    if (rows[0].started_at != null) {
+      attemptStartedAt = Number(rows[0].started_at);
+      break;
+    }
     await delay(20);
   }
+  assert.ok(attemptStartedAt !== undefined, "the model attempt must start before the restart");
+  const before = await call(requestPath);
+  assert.equal(before.state, "running");
+  assert.ok(Number.isFinite(before.began), "the running turn must have a persisted start time");
   await f.restart({}, true);
+  const restarted = Date.now();
   await waitForReceipt();
-  assert.ok(Date.now() - started < 12000, "the restored deadline must interrupt the 15-second provider call");
   assert.equal(await receiptCount(), 1);
-  const result = await call(`/v1/agents/${id}/requests/restart-deadline`);
+  const result = await call(requestPath);
   assert.equal(result.state, "completed");
+  // The elapsed-time deadline uses this persisted start and the unchanged run limit.
+  assert.equal(result.began, before.began, "the restart must preserve the deadline's start time");
   assert.equal(result.outcome.result.code, "turn_limit", JSON.stringify(result));
+  assert.ok(!JSON.stringify(result).includes("must stop at deadline"), "the deadline interrupted the provider call: its answer never arrived");
+  // The deadline (began + 4 s) has passed by the time the Worker is back, so it fires at once. One recomputed at
+  // restart would fire no earlier than restarted + 4 s: the restart's own duration does not enter this bound.
+  assert.ok(result.endedAt < restarted + 4000, `the restored deadline fired ${result.endedAt - restarted} ms after the restart, as a fresh deadline would`);
   assert.equal(Number((await f.db.query("select count(*) n from credit_holds")).rows[0].n), 0);
 });
 

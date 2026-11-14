@@ -26,6 +26,7 @@ export type ModelRequestSettings = AgentConfiguration & { requestId?: string; ou
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
+  authorizeRepoFile?: (file:import("./attachment-policy.ts").RepoFileRef)=>Promise<boolean>;
   beforeRequest?: () => Promise<void>;
   onStreamEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
   onDiscardedOutput?: (message: AssistantMessage) => void | Promise<void>;

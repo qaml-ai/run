@@ -19,9 +19,9 @@ export interface ChoiceResult {
   decision: "split" | "alone" | "error";
   correct: boolean;
   subagents: number; workflowStarted: boolean;
-  /** Workflow mode: what the first workflow's script runs: sub-agents, only jobs (commands, not a split), or neither. */
-  workflowKind?: "agents" | "jobs" | "other";
-  /** Workflow mode: workflows it started that ran no sub-agent (jobs, probes) before it decided. */
+  /** Workflow mode: what the first workflow's script runs: sub-agents or other effects. */
+  workflowKind?: "agents" | "other";
+  /** Workflow mode: workflows it started that ran no sub-agent (such as probes) before it decided. */
   otherWorkflows?: number; firstTools: string[]; costUsd: number; wallMs: number; capped: boolean; error?: string;
 }
 
@@ -76,10 +76,8 @@ export async function choose(runtime: Runtime, prompt: ChoicePrompt, options: Ch
           if (firstTools.length < 12) firstTools.push(event.toolName);
           appendFileSync(log, JSON.stringify({ call: event.toolName, args: JSON.stringify(event.args).slice(0, 1500) }) + "\n");
           if (event.toolName === "workflow_start" || (event.toolName === "codemode" && /\bworkflow_start\b/.test(JSON.stringify(event.args)))) {
-            // Only a workflow that runs sub-agents splits the work. Agents also start workflows to run a command (jobs)
-            // or to look around (a script that lists its globals): those are recorded, and the run goes on.
             const script = JSON.stringify(event.args);
-            const kind = /\bagent\s*\(/.test(script) ? "agents" : /\bjob\s*\(/.test(script) ? "jobs" : "other";
+            const kind = /\bagent\s*\(/.test(script) ? "agents" : "other";
             otherWorkflows += kind === "agents" ? 0 : 1;
             if (kind === "agents") { workflowStarted = true; workflowKind = kind; decided?.(); }
             else workflowKind ??= kind;
@@ -97,7 +95,7 @@ export async function choose(runtime: Runtime, prompt: ChoicePrompt, options: Ch
     } as Parameters<AgentRuntime["createAgent"]>[0]);
     cleanups.push(() => agent.destroy());
     let capped = false;
-    // In workflow mode the agent is told its /workspace's volume id, which agent({ repo }) and job({ at }) take, as in the task evals.
+    // In workflow mode the agent is told its /workspace's volume id, which agent({ repo }) take, as in the task evals.
     const text = options.mode === "workflow" ? `${prompt.prompt}\n\nYour /workspace is volume ${volumeId}.` : prompt.prompt;
     const turn = agent.prompt(text, { timeoutMs: options.capMs }).then(() => undefined, error => { appendFileSync(log, JSON.stringify({ promptError: String(error) }) + "\n"); });
     const cap = new Promise<void>(resolve => setTimeout(() => { capped = true; resolve(); }, options.capMs));
@@ -128,7 +126,7 @@ export function choiceSummary(results: ChoiceResult[]): string {
     lines.push(`| ${mode} | ${wording} | ${runs.length} | ${scored.length ? Math.round(100 * scored.filter(run => run.correct).length / scored.length) : 0}% | ${rate(should)} | ${rate(shouldNot)} | ${mode === "workflow" ? `${scored.filter(run => run.decision === "alone" && run.subagents >= 2).length}/${scored.length}` : "—"} | ${runs.length - scored.length} | $${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(3)} |`);
   }
   lines.push("", "| prompt | expect | mode | wording | decision | sub-agents | first tools | cost | wall |", "|---|---|---|---|---|---|---|---|---|");
-  for (const run of results) lines.push(`| ${run.id} | ${run.expect} | ${run.mode} | ${run.guidance ?? "runtime"} | ${run.decision}${run.otherWorkflows ? ` (+${run.otherWorkflows} job/probe workflows)` : ""}${run.correct ? "" : " (wrong)"}${run.capped ? " (cap)" : ""} | ${run.subagents} | ${run.firstTools.slice(0, 5).join(", ")} | $${run.costUsd.toFixed(3)} | ${Math.round(run.wallMs / 1000)} s |`);
+  for (const run of results) lines.push(`| ${run.id} | ${run.expect} | ${run.mode} | ${run.guidance ?? "runtime"} | ${run.decision}${run.otherWorkflows ? ` (+${run.otherWorkflows} other workflows)` : ""}${run.correct ? "" : " (wrong)"}${run.capped ? " (cap)" : ""} | ${run.subagents} | ${run.firstTools.slice(0, 5).join(", ")} | $${run.costUsd.toFixed(3)} | ${Math.round(run.wallMs / 1000)} s |`);
   return lines.join("\n") + "\n";
 }
 

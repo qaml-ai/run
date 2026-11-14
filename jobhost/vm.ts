@@ -119,12 +119,16 @@ export function fakeLauncher(options: { base?: string; work?: string } = {}): Vm
         await symlink(boot.repo, join(root, "repo"));
       } else await mkdir(join(root, "repo"), { recursive: true });
       await mkdir(join(root, "out"), { recursive: true });
-      const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", GUEST, "--root", root], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, CAMEL_VSOCK_UDS: join(work, `${id}.vsock`) } });
+      const guestBin = process.env.CAMEL_GUEST_BIN;
+      const args = guestBin ? ["guest", "--root", root] : ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", GUEST, "--root", root];
+      const child = spawn(guestBin || process.execPath, args, { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, CAMEL_VSOCK_UDS: join(work, `${id}.vsock`) } });
       const channel = new StdioChannel(child);
       let gone = false;
       return {
         id,
-        request: (request, onLog) => channel.request(request, onLog),
+        // The legacy jobhost checkpoint adapter arms a daemon stream even for an empty diff.
+        request: (request, onLog) => channel.request(
+          guestBin && request.op === "camelfs_checkpoint" ? { ...request, legacyCheckpoint: true } : request, onLog),
         async destroy() {
           if (gone) return;
           gone = true;

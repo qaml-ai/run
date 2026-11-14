@@ -1,25 +1,34 @@
+import { tierConfigured, TierError } from "../camelfs/tier.ts";
 import { Buffer } from 'node:buffer';
 import { tar } from '../../../../src/tar.ts';
 import { sniffContentType, declaredType, downloadHeaders } from '../file-policy.ts';
 import { withMoneyIdempotency } from '../money-idempotency.ts';
 import { camelfsConfigured, StorageError } from './storage.ts';
 import { RepoError, repoErrorFrom, check, normalizeRepoPath, page, type Entry, type Mode } from './repo-policy.ts';
-import { createRepo, deleteRepo, repoContext, versionEntries, type RepoContext, type RepoEnv } from './registry.ts';
+import { createRepo, deleteRepo, repoContext, type RepoContext, type RepoEnv } from './registry.ts';
+import { versionEntries, statPaths, listFiles } from './reads.ts';
 import { commitChanges, setRefToVersion, branch, reportUsage, type WriteInput } from './write.ts';
+import { repoHistory } from './history.ts';
 import { mergeRefs } from './merge.ts';
 import { signRepoLink } from './links.ts';
 export const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 export function repoFailure(e: unknown): Response {
   const r = repoErrorFrom(e);
   if (r)
-    return json({ error: r.code, code: r.code, ...r.detail }, r.status);
+    return json({ error: r.code === 'transport_error' ? r.reason : r.code, code: r.code, ...r.detail }, r.status);
   if (e instanceof StorageError)
     return json({ error: `storage ${e.op ?? 'call'}: ${e.reason}`, code: e.code, storage: e.op ?? null, ...(e.details ? { detail: e.details } : {}) }, e.status >= 400 ? e.status : e.status === 0 ? 503 : 502);
   if (e instanceof SyntaxError || e instanceof URIError)
-    return json({ error: 'bad-input', code: 'bad-input' }, 400);
+    return json({ error: 'bad_input', code: 'bad_input' }, 400);
   if (e && typeof e === 'object' && 'status' in e && typeof e.status === 'number')
-    return json({ error: String(e), code: 'bad-input' }, e.status);
+    return json({ error: String(e), code: 'bad_input' }, e.status);
   throw e;
+}
+export function repoTransportFailure(e: unknown): Response | undefined {
+  if (e instanceof TierError && e.code === 'transport_error')
+    return json({ error: e.message, code: e.code }, e.status);
+  if ((e instanceof RepoError || e instanceof StorageError) && e.code === 'transport_error' && e.cause instanceof TierError)
+    return repoFailure(e);
 }
 export async function boundedBody(request: Request, limit: number): Promise<Uint8Array> {
   const reader = request.body?.getReader();
@@ -35,7 +44,7 @@ export async function boundedBody(request: Request, limit: number): Promise<Uint
       size += value.length;
       if (size > limit) {
         await reader.cancel();
-        throw new RepoError('too-large', 413, 'too-large');
+        throw new RepoError('too_large', 413, 'too_large');
       }
       chunks.push(value);
     }
@@ -58,38 +67,18 @@ const readJson = async (request: Request) => {
   return value;
 };
 export const apiWrite = (tenant: string) => ({ author: `api:${tenant}`, who: `api:${tenant}`, why: 'api', trailers: { 'Camel-User': `api:${tenant}`, 'Camel-Checkpoint': 'api' } });
-export async function resolved(ctx: RepoContext, params: URLSearchParams) { return ctx.stub.resolve(params.get('version') ?? params.get('ref') ?? 'main'); }
-export async function fileEntry(ctx: RepoContext, v: {
-  version: string;
-  tree: string;
-}, path: string): Promise<Entry> {
-  const head = (await ctx.stub.refs()).find(r => r.version === v.version);
-  if (head) {
-    const stat = await ctx.stub.stat(head.name, [path]);
-    if (stat.version === v.version) {
-      const entry = stat.entries[path];
-      if (!entry)
-        throw new RepoError('no-file', 404, 'no-file');
-      return entry;
-    }
-  }
-  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : undefined;
-  let after: string | undefined;
-  do {
-    const list = await ctx.storage.listTree(ctx.lineage, v.tree, { path: dir, recursive: false, after });
-    const entry = list.entries.find(e => e.path === path && 'blob' in e);
-    if (entry && 'blob' in entry)
-      return entry as Entry;
-    after = list.next;
-  } while (after);
-  throw new RepoError('no-file', 404, 'no-file');
+export async function resolved(ctx: RepoContext, params: URLSearchParams) { return ctx.repo.resolve(params.get('version') ?? params.get('ref') ?? 'main'); }
+export async function fileEntry(ctx: RepoContext, v: { tree: string }, path: string): Promise<Entry> {
+  const entry = (await statPaths(ctx, v.tree, [path]))[path];
+  if (entry) return entry;
+  throw new RepoError('no_file', 404, 'no_file');
 }
 export async function streamFile(request: Request, ctx: RepoContext, v: {
   version: string;
   tree: string;
 }, e: Entry, immutable = false) {
   const range = request.headers.get('range');
-  check(!range || /^bytes=(?:\d+-\d*|-\d+)$/.test(range), 'bad-range');
+  check(!range || /^bytes=(?:\d+-\d*|-\d+)$/.test(range), 'bad_range');
   const response = await ctx.storage.openBlob(ctx.lineage, e.blob, v.tree, e.path, range ?? undefined), headers = new Headers(response.headers);
   headers.set('x-blob', e.blob);
   headers.set('x-version', v.version);
@@ -129,17 +118,17 @@ export async function streamFile(request: Request, ctx: RepoContext, v: {
 }
 async function contents(ctx: RepoContext, tree: string, entries: Entry[], limit = 16 * 2 ** 20) {
   if (entries.length > 1000 || entries.reduce((s, e) => s + e.size, 0) > limit)
-    throw new RepoError('too-large', 413, 'too-large');
+    throw new RepoError('too_large', 413, 'too_large');
   const result: unknown[] = [];
   let used = 0;
   for (let i = 0; i < entries.length; i += 256) {
     const batch = await ctx.storage.readBatch(ctx.lineage, tree, entries.slice(i, i + 256).map(e => e.path), limit - used);
     for (const e of batch) {
       if ('error' in e)
-        throw new RepoError('no-file', 404, 'no-file');
+        throw new RepoError('no_file', 404, 'no_file');
       used += e.bytes.length;
       if (used > limit)
-        throw new RepoError('too-large', 413, 'too-large');
+        throw new RepoError('too_large', 413, 'too_large');
       const { bytes, ...rest } = e;
       let content;
       try {
@@ -159,7 +148,7 @@ export async function handleRepoRequest(request: Request, env: RepoEnv, principa
   if (path !== '/v1/repos' && !path.startsWith('/v1/repos/'))
     return null;
   if (!camelfsConfigured(env))
-    return json({ code: 'storage-unavailable' }, 503);
+    return json({ code: 'storage_unavailable' }, 503);
   try {
     if (request.method === 'POST' && request.headers.has('Idempotency-Key'))
       return await withMoneyIdempotency(request, env, principal.tenantId, r => route(r, env, principal.tenantId, path)) ?? null;
@@ -174,24 +163,27 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   const number = (k: string) => s.has(k) ? Number(s.get(k)) : undefined;
   if (path === '/v1/repos') {
     if (method === 'POST') {
-      const r = await createRepo(env, tenant, await readJson(request));
+      const r = await createRepo(env, tenant, { ...await readJson(request), ...(tierConfigured(env) ? { author: `api:${tenant}` } : {}) });
       return json(r.info, r.existing ? 200 : 201);
     }
     if (method === 'GET') {
       const p = await env.TENANTS.getByName(tenant).listRepos({ after: s.get('after') ?? undefined, limit: number('limit') });
-      return json({ ...p, repos: p.repos.map(({ id, name, key, createdAt, bytes, files }) => ({ id, name, key, createdAt, bytes, files })) });
+      return json({ ...p, repos: p.repos.map(({ id, name, key, createdAt, lineage, bytes, files }) => ({
+        id, name, key, createdAt,
+        ...(tierConfigured(env) && lineage !== `${tenant}:${id}` ? { sharesStorageWith: lineage.slice(tenant.length + 1) } : { bytes, files }),
+      })) });
     }
   }
   const match = /^\/v1\/repos\/([^/]+)(?:\/(.*))?$/.exec(path);
   if (!match)
-    throw new RepoError('not-found', 404, 'not-found');
-  const id = decodeURIComponent(match[1]), tail = match[2] ?? '', ctx = await repoContext(env, tenant, id), ref = s.get('ref') ?? 'main', actor = apiWrite(tenant);
+    throw new RepoError('not_found', 404, 'not_found');
+  const id = decodeURIComponent(match[1]), tail = match[2] ?? '';
+  if (!tail && method === 'DELETE') return json(await deleteRepo(env, tenant, id));
+  const ctx = await repoContext(env, tenant, id), ref = s.get('ref') ?? 'main', actor = apiWrite(tenant);
   if (!tail && method === 'GET')
-    return json(await ctx.stub.info());
-  if (!tail && method === 'DELETE')
-    return json(await deleteRepo(env, tenant, id));
+    return json(await ctx.repo.info());
   if (tail === 'refs' && method === 'GET')
-    return json(await ctx.stub.refs());
+    return json(await ctx.repo.refs());
   if (tail.startsWith('refs/')) {
     const name = decodeURIComponent(tail.slice(5));
     if (method === 'PUT') {
@@ -200,11 +192,11 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
     }
     if (method === 'DELETE') {
       for (let attempt = 0;; attempt++) {
-        const head = await ctx.stub.ref(name);
+        const head = await ctx.repo.ref(name);
         if (!head)
-          throw new RepoError('no-ref', 404, 'no-ref');
+          throw new RepoError('no_ref', 404, 'no_ref');
         try {
-          await ctx.stub.deleteRef(name, s.get('expect') ?? head.version);
+          await ctx.repo.deleteRef(name, s.get('expect') ?? head.version);
           break;
         }
         catch (error) {
@@ -221,17 +213,15 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
     return json(await branch(ctx, { name: b.name, from: b.from ?? 'main', owner: b.owner, ttlSeconds: b.ttl, who: actor.who }), 201);
   }
   if (tail === 'history' && method === 'GET')
-    return json(await ctx.stub.history({ ref, from: s.get('from') ?? undefined, limit: number('limit'), path: s.get('path') ?? undefined }));
-  if (tail === 'log' && method === 'GET')
-    return json(await ctx.stub.log({ ref: s.get('ref') ?? undefined, after: number('after'), limit: number('limit') }));
+    return json(await repoHistory(ctx, { ref: s.get('ref') ?? '', after: s.get('after') ?? undefined, limit: number('limit'), path: s.get('path') ?? undefined }));
   if (tail.startsWith('commits/') && method === 'GET') {
-    const v = await ctx.stub.commit(decodeURIComponent(tail.slice(8)));
+    const v = await ctx.repo.commit(decodeURIComponent(tail.slice(8)));
     if (!v)
-      throw new RepoError('no-commit', 404, 'no-commit');
+      throw new RepoError('no_commit', 404, 'no_commit');
     return json(v);
   }
   if (tail === 'diff' && method === 'GET') {
-    const from = await ctx.stub.resolve(s.get('from') ?? 'main'), to = await ctx.stub.resolve(s.get('to') ?? 'main');
+    const from = await ctx.repo.resolve(s.get('from') ?? 'main'), to = await ctx.repo.resolve(s.get('to') ?? 'main');
     const prefix = s.get('path');
     return json(await ctx.storage.diff(ctx.lineage, from.tree, to.tree, prefix ? normalizeRepoPath(prefix.replace(/\/$/, '')) : undefined));
   }
@@ -268,19 +258,20 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
       }
     }
     if (size > 16 * 2 ** 20)
-      throw new RepoError('too-large', 413, 'too-large');
-    return json(await commitChanges(ctx, { ref: b.ref ?? 'main', expect: b.expect, changes, message: b.message ?? 'commit', ...actor }));
+      throw new RepoError('too_large', 413, 'too_large');
+    return json(await commitChanges(ctx, { ref: b.ref ?? 'main', expect: b.expect, changes, message: b.message ?? 'commit', op: 'api', ...actor }));
   }
   if (tail.startsWith('files/') && (method === 'PUT' || method === 'DELETE')) {
     const p = normalizeRepoPath(decodeURIComponent(tail.slice(6))), expect = s.get('expect');
     if (method === 'DELETE') {
-      const head = await ctx.stub.ref(ref);
-      if (!head || (await ctx.stub.stat(ref, [p])).entries[p] === null)
-        throw new RepoError('no-file', 404, 'no-file');
+      const head = await ctx.repo.ref(ref);
+      if (!head || (await statPaths(ctx, head.tree, [p]))[p] === null)
+        throw new RepoError('no_file', 404, 'no_file');
     }
-    const result = await commitChanges(ctx, { ref, changes: { [p]: method === 'DELETE' ? null : { bytes: await boundedBody(request, 256 * 2 ** 20), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, pathExpect: expect ? { [p]: expect } : undefined, message: `${method === 'PUT' ? 'put' : 'delete'} ${p.slice(0, 1000)}`, ...actor });
-    const e = result.files[p];
-    return json(method === 'DELETE' ? { version: result.version, deleted: true } : { version: result.version, blob: e?.blob ?? (await ctx.stub.stat(ref, [p])).entries[p]?.blob, path: p, size: e?.size ?? (await ctx.stub.stat(ref, [p])).entries[p]?.size }, method === 'PUT' ? 201 : 200);
+    const result = await commitChanges(ctx, { ref, op: 'api', changes: { [p]: method === 'DELETE' ? null : { bytes: await boundedBody(request, 256 * 2 ** 20), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, pathExpect: expect ? { [p]: expect } : undefined, message: `${method === 'PUT' ? 'put' : 'delete'} ${p.slice(0, 1000)}`, ...actor });
+    if (method === 'DELETE') return json({ version: result.version, deleted: true });
+    const e = result.files[p] ?? await fileEntry(ctx, { tree: result.tree! }, p);
+    return json({ version: result.version, blob: e.blob, path: p, size: e.size }, 201);
   }
   if (tail === 'files:batch' && method === 'POST') {
     const b = await readJson(request);
@@ -291,37 +282,32 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
     if (b.version)
       params.set('version', b.version);
     const target = await resolved(ctx, params), paths = b.paths.map(normalizeRepoPath) as string[];
-    const stat = target.ref ? await ctx.stub.stat(target.ref, paths) : null;
-    // A head is answered from the object's cache; an older version lists its tree.
-    const all = stat?.version === target.version ? new Map(Object.values(stat.entries).flatMap(e => e ? [[e.path, e] as const] : []))
-      : new Map((await versionEntries(ctx, target.version, target.tree)).map(e => [e.path, e]));
-    const entries = paths.flatMap(p => all.get(p) ? [all.get(p)!] : []);
-    return json({ version: target.version, files: await contents(ctx, target.tree, entries), missing: paths.filter(p => !all.has(p)) });
+    const all = await statPaths(ctx, target.tree, paths);
+    const entries = paths.flatMap(p => all[p] ? [all[p]] : []);
+    return json({ version: target.version, files: await contents(ctx, target.tree, entries), missing: paths.filter(p => !all[p]) });
   }
-  const v = await resolved(ctx, s);
   if ((tail.startsWith('files/') || tail.startsWith('blobs/')) && (method === 'GET' || method === 'HEAD')) {
+    const v = await resolved(ctx, s);
     const blob = tail.startsWith('blobs/'), p = normalizeRepoPath(blob ? s.get('path') ?? '' : decodeURIComponent(tail.slice(6))), e = await fileEntry(ctx, v, p);
     if (blob && e.blob !== decodeURIComponent(tail.slice(6)))
-      throw new RepoError('not-in-tree', 404, 'not-in-tree');
+      throw new RepoError('not_in_tree', 404, 'not_in_tree');
     return streamFile(request, ctx, v, e, blob);
   }
   if (tail === 'files' && method === 'GET') {
+    const v = await resolved(ctx, s);
     const prefix = s.get('prefix') ? normalizeRepoPath(s.get('prefix')!.replace(/\/$/, '')) : undefined, after = s.get('after') ?? '', limit = page(number('limit'), 1000, 10000);
-    let entries: Entry[], next: string | null;
-    const listed = v.ref ? await ctx.stub.list({ ref: v.ref, prefix, after: after || undefined, limit }) : null;
-    if (listed && listed.version === v.version) ({ entries, next } = listed);
-    else {
-      const all = (await versionEntries(ctx, v.version, v.tree)).filter(e => (!prefix || e.path === prefix || e.path.startsWith(prefix + '/')) && e.path > after);
-      entries = all.slice(0, limit); next = all.length > limit ? entries.at(-1)!.path : null;
-    }
+    const { entries, next } = await listFiles(ctx, v.tree, { path: prefix, after: after || undefined, limit });
     return json({ version: v.version, entries: s.get('content') === 'true' ? await contents(ctx, v.tree, entries) : entries, next });
   }
-  if (tail === 'grep' && method === 'GET')
+  if (tail === 'grep' && method === 'GET') {
+    const v = await resolved(ctx, s);
     return json(await ctx.storage.grep(ctx.lineage, { tree: v.tree, q: s.get('q') ?? '', regex: s.get('regex') === 'true' || s.get('regex') === '1', ignoreCase: s.get('ignoreCase') === 'true' || s.get('ignoreCase') === '1', path: s.get('path') ?? undefined, limit: number('limit') }));
+  }
   if (tail === 'export' && method === 'GET') {
-    const entries = await versionEntries(ctx, v.version, v.tree);
+    const v = await resolved(ctx, s);
+    const entries = await versionEntries(ctx, v.tree);
     if (entries.length > 10000 || entries.reduce((s, e) => s + e.size, 0) > 2 ** 30)
-      throw new RepoError('too-large', 413, 'too-large');
+      throw new RepoError('too_large', 413, 'too_large');
     async function* files() {
       for (let i = 0; i < entries.length;) {
         const paths: string[] = [];
@@ -353,7 +339,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
         const batch = await ctx.storage.readBatch(ctx.lineage, v.tree, paths);
         for (const e of batch) {
           if ('error' in e)
-            throw new RepoError('no-file', 404, 'no-file');
+            throw new RepoError('no_file', 404, 'no_file');
           yield { name: e.path, size: e.size, mtime: 0, async *stream() { yield e.bytes; } };
         }
       }
@@ -372,5 +358,5 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
       }, async cancel() { await archive.return(undefined); } });
     return new Response(body, { headers: { 'content-type': 'application/x-tar', 'cache-control': 'no-store' } });
   }
-  throw new RepoError('not-found', 404, 'not-found');
+  throw new RepoError('not_found', 404, 'not_found');
 }

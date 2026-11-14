@@ -1,3 +1,5 @@
+import { agentRepoId } from "./repos/identity.ts";
+import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { placementOf, type Placement } from "../../../shared/owner.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { monitorRoutes, monitorToolsHost } from "./agent-monitors.ts";
@@ -43,7 +45,6 @@ import { modelSettingsRefusal } from "./model-policy.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { resetContext } from "./context-reset.ts";
 import { setAgentSpendLimit } from "./agent-spend.ts";
-import { releasePresentedFiles } from "./file-output.ts";
 import { Config, RequestRecord, Env, json, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -198,6 +199,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
               incoming.config.spendLimit ?? null,
             );
           await this.ctx.storage.put("configuration", incoming);
+          const workspace = agentRepoId(incoming.tenantId, incoming.id);
+          this.repoTrees.retainHeads((incoming.config.mounts ?? []).filter(mount => mount.repo === workspace)
+            .map(mount => workspaceRefKey(`${incoming.tenantId}:${workspace}`, mount.ref ?? "main")));
           await this.ctx.storage.put("last-active", Date.now());
           const pi = await this.harness.pi(),
             root = await pi.root(BACKGROUND_CONTEXT);
@@ -317,14 +321,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
             throw new Error("Agent shutdown is still settling accepted operations");
           await this.flushBilling(true);
           await this.ctx.storage.put("deleted", true);
+          this.repoTrees.retainHeads([]);
           if (conf) await this.closeWatchers(conf.tenantId, conf.id);
-          if (conf)
-            await releasePresentedFiles(
-              this.ctx.storage,
-              this.env,
-              conf.tenantId,
-              conf.id,
-            );
           for (const listener of this.listeners) listener(0, null);
           // Planned as a deleted agent now: it wakes only for what it still owes, or goes quiet (settleDeleted).
           await this.arm();
@@ -597,12 +595,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
         return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
       }
       if (path === "/context/import" && request.method === "POST") {
-        const input = object(await body(request, 17 * 1024 * 1024), ["model", "pinnedVolumes"]);
+        const input = object(await body(request, 17 * 1024 * 1024), ["model"]);
         if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
-        if (Array.isArray(input.pinnedVolumes)) {
-          const pinned = await this.ctx.storage.get<string[]>("file-pin-volumes") ?? [];
-          await this.ctx.storage.put("file-pin-volumes", [...new Set([...pinned, ...input.pinnedVolumes])]);
-        }
         if (!await this.ctx.storage.get("fork-context-imported")) {
           await writeModelContext(await (await this.harness.pi()).root(BACKGROUND_CONTEXT), input.model as Message[]);
           await this.ctx.storage.put("fork-context-imported", true);
@@ -697,7 +691,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           }
           throw error;
         });
-        return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
+        const requests = answered.requests.map(({ limitsSnapshot: _limitsSnapshot, ...record }) => record);
+        return json(batch ? { inputs: answered.inputs, requests } : { input: answered.inputs[0], request: requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
         const params = object(await body(request, 32 * 1024, true), ['queued', 'children']);
@@ -790,6 +785,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.id,
           (conf.config.mounts ?? []) as never,
           path,
+          this.repoTrees,
         ))!;
       }
       if (path.startsWith("/files/")) {
@@ -801,6 +797,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.id,
           decodeURIComponent(path.slice(7)),
           conf.config.mounts as never,
+          "turn",
+          this.repoTrees,
         );
       }
       return json({ error: "Unsupported backend operation", code: "NOT_FOUND" }, 404);

@@ -47,14 +47,14 @@ test("init is idempotent, seed is optional, conflicts and lifecycle errors", asy
 test("delta, path expectations, full diff, no-op, parent checks and watchers", async t => {
   const {object, cas} = fixture(t); await object.init({...init, seed: {version: v(1), entries: [e("a"), e("b")]}});
   object.watch("main", "agent");
-  await assert.rejects(object.cas({ref: "main", expect: id(1), commit: v(2, [1]), changes: {a: e("a", 2)}, pathExpect: {a: "none"}, who: "a", why: "b"}), error("stale-path", 412));
+  await assert.rejects(object.cas({ref: "main", expect: id(1), commit: v(2, [1]), changes: {a: e("a", 2)}, pathExpect: {a: "none"}, who: "a", why: "b"}), error("stale_path", 412));
   assert.deepEqual((await object.cas({ref: "main", expect: id(1), commit: v(2, [1]), changes: {a: e("a", 2), b: null}, pathExpect: {a: id(1), missing: "none"}, who: "a", why: "b"})).watchers, ["agent"]);
   assert.deepEqual(object.commit(id(2))?.paths, ["a", "b"]);
   assert.equal(object.stat("main", ["a", "b"]).entries.b, null);
   await cas(3, [2], [e("a", 2), e("c")]); assert.deepEqual(object.commit(id(3))?.paths, ["c"]);
   const count = object.events().length;
   await cas(3, [2], [e("a", 2), e("c")]); assert.equal(object.events().length, count); assert.equal(object.log().length, count);
-  await assert.rejects(cas(4, [99], []), error("unknown-parent"));
+  await assert.rejects(cas(4, [3, 99], []), error("unknown_parent"));
   await assert.rejects(cas(3, [2], [], {commit: {...v(3, [2]), tree: id(999)}}), error("conflict"));
   object.unwatch("main", "agent");
 });
@@ -73,7 +73,7 @@ test("lease renewal, release, takeover and fences", async t => {
   await cas(2, [1], [], {fence: {holder: "other", epoch: 2}});
   await object.release({ref: "main", holder: "other", epoch: 2});
   await assert.rejects(cas(3, [2], [], {fence: {holder: "other", epoch: 2}}), error("fenced"));
-  await assert.rejects(object.acquire({ref: "main", holder: "h", ttlMs: 999}), error("bad-ttl"));
+  await assert.rejects(object.acquire({ref: "main", holder: "h", ttlMs: 999}), error("bad_ttl"));
 });
 
 test("refs copy heads and roots, usage deduplicates blobs, resolve prefers names", async t => {
@@ -87,11 +87,11 @@ test("refs copy heads and roots, usage deduplicates blobs, resolve prefers names
   await object.deleteRef(id(1)); await object.deleteRef("fork");
   await cas(2, [1], [e("a", 2, 10)]); assert.equal(object.ref("main")?.root, null);
   assert.deepEqual(object.resolve(id(1)), {version: id(1), tree: v(1).tree, root: null, ref: null});
-  await assert.rejects(object.createRef({name: "old", from: {version: id(1)}, who: "a", why: "copy"}), error("not-cached"));
-  assert.throws(() => object.list({version: id(1)}), error("not-cached"));
+  await assert.rejects(object.createRef({name: "old", from: {version: id(1)}, who: "a", why: "copy"}), error("not_cached"));
+  assert.throws(() => object.list({version: id(1)}), error("not_cached"));
   await assert.rejects(object.deleteRef("main", id(1)), error("stale"));
   await object.deleteRef("main", id(2)); assert.equal(object.info().bytes, 0);
-  assert.throws(() => object.resolve("missing"), error("no-ref"));
+  assert.throws(() => object.resolve("missing"), error("no_ref"));
 });
 
 test("history walks first parents with path filters and paging; mergeBase walks all parents", async t => {
@@ -112,7 +112,7 @@ test("list prefixes match whole segments and page by exclusive path", async t =>
   assert.deepEqual(object.list({prefix: "a", after: first.next!}).entries.map(e => e.path), ["a/c"]);
   assert.deepEqual(object.list({prefix: "a/"}).entries.map(e => e.path), ["a/b", "a/c"]);
   assert.equal(object.list({version: id(1)}).entries.length, 4);
-  assert.throws(() => object.list({ref: "absent"}), error("no-ref"));
+  assert.throws(() => object.list({ref: "absent"}), error("no_ref"));
 });
 
 test("expiry skips held refs and rearms at their deadline; deleteOwned reports held refs", async t => {
@@ -127,11 +127,12 @@ test("expiry skips held refs and rearms at their deadline; deleteOwned reports h
 });
 
 test("validation and RepoError survive RPC's lossy error serialization", () => {
-  const original = new RepoError("stale", 412, "stale", {current: id(1)});
-  const decoded = repoErrorFrom(new Error(original.message)); assert.equal(decoded?.status, 412); assert.equal(decoded?.code, "stale"); assert.deepEqual(decoded?.detail, original.detail);
-  assert.equal(repoErrorFrom(new Error("other")), null); assert.equal(repoErrorFrom(new Error("repo:400:bad-path:{oops}")), null);
+  const original = new RepoError("stale_path", 412, "stale_path", {current: id(1)});
+  const decoded = repoErrorFrom(new Error(original.message)); assert.equal(decoded?.status, 412); assert.equal(decoded?.code, "stale_path"); assert.deepEqual(decoded?.detail, original.detail);
+  assert.equal(repoErrorFrom(new Error("repo:400:bad_sha1:{}"))?.code, "bad_sha1");
+  assert.equal(repoErrorFrom(new Error("other")), null); assert.equal(repoErrorFrom(new Error("repo:400:bad_path:{oops}")), null);
   assert.equal(normalizeRepoPath("//a/b"), "a/b");
-  for (const p of ["a//b", "a/../b", ".git/x", "a/", "a\0", "é".repeat(128)]) assert.throws(() => normalizeRepoPath(p), error("bad-path"));
+  for (const p of ["a//b", "a/../b", ".git/x", "a/", "a\0", "é".repeat(128)]) assert.throws(() => normalizeRepoPath(p), error("bad_path"));
 });
 
 test("a SQL failure late in CAS rolls back commits, head, refs, logs and events", async t => {
@@ -161,7 +162,7 @@ test("CAS rejects invalid metadata and normalized path aliases atomically", asyn
     {entries: [e("a"), e("/a")]}, {entries: [{...e("a"), size: -1}]},
   ]) await assert.rejects(cas(2, [1], [], extra), (err: unknown) => {assert.ok(err instanceof RepoError); assert.equal(err.status, 400); return true;});
   assert.equal(object.ref("main")?.version, id(1)); assert.equal(object.log().length, 1);
-  await assert.rejects(object.cas({ref: "main", changes: {}, commit: v(2, [1]), who: "a", why: "b"}), error("bad-input"));
+  await assert.rejects(object.cas({ref: "main", changes: {}, commit: v(2, [1]), who: "a", why: "b"}), error("bad_input"));
 });
 
 test("a fork's seed may name parents this repo never saw; history stops there", async t => {
@@ -175,5 +176,57 @@ test("a fork's seed may name parents this repo never saw; history stops there", 
 test('all supported owner kinds including cache are accepted',async t=>{
   const {object,cas}=fixture(t);await object.init(init);await cas(1,[],[]);
   for(const kind of ['agent','workflow','job','user','api','cache'])await object.createRef({name:kind,from:'main',owner:`${kind}:x`,who:'api:test',why:'test'});
-  await assert.rejects(object.createRef({name:'bad',from:'main',owner:'volume:x',who:'api:test',why:'test'}),error('bad-owner'));
+  await assert.rejects(object.createRef({name:'bad',from:'main',owner:'volume:x',who:'api:test',why:'test'}),error('bad_owner'));
+});
+
+test("new commits on an existing ref must start with the current version", async t => {
+  const {object, cas} = fixture(t);
+  await object.init(init);
+  await cas(1, [], [e("a")]);
+  await cas(2, [98, 99], [e("side")], {ref: "topic", expect: null});
+  const state = () => [object.ref("main"), object.list().entries, object.log(), object.events()];
+  const before = state();
+  for (const parents of [[], [2], [2, 1], [1, 2, 2]]) {
+    await assert.rejects(cas(3, parents, [e("b")]), err => {
+      error("bad_parent", 409)(err);
+      assert.deepEqual((err as InstanceType<typeof RepoError>).detail, { parents: parents.map(id), current: id(1) });
+      return true;
+    });
+    assert.deepEqual(state(), before);
+    assert.equal(object.commit(id(3)), null);
+  }
+  await cas(3, [1, 2], [e("b")]);
+  assert.deepEqual(object.commit(id(3))?.parents, [id(1), id(2)]);
+});
+
+test("fast-forward follows all parents and reaches a current fork base without a commit row", async t => {
+  const {object, cas, db} = fixture(t);
+  await object.init(init);
+  await cas(1, [], [e("a")]);
+  await cas(2, [99, 1], [e("b")], {ref: "topic", expect: null});
+  await cas(3, [2], [e("c")], {ref: "topic"});
+  db.prepare("DELETE FROM commits WHERE version=?").run(id(1));
+  await cas(3, [2], [e("c")], {expect: id(1)});
+  assert.equal(object.ref("main")?.version, id(3));
+});
+
+test("fast-forward fails closed past 50,000 visited versions", async t => {
+  const {object, cas, db} = fixture(t);
+  await object.init(init);
+  await cas(1, [], [e("a")]);
+  const insert = db.prepare("INSERT INTO commits VALUES(?,?,?,?,?,?,?)");
+  db.exec("BEGIN");
+  for (let n = 2; n <= 50_001; n++) {
+    const row = v(n, [n - 1]);
+    insert.run(row.version, row.tree, JSON.stringify(row.parents), row.author, row.message, "{}", row.at);
+  }
+  db.exec("COMMIT");
+  const state = () => [object.ref("main"), object.list().entries, object.log(), object.events()];
+  const before = state();
+  await assert.rejects(cas(50_001, [50_000], [e("b")]), err => {
+    error("not_fast_forward", 409)(err);
+    assert.deepEqual((err as InstanceType<typeof RepoError>).detail, { current: id(1), reason: "too_deep" });
+    return true;
+  });
+  assert.deepEqual(state(), before);
 });

@@ -24,6 +24,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
+	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
@@ -32,6 +33,10 @@ type invalidRequest string
 
 func (e invalidRequest) Error() string         { return string(e) }
 func invalid(format string, args ...any) error { return invalidRequest(fmt.Sprintf(format, args...)) }
+
+type forbidden string
+
+func (e forbidden) Error() string { return string(e) }
 
 type storageError struct {
 	status  int
@@ -53,13 +58,38 @@ func jsonReply(w http.ResponseWriter, status int, v any) {
 func storageFail(w http.ResponseWriter, e error) {
 	status, code, details := 500, "internal", any(nil)
 	var se *storageError
+	var re *refstore.Error
 	var ae *apierr.Error
 	var validation invalidRequest
+	var denied forbidden
+	var missingSizes *objects.MissingTreeSizes
 	message := ""
-	if errors.As(e, &validation) {
+	if errors.As(e, &missingSizes) {
+		message = missingSizes.Error()
+	} else if errors.As(e, &denied) {
+		status, code, message = 403, "forbidden", denied.Error()
+	} else if errors.As(e, &validation) {
 		status, code, message = 400, "invalid_request", validation.Error()
+	} else if errors.As(e, &re) {
+		status, code, details = re.Status, re.Code, re.Details
+		switch code {
+		case "exists":
+			code = "ref_exists"
+		case "no_ref":
+			code = "ref_not_found"
+		case "invalid", "bad_ttl":
+			code = "invalid_request"
+		}
+		if re.Details == nil {
+			details = nil
+		}
 	} else if errors.As(e, &se) {
 		status, code, details = se.status, se.code, se.details
+		if se.code == "not_found" {
+			if d, ok := se.details.(map[string]string); ok && d["commit"] != "" {
+				message = "commit " + d["commit"] + " not found"
+			}
+		}
 	} else if errors.As(e, &ae) {
 		status, code, message = ae.Status, "invalid_request", ae.Error()
 		if status == 413 {
@@ -125,21 +155,104 @@ func require(ctx context.Context, repo *objects.Repository, l, id, kind string, 
 	}
 	return nil
 }
-func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r) {
+func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
+	r = s.authorize(w, r)
+	if r == nil {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/lineages/"), "/")
-	if len(parts) < 2 || !store.Lineage(parts[0]) {
+	if (len(parts) < 2 && s.lineages == nil) || !store.Lineage(parts[0]) {
 		storageFail(w, invalid("lineage: expected /v1/lineages/{lineage}/{route} with a valid lineage"))
 		return
 	}
 	l := parts[0]
 	route := strings.Join(parts[1:], "/")
-	repo := s.repository().ForLineage(l)
+	// Fail closed: every method except GET/HEAD mutates, except the read-only POST /read.
+	write := r.Method != http.MethodGet && r.Method != http.MethodHead && !(r.Method == http.MethodPost && route == "read")
+	if claims, ok := ClaimsFromContext(r.Context()); ok {
+		if claims.Lineage != l {
+			authFail(w, http.StatusForbidden, "forbidden", "token lineage does not match path")
+			return
+		}
+		if write && claims.Access != "w" {
+			authFail(w, http.StatusForbidden, "forbidden", "write access required")
+			return
+		}
+	}
+	repo := s.repo().ForLineage(l)
+	handler := func(w http.ResponseWriter) { s.storageRoute(w, r, l, route, repo) }
+	idemRoute := route
+	var replayRefMatches func(string) bool
+	if s.lineages != nil {
+		claims, _ := ClaimsFromContext(r.Context())
+		item, err := s.lineages.get(r.Context(), l)
+		if err != nil {
+			storageFail(w, ddbUnavailable(err))
+			return
+		}
+		isDelete := route == "" && r.Method == "DELETE"
+		if item.DeletedAt != nil && !isDelete {
+			storageFail(w, lineageDeleted())
+			return
+		}
+		if route == "blobs" && r.Method == "PUT" {
+			if item.Lineage == "" {
+				storageFail(w, lineageMissing())
+				return
+			}
+			if item.Deletion != "" {
+				storageFail(w, &storageError{503, "unavailable", nil})
+				return
+			}
+		}
+		if route == "" || route == "refs" || strings.HasPrefix(route, "refs/") {
+			idemRoute = r.Method + " " + route
+			var request refRequest
+			if route == "" {
+				if isDelete && !runtimeSubject(claims) {
+					storageFail(w, forbidden("runtime token required"))
+					return
+				}
+				if write && claims.Fence != nil {
+					storageFail(w, forbidden("fence requires one exact ref"))
+					return
+				}
+			} else {
+				if item.Lineage == "" {
+					storageFail(w, lineageMissing())
+					return
+				}
+				request, err = parseRefRequest(r, route, claims)
+				if request.action == "create" {
+					replayRefMatches = request.matches
+				}
+				if request.name != "" && request.action != "create" {
+					idemRoute = r.Method + " " + request.action + " " + request.name + " " + request.watcher
+				}
+				if err != nil {
+					storageFail(w, err)
+					return
+				}
+			}
+			if write && item.Deletion != "" && !isDelete {
+				storageFail(w, &storageError{503, "unavailable", nil})
+				return
+			}
+			handler = func(w http.ResponseWriter) {
+				var err error
+				if route == "" {
+					err = s.lineageRoute(w, r, l, item)
+				} else {
+					err = s.refRoute(w, r, l, request, repo)
+				}
+				if err != nil {
+					s.refRouteError(w, r, l, err)
+				}
+			}
+		}
+	}
 	// Serialize keyed mutations through response publication. A failed request is
 	// retryable; only successful results enter the 24-hour response cache.
-	write := r.Method == "PUT" || r.Method == "POST" && route != "read"
 	if write && r.Header.Get("Idempotency-Key") != "" {
 		key := r.Header.Get("Idempotency-Key")
 		if len(key) > 256 {
@@ -150,9 +263,22 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 		defer unlock()
 		var status int
 		var body []byte
-		e := repo.DB.DB.QueryRowContext(r.Context(), "SELECT status,body FROM idempotency WHERE key=? AND lineage=? AND route=? AND created_at>?", key, l, route, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&status, &body)
+		e := repo.DB.DB.QueryRowContext(r.Context(), "SELECT status,body FROM idempotency WHERE key=? AND lineage=? AND route=? AND created_at>?", key, l, idemRoute, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&status, &body)
 		if e == nil {
-			w.Header().Set("Content-Type", "application/json")
+			if replayRefMatches != nil {
+				var original struct{ Name string }
+				if err := json.Unmarshal(body, &original); err != nil {
+					storageFail(w, err)
+					return
+				}
+				if !replayRefMatches(original.Name) {
+					storageFail(w, refOutsideScope(original.Name))
+					return
+				}
+			}
+			if status != http.StatusNoContent {
+				w.Header().Set("Content-Type", "application/json")
+			}
 			w.WriteHeader(status)
 			_, _ = w.Write(body)
 			return
@@ -162,9 +288,9 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rec := httptest.NewRecorder()
-		s.storageRoute(rec, r, l, route, repo)
+		handler(rec)
 		if rec.Code >= 200 && rec.Code < 300 {
-			_, e = repo.DB.DB.ExecContext(r.Context(), "INSERT OR REPLACE INTO idempotency VALUES(?,?,?,?,?,?)", key, l, route, rec.Code, rec.Body.Bytes(), time.Now().UnixMilli())
+			_, e = repo.DB.DB.ExecContext(r.Context(), "INSERT OR REPLACE INTO idempotency VALUES(?,?,?,?,?,?)", key, l, idemRoute, rec.Code, rec.Body.Bytes(), time.Now().UnixMilli())
 			if e != nil {
 				storageFail(w, e)
 				return
@@ -177,9 +303,9 @@ func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(rec.Body.Bytes())
 		return
 	}
-	s.storageRoute(w, r, l, route, repo)
+	handler(w)
 }
-func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route string, repo *objects.Repository) {
+func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, route string, repo *objects.Repository) {
 	ctx := r.Context()
 	q := r.URL.Query()
 	fail := func(e error) { storageFail(w, e) }
@@ -193,6 +319,10 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 		b, e := repo.Upload(ctx, l, expected, r.ContentLength, r.Body)
 		if e != nil {
 			fail(e)
+			return
+		}
+		if err := s.countUpload(ctx, l, b); err != nil {
+			s.refRouteError(w, r, l, err)
 			return
 		}
 		status := 201
@@ -268,6 +398,45 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 			return
 		}
 		jsonReply(w, 201, out)
+	case r.Method == "GET" && (route == "merge-base" || strings.HasPrefix(route, "commits/") && strings.HasSuffix(route, "/is-ancestor")):
+		a, b := q.Get("a"), q.Get("b")
+		fields := []string{"a", "b"}
+		if route != "merge-base" {
+			a = strings.TrimSuffix(strings.TrimPrefix(route, "commits/"), "/is-ancestor")
+			b = q.Get("of")
+			fields = []string{"commit", "of"}
+		}
+		for i, id := range []string{a, b} {
+			if id == "" {
+				fail(invalid("missing field %s", fields[i]))
+				return
+			}
+		}
+		serveAncestry(w, r, repo, l, a, b)
+	case r.Method == "GET" && strings.HasPrefix(route, "trees/") && strings.HasSuffix(route, "/entry"):
+		id := strings.TrimSuffix(strings.TrimPrefix(route, "trees/"), "/entry")
+		path := q.Get("path")
+		if path == "" {
+			fail(invalid("missing field path"))
+			return
+		}
+		if objects.Path(path) != nil {
+			fail(invalid("invalid path %s", path))
+			return
+		}
+		if e := require(ctx, repo, l, id, "tree", false); e != nil {
+			if se, ok := e.(*storageError); ok && se.status == 404 {
+				e = &storageError{404, "not_found", nil}
+			}
+			fail(e)
+			return
+		}
+		v, e := treeEntry(ctx, repo, l, id, path)
+		if e != nil {
+			fail(e)
+			return
+		}
+		jsonReply(w, 200, v)
 	case strings.HasPrefix(route, "commits/") && r.Method == "GET":
 		id := strings.TrimPrefix(route, "commits/")
 		if e := require(ctx, repo, l, id, "commit", false); e != nil {
@@ -331,6 +500,11 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 			}
 			cap = min(cap, *v.MaxBytes)
 		}
+		files, e := repo.Files(ctx, v.Tree, v.Paths)
+		if e != nil {
+			fail(e)
+			return
+		}
 		entries := make([]objects.Entry, len(v.Paths))
 		data := make([][]byte, len(v.Paths))
 		keys := []string{}
@@ -340,7 +514,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 				fail(invalid("invalid path %s", p))
 				return
 			}
-			f, e := repo.File(ctx, v.Tree, p)
+			f, e := files[i].Entry, files[i].Err
 			if errors.Is(e, os.ErrNotExist) {
 				continue
 			}
@@ -361,7 +535,7 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 			entries[i] = f
 			keys = append(keys, strconv.Itoa(i))
 		}
-		e := store.Parallel(ctx, 64, keys, func(k string) error {
+		e = store.Parallel(ctx, 64, keys, func(k string) error {
 			i, _ := strconv.Atoi(k)
 			b, e := blobBytes(ctx, repo, l, entries[i].SHA1)
 			data[i] = b
@@ -402,9 +576,14 @@ func (s *Server) storageRoute(w http.ResponseWriter, r *http.Request, l, route s
 			fail(e)
 			return
 		}
-		out, e := mergeTrees(ctx, repo, l, v)
+		batch := repo.BeginPublication()
+		batch.OnBlobUpload(func(ctx context.Context, blob objects.Blob) error { return s.countUpload(ctx, l, blob) })
+		out, e := stageMerge(ctx, batch, l, v, false)
+		if e == nil {
+			e = batch.Flush(ctx)
+		}
 		if e != nil {
-			fail(e)
+			s.refRouteError(w, r, l, e)
 			return
 		}
 		jsonReply(w, 200, out)
@@ -456,7 +635,7 @@ type idempotencyLock struct {
 
 // The map mutex protects bookkeeping only, never request bodies or store I/O.
 // References include waiters so a lock cannot be replaced while still in use.
-func (s *Server) lockIdempotency(lineage, key string) func() {
+func (s *StorageServer) lockIdempotency(lineage, key string) func() {
 	k := idempotencyKey{lineage, key}
 	s.idemLocksMu.Lock()
 	if s.idemLocks == nil {

@@ -70,21 +70,13 @@ export function modelRuntime(
     TEST_MODEL_BASE_URL?: string;
     TEST_MODEL_API?: Api;
     TEST_MODE?: string;
-  } & ImageBindings & ModelTimeoutEnv & { VOLUMES?: FileBindings["VOLUMES"] },
+  } & ImageBindings & ModelTimeoutEnv,
   getTenant: () => Promise<string>,
   hooks: ModelHooks = {},
 ) {
   const models = createModels();
   const decorate = (provider: Provider) => {
-    const authorizeFile = async (key: string) => {
-      const agent = await hooks.agentId?.();
-      if (!agent || !env.VOLUMES) return false;
-      const tenant = await getTenant();
-      if (!key.startsWith(`files/${encodeURIComponent(tenant)}/`)) return false;
-      const volume = decodeURIComponent(key.split("/")[2] ?? "");
-      return env.VOLUMES.getByName(`${tenant}:${volume}`).hasPin(`agent:${agent}`, key);
-    };
-    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant, authorizeFile), env, getTenant, authorizeFile);
+    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant), env as FileBindings & import("./repos/registry.ts").RepoEnv, getTenant, undefined,hooks.authorizeRepoFile);
     return withSettings(hooks.wrapProvider ? hooks.wrapProvider(images) : images, hooks, env);
   };
   const contextModels = new Map<string, Model<Api>>();

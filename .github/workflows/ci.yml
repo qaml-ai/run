@@ -1,7 +1,7 @@
 # Keep every main commit eligible for the completed-CI deploy trigger.
 name: CI
 on:
-  push: { branches: [main] }
+  push: { branches: [main, camelfs/files-model] }
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
@@ -41,6 +41,7 @@ jobs:
       pull-requests: read
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
+      guest_image: ${{ steps.changes.outputs.guest_image || 'true' }}
       selected: ${{ steps.changes.outputs.selected }}
       image: ${{ steps.changes.outputs.image || 'true' }}
       # A draft runs only the fast checks and its changed test files; marking it ready runs the affected suite.
@@ -353,25 +354,100 @@ jobs:
     timeout-minutes: 15
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     defaults: { run: { working-directory: camelfsd } }
+    # DynamoDB Local for the refs, delivery and compute stores (internal/ddb/ddbtest): with CAMELFS_DDB_LOCAL set their
+    # tests run instead of skipping. It starts beside checkout and Go setup, so it adds seconds, not a stage.
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local@sha256:1856c05cc66a0e49dc1099e483ad2851477eeebe2135250ac11a1d1227db54b1
+        ports: ["8000:8000"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: camelfsd/go.mod, cache-dependency-path: camelfsd/go.sum }
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
+      - name: Wait for DynamoDB Local
+        # An unsigned request gets an HTTP error once DynamoDB Local serves; fail loudly rather than skip its tests.
+        run: for i in $(seq 60); do curl -s --max-time 1 -o /dev/null http://127.0.0.1:8000 && exit 0; sleep 1; done; exit 1
       - run: go test ./...
+        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
+      - name: DynamoDB tests ran (not skipped)
+        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
+        run: |
+          out=$(go test -count=1 -v ./internal/refstore/... 2>&1)
+          if grep -q -- "--- SKIP" <<<"$out" || ! grep -q -- "--- PASS: TestCasRace" <<<"$out"; then echo "$out" | tail -40; exit 1; fi
       - run: go build -o "$RUNNER_TEMP/camelfsd" ./cmd/camelfsd
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+      - uses: ./.github/actions/node-dependencies
       - name: Real camelfsd contract
         working-directory: .
+        # The api role's refs routes run against the job's DynamoDB Local service (tables made per test).
+        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
         run: CAMELFSD_BIN="$RUNNER_TEMP/camelfsd" CAMELFS_CONTRACT_REQUIRED=1 node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/camelfs-contract.test.ts
+      - name: Shared refs contract against a throwaway tier
+        # The same cases as the strict fake (tests/contract/camelfs-refs-cases.ts), against camelfsd api on the job's
+        # DynamoDB Local service with a key made for this run, so the fake and the tier cannot drift.
+        working-directory: .
+        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
+        run: CAMELFSD_BIN="$RUNNER_TEMP/camelfsd" node --experimental-strip-types --disable-warning=ExperimentalWarning tests/camelfs-refs-tier.ts
+      - name: Node and Go guest compatibility
+        working-directory: .
+        run: |
+          (cd camelfsd && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags guest -o "$RUNNER_TEMP/camelfsd-guest" ./cmd/camelfsd)
+          tests=(tests/jobhost.test.ts tests/jobhost-camelfs*.test.ts tests/jobhost-host.test.ts)
+          env -u CAMEL_GUEST_BIN node --experimental-strip-types --disable-warning=ExperimentalWarning --test "${tests[@]}"
+          CAMEL_GUEST_BIN="$RUNNER_TEMP/camelfsd-guest" node --experimental-strip-types --disable-warning=ExperimentalWarning --test "${tests[@]}"
+  guest-image:
+    needs: changes
+    if: needs.changes.outputs.guest_image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: camelfsd/go.mod, cache: false }
+      - name: Build the AL2023 guest rootfs
+        run: |
+          mkdir -p "$RUNNER_TEMP/guest-image"
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/src:ro" -v "$(go env GOROOT):/opt/go:ro" \
+            -v "$RUNNER_TEMP/guest-image:/out" -w /src amazonlinux:2023@sha256:3ccfbe800f864982b0a4e124a614b2382518cbd04b3c1cd35202bd46f392675b bash -euc '
+              dnf -y -q install git gcc e2fsprogs jq zstd findutils
+              git config --global --add safe.directory /src
+              export PATH="/opt/go/bin:$PATH"
+              camelfsd/scripts/build-guest-image.sh /out
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-image
+          path: ${{ runner.temp }}/guest-image/guest-*
+          if-no-files-found: error
+          compression-level: 0
+  publish-guest-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/camelfs/files-model'
+    needs: guest-image
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest-image
+          path: ${{ runner.temp }}/guest-image
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::904534089871:role/camelfs-prod-guest-image-publisher
+          aws-region: us-west-2
+      - run: camelfsd/scripts/publish-guest-image.sh "$RUNNER_TEMP/guest-image" s3://camelfs-prod-904534089871
   ci:
     name: CI success
     timeout-minutes: 5
     # Always report a result on ready PRs, including when a dependency failed or was cancelled.
     if: always() && needs.changes.outputs.draft != 'true'
-    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs, camelfsd]
+    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs, camelfsd, guest-image, publish-guest-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read

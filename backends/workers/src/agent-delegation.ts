@@ -170,6 +170,7 @@ export function createDelegation(this: AgentRuntime): Delegation {
         config,
         key,
         conf.runtimeOrigin,
+        undefined, false,
       );
       if ("failed" in entry)
         throw Object.assign(new Error(entry.error), { status: entry.status });

@@ -1,3 +1,4 @@
+import { storedConfiguration } from "./api-contract.ts";
 import { checkRequest, RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../../../shared/monitors.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { requireActiveMember, sharedPromptInput } from "../../../src/shared-agents.ts";
@@ -87,6 +88,7 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
     if (!replacement && !Object.keys(request.params).length) throw new BadRequest("Give at least one configuration field");
     const conf = await this.config();
     const given = request.params as Record<string, unknown>;
+    if(given.mounts!==undefined)configuration({mounts:given.mounts},conf.config.model??this.env.MODEL);
     // A definition revision (only from the directory's /configuration-target) is checked against the configuration
     // now, and merged with the configuration it finds when it applies.
     const params = replacement && given.applyDefinition !== undefined
@@ -95,7 +97,7 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
     if (params.subject !== undefined && params.subject !== conf.config.subject)
       throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, withoutOnExpire(conf.config), params);
-    configuration(patched, conf.config.model ?? this.env.MODEL, "patch");
+    storedConfiguration(patched, conf.config.model ?? this.env.MODEL, "patch");
     await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel });
     if (replacement && (params.model !== undefined || params.keyScope !== undefined)) {
       try {
@@ -129,6 +131,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
       throw new BadRequest("Expected configuration object");
     const given = request.params as Record<string, unknown>;
     const conf = await this.config();
+    if(given.mounts!==undefined)configuration({mounts:given.mounts},conf.config.model??this.env.MODEL);
     const replacement = (await this.ctx.storage.get<RequestRecord>(reqKey(id)))?.replaceConfiguration === true;
     // A definition application merges its revision with the configuration as it is now, at the head of the queue, so
     // configuration queued before it stays. Keyed upserts inherit the definition revision the agent has by then.
@@ -139,7 +142,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
     const replacementInput = replacement && params.definition !== undefined && !applying
       ? definitionUpsert(params, conf.config) : params;
     const replacementParams = replacement ? replacementConfiguration(withoutOnExpire(conf.config), replacementInput) : params;
-    const patched = configuration(replacement ? replacementParams : { ...withoutOnExpire(conf.config), ...params }, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
+    const patched = storedConfiguration((replacement ? replacementParams : { ...withoutOnExpire(conf.config), ...params }) as import("./api-contract.ts").AgentConfiguration, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
       ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
     const fingerprint = canonical(request);
@@ -175,6 +178,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
       previous?.replaceConfiguration ? replacementParams : await configurationPatch(this.env, conf.tenantId, current.config, params),
       current.key ?? current.id,
       origin ?? conf.runtimeOrigin,
+      undefined, false,
     );
     if ("failed" in updated)
       throw Object.assign(new Error(updated.error), {
@@ -543,10 +547,10 @@ export async function admitImpl(this: AgentRuntime,
       : undefined;
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
-    if (preparing) {
-      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined));
-      await this.arm();
-    }
+    const preparedLimits = preparing
+      ? await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined))
+      : undefined;
+    if (preparing) await this.arm();
     let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
     try {
     const audioRunLimit = (params.spendLimit as { usd?: number } | undefined)?.usd;
@@ -610,6 +614,7 @@ export async function admitImpl(this: AgentRuntime,
       startedAt: old?.startedAt ?? Date.now(),
     };
     delete record.noticeQueued;
+    if (preparedLimits) record.limitsSnapshot = preparedLimits;
     // Keep the suspended call live. Input settlement retries admission, without a polling alarm.
     if (request.method === "prompt" && shared) {
       const inputs = await (await this.harness.pi()).snapshot(HumanInputs, BACKGROUND_CONTEXT);
@@ -617,8 +622,9 @@ export async function admitImpl(this: AgentRuntime,
         delete record.inputAdmissionRetry;
         record.state = "queued";
         record.heldForInput = true;
-        if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+        if (preparing) record.admitted = true;
         await this.ctx.storage.put(reqKey(id), record);
+        if (preparing) await this.promptPreparations.finish(id);
         return record;
       }
     }
@@ -647,7 +653,7 @@ export async function admitImpl(this: AgentRuntime,
     }
     const configurationWait = record.configurationWait ?? await this.configurationQueue.pendingOrder();
     if (configurationWait > await this.configurationQueue.completedOrder()) {
-      if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+      if (preparing) record.admitted = true;
       record.configurationWait = configurationWait;
       record.state = 'queued';
       record.configurationWaitSequence = await this.ctx.storage.transaction(async tx => {
@@ -660,6 +666,7 @@ export async function admitImpl(this: AgentRuntime,
         await tx.put(reqKey(id), saved);
         return sequence;
       });
+      if (preparing) await this.promptPreparations.finish(id);
       await this.arm(Date.now() + 1000);
       return record;
     }
@@ -707,7 +714,7 @@ export async function admitImpl(this: AgentRuntime,
     if (noTurn && notice) return landWithoutTurn(noTurn);
     await this.arm(Date.now() + 1000);
     if (!record.admitted) {
-      await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
+      record.limitsSnapshot = await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
       record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);

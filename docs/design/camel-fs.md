@@ -1,5 +1,10 @@
 # camelFS: the file system for agents, on our own AWS machines
 
+> **Superseded in part (Miguel, 2026-11-14): there are no jobs.** Agents compute through one `bash` tool backed by
+> one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
+> child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2
+> and §6. What this document says about jobs is the record of the replaced design.
+
 Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions; merged in #874; §6 records the v0 defaults he approved (questions 8, 9, 10, 12). Docs
 only; nothing here creates AWS resources (Miguel applies every AWS change himself). It supersedes the file half of
 [swarm-workflows.md](swarm-workflows.md) Part 2 (the repository object, layers, search, git without a VM,
@@ -82,7 +87,7 @@ on the real host.
 Three parts, one binary:
 
 - **The storage plane is managed services only.** S3 holds the bytes; DynamoDB holds every mutable fact (refs,
-  touches, warm-host hints) and the hot content-addressed objects (trees, commits); refs live in the lineage object (§1.2). No host holds truth. A published
+  touches, warm-host hints) and the hot content-addressed objects (trees, commits); refs are conditional writes (§1.2; option C, decided 2026-11-13). No host holds truth. A published
   version has RPO 0; a host can be terminated at any moment and the system loses only the unpublished part of the
   current turn on the branches it held live.
 - **`camelfsd` runs in two roles.** `api` on a small stateless tier behind an ALB (what Workers, laptops and git talk
@@ -143,37 +148,38 @@ object by id without bytes only when that object is reachable from the caller's 
 "does anyone have this file". No code path anywhere checks existence and then skips a write without recording a
 touch (§1.9).
 
-### 1.2 Refs, leases and fences (the lineage object); trees and commits (DynamoDB)
+### 1.2 Refs, leases and fences; trees and commits (all DynamoDB)
 
-**Decided (Miguel, 2026-11-13; detailed in [camel-fs-files.md](camel-fs-files.md) §6):** refs, their history, leases
-and fencing epochs live in the **per-lineage Durable Object's SQLite** (a `refs`/`ref_log` table pair with row locks
-per lineage on the Node backend); **trees and commits** live in DynamoDB, with cold generations packed to S3; blobs
-and chunks live in S3. An earlier revision of this section put the refs in DynamoDB too; the reasons it moved:
-every ref change already passes through a Durable Object (the agent's turn, a `HostJob`'s result, the API's
-request); Workers resolve ref → tree locally on every file-API call, and refs cannot be edge-cached since they are
-mutable, while trees and commits can be, by hash; one serial owner per lineage gives a transactional CAS, the fence
-and SQL history without a cross-store protocol; and the immutable objects stay next to the hosts in stores that
-scale without an owner.
+**Decided (Miguel, 2026-11-13 ~17:00; option C, detailed in [camel-fs-files.md](camel-fs-files.md) §6 and §9):**
+camelFS is one AWS service. Refs, leases, fences and watchers are **DynamoDB items written with conditional
+writes** by the stateless `camelfsd api` tier; trees and commits live in DynamoDB, with cold generations
+packed to S3; blobs and chunks live in S3. Earlier the same day the refs had moved into a per-lineage Durable Object
+(`RepoDO`); option C moves them back, because each move is one conditional write on
+`version = :expect` after the approved ref-move rules are checked against immutable commits, because the growing writer is a VM whose CAS is then in-region instead of host → Worker →
+host, and because the service then stands alone (one binary, a bucket, a table) for Node, Workers, hosts and
+customers alike. The runtime holds no ref; it signs tokens and caches trees by id per agent.
 
 | where | key | holds |
 |---|---|---|
-| lineage object: `refs` | `name` | `commit`, `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`; the lease when a VM holds the branch: `holder` (host id, host boot epoch, mount id), `leaseEpoch`, `leaseDeadline`; `createdAt`, `updatedAt` |
-| lineage object: `ref_log` | `name`, `seq` | every move of a ref: from, to, who, when, why (what `history` reads before descending into commits) |
-| lineage object: head-tree cache, quota counters, watchers | | path → blob, mode, size for each ref's current version; bytes and files reachable at the heads; `notify` subscribers |
+| DynamoDB `refs` | `lineage`, `name` | `version` (the commit), `tree`, `root?`, `owner` (`volume:<id>`, `workflow:<id>`, `job:<id>`, `cache:<key>`, `mirror:<remote>`), `expiresAt?`; the lease when a VM holds the branch: `holder` (host id, host boot epoch, mount id), `leaseEpoch`, `leaseDeadline`; `watchers`; `createdAt`, `createdBy`, `updatedAt` |
+| (no log table) | | every move extends the ref's history (a new commit on current, or a fast-forward; a restore is a new commit), `history` walks first parents, and who and why travel in each commit's author and trailers |
+| DynamoDB `deliveries` | `shard`, `id` | a pending `notify` webhook, written in the same transaction as the move of a watched ref (camel-fs-files.md §9.11) |
 | DynamoDB `objects` | `id` | trees and commits (content-addressed; a put is unconditional and idempotent), `generation` |
 | DynamoDB `touch` | `id` | an object named by id without bytes since the last mark began (§1.9); TTL = 2 × grace |
 | DynamoDB `warm` | `lineage`, `host` | the image files this host holds, with the host's boot epoch, for placement |
-| DynamoDB `lineages` | `lineage` | tenant, kind (`workspace` / `image`), quota, default branch, ignore list, last mark; the lineage object's id |
+| DynamoDB `lineages` | `lineage` | tenant, kind (`workspace` / `image`), default branch, ignore list, last mark |
 
-A **lineage** is a volume plus everything made from it (forks, job views, cache entries, mirrors); it is the object
-that owns its refs, the DynamoDB partition key of its objects' metadata, and the unit of chunk sharing. A single
-branch is bounded by its one writer; a swarm's thousand forks of one lineage are a thousand rows in one object,
-which its SQLite absorbs. A **ref** is a name → commit inside a lineage.
+A **lineage** is a volume plus everything made from it (forks, job views, cache entries, mirrors); it is the
+DynamoDB partition key of its refs and its objects' metadata, and the unit of chunk sharing. A single
+branch is bounded by its one writer; a swarm's thousand forks of one lineage are a thousand items under one
+partition key, which DynamoDB's adaptive capacity spreads; one hot ref is the bound. A **ref** is a name → commit inside a lineage.
 
-**Every ref update is one fenced CAS**, one SQLite transaction in the lineage object. The condition names the
-expected `commit` **and** the lease state the writer believes in: an API writer requires `holder` absent; a host
+**Every ref update is one fenced CAS**, one conditional write on the ref item (quota is the mark count plus bytes written since,
+camel-fs-files.md §6, outside this write). The tier first checks the ref-move rules (camel-fs-files.md §6: a new commit's
+`parents[0]` is current; a move to a recorded commit is a fast-forward); the condition is `version = :expect`
+**and** the lease state the writer believes in: an API writer requires `holder` absent; a host
 requires `holder = me` and `leaseEpoch = the epoch it took`. A merge that moves one ref and deletes another is one
-transaction. A host that was partitioned from the runtime, lost its lease and comes back late fails its CAS on the
+`TransactWriteItems`. A host that was partitioned from the runtime, lost its lease and comes back late fails its CAS on the
 epoch; it cannot land a version on a branch another mount has since taken (which gets a new epoch), and it cannot
 split the branch. A host that reboots gets a new boot epoch, and every lease carrying the old one is dead on sight.
 There are no other locks. The working layer for API-held branches (an earlier `dirty` table) is gone: in the file
@@ -183,8 +189,8 @@ never has rows to fold.
 **One writer per branch, fenced.** A branch is held either by a VM (`holder` names the host and mount; the host is
 the writer) or by nobody (the API is the writer, one commit per write). The rules, all of them:
 
-- Taking the lease: `holder` absent; the lease put and any API commit on the same branch serialize in the lineage
-  object, so a write racing the lease either lands as a commit before it (and the mount starts from that version) or
+- Taking the lease: `holder` absent; the lease put and any API commit on the same branch serialize on the ref item's
+  condition, so a write racing the lease either lands as a commit before it (and the mount starts from that version) or
   fails its fence after it.
 - While held, **every operation on the branch is routed to the holder or refused**: reads and writes are forwarded
   to the host and executed in the guest by `camel-guest` (a write's `expectBlob` is checked in the guest against
@@ -208,9 +214,8 @@ key-value shaped. Trees and commits live here rather than in S3 because they are
 difference between a 5 s and a 65 ms one-file commit on a large tree (its v1 kept packs and the fetch walk in R2;
 its v2 moved trees and commits into SQLite). WCU is per KB, so a top-level tree of 2–3 KB is 2–3 WCU; the cost
 section counts it. The one thing DynamoDB makes harder, enumerating objects for GC, is done from S3 Inventory
-(§1.9). The refs did not stay here because a ref is mutable, per-lineage and written from a Durable Object on every
-path, which is exactly what the lineage object's SQLite is for; a camelFS deployed without camelRun would put them
-back in DynamoDB with conditional writes, and nothing else in this document changes.
+(§1.9). The refs live here too (option C): a ref is one small item whose every move is a conditional write, the condition
+is the expected version and the fence (taken only from the signed token), and no serial owner is needed; the earlier per-lineage Durable Object is deleted.
 
 ### 1.3 Hosts: image files, the lazy origin, the checkpoint contract
 
@@ -238,8 +243,8 @@ and dm-clone both take.
 
 **Cold host (the image file is absent): prehydrate and swap, under dm-snapshot** (decided 2026-11-13 as unit 7b,
 replacing dm-clone). The VM's device is a **dm-snapshot** (copy-on-write into a sparse file on the NVMe) over a
-**dm-linear** origin. At mount, the origin maps to `camelfsd`'s **lazy device** for the root (NBD over a Unix
-socket today; ublk later): a read miss fetches the chunk from the host cache, else from S3, so the guest's first
+**dm-linear** origin. At mount, the origin maps to `camelfsd`'s **lazy device** for the root (NBD served over TCP loopback, `127.0.0.1:10809` by
+default (`camelfsd host --nbd-listen`), today; ublk later): a read miss fetches the chunk from the host cache, else from S3, so the guest's first
 reads are served at once. Meanwhile the daemon **prehydrates** the root into a sparse local image file at the NIC
 ceiling, 64 chunks in flight, writing only the chunks the root names (holes cost nothing, so the work is the root's
 bytes, not the virtual size), and when the file is complete it **reloads the linear layer onto the local file**:
@@ -445,6 +450,9 @@ so the cost is a bigger simultaneous re-place, bounded by the warm pool.
 
 ### 1.5 VMs: jobs and computers on one substrate
 
+**Superseded (2026-11-14):** one VM shape remains, the `bash` session on an agent's branch (camel-fs-compute.md §6).
+The job column below is the replaced design.
+
 Both run as Firecracker microVMs on the fleet, with the job-hosts plan's image, netns pool, egress proxy and
 isolation suite. The difference is the lease:
 
@@ -474,14 +482,14 @@ computer has no volume at all: "Files are separate from agent volumes").
 
 `camelfsd api`, stateless, in us-west-2 behind an ALB (HTTP/1.1 from Workers: the 2026-10-24 Cloudflare→ALB HTTP/2
 stall), 2 AZs, autoscaled on CPU. A request carries a token (§1.10) naming the lineage and the refs it may read and
-write; the tier resolves the ref in the lineage object, reads trees from DynamoDB and blobs from S3 (an in-process LRU of trees
+write; the tier resolves the ref with a consistent `GetItem` on `refs`, reads trees from DynamoDB and blobs from S3 (an in-process LRU of trees
 and small blobs in front), and answers.
 
-| op | what it does | expected latency from a Worker (us-west-2 round trip ~20–60 ms included) |
+| op | what it does | expected latency from a Worker (us-west-2 round trip included: estimated ~85 ms from an arbitrary colo, ~25 from a DO placed `wnam`; unmeasured) |
 |---|---|---|
-| `read(ref, path)`, `stat`, `ls`, `glob` | the ref's current tree (the lineage object's head-tree cache); blob from S3; on a held branch, forwarded to the holder (v0: the last version, labelled stale) | 30–80 ms cold, ~25 ms for trees only; + the host hop when forwarded |
-| `write(ref, path, bytes, expectBlob?)` | **one commit**: blob PUT, new trees on the path and a commit object (camel-fs-files.md §9.3), then the fenced CAS in the lineage object; `expectBlob` is the per-path precondition; forwarded when held (v0: refused) | 50–150 ms |
-| `commit(ref, files, expect?)` | several files as one commit with a whole-ref CAS (camel-fs-files.md §3); two writers racing are serialized by the lineage object and the loser's CAS fails on `commit` | 50–150 ms |
+| `read(ref, path)`, `stat`, `ls`, `glob` | the ref's current tree (trees by id in the tier's LRU; an agent's own version from its tree cache, camel-fs-files.md §6, with no call at all); blob from S3; on a held branch, forwarded to the holder (v0: the last version, labelled stale) | 30–80 ms cold, ~25 ms for trees only; + the host hop when forwarded |
+| `write(ref, path, bytes, expectBlob?)` | **one commit**: blob PUT, new trees on the path and a commit object (camel-fs-files.md §9.3), then one conditional write on the ref item (camel-fs-files.md §9.9 `write`, one call); `expectBlob` is the per-path precondition; forwarded when held (v0: refused) | 50–150 ms |
+| `commit(ref, files, expect?)` | several files as one commit with a whole-ref CAS (camel-fs-files.md §3); two writers racing are serialized by the condition and the loser's CAS fails on `version` | 50–150 ms |
 | `fork(from, name, owner, ttl?)` | one conditional put; a held source is checkpointed first | 30 ms unheld |
 | `merge(into, from, mode)` | three-way on trees in the API node; diff3 on co-edited text; conflicts → 409 with both sides, nothing written; clean → two-parent commit + transactional ref move; `into` held → 409 `held`; `renames: true` runs stock `git merge-tree --write-tree` on the materialized repo (§1.8) | 50–200 ms for a few changed paths; proportional to changed paths, not tree size |
 | `diff`, `log`, `blame` | tree walk skipping equal subtrees; first-parent log; blame from history over cached blobs, or stock git for deep histories | 30–300 ms |
@@ -666,7 +674,8 @@ live sets; the sweep is a sorted merge over the inventory (daily, a few cents pe
 - **Hosts** hold an instance role scoped to the bucket prefixes and tables, as the job-hosts plan's role is scoped,
   and enroll with the STS attestation already landed (`shared/job-host-attest.ts`). They accept one mTLS port from
   the API tier's security group and nothing from the internet.
-- **Tokens** are signed by camelRun (HMAC or ES256, key held by the runtime and the API tier): `{ lineage, read:
+- **Tokens** are signed by camelRun (Ed25519 JWTs from the runtime's existing `RuntimeSigner`, family `camelfs+jwt`;
+  the API tier verifies against a static JWKS file; camel-fs-files.md §9.10): `{ lineage, read:
   [ref globs], write: [ref globs], scope, exp, subject }`. A workflow child's token writes `fork/<effect>` and reads
   `main`; a job's token reads one commit and writes `job/<id>`; a laptop clone token reads one branch for an hour.
   The API tier is the authorization boundary; the storage plane is reached by nothing else. Revocation is a key
@@ -999,7 +1008,7 @@ purpose; v0's measurements will reshape them.
   job of a lineage on a host; `git fsck --strict` clean on every exported test lineage; the GC audit reports zero
   live objects marked garbage over a week.
 - AWS: S3 bucket `camelfs-prod` (SSE-KMS, versioning on with 35-day noncurrent expiry, Inventory daily, Batch
-  Operations role), DynamoDB tables (`objects`, `touch`, `warm`, `lineages`; on-demand, PITR on; refs live in the lineage object),
+  Operations role), DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`, `touch`, `warm`; on-demand, PITR on),
   an ALB + target group, an ECS Fargate service or a 2-host ASG for `camelfsd api` (Graviton), IAM roles (api, host),
   Secrets Manager for the token key, CloudWatch alarms and dashboards; the x86 AMI pipeline and the `m8id`/`c8id`
   launch templates with nested virtualization enabled; the vCPU quota for the Intel families. Fixed cost ~$150/month

@@ -3,16 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 type mergeRequest struct{ Base, Ours, Theirs, Mode string }
@@ -24,12 +21,26 @@ type mergeConflict struct {
 	Reason string `json:"reason"`
 }
 
-func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeRequest) (any, error) {
-	r = r.ForLineage(l)
+type mergeTook struct {
+	Ours   int `json:"ours"`
+	Theirs int `json:"theirs"`
+}
+
+type treeMergeResult struct {
+	Tree   string    `json:"tree"`
+	Merged []string  `json:"merged"`
+	Took   mergeTook `json:"took"`
+}
+
+func stageMerge(ctx context.Context, r *objects.Repository, l string, q mergeRequest, emptyBase bool) (*treeMergeResult, error) {
 	if q.Mode != "merge" && q.Mode != "squash" {
 		return nil, invalid("mode: must be merge or squash")
 	}
-	for _, id := range []string{q.Base, q.Ours, q.Theirs} {
+	trees := []string{q.Ours, q.Theirs}
+	if !emptyBase {
+		trees = append(trees, q.Base)
+	}
+	for _, id := range trees {
 		if e := require(ctx, r, l, id, "tree", true, "base/ours/theirs"); e != nil {
 			return nil, e
 		}
@@ -39,7 +50,6 @@ func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeReq
 		return nil, e
 	}
 	defer os.RemoveAll(dir)
-	pending := map[string][]byte{}
 	merged := []string{}
 	conflicts := []mergeConflict{}
 	ours, theirs := 0, 0
@@ -64,7 +74,7 @@ func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeReq
 			if id == "" {
 				continue
 			}
-			es, e := r.ReadTree(ctx, id)
+			es, e := r.SizedTree(ctx, id)
 			if e != nil {
 				return "", e
 			}
@@ -134,14 +144,14 @@ func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeReq
 					cmd := exec.CommandContext(ctx, "git", "merge-file", "-p", filepath.Join(dir, "1"), filepath.Join(dir, "0"), filepath.Join(dir, "2"))
 					raw, e := cmd.Output()
 					if e != nil {
-						if exit, ok := e.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+						if exit, ok := e.(*exec.ExitError); ok && exit.ExitCode() >= 1 && exit.ExitCode() <= 127 {
 							reason = "both_modified"
 							break
 						}
 						return "", fmt.Errorf("merge-file: %w", e)
 					}
-					v.SHA1 = store.GitHash("blob", raw)
-					pending["o/"+v.SHA1] = raw
+					blob := r.StageBlob(raw)
+					v.SHA1, v.Size = blob.SHA1, blob.Size
 					merged = append(merged, p)
 				}
 				if o.Mode == t.Mode {
@@ -162,19 +172,7 @@ func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeReq
 			}
 		}
 		sort.Slice(entries, func(i, j int) bool { return gitLess(entries[i], entries[j]) })
-		var buf bytes.Buffer
-		for _, f := range entries {
-			fmt.Fprintf(&buf, "%s %s\x00", f.Mode, f.Path)
-			raw, _ := hex.DecodeString(f.SHA1)
-			buf.Write(raw)
-		}
-		raw := buf.Bytes()
-		if raw == nil {
-			raw = []byte{}
-		}
-		id := store.GitHash("tree", raw)
-		pending["t/"+id] = raw
-		return id, nil
+		return r.StageSizedTree(ctx, entries)
 	}
 	tree, e := walk(q.Base, q.Ours, q.Theirs, "")
 	if e != nil {
@@ -184,23 +182,6 @@ func mergeTrees(ctx context.Context, r *objects.Repository, l string, q mergeReq
 		sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Path < conflicts[j].Path })
 		return nil, &storageError{409, "conflict", map[string]any{"conflicts": conflicts}}
 	}
-	// No durable writes occur until all files are known to merge cleanly.
-	keys := []string{}
-	for k := range pending {
-		keys = append(keys, k)
-	}
-	e = store.Parallel(ctx, 16, keys, func(k string) error {
-		raw := pending[k]
-		if strings.HasPrefix(k, "t/") {
-			_, e := r.PutObject(ctx, l, "tree", raw)
-			return e
-		}
-		_, e := r.Upload(ctx, l, "", int64(len(raw)), bytes.NewReader(raw))
-		return e
-	})
-	if e != nil {
-		return nil, e
-	}
 	sort.Strings(merged)
-	return map[string]any{"tree": tree, "merged": merged, "took": map[string]int{"ours": ours, "theirs": theirs}}, nil
+	return &treeMergeResult{tree, merged, mergeTook{ours, theirs}}, nil
 }

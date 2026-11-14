@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,7 +44,7 @@ func unit3(t *testing.T) (*Manager, string) {
 }
 func mount3(t *testing.T, m *Manager, tree, job string) *Mount {
 	t.Helper()
-	v, e := m.Mount(context.Background(), Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+	v, e := m.Mount(context.Background(), Request{Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -171,6 +172,7 @@ func TestArmingAndMountIsolation(t *testing.T) {
 }
 func TestApplyCheckpointCommit(t *testing.T) {
 	m, tree := unit3(t)
+	m.Store = testutil.TrackTreePuts(t, m.Store)
 	v := mount3(t, m, tree, "j")
 	dir := t.TempDir()
 	index := filepath.Join(t.TempDir(), "idx.json")
@@ -241,6 +243,10 @@ func TestApplyCheckpointCommit(t *testing.T) {
 	printed, e := exec.Command("git", "--git-dir", git, "cat-file", "-p", out.Commit).Output()
 	if e != nil || !bytes.Equal(raw, printed) {
 		t.Fatal(e)
+	}
+	// The repo log reads who and why from trailers (#993): an agent's manual checkpoint is a turn op.
+	if !bytes.HasSuffix(raw, []byte("Camel-Agent: bot\nCamel-Checkpoint: manual\nCamel-Op: turn\n")) {
+		t.Fatalf("checkpoint trailers: %q", raw)
 	}
 	m.Release(context.Background(), "j")
 	warm := mount3(t, m, out.Tree, "warm")

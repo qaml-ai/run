@@ -1,5 +1,3 @@
-import { jobDriver } from "./jobs/driver.ts";
-import { agentJobTools } from "./agent-jobs.ts";
 import { workflowTools } from "./workflow-tools.ts";
 import { workflowsEnabled } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
@@ -26,7 +24,8 @@ import { withSql as shareSql } from "./postgres.ts";
 import { computerTool } from "./computers/tool.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { askHuman, makeAskUser, humanInputExtension } from "./human.ts";
-import { volumeTools, type Mount } from "./files.ts";
+import { repoTools } from "./repos/tools.ts";
+import type { Mount } from "./repos/mounts.ts";
 import { attachedComputerTools } from "./computers/agent-tools.ts";
 import { ComputerService } from "./computers/service.ts";
 import { modelRuntime } from "./model.ts";
@@ -92,6 +91,10 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
     async () => (await this.config()).tenantId,
     {
       agentId: async () => (await this.config()).id,
+      authorizeRepoFile: async file=>{
+        const conf=await this.config();
+        return (await import('./repos/attachments.ts')).authorizedAttachment(this.env,conf.tenantId,(conf.config.mounts??[]) as import('./files.ts').Mount[],file);
+      },
       onRetryEvent: async (event) => {
         await this.emit({ type: "event", requestId: (await this.currentRun()).id, event });
       },
@@ -293,7 +296,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
             await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
             site.messageIndex = this.historyIndex.messageIndex(site.assistant);
           }
-          return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
+          return { tenant: conf.tenantId, agent: conf.id, requestId:await this.fileRequestId(), mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
         }));
         // After the result is capped (tool-output.ts keeps the <agent_updates> part whole): children's progress rides on it.
         registry.install(agentUpdatesExtension(() => this.delegation, async (api, callId) => {
@@ -307,8 +310,8 @@ export function createHarness(this: AgentRuntime): PiHarness {
           async () => (await this.harness.pi()).root(BACKGROUND_CONTEXT),
           async failure => { await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
         ));
-        // User files live in the volume DO/R2; code runs in the separate sandbox.
-        const templates = volumeTools(
+        // User files live in repos; code runs in the separate sandbox.
+        const templates = repoTools(
           this.env,
           "_uninitialized",
           "_uninitialized",
@@ -318,35 +321,42 @@ export function createHarness(this: AgentRuntime): PiHarness {
             ...tool,
             execute: async (args, api, context) => {
               const config = await this.config();
-              const impl = volumeTools(
-                this.env,
-                config.tenantId,
-                config.id,
-                async () => (config.config.mounts as never) ?? [],
-                async (file, volumePath) => {
-                  await presentedFile(
-                    this.ctx.storage,
-                    this.env,
-                    {
-                      requestId: await this.fileRequestId(api.conversationId),
-                      callId: api.callId,
-                      tenant: config.tenantId,
-                      origin: await this.ctx.storage.get<string>("file-origin"),
-                    },
-                    file,
-                    volumePath,
-                    (event) => this.emit(event),
-                  );
-                },
-                async (file) =>
-                  writtenFile(
-                    this.ctx.storage,
-                    await this.fileRequestId(api.conversationId),
-                    file,
-                  ),
-                this.fileVersions,
-              )[index];
-              return impl.execute(args as never, api, context);
+              const scope = this.repoTrees.scope();
+              try {
+                const impl = repoTools(
+                  this.env,
+                  config.tenantId,
+                  config.id,
+                  async () => (config.config.mounts as never) ?? [],
+                  async (file, resolvedPath) => {
+                    await presentedFile(
+                      this.ctx.storage,
+                      this.env,
+                      {
+                        requestId: await this.fileRequestId(api.conversationId),
+                        callId: api.callId,
+                        tenant: config.tenantId,
+                        origin: await this.ctx.storage.get<string>("file-origin"),
+                      },
+                      file,
+                      resolvedPath,
+                      (event) => this.emit(event),
+                    );
+                  },
+                  async (file) =>
+                    writtenFile(
+                      this.ctx.storage,
+                      await this.fileRequestId(api.conversationId),
+                      file,
+                    ),
+                  this.fileVersions,
+                  { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
+                  scope,
+                )[index];
+                return await impl.execute(args as never, api, context);
+              } finally {
+                scope.close();
+              }
             },
           })),
         );
@@ -360,7 +370,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         const attachments = async (items: any[]) => {
           const conf = await this.config();
           const found: any[] = [];
-          const present = volumeTools(this.env, conf.tenantId, conf.id, async () => conf.config.mounts as Mount[] ?? [], async file => { found.push({ path: file.path, version: file.version, contentType: file.contentType, ...(file.caption ? { caption: file.caption } : {}) }); }).find(tool => tool.name === "present_file")!;
+          const present = repoTools(this.env, conf.tenantId, conf.id, async () => conf.config.mounts as Mount[] ?? [], async file => { found.push({ path: file.path, version: file.version, contentType: file.contentType, ...(file.caption ? { caption: file.caption } : {}) }); }).find(tool => tool.name === "present_file")!;
           for (const item of items) await present.execute(item, {} as never, BACKGROUND_CONTEXT);
           return found;
         };
@@ -500,7 +510,6 @@ export function createHarness(this: AgentRuntime): PiHarness {
             ...(conf.config.bucket ? { bucket: conf.config.bucket as string } : {}),
             ...(typeof workflowSettings === "object" && workflowSettings?.maxBudgetUsd !== undefined ? { maxBudgetUsd: workflowSettings.maxBudgetUsd } : {}),
             remaining: async () => { const spend = await this.agentSpend(await this.config()); return spend ? Math.max(0, spend.usd - spend.spent) : Infinity; },
-            jobRun: jobDriver(this.env as never).ok,
             // Its workflows are background children of its (workflow-endings.ts): their endings come as a child's.
             children: {
               register: (workflow, api) => this.delegation.registerWorkflow(workflow, api as never),
@@ -509,15 +518,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
             },
           }) });
         }
-        // The jobs builtin (agent-jobs.ts): one command in a container of its own. On the tenants that have workflows and
-        // where a job driver exists (the pilot), for every agent that may use a computer (not one whose computer is
-        // disabled, as camel.linux) unless its configuration says workflows: false. Sub-agents too: a workflow's workers
-        // build and test with it.
         const noComputer = await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id));
-        if (!noComputer && conf.config.workflows !== false && workflowsEnabled(this.env as never, conf.tenantId)) {
-          const jobs = agentJobTools({ env: this.env as never, tenant: conf.tenantId, agentId: conf.id, storage: this.ctx.storage, runId: async api => (await this.currentRun(api as never)).id });
-          if (jobs.length) registry.install({ name: "camel.jobs", tools: jobs });
-        }
         registry.install({
           name: "camel.linux",
           tools: noComputer ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],

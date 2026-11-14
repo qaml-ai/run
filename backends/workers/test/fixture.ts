@@ -1,19 +1,16 @@
+import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createCipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
+import { checkFixtureLifecycle, registerFixture } from "./fixture-lifecycle.ts";
 import { createMigratedDatabase } from "./migrated-database.ts";
 import { publicAssets } from "../scripts/public-assets.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const activeFixtures = new Set<() => Promise<void>>();
-function stopActiveFixtures() {
-  for (const stop of activeFixtures) void stop().catch(error => {
-    console.error(`Local Worker signal cleanup failed: ${error.message}`);
-  });
-}
 /** The alarm guard's lines in a worker's log (src/alarm-guard.ts): hot loops, and immediate re-arms counted per object. */
 export function alarmFindings(logs: string) {
   const hot: string[] = [], due: Record<string, number> = {};
@@ -27,20 +24,6 @@ export function alarmFindings(logs: string) {
   return { hot, due: Object.entries(due).map(([object, count]) => ({ object, count })) };
 }
 
-function registerFixture(stop: () => Promise<void>) {
-  if (!activeFixtures.size) {
-    process.on("SIGTERM", stopActiveFixtures);
-    process.on("SIGINT", stopActiveFixtures);
-  }
-  activeFixtures.add(stop);
-  return () => {
-    activeFixtures.delete(stop);
-    if (!activeFixtures.size) {
-      process.off("SIGTERM", stopActiveFixtures);
-      process.off("SIGINT", stopActiveFixtures);
-    }
-  };
-}
 /** pg-pool removes idle clients from its count before their socket-end callback.
  * Wait for those callbacks too before DROP DATABASE can terminate the sockets. */
 async function closePool(db: pg.Pool) {
@@ -74,8 +57,10 @@ export async function startFixture(
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
     entrypoint?: string;
-    /** Bind camelFS to the test-only CamelfsStub named entrypoint. */
+    /** Bind camelFS to the test-only CamelfsStub named entrypoint (default: on, served by an in-process fake
+     * camelfsd unless `vars.TEST_CAMELFS_URL` names one). Every agent's workspace is a repo, so agents need it. */
     camelfsStub?: boolean;
+    camelfsTier?: boolean;
     scheduled?: boolean;
     signal?: AbortSignal;
     /** No AGENT_PUBLIC_URL, as a local `wrangler dev` or a self-host without one: origins come from requests. */
@@ -139,16 +124,23 @@ export async function startFixture(
   const admin = new pg.Client({ connectionString: base });
   cleanups.push(() => admin.end());
   try {
+  checkFixtureLifecycle();
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   await admin.connect();
   await createMigratedDatabase(admin, base, schema);
-  cleanups.push(async () => { await admin.query(`drop database ${schema} with (force)`); });
+  // Keep migration and teardown alive while they use the maintenance connection.
+  // Between them an abandoned fixture must be able to exit.
+  const adminSocket = admin.connection.stream as Socket;
+  cleanups.push(async () => {
+    adminSocket.ref();
+    await admin.query(`drop database ${schema} with (force)`);
+  });
   // Hyperdrive validates a password even when isolated local Postgres uses trust auth.
   if (!parsed.password) parsed.password = "local-only-unused";
   parsed.pathname = `/${schema}`;
   parsed.search = "";
   const databaseUrl = parsed.toString(),
-    db = new pg.Pool({ connectionString: databaseUrl });
+    db = new pg.Pool({ connectionString: databaseUrl, allowExitOnIdle: true });
   cleanups.push(() => closePool(db));
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
@@ -178,7 +170,7 @@ export async function startFixture(
   const config = JSON.parse(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
-  config.main = options.entrypoint ?? join(root, "src/index.ts");
+  config.main = options.entrypoint ?? join(root, "test/worker-entry.ts");
   if (config.assets?.directory) config.assets.directory = join(root, config.assets.directory);
   if (options.vars?.AGENT_CONSOLE_DIR) config.assets = { directory: options.vars.AGENT_CONSOLE_DIR, binding: "ASSETS", run_worker_first: true, not_found_handling: "single-page-application" };
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
@@ -187,7 +179,31 @@ export async function startFixture(
       dockerfile?: string;
     }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
-  if (options.camelfsStub) config.services = [
+  const camelfs = !options.camelfsTier && (options.camelfsStub ?? true);
+  let camelfsCalls: string[] | undefined;
+  let camelfsVars: Record<string, string> = {};
+  if (options.camelfsTier) {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const kid = "fixture-camelfs", issuer = options.vars?.AGENT_PUBLIC_URL || `http://127.0.0.1:${port}`;
+    const jwk = { ...publicKey.export({ format: "jwk" }), kid, alg: "EdDSA", use: "sig" };
+    const key = Buffer.from(options.vars?.AGENT_SECRETS_KEY ?? "0".repeat(64), "hex");
+    const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", key, iv);
+    cipher.setAAD(Buffer.from("runtime-signing:" + kid));
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(privateKey.export({ format: "jwk" }))), cipher.final()]);
+    await db.query("INSERT INTO signing_keys(kid,public_jwk,private_sealed,created_at) VALUES ($1,$2,$3,$4)",
+      [kid, jwk, { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }, Date.now()]);
+    const daemon = await serveFakeCamelfsd(randomBytes(24).toString("hex"), { issuer, jwks: { keys: [jwk] } });
+    camelfsCalls = daemon.calls;
+    cleanups.push(() => daemon.close());
+    camelfsVars = { CAMELFS_URL: daemon.url };
+  }
+  if (camelfs && !options.vars?.TEST_CAMELFS_URL) {
+    const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken, { unref: true });
+    camelfsCalls = daemon.calls;
+    cleanups.push(() => daemon.close());
+    camelfsVars = { TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: camelfsToken };
+  }
+  if (camelfs) config.services = [
     ...(config.services ?? []),
     { binding: "CAMELFS", service: config.name, entrypoint: "CamelfsStub" },
   ];
@@ -200,6 +216,7 @@ export async function startFixture(
     AGENT_SECRETS_KEY: "0".repeat(64),
     AGENT_OUTBOUND_ALLOW_HTTP: "true",
     AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8,::1/128",
+    ...camelfsVars,
     ...(options.vars?.AGENT_ACCOUNT_EMAIL_FROM ? { SCHEDULE_EMAIL_FROM: options.vars.AGENT_ACCOUNT_EMAIL_FROM } : {}),
     ...options.vars,
     ...(options.vars?.AGENT_PUBLIC_URL === "" ? { AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`, PUBLIC_URL: `http://127.0.0.1:${port}` } : {}),
@@ -223,8 +240,8 @@ export async function startFixture(
     token,
   );
   startingWorker = worker;
-  cleanups.push(() => worker.stop());
-  await worker.start();
+  adminSocket.unref();
+  await worker.start(options.signal);
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   finishStartup();
   if ((config.vars.MAIL_TEST_URL || options.scheduled) && !stopped) {
@@ -241,12 +258,12 @@ export async function startFixture(
       if (failed) throw failed;
     };
   }
-  return { url: worker.url, databaseUrl, db, worker, token, stop,
+  return { url: worker.url, databaseUrl, db, worker, token, stop, camelfsCalls,
     async restart(vars: Record<string, string> = {}, crash = false) {
       await worker.stop(crash);
       Object.assign(config.vars, vars);
       await writeFile(configPath, JSON.stringify(config));
-      await worker.start();
+      await worker.start(options.signal);
     },
   };
   } catch (error) {

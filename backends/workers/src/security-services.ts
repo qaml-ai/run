@@ -58,6 +58,7 @@ export async function keyServices(env: SecurityEnv) {
   const maxAgents = positive("AGENT_MAX_AGENTS", 8);
   const accounts = new Accounts({ tenants, db, secretsKey: env.AGENT_SECRETS_KEY, stripe: createStripe(env), azureOpenAI: modelAzure(env), anthropicFederation: federationFor(env),
     publicUrl: env.AGENT_PUBLIC_URL ?? env.PUBLIC_URL, pricing: pricingFromEnvironment(env as unknown as NodeJS.ProcessEnv),
+    flushReceipts: false, // Workers write receipts already accounted.
     maxAgentsPerTenant: positive("AGENT_MAX_AGENTS_PER_TENANT", Math.max(1, Math.ceil(maxAgents / 2))) });
   const split = (value?: string) => value?.split(",").map(s => s.trim()).filter(Boolean);
   const outbound = new Outbound({

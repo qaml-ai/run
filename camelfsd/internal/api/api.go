@@ -20,15 +20,26 @@ import (
 
 type Server struct {
 	APIToken       string
-	idemLocksMu    sync.Mutex
-	idemLocks      map[idempotencyKey]*idempotencyLock
+	storageOnce    sync.Once
+	storageServer  *StorageServer
 	Manager        *image.Manager
 	Version, Store string
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
-		s.loggedStorage(w, r)
+		s.storageOnce.Do(func() {
+			s.storageServer = &StorageServer{
+				repo: s.repository,
+				authorize: func(w http.ResponseWriter, r *http.Request) *http.Request {
+					if !s.authorize(w, r) {
+						return nil
+					}
+					return r
+				},
+			}
+		})
+		s.storageServer.loggedStorage(w, r)
 		return
 	}
 	t := time.Now()
@@ -53,6 +64,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.DisallowUnknownFields()
 		if e := d.Decode(v); e != nil {
+			var typed *apierr.Error
+			if errors.As(e, &typed) {
+				return e
+			}
 			return apierr.Invalid("invalid JSON: %w", e)
 		}
 		var extra any

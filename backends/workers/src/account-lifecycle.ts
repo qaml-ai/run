@@ -8,8 +8,10 @@ import { Directory, type ControlEnv } from "./control.ts";
 import { definitionRoutes } from "./definitions.ts";
 import { HttpError } from "./errors.ts";
 import { readText } from "./account-http.ts";
-import { volume, stub, type FileBindings } from "./files.ts";
-import type { FileEntry } from "./volume.ts";
+import type { FileBindings } from "./files.ts";
+import { liveRepos } from "./account-repos.ts";
+import { deleteRepo, type RepoEnv } from "./repos/registry.ts";
+import { repoErrorFrom } from "./repos/repo-policy.ts";
 import type { Webhooks } from "./webhook-policy.ts";
 import type { DeliveryMessage } from "./webhooks.ts";
 import { createStripe, type BillingEnv } from "./billing-routes.ts";
@@ -18,7 +20,6 @@ import { transaction } from "./postgres.ts";
 
 export type AccountLifecycleEnv = FileBindings & BillingEnv & {
   WEBHOOKS?: Queue<DeliveryMessage>;
-  TENANTS?: { getByName(id: string): { purgeAccountData(): Promise<void> } };
   AGENTS: { getByName(id: string): { fetch(request: Request): Promise<Response>; purgeAccountData(tenant: string, id: string): Promise<void> } };
 };
 const reply = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -34,8 +35,6 @@ async function removePrefix(env: FileBindings, prefix: string) {
 
 export function accountDeletions(env: AccountLifecycleEnv, service: AccountServices, tenantOnly?: string) {
   const db = service.accounts.db;
-  const tenantFilter = tenantOnly === undefined ? "" : " and tenant = $1";
-  const tenantValues = tenantOnly === undefined ? [] : [tenantOnly];
   return new AccountDeletions({
     db, accounts: service.accounts, stripe: createStripe(env), onlyTenant: tenantOnly,
     // Each channel goes as DELETE /v1/channels/:id takes it: its service torn down, its queue and threads with it.
@@ -45,6 +44,7 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       const tenant = prefix.split("/")[1];
       await removePrefix(env, prefix);
       if (prefix.startsWith("chunks/")) {
+        // Legacy files belong to the deleted account as well (ledger L90).
         await removePrefix(env, `files/${encodeURIComponent(tenant)}/`);
         await removePrefix(env, `images/${encodeURIComponent(tenant)}/`);
       }
@@ -72,28 +72,27 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       });
       return rows.length;
     },
+    removeRepos: async tenant => {
+      for await (const repo of liveRepos(env as RepoEnv, tenant)) {
+        try {
+          await deleteRepo(env as RepoEnv, tenant, repo.id);
+        } catch (error) {
+          const code = repoErrorFrom(error)?.code;
+          if (code === "no_repo") continue;
+          if (code !== "uninitialized") throw error;
+          // A create interrupted after index registration has no repo contents to delete.
+          await env.TENANTS.getByName(tenant).markRepoDeleted(repo.id);
+        }
+      }
+    },
     removeComputers: async tenant => {
       for (const { agent } of (await db.query("select distinct agent from computer_connections where tenant=$1", [tenant])).rows)
         await new ComputerService(env as unknown as ComputerEnv, tenant).removeAgent(agent);
       // Fork snapshots go too: their rows are deleted with the account, and they are the only handle to them.
       await dropTenantSnapshots(env as unknown as ComputerEnv, tenant);
     },
-    flushStorageUsage: async () => {
-      for (const { tenant } of (await db.query("select tenant from account_deletions where completed_at is null and not exists (select 1 from agents where agents.tenant=account_deletions.tenant)" + tenantFilter, tenantValues)).rows)
-        await env.TENANTS?.getByName(tenant).purgeAccountData();
-    },
-    volumes: {
-      async call(id, tenant) {
-        const result = await stub(env, tenant, id).delete();
-        await db.query("update volumes set deleted_at=coalesce(deleted_at,$3) where id=$1 and tenant=$2", [id, tenant, Date.now()]);
-        return result;
-      },
-      async purge(id) {
-        const row = (await db.query("select tenant from volumes where id=$1", [id])).rows[0];
-        if (!row) return;
-        await stub(env, row.tenant, id).purgeAccountData(row.tenant);
-        await db.query("update volumes set purged_at=$2 where id=$1", [id, Date.now()]);
-      },
+    purgeTenantIndex: async tenant => {
+      await env.TENANTS.getByName(tenant).purgeAccountData();
     },
   });
 }
@@ -127,23 +126,7 @@ async function exportResponse(env: AccountLifecycleEnv, service: AccountServices
       if (!response?.ok) throw new HttpError(response?.status ?? 500, "Definitions are unavailable");
       return response.json() as never;
     } },
-    volumes: {
-      async list() { return (await db.query("select id from volumes where tenant=$1 and deleted_at is null order by created_at,id", [tenant])).rows; },
-      async call(id, owner, action, query) {
-        const object = await volume(env, owner, id);
-        if (action === "info") return object.info();
-        const after = (query as { after?: string })?.after;
-        const files = (await object.list()).filter(file => !after || file.path > after);
-        return { files: files.slice(0, 500), ...(files.length > 500 ? { next: files[499].path } : {}) };
-      },
-      async *stream(owner, input) {
-        const file = input as FileEntry;
-        if (!file.key.startsWith(`files/${encodeURIComponent(owner)}/`)) throw new HttpError(403, "File does not belong to this account");
-        const object = await env.BUCKET.get(file.key);
-        if (!object) throw new HttpError(503, "File object missing");
-        for await (const bytes of object.body) yield bytes;
-      },
-    },
+    repos: env as RepoEnv,
   }, tenant);
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {

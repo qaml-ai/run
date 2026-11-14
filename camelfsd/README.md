@@ -166,6 +166,33 @@ Size lookups are lineage-scoped and batched.
 curl -H "Authorization: Bearer $TOKEN" "$A/trees/$T?path=src&recursive=1&limit=10000"
 ```
 
+Single-entry stat descends one subtree per path component, without listing.
+The tree must belong to the lineage (`404 not_found` otherwise); a missing path
+returns `404 not_in_tree`. `path` is required: absent or empty is
+`400 invalid_request` with `missing field path`. Absolute paths, empty or dot
+components and trailing slashes return `400 invalid_request` with `invalid path …`.
+
+| GET route (under `/v1/lineages/{lineage}`) | 200 response |
+|---|---|
+| `/trees/{tree}/entry?path=<path>` | `{ "path": "a/b", "mode": "100644" \| "100755" \| "120000", "blob": "<sha1>", "size": 1234 }` or `{ "path": "a", "mode": "040000", "tree": "<sha1>" }` |
+| `/commits/{a}/is-ancestor?of=<b>` | `{ "ancestor": true \| false }` |
+| `/merge-base?a=<commit>&b=<commit>` | `{ "base": "<commit>", "tree": "<tree>" }` or `{ "base": null, "tree": null }` |
+
+Ancestry includes equality and follows every parent. Both commits must belong
+to the lineage; `404 not_found` names the missing commit. Missing `of`, `a` or
+`b` returns `400 invalid_request` with `missing field <field>`; malformed ids
+return `400 invalid_request` with `invalid commit <id>`.
+Is-ancestor walks only from `of`, stopping immediately when it reaches `a`;
+it never loads `a`'s parent history. Merge-base uses a bidirectional
+breadth-first walk marking generations. Both use the lineage-scoped commit
+loader and visit at most 50,000 distinct commits (across both sides for
+merge-base). Attempting to visit another returns `413 too_deep`, never false
+or a null base.
+Merge-base excludes common ancestors reachable from another common ancestor
+(Git's best-common-ancestor rule). Multiple best candidates are resolved by
+latest commit time, then lexicographically greatest commit id. Commit time
+never lets a dominated ancestor win. Disjoint histories return a null base.
+
 Read parsed commit metadata: tree, parents, author, message, trailers and time.
 
 ```sh
@@ -174,6 +201,21 @@ curl -H "Authorization: Bearer $TOKEN" "$A/commits/$K"
 
 Diff returns added, modified, deleted and mode changes. Equal subtree ids
 are pruned without reading their descendants; path filters to a prefix.
+The response is `{ "changes": [ { "path": "a", "status": "added" | "modified" |
+"deleted" | "mode", "oldBlob"?: "<sha1>", "newBlob"?: "<sha1>", "oldMode"?:
+"<mode>", "newMode"?: "<mode>", "oldSize"?: 1234, "newSize"?: 5678 } ] }`.
+Sizes come from loaded tree entries. Every side with a blob has a size,
+including zero: added omits oldSize, deleted omits newSize, and mode has both.
+Every tree writer (commits, imports, merges and checkpoints) publishes a
+lineage-scoped `ts/<tree>` JSON sidecar with path, mode, blob/tree id and size
+for each entry, in the same upload wave as `t/<tree>`. Its entries reconstruct
+the Git tree id on write; on read they must match the verified Git tree's
+entries in order, with nonnegative sizes. The daemon derives sizes from its
+blob index or stored blob HEAD metadata when writing, never blob GETs.
+Sidecars are the required size source for listings, entry stat and diff:
+a missing sidecar is `500 internal` with `missing tree sizes <tree>`, with no
+fallback to blob metadata or data.
+
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" "$A/diff?from=$BASE&to=$T&path=src"
@@ -211,15 +253,15 @@ Examples use S=/run/camelfsd/api.sock.
 
 ```sh
 curl --unix-socket "$S" http://localhost/v0/health
-curl --unix-socket "$S" -d "{\"jobId\":\"j1\",\"lineage\":\"test\",\"tree\":\"$T\",\"fence\":{\"holder\":\"runtime\",\"epoch\":1},\"vsock\":\"/run/job.vsock\"}" http://localhost/v0/mounts
+curl --unix-socket "$S" -d "{\"jobId\":\"j1\",\"lineage\":\"test\",\"tree\":\"$T\",\"parent\":\"$P\",\"fence\":{\"holder\":\"runtime\",\"epoch\":1},\"vsock\":\"/run/job.vsock\"}" http://localhost/v0/mounts
 curl --unix-socket "$S" http://localhost/v0/mounts/j1
 curl --unix-socket "$S" -d '{"timeoutMs":120000,"message":"checkpoint","trailers":{"kind":"manual"}}' http://localhost/v0/mounts/j1/checkpoint
 curl --unix-socket "$S" -X DELETE http://localhost/v0/mounts/j1
 curl --unix-socket "$S" -d "{\"lineage\":\"test\",\"path\":\"/nvme/base.img\",\"tree\":\"$T\"}" http://localhost/v0/images
 ```
 
-Mount accepts exactly one of tree or root. fence is stored and echoed in
-status. Explicit null makes the image read-only and checkpoint returns
+Mount accepts exactly one of tree or root. An explicit fence requires parent, the 40-hex base commit ID. The CLI flag is `--parent`.
+The fence is stored and echoed in status. Explicit null makes the image read-only and checkpoint returns
 409 no_fence. A missing fence enables phase-1 compatibility, removed with
 jobhost phase 2: the daemon synthesizes {holder: "<hostId>/<jobId>", epoch: 0},
 logs op=mount legacy-fence jobId=... count=N, and permits checkpoints. The
@@ -246,8 +288,14 @@ metadata, sends ready, validates the stream, then sends ack before uploading.
 The guest thaws on ack, nack, EOF or deadline. After ack the daemon writes
 blobs, trees, the commit and the image root; records lineage_objects and
 tree_roots; and returns {tree,root,commit,timings}. Flat timing fields remain
-for one release. jobhost/RepoDO must perform CAS before telling the guest to
-commit its pending index. Publication failure leaves tree_roots unchanged.
+for one release. Today's order, for jobs: jobhost sends `checkpointed{tree}` to
+the guest as soon as the daemon answers (`jobhost/agent.ts`), and the runtime
+(`HostJob` → `RepoDO`) performs the CAS after the result arrives
+(`backends/workers/src/jobs/hosts.ts`, `finishJobRepo`); that is safe only
+because a job's VM is destroyed right after. Option C's order (camel-fs-files.md
+§9.7), required for computers and `bash` VMs: the host calls the tier's `cas`
+in-VPC first and sends `checkpointed{tree}` (or `{error}`) only after the ref
+moved. Publication failure leaves tree_roots unchanged.
 
 Stream defaults: --stream-idle 30s, --apply-max 30m, checkpoint timeoutMs
 120000 (maximum 600000), --max-files 200000, --max-bytes 8589934592,
@@ -350,3 +398,82 @@ runs the root tests and harness. The demand samples include NBD misses and
 cache hits; they are not an isolated cache-hit microbenchmark.
 Host /v0 tree, blob and commit GETs now require ?lineage=NAME. The development
 CLI tree and cat commands take --lineage NAME before the tree id.
+
+## Host and API roles
+
+`camelfsd host` runs the block layer, cache, NBD and mounts. It serves
+the Unix socket and can expose the runtime and import routes over TCP with
+the existing shared bearer.
+
+`camelfsd api` serves `/v1/lineages/{lineage}/*` over TCP for the ALB.
+`GET /v0/health` needs no credentials and returns a JSON object containing
+only `version`. `GET /v0/stats` reports local SQLite connection counts and
+accepts a valid read or write token for any lineage.
+
+```sh
+camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfsd \
+  --store s3://bucket/prefix --region us-west-2 \
+  --jwks-file /etc/camelfsd/jwks.json --token-issuer https://runtime.example
+```
+
+When compute is enabled, set `--listen-hosts 0.0.0.0:8794` for host
+registration, heartbeats, and VM lifecycle callbacks. Route these calls
+through an internal NLB with a TCP listener on 443 and a TCP target group
+on 8794. Use a **TCP health check**. The host listener has no unauthenticated
+HTTP route, and the NLB passes TLS through to camelfsd. The public storage
+ALB continues to target port 8790. Tier pushes go directly to the host's
+compute listener on port 8792.
+
+The tier verifies host client certificates against `--hosts-ca-pem`.
+The verified leaf must carry the clientAuth EKU and exactly one URI SAN
+of the form `spiffe://camelfs/host/<id>` matching the request path.
+The tier certificate and key (`--tier-cert` and `--tier-key`) serve both the
+host listener and outbound pushes. The certificate requires serverAuth and
+clientAuth EKUs, the `spiffe://camelfs/tier` URI for pushes, and a DNS SAN
+matching the private host-channel endpoint for clients that verify its name.
+After rotating the files, send SIGHUP to load the CA bundle and tier key
+pair together for new connections. A failed reload keeps the previous
+credentials.
+
+Each API node keeps its own SQLite caches, including its idempotency response
+cache. Nodes can share the same object store, which is the durable source of
+storage objects. `--fetch-depth` bounds concurrent store operations.
+
+Send `Authorization: Bearer <jwt>` for storage requests. The runtime signs
+the JWT using Ed25519 with `alg: "EdDSA"`, `typ: "camelfs+jwt"` and a `kid`
+from its published JWKS. Claims include the configured `iss`,
+`aud: "camelrun:camelfs"`, the actor `sub`, integer Unix seconds `iat` and
+`exp`, the exact path lineage `lin`, and `acc` of `r` (read) or `w`
+(read and write). Tokens may live up to `--token-max-ttl` (15 minutes by
+default), with up to five seconds of future clock skew on `iat`. Include
+`refs` as an array of up to 64 ref globs, which may be empty. The optional
+`fence` contains a string `holder` and integer `epoch`. This release
+validates the shape of `refs` and `fence`.
+
+Provide exactly one JWKS source. Use `--jwks-file` for a local file or
+`CAMELFS_JWKS` for the JSON itself. Each key specifies `kty: "OKP"`,
+`crv: "Ed25519"`, `alg: "EdDSA"`, `use: "sig"`, `kid` and the base64url
+public key `x`. To rotate file-backed keys, add the new key, send SIGHUP,
+then remove the old key after its tokens expire and send SIGHUP again. A
+failed reload keeps the previous keys. Restart env-backed nodes to rotate
+their keys.
+
+### Lineages and refs
+
+Configure both `--refs-table` (partition key `lineage`, sort key `name`) and
+`--lineages-table` (partition key `lineage`) on `camelfsd api` to enable the
+lineage and ref routes. Both use `--region`. For DynamoDB Local, also set
+`--ddb-endpoint` to its URL. The host role has no ref routes.
+
+A ref glob matches the whole name. `*` matches zero or more characters in a
+single path segment. `**` also matches slashes. Listing and owner cleanup
+include only refs covered by the token. Use `**` for lineage-wide owner cleanup.
+URL-encode the ref name as one path parameter, especially when a ref name ends
+in a route suffix such as `/lease`. A fence token must name one exact ref.
+
+Lineage deletion freezes ref mutations across API instances while it checks for
+held leases. A held lineage is reopened and returns `409 held`. A retry can
+resume an interrupted sweep. The final conditional write records `deletedAt`.
+Subsequent requests return `410 lineage_deleted`. An exact replay of a successful
+keyed lineage deletion returns its original `204` while the idempotency entry
+is available.

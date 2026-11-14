@@ -1,3 +1,6 @@
+import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
+import { fileURLToPath } from "node:url";
+import {gunzipSync} from 'node:zlib';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
@@ -7,10 +10,11 @@ const png = Buffer.from(
   "base64",
 );
 test(
-  "R2 files, volume ordering, retained snapshots, signed images and restart",
+  "repo files, retired volume routes and signed images",
   { timeout: 180000 },
   async (t) => {
-    const fixture = await startFixture();
+    const camelfs=await serveFakeCamelfsd("files-test-token");t.after(()=>camelfs.close());
+    const fixture = await startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),vars:{TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:"files-test-token"}});
     const worker = fixture.worker;
     t.after(() => fixture.stop());
     const call = async (path: string, options: RequestInit = {}) =>
@@ -20,146 +24,54 @@ test(
         signal: AbortSignal.timeout(20000),
       });
     try {
-      const create = await call("/v1/volumes", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "files experiment" }),
+      await t.test('stored legacy mounts refuse use and remain replaceable',async()=>{
+        const make=async(path:string,value:unknown)=>{const r=await call(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(value)});assert.ok(r.ok,await r.clone().text());return await r.json() as any;};
+        const agent=await make('/v1/agents',{});
+        const injected=await call('/__test/stored-legacy-mount',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agent:agent.id})});
+        assert.ok([200,409].includes(injected.status),await injected.clone().text());
+        const mounts=await (await call(`/v1/agents/${agent.id}/mounts`)).json() as any[];
+        const refused=await call(`/v1/agents/${agent.id}/files/workspace/old.txt`);
+        assert.equal(refused.status,409,await refused.clone().text());
+        assert.match(await refused.text(),new RegExp(`Mount of volume ${mounts[0].volumeId} at /workspace is retired`));
+        // The worker's log line arrives through its output stream after the response: wait for it.
+        for(let i=0;i<100&&!worker.logs().includes('legacy_volume_mount_refused');i++)await new Promise(resolve=>setTimeout(resolve,50));
+        assert.ok(worker.logs().includes('legacy_volume_mount_refused'));
+        assert.deepEqual(await (await call(`/v1/agents/${agent.id}/mounts`)).json(),mounts);
+        const repo=await make('/v1/repos',{name:'replacement'});
+        const replaced=await call(`/v1/agents/${agent.id}/mounts`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({mounts:[{repo:repo.id,path:'/workspace',mode:'rw'}],remount:true})});
+        assert.equal(replaced.status,200,await replaced.clone().text());
       });
-      assert.equal(create.status, 201, await create.clone().text());
-      const { id } = (await create.json()) as {
-        id: string;
-      };
-      const base = `/v1/volumes/${id}`;
-      await t.test(
-        "conditional concurrent writers have exactly one winner",
-        async () => {
-          const initial = await call(base + "/files/hello.txt", {
-            method: "PUT",
-            body: "initial",
-            headers: { "content-type": "text/plain", "if-none-match": "*" },
-          });
-          assert.equal(initial.status, 201);
-          const { version } = (await initial.json()) as {
-            version: number;
-          };
-          const writes = await Promise.all(
-            ["writer one", "writer two"].map((body) =>
-              call(base + "/files/hello.txt", {
-                method: "PUT",
-                body,
-                headers: { "if-match": String(version) },
-              }),
-            ),
-          );
-          assert.deepEqual(writes.map((r) => r.status).sort(), [201, 412]);
-          const read = await call(base + "/files/hello.txt");
-          assert.ok(["writer one", "writer two"].includes(await read.text()));
-          const range = await call(base + "/files/hello.txt", {
-            headers: { range: "bytes=0-5" },
-          });
-          assert.equal(range.status, 206);
-          assert.equal(await range.text(), "writer");
-        },
-      );
-      await t.test(
-        "snapshot keeps immutable bytes after overwrite and restart",
-        async () => {
-          const saved = await (await call(base + "/files/hello.txt")).text();
-          const snap = await call(base + "/snapshots", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: '{"name":"saved"}',
-          });
-          assert.equal(snap.status, 201);
-          const snapshot = (await snap.json()) as {
-            id: string;
-          };
-          assert.equal(
-            (
-              await call(base + "/files/hello.txt", {
-                method: "PUT",
-                body: "changed",
-              })
-            ).status,
-            201,
-          );
-          const bulk = await call(
-            base + "/files?content=true&snapshot=" + snapshot.id,
-          );
-          assert.equal(bulk.status, 200);
-          const snapshotContents = (await bulk.json()) as {
-            files: { path: string; data?: string; text?: string }[];
-          };
-          assert.equal(
-            snapshotContents.files.find((file) => file.path === "/hello.txt")!
-              .text ??
-              Buffer.from(
-                snapshotContents.files.find(
-                  (file) => file.path === "/hello.txt",
-                )!.data!,
-                "base64",
-              ).toString(),
-            saved,
-          );
-          await worker.stop(true);
-          await worker.start();
-          assert.equal(
-            await (
-              await call(base + "/files/hello.txt?snapshot=" + snapshot.id)
-            ).text(),
-            saved,
-          );
-          assert.equal(
-            (
-              await call(base + "/restore", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ snapshot: snapshot.id }),
-              })
-            ).status,
-            200,
-          );
-          assert.equal(
-            await (await call(base + "/files/hello.txt")).text(),
-            saved,
-          );
-        },
-      );
-      await t.test(
-        "file control JSON rejects an oversized body before parsing",
-        async () => {
-          const oversized = await call("/v1/volumes", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: "x".repeat(65536) }),
-          });
-          assert.equal(oversized.status, 413);
-        },
-      );
-      await t.test(
-        "file links are signed and do not require API credentials",
-        async () => {
-          const response = await call(base + "/links", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: '{"path":"/hello.txt","expiresIn":60}',
-          });
-          assert.equal(response.status, 201);
-          const link = (await response.json()) as {
-            url: string;
-          };
-          const content = await fetch(link.url);
-          assert.equal(content.status, 200);
-          assert.match(await content.text(), /^writer /);
-          const url = new URL(link.url);
-          url.pathname = url.pathname.replace(
-            /\/([^/]+)\/[^/]+$/,
-            (whole, signature: string) =>
-              `/${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}/hello.txt`,
-          );
-          assert.equal((await fetch(url)).status, 403);
-        },
-      );
+      await t.test('repo tool-file URLs retain immutable files and directory archives',async()=>{
+        const created=await call('/v1/agents',{method:'POST',headers:{'content-type':'application/json','idempotency-key':'repo-tool-links'},body:JSON.stringify({})});
+        assert.equal(created.status,201,await created.clone().text());
+        const agent=(await created.json() as any).id;
+        const path=`/v1/agents/${agent}/files/workspace`;
+        const put=async(name:string,text:string)=>assert.equal((await call(`${path}/${name}`,{method:'PUT',body:text})).status,201);
+        await put('one.txt','original one');await put('nested/two.txt','original two');
+        const link=async(directory:boolean)=>{
+          const r=await call('/__test/agent-tool-file',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agent,path:directory?'/workspace':'/workspace/one.txt',directory})});
+          assert.equal(r.status,200,await r.clone().text());return (await r.json() as any).uri;
+        };
+        const file=await link(false),archive=await link(true);
+        assert.match(new URL(file).pathname,/^\/v1\/files\//);
+        await put('one.txt','replacement');await put('nested/two.txt','changed');
+        const downloaded=await fetch(file);assert.equal(downloaded.status,200);assert.equal(await downloaded.text(),'original one');
+        const tar=await fetch(archive);assert.equal(tar.status,200);
+        const contents=gunzipSync(Buffer.from(await tar.arrayBuffer())).toString();
+        assert.ok(contents.includes('one.txt'));assert.ok(contents.includes('nested/two.txt'));
+        assert.ok(contents.includes('original one'));assert.ok(contents.includes('original two'));assert.ok(!contents.includes('replacement'));
+        const mounts=await (await call(`/v1/agents/${agent}/mounts`)).json() as any[];
+        const refs=await (await call(`/v1/repos/${mounts[0].repo}/refs`)).json() as any;
+        assert.equal(refs.length,1,'directory links create no snapshot refs');
+      });
+      await t.test("retired endpoints bypass authentication and idempotency", async () => {
+        const error = { error: "Volumes are replaced by repos: use /v1/repos", code: "gone" };
+        for (const [path, method] of [["/v1/volumes", "GET"], ["/v1/volumes", "POST"], ["/v1/volumes/old/files/a/b", "DELETE"]]) {
+          const response = await fetch(fixture.url + path, { method, headers: { "Idempotency-Key": "ignored" } });
+          assert.equal(response.status, 410);
+          assert.deepEqual(await response.json(), error);
+        }
+      });
       await t.test(
         "stored image derivative yields bounded base64 and signed URL",
         async () => {

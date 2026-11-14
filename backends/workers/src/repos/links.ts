@@ -15,10 +15,13 @@ type Grant = {
   expiresAt: number;
   maxBytes?: number;
   contentType?: string;
+  agent?: string;
+  run?: string;
+  call?: string;
 };
 function signer(env: RepoEnv, base: string) {
   if (!env.FILE_SIGNING_SECRET || env.FILE_SIGNING_SECRET.length < 32)
-    throw new RepoError('signing-unavailable', 503, 'signing-unavailable');
+    throw new RepoError('signing_unavailable', 503, 'signing_unavailable');
   return new FileLinks(env.FILE_SIGNING_SECRET + ':repo', env.AGENT_PUBLIC_URL || env.PUBLIC_BASE_URL || base);
 }
 export async function signRepoLink(ctx: RepoContext, base: string, input: {
@@ -29,21 +32,22 @@ export async function signRepoLink(ctx: RepoContext, base: string, input: {
   expiresIn?: number;
   maxBytes?: number;
   contentType?: string;
+  agent?: string; run?: string; call?: string;
 }) {
   const method = input.method ?? 'GET', seconds = input.expiresIn ?? 900;
   check(method === 'GET' || method === 'PUT');
-  check(Number.isInteger(seconds) && seconds >= 1 && seconds <= 3600, 'bad-expiry');
-  check(input.maxBytes === undefined || (Number.isSafeInteger(input.maxBytes) && input.maxBytes >= 0 && input.maxBytes <= 256 * 2 ** 20), 'bad-size');
-  check(input.contentType === undefined || declaredType(input.contentType), 'bad-content-type');
-  check(method !== 'PUT' || input.version === undefined, 'bad-version');
+  check(Number.isInteger(seconds) && seconds >= 1 && seconds <= 3600, 'bad_expiry');
+  check(input.maxBytes === undefined || (Number.isSafeInteger(input.maxBytes) && input.maxBytes >= 0 && input.maxBytes <= 256 * 2 ** 20), 'bad_size');
+  check(input.contentType === undefined || declaredType(input.contentType), 'bad_content_type');
+  check(method !== 'PUT' || input.version === undefined, 'bad_version');
   const path = normalizeRepoPath(input.path), ref = input.ref ?? 'main';
   if (method === 'GET') {
-    const v = await ctx.stub.resolve(input.version ?? ref);
+    const v = await ctx.repo.resolve(input.version ?? ref);
     await fileEntry(ctx, v, path);
   }
-  const grant = { kind: 'repo' as const, tenant: ctx.tenant, repo: ctx.repoId, ref, version: input.version, path, method, maxBytes: input.maxBytes, contentType: input.contentType };
+  const grant = { kind: 'repo' as const, tenant: ctx.tenant, repo: ctx.repoId, ref, version: input.version, path, method, maxBytes: input.maxBytes, contentType: input.contentType, agent: input.agent, run: input.run, call: input.call };
   // A separate HMAC domain prevents either link family accepting the other's token.
-  const signed = signer(ctx.env, base).sign({ ...grant, expiresIn: seconds } as unknown as Parameters<FileLinks['sign']>[0]);
+  const signed = signer(ctx.env, base).sign({ ...grant, expiresIn: seconds });
   return { url: signed.url.replace('/v1/links/', '/v1/repo-links/'), expiresAt: signed.expiresAt };
 }
 export async function handleSignedRepoRequest(request: Request, env: RepoEnv): Promise<Response | null> {
@@ -51,21 +55,21 @@ export async function handleSignedRepoRequest(request: Request, env: RepoEnv): P
   if (!m)
     return null;
   if (!camelfsConfigured(env))
-    return json({ code: 'storage-unavailable' }, 503);
+    return json({ code: 'storage_unavailable' }, 503);
   try {
     const grant = signer(env, url.origin).verify(m[1]) as unknown as Grant;
     if (grant.kind !== 'repo' || !grant.tenant || !/^repo_[a-f0-9]{24}$/.test(grant.repo) || normalizeRepoPath(grant.path) !== grant.path)
-      throw new RepoError('invalid-link', 403, 'invalid-link');
+      throw new RepoError('invalid_link', 403, 'invalid_link');
     if (request.method !== grant.method)
-      throw new RepoError('method-not-allowed', 405, 'method-not-allowed');
+      throw new RepoError('method_not_allowed', 405, 'method_not_allowed');
     const ctx = await repoContext(env, grant.tenant, grant.repo);
     if (grant.method === 'GET') {
-      const v = await ctx.stub.resolve(grant.version ?? grant.ref);
+      const v = await ctx.repo.resolve(grant.version ?? grant.ref);
       return await streamFile(request, ctx, v, await fileEntry(ctx, v, grant.path));
     }
     if (grant.contentType && declaredType(request.headers.get('content-type')) !== grant.contentType)
-      throw new RepoError('content-type', 415, 'content-type');
-    const result = await commitChanges(ctx, { ref: grant.ref, changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: `link:${grant.repo}`, who: `link:${grant.repo}`, why: 'link', trailers: { 'Camel-Checkpoint': 'api' } });
+      throw new RepoError('content_type', 415, 'content_type');
+    const result = await commitChanges(ctx, { ref: grant.ref, op: grant.agent ? 'turn' : 'api', changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, who: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, why: 'link', trailers: grant.agent ? { 'Camel-Agent': grant.agent, 'Camel-Checkpoint': 'automatic', ...(grant.run ? { 'Camel-Run': grant.run } : {}), ...(grant.call ? { 'Camel-Call': grant.call } : {}) } : { 'Camel-Checkpoint': 'api' } });
     return json({ version: result.version, path: grant.path, ...result.files[grant.path] }, 201);
   }
   catch (e) {

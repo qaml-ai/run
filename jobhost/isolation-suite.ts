@@ -10,9 +10,11 @@
 import { firecrackerLauncher } from "./firecracker.ts";
 import { jobAddress } from "./network.ts";
 import type { Vm, VmLauncher } from "./vm.ts";
+import { lookup } from "node:dns/promises";
 
 export type Check = { name: string; ok: boolean; detail: string };
-const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 4096 };
+// At least the base image (6 GiB): a job disk is the base grown by truncate + resize2fs, never shrunk.
+const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 8192 };
 
 type Ran = { exitCode: number | null; stdout: string; stderr: string };
 async function sh(vm: Vm, command: string, extra: Record<string, unknown> = {}): Promise<Ran> {
@@ -26,7 +28,7 @@ const tcp = (host: string, port: number) => `timeout 4 bash -c 'exec 3<>/dev/tcp
 /** An HTTPS fetch through the job's proxy (the guest's init exports https_proxy when the job has internet). */
 const fetchVia = (url: string) => `curl -sS -o /dev/null -m 15 -w '%{http_code}' '${url}'`;
 
-export async function isolationSuite(launcher: VmLauncher, options: { allowed?: string; refused?: string } = {}): Promise<Check[]> {
+export async function isolationSuite(launcher: VmLauncher, options: { allowed?: string; refused?: string; resolve?: (host: string) => Promise<string> } = {}): Promise<Check[]> {
   const checks: Check[] = [];
   const check = async (name: string, run: () => Promise<{ ok: boolean; detail: string }>) => {
     try { checks.push({ name, ...await run() }); } catch (error) { checks.push({ name, ok: false, detail: error instanceof Error ? error.message : String(error) }); }
@@ -62,7 +64,16 @@ export async function isolationSuite(launcher: VmLauncher, options: { allowed?: 
       return { ok: ran.exitCode === 0 && /^[23]\d\d$/.test(ran.stdout), detail: `exit ${ran.exitCode}, ${ran.stdout}` };
     });
     await check("a host off the allowlist is refused", async () => refusedAll(await sh(online, fetchVia(refusedUrl))));
-    await check("port 80 is refused even to an allowlisted host", async () => refusedAll(await sh(online, `curl -sS -o /dev/null -m 10 http://registry.npmjs.org/`)));
+    // Plain HTTP goes to the proxy (init exports http_proxy too), which answers 403 to anything but CONNECT: curl exits 0
+    // on a 403, so the status is what shows the refusal. Without the proxy, port 80 must not connect at all, even to an address.
+    await check("port 80 is refused even to an allowlisted host", async () => {
+      const proxied = await sh(online, `curl -sS -o /dev/null -m 10 -w '%{http_code}' http://registry.npmjs.org/`);
+      // A literal address, resolved here on the host: the guest has no DNS, so a name fails at resolution (curl exit 6)
+      // and proves nothing about the path. Only a refused (7) or timed-out (28) connect shows port 80 is closed.
+      const address = await (options.resolve ?? (async (host: string) => (await lookup(host, { family: 4 })).address))("registry.npmjs.org");
+      const direct = await sh(online, `curl -sS -o /dev/null -m 10 --noproxy '*' -H 'Host: registry.npmjs.org' http://${address}/`);
+      return { ok: proxied.stdout.trim() === "403" && (direct.exitCode === 7 || direct.exitCode === 28), detail: `proxied ${proxied.stdout.trim() || `exit ${proxied.exitCode}`}, direct to ${address} exit ${direct.exitCode}` };
+    });
     await check("a job without internet reaches nothing, not even the allowlist", async () =>
       refusedAll(await sh(offline, `curl -sS -o /dev/null -m 10 -x http://${offlineIp.replace(/\.2$/, ".1")}:3128 ${allowedUrl}`)));
     await check("the pid cap holds", async () => {

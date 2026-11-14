@@ -3,7 +3,6 @@ import { validFileRef, type FileRef } from "./attachment-policy.ts";
 import type { ImageRef } from "./images.ts";
 export const ATTACHMENT_MARKER = "[camelrun-file-ref:v1]";
 export type AttachedFile = FileRef & {
-  key: string;
   image?: ImageRef;
   transcribe?: boolean;
 };
@@ -12,7 +11,7 @@ export function attachmentMarker(text: string): AttachedFile | undefined {
   if (!text.startsWith(ATTACHMENT_MARKER)) return;
   try {
     const file = JSON.parse(text.slice(ATTACHMENT_MARKER.length));
-    if (validFileRef(file) && typeof (file as AttachedFile).key === "string")
+    if (validFileRef(file))
       return file as AttachedFile;
   } catch {
     /* Ordinary user text may begin with a marker prefix. */
@@ -58,7 +57,7 @@ export function attachmentMessages(messages: unknown): unknown {
       : {
           ...message,
           content: message.content.map((part: unknown) =>
-            validFileRef(part) && typeof (part as AttachedFile).key === "string"
+            validFileRef(part)
               ? { type: "text", text: ATTACHMENT_MARKER + JSON.stringify(part) }
               : part,
           ),

@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,7 +47,7 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v, e := m.Mount(ctx, Request{JobID: "job", Lineage: "test", Root: imp.Root, Fence: &refs.Fence{Holder: "runtime", Epoch: 1}})
+	v, e := m.Mount(ctx, Request{JobID: "job", Lineage: "test", Root: imp.Root, Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}})
 	if e != nil {
 		t.Fatal(e)
 	}

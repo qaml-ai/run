@@ -1,3 +1,4 @@
+import { StorageError } from "./repos/storage.ts";
 // A workflow's `agent()` effects (docs/design/swarm-workflows.md, "Children and exactly-once"): the real executor
 // behind `EffectExecutor` (workflow-runner.ts). The workflow object owns its children as an agent does
 // (`owner = { kind: "workflow", id }`, the `children` table in its own SQLite); each child is a real agent started
@@ -65,11 +66,11 @@ export interface WorkflowAgentsHost {
   /** The agent its children's usage rolls up into: the workflow's owner agent, if one started it. */
   usageRoot?(): string | undefined;
   /**
-   * A volume the child works in (`agent(task, { repo })`, the jobs lane's volume forks): called once before the child
+   * A branch the child works in (`agent(task, { repo })`): called once before the child
    * is made, idempotent per `key:attempt` on the host's side. `mounts` join the child's configuration; `result` joins
-   * an ok outcome's value (`{ fork: { volume, base } }`), a text answer becoming `{ text, ...result }`.
+   * an ok outcome's value (`{ fork: { repo, ref, base } }`), a text answer becoming `{ text, ...result }`.
    */
-  childVolume?(effect: { key: string; attempt: number }, args: AgentArgs): Promise<{ mounts?: unknown[]; result?: Record<string, unknown> } | undefined>;
+  childMounts?(effect: { key: string; attempt: number }, args: AgentArgs): Promise<{ mounts?: unknown[]; result?: Record<string, unknown> } | undefined>;
 }
 
 /** Making and reaching child agents. */
@@ -92,12 +93,12 @@ export const workflowRun = (id: string) => `${id}:main`;
 
 const ROW_PREFIX = "workflow-";
 /** A child's row in the workflow's table: queued (no slot yet), running, or how it ended. */
-type Row = DelegatedChild & { landed?: true; effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number; resolved?: { type?: AgentType; modelClass?: ModelClass }; volumeResult?: Record<string, unknown> };
+type Row = DelegatedChild & { landed?: true; effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number; resolved?: { type?: AgentType; modelClass?: ModelClass }; mountResult?: Record<string, unknown> };
 
 function owner(id: string): Owner { return { kind: "workflow", id }; }
 
 /**
- * Configuration a workflow's child never takes from a definition: no computer (`job()` is a workflow's compute), no
+ * Configuration a workflow's child never takes from a definition: no computer configuration, no
  * `subject` (admission and billing charge an agent's subject's end-user pool: a workflow's children bill its tenant),
  * and no agent spend limit of its own (each run's spend limit is its share of the workflow's budget).
  */
@@ -162,7 +163,7 @@ export class WorkflowAgents implements EffectExecutor {
       this.later(row);
     };
     if (!args || typeof args.prompt !== "string" || !args.prompt) return refuse("agent() needs a prompt");
-    if (args.computer !== undefined) return refuse("A workflow's agents have no computer: run a job() for compute");
+    if (args.computer !== undefined) return refuse("A workflow's agents cannot set computer configuration.");
     let resolved: { type?: AgentType; modelClass?: ModelClass };
     try { resolved = resolveAgentOptions(args, this.host.classes?.() ?? {}); }
     catch (error) { if (error instanceof AgentOptionsError) return refuse(error.message); throw error; }
@@ -239,17 +240,17 @@ export class WorkflowAgents implements EffectExecutor {
       if (!row.id) {
         const config = await this.host.children.config(args, row.resolved);
         for (const name of WORKFLOW_CHILD_REFUSED_KEYS) delete config[name];
-        const volume = await this.host.childVolume?.({ key: row.effectKey, attempt: row.attempt ?? 1 }, args);
-        if (volume?.mounts?.length) config.mounts = [...(Array.isArray(config.mounts) ? config.mounts : []), ...volume.mounts];
+        const mounts = await this.host.childMounts?.({ key: row.effectKey, attempt: row.attempt ?? 1 }, args);
+        if (mounts?.mounts?.length) config.mounts = [...(Array.isArray(config.mounts) ? config.mounts : []), ...mounts.mounts];
         const { id } = await this.host.children.create({ ...config, name: row.name, type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds, ...(row.bucket ? { bucket: row.bucket } : {}) }, row.key, place);
-        row = { ...row, id, ...(volume?.result ? { volumeResult: volume.result } : {}) };
+        row = { ...row, id, ...(mounts?.result ? { mountResult: mounts.result } : {}) };
       }
       // Running before it is submitted, unless an abort (or anything else) moved the row on while the child was being
       // made: then nothing is started. A start made again after a crash here submits the same request, which dedupes.
       const claimed = await this.host.storage.transaction(async tx => {
         const current = await this.rows.get(row.key) as Row | undefined;
         if (!current || current.status !== row.status || current.cancelRequested) return undefined;
-        const next: Row = { ...current, id: row.id, ...(row.volumeResult ? { volumeResult: row.volumeResult } : {}), status: "running", startedRun: current.startedRun ?? Date.now(), ...(held !== undefined ? { held } : {}) };
+        const next: Row = { ...current, id: row.id, ...(row.mountResult ? { mountResult: row.mountResult } : {}), status: "running", startedRun: current.startedRun ?? Date.now(), ...(held !== undefined ? { held } : {}) };
         await this.rows.put(next, tx);
         return next;
       });
@@ -271,6 +272,7 @@ export class WorkflowAgents implements EffectExecutor {
       const current = await this.rows.get(row.key) as Row | undefined;
       if (current?.status === "running") await this.rows.put({ ...current, accepted: true });
     } catch (error) {
+      if (error instanceof StorageError) throw error;
       const status = (error as { status?: number }).status;
       if (status === 402) return this.end(row, "refused", { refused: (error as Error).message, code: "payer_exhausted" });
       // The directory or the child unreachable, or a 5xx: the same start is made again (recover, or the runner's wake),
@@ -291,8 +293,8 @@ export class WorkflowAgents implements EffectExecutor {
   private async settle(row: Row) {
     const usage = effectUsage(row.outcome ? { state: "completed", outcome: row.outcome } : undefined, row.endedAt && row.startedRun ? row.endedAt - row.startedRun : undefined);
     let outcome: LandedOutcome = row.refusal ?? (row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
-    if (row.volumeResult && "ok" in outcome && outcome.ok && "value" in outcome)
-      outcome = { ok: true, value: outcome.value && typeof outcome.value === "object" && !Array.isArray(outcome.value) ? { ...outcome.value as object, ...row.volumeResult } : { text: outcome.value, ...row.volumeResult } };
+    if (row.mountResult && "ok" in outcome && outcome.ok && "value" in outcome)
+      outcome = { ok: true, value: outcome.value && typeof outcome.value === "object" && !Array.isArray(outcome.value) ? { ...outcome.value as object, ...row.mountResult } : { text: outcome.value, ...row.mountResult } };
     await this.host.land(row.effectKey, row.attempt ?? 1, outcome, usage);
     const current = await this.rows.get(row.key) as Row | undefined;
     if (current && !current.landed && current.status === row.status) await this.rows.put({ ...current, landed: true } as Row);
@@ -430,7 +432,7 @@ export function workflowChildren(env: Env & { AGENT_WORKFLOW_CLASS_MODELS?: stri
     },
     async create(config, key, place) {
       const { id, tenant } = workflow();
-      const entry = await new Directory(env, tenant).upsert(config, key, defaults.runtimeOrigin?.());
+      const entry = await new Directory(env, tenant).upsert(config, key, defaults.runtimeOrigin?.(), undefined, false);
       if ("failed" in entry) throw Object.assign(new Error(entry.error), { status: entry.status ?? 400 });
       await recordChildParent(env, tenant, entry.id, id, place.ownerRun, place);
       return { id: entry.id };

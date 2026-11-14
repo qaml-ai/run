@@ -1,3 +1,4 @@
+import { diverge } from './repo-divergence.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 const source = await readFile(new URL('../../../src/agent-mcp.ts', import.meta.url), 'utf8');
 const first = source.indexOf('/** An input as GET'), end = source.indexOf('export function agentMcp('), helpers = source.indexOf("/** The tool's description:");
@@ -44,7 +45,7 @@ await generated('hosted-mcp-ops.ts', header + ops.replaceAll('"./api.ts"', '"./a
   .replaceAll('created.reconfigured ?', 'created.reconfigured || created.existingAgent ?'));
 await generated('hosted-mcp-manifest.ts', header + await readFile(new URL('../../../packages/cli/src/manifest.ts', import.meta.url), 'utf8'));
 const cliTools = await readFile(new URL('../../../packages/cli/src/tools.ts', import.meta.url), 'utf8');
-await generated('hosted-mcp-tools.ts', header + cliTools.replaceAll('"./api.ts"', '"./agent-mcp-api.ts"').replaceAll('"./manifest.ts"', '"./hosted-mcp-manifest.ts"').replaceAll('"./ops.ts"', '"./hosted-mcp-ops.ts"'));
+await generated('hosted-mcp-tools.ts', diverge('hosted-mcp-tools.ts', header + cliTools.replaceAll('"./api.ts"', '"./agent-mcp-api.ts"').replaceAll('"./manifest.ts"', '"./hosted-mcp-manifest.ts"').replaceAll('"./ops.ts"', '"./hosted-mcp-ops.ts"')));
 const cliServer = await readFile(new URL('../../../packages/cli/src/mcp.ts', import.meta.url), 'utf8');
 const capStart = cliServer.indexOf('/** A result\'s most'), capEnd = cliServer.indexOf('/** Serve the CLI');
 const serverStart = cliServer.indexOf('export function createServer(');

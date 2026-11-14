@@ -3,16 +3,18 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 type change struct {
@@ -32,7 +34,20 @@ type commitRequest struct {
 }
 
 func safeLine(s string) bool { return !strings.ContainsAny(s, "\r\n\x00") }
+
+type commitTiming struct {
+	prechecks, read, build time.Duration
+	readWaves              int
+	objects.FlushTiming
+}
+
+type commitTimingKey struct{}
+
 func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRequest) (any, error) {
+	timing, ok := ctx.Value(commitTimingKey{}).(*commitTiming)
+	if !ok {
+		timing = &commitTiming{}
+	}
 	r = r.ForLineage(l)
 	if q.Parents == nil {
 		return nil, invalid("missing field parents")
@@ -44,141 +59,222 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if len(q.Changes) > 10000 {
 		return nil, large("")
 	}
-	if q.Author == "" || !safeLine(q.Author) {
-		return nil, invalid("author: required single line without NUL")
+	if err := q.metadata().validate(); err != nil {
+		return nil, err
 	}
-	if strings.ContainsRune(q.Message, 0) {
-		return nil, invalid("message: NUL is forbidden")
+	start := time.Now()
+	base, blobs, err := commitPrechecks(ctx, r, l, q)
+	timing.prechecks = time.Since(start)
+	if err != nil {
+		return nil, err
 	}
-	base := ""
-	for i, parent := range parents {
-		if !root.Hex(parent, 40) {
-			return nil, bad("unknown_commit")
-		}
-		if e := require(ctx, r, l, parent, "commit", true); e != nil {
-			return nil, e
-		}
-		if i == 0 {
-			c, e := readCommit(ctx, r, parent)
-			if e != nil {
-				return nil, e
-			}
-			base = c["tree"].(string)
-		}
+	start = time.Now()
+	tree, paths := commitPaths(q.Changes, base)
+	timing.build = time.Since(start)
+	start = time.Now()
+	if len(q.Changes) > 0 {
+		err = tree.read(ctx, r, timing)
 	}
-	if q.BaseTree != nil {
-		base = *q.BaseTree
+	timing.read = time.Since(start)
+	if err != nil {
+		return nil, err
 	}
-	if base != "" {
-		if e := require(ctx, r, l, base, "tree", true, "baseTree"); e != nil {
-			return nil, e
-		}
-	}
-	files := map[string]objects.File{}
 
-	if base != "" {
-		es, e := r.TreeEntries(ctx, base)
-		if e != nil {
-			return nil, e
-		}
-		ids := make([]string, len(es))
-		for i, f := range es {
-			ids[i] = f.SHA1
-		}
-		blobs, e := r.BlobInfos(ctx, l, ids)
-		if e != nil {
-			return nil, e
-		}
-		for _, f := range es {
-			b := blobs[f.SHA1]
-			files[f.Path] = objects.File{SHA256: b.SHA256, Mode: f.Mode}
-
-		}
+	start = time.Now()
+	changed, bytes, err := applyCommitChanges(paths, q.Changes, blobs)
+	if err != nil {
+		return nil, err
 	}
+	r = r.BeginPublication()
+	treeID, err := tree.build(ctx, r, true)
+	if err != nil {
+		return nil, err
+	}
+	if base != "" && treeID != base {
+		r.StageTreeParent(treeID, base)
+	}
+	id, now, err := q.metadata().stage(ctx, r, l, treeID, parents)
+	if err != nil {
+		return nil, err
+	}
+	timing.build += time.Since(start)
+	if err = r.FlushTimed(ctx, &timing.FlushTiming); err != nil {
+		return nil, err
+	}
+	return map[string]any{"tree": treeID, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
+}
+
+func applyCommitChanges(paths []commitPath, changes []change, blobs map[string]objects.BlobLookup) (int, int64, error) {
 	changed := 0
 	var bytes int64
-	for _, c := range q.Changes {
-		if objects.Path(c.Path) != nil {
-			return nil, invalid("invalid path %s", c.Path)
+	for i, c := range changes {
+		if paths[i].dir == nil {
+			return 0, 0, invalid("invalid path %s", c.Path)
 		}
 		if c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
-			return nil, invalid("invalid mode %s", c.Mode)
+			return 0, 0, invalid("invalid mode %s", c.Mode)
 		}
-		prev, exists := files[c.Path]
+		dir, name := paths[i].dir, paths[i].name
+		prev, exists := dir.files[name]
 		if c.Delete {
 			if c.Blob != "" || c.Mode != "" {
-				return nil, invalid("delete: blob and mode must be absent")
+				return 0, 0, invalid("delete: blob and mode must be absent")
 			}
 			if exists {
-				delete(files, c.Path)
+				delete(dir.files, name)
 				changed++
 			}
 			continue
 		}
 		next := prev
 		if c.Blob != "" {
-			if e := require(ctx, r, l, c.Blob, "blob", true); e != nil {
-				return nil, e
+			if !root.Hex(c.Blob, 40) {
+				return 0, 0, invalid("blob: expected a 40-character Git id")
 			}
-			b, e := r.BlobInfo(ctx, l, c.Blob)
-			if e != nil {
-				return nil, e
+			found := blobs[c.Blob]
+			if errors.Is(found.Err, sql.ErrNoRows) {
+				return 0, 0, bad("unknown_blob")
 			}
-			next.SHA256 = b.SHA256
-			bytes += b.Size
+			if found.Err != nil {
+				return 0, 0, found.Err
+			}
+			next.SHA1, next.Size = found.Blob.SHA1, found.Blob.Size
+			bytes += found.Blob.Size
 		} else if !exists {
-			return nil, invalid("blob: required for new path %q", c.Path)
+			return 0, 0, invalid("blob: required for new path %q", c.Path)
 		}
+		next.Path = name
 		if c.Mode != "" {
 			next.Mode = c.Mode
 		}
 		if next.Mode == "" {
 			next.Mode = "100644"
 		}
-		if next != prev {
+		if next.SHA1 != prev.SHA1 || next.Mode != prev.Mode {
 			changed++
 		}
-		files[c.Path] = next
+		dir.files[name] = next
 	}
-	for k, v := range q.Trailers {
+	return changed, bytes, nil
+}
+
+type commitMetadata struct {
+	Author   string
+	Message  *string
+	Trailers map[string]string
+	Time     *int64
+}
+
+func (q commitRequest) metadata() commitMetadata {
+	return commitMetadata{q.Author, &q.Message, q.Trailers, q.Time}
+}
+
+func (m commitMetadata) validate() error {
+	if m.Author == "" || !safeLine(m.Author) {
+		return invalid("author: required single line without NUL")
+	}
+	if m.Message == nil || strings.ContainsRune(*m.Message, 0) {
+		return invalid("message: required without NUL")
+	}
+	for k, v := range m.Trailers {
 		if k == "" || !safeLine(k) || strings.Contains(k, ":") {
-			return nil, invalid("invalid trailer key %s", k)
+			return invalid("invalid trailer key %s", k)
 		}
 		if !safeLine(v) {
-			return nil, invalid("invalid trailer value %s", k)
+			return invalid("invalid trailer value %s", k)
 		}
 	}
-	r = r.BeginPublication()
-	tr, e := r.Import(ctx, objects.Request{Lineage: l, ParentTree: base, Files: files})
-	if e != nil {
-		return nil, e
-	}
+	return nil
+}
+
+func (m commitMetadata) stage(ctx context.Context, r *objects.Repository, l, treeID string, parents []string) (string, int64, error) {
 	now := time.Now().Unix()
-	if q.Time != nil {
-		now = *q.Time
+	if m.Time != nil {
+		now = *m.Time
 	}
-	body := "tree " + tr.Tree + "\n"
+	body := "tree " + treeID + "\n"
 	for _, parent := range parents {
 		body += "parent " + parent + "\n"
 	}
-	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n", q.Author, q.Author, now, now, q.Message)
+	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n", m.Author, m.Author, now, now, *m.Message)
 	keys := []string{}
-	for k := range q.Trailers {
+	for k := range m.Trailers {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		body += k + ": " + q.Trailers[k] + "\n"
+		body += k + ": " + m.Trailers[k] + "\n"
 	}
-	id, e := r.PutObject(ctx, l, "commit", []byte(body))
-	if e != nil {
-		return nil, e
-	}
-	if e = r.Flush(ctx); e != nil {
-		return nil, e
-	}
-	return map[string]any{"tree": tr.Tree, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
+	id, err := r.PutObject(ctx, l, "commit", []byte(body))
+	return id, now, err
 }
+func commitPrechecks(ctx context.Context, r *objects.Repository, l string, q commitRequest) (string, map[string]objects.BlobLookup, error) {
+	var base string
+	var parentErrors [2]error
+	var baseErr, blobErr error
+	var blobs map[string]objects.BlobLookup
+	checkBase := func(id string) {
+		base = id
+		if id != "" {
+			baseErr = require(ctx, r, l, id, "tree", true, "baseTree")
+		}
+	}
+
+	var wg sync.WaitGroup
+	run := func(check func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			check()
+		}()
+	}
+	for i, parent := range q.Parents {
+		run(func() {
+			if !root.Hex(parent, 40) {
+				parentErrors[i] = bad("unknown_commit")
+				return
+			}
+			parentErrors[i] = require(ctx, r, l, parent, "commit", true)
+			if i != 0 || parentErrors[i] != nil {
+				return
+			}
+			c, err := readCommit(ctx, r, parent)
+			if err != nil {
+				parentErrors[i] = err
+				return
+			}
+			if q.BaseTree == nil {
+				// Only an inferred base depends on reading the first parent.
+				checkBase(c["tree"].(string))
+			}
+		})
+	}
+	if q.BaseTree != nil {
+		run(func() { checkBase(*q.BaseTree) })
+	}
+	var ids []string
+	for _, c := range q.Changes {
+		if !c.Delete && root.Hex(c.Blob, 40) {
+			ids = append(ids, c.Blob)
+		}
+	}
+	if len(ids) > 0 {
+		run(func() { blobs, blobErr = r.BlobInfos(ctx, l, ids) })
+	}
+	wg.Wait()
+	// Report parent failures in parent order, then the baseTree failure.
+	// The caller reports per-blob failures in change request order.
+	for _, err := range parentErrors {
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if baseErr != nil {
+		return "", nil, baseErr
+	}
+	return base, blobs, blobErr
+}
+
 func readCommit(ctx context.Context, r *objects.Repository, id string) (map[string]any, error) {
 	b, e := r.Object(ctx, id, "commit")
 	if e != nil {
@@ -258,7 +354,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			return nil, invalid("invalid path %s", dir)
 		}
 		for _, p := range strings.Split(dir, "/") {
-			es, e := r.ReadTree(ctx, id)
+			es, e := r.SizedTree(ctx, id)
 			if e != nil {
 				return nil, e
 			}
@@ -275,32 +371,21 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			}
 		}
 	}
-	es := []objects.Entry{}
-	var walk func(string, string) error
-	walk = func(id, prefix string) error {
-		entries, e := r.ReadTree(ctx, id)
-		if e != nil {
-			return e
-		}
-		sort.Slice(entries, func(i, j int) bool { return gitLess(entries[i], entries[j]) })
-		for _, f := range entries {
-			f.Path = prefix + f.Path
-			if recursive && f.Mode == "40000" {
-				if e = walk(f.SHA1, f.Path+"/"); e != nil {
-					return e
-				}
-			} else {
-				es = append(es, f)
-			}
-		}
-		return nil
+	var es []objects.Entry
+	var e error
+	if recursive {
+		es, e = r.TreeEntries(ctx, id)
+	} else {
+		es, e = r.SizedTree(ctx, id)
+		sort.Slice(es, func(i, j int) bool { return gitLess(es[i], es[j]) })
 	}
-	prefix := ""
-	if dir != "" {
-		prefix = dir + "/"
-	}
-	if e := walk(id, prefix); e != nil {
+	if e != nil {
 		return nil, e
+	}
+	if dir != "" {
+		for i := range es {
+			es[i].Path = dir + "/" + es[i].Path
+		}
 	}
 	start := 0
 	if after != "" {
@@ -317,66 +402,6 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 		}
 	}
 	page := es[start:min(len(es), start+limit)]
-	sizes := map[string]int64{}
-	// One lineage-scoped size query per page, regardless of its file count.
-	rows, e := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE lineage=?", l)
-	if e != nil {
-		return nil, e
-	}
-	for rows.Next() {
-		var id string
-		var size int64
-		if e = rows.Scan(&id, &size); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		sizes[id] = size
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
-	}
-	missingIDs := []string{}
-	for _, f := range page {
-		if f.Mode != "40000" {
-			if _, ok := sizes[f.SHA1]; !ok {
-				missingIDs = append(missingIDs, f.SHA1)
-			}
-		}
-	}
-	if len(missingIDs) > 0 {
-		if e := store.Parallel(ctx, 64, missingIDs, func(id string) error {
-			ok, e := r.Reachable(ctx, l, id, "blob")
-			if e != nil {
-				return e
-			}
-			if !ok {
-				return fmt.Errorf("missing lineage blob")
-			}
-			return nil
-		}); e != nil {
-			return nil, e
-		}
-		rows, e := r.DB.DB.QueryContext(ctx, "SELECT sha1,size FROM lineage_blobs WHERE lineage=?", l)
-		if e != nil {
-			return nil, e
-		}
-		for rows.Next() {
-			var id string
-			var n int64
-			if e = rows.Scan(&id, &n); e != nil {
-				rows.Close()
-				return nil, e
-			}
-			sizes[id] = n
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			return nil, e
-		}
-	}
 	out := []listingEntry{}
 	for _, f := range page {
 		v := listingEntry{Path: f.Path, Mode: f.Mode}
@@ -384,14 +409,7 @@ func listTree(ctx context.Context, r *objects.Repository, l, id, dir, after stri
 			v.Mode = "040000"
 			v.Tree = f.SHA1
 		} else {
-			size, ok := sizes[f.SHA1]
-			if !ok {
-				b, e := r.BlobInfo(ctx, l, f.SHA1)
-				if e != nil {
-					return nil, e
-				}
-				size = b.Size
-			}
+			size := f.Size
 			v.Blob = f.SHA1
 			v.Size = &size
 		}
@@ -411,6 +429,8 @@ type diffChange struct {
 	NewBlob string `json:"newBlob,omitempty"`
 	OldMode string `json:"oldMode,omitempty"`
 	NewMode string `json:"newMode,omitempty"`
+	OldSize *int64 `json:"oldSize,omitempty"`
+	NewSize *int64 `json:"newSize,omitempty"`
 }
 
 func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) ([]diffChange, error) {
@@ -418,84 +438,107 @@ func treeDiff(ctx context.Context, r *objects.Repository, a, b, prefix string) (
 		return nil, invalid("invalid path %s", prefix)
 	}
 	out := []diffChange{}
-	var walk func(string, string, string) error
-	walk = func(a, b, dir string) error {
-		if a == b {
-			return nil
+	type pair struct{ a, b, dir string }
+	for level := []pair{{a: a, b: b}}; len(level) > 0; {
+		var ids []string
+		for _, p := range level {
+			if p.a != "" && p.a != p.b {
+				ids = append(ids, p.a)
+			}
+			if p.b != "" && p.a != p.b {
+				ids = append(ids, p.b)
+			}
 		}
-		am, bm := map[string]objects.Entry{}, map[string]objects.Entry{}
-		for i, id := range []string{a, b} {
-			if id == "" {
+		trees, err := r.SizedTrees(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		var next []pair
+		for _, p := range level {
+			if p.a == p.b {
 				continue
 			}
-			es, e := r.ReadTree(ctx, id)
-			if e != nil {
-				return e
+			am, bm := map[string]objects.Entry{}, map[string]objects.Entry{}
+			for _, f := range trees[p.a] {
+				am[f.Path] = f
 			}
-			for _, f := range es {
-				if i == 0 {
-					am[f.Path] = f
-				} else {
-					bm[f.Path] = f
-				}
+			for _, f := range trees[p.b] {
+				bm[f.Path] = f
 			}
-		}
-		names := map[string]bool{}
-		for n := range am {
-			names[n] = true
-		}
-		for n := range bm {
-			names[n] = true
-		}
-		keys := []string{}
-		for n := range names {
-			keys = append(keys, n)
-		}
-		sort.Strings(keys)
-		for _, n := range keys {
-			x, y := am[n], bm[n]
-			p := dir + n
-			if prefix != "" && p != prefix && !strings.HasPrefix(p, prefix+"/") && !strings.HasPrefix(prefix, p+"/") {
-				continue
+			names := map[string]bool{}
+			for n := range am {
+				names[n] = true
 			}
-			if x.SHA1 == y.SHA1 && x.Mode == y.Mode {
-				continue
+			for n := range bm {
+				names[n] = true
 			}
-			if x.Mode == "40000" || y.Mode == "40000" {
-				ax, by := "", ""
-				if x.Mode == "40000" {
-					ax = x.SHA1
-				}
-				if y.Mode == "40000" {
-					by = y.SHA1
-				}
-				if e := walk(ax, by, p+"/"); e != nil {
-					return e
-				}
-				if x.Mode == "40000" {
-					x = objects.Entry{}
-				}
-				if y.Mode == "40000" {
-					y = objects.Entry{}
-				}
-				if x.SHA1 == "" && y.SHA1 == "" {
+			for n := range names {
+				x, y := am[n], bm[n]
+				path := p.dir + n
+				if prefix != "" && path != prefix && !strings.HasPrefix(path, prefix+"/") && !strings.HasPrefix(prefix, path+"/") {
 					continue
 				}
+				if x.SHA1 == y.SHA1 && x.Mode == y.Mode {
+					continue
+				}
+				if x.Mode == "40000" || y.Mode == "40000" {
+					ax, by := "", ""
+					if x.Mode == "40000" {
+						ax = x.SHA1
+					}
+					if y.Mode == "40000" {
+						by = y.SHA1
+					}
+					next = append(next, pair{ax, by, path + "/"})
+					if x.Mode == "40000" {
+						x = objects.Entry{}
+					}
+					if y.Mode == "40000" {
+						y = objects.Entry{}
+					}
+					if x.SHA1 == "" && y.SHA1 == "" {
+						continue
+					}
+				}
+				status := "modified"
+				if x.SHA1 == "" {
+					status = "added"
+				} else if y.SHA1 == "" {
+					status = "deleted"
+				} else if x.SHA1 == y.SHA1 {
+					status = "mode"
+				}
+				c := diffChange{Path: path, Status: status, OldBlob: x.SHA1, NewBlob: y.SHA1, OldMode: x.Mode, NewMode: y.Mode}
+				if x.SHA1 != "" {
+					size := x.Size
+					c.OldSize = &size
+				}
+				if y.SHA1 != "" {
+					size := y.Size
+					c.NewSize = &size
+				}
+				out = append(out, c)
 			}
-			status := "modified"
-			if x.SHA1 == "" {
-				status = "added"
-			} else if y.SHA1 == "" {
-				status = "deleted"
-			} else if x.SHA1 == y.SHA1 {
-				status = "mode"
-			}
-			out = append(out, diffChange{p, status, x.SHA1, y.SHA1, x.Mode, y.Mode})
 		}
-		return nil
+		level = next
 	}
-	e := walk(a, b, "")
-	return out, e
+	sort.Slice(out, func(i, j int) bool { return diffPathLess(out[i].Path, out[j].Path) })
+	return out, nil
+}
+
+// Diff order compares path components and emits descendants before their parent.
+func diffPathLess(a, b string) bool {
+	for {
+		x, restA, moreA := strings.Cut(a, "/")
+		y, restB, moreB := strings.Cut(b, "/")
+		if x != y {
+			return x < y
+		}
+		if !moreA || !moreB {
+			return moreA
+		}
+		a, b = restA, restB
+	}
 }
 
 func (q *commitRequest) UnmarshalJSON(raw []byte) error {
@@ -518,4 +561,43 @@ func (q *commitRequest) UnmarshalJSON(raw []byte) error {
 	}
 	*q = commitRequest(v)
 	return nil
+}
+
+// treeEntry descends exactly one tree per path component, without listing.
+func treeEntry(ctx context.Context, r *objects.Repository, l, id, path string) (listingEntry, error) {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		es, e := r.SizedTree(ctx, id)
+		if e != nil {
+			return listingEntry{}, e
+		}
+		found := false
+		for _, f := range es {
+			if f.Path != p {
+				continue
+			}
+			found = true
+			if i == len(parts)-1 {
+				v := listingEntry{Path: path, Mode: f.Mode}
+				if f.Mode == "40000" {
+					v.Mode = "040000"
+					v.Tree = f.SHA1
+				} else {
+
+					v.Blob = f.SHA1
+					v.Size = &f.Size
+				}
+				return v, nil
+			}
+			if f.Mode != "40000" {
+				return listingEntry{}, missing()
+			}
+			id = f.SHA1
+			break
+		}
+		if !found {
+			return listingEntry{}, missing()
+		}
+	}
+	return listingEntry{}, missing()
 }

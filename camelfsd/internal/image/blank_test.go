@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -70,7 +71,7 @@ func TestZeroWrittenCheckpointRecordsHoleWithoutUpload(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v, e := m.Mount(ctx, Request{Lineage: "zeros", Root: imp.Root, Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "zero-write"})
+	v, e := m.Mount(ctx, Request{Lineage: "zeros", Root: imp.Root, Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, JobID: "zero-write"})
 	if e != nil {
 		t.Fatal(e)
 	}
