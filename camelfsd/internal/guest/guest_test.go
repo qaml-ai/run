@@ -274,6 +274,9 @@ func TestApplyTimeoutRepliesToDaemon(t *testing.T) {
 func TestCheckpointThawsOnTimeout(t *testing.T) {
 	g := fixture(t)
 	g.index = &index{Tree: strings.Repeat("a", 40)}
+	if err := os.WriteFile(filepath.Join(g.repo, "changed"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	frozen, thawed := false, false
 	g.freeze = func() (func() error, error) {
 		frozen = true
@@ -289,6 +292,13 @@ func TestCheckpointThawsOnTimeout(t *testing.T) {
 			if err := wire.JSON(r, &frame); err != nil {
 				return err
 			}
+		}
+		if _, err := wire.Read(r, wire.DataMax); err != nil {
+			return err
+		}
+		var end message
+		if err := wire.JSON(r, &end); err != nil {
+			return err
 		}
 		_, err := r.ReadByte()
 		if err == io.EOF {
