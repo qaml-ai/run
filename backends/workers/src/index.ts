@@ -1,3 +1,7 @@
+import { handleCamelfsNotify, type NotifyEnv } from "./camelfs/notify.ts";
+import { handleCamelfsSmoke } from "./camelfs/smoke.ts";
+import { handlePilotReset } from "./camelfs/pilot-reset.ts";
+import { tierConfigured } from "./camelfs/tier.ts";
 import { storedConfiguration } from "./api-contract.ts";
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { vaultRoutes } from "./vault.ts";
@@ -58,7 +62,7 @@ import {
   resumeWebhookDeliveries,
   type DeliveryMessage,
 } from "./webhooks.ts";
-import { handleRepoRequest } from "./repos/routes.ts";
+import { handleRepoRequest, repoTransportFailure } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { handleFileRequest, retiredVolumes } from "./files.ts";
@@ -101,8 +105,6 @@ export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
-// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-export { Volume } from "./volume.ts";
 export { RepoDO } from "./repos/repo-do.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
@@ -110,7 +112,6 @@ import { workflowRoutes } from "./workflow-routes.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { JobHost, JobHostRegistry, HostJob } from "./jobs/hosts.ts";
 import { HOST_NAME, enrollHost, jobHostRoutes, scalerRoutes, type JobHostsEnv } from "./jobs/hosts.ts";
-import { jobObjectName } from "./jobs/driver.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
@@ -196,6 +197,8 @@ function shareInput<T>(schema: { safeParse(value: unknown): { success: true; dat
 }
 
 function httpFailure(error: unknown, env: Env): Response {
+  const transport = repoTransportFailure(error);
+  if (transport) return transport;
   const limited = admissionError(error);
   if (limited) return limited;
   // The shared core's errors (src/core/http-error.ts: decision questions, channels) answer as this backend's own do.
@@ -215,6 +218,11 @@ const worker = {
     // attestation for a credential bound to the host id it proves, then dials out with it (its socket's first message).
     const hosts = env as unknown as JobHostsEnv;
     const hostPath = new URL(request.url).pathname;
+    if (hostPath === "/v1/internal/camelfs/notify") {
+      try { return await handleCamelfsNotify(request, env as unknown as NotifyEnv); }
+      catch (error) { return httpFailure(error, env); }
+    }
+    if (hostPath === "/v1/internal/camelfs/smoke" && !tierConfigured(env as RepoEnv)) return new Response(null, { status: 404 });
     const retired = retiredVolumes(hostPath);
     if (retired) return publicPageHeaders(request, corsResponse(request, retired));
     if (hosts.JOB_HOST_ATTESTORS && hosts.JOB_HOSTS && hosts.JOB_HOST_REGISTRY && hostPath.startsWith("/v1/internal/job-hosts/")) {
@@ -224,19 +232,6 @@ const worker = {
         return hosts.JOB_HOSTS.getByName(name).fetch(request);
       }
       if (hostPath === "/v1/internal/job-hosts/enroll" && request.method === "POST") return enrollHost(request, hosts);
-      // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-      // Host-side sync: a job's host fetches its large tree's files (HostJob.fetch checks the job's token).
-      const synced = /^\/v1\/internal\/job-hosts\/sync\/([^/]{1,200})\/(\d{1,6})$/.exec(hostPath);
-      if (synced && request.method === "GET" && hosts.HOST_JOBS) {
-        // Unauthenticated until the job object checks its token: limited per client address where the binding is set
-        // (generous: one job's host fetches each of its files once).
-        if (hosts.JOB_HOST_SYNC_LIMITER && !(await hosts.JOB_HOST_SYNC_LIMITER.limit({ key: request.headers.get("cf-connecting-ip") ?? "unknown" })).success)
-          return new Response("Too many requests", { status: 429 });
-        let job = "";
-        try { job = decodeURIComponent(synced[1]!); } catch { /* malformed: refused below */ }
-        if (!/^[A-Za-z0-9_-]{1,100}$/.test(job)) return new Response("Not found", { status: 404 });
-        return hosts.HOST_JOBS.getByName(jobObjectName(job)).fetch(new Request(`https://host-job/sync/${synced[2]}`, { headers: { authorization: request.headers.get("authorization") ?? "" } }));
-      }
       const scaled = await scalerRoutes(request, hosts);
       if (scaled) return scaled;
       return new Response("Not found", { status: 404 });
@@ -410,6 +405,9 @@ const worker = {
           const workflow = await workflowTestRoute(request, env as unknown as WorkflowEnv, path, auth.tenantId);
           if (workflow) return workflow;
         }
+        if (path === "/v1/internal/camelfs/smoke") return handleCamelfsSmoke(request, env as RepoEnv, auth);
+        // TEMPORARY(pilot-switch): R5 deletes this route.
+        if (path === "/v1/internal/camelfs/pilot-reset") return handlePilotReset(request, env as never, auth);
         const workflows = await workflowRoutes(request, env as unknown as WorkflowEnv & { AGENT_WORKFLOW_TENANTS?: string }, auth.tenantId);
         if (workflows) return workflows;
         const jobHosts = await jobHostRoutes(request, env as unknown as JobHostsEnv & { ADMIN_TENANTS?: string }, auth);

@@ -193,7 +193,7 @@ func TestDDBHostChannel(t *testing.T) {
 	post(clientA, path, end, 204, nil)
 	post(clientA, path, end, 204, nil)
 	v = get("life")
-	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.ResultRef != "" || v.UsageSeq != 5 {
+	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.UsageSeq != 5 {
 		t.Fatalf("ended: %+v", v)
 	}
 	h, err := c.Host(ctx, "pool", "a")

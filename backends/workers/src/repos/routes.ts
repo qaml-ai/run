@@ -1,3 +1,4 @@
+import { tierConfigured, TierError } from "../camelfs/tier.ts";
 import { Buffer } from 'node:buffer';
 import { tar } from '../../../../src/tar.ts';
 import { sniffContentType, declaredType, downloadHeaders } from '../file-policy.ts';
@@ -14,7 +15,7 @@ export const json = (value: unknown, status = 200) => Response.json(value, { sta
 export function repoFailure(e: unknown): Response {
   const r = repoErrorFrom(e);
   if (r)
-    return json({ error: r.code, code: r.code, ...r.detail }, r.status);
+    return json({ error: r.code === 'transport_error' ? r.reason : r.code, code: r.code, ...r.detail }, r.status);
   if (e instanceof StorageError)
     return json({ error: `storage ${e.op ?? 'call'}: ${e.reason}`, code: e.code, storage: e.op ?? null, ...(e.details ? { detail: e.details } : {}) }, e.status >= 400 ? e.status : e.status === 0 ? 503 : 502);
   if (e instanceof SyntaxError || e instanceof URIError)
@@ -22,6 +23,12 @@ export function repoFailure(e: unknown): Response {
   if (e && typeof e === 'object' && 'status' in e && typeof e.status === 'number')
     return json({ error: String(e), code: 'bad_input' }, e.status);
   throw e;
+}
+export function repoTransportFailure(e: unknown): Response | undefined {
+  if (e instanceof TierError && e.code === 'transport_error')
+    return json({ error: e.message, code: e.code }, e.status);
+  if ((e instanceof RepoError || e instanceof StorageError) && e.code === 'transport_error' && e.cause instanceof TierError)
+    return repoFailure(e);
 }
 export async function boundedBody(request: Request, limit: number): Promise<Uint8Array> {
   const reader = request.body?.getReader();
@@ -156,22 +163,25 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   const number = (k: string) => s.has(k) ? Number(s.get(k)) : undefined;
   if (path === '/v1/repos') {
     if (method === 'POST') {
-      const r = await createRepo(env, tenant, await readJson(request));
+      const r = await createRepo(env, tenant, { ...await readJson(request), ...(tierConfigured(env) ? { author: `api:${tenant}` } : {}) });
       return json(r.info, r.existing ? 200 : 201);
     }
     if (method === 'GET') {
       const p = await env.TENANTS.getByName(tenant).listRepos({ after: s.get('after') ?? undefined, limit: number('limit') });
-      return json({ ...p, repos: p.repos.map(({ id, name, key, createdAt, bytes, files }) => ({ id, name, key, createdAt, bytes, files })) });
+      return json({ ...p, repos: p.repos.map(({ id, name, key, createdAt, lineage, bytes, files }) => ({
+        id, name, key, createdAt,
+        ...(tierConfigured(env) && lineage !== `${tenant}:${id}` ? { sharesStorageWith: lineage.slice(tenant.length + 1) } : { bytes, files }),
+      })) });
     }
   }
   const match = /^\/v1\/repos\/([^/]+)(?:\/(.*))?$/.exec(path);
   if (!match)
     throw new RepoError('not_found', 404, 'not_found');
-  const id = decodeURIComponent(match[1]), tail = match[2] ?? '', ctx = await repoContext(env, tenant, id), ref = s.get('ref') ?? 'main', actor = apiWrite(tenant);
+  const id = decodeURIComponent(match[1]), tail = match[2] ?? '';
+  if (!tail && method === 'DELETE') return json(await deleteRepo(env, tenant, id));
+  const ctx = await repoContext(env, tenant, id), ref = s.get('ref') ?? 'main', actor = apiWrite(tenant);
   if (!tail && method === 'GET')
     return json(await ctx.repo.info());
-  if (!tail && method === 'DELETE')
-    return json(await deleteRepo(env, tenant, id));
   if (tail === 'refs' && method === 'GET')
     return json(await ctx.repo.refs());
   if (tail.startsWith('refs/')) {

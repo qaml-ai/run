@@ -3,7 +3,8 @@ import { keyServices } from '../security-services.ts';
 import { RepoError, check, normalizeRepoPath, repoErrorFrom, type Entry, type Mode, type Fence, type Version } from './repo-policy.ts';
 import { repoContext, type RepoContext } from './registry.ts';
 import { versionEntries, statPaths } from './reads.ts';
-import type { Change } from './storage.ts';
+import { HttpRepoClient, needsK5 } from './http-client.ts';
+import type { RepoQuota, WriteChange } from './write-input.ts';
 export type CommitOp = 'api' | 'turn' | 'job' | 'merge' | 'restore';
 export type WriteInput = {
   op: CommitOp;
@@ -36,10 +37,18 @@ export type WriteInput = {
   idempotencyKey?: string;
 };
 // Awaited (not waitUntil): the next write's quota check reads it, and the tool import graph runs outside cloudflare:workers in tests.
-export async function reportUsage(ctx: RepoContext) {
-  const info = await ctx.repo.info();
-  await Promise.resolve(ctx.env.TENANTS.getByName(ctx.tenant).repoUsage(ctx.repoId, info.bytes, info.files))
+export async function reportUsage(ctx: RepoContext, info?: { bytes: number; files: number }) {
+  if (!info && ctx.repo instanceof HttpRepoClient) return;
+  info ??= await ctx.repo.info();
+  await Promise.resolve(ctx.env.TENANTS.getByName(ctx.tenant).repoUsage(ctx.repoId, info.bytes, info.files, ctx.repo instanceof HttpRepoClient))
     .catch(error => console.error('repo usage update failed', String(error)));
+}
+export async function tierQuota(ctx: RepoContext): Promise<RepoQuota | undefined> {
+  const [limitBytes, otherBytes] = await Promise.all([
+    keyServices(ctx.env).then(({ accounts }) => accounts.billing.storageLimit(ctx.tenant)),
+    ctx.env.TENANTS.getByName(ctx.tenant).reposUsed(ctx.lineage),
+  ]);
+  return limitBytes === undefined ? undefined : { limitBytes, otherBytes };
 }
 export async function quota(ctx: RepoContext, bytes: number) {
   const { accounts } = await keyServices(ctx.env);
@@ -50,14 +59,25 @@ export async function quota(ctx: RepoContext, bytes: number) {
 /** RepoDO accounts for each blob once across all heads. */
 export const addedBytes = (ctx: RepoContext, incoming: Entry[]) => ctx.repo.unseenBytes(incoming.map(({ blob, size }) => ({ blob, size })));
 export async function commitChanges(ctx: RepoContext, input: WriteInput) {
-  const prepared: Record<string, {
-    blob?: string;
-    size?: number;
-    mode?: Mode;
-  } | null> = Object.create(null);
   check(input.changes && typeof input.changes === 'object' && !Array.isArray(input.changes));
   const changes = Object.entries(input.changes);
   check(changes.length <= 1000, 'too_many_paths');
+  const inline = new Set<string>();
+  if (ctx.repo instanceof HttpRepoClient) {
+    let remaining = 8 * 2 ** 20;
+    for (const [path, change] of changes) {
+      if (change && typeof change === 'object' && 'bytes' in change && change.bytes.byteLength <= remaining) {
+        inline.add(path);
+        remaining -= change.bytes.byteLength;
+      }
+    }
+  }
+  const sizes: Record<string, number> = Object.create(null);
+  const prepared: Record<string, {
+    blob?: string;
+    base64?: string;
+    mode?: Mode;
+  } | null> = Object.create(null);
   let offset = 0;
   await Promise.all(Array.from({ length: Math.min(8, changes.length) }, async () => {
     while (offset < changes.length) {
@@ -70,76 +90,49 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
       if ('mode' in c && c.mode !== undefined)
         check(['100644', '100755', '120000'].includes(c.mode!), 'bad_mode');
       if ('bytes' in c) {
-        const b = await ctx.storage.putBlob(ctx.lineage, c.bytes);
-        prepared[path] = { blob: b.blob, size: b.size, mode: c.mode };
+        if (inline.has(raw)) prepared[path] = { base64: Buffer.from(c.bytes).toString('base64'), mode: c.mode };
+        else {
+          const b = await ctx.storage.putBlob(ctx.lineage, c.bytes);
+          prepared[path] = { blob: b.blob, mode: c.mode };
+          sizes[path] = b.size;
+        }
       }
       else if ('from' in c) {
-        const src = await repoContext(ctx.env, ctx.tenant, c.from.repo), v = await src.repo.resolve(c.from.version ?? c.from.ref ?? 'main');
+        const src = await repoContext(ctx.env, ctx.tenant, c.from.repo, ctx.sub), v = await src.repo.resolve(c.from.version ?? c.from.ref ?? 'main');
         const sourcePath = normalizeRepoPath(c.from.path);
         const e = (await statPaths(src, v.tree, [sourcePath]))[sourcePath];
         if (!e)
           throw new RepoError('no_file', 404, 'no_file');
         const b = src.lineage === ctx.lineage ? e : await ctx.storage.putBlob(ctx.lineage, await src.storage.readBlob(src.lineage, e.blob, v.tree, sourcePath));
-        prepared[path] = { blob: b.blob, size: b.size, mode: e.mode };
+        prepared[path] = { blob: b.blob, mode: e.mode };
+        sizes[path] = b.size;
       }
       else
         prepared[path] = { ...c };
     }
   }));
-  for (let attempt = 0;; attempt++) {
-    const head = await ctx.repo.ref(input.ref), current = head?.version ?? null;
-    if (input.expect !== undefined && input.expect !== current)
-      throw new RepoError('stale', 412, 'stale', { current });
-    const named = [...Object.keys(prepared), ...Object.keys(input.pathExpect ?? {})];
-    const old = head ? await statPaths(ctx, head.tree, named) : Object.create(null) as Record<string, Entry | null>;
-    const pathExpect: Record<string, string | 'none'> = Object.create(null);
-    for (const [raw, expected] of Object.entries(input.pathExpect ?? {})) {
-      const path = normalizeRepoPath(raw);
-      pathExpect[path] = expected;
-      const actual = old[path]?.blob ?? null;
-      if (actual !== (expected === 'none' ? null : expected))
-        throw new RepoError('stale_path', 412, 'stale_path', { path, current: actual });
-    }
-    const delta: Record<string, Entry | null> = Object.create(null), storageChanges: Change[] = [];
-    for (const [path, c] of Object.entries(prepared)) {
-      const prev = old[path];
-      let next: Entry | null = null;
-      if (c) {
-        let blob = c.blob ?? prev?.blob, size = c.size ?? prev?.size;
-        if (c.blob && c.size === undefined) {
-          const known = await ctx.repo.blobSize(c.blob);
-          if (known === null)
-            throw new RepoError('unknown_blob', 400, 'unknown_blob');
-          size = known;
-        }
-        if (!blob || size === undefined)
-          throw new RepoError('no_file', 404, 'no_file');
-        next = { path, blob, size, mode: c.mode ?? prev?.mode ?? '100644' };
-        check(['100644', '100755', '120000'].includes(next.mode), 'bad_mode');
-      }
-      if ((!prev && !next) || (prev && next && prev.blob === next.blob && prev.mode === next.mode))
-        continue;
-      delta[path] = next;
-      storageChanges.push(next ? { path, blob: next.blob, mode: next.mode } : { path, delete: true });
-    }
-    if (!storageChanges.length && !input.allowEmpty)
-      return { changed: false, version: current, tree: head?.tree ?? null, previous: current, watchers: [], files: delta };
-    await quota(ctx, await addedBytes(ctx, Object.values(delta).filter((entry): entry is Entry => entry !== null)));
-    const parents = current ? [current] : [], trailers = { ...input.trailers, 'Camel-Op': input.op };
-    // The daemon replays a key's first answer whatever the body, so the key names the parent too: a retry after a crash
-    // (same parent) gets the same commit, and a retry after losing the ref to a concurrent write commits on the new head.
-    const key = input.idempotencyKey === undefined ? undefined : `${input.idempotencyKey}@${current ?? 'root'}`;
-    const c = await ctx.storage.commit(ctx.lineage, { parents, changes: storageChanges, author: input.author, message: input.message, trailers }, key);
-    const result = await ctx.repo.cas({ ref: input.ref, expect: current, commit: { version: c.commit, tree: c.tree, parents, author: input.author, message: input.message, trailers, at: c.time * 1000 }, changes: { ...delta }, pathExpect: { ...pathExpect }, fence: input.fence, who: input.who, why: input.why }).catch(e => {
-      if (repoErrorFrom(e)?.code !== 'stale' || input.expect !== undefined || attempt >= 3)
-        throw e;
-      return null;
-    });
-    if (!result) continue;
-    await reportUsage(ctx);
-    await notifyRepoWatchers(ctx, input.ref, result, delta, input.author);
-    return { ...result, tree: c.tree, changed: true, files: delta };
+  const edits: WriteChange[] = [];
+  const expectations = Object.fromEntries(Object.entries(input.pathExpect ?? {}).map(([path, blob]) => [normalizeRepoPath(path), blob]));
+  for (const [path, change] of Object.entries(prepared)) {
+    edits.push({ path, ...(change ?? { delete: true as const }), expectBlob: expectations[path] });
   }
+  if (ctx.repo instanceof HttpRepoClient) {
+    // The tier checks expectations atomically for each path included in the write.
+    for (const path of Object.keys(expectations)) check(path in prepared, 'bad_path');
+    if (input.fence) throw needsK5();
+  }
+  const result = await ctx.repo.write({
+    ref: input.ref, expect: input.expect, changes: edits, author: input.author, message: input.message,
+    time: Math.floor(Date.now() / 1000), trailers: { ...input.trailers, 'Camel-Op': input.op },
+    quota: ctx.repo instanceof HttpRepoClient ? await tierQuota(ctx) : undefined,
+    idempotencyKey: input.idempotencyKey,
+    legacy: { who: input.who, why: input.why, fence: input.fence, allowEmpty: input.allowEmpty, pathExpect: expectations, sizes },
+  });
+  if (result.moved) {
+    await reportUsage(ctx, result);
+    await notifyRepoWatchers(ctx, input.ref, result, result.changed, input.author);
+  }
+  return { changed: result.moved, version: result.version, tree: result.tree, previous: result.previous, watchers: result.watchers, files: result.changed };
 }
 export async function setRefToVersion(ctx: RepoContext, input: {
   ref: string;
@@ -161,6 +154,22 @@ export async function setRefToVersion(ctx: RepoContext, input: {
     const target = await ctx.repo.commit(input.version);
     if (!target)
       throw new RepoError('no_commit', 404, 'no_commit');
+    if (ctx.repo instanceof HttpRepoClient) {
+      if (!head && !input.newCommit) {
+        await ctx.repo.createRef({ name: input.ref, from: { version: target.version }, who: input.who, why: input.why });
+        return { version: target.version, tree: target.tree, previous: null, watchers: [] as string[], changed: true };
+      }
+      const quota = await tierQuota(ctx);
+      const restored = input.newCommit
+        ? await ctx.repo.restore(input.ref, {
+          version: input.version, quota, author: input.author, time: Math.floor(Date.now() / 1000),
+          message: input.message ?? `restore ${input.version.slice(0, 12)}`,
+          trailers: { ...(input.trailers ?? { 'Camel-User': input.author, 'Camel-Checkpoint': 'api' }), 'Camel-Op': input.op ?? 'restore' },
+        })
+        : await ctx.repo.cas({ ref: input.ref, expect: current, commit: target, quota, who: input.who, why: input.why });
+      await reportUsage(ctx, restored);
+      return { version: restored.version, tree: restored.tree, previous: current, watchers: [] as string[], changed: current !== restored.version };
+    }
     const entries = await versionEntries(ctx, target.tree);
     await quota(ctx, await addedBytes(ctx, entries));
     let commit: Version = target;
@@ -202,7 +211,7 @@ export async function branch(ctx: RepoContext, input: {
     return r;
   }
   catch (e) {
-    if (repoErrorFrom(e)?.code !== 'not_cached')
+    if (ctx.repo instanceof HttpRepoClient || repoErrorFrom(e)?.code !== 'not_cached')
       throw e;
   }
   const target = await ctx.repo.resolve(typeof input.from === 'string' ? input.from : input.from.version), commit = await ctx.repo.commit(target.version);
@@ -252,8 +261,9 @@ export async function advanceRef(ctx: RepoContext, input: {
   if (head?.version !== input.expect)
     throw new RepoError('stale', 412, 'stale', { current: head?.version ?? null });
   const c = await ctx.storage.getCommit(ctx.lineage, input.commit), changes = await diffEntries(ctx, head.tree, c.tree);
-  await quota(ctx, await addedBytes(ctx, Object.values(changes).filter((entry): entry is Entry => entry !== null)));
-  const result = await ctx.repo.cas({ ...input, expect: head.version, commit: { version: input.commit, tree: c.tree, parents: c.parents, author: c.author, message: c.message, trailers: c.trailers, at: c.time * 1000 }, changes: { ...changes } });
-  await reportUsage(ctx);
+  const quotaInput = ctx.repo instanceof HttpRepoClient ? { quota: await tierQuota(ctx) } : {};
+  if (!(ctx.repo instanceof HttpRepoClient)) await quota(ctx, await addedBytes(ctx, Object.values(changes).filter((entry): entry is Entry => entry !== null)));
+  const result = await ctx.repo.cas({ ...quotaInput, ...input, expect: head.version, commit: { version: input.commit, tree: c.tree, parents: c.parents, author: c.author, message: c.message, trailers: c.trailers, at: c.time * 1000 }, changes: { ...changes } });
+  await reportUsage(ctx, "bytes" in result ? result as typeof result & { bytes: number; files: number } : undefined);
   return { ...result, tree: c.tree, changed: true, files: changes };
 }

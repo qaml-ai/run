@@ -15,7 +15,7 @@ Postgres or use customer credentials. All dates below are UTC.
 | Custom domain | `run-pilot.camelai.dev` | `camelai.dev` zone `3180d911f20372a279a4ea408aebc765` |
 | Agent objects | `AGENTS` / `CamelAgent` | Durable journal, runs, schedules, human input, hibernatable sockets |
 | Tenant objects | `TENANTS` / `TenantAdmission` | Admission and counters |
-| Volume objects | `VOLUMES` / `Volume` | Ordered file metadata |
+| Repo objects | `REPOS` / `RepoDO` | Repo metadata, refs and writes over camelFS |
 | Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | One container per agent through `ctx.container` (`durable_object` scheduling policy, `standard-1`); image `workspace` from `computers/Dockerfile` |
 | Code-mode binding | `CODEMODE_SANDBOX` | External `CodemodeSandbox` class on `camelrun-pilot-codemode` |
 | Sandbox objects | `SANDBOX` / `CodemodeSandbox` | Local binding in the sandbox Worker |
@@ -624,11 +624,6 @@ the `workspace` entry of the `images` map, which a deploy builds from
 a computer (their definition declares `computer`, or they were given one as a
 sub-agent) and code mode see the `computer` tool; its container time is charged as platform usage
 (`computer` kind, `cloudflare/standard-1`, at cost: about $0.038 an hour idle, $0.074 busy).
-Jobs (`src/jobs/`, internal: no route and no builtin yet) use the same class and image: a job runs
-in an object named `job:<id>`, which starts a container sized from the job's limits (`standard-1`
-to `standard-4`), syncs its files into `/repo`, runs one command, returns the named files from
-`/out` and destroys the container. Every job has a payer: it holds a computer slot (`job:<id>`) and
-is charged like a computer. Deployments without `COMPUTER_CONTAINERS` answer `JOBS_UNAVAILABLE`.
 A deploy needs Docker on the deploying machine. A
 new image digest makes earlier snapshots unusable (they are refused, not
 restored); snapshots expire 30 days after creation or their latest restore.
