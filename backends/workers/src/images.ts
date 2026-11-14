@@ -9,7 +9,7 @@ import {
   type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
-import { digest, FileError } from "./volume.ts";
+import { digest, FileError } from "./file-errors.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "../../../src/image-header.ts";
 import { requestImageLimit } from "../../../src/request-images.ts";
 import { makeMarker, parseMarker, type ImageReference } from "./image-request-marker.ts";

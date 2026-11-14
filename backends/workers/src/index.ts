@@ -61,7 +61,8 @@ import {
 import { handleRepoRequest } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
-import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
+import { handleFileRequest, retiredVolumes } from "./files.ts";
+import { handleSignedFileRequest } from "./images.ts";
 import { channelRoutes, channelWebhook } from "./channel-routes.ts";
 import { githubAppRoutes } from "./github-app-routes.ts";
 import { workerChannels } from "./channels.ts";
@@ -100,6 +101,7 @@ export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
+// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
 export { Volume } from "./volume.ts";
 export { RepoDO } from "./repos/repo-do.ts";
 export { WorkflowObject } from "./workflow-object.ts";
@@ -213,6 +215,8 @@ const worker = {
     // attestation for a credential bound to the host id it proves, then dials out with it (its socket's first message).
     const hosts = env as unknown as JobHostsEnv;
     const hostPath = new URL(request.url).pathname;
+    const retired = retiredVolumes(hostPath);
+    if (retired) return publicPageHeaders(request, corsResponse(request, retired));
     if (hosts.JOB_HOST_ATTESTORS && hosts.JOB_HOSTS && hosts.JOB_HOST_REGISTRY && hostPath.startsWith("/v1/internal/job-hosts/")) {
       if (hostPath === "/v1/internal/job-hosts/connect") {
         const name = new URL(request.url).searchParams.get("host") ?? "";
@@ -220,6 +224,7 @@ const worker = {
         return hosts.JOB_HOSTS.getByName(name).fetch(request);
       }
       if (hostPath === "/v1/internal/job-hosts/enroll" && request.method === "POST") return enrollHost(request, hosts);
+      // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
       // Host-side sync: a job's host fetches its large tree's files (HostJob.fetch checks the job's token).
       const synced = /^\/v1\/internal\/job-hosts\/sync\/([^/]{1,200})\/(\d{1,6})$/.exec(hostPath);
       if (synced && request.method === "GET" && hosts.HOST_JOBS) {

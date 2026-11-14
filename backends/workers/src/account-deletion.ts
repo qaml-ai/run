@@ -6,16 +6,12 @@ import { HttpError } from "./errors.ts";
 import { deleteJourneyAccount } from "./account-journey-state.ts";
 import { safeError } from "./observability.ts";
 import { StripeError, type Stripe } from "./stripe.ts";
-interface VolumeService {
-  call(id: string, tenant: string, action: "delete"): Promise<unknown>;
-  purge(id: string): Promise<void>;
-}
 interface Channels { remove(tenant: string, id: string): Promise<unknown> }
 interface Storage { removeBlobs(prefix: string): Promise<void> }
 
 /**
  * Deleting a tenant created by sign-in, and everything it stored: agents (through their purge, which releases their
- * chunk pins), volumes and their files, credentials (API tokens, OAuth grants, provider keys, key scopes), definitions,
+ * chunk pins), repos and their files, credentials (API tokens, OAuth grants, provider keys, key scopes), definitions,
  * webhooks, channels, billing contacts and settings, its Stripe customer, and its tenant row.
  *
  * Kept, on purpose: the credit ledger, credit account and usage totals (for tax and accounting), payment records
@@ -35,16 +31,16 @@ export interface AccountDeletionOptions {
   db: Db;
   accounts: Accounts;
   storage: Storage;
-  volumes?: VolumeService;
   channels?: Channels;
   stripe?: Stripe;
   /** Delete one of the tenant's agents on whichever node serves it. */
   deleteAgent(agent: string, tenant: string): Promise<unknown>;
   /** Purge up to `limit` deleted agents now, rather than at the next sweep; resolves to how many it purged. */
   purgeAgents?(tenant: string, limit: number): Promise<number>;
-  /** Write storage-usage deltas, so none for the tenant's deleted objects is written after its rows go. */
-  flushStorageUsage?(): Promise<void>;
+  /** Purge the tenant index after owned resources have been removed. */
+  purgeTenantIndex?(tenant: string): Promise<void>;
   removeComputers?(tenant: string): Promise<void>;
+  removeRepos?(tenant: string): Promise<void>;
   /** Restrict maintenance claims when a bounded operator manages one tenant. */
   onlyTenant?: string;
   /** Durable host wake-up. Awaited after recording intent, before accepting the request. */
@@ -190,7 +186,7 @@ export class AccountDeletions {
    * purged some (the next pass may start at once), "waiting" when it could do nothing (look again shortly).
    */
   private async run(tenant: string): Promise<"done" | "progress" | "waiting"> {
-    const { db, channels, volumes } = this.options;
+    const { db, channels } = this.options;
     const ids = async (query: string) => (await db.query(query, [tenant])).rows.map(row => row.id as string);
     // Channels first, so no message makes the tenant a new agent meanwhile; each is torn down at its provider.
     for (const id of await ids("select id from channels where tenant = $1")) {
@@ -208,17 +204,12 @@ export class AccountDeletions {
       const purged = await this.options.purgeAgents?.(tenant, limit) ?? 0;
       if ((await db.query("select 1 from agents where tenant = $1 limit 1", [tenant])).rowCount) return live.length || purged ? "progress" : "waiting";
     }
-    if (volumes) {
-      for (const id of await ids("select id from volumes where tenant = $1 and deleted_at is null")) {
-        await volumes.call(id, tenant, "delete").catch(error => { if ((error as HttpError).status !== 404) throw error; });
-      }
-      for (const id of await ids("select id from volumes where tenant = $1 and purged_at is null")) await volumes.purge(id);
-    }
+    await this.options.removeRepos?.(tenant);
     // Files' contents: every chunk the tenant stored, referenced or not.
     await this.options.storage.removeBlobs(`chunks/${tenant}/`);
     // Voice recordings' chunks and files.
     await this.options.storage.removeBlobs(`recordings/${tenant}/`);
-    await this.options.flushStorageUsage?.();
+    await this.options.purgeTenantIndex?.(tenant);
     await this.deleteCustomers(tenant);
     await transaction(db, async sql => {
       for (const table of TENANT_TABLES) await sql.query(`delete from ${table} where tenant = $1`, [tenant]);
@@ -227,6 +218,7 @@ export class AccountDeletions {
       await sql.query("update model_attempts set context='{}', end_user=null where tenant=$1", [tenant]);
       await sql.query("delete from billing_confirmation_limits where scope = $1", [`tenant:${tenant}`]);
       await sql.query("delete from storage_usage where (kind = 'tenant' and owner = $1) or (kind = 'volume' and owner in (select id from volumes where tenant = $1))", [tenant]);
+      await sql.query("delete from volume_snapshots where volume in (select id from volumes where tenant = $1)", [tenant]);
       await sql.query("delete from volumes where tenant = $1", [tenant]);
       await sql.query("delete from tenants where id = $1", [tenant]);
       await sql.query("update account_deletions set completed_at = $2, claimed_until = null where tenant = $1", [tenant, Date.now()]);

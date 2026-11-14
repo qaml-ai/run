@@ -6,7 +6,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { jobDriver, type JobDriverEnv } from "./jobs/driver.ts";
 import { JOB_LIMITS, JobSpecError, jobVolume, type JobResult, type JobSpec } from "./jobs/job.ts";
 import { volume, type FileBindings } from "./files.ts";
-import { digest } from "./volume.ts";
+import { digest } from "./file-errors.ts";
 
 export type AgentJobsEnv = JobDriverEnv & FileBindings;
 
@@ -118,6 +118,7 @@ export async function jobRunSpec(host: Pick<AgentJobsHost, "env" | "tenant" | "a
   if (args.files !== undefined && (!args.files || typeof args.files !== "object" || Array.isArray(args.files) || Object.values(args.files).some(value => typeof value !== "string")))
     throw new JobSpecError("files maps paths to text");
   if (args.outputs !== undefined && (!Array.isArray(args.outputs) || args.outputs.some(value => typeof value !== "string"))) throw new JobSpecError("outputs is a list of paths");
+  // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
   let source: Pick<JobSpec, "volume" | "files"> = {};
   if (args.at !== undefined) {
     if (typeof args.at !== "string") throw new JobSpecError("at is a volume id");

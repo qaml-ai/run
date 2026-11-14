@@ -18,7 +18,7 @@ import { configuration } from "./api-contract.ts";
 import { keyServices } from "./security-services.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { handleAgentFilesRoute, type Mount } from "./files.ts";
-import { normalizePath } from "./volume-policy.ts";
+import { normalizePath } from "./file-policy.ts";
 import { transaction, withSql, type Sql } from "./postgres.ts";
 import { safeError } from "./observability.ts";
 import { SendError } from "../../../src/core/channels/channels.ts";

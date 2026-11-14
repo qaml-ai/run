@@ -225,16 +225,16 @@ export interface CapacitySeam {
  */
 export interface ResultCache {
   /**
-   * The cache key of an effect of `kind` with canonical `args` as it is about to start (for one that reads a volume,
-   * with that volume's version now), and the result stored under it, if any. The key is kept on the effect: its result
+   * The cache key of an effect of `kind` with canonical `args` as it is about to start (for one that reads files,
+   * with the source's version now), and the result stored under it, if any. The key is kept on the effect: its result
    * is offered under the key it was looked up with, never one made after it ran, so a result is only ever found again
-   * on the version it could have read (a volume's version only grows: a key made before a change is never made again).
+   * on the version it could have read (the version is part of the key).
    */
   lookup(kind: string, args: string, effect: { key: string; attempt: number }): Promise<{ key: string; hit?: { value: unknown; source: string } }>;
   /** Retain a cacheable result before journaling its landing and cleaning up its source branch. */
   landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown; cacheKey: string }): void | Promise<void>;
 }
-/** Kinds whose `ok` results are reused (`commit`, `push` change a volume or a branch: effects, not results). */
+/** Kinds whose `ok` results are reused (`commit`, `push` change a repo or a branch: effects, not results). */
 const CACHEABLE = new Set(["agent", "job"]);
 /** Whether an effect's result may come from, or go to, the cache: an agent or job that did not opt out (`nocache: true`). */
 export function cacheable(kind: string, args: string) {

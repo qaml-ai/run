@@ -17,7 +17,7 @@ import { Tenants } from "../src/tenants.ts";
 
 import type { Storage } from "../src/billing-host.ts";
 
-import { StorageUsage } from "../src/storage-usage.ts";
+import { StorageUsage } from "../../../src/storage-usage.ts";
 
 import { testDatabase } from "./billing-database.ts";
 
