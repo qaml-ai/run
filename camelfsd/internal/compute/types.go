@@ -58,13 +58,14 @@ const (
 )
 
 var (
-	ErrNotFound  = errors.New("compute item not found")
-	ErrConflict  = errors.New("VM id already used by another request")
-	ErrNoHost    = errors.New("no host available")
-	ErrCondition = errors.New("compute condition lost")
-	ErrPhase     = errors.New("invalid VM phase for operation")
-	ErrHost      = errors.New("host or boot epoch does not match")
-	ErrInvalid   = errors.New("invalid compute request")
+	ErrNotFound     = errors.New("compute item not found")
+	ErrConflict     = errors.New("VM id already used by another request")
+	ErrTooManyExecs = errors.New("too many in-flight execs")
+	ErrNoHost       = errors.New("no host available")
+	ErrCondition    = errors.New("compute condition lost")
+	ErrPhase        = errors.New("invalid VM phase for operation")
+	ErrHost         = errors.New("host or boot epoch does not match")
+	ErrInvalid      = errors.New("invalid compute request")
 	// ErrLeaseExpired: a lapsed lease is final. A renewal that arrives after the deadline never revives it.
 	ErrLeaseExpired = errors.New("VM lease has expired")
 )
@@ -78,9 +79,17 @@ type Shape struct {
 
 const DefaultIdleStopS = 10
 
-func ValidIdleStop(seconds int64) bool { return seconds >= 5 && seconds <= 86400 }
+func ValidIdleStop(seconds int64) bool { return seconds > 0 && seconds <= 3600 }
 
 type Session struct{ IdleStopS int64 }
+
+const maxExecsInFlight = 64
+
+type Checkpoint struct {
+	Version string `json:"version"`
+	Tree    string `json:"tree"`
+	At      int64  `json:"at"`
+}
 
 type CreateRequest struct {
 	ID, Lineage, Ref, Version string
@@ -104,7 +113,8 @@ type VM struct {
 	StopCheckpoint                          bool
 	StopReason, Code                        EndCode
 	FirstExecAt                             *int64
-	execs, seenExecs                        []string
+	execs                                   []string
+	LastCheckpoint                          *Checkpoint
 	RequestedVersion                        string
 	RequestedDeadline                       int64
 	ResultRef, EndVersion                   string
