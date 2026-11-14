@@ -47,18 +47,20 @@ func TestUnitRank(t *testing.T) {
 	now := int64(100000)
 	shape := Shape{2, 1024, 3}
 	host := func(name string, free int) Host {
-		return Host{HostInfo: HostInfo{Host: name, Shape: shape}, Free: free, LastSeenAt: now}
+		return Host{HostInfo: HostInfo{Host: name, Shape: shape}, Free: free, FreeMiB: 1024, LastSeenAt: now}
 	}
 	hosts := []Host{host("b", 3), host("c", 4), host("a", 3), host("stale", 10),
-		host("draining", 10), host("small", 10), host("full", 0)}
+		host("draining", 10), host("small", 10), host("full", 0), host("no-memory", 10), host("more-memory", 3)}
 	hosts[3].LastSeenAt -= hostFreshMS
 	hosts[4].Draining = true
 	hosts[5].Shape.DiskGiB--
+	hosts[7].FreeMiB--
+	hosts[8].FreeMiB *= 2
 	var names []string
 	for _, h := range rank(hosts, shape, now) {
 		names = append(names, h.Host)
 	}
-	if !slices.Equal(names, []string{"c", "a", "b"}) {
+	if !slices.Equal(names, []string{"c", "more-memory", "a", "b"}) {
 		t.Fatal(names)
 	}
 }
