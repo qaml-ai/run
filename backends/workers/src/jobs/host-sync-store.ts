@@ -1,3 +1,4 @@
+// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
 // A job's host-side sync record (hosts.ts HostJob): its token, hashed, until when, and its manifest, one row per file
 // in the job object's own SQLite. A manifest of 100,000 files is far past one stored value's size, and a fetch reads
 // only its own row.
