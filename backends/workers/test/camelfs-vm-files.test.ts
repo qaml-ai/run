@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,9 +55,23 @@ function fixture(t: TestContext) {
   const activity: { event: string; execId: string; at: number }[] = [];
   const ops: string[] = [];
   const flags = { checkpoints: 0, create: 0, stopped: false, changed: false, checkpointGate: undefined as Promise<void> | undefined, bashGate: undefined as Promise<void> | undefined };
+  const uploads = new Map<string, Uint8Array>();
+  const blobExecs: { blob: string; size: number; sha256: string }[] = [];
+  let transfer = (bytes: Uint8Array) => bytes;
   let lastActivity = Date.now();
   t.mock.method(globalThis, "fetch", async (url: URL, init: RequestInit) => {
     const [, , resource, id, op] = url.pathname.split("/");
+    if (resource === "lineages" && op === "blobs") {
+      assert.equal(decodeURIComponent(id), branch.lineage);
+      assert.equal(init.method, "PUT");
+      assert.ok(init.body instanceof Uint8Array);
+      const bytes = init.body;
+      const sha256 = sha(bytes);
+      assert.equal(new Headers(init.headers).get("X-Camel-Sha256"), sha256);
+      const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+      uploads.set(blob, bytes);
+      return Response.json({ blob, sha256, size: bytes.length }, { status: 201 });
+    }
     assert.equal(resource, "vms");
     if (!id) {
       flags.create++;
@@ -76,15 +90,46 @@ function fixture(t: TestContext) {
     const body = JSON.parse(String(init.body));
     activity.push({ event: "ExecStarted", execId: body.execId, at: Date.now() });
     let stdout = "bash";
-    if (body.stdin) {
+    if (body.stdin || body.stdinBlob) {
       assert.equal(body.cwd, "/workspace");
       assert.equal(body.shell, undefined);
       assert.match(body.execId, /^vmfiles-[a-f0-9-]+$/);
-      ops.push(JSON.parse(body.stdin).op);
-      // The tier is fake. Run only the generated command against a local temporary directory.
-      const result = spawnSync("bash", ["-lc", body.command], { cwd: dir, input: body.stdin, encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 2000 });
-      assert.equal(result.status, 0, result.stderr);
-      stdout = result.stdout;
+      let input: Uint8Array;
+      if (body.stdinBlob) {
+        assert.ok(!Object.hasOwn(body, "stdin"));
+        assert.ok(String(init.body).length < 32 * 1024);
+        const params = JSON.parse(Buffer.from(body.command.split(" ").at(-1), "base64").toString());
+        assert.equal(params.op, "write");
+        assert.ok(!Object.hasOwn(params, "bytes"));
+        const { blob, size, sha256 } = body.stdinBlob;
+        const bytes = uploads.get(blob);
+        assert.ok(bytes);
+        assert.deepEqual({ size, sha256 }, { size: bytes.length, sha256: sha(bytes) });
+        assert.equal(params.size, size);
+        assert.equal(params.sha256, sha256);
+        blobExecs.push(body.stdinBlob);
+        ops.push(params.op);
+        input = transfer(bytes);
+      } else {
+        ops.push(JSON.parse(body.stdin).op);
+        input = Buffer.from(body.stdin);
+      }
+      // Use a file descriptor like the guest. The input file is unlinked before
+      // running the command, so file operations see only the workspace.
+      const inputFile = join(dir, ".test-stdin");
+      writeFileSync(inputFile, input);
+      const fd = openSync(inputFile, "r");
+      try {
+        rmSync(inputFile);
+        const result = spawnSync("bash", ["-lc", body.command], {
+          cwd: dir, stdio: [fd, "pipe", "pipe"],
+          encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 5000,
+        });
+        assert.equal(result.status, 0, result.stderr || result.error?.message);
+        stdout = result.stdout;
+      } finally {
+        closeSync(fd);
+      }
     } else {
       assert.equal(body.shell, "agent-shell");
       await flags.bashGate;
@@ -97,7 +142,8 @@ function fixture(t: TestContext) {
   const get = (ref = scope.ref) => vmFiles({ ...env, bashSessions: sessions }, { ...scope, ref });
   const bash = (id: string) => sessions.execute(conf, branch, id, id, "run", { command: "true" });
   const flush = async () => { while (pending.length) await Promise.all(pending.splice(0)); };
-  return { db, dir, sessions, flags, activity, ops, get, bash, flush };
+  return { db, dir, sessions, flags, activity, ops, get, bash, flush, uploads, blobExecs,
+    setTransfer: (mutate: typeof transfer) => { transfer = mutate; } };
 }
 
 test("running branch uses isolated execs for every file operation", async t => {
@@ -246,4 +292,33 @@ test("file exec resets idle activity, and a stopped VM fails without changing ba
   await assert.rejects(vm.read("a"), { status: 409, message: "the VM stopped; retry" });
   assert.equal(await f.get(), undefined);
   await assert.rejects(vm.checkpoint(), /the VM stopped; retry/);
+});
+
+test("20 MiB write sends only metadata in the exec request", async t => {
+  const f = fixture(t);
+  await f.bash("boot");
+  const vm = (await f.get())!;
+  const bytes = Buffer.alloc(20 * 2 ** 20, 0x9f);
+  const sha256 = sha(bytes);
+  assert.deepEqual(await vm.write("large", bytes), { size: bytes.length, sha256 });
+  assert.equal(f.uploads.size, 1);
+  assert.deepEqual(f.blobExecs, [{ blob: [...f.uploads.keys()][0], size: bytes.length, sha256 }]);
+  assert.deepEqual(readFileSync(join(f.dir, "large")), bytes);
+  await f.flush();
+});
+
+test("corrupt transfers leave the current file and directory contents intact", async t => {
+  const f = fixture(t);
+  await f.bash("boot");
+  const vm = (await f.get())!;
+  const original = Buffer.from("keep");
+  await vm.write("target", original);
+  for (const corrupt of ["BAD!", "bad", "extra"]) {
+    f.setTransfer(() => Buffer.from(corrupt));
+    await assert.rejects(vm.write("target", Buffer.from("good"), { expectSha256: "none" }),
+      { code: "transfer_corrupt", status: 502 });
+    assert.deepEqual(readFileSync(join(f.dir, "target")), original);
+    assert.deepEqual(readdirSync(f.dir), ["target"]);
+  }
+  await f.flush();
 });

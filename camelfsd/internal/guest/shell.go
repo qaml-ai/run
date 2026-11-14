@@ -2,6 +2,7 @@ package guest
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"golang.org/x/sys/unix"
 )
 
@@ -111,6 +114,12 @@ func (g *guest) sessionCommand(e *execution, sh *shell, req request) (any, bool,
 	if strings.ContainsRune(req.Command, 0) {
 		return 125, false, errors.New("invalid command")
 	}
+	// Use a file so os/exec does not wait on a stdin copier after the child exits.
+	in, err := g.commandInput(req, deadline)
+	if err != nil {
+		return 125, false, err
+	}
+	defer in.Close()
 	var pipes [2][2]*os.File
 	for i := range pipes {
 		r, w, err := os.Pipe()
@@ -148,7 +157,7 @@ func (g *guest) sessionCommand(e *execution, sh *shell, req request) (any, bool,
 		drain.Wait()
 	}()
 	if sh != nil {
-		return sh.run(req, env, pipes[0][1], pipes[1][1], deadline)
+		return sh.run(req, env, in, pipes[0][1], pipes[1][1], deadline)
 	}
 	cmd := exec.Command("bash", "-lc", req.Command)
 	cmd.Dir, cmd.Env = g.workdir(), append(os.Environ(), env...)
@@ -159,12 +168,6 @@ func (g *guest) sessionCommand(e *execution, sh *shell, req request) (any, bool,
 		}
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	// Use a file so os/exec does not wait on a stdin copier after the child exits.
-	in, err := commandInput(req.Stdin)
-	if err != nil {
-		return 125, false, err
-	}
-	defer in.Close()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, pipes[0][1], pipes[1][1]
 	wait, err := g.reaper.start(cmd)
 	if err != nil {
@@ -192,8 +195,8 @@ func exitCode(status unix.WaitStatus) any {
 	return nil
 }
 
-func commandInput(data string) (*os.File, error) {
-	if data == "" {
+func (g *guest) commandInput(req request, deadline time.Time) (*os.File, error) {
+	if req.Stdin == "" && req.StdinBlob == nil {
 		return os.Open(os.DevNull)
 	}
 	fd, err := unix.MemfdCreate("exec-stdin", unix.MFD_CLOEXEC)
@@ -201,7 +204,12 @@ func commandInput(data string) (*os.File, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), "exec-stdin")
-	if _, err = f.WriteString(data); err == nil {
+	if req.StdinBlob == nil {
+		_, err = f.WriteString(req.Stdin)
+	} else {
+		err = g.readExecInput(req, deadline, f)
+	}
+	if err == nil {
 		_, err = f.Seek(0, io.SeekStart)
 	}
 	if err != nil {
@@ -211,18 +219,47 @@ func commandInput(data string) (*os.File, error) {
 	return f, nil
 }
 
+func (g *guest) readExecInput(req request, deadline time.Time, dst io.Writer) error {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	c, err := g.dial(ctx, hostwire.ExecInputPort, deadline)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := c.SetDeadline(deadline); err != nil {
+		return err
+	}
+	if err := wire.Send(c, req.StdinToken); err != nil {
+		return err
+	}
+	var ready bool
+	if err := wire.JSON(c, &ready); err != nil {
+		return err
+	}
+	if !ready {
+		return errors.New("stdin blob stream unavailable")
+	}
+	// The host closes the raw stream after the last byte. Read one extra byte
+	// to distinguish an exact transfer from one with trailing data.
+	size := *req.StdinBlob.Size
+	n, err := io.Copy(dst, io.LimitReader(c, size+1))
+	if err != nil {
+		return err
+	}
+	if n != size {
+		return errors.New("stdin blob stream size mismatch")
+	}
+	return nil
+}
+
 func procFD(f *os.File) string { return fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), f.Fd()) }
 
 // Bash reads one wrapper from the control pipe. Eval runs in the shell with
 // per-command stdin/stdout/stderr and fd 3 closed. Only the wrapper writes
 // <random 128-bit token>:<status> to fd 3, a separate status pipe. Bytes on
 // stdout/stderr are never parsed as status, even if they match the sentinel.
-func (sh *shell) run(req request, env []string, out, errOut *os.File, deadline time.Time) (any, bool, error) {
-	in, err := commandInput(req.Stdin)
-	if err != nil {
-		return 125, false, err
-	}
-	defer in.Close()
+func (sh *shell) run(req request, env []string, in, out, errOut *os.File, deadline time.Time) (any, bool, error) {
 	nonce, err := token()
 	if err != nil {
 		return 125, false, err

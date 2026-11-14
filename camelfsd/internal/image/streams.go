@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -35,13 +37,14 @@ type arm struct {
 	conn chan net.Conn
 }
 type streams struct {
-	mu        sync.Mutex
-	listeners []net.Listener
-	paths     []string
-	conns     map[net.Conn]bool
-	armed     *arm
-	used      bool
-	closed    bool
+	mu         sync.Mutex
+	listeners  []net.Listener
+	paths      []string
+	conns      map[net.Conn]bool
+	armed      *arm
+	execInputs map[string]io.Reader
+	used       bool
+	closed     bool
 }
 
 func (s *streams) close() {
@@ -163,6 +166,10 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 	if apply {
 		ports = append(ports, "5201")
 	}
+	execPort := strconv.Itoa(hostwire.ExecInputPort)
+	if v.Session {
+		ports = append(ports, execPort)
+	}
 	for _, port := range ports {
 		path := v.Vsock + "_" + port
 		bind := path
@@ -235,6 +242,12 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 						delete(s.conns, c)
 						s.mu.Unlock()
 					}
+					continue
+				}
+				if port == execPort {
+					s.conns[c] = true
+					s.mu.Unlock()
+					go s.sendExecInput(c, m.StreamIdle, m.ApplyMax)
 					continue
 				}
 				if s.used {

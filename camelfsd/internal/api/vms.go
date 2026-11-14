@@ -25,6 +25,7 @@ import (
 
 type vmAPI struct {
 	controller *compute.Controller
+	storage    *StorageServer
 	host       HostPusher
 	images     []string
 	pools      []string
@@ -35,7 +36,7 @@ type vmAPI struct {
 }
 
 func (s *StorageServer) EnableCompute(c *compute.Controller, images, pools []string, idle map[string]int64, heartbeat time.Duration) {
-	v := &vmAPI{controller: c, images: images, pools: pools, idle: idle, heartbeat: heartbeat,
+	v := &vmAPI{controller: c, storage: s, images: images, pools: pools, idle: idle, heartbeat: heartbeat,
 		imageBytes: make(map[string]int64)}
 	// The production controller already carries the pusher with the tier's rotating TLS credentials.
 	v.host, _ = c.Pusher.(HostPusher)

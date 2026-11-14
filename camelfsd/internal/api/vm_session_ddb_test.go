@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 func TestDDBVMSessionProxy(t *testing.T) {
@@ -40,6 +41,13 @@ func TestDDBVMSessionProxy(t *testing.T) {
 		HostFresh: 10 * time.Minute,
 	}
 	c.EnableClockCheck()
+	repoServer := storageServer(t, store.Local{Dir: t.TempDir()})
+	blob := put(t, repoServer, "tenant", "verified input")
+	foreign := put(t, repoServer, "other", "foreign input")
+	info, err := repoServer.repository().BlobInfo(ctx, "tenant", blob)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const vmPath = "/v1/vms/vm"
 	exitAllowed := make(chan struct{})
 	checkpointEntered, checkpointAllowed := make(chan struct{}), make(chan struct{})
@@ -71,6 +79,12 @@ func TestDDBVMSessionProxy(t *testing.T) {
 			wantShell := "sh"
 			if q.ExecID == "one-off" {
 				wantShell = ""
+				if q.Stdin != nil || q.StdinBlob == nil || !q.StdinBlob.Valid() ||
+					q.StdinBlob.Blob != blob || *q.StdinBlob.Size != info.Size || q.StdinBlob.SHA256 != info.SHA256 {
+					t.Errorf("forwarded blob: %+v", q)
+				}
+			} else if q.StdinBlob != nil {
+				t.Errorf("unexpected forwarded blob: %+v", q)
 			}
 			if err != nil || q.Shell != wantShell {
 				t.Errorf("exec request: %+v, %v", q, err)
@@ -160,6 +174,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	// Cancel host test gates before httptest cleanup waits for active handlers.
 	t.Cleanup(cancel)
 	s := vmTestServer(c, nil, nil)
+	s.repo = repoServer.repository
 	request := func(method, suffix, body, access, subject string) *http.Request {
 		r := vmRequest(method, vmPath+suffix, body).WithContext(ctx)
 		r.Header.Set("X-Access", access)
@@ -232,7 +247,26 @@ func TestDDBVMSessionProxy(t *testing.T) {
 		t.Fatalf("host shell requests: %v, want {} and shellKey %q", gotShellRequests, shellKey)
 	}
 	call(post("/exec", `{"command":"true","shell":"sh","timeoutS":1}`), 400, "execId")
-	call(post("/exec", `{"execId":"one-off","command":"true","timeoutS":1}`), 200, strings.Join(sessionFrames, ""))
+	blobBody := func(fields string) string {
+		return `{"execId":"one-off","command":"true","timeoutS":1,` + fields + `}`
+	}
+	valid := fmt.Sprintf(`"stdinBlob":{"blob":%q,"size":%d,"sha256":%q}`, blob, info.Size, info.SHA256)
+	call(post("/exec", blobBody(valid)), 200, strings.Join(sessionFrames, ""))
+	call(post("/exec", blobBody(`"stdin":"",`+valid)), 400, "invalid_request")
+	call(post("/exec", blobBody(`"stdin":null,`+valid)), 400, "invalid_request")
+	call(post("/exec", blobBody(strings.Replace(valid, blob, foreign, 1))), 404, "not_in_tree")
+	for _, invalid := range []string{
+		`"stdinBlob":false`,
+		`"stdinBlob":null`,
+		strings.Replace(valid, blob, strings.Repeat("A", 40), 1),
+		strings.Replace(valid, info.SHA256, "x", 1),
+		strings.Replace(valid, fmt.Sprintf(`"size":%d,`, info.Size), "", 1),
+		strings.Replace(valid, fmt.Sprintf(`"size":%d`, info.Size), `"size":-1`, 1),
+		strings.Replace(valid, fmt.Sprintf(`"size":%d`, info.Size), `"size":0.5`, 1),
+		strings.Replace(valid, fmt.Sprintf(`"size":%d`, info.Size), `"size":268435457`, 1),
+	} {
+		call(post("/exec", blobBody(invalid)), 400, "invalid_request")
+	}
 	call(post("/exec", execBody("e", "true")), 200, strings.Join(sessionFrames, ""))
 
 	clock.Add(5_000)

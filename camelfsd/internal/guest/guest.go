@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"golang.org/x/sys/unix"
 )
 
@@ -43,6 +44,8 @@ type request struct {
 	Env                       map[string]string
 	Outputs                   []string
 	ExecID, Shell, Stdin, Cwd string
+	StdinBlob                 *hostwire.ExecBlob
+	StdinToken                string
 	ShellKey                  string
 	TimeoutS                  float64
 	Offset                    int64
