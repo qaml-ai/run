@@ -144,12 +144,13 @@ func TestBadImageEndsStartFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"compressed", "ext4"} {
+	for _, bad := range []string{"compressed", "ext4", "short", "long", "missing size"} {
 		t.Run(bad, func(t *testing.T) {
 			sha, zsha := fmt.Sprintf("%x", sha256.Sum256(disk)), fmt.Sprintf("%x", sha256.Sum256(zip))
-			if bad == "compressed" {
+			switch bad {
+			case "compressed":
 				zsha = strings.Repeat("1", 64)
-			} else {
+			case "ext4":
 				sha = strings.Repeat("2", 64)
 			}
 			data, source := t.TempDir(), t.TempDir()
@@ -162,8 +163,20 @@ func TestBadImageEndsStartFailed(t *testing.T) {
 			must(os.Mkdir(filepath.Join(source, "guest"), 0700))
 			must(os.Mkdir(filepath.Join(data, "images"), 0700))
 			base := filepath.Join(source, "guest", sha)
-			meta := fmt.Sprintf(`{"sha256":%q,"zstdSha256":%q,"bytes":%d}`, sha, zsha, len(disk))
-			must(os.WriteFile(base+".json", []byte(meta), 0600))
+			size := len(zip)
+			switch bad {
+			case "short":
+				size++
+			case "long":
+				size--
+			}
+			meta := map[string]any{"sha256": sha, "zstdSha256": zsha, "bytes": len(disk)}
+			if bad != "missing size" {
+				meta["zstdBytes"] = size
+			}
+			manifest, err := json.Marshal(meta)
+			must(err)
+			must(os.WriteFile(base+".json", manifest, 0600))
 			must(os.WriteFile(base+".ext4.zst", zip, 0600))
 			shape := hostwire.Shape{VCPUs: 1, MemoryMiB: 128, DiskMiB: 1}
 			h, err := Open(t.Context(), Config{Data: data, HostID: "host", Slots: 1, Shape: shape, Images: store.Local{Dir: source}, Mounts: &image.Manager{}, Launcher: &vmhost.Launcher{Work: data}})

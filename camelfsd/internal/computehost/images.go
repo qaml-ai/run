@@ -96,13 +96,14 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 		SHA256     string `json:"sha256"`
 		ZstdSHA256 string `json:"zstdSha256"`
 		Bytes      int64  `json:"bytes"`
+		ZstdBytes  int64  `json:"zstdBytes"`
 	}
 	err = json.NewDecoder(io.LimitReader(manifest, 64<<10)).Decode(&m)
 	manifest.Close()
 	if err != nil {
 		return err
 	}
-	if m.SHA256 != sha || !root.Hex(m.ZstdSHA256, 64) || m.Bytes <= 0 || m.Bytes > maxBytes {
+	if m.SHA256 != sha || !root.Hex(m.ZstdSHA256, 64) || m.Bytes <= 0 || m.Bytes > maxBytes || m.ZstdBytes <= 0 || m.ZstdBytes == math.MaxInt64 {
 		return errors.New("invalid guest manifest or guest image exceeds VM disk")
 	}
 	dir, err := os.MkdirTemp(i.dir, ".download-")
@@ -119,12 +120,16 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 		compressed.Close()
 		return err
 	}
-	// zstd never expands incompressible input by more than a few bytes per block; bound the
-	// download by the image size so a bad object cannot fill the cache disk.
-	verify := checkHash(io.LimitReader(response, m.Bytes+m.Bytes/64+1<<20), compressed, m.ZstdSHA256)
-	response.Close()
-	if err := errors.Join(verify, compressed.Close()); err != nil {
+	hash := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(compressed, hash), io.LimitReader(response, m.ZstdBytes+1))
+	if err := errors.Join(copyErr, response.Close(), compressed.Close()); err != nil {
 		return fmt.Errorf("compressed guest image: %w", err)
+	}
+	if n != m.ZstdBytes {
+		return errors.New("compressed guest image size mismatch")
+	}
+	if fmt.Sprintf("%x", hash.Sum(nil)) != m.ZstdSHA256 {
+		return errors.New("compressed guest image SHA-256 mismatch")
 	}
 
 	cmd := exec.CommandContext(ctx, "zstd", "-q", "-d", "-c", "--", compressed.Name())
@@ -140,8 +145,8 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	hash := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(hash, image), io.LimitReader(out, m.Bytes+1))
+	hash.Reset()
+	n, copyErr = io.Copy(io.MultiWriter(hash, image), io.LimitReader(out, m.Bytes+1))
 	out.Close()
 	if err := errors.Join(copyErr, cmd.Wait()); err != nil {
 		return err

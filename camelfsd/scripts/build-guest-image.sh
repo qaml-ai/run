@@ -36,8 +36,8 @@ sha=$(sha256sum "$image" | cut -d ' ' -f1)
 zstd -q -T0 -6 "$image" -o "$work/guest.ext4.zst"
 zsha=$(sha256sum "$work/guest.ext4.zst" | cut -d ' ' -f1)
 jq -n --arg sha "$sha" --argjson bytes "$(stat -c %s "$image")" --arg zsha "$zsha" --arg commit "$commit" \
-  --rawfile packages "$work/packages" \
-  '{sha256:$sha,bytes:$bytes,zstdSha256:$zsha,camelfsdCommit:$commit,packages:($packages|split("\n")|map(select(length>0)))}' > "$work/guest.json"
+  --argjson zbytes "$(stat -c %s "$work/guest.ext4.zst")" --rawfile packages "$work/packages" \
+  '{sha256:$sha,bytes:$bytes,zstdSha256:$zsha,zstdBytes:$zbytes,camelfsdCommit:$commit,packages:($packages|split("\n")|map(select(length>0)))}' > "$work/guest.json"
 mv "$work/guest.ext4.zst" "$out/guest-$sha.ext4.zst"
 mv "$work/guest.json" "$out/guest-$sha.json"
 echo "Guest image $sha: $(stat -c %s "$image") bytes ext4, $(stat -c %s "$out/guest-$sha.ext4.zst") bytes zstd"
