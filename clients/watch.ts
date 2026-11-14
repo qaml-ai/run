@@ -37,7 +37,9 @@ export interface WatchOptions {
   transport?: "auto" | "websocket" | "sse" | "poll";
   /** Messages a history page asks for (default 50). */
   pageSize?: number;
-  /** A stream that delivers nothing (not even a heartbeat) this long is cut (default 35 s); two such, and it polls. */
+  /** A stream that has not delivered its first frame this long after it opened is cut (default 8 s); the watcher then polls when SSE can fall back. */
+  firstFrameMs?: number;
+  /** After the first frame, cut an SSE stream that delivers nothing (not even a heartbeat) this long (default 35 s). */
   stallMs?: number;
   /** Close the stream while the page is hidden, after this long (default 30 s; 0: never). */
   hiddenGraceMs?: number;
@@ -207,6 +209,7 @@ export function watchAgent(options: WatchOptions): Watcher {
   /** The index the next finished message takes, once the stream has said (a run's start, or a snapshot). */
   let next: number | undefined;
   let cursor = 0;
+  let snapshotted = false;
   let websocketSelected = false;
   let json = new Map<number, string>();
   let stream: AbortController | undefined;
@@ -248,26 +251,49 @@ export function watchAgent(options: WatchOptions): Watcher {
   };
   /** Whether the token reads history: until a 403 says not, when the watcher goes on with the stream alone. */
   let readsHistory = true;
-  async function historyRead(path: string) {
+  type HistoryPage = { entries: { index: number; message: Message }[]; next: number | null };
+  async function historyRead(path: string): Promise<HistoryPage | undefined> {
     if (!readsHistory) return undefined;
     try { return await json200(path); }
     catch (error) {
       if ((error as { status?: number }).status !== 403) throw error;
-      readsHistory = false;
-      before = null;
       return undefined;
     }
   }
 
   /** Take in a page of history: its messages by index, and (for the first, or an older one) where the next older page ends. */
-  function page(value: { entries: { index: number; message: Message }[]; next: number | null }, older = false, until = Infinity) {
+  function page(value: HistoryPage | undefined, older = false, until = Infinity) {
+    if (!value) {
+      readsHistory = false;
+      before = null;
+      return;
+    }
     for (const { index, message } of value.entries) if (index < until) messages.set(index, message);
     if (older || before === undefined) before = value.next;
   }
-  /** The newest page of history; messages from `until` on are left to the stream, which delivers them after its snapshot. */
-  async function newest(until?: number) {
-    const value = await historyRead(`/history?limit=${pageSize}`);
-    if (value) page(value, false, until);
+  const newest = () => historyRead(`/history?limit=${pageSize}`);
+
+  async function readHistoryAndState(turn: unknown, eager = false) {
+    type Known = { requests?: { method: string; state: string; began?: number }[] } | undefined;
+    const read = () => json200("/state").catch(error => {
+      if (eager && (error as { status?: number }).status !== 403) throw error;
+      return undefined;
+    }) as Promise<Known>;
+    const runs = (known: Known) => !!known?.requests?.some(request => request.state === "running" && request.began && ["prompt", "continue", "resume"].includes(request.method));
+    const [history, known] = await Promise.all([newest(), turn ? undefined : read()]);
+    let running = !!turn || runs(known);
+    if (!turn && !running) {
+      let index = Math.max(-1, ...messages.keys());
+      let latest = messages.get(index);
+      for (const entry of history?.entries ?? []) {
+        if (entry.index < index) continue;
+        index = entry.index;
+        latest = entry.message;
+      }
+      // If a run began between the reads, history can have its user message before state shows the run.
+      if (latest?.role === "user") running = runs(await read());
+    }
+    return { history, running };
   }
 
   /**
@@ -299,6 +325,8 @@ export function watchAgent(options: WatchOptions): Watcher {
   /** Take in one frame of the stream. */
   async function receive(data: any) {
     if (data.type === "snapshot") {
+      const firstSnapshot = !snapshotted;
+      snapshotted = true;
       // Where the stream could not replay: the running turn as of now, and the settled history before it.
       const turn = data.turn;
       state.running = !!turn;
@@ -307,23 +335,17 @@ export function watchAgent(options: WatchOptions): Watcher {
       state.progress = new Map();
       if (turn?.start !== null && turn?.start !== undefined) {
         // What the run finished: all of it, unless it was too large to send (then from history, read below).
-        next = turn.start + (turn.count ?? turn.messages.length);
+        const end: number = turn.start + (turn.count ?? turn.messages.length);
+        next = end;
+        // The eager page may already contain messages that the stream will replay after this snapshot.
+        if (firstSnapshot) for (const index of messages.keys()) if (index >= end) messages.delete(index);
         for (const [offset, message] of turn.messages.entries()) messages.set(turn.start + offset, message);
       } else next = undefined;
-      // History, and without a turn in it the agent's state (none runs, or the token does not show it), read together: a
-      // run that begins after the snapshot reaches this watcher as the stream's events, taken in after these reads.
-      type Known = { requests?: { method: string; state: string; began?: number }[] } | undefined;
-      const read = () => json200("/state").catch(() => undefined) as Promise<Known>;
-      const runs = (known: Known) => !!known?.requests?.some(request => request.state === "running" && request.began && ["prompt", "continue", "resume"].includes(request.method));
       // With a turn, the history read (made after the snapshot) may already hold messages the turn finished since: the
       // stream's events after the snapshot bring those, so the state stays the snapshot plus the events taken in.
-      const [, known] = await Promise.all([newest(turn ? next : undefined), turn ? undefined : read()]);
-      if (!turn) {
-        state.running = runs(known);
-        // A run that began between the two reads: history has its message, the state read before it did not. Read the
-        // state again then, so a message never shows with its turn not running.
-        if (!state.running && messages.get(Math.max(-1, ...messages.keys()))?.role === "user") state.running = runs(await read());
-      }
+      const { history, running } = await readHistoryAndState(turn);
+      page(history, false, turn ? next : undefined);
+      state.running = running;
       state.loaded = true;
       return;
     }
@@ -356,7 +378,7 @@ export function watchAgent(options: WatchOptions): Watcher {
         break;
       // A message too large for the stream still takes its place; the newest page of history has it.
       case "event_omitted":
-        if (event.was === "message_end" && next !== undefined) { next++; void newest().then(changed, report); }
+        if (event.was === "message_end" && next !== undefined) { next++; void newest().then(history => { page(history); changed(); }, report); }
         break;
       case "tool_execution_update": state.progress.set(event.toolCallId, event.partialResult); break;
       case "tool_execution_end": state.progress.delete(event.toolCallId); break;
@@ -397,20 +419,21 @@ export function watchAgent(options: WatchOptions): Watcher {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "", delivered = false, watchdog: ReturnType<typeof setTimeout> | undefined;
-    const touch = () => { clearTimeout(watchdog); if (!hibernatable) watchdog = setTimeout(() => void reader.cancel().catch(() => {}), options.stallMs ?? 35_000); };
-    touch();
+    const cut = () => void reader.cancel().catch(() => {});
+    const touch = () => { clearTimeout(watchdog); if (!hibernatable) watchdog = setTimeout(cut, options.stallMs ?? 35_000); };
+    watchdog = setTimeout(cut, options.firstFrameMs ?? 8_000);
     try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) return delivered;
-        touch();
+        if (delivered) touch();
         buffer += decoder.decode(value, { stream: true });
         for (let end; (end = buffer.indexOf("\n\n")) !== -1;) {
           const lines = buffer.slice(0, end).split("\n");
           buffer = buffer.slice(end + 2);
           const text = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
           if (!text) continue;
-          delivered = true;
+          if (!delivered) { delivered = true; touch(); }
           if (lines.includes("event: ready")) { state.connected = true; state.transport = hibernatable ? "websocket" : "sse"; changed(); continue; }
           if (lines.includes("event: reconnect")) { void reader.cancel().catch(() => {}); return true; }
           const id = Number(lines.find(line => line.startsWith("id:"))?.slice(3));
@@ -443,8 +466,17 @@ export function watchAgent(options: WatchOptions): Watcher {
       state.pendingInputs = [...pending.filter(input => !resolved.has(input.id) && !known.has(input.id)), ...state.pendingInputs];
       changed();
     }, report);
+    void readHistoryAndState(undefined, true).then(({ history, running }) => {
+      // The snapshot's reads and subsequent events are authoritative. Discard a late eager result so it cannot
+      // merge stale messages or flip running back.
+      if (snapshotted || closed.signal.aborted) return;
+      page(history);
+      state.running = running;
+      state.loaded = true;
+      changed();
+    }, report);
     let mode: "sse" | "poll" = options.transport === "poll" ? "poll" : "sse";
-    let failures = 0, backoff = 500;
+    let empty = 0, failures = 0, backoff = 500;
     while (!closed.signal.aborted) {
       await visible();
       if (closed.signal.aborted) break;
@@ -455,7 +487,8 @@ export function watchAgent(options: WatchOptions): Watcher {
       try {
         if (mode === "sse") {
           const delivered = await sse(signal);
-          failures = delivered ? 0 : failures + 1;
+          if (delivered) { empty = 0; failures = 0; }
+          else if (!signal.aborted) empty++;
           state.connected = false;
         } else await poll(signal);
         backoff = 500;
@@ -475,8 +508,8 @@ export function watchAgent(options: WatchOptions): Watcher {
         await sleep(backoff, closed.signal);
         backoff = Math.min(backoff * 2, 30_000);
       }
-      // Streams that end or fail without delivering anything (a proxy that buffers them): poll instead.
-      if (mode === "sse" && options.transport !== "sse" && options.transport !== "websocket" && !websocketSelected && failures >= 2) mode = "poll";
+      // Poll after one empty SSE stream (for example, a proxy that buffers it) or two connection errors.
+      if (mode === "sse" && options.transport !== "sse" && options.transport !== "websocket" && !websocketSelected && (empty >= 1 || failures >= 2)) mode = "poll";
     }
   }
 
@@ -498,8 +531,8 @@ export function watchAgent(options: WatchOptions): Watcher {
     async loadOlder() {
       if (!before) return false;
       const value = await historyRead(`/history?limit=${pageSize}&before=${before}`);
-      if (!value) return false;
       page(value, true);
+      if (!value) return false;
       changed();
       return true;
     },

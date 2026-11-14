@@ -175,16 +175,19 @@ test("a watcher whose streams deliver nothing (a proxy that buffers them) falls 
   const r = await runtime(t, () => ({ content: "polled" }));
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: {} })).json;
+  let cacheControl: string | null = null;
   const buffering = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input).includes("/events") && !String(input).includes("poll=1")) {
-      const response = await fetch(input, init);
+      const response = await fetch(input, { ...init, headers: { ...init?.headers, Accept: "text/event-stream" } });
+      cacheControl = response.headers.get("cache-control");
       return new Response(new ReadableStream({ cancel: () => response.body?.cancel() }), { status: 200, headers: response.headers });
     }
     return fetch(input, init);
   }) as typeof fetch;
-  const watcher = watchAgent({ url: r.base, agentId: agent, token, fetch: buffering, stallMs: 300 });
+  const watcher = watchAgent({ url: r.base, agentId: agent, token, fetch: buffering, firstFrameMs: 300 });
   t.after(() => watcher.close());
   await until(() => watcher.state.transport === "poll", "the fallback to polls", 10_000);
+  assert.match(cacheControl ?? "", /\bno-transform\b/);
   const done = await r.prompt(agent, "hi");
   await until(() => watcher.state.lastOutcome?.id === done.id, "the turn, by polls");
   assert.equal((watcher.state.messages.at(-1) as any).content[0].text, "polled");
@@ -343,4 +346,97 @@ test("a watcher reads pending inputs beside the stream, and history and state to
     assert.ok(seen.filter(view => !view.loaded).every(view => view.messages.length === 0), "not loaded until history is in");
     assert.equal(seen.find(view => view.loaded)!.messages.length, 2);
   } finally { watcher.close(); }
+});
+
+test("history and state are read beside the stream, so the watcher is loaded before the stream's first frame", async t => {
+  let opened = false;
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.split("/").pop();
+    if (path === "events") {
+      opened = true;
+      return new Response(new ReadableStream({ start(controller) {
+        init?.signal?.addEventListener("abort", () => controller.close());
+      } }), { headers: { "Content-Type": "text/event-stream" } });
+    }
+    if (path === "history") return Response.json({ entries: [
+      { index: 1, message: { role: "user", content: "hi", timestamp: 1 } },
+      { index: 2, message: { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 2 } },
+    ], next: 1 });
+    if (path === "state") return Response.json({ requests: [] });
+    return Response.json([]);
+  };
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "t", fetch });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.loaded, "eager history and state", 2_000);
+  assert.ok(opened);
+  assert.equal(watcher.state.messages.length, 2);
+  assert.equal(watcher.state.running, false);
+  assert.equal(watcher.state.hasOlder, true);
+  assert.equal(watcher.state.transport, null);
+});
+
+test("a stream that never delivers its first frame is cut after firstFrameMs, and the watcher polls after that one stream", async t => {
+  let streams = 0, polls = 0, cancelled = false;
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/history")) return Response.json({ entries: [], next: null });
+    if (url.pathname.endsWith("/state")) return Response.json({ requests: [] });
+    if (!url.pathname.endsWith("/events")) return Response.json([]);
+    if (url.searchParams.has("poll")) {
+      if (init?.signal?.aborted) throw init.signal.reason;
+      if (++polls === 1) return Response.json({ cursor: 0, events: [] });
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)));
+    }
+    streams++;
+    // Heartbeats may be getting through even while the first data frame is buffered.
+    let heartbeat: ReturnType<typeof setInterval>;
+    const body = new ReadableStream({
+      start(controller) { heartbeat = setInterval(() => controller.enqueue(new TextEncoder().encode(": heartbeat\n\n")), 25); },
+      cancel() { clearInterval(heartbeat); cancelled = true; },
+    });
+    init?.signal?.addEventListener("abort", () => clearInterval(heartbeat));
+    return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "t", fetch, firstFrameMs: 200 });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.transport === "poll", "the fallback to polls", 2_000);
+  assert.ok(cancelled);
+  assert.equal(streams, 1);
+});
+
+test("a snapshot that arrives before the eager reads land wins", async t => {
+  const eager = Promise.withResolvers<void>();
+  const stale = { role: "assistant", content: [{ type: "text", text: "stale" }], timestamp: 1 };
+  const settled = { role: "assistant", content: [{ type: "text", text: "settled" }], timestamp: 2 };
+  const prompt = { role: "user", content: "go", timestamp: 3 };
+  let histories = 0;
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.split("/").pop();
+    if (path === "history") {
+      const first = ++histories === 1;
+      if (first) await eager.promise;
+      return Response.json({ entries: [{ index: 0, message: first ? stale : settled }], next: null });
+    }
+    if (path === "state") {
+      await eager.promise;
+      return Response.json({ requests: [] });
+    }
+    if (path === "events") return new Response(new ReadableStream({ start(controller) {
+      const snapshot = { type: "snapshot", turn: { start: 1, messages: [prompt] } };
+      controller.enqueue(new TextEncoder().encode(`event: ready\ndata: {}\n\nid: 5\ndata: ${JSON.stringify(snapshot)}\n\n`));
+      init?.signal?.addEventListener("abort", () => controller.close());
+    } }), { headers: { "Content-Type": "text/event-stream" } });
+    return Response.json([]);
+  };
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "t", fetch });
+  t.after(() => { watcher.close(); eager.resolve(); });
+  await until(() => watcher.state.loaded, "the snapshot to load", 2_000);
+  assert.equal(histories, 2);
+  assert.equal(watcher.state.running, true);
+  assert.deepEqual(watcher.state.messages, [settled, prompt]);
+  eager.resolve();
+  // Let both eager responses be read and parsed.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(watcher.state.running, true);
+  assert.deepEqual(watcher.state.messages, [settled, prompt]);
 });
