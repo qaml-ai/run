@@ -121,19 +121,17 @@ locals {
         Resource = values(local.table_arns)
       },
       # Registration authority for the hosts' CA (mtls.tf): issue a host's or its own end-entity certificate from a
-      # CSR, and fetch it. IssueCertificate is restricted to the two end-entity templates (never a CA template,
-      # never passthrough of arbitrary extensions); validity is capped by the CA's short-lived mode (7 days). Which
-      # host id a certificate may carry is the tier's enrollment check: IAM cannot constrain a subject.
+      # CSR, and fetch it. IssueCertificate is restricted to the one end-entity template with server + client EKU
+      # (hosts serve --listen-compute and call the tier; the tier serves --listen-hosts and calls hosts; never a CA
+      # template, never passthrough of arbitrary extensions); validity is capped by the CA's short-lived mode (7
+      # days). Which host id a certificate may carry is the tier's enrollment check: IAM cannot constrain a subject.
       {
         Sid      = "IssueHostCertificates"
         Effect   = "Allow"
         Action   = ["acm-pca:IssueCertificate"]
         Resource = [aws_acmpca_certificate_authority.hosts.arn]
         Condition = {
-          StringEquals = { "acm-pca:TemplateArn" = [
-            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1",
-            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityClientAuthCertificate/V1",
-          ] }
+          StringEquals = { "acm-pca:TemplateArn" = ["arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1"] }
         }
       },
       {

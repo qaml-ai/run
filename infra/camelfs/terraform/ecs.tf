@@ -1,4 +1,5 @@
-# The api tier: camelfsd api as an autoscaled Fargate service (Graviton) behind both load balancers (alb.tf).
+# The api tier: camelfsd api as an autoscaled Fargate service (Graviton) behind the public ALB (alb.tf), the
+# hosts' NLB and the enrollment listener of the internal ALB (mtls.tf).
 #
 # Fargate over an ASG (the README weighs it): the tier is a stateless Go process that needs no NVMe, no KVM and no
 # host-level anything, so the only things an ASG would add are an AMI to bake, a host to patch and an agent to
@@ -29,14 +30,20 @@ locals {
   # The daemon's CLI (proto-block, 2026-11-13): `camelfsd api --listen --data --store --region --token-issuer
   # --refs-table`; --objects-table and --lineages-table come with L74, the K4 tables with K4 (api_extra_args until
   # then, or here once the flags exist). --listen-enroll (§9.12): the enrollment-only port behind the plain-TLS
-  # listener. --hosts-ca: the Private CA the tier issues host certificates from. The runtime's verify JWKS is not a
+  # listener. --listen-hosts: the host routes, mutual TLS terminated by the tier, behind the NLB in TCP passthrough;
+  # --hosts-ca-pem / --tier-cert / --tier-key are files under --data that K4c3 writes at boot from the Private CA
+  # (--hosts-ca names it). The runtime's verify JWKS is not a
   # flag: ECS injects it as CAMELFS_JWKS (the daemon also takes --jwks-file), so no key material is in the task
   # definition and the task role reads no secret. The tier's own client certificate comes from the CA at boot.
   api_command = concat([
     "api",
     "--listen", "0.0.0.0:${var.api_port}",
     "--listen-enroll", "0.0.0.0:${var.enroll_port}",
+    "--listen-hosts", "0.0.0.0:${var.hosts_port}",
     "--hosts-ca", aws_acmpca_certificate_authority.hosts.arn,
+    "--hosts-ca-pem", "${local.api_data_dir}/hosts-ca.pem",
+    "--tier-cert", "${local.api_data_dir}/tier.pem",
+    "--tier-key", "${local.api_data_dir}/tier.key",
     "--data", local.api_data_dir,
     "--store", "s3://${aws_s3_bucket.objects.bucket}",
     "--region", var.region,
@@ -103,12 +110,13 @@ resource "aws_ecs_cluster" "camelfs" {
 resource "aws_security_group" "api" {
   name        = "${var.name}-${var.env}-api"
   description = "camelFS api tasks: the API port from the two load balancers"
-  vpc_id      = data.aws_vpc.default.id
-  tags        = { Name = "${var.name}-${var.env}-api" }
+  # (The description predates the enrollment and hosts ports; changing it would replace the group.)
+  vpc_id = data.aws_vpc.default.id
+  tags   = { Name = "${var.name}-${var.env}-api" }
 }
 
 resource "aws_vpc_security_group_ingress_rule" "api_from_alb" {
-  for_each                     = { public = aws_security_group.alb_public.id, internal = aws_security_group.alb_internal.id }
+  for_each                     = { public = aws_security_group.alb_public.id }
   security_group_id            = aws_security_group.api.id
   referenced_security_group_id = each.value
   ip_protocol                  = "tcp"
@@ -166,7 +174,7 @@ resource "aws_ecs_task_definition" "api" {
     image        = local.api_image
     command      = local.api_command
     essential    = true
-    portMappings = [{ containerPort = var.api_port, protocol = "tcp" }, { containerPort = var.enroll_port, protocol = "tcp" }]
+    portMappings = [{ containerPort = var.api_port, protocol = "tcp" }, { containerPort = var.enroll_port, protocol = "tcp" }, { containerPort = var.hosts_port, protocol = "tcp" }]
     environment  = [for name in sort(keys(local.api_environment)) : { name = name, value = local.api_environment[name] }]
     # Read by the execution role at task start: the runtime's public JWKS (a rotation is jwks.sh set + a roll).
     secrets     = [{ name = "CAMELFS_JWKS", valueFrom = aws_secretsmanager_secret.token_verify_keys.arn }]
@@ -243,7 +251,14 @@ resource "aws_ecs_service" "api" {
     container_port   = var.enroll_port
   }
 
-  depends_on = [aws_lb_listener.api_https, aws_lb_listener.enroll]
+  # The hosts port, behind the NLB in TCP passthrough (mtls.tf).
+  load_balancer {
+    target_group_arn = aws_lb_target_group.hosts.arn
+    container_name   = local.container_name
+    container_port   = var.hosts_port
+  }
+
+  depends_on = [aws_lb_listener.api_https, aws_lb_listener.enroll, aws_lb_listener.hosts]
 
   lifecycle {
     # Autoscaling owns the count. task_definition is NOT ignored: before the first deploy it is Terraform's

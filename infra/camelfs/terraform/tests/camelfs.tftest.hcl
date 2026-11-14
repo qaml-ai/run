@@ -104,8 +104,21 @@ run "first_apply_before_the_certificate" {
     error_message = "Before certificate_issued there is no validation wait, no HTTPS or enrollment listener, no service, no autoscaling and no service alarm: the first apply never hangs on DNS."
   }
   assert {
-    condition     = length(aws_lb_trust_store.aop) == 0 && aws_acmpca_certificate_authority.hosts.usage_mode == "SHORT_LIVED_CERTIFICATE" && aws_acmpca_certificate_authority.hosts.type == "ROOT" && aws_lb_trust_store.hosts.ca_certificates_bundle_s3_key == "hosts-ca.pem"
-    error_message = "The hosts' CA is a short-lived-mode root with its certificate pinned in the hosts trust store; no AOP trust store until aop_ca_version is set."
+    condition     = length(aws_lb_trust_store.aop) == 0 && aws_acmpca_certificate_authority.hosts.usage_mode == "SHORT_LIVED_CERTIFICATE" && aws_acmpca_certificate_authority.hosts.type == "ROOT"
+    error_message = "The hosts' CA is a short-lived-mode root; no AOP trust store until aop_ca_version is set."
+  }
+  assert {
+    condition = (
+      aws_lb.hosts.load_balancer_type == "network" && aws_lb.hosts.internal == true && aws_lb.hosts.enable_cross_zone_load_balancing == true
+      && aws_lb_listener.hosts.protocol == "TCP" && aws_lb_listener.hosts.port == 8794
+      && aws_lb_target_group.hosts.protocol == "TCP" && aws_lb_target_group.hosts.port == 8794 && aws_lb_target_group.hosts.health_check[0].path == "/v0/health" && aws_lb_target_group.hosts.health_check[0].port == "8790"
+      && length(aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts) == 0
+    )
+    error_message = "Host routes: an internal NLB in TCP passthrough on 8794 to the tier (the tier terminates mTLS), health-checked on the api port; no host admitted until the host groups are named."
+  }
+  assert {
+    condition     = keys(aws_lb_target_group.api) == ["public"] && keys(aws_vpc_security_group_ingress_rule.api_from_alb) == ["public"]
+    error_message = "The api target group and the api-port ingress exist for the public balancer only: the internal ALB keeps the enrollment path alone."
   }
   assert {
     condition     = output.service_name == "" && aws_acm_certificate.api.validation_method == "DNS" && aws_acm_certificate.api.domain_name == "fs.camelai.dev" && aws_acm_certificate.api.subject_alternative_names == toset(["fs-internal.camelai.dev"])
@@ -177,7 +190,7 @@ run "balancers" {
     error_message = "The public balancer admits 443 from each Cloudflare IPv4 range and nothing else."
   }
   assert {
-    condition     = length(aws_vpc_security_group_ingress_rule.alb_internal_hosts) == 0
+    condition     = length(aws_vpc_security_group_ingress_rule.alb_internal_hosts_enroll) == 0
     error_message = "With no host security groups named, the internal balancer admits nothing."
   }
   assert {
@@ -197,8 +210,13 @@ run "internal_balancer_admits_the_hosts" {
   }
 
   assert {
-    condition     = toset([for rule in aws_vpc_security_group_ingress_rule.alb_internal_hosts : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
-    error_message = "Each host security group gets one 443 rule on the internal balancer."
+    condition = (
+      toset([for rule in aws_vpc_security_group_ingress_rule.alb_internal_hosts_enroll : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
+      && alltrue([for rule in aws_vpc_security_group_ingress_rule.alb_internal_hosts_enroll : rule.from_port == 8443])
+      && toset([for rule in aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts : rule.referenced_security_group_id]) == toset(["sg-0123456789abcdef0", "sg-0fedcba9876543210"])
+      && alltrue([for rule in aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts : rule.from_port == 8794])
+    )
+    error_message = "Each host security group gets the enrollment port on the internal ALB and the hosts port on the NLB, nothing on 443."
   }
   assert {
     condition = (
@@ -275,10 +293,10 @@ run "roles_and_policies" {
   }
   assert {
     condition = (
-      [for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Condition.StringEquals["acm-pca:TemplateArn"] if statement.Sid == "IssueHostCertificates"] == [["arn:aws:acm-pca:::template/EndEntityCertificate/V1", "arn:aws:acm-pca:::template/EndEntityClientAuthCertificate/V1"]]
+      [for statement in jsondecode(aws_iam_role_policy.api.policy).Statement : statement.Condition.StringEquals["acm-pca:TemplateArn"] if statement.Sid == "IssueHostCertificates"] == [["arn:aws:acm-pca:::template/EndEntityCertificate/V1"]]
       && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : anytrue([for action in flatten([statement.Action]) : startswith(action, "acm-pca:")])])
     )
-    error_message = "Only the api role issues certificates, and only end-entity ones; hosts touch the CA not at all."
+    error_message = "Only the api role issues certificates, and only with the server+client end-entity template; hosts touch the CA not at all."
   }
 }
 
@@ -291,16 +309,12 @@ run "second_apply_with_the_certificate" {
   }
 
   assert {
-    condition     = length(aws_acm_certificate_validation.api) == 1 && length(aws_lb_listener.api_https) == 2 && alltrue([for listener in aws_lb_listener.api_https : listener.protocol == "HTTPS" && listener.port == 443])
-    error_message = "With the certificate issued: the validation wait and two HTTPS listeners on 443."
+    condition     = length(aws_acm_certificate_validation.api) == 1 && keys(aws_lb_listener.api_https) == ["public"] && aws_lb_listener.api_https["public"].protocol == "HTTPS" && aws_lb_listener.api_https["public"].port == 443
+    error_message = "With the certificate issued: the validation wait and the public HTTPS listener on 443 (the internal ALB has only the enrollment listener)."
   }
   assert {
-    condition = (
-      aws_lb_listener.api_https["internal"].mutual_authentication[0].mode == "verify"
-      && aws_lb_listener.api_https["internal"].mutual_authentication[0].ignore_client_certificate_expiry == false
-      && aws_lb_listener.api_https["public"].mutual_authentication[0].mode == "off"
-    )
-    error_message = "The internal listener verifies host certificates from the first listener on; the public one runs off until the AOP CA is pinned."
+    condition     = aws_lb_listener.api_https["public"].mutual_authentication[0].mode == "off"
+    error_message = "The public listener runs off until the AOP CA is pinned."
   }
   assert {
     condition = (
@@ -361,12 +375,11 @@ run "service_with_an_image" {
     condition     = length(aws_ecs_service.api) == 1 && aws_ecs_service.api[0].desired_count == 2 && length(aws_appautoscaling_target.api) == 1 && length(aws_cloudwatch_metric_alarm.running_tasks) == 1
     error_message = "A minimum above 0 runs tasks, scales them and alarms on fewer than the minimum."
   }
-  # The mock gives every target group one ARN, so the service's load_balancer set collapses here; the dynamic
-  # block iterates every api group (alb.tf has two) plus the enrollment group, and each registration names the
-  # api container on its port.
+  # The mock gives every target group one ARN, so the service's load_balancer set collapses here; the registrations
+  # are the public api group, the enrollment group and the hosts NLB group, each naming the api container on its port.
   assert {
-    condition     = length(aws_lb_target_group.api) == 2 && alltrue([for registration in aws_ecs_service.api[0].load_balancer : registration.container_name == "camelfsd" && contains([8790, 8793], registration.container_port)])
-    error_message = "The service registers the api container with the api target groups and the enrollment group."
+    condition     = length(aws_lb_target_group.api) == 1 && alltrue([for registration in aws_ecs_service.api[0].load_balancer : registration.container_name == "camelfsd" && contains([8790, 8793, 8794], registration.container_port)])
+    error_message = "The service registers the api container with the public api group, the enrollment group and the hosts NLB group."
   }
   assert {
     condition     = aws_ecs_task_definition.api.runtime_platform[0].cpu_architecture == "ARM64" && contains(aws_ecs_task_definition.api.requires_compatibilities, "FARGATE")
@@ -375,7 +388,7 @@ run "service_with_an_image" {
   assert {
     condition = (
       jsondecode(aws_ecs_task_definition.api.container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:0123456789ab"
-      && jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--listen-enroll", "0.0.0.0:8793", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
+      && jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--listen-enroll", "0.0.0.0:8793", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--hosts-ca-pem", "/var/lib/camelfs/hosts-ca.pem", "--tier-cert", "/var/lib/camelfs/tier.pem", "--tier-key", "/var/lib/camelfs/tier.key", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
     )
     error_message = "The task runs the named image as `camelfsd api` with the daemon's flags (proto-block, 2026-11-13)."
   }

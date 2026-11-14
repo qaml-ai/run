@@ -161,9 +161,15 @@ variable "aop_ca_version" {
 }
 
 variable "enroll_listener_port" {
-  description = "The internal balancer's plain-TLS listener for host enrollment (no client certificate; serves only POST /v1/hosts/enroll). Hosts need egress to it (job-hosts allows 443 only today)."
+  description = "The internal ALB's plain-TLS listener for host enrollment (no client certificate; serves only POST /v1/hosts/enroll). Hosts need egress to it and to hosts_port (job-hosts allows 443 only today)."
   type        = number
   default     = 8443
+}
+
+variable "hosts_port" {
+  description = "The container port the tier serves host routes (/v1/hosts/*) on, terminating the hosts' mutual TLS itself (camelfsd api --listen-hosts); reached only through the hosts' internal NLB in TCP passthrough (mtls.tf)."
+  type        = number
+  default     = 8794
 }
 
 variable "enroll_port" {

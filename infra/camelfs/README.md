@@ -22,12 +22,12 @@ outputs.
 |---|---|
 | `bucket.tf` | S3 bucket **`camelfs-prod-904534089871`**: SSE-KMS with its own key (rotation on, S3 bucket keys), public access blocked, owner-enforced, versioned with 35-day noncurrent expiry, incomplete uploads aborted after 2 days, TLS-only, **daily Inventory** (Parquet) into `inventory/` kept 30 days. No expiry of live objects: deletion is the collector's. Keys exactly as `camelfsd` writes them today, `<lineage>/{o,t,k,r,c,ts}/<hash>`, plus `guest/<sha256>…` (the guest image, K1, put by CI) and `results/<lineage>/<vm>` (VM results, up to tens of MiB, K4, put by the host that ran the VM, expired after 7 days by prefix) |
 | `dynamodb.tf` | Seven on-demand tables with PITR and deletion protection: **`camelfs-prod-objects`** (`lineage` + `id`), **`camelfs-prod-refs`** (`lineage` + `name`), **`camelfs-prod-lineages`** (`lineage`), **`camelfs-prod-deliveries`** (`shard` + `id`), **`camelfs-prod-hosts`** (`pool` + `host`), **`camelfs-prod-vms`** (`id`), **`camelfs-prod-usage`** (`shard` + `ulid`; the one table with a TTL, `expiresAt`). No GSI/LSI (see "Key schemas") |
-| `alb.tf` | One ACM certificate for `fs.camelai.dev` + `fs-internal.camelai.dev` (DNS-validated; the records are output for Cloudflare). Two application load balancers, both **HTTP/2 off**, HTTPS only (TLS 1.3/1.2 policy), deletion protection: **public** (Cloudflare's IPv4 ranges only; `fs.camelai.dev` proxied; mTLS **verify** against the AOP CA once `aop_ca_version` is set) and **internal** (the hosts' security groups only; `fs-internal.camelai.dev` DNS-only to its private addresses; mTLS **verify** against the hosts' Private CA from the first listener on). A target group each (`/v0/health`, 5 s interval, 2 up / 3 down). The listeners exist once `certificate_issued` is set. Per host security group: 443 and `enroll_listener_port` (8443) to the internal balancer, and the api tasks → `host_compute_port` (8792, `--listen-compute`) |
-| `mtls.tf` | §9.12. The trust bucket `camelfs-prod-trust-<account>` (public CA PEMs, versioned). The offline **AOP CA**'s secret `camelfs/prod/aop-ca` (filled by `aop.sh init`) and, once `aop_ca_version` pins its PEM, the public listener's trust store. The **hosts' CA**: AWS Private CA, root, EC P-256, **short-lived mode** (leaves ≤ 7 days, no CRL/OCSP), self-signed for 10 years and activated by Terraform; its PEM written to the trust bucket and pinned by the internal listener's trust store. The **enrollment** path: a plain-TLS listener on the internal balancer (8443) whose only rule forwards `POST /v1/hosts/enroll` to a separate target group on container port 8793 (everything else 404), with the security-group rules both sides. A rule on the public listener: `/v1/hosts/*` → 404 |
+| `alb.tf` | One ACM certificate for `fs.camelai.dev` + `fs-internal.camelai.dev` (DNS-validated; the records are output for Cloudflare). Two application load balancers, both **HTTP/2 off**, HTTPS only (TLS 1.3/1.2 policy), deletion protection: **public** (Cloudflare's IPv4 ranges only; `fs.camelai.dev` proxied; mTLS **verify** against the AOP CA once `aop_ca_version` is set) and **internal** (the hosts' security groups only; `fs-internal.camelai.dev` DNS-only to its private addresses; serves **only the enrollment listener**, 8443). The api target group (`/v0/health`, 5 s interval, 2 up / 3 down) is the public balancer's; the listeners exist once `certificate_issued` is set. Per host security group: 8443 to the internal ALB, `hosts_port` (8794) to the hosts NLB, and the api tasks → `host_compute_port` (8792, `--listen-compute`) |
+| `mtls.tf` | §9.12. The trust bucket `camelfs-prod-trust-<account>` (public CA PEMs, versioned). The offline **AOP CA**'s secret `camelfs/prod/aop-ca` (filled by `aop.sh init`) and, once `aop_ca_version` pins its PEM, the public listener's trust store. The **hosts' CA**: AWS Private CA, root, EC P-256, **short-lived mode** (leaves ≤ 7 days, no CRL/OCSP), self-signed for 10 years and activated by Terraform. **Host routes**: an internal **NLB in TCP passthrough** (`camelfs-prod-hosts`, port 8794, its own security group: hosts in, api tasks out) to the tier's `--listen-hosts` port, where the tier terminates mutual TLS itself. The **enrollment** path: a plain-TLS listener on the internal balancer (8443) whose only rule forwards `POST /v1/hosts/enroll` to a separate target group on container port 8793 (everything else 404), with the security-group rules both sides. A rule on the public listener: `/v1/hosts/*` → 404 |
 | `ecs.tf` | ECR repository `camelfs-prod` (immutable tags, newest 20 kept), cluster `camelfs-prod` (Container Insights), the api tasks' security group, the Fargate task definition (ARM64, 1 vCPU / 2 GiB, read-only root, an ephemeral `/var/lib/camelfs` for the SQLite caches and temp files, `CAMELFS_JWKS` and `CAMELFS_SERVICE_SIGNING_KEY` injected from Secrets Manager), and, with `certificate_issued`, the service `camelfs-prod-api` on both target groups (circuit breaker + alarm rollback) at **`api_min_count` tasks, 0 by default**; CPU target-tracking autoscaling (`api_min_count`–8) once the minimum is above 0 |
-| `iam.tf` | **api** task role (every table; the bucket read/write, never delete; the hosts' CA as registration authority: `IssueCertificate` restricted to the two end-entity templates, `GetCertificate`; ECS Exec; no secret) and execution role (image, logs, the one JWKS secret it injects). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on the six other tables and on `sts:AssumeRole*`; no secret, no CA; it puts its VMs' results under `results/<lineage>/<vm>` and may read none: `results/` is write-only for hosts), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles). **publisher** role `camelfs-prod-guest-image-publisher` for GitHub Actions (OIDC, the repository's `production` environment): `s3:PutObject` under `guest/` and nothing else |
+| `iam.tf` | **api** task role (every table; the bucket read/write, never delete; the hosts' CA as registration authority: `IssueCertificate` restricted to the `EndEntityCertificate/V1` template, `GetCertificate`; ECS Exec; no secret) and execution role (image, logs, the one JWKS secret it injects). **host** policy `camelfs-prod-host` (the bucket read/write, the `objects` table only; explicit deny on the six other tables and on `sts:AssumeRole*`; no secret, no CA; it puts its VMs' results under `results/<lineage>/<vm>` and may read none: `results/` is write-only for hosts), attachable to the job-hosts pool roles, plus a role and instance profile of the same name for hosts outside those pools (trusts `ec2.amazonaws.com` only, guarded like the job-hosts roles). **publisher** role `camelfs-prod-guest-image-publisher` for GitHub Actions (OIDC, the repository's `production` environment): `s3:PutObject` under `guest/` and nothing else |
 | `secrets.tf` | Secrets Manager container `camelfs/prod/token-verify-keys` (the runtime's public JWKS, Ed25519: what the tier verifies runtime tokens with; `jwks.sh`). The `service-signing-key` / `service-verify-keys` pair of the retired `camelfs-host+jwt` family is deleted (§9.12). Values never by Terraform |
-| `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists). 30 alarms |
+| `alarms.tf` | To `camelai-agent-runtime-alerts` (us-west-2): per balancer, unhealthy targets (3 min), ALB 5xx (>10/5 min), target 5xx (>25/5 min), target p99 latency (>1 s for 3 of 5 min); per table, read and write throttles and system errors; running tasks below the minimum (once the service exists); unhealthy targets on the hosts NLB and the enrollment group. 32 alarms |
 | `outputs.tf` | URLs, bucket, key, tables, role and policy ARNs, repository, the secret, the guest-image location, and the api command |
 
 ### Key schemas (the whole contract this module imposes on the daemon)
@@ -52,10 +52,11 @@ created now so the tier's role covers them; nothing writes them until K4 lands.
 ### The api task's command
 
 The daemon's CLI (proto-block, 2026-11-13), composed by `ecs.tf`:
-`camelfsd api --listen 0.0.0.0:8790 --listen-enroll 0.0.0.0:8793 --hosts-ca <Private CA ARN> --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer> --refs-table camelfs-prod-refs`,
+`camelfsd api --listen 0.0.0.0:8790 --listen-enroll 0.0.0.0:8793 --listen-hosts 0.0.0.0:8794 --hosts-ca <Private CA ARN> --hosts-ca-pem /var/lib/camelfs/hosts-ca.pem --tier-cert /var/lib/camelfs/tier.pem --tier-key /var/lib/camelfs/tier.key --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer> --refs-table camelfs-prod-refs`,
 plus `api_extra_args` (`--objects-table` / `--lineages-table` once L74 lands, the K4 table flags; the tables
-exist already). `--listen-enroll` is the enrollment-only port behind the plain-TLS listener; `--hosts-ca` the
-Private CA the tier issues host certificates (and its own client certificate) from. Keys are not flags: ECS
+exist already). `--listen-enroll` is the enrollment-only port behind the plain-TLS listener; `--listen-hosts` the
+host routes behind the NLB, mutual TLS terminated by the tier with the files K4c3 writes under `--data` at boot
+(the CA's PEM, and the tier's own certificate and key issued from `--hosts-ca`). Keys are not flags: ECS
 injects `token-verify-keys` as `CAMELFS_JWKS` (the daemon also takes `--jwks-file`; exactly one of the two) at
 task start, so no key material is in the task definition and the task role reads no secret. `token_issuer` is the runtime's
 `AGENT_PUBLIC_URL` (the JWT `iss` the tier checks); it must equal `infra/job-hosts`' `runtime_public_url`. The
@@ -129,23 +130,24 @@ self-run CA's key could be copied (§9.12's table). Short-lived mode caps leaves
 and renews every 8 h), issues no CRL and no OCSP: revocation is expiry plus removing the host from `hosts`. Only
 the api role may `IssueCertificate`, and only with the `EndEntityCertificate/V1` (hosts: client + server auth) and
 `EndEntityClientAuthCertificate/V1` (the tier's own) templates; IAM cannot constrain a subject, so *which* host id a
-certificate carries (`spiffe://camelfs/host/<id>`, URI SAN) is the tier's enrollment check. The internal 443
-listener verifies against the CA and forwards the verified leaf in `X-Amzn-Mtls-Clientcert-*` (stripping any
-client-supplied copy); the tier reads the host id from it. Hosts verify the tier's `spiffe://camelfs/tier` client
-certificate on `--listen-compute` against the CA certificate the enroll/renew reply carries
+certificate carries (`spiffe://camelfs/host/<id>`, URI SAN) is the tier's enrollment check. **No ALB terminates
+host mTLS and no header is trusted** (the lead's K4c2 review, 11-14: AWS does not guarantee that an ALB in
+verify mode strips client-supplied `X-Amzn-Mtls-*` headers). Host → tier calls (`/v1/hosts/*`) go through an
+internal NLB in TCP passthrough to the tier's `--listen-hosts` port, where the tier terminates mutual TLS itself
+and reads the host id from the client certificate's SAN. The tier's own certificate (`spiffe://camelfs/tier`,
+server + client EKU, hence the single `EndEntityCertificate/V1` template) is what it serves there and presents on
+`--listen-compute`; hosts verify it by SAN against the CA certificate the enroll/renew reply carries
 (`{certificatePem, chainPem, caPem, notAfter}`; proto-block: over server-authenticated TLS, no extra IAM, and a
-CA rotation reaches every host with its next renewal). `hosts-ca.pem` in the trust bucket is the listener's
-trust store's copy, and the tier's.
+CA rotation reaches every host with its next renewal). Hosts dial the NLB's DNS name (`output hosts_endpoint`),
+not a public hostname, on that path.
 
 **Enrollment on its own port.** A new host has no certificate, so it presents its STS attestation once on the
 internal balancer's **8443** listener (plain TLS, no client certificate), whose only rule forwards
 `POST /v1/hosts/enroll` to container port **8793** (`--listen-enroll`); any other path is a 404 at the balancer.
-Two container ports, not one, so a request can never reach the mTLS-trusting port 8790 without having passed the
-verify-mode listener, and the tier trusts no `X-Amzn-Mtls-*` header on 8793. The public listener also runs verify
-mode (against the AOP CA) and sets the same `X-Amzn-Mtls-Clientcert-*` headers from Cloudflare's leaf, so the
-tier must check that a `/v1/hosts/*` caller's leaf chains to the private CA with a host SAN; and a rule on the
-public listener answers 404 to every `/v1/hosts/*` before the tier sees it, so host routes exist only behind the
-internal balancer (two locks, wf-durable). Renewal is the same call over the
+Three container ports: 8790 (runtime tokens, behind the public ALB), 8793 (enrollment only, behind the internal
+ALB's plain-TLS listener), 8794 (host routes, mutual TLS terminated by the tier, behind the NLB). A rule on the
+public listener answers 404 to every `/v1/hosts/*` before the tier sees it, and the tier serves host routes on
+8794 alone, so a host route is reachable only through the NLB (two locks, wf-durable). Renewal is the same call over the
 host's current certificate on 443.
 
 ## Network and security
@@ -160,7 +162,10 @@ host's current certificate on 443.
   addresses: it is reachable from the VPC alone, and the certificate's name matches for hosts.
 - No principal here may delete an object: the collector (camel-fs.md §1.9) gets a role of its own in a later phase.
 - The tier reaches each host security group on `host_compute_port` only (the boot/stop listener); the hosts'
-  own egress rules (job-hosts: 443 out only) are theirs to widen.
+  own egress rules (job-hosts: 443 out only) are theirs to widen, to 8443 (enrollment) and 8794 (the NLB).
+- The internal ALB's security group admits hosts on 8443 only and reaches the tasks on 8793 only; the NLB's admits
+  hosts on 8794 only and reaches the tasks on 8794 only; the tasks admit 8790 from the public ALB, 8793 from the
+  internal ALB, 8794 from the NLB.
 - The guest-image publisher (GitHub Actions through the account's existing OIDC provider, the repository's
   `production` environment, as the runtime's deploy role) may only `PutObject` under `guest/`: no read, no list,
   no delete, no other prefix. The key is the image's sha256 and `publish-guest-image.sh` puts with
@@ -171,8 +176,8 @@ host's current certificate on 443.
   `iam:PassRole` on it is as good as enrolling a host.
 - The api task role reads no secret: the execution role reads the one JWKS secret at task start and injects it.
   Nothing in AWS reads the AOP CA secret; only `aop.sh`, run by an operator.
-- Hosts' egress: the job-hosts group allows 443 out only; enrollment on 8443 needs one egress rule there (a
-  job-hosts change), or `enroll_listener_port=443` cannot be used because 443 is the mTLS listener.
+- Hosts' egress: the job-hosts group allows 443 out only; enrollment on 8443 and the NLB on 8794 need egress rules
+  there (a job-hosts change).
 - Telemetry carries lineage ids, counts, statuses and durations; the daemon's access lines omit paths, ids and
   bodies (`camelfsd/README.md`).
 
@@ -186,14 +191,14 @@ on-demand prices in November 2024 ($0.625/M and $0.125/M), which the second colu
 
 | item | service at 0 tasks (the default) | service running (2 tasks) |
 |---|---|---|
-| 2 application load balancers ($0.0225/h each) | ~$33 | ~$33 |
+| 2 application load balancers ($0.0225/h each) + 1 network load balancer ($0.0225/h) | ~$49 | ~$49 |
 | public balancer's IPv4 addresses (one per default subnet, $0.005/h) | ~$15 | ~$15 |
 | Fargate ARM, 2 × (1 vCPU / 2 GiB) at $0.0395/h | $0 | ~$58 |
 | the tasks' public IPv4 ($0.005/h each) | $0 | ~$7 |
-| KMS key, 2 secrets, 30 alarms, Container Insights, logs, ECR, trust bucket | ~$7 | ~$10 |
+| KMS key, 2 secrets, 32 alarms, Container Insights, logs, ECR, trust bucket | ~$7 | ~$10 |
 | **AWS Private CA, short-lived mode** (the hosts' CA) | ~$50 | ~$50 |
 | **host and tier certificates** (~$0.058 each in short-lived mode; 24 h validity renewed every 8 h = 3 a day per host) | ~$0 (no hosts) | 10 hosts ≈ 900/month ≈ ~$52; 50 hosts ≈ ~$260 |
-| **total** | **~$105** | **~$225 (10 hosts) – ~$435 (50 hosts)** |
+| **total** | **~$121** | **~$241 (10 hosts) – ~$451 (50 hosts)** |
 
 **Variable, by scale** (the design's baseline is 1,000 concurrent agents: 144 M API writes + 14.6 M checkpoints a
 month, 0.5 TB live; the pilot today is a few agents, so the fixed line is the bill):
@@ -293,7 +298,8 @@ to expect by name.
 
    The proto host (`i-06fa9b78a2a9d188b`) can be let in the same way for the first end-to-end run: its security
    group in `host_security_group_ids`, the host policy attached to its `camel-fs-proto` role by hand. Hosts also
-   need egress to 8443 (enrollment); the CA certificate to verify the tier comes in the enroll reply.
+   need egress to 8443 (enrollment) and 8794 (the NLB, `output hosts_endpoint`); the CA certificate to verify the
+   tier comes in the enroll reply.
 
 7. **Runtime config** (Cloudflare; this module does not touch it): the public URL. The runtime signs with the
    keys it already has; nothing to copy back.
@@ -332,9 +338,10 @@ Eight runs: the first apply (no listener, no service, no compute rules; the shor
 the tables' keys and protection; the balancers (h2 off, sources, DNS modes, health route); the host groups (443 to
 the internal balancer, the compute port both ways); the roles (trust invariant, no delete, no sts, hosts denied the
 control tables, no secret anywhere but the execution role, only the api role issues end-entity certificates, the
-publisher's one prefix); the second apply (validation wait, listeners, internal verify, the enrollment listener and
-its one rule, the service at 0); the service running (Fargate ARM, the command, the injected JWKS, autoscaling);
-the AOP CA pinned (trust store, public verify, the ranges group still there).
+publisher's one prefix); the second apply (validation wait, the public listener, the enrollment listener and its one rule, the service at
+0); the service running (Fargate ARM, the command with the three listeners, the injected JWKS, the three target
+groups, autoscaling); the AOP CA pinned (trust store, public verify, the ranges group still there); the hosts NLB
+(TCP passthrough on 8794, health-checked on the api port).
 
 ## Questions for Miguel
 
@@ -378,12 +385,13 @@ the AOP CA pinned (trust store, public verify, the ranges group still there).
 - The collector (S3 Batch Operations role, `touch` and `warm` tables; camel-fs.md §1.9), dashboards, and the
   daemon's EMF metrics (§1.12).
 - The guest-image CI job itself (K1, proto-block) and its `publish-guest-image.sh`; only the role it assumes is here.
-- The hosts' side of mTLS (K2): enrollment at boot with the STS attestation on 8443, the certificate on
-  `--listen-compute 0.0.0.0:8792`, renewal every 8 h, the CA from the enroll reply to verify the tier; the
-  job-hosts egress rule for 8443. VM results are PUT by the host under `results/<lineage>/<vm>` (wf-durable, 11-14).
+- The hosts' side of mTLS (K2): enrollment at boot with the STS attestation on 8443, every later call to the NLB
+  on 8794 with the host certificate, the certificate on `--listen-compute 0.0.0.0:8792`, renewal every 8 h, the CA
+  from the enroll reply to verify the tier by SAN; the job-hosts egress rules for 8443 and 8794. VM results are PUT by the host under `results/<lineage>/<vm>` (wf-durable, 11-14).
 - The tier's side (K4c, wf-durable): enrollment's pool check, `IssueCertificate` with the host's URI SAN, the
-  reply `{certificatePem, chainPem, caPem, notAfter}`, reading `X-Amzn-Mtls-Clientcert-*`, its own client
-  certificate.
+  reply `{certificatePem, chainPem, caPem, notAfter}`, terminating mutual TLS on `--listen-hosts` and reading the
+  host id from the client certificate's SAN, its own certificate (K4c3 writes `hosts-ca.pem`, `tier.pem`,
+  `tier.key` under `--data`).
 - Access logs for the balancers (`alb_access_logs_bucket` takes an existing bucket; none is created).
 - Gateway endpoints for S3 and DynamoDB on the default route table (free; the tasks go through the internet gateway
   as the runtime's do). Worth adding with a route table of this module's own if the tasks ever leave the default
