@@ -25,6 +25,10 @@ type Controller struct {
 	CommitTree func(ctx context.Context, lineage, version string) (string, error)
 	Log        func(event string, fields map[string]any)
 	HostFresh  time.Duration
+	// UsageWriteTimeout bounds one usage transaction (default UsageWriteBound). GET /v1/usage's watermark (now − 20 s)
+	// relies on a ULID's time being within this bound of its commit, so production never raises it; only tests whose
+	// DynamoDB Local runs on a loaded machine and that never read usage through the watermark do.
+	UsageWriteTimeout time.Duration
 	// clock is shared by every Controller copy that uses the same instrumented client (EnableClockCheck).
 	clock *clockObservation
 
@@ -118,13 +122,11 @@ type VM struct {
 	LastCheckpoint                          *Checkpoint
 	RequestedVersion                        string
 	RequestedDeadline                       int64
-	ResultRef, EndVersion                   string
+	EndVersion                              string
 	CheckpointError                         string
 	Tree, RefLeaseHolder                    string
 	RefLeaseEpoch, RefLeaseDeadline         int64
 	RefLeaseReleased                        bool
-	ResultSha256                            string
-	ResultBytes                             int64
 	BilledTo, UsageSeq                      int64
 }
 

@@ -32,6 +32,7 @@ func apiRole(args []string) error {
 	region := f.String("region", "us-west-2", "AWS region")
 	// --refs-table and --ddb-endpoint are shared with the compute flags (api_compute.go): one refs table.
 	lineagesTable := f.String("lineages-table", "", "DynamoDB lineages table")
+	marksTable := f.String("marks-table", "marks", "DynamoDB pending mark work table keyed by lineage")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	jwksFile := f.String("jwks-file", "", "runtime JWKS file (alternative to CAMELFS_JWKS)")
 	issuer := f.String("token-issuer", "", "runtime issuer URL")
@@ -92,7 +93,7 @@ func apiRole(args []string) error {
 		if err != nil {
 			return err
 		}
-		handler.ConfigureRefs(client, computeFlags.refs, *lineagesTable, nil)
+		handler.ConfigureRefs(client, computeFlags.refs, *lineagesTable, nil, *marksTable)
 	}
 	if computeAPI != nil {
 		handler.EnableCompute(computeAPI.loop.C, computeAPI.images, computeAPI.pools, computeAPI.idle, computeFlags.heartbeat)
@@ -120,8 +121,8 @@ func apiRole(args []string) error {
 				return fmt.Errorf("listen-enroll: %w", err)
 			}
 			defer enrollListener.Close()
-			enroll = &http.Server{Handler: computeAPI.enrollServer, ReadHeaderTimeout: 5 * time.Second,
-				ReadTimeout: 10 * time.Second}
+			enroll = &http.Server{Handler: computeAPI.enrollServer, TLSConfig: computeAPI.credentials.EnrollServerConfig(),
+				ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second}
 		}
 	}
 
@@ -137,7 +138,7 @@ func apiRole(args []string) error {
 	}
 	if enroll != nil {
 		defer enroll.Close()
-		go func() { stopped <- enroll.Serve(enrollListener) }()
+		go func() { stopped <- enroll.ServeTLS(enrollListener, "", "") }()
 		log.Printf("op=api-enroll listen=%s", enrollListener.Addr())
 	}
 	for {

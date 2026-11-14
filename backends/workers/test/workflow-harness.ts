@@ -123,7 +123,7 @@ export class FakeCapacity {
       leaseMs: this.leaseMs,
       open: async concurrency => { this.calls.push(`open ${concurrency}`); return this.refuseOpen ? { ok: false, message: this.refuseOpen } : { ok: true }; },
       acquire: async (key, kind) => {
-        this.calls.push(kind === "job" ? `acquire ${key} job` : `acquire ${key}`);
+        this.calls.push(`acquire ${key}`);
         const lease = this.held.get(key);
         if (lease) return { granted: true, lease };
         if (this.held.size < this.slots) { const id = `l${++this.next}`; this.held.set(key, id); return { granted: true, lease: id }; }

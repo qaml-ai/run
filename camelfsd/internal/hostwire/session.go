@@ -2,6 +2,14 @@ package hostwire
 
 import "encoding/json"
 
+// ShellRequest is the optional body of POST /v1/vms/{id}/shells.
+// The same shellKey on the same VM returns the same shellId and never opens a second shell; the key is recorded in the
+// guest before the shell starts. The guest retains the last 64 keys per VM, including keys for exited shells.
+// Without a key, the request opens a new shell.
+type ShellRequest struct {
+	ShellKey string `json:"shellKey,omitempty"`
+}
+
 // ShellCreated is the response to POST /v1/vms/{id}/shells.
 // A persistent bash in the guest (cwd/env/functions survive); shells die with the
 // VM and survive a daemon restart. ONE exec at a time per shell: a second → 409 shell_busy.
@@ -33,8 +41,9 @@ type ExecChunk struct {
 // ExecExit is the JSON data in an exit SSE event.
 // GET /v1/vms/{id}/exec/{execId}?offset=N returns the retained tail from N.
 // Retention: last 8 execs per VM × 1 MiB each, plus exit records of the last 64
-// (truncated: true when the tail is gone). Older than retained → 410 tail_truncated
-// { firstOffset }; unknown → 404 exec_unknown.
+// (truncated: true when the tail is gone). Older than retained → 410 tail_truncated with
+// details { firstOffset }; unknown → 404 exec_unknown. Every host error body is the §9.8 shape
+// { error: { code, message, details? } }, relayed by the tier unchanged.
 type ExecExit struct {
 	Code      int   `json:"code"`
 	TimedOut  bool  `json:"timedOut"`

@@ -58,7 +58,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) fresh() *Controller {
-	return &Controller{DB: f.DB, Tables: f.Tables, Now: f.Now, RuntimeURL: f.RuntimeURL, clock: f.clock}
+	return &Controller{DB: f.DB, Tables: f.Tables, Now: f.Now, RuntimeURL: f.RuntimeURL, clock: f.clock, UsageWriteTimeout: f.UsageWriteTimeout}
 }
 
 func must[T any](t *testing.T) func(T, error) T {
@@ -507,6 +507,9 @@ func TestDDBUsagePagination(t *testing.T) {
 
 func TestDDBRandomCrashes(t *testing.T) {
 	f := newFixture(t)
+	// 500 runs of transactions on DynamoDB Local on a shared sprite: a slow machine must not fail the production 5 s
+	// usage-write bound. This test never reads usage through the watermark, so the bound's guarantee is not under test.
+	f.UsageWriteTimeout = time.Minute
 	ctx := t.Context()
 	rng := rand.New(rand.NewSource(14))
 	for run := range 500 {

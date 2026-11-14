@@ -25,7 +25,7 @@ func socket() (*os.File, error) {
 	return os.NewFile(uintptr(fd), "vsock"), nil
 }
 
-func ServeVM(ctx context.Context, repoDisk bool, r *reaper) error {
+func ServeVM(ctx context.Context, repoDisk bool, r *reaper, session bool) error {
 	listener, err := socket()
 	if err != nil {
 		return err
@@ -49,26 +49,34 @@ func ServeVM(ctx context.Context, repoDisk bool, r *reaper) error {
 	}
 	stop := context.AfterFunc(ctx, func() { listener.Close() })
 	defer stop()
-	var fd int
-	err = raw.Read(func(s uintptr) bool {
-		for {
-			fd, _, sockErr = unix.Accept4(int(s), unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC)
-			if sockErr != unix.EINTR {
-				return sockErr != unix.EAGAIN
+	g := &guest{root: "/", vm: true, vsock: repoDisk, reaper: r, session: session}
+	if session {
+		g.repo, g.out = workspacePath, "/out"
+	}
+	defer g.sessions.close()
+	for {
+		var fd int
+		err = raw.Read(func(s uintptr) bool {
+			for {
+				fd, _, sockErr = unix.Accept4(int(s), unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC)
+				if sockErr != unix.EINTR {
+					return sockErr != unix.EAGAIN && sockErr != unix.ECONNABORTED
+				}
 			}
+		})
+		if err != nil {
+			return err
 		}
-	})
-	if err != nil {
-		return err
+		if sockErr != nil {
+			return sockErr
+		}
+		conn := os.NewFile(uintptr(fd), "vsock:5000")
+		exit, _ := g.serveChannel(ctx, conn, conn)
+		conn.Close()
+		if exit {
+			return nil
+		}
 	}
-	if sockErr != nil {
-		return sockErr
-	}
-	conn := os.NewFile(uintptr(fd), "vsock:5000")
-	defer conn.Close()
-	stopConn := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stopConn()
-	return serve(ctx, conn, conn, &guest{root: "/", vsock: repoDisk, reaper: r})
 }
 
 func (g *guest) dial(ctx context.Context, port uint32, deadline time.Time) (transport, error) {

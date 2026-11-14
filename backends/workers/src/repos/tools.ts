@@ -7,10 +7,11 @@ import { FileError, normalizePath } from "../file-errors.ts";
 import { declaredType, sniffContentType } from "../file-policy.ts";
 import { editArguments } from "../edit-arguments.ts";
 import type { FileVersions } from "../file-versions.ts";
+import type { RepoTreeScope } from "./tree-cache.ts";
 import type { RepoEnv } from "./registry.ts";
 import { agentRepoId, workspaceMount, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
-import { commitChanges, setRefToVersion, type WriteInput } from "./write.ts";
+import { setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
 import { heldFileError, lastSaved, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, vmHeld, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
 
@@ -26,6 +27,7 @@ export function repoTools(
   onWrite?: (file: WrittenRepoFile) => Promise<void>,
   seen?: FileVersions,
   identity: Record<string,string> = {},
+  scope?: RepoTreeScope,
   vmFiles?: VmFilesProvider,
 ) {
   const mountPath = async (raw: string, write = false) => {
@@ -54,7 +56,7 @@ export function repoTools(
   const resolve = (t: Awaited<ReturnType<typeof mountPath>>) =>
     resolveVmFiles(env, { tenant, agent: agentId, repo: t.mount.repo, ref: t.ref }, vmFiles);
   const store = (t: Awaited<ReturnType<typeof mountPath>>) =>
-    agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity);
+    agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity, scope);
   const target = async (raw: string, write = false) => {
     const t = await mountPath(raw, write);
     const vm = await resolve(t);
@@ -463,11 +465,13 @@ function versionTools(
       const t = await target(path ?? await workspace(), true), head = await t.v.ctx.repo.ref(t.v.ref), previous = head && await t.v.ctx.repo.commit(head.version);
       // Naming the same point twice is free; a new name for it is a new (empty) commit, never a dropped message.
       if (previous?.trailers['Camel-Checkpoint'] === 'manual' && previous.message === message) return output(previous.version);
-      return output((await explicitWrite(t.v.ref, () => commitChanges(t.v.ctx, {ref:t.v.ref, op:'turn', changes:{}, message, allowEmpty:true, author:`agent:${agent}`,who:`agent:${agent}`,why:'checkpoint',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'manual'}}))).version);
+      return output((await explicitWrite(t.v.ref, () => t.v.commit({}, {}, message, {'Camel-Checkpoint':'manual'}, 'turn', true, 'checkpoint'))).version);
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
-      return output((await explicitWrite(t.v.ref, () => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}))).version);
+      const result = await explicitWrite(t.v.ref, () => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}));
+      t.v.moved(result);
+      return output(result.version);
     }}),
     defineTool({name:'history',description:"List a mount's versions, newest first. With a file path, only versions that changed it. Pass next as after to continue.",replay:'safe',parameters:obj({path:opt(str()),limit:opt(int()),after:opt(str())}),async execute({path,limit,after}) {
       const t = await target(path ?? await workspace());

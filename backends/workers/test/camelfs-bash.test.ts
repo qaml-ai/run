@@ -54,7 +54,7 @@ function fixture(t: TestContext) {
   let sessions: InstanceType<typeof BashSessions>;
   const env = {
     CAMELFS_URL: "https://tier.example", AGENT_PUBLIC_URL: "https://runtime.example",
-    CAMELFS_COMPUTE: "1", GUEST_IMAGE_SHA256: "a".repeat(64), CAMELFS_NOTIFY_KEY: "fixture",
+    CAMELFS_COMPUTE: "1", CAMELFS_POOLS: JSON.stringify({ default: "test" }), GUEST_IMAGE_SHA256: "a".repeat(64), CAMELFS_NOTIFY_KEY: "fixture",
     CAMELFS_USAGE: { getByName: () => ({ start: async () => { flags.pollerStarts++; } }) },
     AGENTS: { getByName: (agent: string) => {
       assert.equal(agent, conf.id);
@@ -80,7 +80,7 @@ function fixture(t: TestContext) {
     const vm = vms.get(id)!;
     if (!op) return Response.json(vm);
     if (op === "deadline") {
-      if (flags.leaseExpired) return Response.json({ error: "lease_expired" }, { status: 409 });
+      if (flags.leaseExpired) return fail(409, "lease_expired");
       vm.deadline = body.deadline;
       return Response.json({ deadline: vm.deadline });
     }
@@ -330,4 +330,15 @@ test("replays an ambiguous renewal with the same deadline", async t => {
   await f.sessions.wake(f.conf);
   assert.equal(f.calls.at(-1)!.body.deadline, target);
   assert.equal(f.row()!.deadline, target);
+});
+
+test("the shape → pool mapping is CAMELFS_POOLS only, with no code-side default", async () => {
+  const { tierPool } = await import("../src/camelfs/bash.ts");
+  const small = { vcpus: 1, memoryMiB: 2048, diskMiB: 8192 }, large = { vcpus: 64, memoryMiB: 262144, diskMiB: 8192 };
+  assert.equal(tierPool({ CAMELFS_POOLS: JSON.stringify({ default: "test" }) }, large), "test");
+  assert.equal(tierPool({ CAMELFS_POOLS: JSON.stringify({ test: "test", build: "build" }) }, large), "build");
+  assert.equal(tierPool({ CAMELFS_POOLS: JSON.stringify({ test: "test", build: "build" }) }, small), "test");
+  assert.throws(() => tierPool({ CAMELFS_POOLS: JSON.stringify({ test: "test" }) }, large), /no host pool for shape 64 vCPU/);
+  assert.throws(() => tierPool({}, small), /no host pool for shape/);
+  assert.throws(() => tierPool({ CAMELFS_POOLS: "not json" }, small), /no host pool for shape/);
 });

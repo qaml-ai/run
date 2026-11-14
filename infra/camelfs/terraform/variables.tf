@@ -128,9 +128,9 @@ variable "api_port" {
 }
 
 variable "api_health_path" {
-  description = "The unauthenticated health route both target groups probe; must answer 200 on a ready node."
+  description = "The unauthenticated health route every target group and aop.sh probe; must answer 200 on a ready node. /v1/health since unit 11 (the /v0 surface is deleted; the image must serve /v1/health before this is applied)."
   type        = string
-  default     = "/v0/health"
+  default     = "/v1/health"
 }
 
 variable "api_cpu" {
@@ -231,12 +231,6 @@ variable "guest_image_prefix" {
     condition     = var.guest_image_prefix == "" || can(regex("^[a-z0-9-]+/$", var.guest_image_prefix))
     error_message = "guest_image_prefix is empty or one lowercase path segment with a trailing slash."
   }
-}
-
-variable "results_expiry_days" {
-  description = "VM results hosts write to S3 (results/<lineage>/<vm>; K4) are deleted after this many days (a prefix lifecycle rule)."
-  type        = number
-  default     = 7
 }
 
 variable "github_subjects" {

@@ -274,6 +274,9 @@ func TestApplyTimeoutRepliesToDaemon(t *testing.T) {
 func TestCheckpointThawsOnTimeout(t *testing.T) {
 	g := fixture(t)
 	g.index = &index{Tree: strings.Repeat("a", 40)}
+	if err := os.WriteFile(filepath.Join(g.repo, "changed"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	frozen, thawed := false, false
 	g.freeze = func() (func() error, error) {
 		frozen = true
@@ -289,6 +292,13 @@ func TestCheckpointThawsOnTimeout(t *testing.T) {
 			if err := wire.JSON(r, &frame); err != nil {
 				return err
 			}
+		}
+		if _, err := wire.Read(r, wire.DataMax); err != nil {
+			return err
+		}
+		var end message
+		if err := wire.JSON(r, &end); err != nil {
+			return err
 		}
 		_, err := r.ReadByte()
 		if err == io.EOF {
@@ -336,11 +346,31 @@ func TestInitOrdering(t *testing.T) {
 		},
 		report: func(err error) { t.Fatal(err) },
 	})
-	if cfg != (bootConfig{"10.0.0.2/30", "10.0.0.1", "http://10.0.0.1:3128", "/dev/vdb"}) {
+	if cfg != (bootConfig{ip: "10.0.0.2/30", gw: "10.0.0.1", proxy: "http://10.0.0.1:3128", repo: "/dev/vdb"}) {
 		t.Fatal(cfg)
 	}
 	want := []string{"/proc", "/sys", "/dev", "/dev/pts", "/dev/shm", "/run", "/sys/fs/cgroup", "prepare", "cmdline", "network", "/etc/resolv.conf", "/etc/profile.d/camel-proxy.sh", "/repo"}
 	if !reflect.DeepEqual(steps, want) {
 		t.Fatal(steps)
+	}
+}
+
+func TestSessionWorkspace(t *testing.T) {
+	var targets []mount
+	cfg := setupBoot(bootSystem{
+		mount:       func(m mount) error { targets = append(targets, m); return nil },
+		prepare:     func() {},
+		readCmdline: func() ([]byte, error) { return []byte("camel.workspace=/dev/vdb"), nil },
+		network:     func(bootConfig) {},
+		writeFile:   func(string, []byte, os.FileMode) error { return nil },
+		report:      func(e error) { t.Fatal(e) },
+	})
+	want := mount{"/dev/vdb", "/workspace", "ext4", unix.MS_NOATIME}
+	if cfg.workspaceFailed || len(targets) != len(earlyMounts)+1 || targets[len(targets)-1] != want {
+		t.Fatalf("session mounts: %v", targets)
+	}
+	g := &guest{session: true, root: "/"}
+	if cwd := g.workdir(); cwd != "/workspace" {
+		t.Fatalf("new shell cwd = %q", cwd)
 	}
 }

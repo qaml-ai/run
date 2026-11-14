@@ -18,6 +18,7 @@ import (
 type StorageServer struct {
 	compute     http.Handler
 	refs        *refstore.Store
+	marksTable  string
 	lineages    *lineageStore
 	repo        func() *objects.Repository
 	version     string
@@ -37,18 +38,23 @@ func NewStorageServer(repo *objects.Repository, version string, keys *auth.Keys)
 }
 
 // ConfigureRefs enables the tier's DynamoDB-backed lineage and ref routes.
-func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineagesTable string, now func() time.Time) {
+func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineagesTable string, now func() time.Time, marksTable ...string) {
 	if now == nil {
 		now = time.Now
 	}
 	s.lineages = &lineageStore{client: client, table: aws.String(lineagesTable), now: now}
 	s.refs = refstore.New(client, refsTable, now, commitParents{s.repo()})
 	s.refs.GuardLineages(lineagesTable)
+	s.marksTable = "marks"
+	if len(marksTable) != 0 {
+		s.marksTable = marksTable[0]
+	}
 }
 
 func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/v0/health":
+	// /v1/health is the target-group probe; /v0/health stays until the probes move (expand/contract).
+	case r.Method == http.MethodGet && (r.URL.Path == "/v1/health" || r.URL.Path == "/v0/health"):
 		jsonReply(w, http.StatusOK, map[string]string{"version": s.version})
 	case r.Method == http.MethodGet && r.URL.Path == "/v0/stats":
 		r = s.authorize(w, r)

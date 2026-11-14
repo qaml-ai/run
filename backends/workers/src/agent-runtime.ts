@@ -1,4 +1,5 @@
 import { BashSessions } from "./camelfs/bash.ts";
+import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
@@ -58,6 +59,7 @@ import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, hist
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
+import { RepoTreeCache } from "./repos/tree-cache.ts";
 import { DbProfile } from "./db-profile.ts";
 
 class AgentContext {
@@ -78,6 +80,8 @@ export class AgentRuntime extends AgentContext {
     super(ctx, env, host);
     if (env.TEST_MODE === "1") testAgentRuntimes.set(host, this);
   }
+
+  readonly repoTrees = new RepoTreeCache(this.ctx.storage);
 
   readonly sharedAgents = new SharedAgents(database(this.env));
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
@@ -433,7 +437,11 @@ export class AgentRuntime extends AgentContext {
   }
 
   /** A notify delivery for a repo this agent watches: an idempotent outbox row, drained by the alarm. */
-  stageRepoMove(move: RefMove) { return stageRepoMove(this.ctx.storage, move); }
+  async stageRepoMove(move: RefMove) {
+    await stageRepoMove(this.ctx.storage, move);
+    // A foreign move updates reachability only; it never derives a tree (R4).
+    this.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
+  }
   vmEnded(delivery: string, vm: string) { return this.bashSessions.ended(delivery, vm); }
 
   removeMember(member: string) {

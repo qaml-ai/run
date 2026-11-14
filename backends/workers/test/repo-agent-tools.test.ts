@@ -189,7 +189,7 @@ test('version tools read committed history and report a held ref', async t => {
   } });
   let running = true;
   const tools = repoTools(env, 't', 'a', async () => [{ repo: ctx.repoId, path: '/workspace', mode: 'rw' }],
-    undefined, undefined, undefined, {}, async () => running ? vm as never : undefined);
+    undefined, undefined, undefined, {}, undefined, async () => running ? vm as never : undefined);
   const run = (name: string, args: any) => tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never);
   const note = { type: 'text', text: 'Showing main as last saved; a command still running on your machine may change it.' };
   const historyArgs = { path: '/workspace/a.txt' };

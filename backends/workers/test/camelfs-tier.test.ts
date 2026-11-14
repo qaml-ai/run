@@ -69,6 +69,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   assert.equal((await handleCamelfsSmoke(request(), { ...env, CAMELFS_URL: undefined }, auth)).status, 404);
   assert.equal((await handleCamelfsSmoke(request(), env, { ...auth, scopes: [] })).status, 403);
   assert.equal((await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?iterations=501", { method: "POST" }), env, auth)).status, 400);
+  assert.equal((await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?minSeconds=601", { method: "POST" }), env, auth)).status, 400);
   const response = await handleCamelfsSmoke(request(), env, auth);
   const smoke = await response.json() as { lineage: string; ok: boolean; routes: Record<string, { count: number; p50: number; p95: number; p99: number }> };
   assert.equal(response.status, 200, JSON.stringify(smoke));
@@ -76,6 +77,10 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   assert.match(smoke.lineage, /^smoke:/);
   assert.deepEqual(Object.keys(smoke.routes), ["putBlob", "commit", "readBatch", "getCommit"]);
   assert.ok(Object.values(smoke.routes).every(r => r.count === 1 && r.p50 >= 0 && r.p99 >= r.p50));
+  const full = smoke as unknown as { completed: number; statuses: Record<string, Record<string, number>>; window: { startedAt: string; endedAt: string } };
+  assert.equal(full.completed, 1);
+  assert.deepEqual(full.statuses, { putBlob: { ok: 1 }, commit: { ok: 1 }, readBatch: { ok: 1 }, getCommit: { ok: 1 } });
+  assert.ok(Date.parse(full.window.endedAt) >= Date.parse(full.window.startedAt));
   assert.deepEqual(calls.map(c => [c.method, c.claims.lin, c.claims.acc, c.claims.sub, c.claims.refs]), [
     ["PUT", smoke.lineage, "w", "runtime:camelfs-smoke", []],
     ["POST", smoke.lineage, "w", "runtime:camelfs-smoke", []],

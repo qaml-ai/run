@@ -1,3 +1,5 @@
+import { agentRepoId } from "./repos/identity.ts";
+import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { placementOf, type Placement } from "../../../shared/owner.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { monitorRoutes, monitorToolsHost } from "./agent-monitors.ts";
@@ -197,6 +199,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
               incoming.config.spendLimit ?? null,
             );
           await this.ctx.storage.put("configuration", incoming);
+          const workspace = agentRepoId(incoming.tenantId, incoming.id);
+          this.repoTrees.retainHeads((incoming.config.mounts ?? []).filter(mount => mount.repo === workspace)
+            .map(mount => workspaceRefKey(`${incoming.tenantId}:${workspace}`, mount.ref ?? "main")));
           await this.ctx.storage.put("last-active", Date.now());
           const pi = await this.harness.pi(),
             root = await pi.root(BACKGROUND_CONTEXT);
@@ -316,6 +321,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             throw new Error("Agent shutdown is still settling accepted operations");
           await this.flushBilling(true);
           await this.ctx.storage.put("deleted", true);
+          this.repoTrees.retainHeads([]);
           if (conf) await this.closeWatchers(conf.tenantId, conf.id);
           for (const listener of this.listeners) listener(0, null);
           // Planned as a deleted agent now: it wakes only for what it still owes, or goes quiet (settleDeleted).
@@ -779,6 +785,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           conf.id,
           (conf.config.mounts ?? []) as never,
           path,
+          this.repoTrees,
           this.vmFiles,
         ))!;
       }
@@ -792,6 +799,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           decodeURIComponent(path.slice(7)),
           conf.config.mounts as never,
           "turn",
+          this.repoTrees,
           this.vmFiles,
         );
       }

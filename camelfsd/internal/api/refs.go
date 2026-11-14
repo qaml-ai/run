@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,7 +78,7 @@ func replyRef(r refstore.Ref) (refReply, error) {
 func refMatcher(globs []string) func(string) bool {
 	patterns := make([]*regexp.Regexp, 0, len(globs))
 	for _, glob := range globs {
-		pattern := strings.NewReplacer(`\*\*`, `.*`, `\*`, `[^/]*`).Replace(regexp.QuoteMeta(glob))
+		pattern := strings.ReplaceAll(regexp.QuoteMeta(glob), `\*`, `[^/]*`)
 		patterns = append(patterns, regexp.MustCompile("^"+pattern+"$"))
 	}
 	return func(name string) bool {
@@ -101,7 +102,7 @@ type refRequest struct {
 
 // Ref names may contain slashes. The method disambiguates route suffixes.
 func parseRefRequest(r *http.Request, route string, claims auth.Claims) (refRequest, error) {
-	q := refRequest{matches: refMatcher(claims.Refs)}
+	var q refRequest
 	switch {
 	case route == "refs":
 		switch r.Method {
@@ -128,12 +129,18 @@ func parseRefRequest(r *http.Request, route string, claims auth.Claims) (refRequ
 		case (r.Method == "PUT" || r.Method == "DELETE") && strings.Contains(q.name, "/watchers/"):
 			idx := strings.LastIndex(q.name, "/watchers/")
 			q.name, q.watcher, q.action = q.name[:idx], q.name[idx+len("/watchers/"):], "watch"
-		case r.Method == "POST" && strings.HasSuffix(q.name, "/cas"):
-			q.name, q.action = strings.TrimSuffix(q.name, "/cas"), "cas"
 		case r.Method == "POST" && strings.HasSuffix(q.name, "/lease/renew"):
 			q.name, q.action = strings.TrimSuffix(q.name, "/lease/renew"), "renew"
 		case (r.Method == "POST" || r.Method == "DELETE") && strings.HasSuffix(q.name, "/lease"):
 			q.name, q.action = strings.TrimSuffix(q.name, "/lease"), "lease"
+		case r.Method == "POST":
+			idx := strings.LastIndex(q.name, "/")
+			if idx >= 0 {
+				switch action := q.name[idx+1:]; action {
+				case "cas", "write", "merge", "restore":
+					q.name, q.action = q.name[:idx], action
+				}
+			}
 		case r.Method == "GET":
 			q.action = "get"
 		case r.Method == "DELETE":
@@ -155,25 +162,43 @@ func parseRefRequest(r *http.Request, route string, claims auth.Claims) (refRequ
 		if !refstore.ValidName(q.name) {
 			return q, invalid("invalid ref name")
 		}
-		if !q.matches(q.name) {
-			return q, &storageError{403, "forbidden", nil}
+		if r.Method != http.MethodGet {
+			q.matches = refMatcher(claims.Refs)
+			if !q.matches(q.name) {
+				return q, refOutsideScope(q.name)
+			}
 		}
 	}
-	if (q.action == "watch" || (q.action == "lease" && r.Method == "POST")) && !runtimeSubject(claims) {
-		return q, &storageError{403, "forbidden", nil}
+	if (q.action == "watch" || q.action == "lease" || q.action == "renew") && !runtimeSubject(claims) {
+		return q, forbidden("runtime token required")
 	}
-	if r.Method != "GET" && claims.Fence != nil && (len(claims.Refs) != 1 || claims.Refs[0] != q.name) {
-		return q, &storageError{403, "forbidden", nil}
+	release := q.action == "lease" && r.Method == http.MethodDelete
+	if r.Method != http.MethodGet && claims.Fence != nil {
+		if len(claims.Refs) != 1 || claims.Refs[0] != q.name {
+			return q, forbidden("fence requires one exact ref")
+		}
+		if q.action != "cas" && q.action != "renew" && !release {
+			return q, forbidden("fence token cannot be used on this route")
+		}
 	}
-	if r.Method != "GET" && claims.Fence != nil && q.action != "cas" && q.action != "renew" && !(q.action == "lease" && r.Method == "DELETE") {
-		return q, &storageError{403, "forbidden", nil}
+	if q.action == "watch" || release {
+		if r.Body != nil {
+			var first [1]byte
+			if _, err := io.ReadFull(r.Body, first[:]); err != io.EOF {
+				return q, invalid("request body must be empty")
+			}
+		}
 	}
 	return q, nil
 }
 
+func refOutsideScope(name string) error {
+	return forbidden("ref " + name + " is outside the token's refs")
+}
+
 func runtimeSubject(c auth.Claims) bool { return strings.HasPrefix(c.Subject, "runtime:") }
 
-func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l string, q refRequest, item lineageItem, repo *objects.Repository) error {
+func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l string, q refRequest, repo *objects.Repository) error {
 	ctx := r.Context()
 	claims, _ := ClaimsFromContext(ctx)
 	query := r.URL.Query()
@@ -198,7 +223,7 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 				return invalid("limit must be between 1 and 1000")
 			}
 		}
-		rows, next, err := s.refs.ListMatching(ctx, l, query.Get("prefix"), query.Get("after"), limit, q.matches)
+		rows, next, err := s.refs.List(ctx, l, query.Get("prefix"), query.Get("after"), limit)
 		if err != nil {
 			return err
 		}
@@ -232,7 +257,7 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 		}
 		jsonReply(w, 201, body)
 	case "deleteOwned":
-		deleted, held, err := s.refs.DeleteOwnedMatching(ctx, l, query.Get("owner"), q.matches)
+		deleted, held, err := s.refs.DeleteOwned(ctx, l, query.Get("owner"))
 		if err != nil {
 			return err
 		}
@@ -265,7 +290,13 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 	case "lease", "renew":
 		return s.leaseRoute(w, r, l, name, q.action, claims.Fence)
 	case "cas":
-		return s.refCAS(w, r, l, name, claims.Fence, item, repo)
+		return s.refCAS(w, r, l, name, claims.Fence, repo)
+	case "write":
+		return s.refWrite(w, r, l, name, repo)
+	case "merge":
+		return s.refMerge(w, r, l, name, repo)
+	case "restore":
+		return s.refRestore(w, r, l, name, repo)
 	default:
 		http.NotFound(w, r)
 	}
@@ -283,14 +314,20 @@ func loadRefCommit(ctx context.Context, repo *objects.Repository, id string) (re
 	return c, err
 }
 
-func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name string, fence *auth.Fence, item lineageItem, repo *objects.Repository) error {
+func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name string, fence *auth.Fence, repo *objects.Repository) error {
 	ctx := r.Context()
-	var body struct{ Commit, Expect, Root string }
+	var body struct {
+		Commit, Expect, Root string
+		Quota                *quotaRequest
+	}
 	if err := decodeStorage(r, &body); err != nil {
 		return err
 	}
 	if !root.Hex(body.Expect, 40) || (body.Root != "" && !root.Hex(body.Root, 64)) {
 		return invalid("expect must be a Git id and root, when supplied, must be a SHA-256")
+	}
+	if err := body.Quota.validate(); err != nil {
+		return err
 	}
 	commit, err := loadRefCommit(ctx, repo, body.Commit)
 	if err != nil {
@@ -305,7 +342,7 @@ func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name s
 		kind = "commit"
 	}
 	var diff []diffChange
-	var files int64
+	var files, bytes int64
 	move := refstore.Move{Kind: kind, Version: body.Commit, Tree: commit.tree, Root: body.Root, Parents: commit.parents,
 		Expect: &body.Expect, RequireExisting: true,
 		Prepare: func(previous refstore.Ref) error {
@@ -315,6 +352,10 @@ func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name s
 				return err
 			}
 			files, err = repo.TreeFileCount(ctx, commit.tree)
+			if err != nil {
+				return err
+			}
+			bytes, err = s.checkQuota(ctx, l, body.Quota)
 			return err
 		}}
 	if fence != nil {
@@ -324,7 +365,7 @@ func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name s
 		return err
 	}
 	jsonReply(w, 200, map[string]any{"version": body.Commit, "tree": commit.tree, "parents": commit.parents,
-		"diff": diff, "bytes": item.MarkedBytes + item.WrittenSince, "files": files})
+		"diff": diff, "bytes": bytes, "files": files})
 	return nil
 }
 

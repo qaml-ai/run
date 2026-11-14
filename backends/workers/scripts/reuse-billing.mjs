@@ -13,6 +13,8 @@ for (const name of files) {
   source = source.replaceAll('"./core/no-redirect.ts"', '"../../../src/core/no-redirect.ts"');
   source = source.replaceAll('import type { Accounts } from "./accounts.ts";', 'import type { Accounts } from "./billing-host.ts";');
   if (name === "billing") {
+    // TEMPORARY(until M1 on files-model): M1 (#1043) exports FREE_HOURLY_LIMIT from Node's src/billing.ts with this exact
+    // code; delete this adaptation in the main → files-model merge that brings M1.
     // Workers compute admission distinguishes free-credit exhaustion from request throttling.
     const freeHourlyError = /(return new HttpError\(429, `This account has reached its spending limit on free credit:[^\n]+`)(\);)/;
     if (!freeHourlyError.test(source)) throw new Error("Could not identify the free-hourly billing error");

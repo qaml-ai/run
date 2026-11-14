@@ -6,7 +6,7 @@ import type { Config, Env } from "../agent-types.ts";
 import { meterBilling } from "../computers/meter-billing.ts";
 import { computerSpec } from "../computers/provider.ts";
 import { HttpError } from "../errors.ts";
-import { HOSTS_PROVIDER, hostPool, hostSecondRate, hostShape, type HostPriceEnv } from "../jobs/host-pricing.ts";
+import { HOSTS_PROVIDER, hostPool, hostSecondRate, hostShape, type HostPriceEnv, type HostShape } from "../jobs/host-pricing.ts";
 import { workspaceMount, type Mount } from "../repos/mounts.ts";
 import { HttpRepoClient } from "../repos/http-client.ts";
 import { repoContext, type RepoEnv } from "../repos/registry.ts";
@@ -17,7 +17,22 @@ import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
 
 export const BASH_WORKDIR = '/workspace';
-export type BashEnv = HostPriceEnv & { CAMELFS_COMPUTE?: string; GUEST_IMAGE_SHA256?: string; COMPUTER_INSTANCE?: string };
+export type BashEnv = HostPriceEnv & { CAMELFS_COMPUTE?: string; CAMELFS_POOLS?: string; GUEST_IMAGE_SHA256?: string; COMPUTER_INSTANCE?: string };
+
+/**
+ * The tier pool a VM of this shape runs in: THE mapping is the deployment's `CAMELFS_POOLS` (JSON: shape class → pool,
+ * with an optional "default"), e.g. {"default":"test"} while one test host exists. The shape class is hostPool(shape)
+ * ("test" | "build"). There is no code-side default: an unmapped shape is refused here, never sent to the tier.
+ */
+export function tierPool(env: { CAMELFS_POOLS?: string }, shape: HostShape): string {
+  let map: unknown;
+  try { map = JSON.parse(env.CAMELFS_POOLS ?? "null"); } catch { map = null; }
+  const pools = map && typeof map === "object" && !Array.isArray(map) ? map as Record<string, unknown> : {};
+  const pool = pools[hostPool(shape)] ?? pools.default;
+  if (typeof pool !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(pool))
+    throw new Error(`no host pool for shape ${shape.vcpus} vCPU / ${shape.memoryMiB} MiB (CAMELFS_POOLS)`);
+  return pool;
+}
 export const bashEnabled = (env: Env) => tierConfigured(env) && env.CAMELFS_COMPUTE === "1";
 
 // MONEY: renew a ten-minute credit lease after three minutes of elapsed lease time.
@@ -47,9 +62,10 @@ function bootSpec(env: Env, conf: Config) {
   const image = env.GUEST_IMAGE_SHA256;
   if (!image || !/^[a-f0-9]{64}$/.test(image)) throw new Error("GUEST_IMAGE_SHA256 must name a published guest image");
   const shape = hostShape({ instance: conf.config.computer?.instance ?? computerSpec(env).instance });
-  const pool = hostPool(shape);
-  // MONEY: the encoded payer fixes the rate at create. The usage poller settles independently of vm.ended.
-  const payer: VmPayer = { tenant: conf.tenantId, agent: conf.id, rate: hostSecondRate(pool, shape, env) };
+  const pool = tierPool(env, shape);
+  // MONEY: the encoded payer fixes the rate at create, priced by the shape's class (hostPool) whatever tier pool it is
+  // placed in. The usage poller settles independently of vm.ended.
+  const payer: VmPayer = { tenant: conf.tenantId, agent: conf.id, rate: hostSecondRate(hostPool(shape), shape, env) };
   return {
     image, pool, shape: { vcpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskGiB: Math.ceil(shape.diskMiB / 1024) },
     network: { internet: conf.config.networking?.type !== "limited" }, usage: { payer: encodeVmPayer(payer) },
@@ -121,8 +137,8 @@ export class BashSessions {
     });
   }
 
-  private request<T>(vm: Vm, method: string, suffix = "", body?: unknown, timeoutMs?: number) {
-    return tierRequest<T>(this.env, { method, path: "/v1/vms/" + vm.vm_id + suffix, body, claims: claims(vm), timeoutMs });
+  private request<T>(vm: Vm, method: string, suffix = "", body?: unknown, timeoutMs?: number, idempotencyKey?: string) {
+    return tierRequest<T>(this.env, { method, path: "/v1/vms/" + vm.vm_id + suffix, body, claims: claims(vm), timeoutMs, idempotencyKey });
   }
 
   private receipt(key: string): Receipt | undefined {
@@ -202,7 +218,8 @@ export class BashSessions {
     }
     let shell: string;
     try {
-      ({ shell } = await this.request<{ shell: string }>(vm, "POST", "/shells"));
+      // One shell per VM: the VM id is the key, so a retry after a crash gets the same shell (#1071, L104).
+      ({ shell } = await this.request<{ shell: string }>(vm, "POST", "/shells", undefined, undefined, vm.vm_id));
     } catch (error) {
       if (isTier(error, 409, "not_running")) this.stop(vm.vm_id);
       throw error;

@@ -21,6 +21,7 @@ type Move struct {
 	Expect                    *string
 	ExpectAbsent              bool
 	RequireExisting           bool
+	APIWrite                  bool // Unfenced tier mutation; a live lease is reported as held.
 	// Prepare computes the response after validation but before the conditional write.
 	Prepare func(previous Ref) error
 	Fence   *Fence
@@ -45,7 +46,11 @@ func (s *Store) Cas(ctx context.Context, lineage, name string, m Move) (Result, 
 	if err := validateTarget(m.Version, m.Tree, m.Root, m.Owner); err != nil {
 		return Result{}, err
 	}
-	for range 2 {
+	attempts := 2
+	if m.APIWrite {
+		attempts = 1 // The API rebuilds a write once, against the newly read head.
+	}
+	for range attempts {
 		r, err := s.read(ctx, lineage, name)
 		if err != nil {
 			return Result{}, err
@@ -59,7 +64,11 @@ func (s *Store) Cas(ctx context.Context, lineage, name string, m Move) (Result, 
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{}, stale(r, s.now().UnixMilli())
+	now := s.now().UnixMilli()
+	if m.APIWrite && r.held(now) {
+		return Result{}, failure("held", 409)
+	}
+	return Result{}, stale(r, now)
 }
 
 func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, now int64) (Result, error) {
@@ -73,6 +82,9 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 	isHeld := r.held(now)
 	if isHeld {
 		if m.Fence == nil || m.Fence.Holder != *r.Holder || m.Fence.Epoch != r.LeaseEpoch {
+			if m.APIWrite {
+				return Result{}, failure("held", 409)
+			}
 			return Result{}, failure("fenced", 409)
 		}
 	} else if m.Fence != nil {
@@ -96,7 +108,7 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 					"current": *prev, "parents": append([]string{}, m.Parents...),
 				}}
 			}
-		} else if err := s.fastForward(ctx, lineage, *prev, m.Version); err != nil {
+		} else if err := s.CheckFastForward(ctx, lineage, *prev, m.Version); err != nil {
 			return Result{}, err
 		}
 	}
@@ -137,7 +149,7 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 
 const ancestryLimit = 50_000
 
-func (s *Store) fastForward(ctx context.Context, lineage, current, target string) error {
+func (s *Store) CheckFastForward(ctx context.Context, lineage, current, target string) error {
 	if s.commits == nil {
 		return failure("invalid", 400)
 	}

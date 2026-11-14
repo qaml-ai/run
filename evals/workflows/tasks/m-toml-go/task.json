@@ -53,6 +53,5 @@
   "jobs": [
     "go"
   ],
-  "dryNote": "You have go_build and go_decode tools that build /workspace/go in a fresh container (sub-agents do not have them), so build after each round of changes.",
-  "workflowNote": "job_run and a workflow's job() run in containers with Go 1.27.3, Node 24 and Python, and no network: build and check the port there."
+  "dryNote": "You have go_build and go_decode tools that build /workspace/go in a fresh container (sub-agents do not have them), so build after each round of changes."
 }

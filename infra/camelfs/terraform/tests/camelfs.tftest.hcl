@@ -111,7 +111,7 @@ run "first_apply_before_the_certificate" {
     condition = (
       aws_lb.hosts.load_balancer_type == "network" && aws_lb.hosts.internal == true && aws_lb.hosts.enable_cross_zone_load_balancing == true
       && aws_lb_listener.hosts.protocol == "TCP" && aws_lb_listener.hosts.port == 8794
-      && aws_lb_target_group.hosts.protocol == "TCP" && aws_lb_target_group.hosts.port == 8794 && aws_lb_target_group.hosts.health_check[0].path == "/v0/health" && aws_lb_target_group.hosts.health_check[0].port == "8790"
+      && aws_lb_target_group.hosts.protocol == "TCP" && aws_lb_target_group.hosts.port == 8794 && aws_lb_target_group.hosts.health_check[0].path == "/v1/health" && aws_lb_target_group.hosts.health_check[0].port == "8790"
       && length(aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts) == 0
     )
     error_message = "Host routes: an internal NLB in TCP passthrough on 8794 to the tier (the tier terminates mTLS), health-checked on the api port; no host admitted until the host groups are named."
@@ -199,7 +199,7 @@ run "balancers" {
     error_message = "The DNS records to make by hand: the public name proxied, the internal name DNS only."
   }
   assert {
-    condition     = alltrue([for group in aws_lb_target_group.api : group.health_check[0].path == "/v0/health" && group.health_check[0].matcher == "200"])
+    condition     = alltrue([for group in aws_lb_target_group.api : group.health_check[0].path == "/v1/health" && group.health_check[0].matcher == "200"])
     error_message = "Both target groups probe the daemon's health route for 200."
   }
 }
@@ -269,12 +269,20 @@ run "roles_and_policies" {
   }
   assert {
     condition = (
-      !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Sid == "NoResults"])
-      && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "NoResultReads" && statement.Effect == "Deny"] == [["arn:aws:s3:::camelfs-prod-904534089871/results/*"]]
-      && !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : contains(flatten([statement.Action]), "s3:PutObjectTagging")])
-      && anytrue([for rule in aws_s3_bucket_lifecycle_configuration.objects.rule : rule.id == "results" && try(tolist(rule.filter)[0].prefix, "") == "results/" && try(tolist(rule.expiration)[0].days, 0) == 7])
+      !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : contains(flatten([statement.Action]), "s3:PutObjectTagging") || can(regex("results", jsonencode(statement.Resource)))])
+      && !anytrue([for rule in aws_s3_bucket_lifecycle_configuration.objects.rule : rule.id == "results"])
+      && toset([for rule in aws_s3_bucket_lifecycle_configuration.objects.rule : rule.id]) == toset(["noncurrent-versions", "inventory"])
     )
-    error_message = "Hosts put their VM results under results/ and read none (write-only for hosts); nothing tags; results expire by prefix after 7 days."
+    error_message = "No results/ anywhere (L102): no lifecycle rule, no statement naming it, nothing tags; the lifecycle rules are noncurrent-versions and inventory."
+  }
+  assert {
+    condition = (
+      toset(flatten([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "LineageObjectsReadWrite"])) == toset([for kind in ["o", "t", "k", "r", "c", "ts"] : "arn:aws:s3:::camelfs-prod-904534089871/*/${kind}/*"])
+      && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "GuestImageRead"] == [["arn:aws:s3:::camelfs-prod-904534089871/guest/*"]]
+      && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Effect == "Allow" && contains(flatten([statement.Resource]), "arn:aws:s3:::camelfs-prod-904534089871/*")])
+      && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Effect == "Allow" && anytrue([for action in flatten([statement.Action]) : startswith(action, "s3:") && !contains(["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes", "s3:ListBucket"], action)])])
+    )
+    error_message = "The host writes and reads only <lineage>/{o,t,k,r,c,ts}/* and reads guest/*; never the whole bucket, never any other S3 action: everything else is denied by omission."
   }
   assert {
     condition = (

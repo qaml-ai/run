@@ -185,7 +185,7 @@ test("a crash between steps: a new object over the same storage picks up where t
   assert.equal(at(second).result, "re: bA");
 });
 
-test("every Wrangler config adds WorkflowObject, WorkflowResults, and CamelfsUsagePoller with their own new_sqlite_classes migrations, after the existing ones", () => {
+test("every Wrangler config migrates WorkflowObject and WorkflowResults before repos, deletes Volume, then adds CamelfsUsagePoller", () => {
   const configs = ["wrangler.jsonc", "wrangler.test.jsonc", "wrangler.pilot.jsonc", "wrangler.computers.test.jsonc"];
   for (const name of configs) {
     const config = new Function(`return (${readFileSync(new URL(`../${name}`, import.meta.url), "utf8")});`)() as {
@@ -196,16 +196,16 @@ test("every Wrangler config adds WorkflowObject, WorkflowResults, and CamelfsUsa
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "CamelfsUsagePoller"), [{ name: "CAMELFS_USAGE", class_name: "CamelfsUsagePoller" }], name);
     const tags = config.migrations.map(migration => migration.tag);
     assert.equal(new Set(tags).size, tags.length, `${name}: unique tags`);
-    // Only the result cache, job hosts, repos, and usage poller can follow it.
+    assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "VOLUMES" || binding.class_name === "Volume"), name);
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
-    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results" && tag !== "repos" && tag !== "camelfs-usage"), [], name);
-    // Preserve the migration order through the new usage poller.
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), ["workflow-results", "repos", "delete-volumes", "camelfs-usage"], name);
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
     assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
       { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },
       ...(name === "wrangler.pilot.jsonc" ? [{ tag: "job-hosts", new_sqlite_classes: ["JobHost", "HostJob", "JobHostRegistry"] }] : []),
       { tag: "repos", new_sqlite_classes: ["RepoDO"] },
+      { tag: "delete-volumes", deleted_classes: ["Volume"] },
       { tag: "camelfs-usage", new_sqlite_classes: ["CamelfsUsagePoller"] },
     ], name);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);

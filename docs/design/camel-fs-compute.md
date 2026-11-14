@@ -49,7 +49,7 @@ Node.
   `camel-init` replacement powers off cleanly with `reboot(LINUX_REBOOT_CMD_POWER_OFF)` (L62).
 - **`camelfsd api`** is the stateless tier (C1), which gains the compute routes of §2.
 
-**Process model.** VMs must survive a `camelfsd` restart, or a daemon deploy kills every running job on the host.
+**Process model.** VMs must survive a `camelfsd` restart, or a daemon deploy kills every running VM on the host.
 - Each Firecracker runs under the jailer in its own systemd scope, not as a child that dies with the daemon.
 - `camelfsd host` persists its mount and VM state (`mounts`, `vms` tables in the host-local SQLite).
 - On start it re-adopts running VMs and their mounts instead of refusing a non-empty `mounts/`.
@@ -77,7 +77,7 @@ is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md 
 | `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied. **A lapsed lease is final**: a call made at or after the current deadline (`now ≥ deadline`) answers `409 lease_expired` and never revives it (§4) |
 | `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended` (v2 adds `sleeping` after `running`, §6). Ended codes: `stopped` (a requested stop), `idle` (the idle stop), `host_lost`, `start_failed`, `lease_expired` (§4). Admission is the runtime's, before `POST /v1/vms`, so it is never an ended code |
 | `POST /v1/vms/{id}/shells` → `{ shell }` | a persistent shell: cwd, environment and shell state survive between `exec`s, which are the `bash` tool's semantics |
-| `POST /v1/vms/{id}/exec` `{ command, shell, cwd?, timeoutS, env?, stdin? }` | runs one command in the shell. Output streams live as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`). The guest keeps at least the last exec per shell, bounded by 8 execs × 1 MiB of stdout and stderr per VM (stream-tagged, with offsets), plus the last 64 exit records. It lives in the guest's memory, so it survives a daemon restart, and it is dropped when the VM stops. A client whose stream dropped re-reads it with `GET …/exec/{execId}?offset=`. Past those bounds the read answers `410 tail_truncated { firstOffset }`, or `404 exec_unknown` for an exec it no longer knows. Nothing is written to S3 or a table for an exec |
+| `POST /v1/vms/{id}/exec` `{ command, shell, cwd?, timeoutS, env?, stdin? }` | runs one command in the shell. Output streams live as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`). The guest keeps at least the last exec per shell, bounded by 8 execs × 1 MiB of stdout and stderr per VM (stream-tagged, with offsets), plus the last 64 exit records. It lives in the guest's memory, so it survives a daemon restart, and it is dropped when the VM stops. A client whose stream dropped re-reads it with `GET …/exec/{execId}?offset=`. Past those bounds the read answers `410 tail_truncated` with `firstOffset` in the error's `details` (§9.8's error object, #1063), or `404 exec_unknown` for an exec it no longer knows. Nothing is written to S3 or a table for an exec |
 | `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the host's in-VPC `cas` on the VM's ref under its lease (camel-fs-files.md §9.7). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved |
 | `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. The VM also stops by itself after `idleStopS` (≈ 10 s by default) with no `exec` in flight, with a checkpoint first. Warm sleep (a memory snapshot, §6 v2) is a later addition behind the same API, as a `sleeping` state |
 | events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, version?, checkpointError? }` (on the notify webhook with `type: "vm.ended"`, camel-fs-files.md §9.11), `usage.vm` (§4) |
@@ -119,7 +119,7 @@ deserves its own access letter (`x`) is a C2-era detail; the default is `w`.
 ## 3. Where VM control lives: in the camel-fs service
 
 **Decided (Miguel, 2026-11-13 ~17:20): option (ii).** VM control lives in the camel-fs service, durable in
-DynamoDB. That covers placement, dispatch, durable job and VM state, host authority ("is it still running"), stop,
+DynamoDB. That covers placement, dispatch, durable VM state, host authority ("is it still running"), stop,
 and the metering events. The runtime keeps billing, from the usage events it pulls from camel-fs (§4), and agent
 semantics. Under §6 the agent's own object is the compute API's only runtime client (no `HostJob`).
 
@@ -135,7 +135,7 @@ semantics. Under §6 the agent's own object is the compute API's only runtime cl
 - `hosts` (key `pool` + `host`): boot epoch, shape, `free` slots, the string set `vms` of the VMs placed on it,
   `lastSeenAt`, features. Heartbeats write it in-VPC, and every placement and every end update `free` and `vms`
   in the same transaction as the VM's row. A reconcile is then one strongly consistent `GetItem`, with no index.
-- `vms` (key `id`): the §2 phase row, host, lease epoch, `stopRequested`, `resultRef`, `payer`, `deadline`,
+- `vms` (key `id`): the §2 phase row, host, lease epoch, `stopRequested`, `payer`, `deadline`,
   `billedTo`, `usageSeq`.
 - `deliveries` (key `shard` + `id`, camel-fs-files.md §9.11) already exists for notify, and carries the `vm.*`
   hints.
@@ -146,6 +146,11 @@ Every transition is a conditional write:
 - `placed → booting` is written before the host is told.
 
 Placement is warm- and feature-aware, from the `warm` table camel-fs.md §1.2 already names (L32).
+
+**A host's `bootEpoch` follows its kernel boot.** The host sends `/proc/sys/kernel/random/boot_id` as
+`Register.BootID`, and the tier answers the same epoch for the same `BootID`.
+- So VMs and their leases survive a daemon restart.
+- A new kernel boot bumps the epoch, which fences every older holder and ends that boot's VMs `host_lost`.
 
 Hosts reach the tier in-VPC over mutual TLS (camel-fs-files.md §9.12). They enroll once with their STS
 attestation for a host certificate, which is then their identity, heartbeat with `running`, and pull or
@@ -164,7 +169,7 @@ receive work over the VPC.
 `JobHost`, `JobHostRegistry`, the host WebSocket, `shared/job-host-protocol.ts` and the runtime's enrollment route
 are deleted in K5.
 
-**wf-durable's in-flight PRs:**
+**wf-durable's in-flight PRs** (historical; under §6 there is no `HostJob` at all, and K5c deletes the job-host plane):
 
 | PR | outcome |
 |---|---|
@@ -208,7 +213,7 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
   every ≈ 20 s. It inserts with `ON CONFLICT DO NOTHING` and advances its cursor in one Postgres transaction, then
   prices and charges as the meter does today.
   - This replaces `meter.started`, `meter.stopped`, `meter.closed` and `lastSeen`, so L75's ≈ 2.1 s of Postgres
-    around a host job moves off the job's path.
+    around a VM moves off the agent's path.
   - There is no usage webhook.
 - **Balances may go negative** (Miguel, 2026-11-14).
   - **Admission** requires the payer's balance > 0 before `POST /v1/vms`. A VM never starts without an admitted
@@ -233,6 +238,18 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
     `lease_expired` as "the VM is stopping" and lands it through `vm.ended` and the usage poll like any other end.
     It extends well before the deadline (at a fraction of the lease), so a slow round trip does not lapse a VM that
     still has credit.
+- **The runtime's money rules for VMs, C1–C5** (wf-durable's K5, under Miguel's no-holds decision):
+  - **C1 Admission:** before `POST /v1/vms`, the existing `meter.admit(payer)` (spend limits; for a prepaid tenant,
+    spendable > 0). A refusal creates no VM. No credit hold is taken.
+  - **C2 Renewal:** every 3 min while the VM runs, `meter.admit(payer)` again. Only if it passes is the deadline
+    extended (`now + 10 min`). If it refuses, the lease lapses, the tier stops the VM `lease_expired`, and billing
+    ends at that deadline. Exposure past the moment the balance crossed zero is at most one deadline window.
+  - **C3** Every `usage.vm` event is charged, even when it takes the balance below zero, exactly once by the
+    receipt id `computer:camelfs:<vm>:<seq>` and the event insert's `ON CONFLICT DO NOTHING`.
+  - **C4 Price:** the `rate` fixed at admission (carried in the payer) × the integer `to − from` in ms, never a
+    float of seconds.
+  - **C5 Order independence:** `vm.ended` and the usage stream are independent, and nothing about money waits on
+    `vm.ended`.
 - **Money-path review:** this section is the design; the implementation's money hunks (the event schema, the poller's
   insert and cursor, the settlement, the deadline extension) go to the lead line by line before any of them merges.
 
@@ -288,10 +305,13 @@ scripts.
 - **Background work:** `cmd &` or `nohup` runs on in the VM between calls only while the VM is awake. When the VM
   sleeps (below), background processes die. A long-running server needs the agent to keep calling `bash`, or it
   stops.
-- **Output limits:** the model sees at most 32 KiB of each stream: the head and the tail, with a marker for what
-  was cut (`truncated: true`). The full stream passes through the runtime and is not stored.
-- **Checkpoints:** after every `bash` call that changed the tree, the runtime asks for a checkpoint (§2), so the
-  ref moves and the change is a version. The idle stop checkpoints first. The agent's
+- **Output limits:** the model sees at most 32 KiB of each stream: the head and the tail, cut in the middle, and
+  the result says how many bytes were dropped (`truncated`). The full stream passes through the runtime and is not stored.
+- **Checkpoints:** after every `bash` call, the runtime asks for a checkpoint (§2), asynchronously once the tool
+  result has returned. The host answers `changed: false` as a no-op when the tree did not change (the runtime cannot
+  know that cheaply), and otherwise the ref moves and the change is a version. Checkpoints on a VM are serialized.
+  This is the cadence (the lead, 2026-11-14, as K5b builds it); an earlier K5 spec line that checkpointed only at
+  the end of a turn is superseded. The idle stop checkpoints first. The agent's
   `checkpoint`/`restore`/`history`/`diff` tools are unchanged.
 - **File tools and the lease, plainly:** while a VM is running on a branch, it holds the branch's lease, and the
   agent's file tools on that branch go into the VM (reads and writes run in the guest; the next checkpoint makes
@@ -306,6 +326,11 @@ scripts.
       `exec` runs.
     - The next `bash` call boots a fresh VM from the branch's latest tree: a warm mount ≈ 2 ms plus a Firecracker
       boot ≈ 0.5 s (a cold host hydrates first, ≈ 3.7 s for a 660 MB root).
+        - **A fresh root per boot.** Every boot starts from the guest image's root filesystem, with the branch mounted
+      at `/workspace` (the shell starts there). Only `/workspace` is the branch; installed packages, `/tmp` and
+      the shell's environment are gone after a sleep.
+    - **Every stop checkpoints:** the idle stop, a requested stop and a `lease_expired` stop all checkpoint
+      before the VM ends, so `/workspace` is always on the branch.
     - **Files persist, processes do not**, and the tool's description says so to the model.
     - Billing runs only while a VM runs, so a sleeping agent costs storage only.
   - **v2 (later, gated on a measurement): warm sleep.**
@@ -317,11 +342,24 @@ scripts.
       snapshots. The checkpoint still runs before the snapshot, so the branch is current either way.
   - **No API change for v2:** the VM row gains a `sleeping` state (`running → sleeping → running`) between
     `running` and `stopping`, and `GET /v1/vms/{id}` reports it. v1 never enters it.
-- **The tool's description to the model** (in substance): "Runs a shell command in your machine. Your files
-  persist on your branch. The machine sleeps after about 10 seconds without a command, and processes, including
-  background `&` jobs and servers, do not survive the sleep. Keep calling to keep something running."
-- **Money (§4):** admission at balance > 0 before `POST /v1/vms`. The deadline is renewed every ≈ 3 min while the
-  balance is > 0. Usage is pulled, and charges may go negative.
+- **The tool's description to the model**, approved verbatim by the lead (2026-11-14), with `WORKDIR` =
+  `/workspace`:
+
+  > Runs a shell command on your machine, a Linux VM attached to your current branch, and returns its stdout,
+  > stderr and exit code. Files under /workspace are saved to your branch after every command; everything else on
+  > the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps
+  > after about 10 seconds with no command running, and a sleep ends every process, including background `&` jobs
+  > and servers; a command that is still running keeps it awake. The first command after a sleep waits a few
+  > seconds while the machine starts. Output over 32 KiB per stream is cut in the middle, and the result says how
+  > many bytes were dropped.
+  >
+  > `command`: The command to run in bash, in a persistent shell: the working directory and environment carry
+  > over between calls until the machine sleeps.
+  > `cwd`: Directory to run in; defaults to the shell's current directory.
+  > `timeoutSeconds`: Kill the command after this many seconds; the result then says timedOut. (1–600, default
+  > 120)
+- **Money:** §4's C1–C5. Admission at balance > 0, the deadline renewed every 3 min while admission passes, every
+  usage event charged even below zero.
 
 **In the runtime, the agent's own object owns its VM.**
 - The agent's Durable Object keeps one small row per branch: `{ vmId, ref, deadline, state }`, where `state` is

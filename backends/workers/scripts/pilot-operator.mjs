@@ -116,7 +116,6 @@ export async function withPilotOperator(options, callback) {
       durable_objects: { bindings: [
         { name: "AGENTS", class_name: "CamelAgent", script_name: "camelrun-pilot" },
         { name: "TENANTS", class_name: "TenantAdmission", script_name: "camelrun-pilot" },
-        { name: "VOLUMES", class_name: "Volume", script_name: "camelrun-pilot" },
       ] },
     },
     // Warm both routing and Hyperdrive with reads before attempting a mutation.

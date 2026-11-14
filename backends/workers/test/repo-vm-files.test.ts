@@ -82,7 +82,7 @@ test('all routed repo tools use the VM and preserve version and output semantics
   const presented: unknown[] = [];
   const tools = repoTools(noRef as never, 't', 'a', async () => mounts,
     async (file, path) => { presented.push(file, path); }, undefined,
-    { get: key => seen.get(key), remember: (key, value) => { seen.set(key, value); } }, {}, provider);
+    { get: key => seen.get(key), remember: (key, value) => { seen.set(key, value); } }, {}, undefined, provider);
   const run = async (name: string, args: any) => (await tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never)).output;
   const result = async (name: string, args: any) => JSON.parse((await run(name, args))[0].text);
   const path = '/workspace/a.txt';
@@ -124,7 +124,7 @@ test('all routed repo tools use the VM and preserve version and output semantics
 
 test('VM edit maps atomic stale_path and a failed VM call retains its underlying code', async () => {
   const { vm, provider } = memoryVm();
-  const tools = repoTools(noRef as never, 't', 'a', async () => mounts, undefined, undefined, undefined, {}, provider);
+  const tools = repoTools(noRef as never, 't', 'a', async () => mounts, undefined, undefined, undefined, {}, undefined, provider);
   const run = (name: string, args: any) => tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never);
   const path = '/workspace/a.txt';
   vm.write = async (_, __, options) => {
@@ -143,9 +143,9 @@ test('agent file HTTP operations use VM pagination, ranges and conditional write
   const { files, vm, provider } = memoryVm();
   const env = noRef as never;
   const item = (init?: RequestInit) => handleAgentFileRequest(new Request('https://agent.invalid/files', init),
-    env, 't', 'a', '/workspace/a.txt', mounts, 'turn', provider);
+    env, 't', 'a', '/workspace/a.txt', mounts, 'turn', undefined, provider);
   const page = async (query: string) => (await handleAgentFilesRoute(new Request('https://agent.invalid/files?' + query),
-    env, 't', 'a', mounts, '/files', provider))!.json();
+    env, 't', 'a', mounts, '/files', undefined, provider))!.json();
   const first = await page('path=/workspace&glob=**/*.txt&limit=1');
   assert.equal(first.next, '/workspace/a.txt');
   const second = await page('path=/workspace&glob=**/*.txt&limit=1&after=' + first.next);
@@ -173,7 +173,7 @@ test('agent file HTTP operations use VM pagination, ranges and conditional write
 test('presenting on a running machine saves it first and never stores bytes outside the repo', async () => {
   const { provider, checkpoints } = memoryVm();
   const presented: any[] = [];
-  const tools = repoTools(noRef as never, 't', 'a', async () => mounts, async file => { presented.push(file); }, undefined, undefined, {}, provider);
+  const tools = repoTools(noRef as never, 't', 'a', async () => mounts, async file => { presented.push(file); }, undefined, undefined, {}, undefined, provider);
   await tools.find(tool => tool.name === 'present_file')!.execute({ path: '/workspace/a.txt' }, {} as never, {} as never);
   assert.equal(checkpoints.length, 1);
   assert.equal(presented[0].version, 'c'.repeat(40));

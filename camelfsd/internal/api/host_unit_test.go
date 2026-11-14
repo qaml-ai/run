@@ -167,6 +167,7 @@ func TestUnitHostIdentity(t *testing.T) {
 		{name: "forged header", path: "/v1/hosts/a/stub", certs: []tls.Certificate{certB}, forged: true, status: 403},
 		{name: "storage", path: "/v1/lineages/a/trees/x", certs: []tls.Certificate{certA}, status: 404},
 		{name: "health", path: "/v0/health", certs: []tls.Certificate{certA}, status: 404},
+		{name: "v1 health", path: "/v1/health", certs: []tls.Certificate{certA}, status: 404},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, tier.URL+tc.path, nil)
@@ -356,12 +357,64 @@ func TestUnitStorageListener(t *testing.T) {
 		method, path string
 		status       int
 	}{
-		{"GET", "/v0/health", 200}, {"GET", "/v1/lineages/a/trees/x", 401},
+		{"GET", "/v0/health", 200}, {"GET", "/v1/health", 200}, {"GET", "/v1/lineages/a/trees/x", 401},
 	} {
 		w := httptest.NewRecorder()
 		storage.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
 		if w.Code != tc.status {
 			t.Fatalf("%s: HTTP %d, %s", tc.path, w.Code, w.Body)
+		}
+	}
+}
+
+func TestUnitEnrollListenerTLS(t *testing.T) {
+	oldCA, newCA := newHostTestCA(t), newHostTestCA(t)
+	oldTier := oldCA.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier")
+	newTier := newCA.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier")
+	dir := t.TempDir()
+	credentials := testHostTLS(t, oldCA, oldTier, dir)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) != 0 {
+			t.Errorf("enrollment must be TLS without a client certificate")
+		}
+		w.WriteHeader(204)
+	}))
+	server.TLS = credentials.EnrollServerConfig()
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	// A new host has no certificate: it pins the tier's certificate (here by its exact bytes) and presents none.
+	served := func() []byte {
+		t.Helper()
+		var got []byte
+		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true, TLSClientConfig: &tls.Config{
+			InsecureSkipVerify:    true, // the test checks the served leaf itself
+			VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error { got = raw[0]; return nil },
+		}}}
+		resp, err := client.Post(server.URL+"/v1/hosts/enroll", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 204 {
+			t.Fatalf("HTTP %d", resp.StatusCode)
+		}
+		return got
+	}
+	if !bytes.Equal(served(), oldTier.Certificate[0]) {
+		t.Fatal("enroll listener does not serve the tier certificate")
+	}
+	writeHostTLS(t, newCA, newTier, dir)
+	if err := credentials.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(served(), newTier.Certificate[0]) {
+		t.Fatal("enroll listener did not pick up the rotated tier certificate")
+	}
+	// Plain HTTP to the TLS listener is refused.
+	if resp, err := http.Post(strings.Replace(server.URL, "https://", "http://", 1)+"/v1/hosts/enroll", "application/json", nil); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Fatalf("plain HTTP accepted: %d", resp.StatusCode)
 		}
 	}
 }
