@@ -68,12 +68,14 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const auth = { tenantId: "t", scopes: ["*"] };
   assert.equal((await handleCamelfsSmoke(request(), { ...env, CAMELFS_URL: undefined }, auth)).status, 404);
   assert.equal((await handleCamelfsSmoke(request(), env, { ...auth, scopes: [] })).status, 403);
+  assert.equal((await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?iterations=501", { method: "POST" }), env, auth)).status, 400);
   const response = await handleCamelfsSmoke(request(), env, auth);
-  const smoke = await response.json() as { lineage: string; ok: boolean; timings: Record<string, number> };
+  const smoke = await response.json() as { lineage: string; ok: boolean; routes: Record<string, { count: number; p50: number; p95: number; p99: number }> };
   assert.equal(response.status, 200, JSON.stringify(smoke));
   assert.equal(smoke.ok, true);
   assert.match(smoke.lineage, /^smoke:/);
-  assert.deepEqual(Object.keys(smoke.timings), ["putBlob", "commit", "readBatch", "getCommit"]);
+  assert.deepEqual(Object.keys(smoke.routes), ["putBlob", "commit", "readBatch", "getCommit"]);
+  assert.ok(Object.values(smoke.routes).every(r => r.count === 1 && r.p50 >= 0 && r.p99 >= r.p50));
   assert.deepEqual(calls.map(c => [c.method, c.claims.lin, c.claims.acc, c.claims.sub, c.claims.refs]), [
     ["PUT", smoke.lineage, "w", "runtime:camelfs-smoke", []],
     ["POST", smoke.lineage, "w", "runtime:camelfs-smoke", []],
