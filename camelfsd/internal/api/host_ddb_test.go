@@ -52,7 +52,7 @@ func TestDDBHostChannel(t *testing.T) {
 	c.EnableClockCheck()
 	pools := []string{"pool"}
 	loop := compute.Loop{C: c, Pools: func(context.Context) ([]string, error) { return pools, nil }}
-	server := NewHostServer(c, pools, 30*time.Second)
+	server := NewHostServer(c, pools, []string{strings.Repeat("d", 64)}, 30*time.Second)
 	tier := testTier(t, credentials, server)
 	var mu sync.Mutex
 	var boots []hostwire.BootSpec
@@ -116,6 +116,9 @@ func TestDDBHostChannel(t *testing.T) {
 		Shape: hostwire.Shape{VCPUs: 4, MemoryMiB: 4096, DiskMiB: 1024}, Slots: 1, Images: []string{image}}
 	var registered hostwire.Registered
 	post(clientA, "a/register", register, 200, &registered)
+	if len(registered.Images) != 1 || registered.Images[0] != strings.Repeat("d", 64) {
+		t.Fatalf("registered images = %v", registered.Images)
+	}
 	post(clientB, "b/register", register, 200, nil)
 	heartbeat := func(epoch int64, free int, running ...hostwire.Running) hostwire.HeartbeatReply {
 		t.Helper()

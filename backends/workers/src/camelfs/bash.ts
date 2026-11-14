@@ -15,6 +15,7 @@ import type { TierClaims } from "./claims.ts";
 import { TierError, tierConfigured, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
+import { repoStorage } from "./repo-storage.ts";
 import { guestFiles, VM_FILES_STDOUT_BYTES, type VmFiles } from "./vm-files.ts";
 
 export const BASH_WORKDIR = '/workspace';
@@ -346,9 +347,9 @@ export class BashSessions {
       }
     });
     return guestFiles(
-      (execId, command, stdin, mutation) => onVm(async () => {
+      (execId, command, input, mutation) => onVm(async () => {
         const timeoutS = 120;
-        const body = { execId, command, stdin, cwd: BASH_WORKDIR, timeoutS };
+        const body = { execId, command, ...input, cwd: BASH_WORKDIR, timeoutS };
         const checkpoint = { vm, callId: execId, message: "Save VM file changes", time: Date.now() };
         const key = JSON.stringify(["vmfiles", vm.vm_id]);
         if (mutation) {
@@ -378,6 +379,7 @@ export class BashSessions {
         if (reply.changed) this.recordHead(vm, reply);
         return this.rememberHead(vm, reply);
       }),
+      bytes => onVm(() => repoStorage(this.env, claims(vm).sub).putBlob(vm.lineage, bytes)),
     );
   }
 
@@ -503,7 +505,7 @@ export class BashSessions {
 export function bashTool(runtime: AgentRuntime) {
   return defineTool({
     name: "bash",
-    description: `Runs a shell command on your machine, a Linux VM attached to your current branch, and returns its stdout, stderr and exit code. Files under ${BASH_WORKDIR} are saved to your branch after every command; everything else on the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps after about 10 seconds with no command running, and a sleep ends every process, including background \`&\` jobs and servers; a command that is still running keeps it awake. The first command after a sleep waits a few seconds while the machine starts. Output over 32 KiB per stream is cut in the middle, and the result says how many bytes were dropped.`,
+    description: `Runs a shell command on your machine, a Linux VM attached to your current branch, and returns its stdout, stderr and exit code. Files under ${BASH_WORKDIR} are saved to your branch after every command; everything else on the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps after about 10 seconds with no command running, and a sleep ends every process, including background \`&\` jobs and servers; a command that is still running keeps it awake. The first command after a sleep usually starts within a second; the first command on a new or large repository can take up to half a minute while its files are copied in. Output over 32 KiB per stream is cut in the middle, and the result says how many bytes were dropped.`,
     parameters: obj({
       command: str({ description: "The command to run in bash, in a persistent shell: the working directory and environment carry over between calls until the machine sleeps." }),
       cwd: opt(str({ description: "Directory to run in; defaults to the shell's current directory." })),
