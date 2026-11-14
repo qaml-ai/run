@@ -77,6 +77,8 @@ test("commits: parents, mode-only, deletes, no-op, idempotency and caller time",
   const b = await storage.putBlob(lineage, enc("hello\n"));
   const first = await storage.commit(lineage, input([{ path: "a", blob: b.blob }], { parents: [empty.commit] }), "key");
   assert.deepEqual(await storage.commit(lineage, input([{ path: "a", blob: b.blob }], { parents: [empty.commit] }), "key"), first);
+  // As the daemon: a reused key replays the first answer even for a different body (a caller must key per attempt).
+  assert.deepEqual(await storage.commit(lineage, input([{ path: "other", blob: b.blob }], { parents: [empty.commit] }), "key"), first);
   const mode = await storage.commit(lineage, input([{ path: "a", mode: "100755" }], { parents: [first.commit], time: 1700000005 }));
   assert.equal(mode.changed, 1); assert.equal(mode.bytes, 0, "a mode-only change names no blob"); assert.equal(first.bytes, 6); assert.equal(mode.time, 1700000005);
   const merge = await storage.commit(lineage, input([], { parents: [mode.commit, first.commit] }));

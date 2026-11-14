@@ -18,7 +18,7 @@ export async function notifyRepoWatchers(
         mount => mount.repo === ctx.repoId && (mount.ref ?? 'main') === ref && mount.notify,
       );
       if (!mounts.length) {
-        await ctx.stub.unwatch(ref, agent);
+        await ctx.repo.unwatch(ref, agent);
         continue;
       }
       const shown = Object.keys(changes).flatMap(path => mounts.flatMap(mount => {
@@ -40,7 +40,7 @@ export async function notifyRepoWatchers(
           },
         }),
       }));
-      if (response.status === 404 || response.status === 410) await ctx.stub.unwatch(ref, agent);
+      if (response.status === 404 || response.status === 410) await ctx.repo.unwatch(ref, agent);
       else if (!response.ok) throw new Error(`HTTP ${response.status}`);
     } catch {
       // The commit already succeeded. Delivery failures must not turn it into a

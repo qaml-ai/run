@@ -1,3 +1,4 @@
+import { repoHistory } from './history.ts';
 import { RE2JS } from "re2js";
 import { volumeTools } from "../files.ts";
 import { Buffer } from "node:buffer";
@@ -291,7 +292,7 @@ function actualRepoTools(
           throw new FileError("Invalid pattern");
         if(regex) {try {RE2JS.compile(pattern,ignoreCase?RE2JS.CASE_INSENSITIVE:0);}catch(e){throw new FileError(`Invalid regular expression: ${(e as Error).message}`);}}
         const t = await target(path ?? (await getMounts())[0]?.path ?? "/workspace");
-        const head = await t.v.ctx.stub.ref(t.v.ref);
+        const head = await t.v.ctx.repo.ref(t.v.ref);
         if (!head) return output({ matches: [] });
         const prefix=insideRepo(t.path);
         let file=false;if(prefix)try{await t.v.stat(t.path);file=true;}catch(e){if(!String(e).includes('FILE_404:'))throw e;}
@@ -323,7 +324,7 @@ function actualRepoTools(
             throw new FileError(
               "Destination cannot be the source or inside it",
             );
-          const files = await source.v.list(source.path);
+          const files = await source.v.list(source.path, undefined, undefined, true);
           if (!files.length) throw new FileError("Source not found", 404);
           const directory = files[0].path !== source.path;
           if (directory && name === "cp" && !recursive)
@@ -371,33 +372,35 @@ function versionTools(
 ) {
   const resolve = async (t: Awaited<ReturnType<typeof target>>, value: string) => {
     if (!/^[a-f0-9]{7,40}$/.test(value)) throw new FileError('Version must be an id or unique prefix of at least 7 hex characters');
-    if (value.length === 40) return t.v.ctx.stub.resolve(value);
-    const matches = new Map<string, {version: string; tree: string}>();
-    let from: string | undefined;
-    do { const page = await t.v.ctx.stub.history({ref: t.v.ref, from, limit: 500}); for (const v of page.versions) if (v.version.startsWith(value)) matches.set(v.version, v); from = page.next ?? undefined; } while (from);
+    if (value.length === 40) return t.v.ctx.repo.resolve(value);
+    const matches = new Set<string>();
+    let after: string | undefined;
+    do {
+      const page = await repoHistory(t.v.ctx, { ref: t.v.ref, after, limit: 500 });
+      for (const v of page.versions) if (v.version.startsWith(value)) matches.add(v.version);
+      after = page.next ?? undefined;
+    } while (after);
     if (matches.size !== 1) throw new FileError('Version prefix is missing or ambiguous');
-    return [...matches.values()][0];
+    return await t.v.ctx.repo.resolve([...matches][0]);
   };
   return [
     defineTool({ name: 'checkpoint', description: 'Save a named version of your files now, such as "tests pass, before refactor". Your work is already saved automatically as you go; name a version when you may want to return to it with restore. Returns the version id. Costs nothing if nothing changed. path picks the mount (default: your workspace).', replay: 'unsafe', parameters: obj({message: str(), path: opt(str())}), async execute({message,path}) {
-      const t = await target(path ?? await workspace(), true), head = await t.v.ctx.stub.ref(t.v.ref), previous = head && await t.v.ctx.stub.commit(head.version);
+      const t = await target(path ?? await workspace(), true), head = await t.v.ctx.repo.ref(t.v.ref), previous = head && await t.v.ctx.repo.commit(head.version);
       // Naming the same point twice is free; a new name for it is a new (empty) commit, never a dropped message.
       if (previous?.trailers['Camel-Checkpoint'] === 'manual' && previous.message === message) return output(previous.version);
-      return output((await commitChanges(t.v.ctx, {ref:t.v.ref, changes:{}, message, allowEmpty:true, author:`agent:${agent}`,who:`agent:${agent}`,why:'checkpoint',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'manual'}})).version);
+      return output((await commitChanges(t.v.ctx, {ref:t.v.ref, op:'turn', changes:{}, message, allowEmpty:true, author:`agent:${agent}`,who:`agent:${agent}`,why:'checkpoint',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'manual'}})).version);
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
       return output((await setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}})).version);
     }}),
-    defineTool({name:'history',description:"List a mount's versions, newest first, with their messages and who made them. With a file path, only versions that changed it.",replay:'safe',parameters:obj({path:opt(str()),limit:opt(int())}),async execute({path,limit}) {
-      const t=await target(path ?? await workspace());
-      if (!await t.v.ctx.stub.ref(t.v.ref)) return output('');
-      const h=await t.v.ctx.stub.history({ref:t.v.ref,path:insideRepo(t.path)||undefined,limit});
-      return output(h.versions.map(v=>`${v.version.slice(0,12)} ${new Date(v.at).toISOString()} ${v.author} ${v.message.split('\n')[0]}`).join('\n'));
+    defineTool({name:'history',description:"List a mount's versions, newest first. With a file path, only versions that changed it. Pass next as after to continue.",replay:'safe',parameters:obj({path:opt(str()),limit:opt(int()),after:opt(str())}),async execute({path,limit,after}) {
+      const t = await target(path ?? await workspace());
+      return output(await repoHistory(t.v.ctx, { ref: t.v.ref, path: insideRepo(t.path) || undefined, limit, after }));
     }}),
     defineTool({name:'diff',description:'List the files that changed between two versions. By default, between the previous version and now.',replay:'safe',parameters:obj({from:opt(str()),to:opt(str()),path:opt(str())}),async execute({from,to,path}) {
-      const t=await target(path ?? await workspace()), head=await t.v.ctx.stub.resolve(t.v.ref), current=await t.v.ctx.stub.commit(head.version);
-      const a=from ? await resolve(t,from) : current?.parents[0] ? await t.v.ctx.stub.resolve(current.parents[0]) : {tree:'4b825dc642cb6eb9a060e54bf8d69288fbee4904'}, b=to ? await resolve(t,to) : head;
+      const t=await target(path ?? await workspace()), head=await t.v.ctx.repo.resolve(t.v.ref), current=await t.v.ctx.repo.commit(head.version);
+      const a=from ? await resolve(t,from) : current?.parents[0] ? await t.v.ctx.repo.resolve(current.parents[0]) : {tree:'4b825dc642cb6eb9a060e54bf8d69288fbee4904'}, b=to ? await resolve(t,to) : head;
       const d=await t.v.ctx.storage.diff(t.v.ctx.lineage,a.tree,b.tree);
       const prefix=insideRepo(t.mount.subpath??'/');
       return output(d.changes.filter(c=>!prefix||c.path===prefix||c.path.startsWith(prefix+'/')).map(c=>`${c.status} ${c.path}`).join('\n'));

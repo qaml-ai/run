@@ -1,3 +1,4 @@
+import { DoRepoClient } from "./client.ts";
 import { repoProvision, planRepo, plannedRow } from './provision.ts';
 import { agentRepoId } from "./identity.ts";
 export { agentRepoId } from "./identity.ts";
@@ -106,12 +107,12 @@ export async function prepareMounts(
       ...(m.notify ? { notify: true } : {}),
     });
   }
-  for (const mount of mounts) if (mount.notify && !repoProvision.getStore()) await env.REPOS.getByName(`${tenant}:${mount.repo}`).watch(mount.ref ?? "main", agent);
+  for (const mount of mounts) if (mount.notify && !repoProvision.getStore()) await new DoRepoClient(env, tenant, mount.repo).watch(mount.ref ?? "main", agent);
   return mounts;
 }
 
 export async function unwatchMount(env:Pick<RepoEnv,'REPOS'>,tenant:string,agent:string,mount:Mount) {
-  try { await env.REPOS.getByName(`${tenant}:${mount.repo}`).unwatch(mount.ref??'main',agent); }
+  try { await new DoRepoClient(env, tenant, mount.repo).unwatch(mount.ref??'main',agent); }
   catch(error) {
     const status=repoErrorFrom(error)?.status;
     if(status!==404&&status!==410)throw error;
