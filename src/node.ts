@@ -185,7 +185,7 @@ export type NodeDeps = {
    */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
   /** Test hooks for client-held calls. */
-  voiceCallOverrides?: Partial<Pick<VoiceCallsOptions, "admit" | "credit" | "enqueue" | "now" | "pendingMs" | "lateMs" | "record" | "retiring" | "submitStreaming">>;
+  voiceCallOverrides?: Partial<Pick<VoiceCallsOptions, "admit" | "credit" | "enqueue" | "now" | "pendingMs" | "lateMs" | "record" | "retiring" | "spendRoom" | "submitStreaming">>;
   /** Voice connections by provider (src/voice-sessions.ts): Discord's (src/voice-discord.ts) with AGENT_VOICE=true, unless given (a test's fake). */
   voiceTransports?: Partial<Record<"discord", VoiceTransport> & { browser: BrowserTransport }>;
   /** What a voice server's host must match, when a test serves its own. */
@@ -1025,7 +1025,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     } : {}),
   });
   const calls = config.voice.realtime.some(provider => provider === "openai" || provider === "elevenlabs") ? new VoiceCalls({
-    db, node, admit: admitVoice, agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    db, node, admit: admitVoice, spendRoom: tenant => accounts.spendRoom(tenant), agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     ...(deps.voiceCallOverrides?.record ? {} : {
       recordIn: (sql, tenant, usage) => accounts.recordUsageIn(sql, tenant, "", usage),

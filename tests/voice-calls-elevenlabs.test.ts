@@ -4,11 +4,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
+import { Accounts } from "../src/accounts.ts";
 import type { UsageRecord } from "../src/client-sessions/state.ts";
 import type { Db } from "../src/db.ts";
 import { DEFAULT_BUCKET, EndUserCredits } from "../src/end-user-credits.ts";
 import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { Tenants } from "../src/tenants.ts";
+import type { VoiceCallsOptions } from "../src/voice-calls.ts";
 import { terminationReasonToEnd } from "../src/voice/calls/elevenlabs.ts";
 import { ASK_AGENT, PENDING, STAY_SILENT } from "../src/voice/calls/prompts.ts";
 import { enqueueEvents, type WebhookEvent } from "../src/webhooks.ts";
@@ -21,7 +24,7 @@ const path = "/v1/voice/sessions";
 const inbound = "/v1/voice/providers/elevenlabs";
 const minute = 60_000;
 
-async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance?: number; metered?: boolean } = {}) {
+async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance?: number; metered?: boolean; spendRoom?: VoiceCallsOptions["spendRoom"] } = {}) {
   const initial = Date.now();
   let now = initial;
   const warn = t.mock.method(console, "warn", () => {});
@@ -74,6 +77,7 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance
     });
     const made = await createNode(config, {
       ...deps, voiceCallOverrides: {
+        ...(options.spendRoom ? { spendRoom: options.spendRoom } : {}),
         now: () => now, credit: options.metered === false ? undefined : credits, pendingMs: 100, lateMs: 3_000, submitStreaming: submit.submit,
         enqueue: async (batch, sql) => {
           await enqueueEvents(sql ?? db, batch);
@@ -189,7 +193,10 @@ test("a short reservation and a tenant-owned key are refused before any provider
 });
 
 test("credit for twelve minutes selects one ten-minute reservation", async t => {
-  const f = await fixture(t, { allowance: 1_440_000 });
+  const f = await fixture(t, {
+    allowance: 1_440_000,
+    spendRoom: async () => assert.fail("tenant spend room should not be read for an end-user hold"),
+  });
   const call = await f.live();
   assert.equal(call.maxMinutes, 10);
   assert.equal(call.expiresAt - f.initial, 10 * minute);
@@ -202,7 +209,7 @@ test("credit for twelve minutes selects one ten-minute reservation", async t => 
   assert.match(f.eleven.agents[0].name, / 10m$/);
 });
 
-test("an unmetered call defaults to thirty minutes and rounds a twelve-minute cap down", async t => {
+test("an unbounded tenant defaults to thirty minutes and rounds a twelve-minute cap down", async t => {
   const f = await fixture(t, { metered: false });
   const call = await f.live();
   const shorter = await f.live({ maxMinutes: 12 });
@@ -211,6 +218,50 @@ test("an unmetered call defaults to thirty minutes and rounds a twelve-minute ca
   assert.equal(await f.holdRow(call.id), null);
   assert.equal(f.order.includes("hold"), false);
   assert.equal((await f.create({ maxMinutes: 4 })).status, 400);
+});
+
+test("tenant spend room uses the tighter of the monthly cap and prepaid balance", async () => {
+  const { db } = await testDatabase();
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: {
+    alice: { tokenSha256: sha(token), maxMonthlyCost: 5, billing: "prepaid" },
+  } }) });
+  await tenants.reload();
+  const accounts = new Accounts({ db, tenants });
+  await db.query("insert into usage (tenant, day, model, cost) values ('alice', current_date, 'fixture', 3)");
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ('alice', 2000000, 2000000)");
+  assert.deepEqual(await accounts.spendRoom("alice"), { usd: 2, limit: "credit" });
+  await db.query("update credit_accounts set balance = 4000000 where tenant = 'alice'");
+  assert.deepEqual(await accounts.spendRoom("alice"), { usd: 2, limit: "spend_limit" });
+});
+
+test("tenant-paid calls choose a bucket within the tenant's spend room", async t => {
+  let room: Awaited<ReturnType<VoiceCallsOptions["spendRoom"]>> = { usd: 12 * 0.12, limit: "credit" };
+  const f = await fixture(t, { metered: false, spendRoom: async tenant => {
+    assert.equal(tenant, "alice");
+    return room;
+  } });
+  const call = await f.live();
+  assert.equal(call.maxMinutes, 10);
+  assert.equal(call.expiresAt - f.initial, 10 * minute);
+  assert.equal(f.eleven.agents[0].conversation_config.conversation.max_duration_seconds, 600);
+  assert.equal(await f.holdRow(call.id), null);
+
+  f.order.length = 0;
+  room = { usd: 3 * 0.12, limit: "credit" };
+  const credit = await f.create();
+  assert.equal(credit.status, 402);
+  assert.equal(credit.json.code, "INSUFFICIENT_CREDIT");
+  assert.equal(credit.json.error, "This account's credit covers less than 5 minutes of an ElevenLabs call ($0.36 left)");
+  room = { usd: 3 * 0.12, limit: "spend_limit" };
+  const cap = await f.create();
+  assert.equal(cap.status, 402);
+  assert.equal(cap.json.code, "SPEND_LIMIT");
+  assert.equal(cap.json.error, "This account's monthly spend limit leaves less than 5 minutes of an ElevenLabs call");
+  assert.deepEqual(f.order, []);
+  assert.equal((await f.db.query("select id from voice_calls")).rowCount, 1);
+
+  room = undefined;
+  assert.equal((await f.live()).maxMinutes, 30);
 });
 
 test("client transcripts feed authenticated tools and late replies are sent as events", async t => {

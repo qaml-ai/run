@@ -23,6 +23,7 @@ export type VoiceCallOptions = {
 export type VoiceCallsOptions = {
   db: Db; node: string;
   admit(tenant: string): Promise<void>;
+  spendRoom(tenant: string): Promise<{ usd: number; limit: "spend_limit" | "credit" } | undefined>;
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   record(tenant: string, usage: UsageRecord): void;
   recordIn?(sql: Sql, tenant: string, usage: UsageRecord): Promise<void>;
@@ -192,6 +193,18 @@ export class VoiceCalls {
             }
           }
           if (refusal) throw refusal;
+        } else {
+          const room = await this.options.spendRoom(tenant);
+          if (room) {
+            const minutes = candidates.find(minutes => minutes * price.perMinute / 1_000_000 <= room.usd);
+            if (minutes === undefined) {
+              if (room.limit === "credit") {
+                throw new HttpError(402, `This account's credit covers less than 5 minutes of an ElevenLabs call ($${room.usd.toFixed(2)} left)`, "INSUFFICIENT_CREDIT");
+              }
+              throw new HttpError(402, "This account's monthly spend limit leaves less than 5 minutes of an ElevenLabs call", "SPEND_LIMIT");
+            }
+            options.maxMinutes = minutes;
+          }
         }
       }
       await sql.query(`insert into voice_calls (id, tenant, agent, provider, model, voice, state, options, expires_at, created_at, updated_at, hold)
