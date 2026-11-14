@@ -2,13 +2,17 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { checkFixtureLifecycle, registerWorker } from "./fixture-lifecycle.ts";
 import { observeWorkerExit } from "./local-worker-exit.ts";
 
 const directory = fileURLToPath(new URL("../", import.meta.url));
 const token = "local-integration-only-token-with-at-least-32-characters";
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// A cold native-computer fixture can build its image before answering health checks.
+const startupTimeoutMs = 1200 * 250;
+type LocalWorkerOptions = { entrypoint?: string; startupTimeoutMs?: number };
 
 export async function unusedPort(): Promise<number> {
   const server = createServer();
@@ -33,28 +37,53 @@ export class LocalWorker {
   private storage: string;
   private config: string;
   private readyToken: string;
-  private stopping = false;
+  private stopPromise?: Promise<void>;
+  private startup?: AbortController;
   private ready = false;
   private listener?: Server;
   private sockets = new Set<Socket>();
-  private cancelListen?: () => void;
+  private unregisterWorker?: () => void;
+  private readonly options: LocalWorkerOptions;
   constructor(
     port: number,
     storage: string,
     config = "wrangler.test.jsonc",
     readyToken = token,
+    options: LocalWorkerOptions = {},
   ) {
     this.config = config;
     this.readyToken = readyToken;
     this.port = port;
     this.storage = storage;
     this.url = `http://127.0.0.1:${port}`;
+    this.options = options;
   }
+
   async start() {
-    this.stopping = false;
+    checkFixtureLifecycle();
+    this.stopPromise = undefined;
+    const startup = this.startup = new AbortController();
+    const timeout = this.options.startupTimeoutMs ?? startupTimeoutMs;
+    this.output = "";
+    const timer = setTimeout(() => startup.abort(new Error(
+      `Local Worker did not start within ${timeout} ms: ${this.output}`,
+    )), timeout);
     this.ready = false;
+    try {
+      await this.startWorker(startup);
+    } catch (error) {
+      await this.stop(true);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      this.startup = undefined;
+    }
+  }
+
+  private async startWorker(startup: AbortController) {
+    const { signal } = startup;
     this.inspectorPort = await unusedPort();
-    if (this.stopping) throw new Error("Local Worker startup was cancelled");
+    signal.throwIfAborted();
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       CI: "1",
@@ -72,10 +101,11 @@ export class LocalWorker {
     ])
       delete env[key];
     const proxyPort = await unusedPort();
-    if (this.stopping) throw new Error("Local Worker startup was cancelled");
+    signal.throwIfAborted();
+    checkFixtureLifecycle();
     const child = this.child = spawn(
       process.execPath,
-      ["test/local-worker-process.mjs", this.config, String(proxyPort), String(this.inspectorPort), this.storage],
+      [this.options.entrypoint ?? "test/local-worker-process.mjs", this.config, String(proxyPort), String(this.inspectorPort), this.storage],
       {
         cwd: directory,
         env,
@@ -83,7 +113,7 @@ export class LocalWorker {
         detached: true,
       },
     );
-    this.output = "";
+    this.unregisterWorker = child.pid ? registerWorker(child.pid, () => this.stop(true)) : undefined;
     let directPort: number | undefined;
     child.on("message", (message: unknown) => {
       const direct = message as { type?: string; port?: number };
@@ -104,51 +134,53 @@ export class LocalWorker {
       });
       socket.pipe(upstream).pipe(socket);
     });
-    let output = "";
     const save = (data: Buffer) => {
-      output = (output + data.toString()).slice(-this.logLimit);
+      this.output = (this.output + data.toString()).slice(-this.logLimit);
       // The alarm guard's lines are kept whole, past the log limit: a test fails on one (fixture.ts alarmFindings).
       for (const line of data.toString().match(/\{"type":"alarm_(?:hot_loop|rearm_due)"[^\n]*/g) ?? []) this.alarmLines.push(line);
-      this.output = output;
     };
     child.stdout!.on("data", save);
     child.stderr!.on("data", save);
-    const exited = observeWorkerExit(child, () => output);
+    // Close includes the final stderr. The startup deadline still applies if
+    // an inherited pipe keeps close from arriving.
+    void observeWorkerExit(child, () => this.output).then(error => startup.abort(error));
     await new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         listener.off("error", failed);
-        this.cancelListen = undefined;
+        signal.removeEventListener("abort", aborted);
         if (error) reject(error); else resolve();
       };
       const failed = (error: Error) => finish(error);
-      this.cancelListen = () => finish(new Error("Local Worker startup was cancelled"));
+      const aborted = () => finish(signal.reason);
+      signal.addEventListener("abort", aborted, { once: true });
       listener.once("error", failed);
-      void exited.then(finish);
       listener.listen(this.port, "127.0.0.1", () => finish());
     });
-    // A cold native-computer fixture builds its image before workerd can answer health checks.
-    for (let attempt = 0; attempt < 1200; attempt++) {
-      if (this.stopping) throw new Error("Local Worker startup was cancelled");
-      if (child.exitCode !== null || child.signalCode !== null)
-        throw await exited;
+    for (;;) {
+      signal.throwIfAborted();
       try {
         const response = await fetch(`${this.url}/healthz`, {
           headers: { authorization: `Bearer ${this.readyToken}` },
-          signal: AbortSignal.timeout(1000),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(1000)]),
         });
+        void response.body?.cancel().catch(() => {});
+        signal.throwIfAborted();
         if (response.ok) { this.ready = true; return; }
       } catch {}
-      await delay(250);
+      await sleep(250, undefined, { signal }).catch(() => signal.throwIfAborted());
     }
-    throw new Error(`workerd never became ready: ${this.output}`);
   }
-  async stop(hard = false) {
-    this.stopping = true;
-    this.cancelListen?.();
+  stop(hard = false) {
+    return this.stopPromise ??= this.stopWorker(hard);
+  }
+
+  private async stopWorker(hard: boolean) {
+    this.startup?.abort(new Error("Local Worker startup was cancelled"));
     const child = this.child;
+    const unregister = this.unregisterWorker;
     this.child = undefined;
     const listener = this.listener;
     this.listener = undefined;
@@ -163,7 +195,7 @@ export class LocalWorker {
           headers: { authorization: `Bearer ${this.readyToken}` },
           signal: AbortSignal.timeout(15_000),
         });
-        await response.body?.cancel();
+        void response.body?.cancel().catch(() => {});
       } catch { /* A crashed worker still needs its process group cleaned up. */ }
     }
     for (const socket of this.sockets) socket.destroy();
@@ -185,14 +217,19 @@ export class LocalWorker {
       process.kill(-child.pid!, hard ? "SIGKILL" : "SIGTERM");
     } catch {}
     const deadline = Date.now() + (hard ? 1000 : 3000);
-    while (alive() && Date.now() < deadline) await delay(50);
+    while (alive() && Date.now() < deadline) await sleep(50);
     if (alive()) {
       try {
         process.kill(-child.pid!, "SIGKILL");
       } catch {}
       const killedDeadline = Date.now() + 1000;
-      while (alive() && Date.now() < killedDeadline) await delay(50);
+      while (alive() && Date.now() < killedDeadline) await sleep(50);
     }
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    if (child.connected) child.disconnect();
+    child.unref();
+    unregister?.();
     await listenerClosed;
   }
   /** Invoke Wrangler's local Cron Trigger; the real scheduled handler does the work. */

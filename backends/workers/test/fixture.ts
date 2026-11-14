@@ -6,15 +6,10 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
+import { checkFixtureLifecycle, registerFixture } from "./fixture-lifecycle.ts";
 import { createMigratedDatabase } from "./migrated-database.ts";
 import { publicAssets } from "../scripts/public-assets.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const activeFixtures = new Set<() => Promise<void>>();
-function stopActiveFixtures() {
-  for (const stop of activeFixtures) void stop().catch(error => {
-    console.error(`Local Worker signal cleanup failed: ${error.message}`);
-  });
-}
 /** The alarm guard's lines in a worker's log (src/alarm-guard.ts): hot loops, and immediate re-arms counted per object. */
 export function alarmFindings(logs: string) {
   const hot: string[] = [], due: Record<string, number> = {};
@@ -28,20 +23,6 @@ export function alarmFindings(logs: string) {
   return { hot, due: Object.entries(due).map(([object, count]) => ({ object, count })) };
 }
 
-function registerFixture(stop: () => Promise<void>) {
-  if (!activeFixtures.size) {
-    process.on("SIGTERM", stopActiveFixtures);
-    process.on("SIGINT", stopActiveFixtures);
-  }
-  activeFixtures.add(stop);
-  return () => {
-    activeFixtures.delete(stop);
-    if (!activeFixtures.size) {
-      process.off("SIGTERM", stopActiveFixtures);
-      process.off("SIGINT", stopActiveFixtures);
-    }
-  };
-}
 /** pg-pool removes idle clients from its count before their socket-end callback.
  * Wait for those callbacks too before DROP DATABASE can terminate the sockets. */
 async function closePool(db: pg.Pool) {
@@ -141,6 +122,7 @@ export async function startFixture(
   const admin = new pg.Client({ connectionString: base });
   cleanups.push(() => admin.end());
   try {
+  checkFixtureLifecycle();
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   await admin.connect();
   await createMigratedDatabase(admin, base, schema);
@@ -233,7 +215,6 @@ export async function startFixture(
     token,
   );
   startingWorker = worker;
-  cleanups.push(() => worker.stop());
   await worker.start();
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   finishStartup();
