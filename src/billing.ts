@@ -45,7 +45,26 @@ export interface StartingCredit { status: "granted" | "not_eligible" | "not_gran
 /** What a usage flush charges a tenant: `amount` micro-USD spent, and its breakdown (numbers, summed over the hour). */
 export interface UsageCharge { tenant: string; amount: number; metadata: Record<string, number> }
 /** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), its usage charges in the last hour, and whether a payment of its is disputed. */
-type Account = { balance: number; purchased: number; lastHour: number; disputed: boolean };
+export type Account = { balance: number; purchased: number; lastHour: number; disputed: boolean };
+export type BillingTenantRow = {
+  mode: BillingMode;
+  maxStorageBytes?: number;
+  agentCreatesPerMinute?: number;
+  runsPerMinute?: number;
+  maxRunResponses?: number;
+  maxRunSeconds?: number;
+  codeCpuMs?: number;
+  codeMaxTimeoutMs?: number;
+  codeConcurrency?: number;
+  decisionConcurrency?: number;
+  maxBusyAgents?: number;
+};
+
+/** Callers own the lifetime of each read. Balance and tenant policy have different lifetimes. */
+export type BillingReads = {
+  row?: () => Promise<BillingTenantRow>;
+  account?: () => Promise<Account>;
+};
 /** A Stripe dispute closed with one of these leaves the money with us: its debit is restored. */
 const DISPUTE_RESTORED = ["won", "warning_closed", "prevented"];
 
@@ -154,7 +173,7 @@ export class Billing {
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
-  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; decisionConcurrency?: number; until: number }>();
+  private readonly modes = new Map<string, BillingTenantRow & { until: number }>();
 
   constructor(options: BillingOptions) {
     this.options = options;
@@ -169,41 +188,46 @@ export class Billing {
   }
 
   /** Admin tenants are billed as their entry says (unbilled by default); tenants created by sign-in as their row says. */
-  async mode(tenant: string, sql?: Sql): Promise<BillingMode> {
-    return this.tenants.billing(tenant) ?? (await this.row(tenant, sql)).mode;
+  async mode(tenant: string, sql?: Sql, reads?: BillingReads): Promise<BillingMode> {
+    return this.tenants.billing(tenant) ?? (await (reads?.row?.() ?? this.row(tenant, sql))).mode;
   }
 
   /** A self-serve tenant's billing mode and the limits set for it (`tenants.limits`), re-read at most every minute. */
   private async row(tenant: string, sql: Sql = this.db) {
     const cached = this.modes.get(tenant);
     if (cached && cached.until > Date.now()) return cached;
-    const row = (await sql.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
-    const set = (key: string) => Number.isSafeInteger(row?.limits?.[key]) ? { [key]: row.limits[key] as number } : {};
-    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; decisionConcurrency?: number; until: number } = {
-      mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"),
-      ...set("maxRunResponses"), ...set("maxRunSeconds"), ...set("codeCpuMs"), ...set("codeMaxTimeoutMs"), ...set("codeConcurrency"), ...set("decisionConcurrency"),
-      until: Date.now() + MODE_CACHE_MS,
-    };
+    const entry = { ...await this.readTenant(tenant, sql), until: Date.now() + MODE_CACHE_MS };
     this.modes.set(tenant, entry);
     return entry;
+  }
+
+  /** Read the current policy without populating Billing's cache. */
+  async readTenant(tenant: string, sql: Sql = this.db): Promise<BillingTenantRow> {
+    const row = (await sql.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
+    const set = (key: string) => Number.isSafeInteger(row?.limits?.[key]) ? { [key]: row.limits[key] as number } : {};
+    return {
+      mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"),
+      ...set("maxRunResponses"), ...set("maxRunSeconds"), ...set("codeCpuMs"), ...set("codeMaxTimeoutMs"), ...set("codeConcurrency"), ...set("decisionConcurrency"),
+      ...set("maxBusyAgents"),
+    };
   }
 
   /** Forget a self-serve tenant's mode and limits as read, after the operator changed them. */
   forgetLimits(tenant: string) { this.modes.delete(tenant); }
 
   /** A self-serve tenant's own per-minute rate limit (`tenants.limits`), if the operator set one; admin tenants' are in the tenants file. */
-  async rateLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<number | undefined> {
+  async rateLimit(tenant: string, limit: "agentCreates" | "runs", reads?: BillingReads): Promise<number | undefined> {
     if (this.tenants.billing(tenant)) return undefined;
-    return (await this.row(tenant))[limit === "runs" ? "runsPerMinute" : "agentCreatesPerMinute"];
+    return (await (reads?.row?.() ?? this.row(tenant)))[limit === "runs" ? "runsPerMinute" : "agentCreatesPerMinute"];
   }
 
   /**
    * The most one run of the tenant's agents may take, as set for it: an admin tenant's entry (`maxRunResponses`,
    * `maxRunSeconds`; absent, no limit), else for a self-serve tenant `tenants.limits` (absent: undefined, the runtime's).
    */
-  async runLimits(tenant: string): Promise<{ maxResponses?: number; maxSeconds?: number }> {
+  async runLimits(tenant: string, reads?: BillingReads): Promise<{ maxResponses?: number; maxSeconds?: number }> {
     if (this.tenants.has(tenant)) return this.tenants.runLimits(tenant);
-    const row = await this.row(tenant);
+    const row = await (reads?.row?.() ?? this.row(tenant));
     return { maxResponses: row.maxRunResponses, maxSeconds: row.maxRunSeconds };
   }
 
@@ -228,9 +252,9 @@ export class Billing {
    * A prepaid tenant's usage tier's value for `field`, by what it has paid; undefined when the tenant is not prepaid
    * or its tier leaves the field to the deployment's default.
    */
-  async tierValue(tenant: string, field: TierLimitName): Promise<TierValue | undefined> {
-    if (await this.mode(tenant) !== "prepaid") return undefined;
-    const paid = (await this.account(tenant)).purchased;
+  async tierValue(tenant: string, field: TierLimitName, reads?: BillingReads): Promise<TierValue | undefined> {
+    if (await this.mode(tenant, undefined, reads) !== "prepaid") return undefined;
+    const paid = (await (reads?.account?.() ?? this.account(tenant))).purchased;
     const { tier, next } = usageTier(this.pricing.tiers, paid);
     const limit = tier[field];
     if (limit === undefined) return undefined;
@@ -294,9 +318,9 @@ export class Billing {
    * A per-minute rate limit from the tier: none on the internal tier (null), the tier's for a prepaid tenant, else
    * undefined (the deployment's). A limit set for the tenant (`rateLimit`, the tenants file's) comes before this.
    */
-  async tierRateLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<TierValue | null | undefined> {
+  async tierRateLimit(tenant: string, limit: "agentCreates" | "runs", reads?: BillingReads): Promise<TierValue | null | undefined> {
     if (this.tenants.internal(tenant)) return null;
-    return this.tierValue(tenant, limit === "runs" ? "runsPerMinute" : "agentCreatesPerMinute");
+    return this.tierValue(tenant, limit === "runs" ? "runsPerMinute" : "agentCreatesPerMinute", reads);
   }
 
   /**
@@ -305,12 +329,12 @@ export class Billing {
    * tenant (its tenants-file entry's `maxStorageGb`, else `tenants.limits`), else for a prepaid tenant the plan's: free
    * credit's, or once it has bought credit, the paid one. Unbilled tenants have none unless one is set.
    */
-  async storageLimit(tenant: string): Promise<number | undefined> {
+  async storageLimit(tenant: string, reads?: BillingReads): Promise<number | undefined> {
     const admin = this.tenants.maxStorageBytes(tenant);
-    const row = this.tenants.billing(tenant) ? undefined : await this.row(tenant);
+    const row = this.tenants.billing(tenant) ? undefined : await (reads?.row?.() ?? this.row(tenant));
     const set = admin ?? row?.maxStorageBytes;
     if ((this.tenants.billing(tenant) ?? row?.mode) !== "prepaid") return set;
-    const { balance, purchased } = await this.account(tenant);
+    const { balance, purchased } = await (reads?.account?.() ?? this.account(tenant));
     if (balance <= 0) throw new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so it cannot store more files`, "INSUFFICIENT_CREDIT");
     return set ?? (purchased > 0 ? this.pricing.maxStorageBytes : this.pricing.free.maxStorageBytes);
   }
@@ -319,23 +343,35 @@ export class Billing {
   async account(tenant: string): Promise<Account> {
     const cached = this.accounts.get(tenant);
     const stored = cached && cached.until > Date.now() ? cached : await this.read(tenant);
+    return this.withPending(tenant, stored);
+  }
+
+  /** Read the balance for a new admission or provider call, even if Billing already read it. */
+  async readAccount(tenant: string): Promise<Account> {
+    return this.withPending(tenant, await this.readStoredAccount(tenant));
+  }
+
+  private withPending(tenant: string, stored: Account): Account {
     const pending = this.options.pending?.(tenant) ?? 0;
     return { balance: stored.balance - pending, purchased: stored.purchased, lastHour: stored.lastHour + pending, disputed: stored.disputed };
+  }
+
+  private async readStoredAccount(tenant: string): Promise<Account> {
+    await this.options.flush?.();
+    const { rows: [row] } = await this.db.query(`
+      select balance, purchased, (select coalesce(sum(amount), 0) from credit_spend_minutes where tenant = $1 and minute >= $2) as last_hour,
+        exists (select 1 from billing_disputes where tenant = $1 and not closed) as disputed
+      from (select $1::text as tenant) as t left join credit_accounts using (tenant)`, [tenant, Math.floor((Date.now() - HOUR) / MINUTE)]);
+    return { balance: row.balance ?? 0, purchased: row.purchased ?? 0, lastHour: Number(row.last_hour), disputed: row.disputed };
   }
 
   private read(tenant: string) {
     let reading = this.reads.get(tenant);
     if (!reading) {
-      reading = (async () => {
-        await this.options.flush?.();
-        const { rows: [row] } = await this.db.query(`
-          select balance, purchased, (select coalesce(sum(amount), 0) from credit_spend_minutes where tenant = $1 and minute >= $2) as last_hour,
-            exists (select 1 from billing_disputes where tenant = $1 and not closed) as disputed
-          from (select $1::text as tenant) as t left join credit_accounts using (tenant)`, [tenant, Math.floor((Date.now() - HOUR) / MINUTE)]);
-        const value = { balance: row.balance ?? 0, purchased: row.purchased ?? 0, lastHour: Number(row.last_hour), disputed: row.disputed };
+      reading = this.readStoredAccount(tenant).then(value => {
         this.accounts.set(tenant, { ...value, until: Date.now() + BALANCE_CACHE_MS });
         return value;
-      })().finally(() => this.reads.delete(tenant));
+      }).finally(() => this.reads.delete(tenant));
       this.reads.set(tenant, reading);
     }
     return reading;
@@ -349,9 +385,9 @@ export class Billing {
    * the SDKs, chat channels and MCP clients such as ChatGPT, where an upsell does not belong. The
    * console and billing emails say where to add credit themselves.
    */
-  async creditLimit(tenant: string): Promise<HttpError | undefined> {
-    if (await this.mode(tenant) !== "prepaid") return undefined;
-    const { balance, purchased, lastHour, disputed } = await this.account(tenant);
+  async creditLimit(tenant: string, reads?: BillingReads): Promise<HttpError | undefined> {
+    if (await this.mode(tenant, undefined, reads) !== "prepaid") return undefined;
+    const { balance, purchased, lastHour, disputed } = await (reads?.account?.() ?? this.account(tenant));
     if (disputed) return new HttpError(402, "A payment for this account's credit is disputed with the card issuer, so runs cannot start until the dispute is resolved", "INSUFFICIENT_CREDIT");
     if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`, "INSUFFICIENT_CREDIT");
     const allowance = this.pricing.free.hourlySpend;
@@ -376,8 +412,8 @@ export class Billing {
   }
 
   /** Whether a prepaid tenant has never bought credit (or had it all refunded): it has the free limits. */
-  async onFreeCredit(tenant: string) {
-    return await this.mode(tenant) === "prepaid" && (await this.account(tenant)).purchased <= 0;
+  async onFreeCredit(tenant: string, reads?: BillingReads) {
+    return await this.mode(tenant, undefined, reads) === "prepaid" && (await (reads?.account?.() ?? this.account(tenant))).purchased <= 0;
   }
 
   /**
@@ -386,10 +422,20 @@ export class Billing {
    * tier's, else the deployment's. The tier comes from what the tenant has paid,
    * read from its account row (in `sql`, the caller's transaction) each time, so a payment applies at once.
    */
-  async busyLimit(tenant: string, sql: Sql = this.db): Promise<BusyLimit> {
+  async busyLimit(tenant: string, sql: Sql = this.db, reads?: BillingReads): Promise<BusyLimit> {
     const own = this.tenants.maxAgents(tenant);
     if (own !== undefined) return { limit: own, source: "tenant" };
     if (this.tenants.internal(tenant)) return { limit: Infinity, source: "internal" };
+    if (reads?.row && reads.account) {
+      const mode = this.tenants.billing(tenant);
+      const policy = mode ? undefined : await reads.row();
+      const cap = policy?.maxBusyAgents;
+      if (cap !== undefined && cap > 0) return { limit: cap, source: "tenant" };
+      if ((mode ?? policy?.mode) !== "prepaid") return { limit: this.options.maxAgentsPerTenant ?? 4, source: "default" };
+      const paid = Number((await reads.account()).purchased);
+      const { tier, next } = usageTier(this.pricing.tiers, paid);
+      return tierLimit(tier, next, paid);
+    }
     // A self-serve tenant's row (the operator's maxBusyAgents, and its mode) and what it has paid, read together and afresh.
     const { rows: [row] } = await sql.query(`
       select t.billing, t.limits -> 'maxBusyAgents' as max_busy, a.purchased from (select $1::text as id) as x

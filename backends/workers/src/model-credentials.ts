@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { withSql, type PostgresEnv } from "./postgres.ts";
 import type { CustomProviders } from "./model-policy.ts";
 import { HttpError } from "./errors.ts";
@@ -34,14 +35,14 @@ export async function openProviderSecret(env: ProviderKeyEnv, aad: string, value
 }
 
 /** Scope credentials take precedence; the tenant key is the fallback. No ambient AWS credentials. */
-export async function resolveProviderKey(env: ProviderKeyEnv, tenant: string, provider: string, scope?: string): Promise<ProviderKey | undefined> {
-  const credentials = await providerCredentials(await keyServices(env as KeyEnv), tenant, provider, scope);
+export async function resolveProviderKey(env: ProviderKeyEnv, tenant: string, provider: string, scope?: string, invocation?: AgentInvocation): Promise<ProviderKey | undefined> {
+  const credentials = await providerCredentials(await keyServices(env as KeyEnv, invocation), tenant, provider, scope);
   return credentials;
 }
 
 /** Only public declarations enter the synchronous model resolver; keys stay in the request hook. */
-export async function resolveCustomProviders(env: PostgresEnv, tenant: string, scope?: string): Promise<CustomProviders> {
-  const rows = (await withSql(env, sql => sql.query("select name,config from model_providers where tenant=$1 and (scope='' or scope=$2) order by scope desc", [tenant, scope ?? ""]))).rows;
+export async function resolveCustomProviders(env: PostgresEnv, tenant: string, scope?: string, invocation?: AgentInvocation): Promise<CustomProviders> {
+  const rows = (await withSql(env, sql => sql.query("select name,config from model_providers where tenant=$1 and (scope='' or scope=$2) order by scope desc", [tenant, scope ?? ""]), invocation)).rows;
   const providers: Exclude<CustomProviders, undefined> = {};
   for (const row of rows) if (!providers[row.name]) providers[row.name] = { type: row.config.type === "openai-compatible" ? "openai-completions" : row.config.type, baseUrl: row.config.baseUrl, models: row.config.models };
   return Object.keys(providers).length ? providers : undefined;

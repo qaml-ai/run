@@ -308,9 +308,11 @@ export class RepoDO extends DurableObject<{ TEST_MODE?: string }> {
   }
   async delete() {
     this.ctx.storage.transactionSync(() => {
-      const m = this.meta(); if (m.deleted) return; this.alive();
+      // An uninitialized repo (registered, never committed: init never ran) is deletable too: there is no tree to
+      // remove, only its state, so delete marks it deleted instead of refusing `uninitialized` (pilot reset).
+      const m = this.meta(); if (m.deleted) return;
       for (const table of ["refs", "head", "watchers", "events", "commits", "commit_paths", "commit_path_status", "ref_log"]) this.sql.exec(`DELETE FROM ${table}`);
-      this.sql.exec("UPDATE meta SET value='true' WHERE key='deleted'");
+      this.sql.exec("INSERT OR REPLACE INTO meta VALUES('deleted','true')");
     }); await this.ctx.storage.deleteAlarm(); return {deleted: true as const};
   }
   async alarm() {

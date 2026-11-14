@@ -1,13 +1,11 @@
-# Two application load balancers in front of the api tasks (ecs.tf), both HTTP/1.1 only and both terminating TLS
-# with one ACM certificate:
-#   public   <hostname>, proxied through Cloudflare, security group open to Cloudflare's IPv4 ranges only: what the
-#            runtime (Workers, Node, later customers and the git edge) calls. Tokens (camel-fs.md §1.10) are the
-#            authorization; the security group only narrows the network source to Cloudflare, as the runtime's ALB does.
-#   internal <internal_hostname>, a DNS-only record to the internal balancer (its name resolves to private
-#            addresses), security group open to the hosts' groups only, on the ENROLLMENT port alone (mtls.tf):
-#            where a new host presents its STS attestation for its first certificate. Every other host → tier call
-#            goes through the hosts' NLB in TCP passthrough (mtls.tf), where the tier terminates mutual TLS itself.
-# The public ALB has the api target group; the internal ALB has only the enrollment one (mtls.tf).
+# One application load balancer in front of the api tasks (ecs.tf), HTTP/1.1 only, terminating TLS with an ACM
+# certificate: <hostname>, proxied through Cloudflare, security group open to Cloudflare's IPv4 ranges only — what
+# the runtime (Workers, Node, later customers and the git edge) calls. Tokens (camel-fs.md §1.10) are the
+# authorization; the security group only narrows the network source to Cloudflare, as the runtime's ALB does.
+# Every host → tier call, enrollment included, goes through the hosts' NLB in TCP passthrough (mtls.tf), where the
+# tier terminates TLS itself with its Private-CA certificate: a host pins that CA and never trusts public roots.
+# (An internal ALB served enrollment with the public ACM certificate until 2026-11-14; the pinned-CA ruling
+# removed it — see mtls.tf.)
 #
 # enable_http2 = false on both: 2026-10-24, Cloudflare multiplexed requests on one h2 connection to the runtime's
 # ALB and a cancelled response left unread stalled every stream on it (25–183 s chat loads; qaml-ai/run#415).
@@ -27,7 +25,9 @@ data "aws_subnets" "default" {
   }
 }
 
-# --- Certificate: one, for both names, DNS-validated; the records go into Cloudflare by hand ---
+# --- Certificate: DNS-validated; the records go into Cloudflare by hand ---
+# The SAN <internal_hostname> is kept: changing a certificate's names replaces it (and re-validates it); the name
+# now points at nothing and its CNAME can be removed from Cloudflare.
 
 # The first apply (certificate_issued = false) requests it and outputs acm_validation_records; the second, once
 # the CNAMEs are in Cloudflare, waits for issuance and creates the listeners. Terraform never touches DNS here.
@@ -94,16 +94,6 @@ resource "aws_vpc_security_group_egress_rule" "alb_public_to_api" {
   description                  = "API tasks"
 }
 
-resource "aws_security_group" "alb_internal" {
-  name        = "${var.name}-${var.env}-alb-internal"
-  description = "camelFS internal load balancer: HTTPS from the VM hosts only"
-  # (The description predates the enrollment-only role; changing it would replace the group.)
-  vpc_id = data.aws_vpc.default.id
-  tags   = { Name = "${var.name}-${var.env}-alb-internal" }
-}
-
-# The internal balancer admits the hosts on the enrollment port only (mtls.tf, alb_internal_hosts_enroll) and
-# reaches the tasks on the enrollment port only (alb_internal_to_enroll): no host path to the api port exists here.
 
 # The tier pushes boot/stop to the hosts' compute listener (K4): one rule on each host security group from the api
 # tasks' group, and the matching egress on the api group (ecs.tf). The hosts' groups are the pools' (job-hosts) or
@@ -122,12 +112,9 @@ resource "aws_vpc_security_group_ingress_rule" "hosts_compute_from_api" {
 
 locals {
   balancers = {
-    public   = { internal = false, security_group = aws_security_group.alb_public.id, hostname = var.hostname }
-    internal = { internal = true, security_group = aws_security_group.alb_internal.id, hostname = var.internal_hostname }
+    public = { internal = false, security_group = aws_security_group.alb_public.id, hostname = var.hostname }
   }
-  # The api target group and its 443 listener exist on the public balancer only: host routes left the internal ALB
-  # for the NLB (mtls.tf), and the internal ALB keeps the enrollment listener alone.
-  api_balancers = { public = local.balancers.public }
+  api_balancers = local.balancers
 }
 
 resource "aws_lb" "api" {
@@ -215,11 +202,9 @@ resource "aws_lb_listener" "api_https" {
 
 # No port 80: nothing but machines call this service, and every client speaks HTTPS.
 
-# --- DNS (by hand, in Cloudflare; outputs.tf prints the records) ---
+# --- DNS (by hand, in Cloudflare; outputs.tf prints the record) ---
 #
-#   <hostname>           CNAME <public balancer's dns_name>    proxied: the runtime's Workers reach the balancer
-#                        through Cloudflare's edge, from the ranges the public security group admits; TLS is
-#                        re-terminated on the ALB with its ACM certificate.
-#   <internal_hostname>  CNAME <internal balancer's dns_name>  DNS only: the name resolves to private addresses,
-#                        reachable from the VPC alone; proxying it would be meaningless and would break the
-#                        certificate's name match for hosts.
+#   <hostname>  CNAME <public balancer's dns_name>  proxied: the runtime's Workers reach the balancer through
+#               Cloudflare's edge, from the ranges the public security group admits; TLS is re-terminated on the
+#               ALB with its ACM certificate.
+#   <internal_hostname> has no target any more (hosts dial the NLB by its own name); remove its CNAME.

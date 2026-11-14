@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { transaction } from "./postgres.ts";
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from "./auxiliary-usage.ts";
@@ -9,18 +10,18 @@ import { EndUserCredits, settleUsage, utcDay } from "./end-user-credits.ts";
 import { digest } from "./api-contract.ts";
 
 /** Every web request rechecks credit, including calls made inside one codemode execution. */
-export async function admitWebUsage(env: KeyEnv, scope: BuiltinScope, platform: boolean) {
-  const { accounts } = await keyServices(env);
+export async function admitWebUsage(env: KeyEnv, scope: BuiltinScope, platform: boolean, invocation?: AgentInvocation) {
+  const { accounts } = await keyServices(env, invocation);
   await admitAuxiliaryUsage(env, scope, platform, async () => {
     const refused = await accounts.billing.creditLimit(scope.tenant);
     if (refused) throw refused;
-  });
+  }, invocation);
 }
 
 /** Use the source accounting path so platform prices, workspaces and ledger metadata agree. */
-export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinScope, usage: UsageRecord) {
+export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinScope, usage: UsageRecord, invocation?: AgentInvocation) {
   if (!scope.callId || scope.startedAt === undefined) throw new HttpError(503, "Web call identity is unavailable");
-  const { accounts } = await keyServices(env);
+  const { accounts } = await keyServices(env, invocation);
   const now = Date.now(), raw = Math.round(usage.usage.cost.total * 1_000_000);
   const chargeKey = `charge:web:${await digest(JSON.stringify([scope.agent, scope.requestId, scope.callId]))}`;
   await transaction(env, async sql => {
@@ -38,7 +39,7 @@ export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinSco
         metadata: { call: usage.searches ? "web_search" : usage.renders ? "web_fetch" : "tool", agent: scope.agent,
           ...(usage.provider ? { provider: usage.provider } : {}), ...(scope.requestId ? { requestId: scope.requestId } : {}) } }, now);
     }
-  });
+  }, {}, invocation);
   await accounts.usageCommitted(scope.tenant);
-  await publishPending(env);
+  await publishPending(env, invocation);
 }

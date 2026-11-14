@@ -230,3 +230,10 @@ test("fast-forward fails closed past 50,000 visited versions", async t => {
   });
   assert.deepEqual(state(), before);
 });
+
+test("an uninitialized repo deletes: it is marked deleted and init afterwards is refused", async t => {
+  const {object} = fixture(t);
+  assert.deepEqual(await object.delete(), {deleted: true});
+  assert.deepEqual(await object.delete(), {deleted: true}, "a repeat delete is a no-op");
+  await assert.rejects(object.init(init), error("deleted"));
+});

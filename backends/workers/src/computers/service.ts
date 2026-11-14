@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import { keyServices } from "../security-services.ts";
 import { reserveComputer, releaseComputer, suspendComputer, beginComputerUse, endComputerUse, computerToolError } from "../../../../src/core/computer-limit.ts";
 import { computerOwner, SHARED_COMPUTER_CONTROL, SHARED_COMPUTER_STOPPED } from "../../../../src/core/computer-share.ts";
@@ -52,14 +53,14 @@ export class ComputerService {
     // must supply real settlement before this test-only switch can be removed.
     return this.env.TEST_MODE === '1' && this.env.COMPUTER_MANAGED_ENABLED === '1';
   }
-  async connection(agent: string, sql?: Sql) {
-    agent = sql ? await computerOwner(sql, this.tenant, agent) : await withSql(this.env, db => computerOwner(db, this.tenant, agent));
+  async connection(agent: string, sql?: Sql, invocation?: AgentInvocation) {
+    agent = sql ? await computerOwner(sql, this.tenant, agent) : await withSql(this.env, db => computerOwner(db, this.tenant, agent), invocation);
     const get = async (db: Sql) => (await db.query("select c.* from computer_connections c join agents a on a.id=c.agent and a.tenant=c.tenant where c.tenant=$1 and c.agent=$2 and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at>$3)", [this.tenant, agent, Date.now()])).rows[0];
-    const row = sql ? await get(sql) : await withSql(this.env, get);
+    const row = sql ? await get(sql) : await withSql(this.env, get, invocation);
     if (!row) throw new HttpError(404, 'No computer connected to this agent');
     return row;
   }
-  async hasConnection(agent: string) { try { return await this.connection(agent); } catch (e) { if (e instanceof HttpError && e.status === 404) return null; throw e; } }
+  async hasConnection(agent: string, invocation?: AgentInvocation) { try { return await this.connection(agent, undefined, invocation); } catch (e) { if (e instanceof HttpError && e.status === 404) return null; throw e; } }
   async list() {
     return withSql(this.env, async sql => (await sql.query("select c.*, row_to_json(l) as lease from computer_connections c left join lateral (select * from computer_leases where connection=c.id order by sequence desc limit 1) l on true where c.tenant=$1 and c.agent not like 'removed:%' order by c.created_at", [this.tenant])).rows.map(publicConnection));
   }
@@ -81,7 +82,7 @@ export class ComputerService {
     if (envelope.connection !== c.id) throw new Error('Computer credential binding mismatch');
     return envelope.credentials;
   }
-  async tools(agent: string) { const c = await this.hasConnection(agent); return c ? [...COMMON, ...(isBrowserProvider(c.provider) ? BROWSER : SHELL)] : []; }
+  async tools(agent: string, invocation?: AgentInvocation) { const c = await this.hasConnection(agent, invocation); return c ? [...COMMON, ...(isBrowserProvider(c.provider) ? BROWSER : SHELL)] : []; }
   private async driver(c: any): Promise<ComputerDriver> { return this.factory(this.env, this.tenant, c.agent, c.provider, await this.credentials(c)); }
   /**
    * A fork snapshot of `parent`'s connection for one call (`batch`): taken once and shared by every child of that call,
@@ -260,8 +261,8 @@ export class ComputerService {
     return { removed: true };
   }
   async remove(agent: string) { const c = await this.connection(agent); if (c.agent !== agent) throw new HttpError(409, SHARED_COMPUTER_CONTROL); return this.detach(c); }
-  async nextDeadline(agent: string): Promise<number | null> {
-    const row = await withSql(this.env, async sql => (await sql.query("select min(case when l.state='active' then l.expires_at when l.state='starting' then l.created_at+180000 else l.cleanup_at+300000 end) as due from computer_leases l join computer_connections c on c.id=l.connection where c.tenant=$1 and c.agent=$2 and (l.state in ('active','starting') or (l.state in ('closing','uncertain') and l.reference is not null))", [this.tenant, agent])).rows[0]);
+  async nextDeadline(agent: string, invocation?: AgentInvocation): Promise<number | null> {
+    const row = await withSql(this.env, async sql => (await sql.query("select min(case when l.state='active' then l.expires_at when l.state='starting' then l.created_at+180000 else l.cleanup_at+300000 end) as due from computer_leases l join computer_connections c on c.id=l.connection where c.tenant=$1 and c.agent=$2 and (l.state in ('active','starting') or (l.state in ('closing','uncertain') and l.reference is not null))", [this.tenant, agent])).rows[0], invocation);
     return row?.due == null ? null : Number(row.due);
   }
   async sweepAgent(agent: string) {
