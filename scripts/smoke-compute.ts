@@ -58,13 +58,14 @@ async function until<T>(what: string, timeoutMs: number, probe: () => Promise<T 
   }
 }
 
-async function send(agent: string, text: string): Promise<string> {
+async function send(agent: string, text: string): Promise<{ id: string; at: number }> {
+  const at = Date.now();
   const accepted = await call(`/v1/agents/${agent}/prompt`, { body: { text, idempotencyKey: randomUUID() } });
   assert.equal(accepted.status, 202, `prompt: ${accepted.status} ${accepted.text}`);
-  return accepted.json.id;
+  return { id: accepted.json.id, at };
 }
 async function prompt(agent: string, text: string) { return finished(agent, await send(agent, text)); }
-async function finished(agent: string, id: string) {
+async function finished(agent: string, { id, at: sent }: { id: string; at: number }) {
   const record = await until("the run to end", RUN_TIMEOUT_MS, async () => {
     const r = await call(`/v1/agents/${agent}/requests/${id}?wait=25`);
     assert.equal(r.status, 200, `request status: ${r.status} ${r.text}`);
@@ -72,6 +73,8 @@ async function finished(agent: string, id: string) {
   });
   const result = record.outcome?.result;
   assert.ok(result && !record.outcome.error && !result.code, `run failed: ${JSON.stringify(record.outcome)}`);
+  // Client-side wall time from the prompt to the run's end (model turn + VM boot if cold + exec): the host does not log execs.
+  log(`run ${id}: ${Date.now() - sent} ms from prompt to end`);
   const bash = (result.toolCalls ?? []).filter((c: any) => c.tool === "bash");
   assert.ok(bash.length >= 1 && bash.every((c: any) => c.ok), `expected ok bash calls: ${JSON.stringify(result.toolCalls)}`);
   return String(result.reply ?? "");
