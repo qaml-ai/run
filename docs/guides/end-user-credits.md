@@ -14,7 +14,7 @@ balances are your ledger of your users, and camelRun never moves money for them.
 For a shared agent, a tenant API key can send `POST /v1/agents/{id}/prompt` with
 `{"text":"Help with this brief","endUser":"collaborator","bucket":"bot:42"}`.
 `endUser` must already exist in your tenant (create it with a credit entry or an
-end-user update). That prompt's allowance, balance and usage belong to the
+end-user update). That prompt's allowance, balance, holds and usage belong to the
 named user. Without it, the agent's subject pays. Child tasks (including messages
 sent to existing children) and their notifications use the sending run's payer
 and bucket. A child's tool identity stays the owner's: billing never grants a
@@ -52,12 +52,15 @@ The CLI accepts `camelrun run <agent> <message> --end-user collaborator`.
   grants (after a payment), and take from it with refunds and adjustments.
 - **Markup**: added to the raw cost of paid spend before it is charged (`markupBps`:
   2500 is +25%). The ledger records both.
-- **Daily limit**: the paid spend at which new calls without allowance are refused for the UTC day, for everyone
+- **Daily limit**: the most a person's paid spend may be per UTC day, for everyone
   or per person.
-- **Bucket limits**: the same admission limit for a single bucket, keyed as allowances are (`"bot:*"`).
-  For example, `"bot:*": 2_000_000` lets a bot start calls once its allowance is used until its posted paid spend
-  reaches $2. A zero limit permits calls while the bucket still has allowance. The last admitted call can
-  charge the balance if it uses more than the remaining allowance.
+- **Bucket limits**: the most one bucket may charge a person's balance per UTC day,
+  keyed as allowances are (`"bot:*"`), for everyone or per person. A bot at
+  `"bot:*": 2_000_000` spends its allowance, then at most $2 of the balance a day,
+  however much the person holds; at `0` it spends its allowance only. To list the
+  buckets that may spend paid credit at all, give `"*": 0` and a limit for each of
+  them: `{ "*": 0, builder: 20_000_000, "bot:*": 2_000_000 }`. Then no other bucket,
+  `default` included, ever charges anyone's balance.
 
 All amounts are integer **micro-USD**: 1 USD = 1,000,000.
 
@@ -70,7 +73,7 @@ on a model with no price (one of your [own models](custom-models.md) declared wi
 `pricing`) is never free to them: it is charged at the catalog's price for the model,
 else a mid-range price ($3 in, $15 out a million tokens), and logged as `end_user_unpriced_model`. Declare its
 pricing to charge your own. ChatGPT subscription models (`openai-codex`), including through
-your model endpoint, use the connected ChatGPT plan: their model calls spend no
+your model endpoint, use the connected ChatGPT plan: their model calls hold and spend no
 end-user credit or allowance, and can run with no end-user credit. Other billable work
 the agent performs (such as images or web search) is still metered.
 
@@ -100,13 +103,14 @@ replaces that bucket's ordinary free allowance. Removing a person's override wit
 keys and removes keys set to `null`.
 
 `endUsers.get(id)` returns configured pools in `today.pools`, including unused
-pools. Each has `key`, `allowance`, `allowanceSpent`, `held`, and `allowanceLeft`.
+pools. Each has `key`, `allowance`, `allowanceSpent`, `held` (always 0 now that nothing is held; it will be
+removed), and `allowanceLeft`.
 Each member in `today.buckets` also has its `pool` snapshot. The member's
 `allowanceSpent`, `paidSpent`, and `held` still describe that bucket alone. Its
 `allowance` and `allowanceLeft` describe the shared allowance. Unpooled buckets
 have `pool: null`. Pass `buckets` to include named bots that have not spent today.
 
-Calls in flight reserve from the shared pool. Paid credit and per-bucket paid
+A call is checked against the shared pool before it starts; nothing is reserved. Paid credit and per-bucket paid
 limits apply after the pool runs out. A call crossing midnight uses the day it
 began for its allowance. `end_user.allowance.low` and allowance exhaustion fire
 once per person, pool, and UTC day, with the pool key in `data.pool` and the
@@ -195,7 +199,7 @@ A credit page reads no usage rows: the ledger's `kind` filter leaves them out, a
 `days` gives each UTC day's totals by bucket in one request.
 
 A refund you make in Stripe: `endUsers.refund(id, { amount, key })` takes the credit
-back: at most the current balance, else a 409
+back: at most the balance, else a 409
 `INSUFFICIENT_BALANCE` (with `refundable`). Credit a person spends on something you sell other than metered usage
 (a month of a feature, an item): `endUsers.spend(id, { amount, key })`, held to the same line as a refund (a 409
 `INSUFFICIENT_BALANCE` with `available` when short), fires `end_user.credit.spent`, and is a debit for the balance
@@ -210,7 +214,7 @@ A grant with `expiresAt` (epoch ms, within 400 days) is a **lot**: a subscriptio
 still has one balance, spent by every bucket once its allowance is used, but paid spend takes the soonest-expiring lot
 first, splitting across lots, and credit without `expiresAt` (packs) last; it never expires. At a lot's time its
 unspent part leaves the balance as an `expiry` entry (`metadata.lot`: the grant's key) and `end_user.credit.expired`
-fires. A debit uses the lots that are still current when the cost posts.
+fires. A call that started before the lot's time settles against it; what it leaves expires next.
 
 ```ts
 await agents.endUsers.grant(user.id, { amount: 12_500_000, key: `plan:${sub.id}:${periodStart}`, expiresAt: periodEnd });
@@ -226,20 +230,23 @@ amount, expiresAt })` turns that much of what never expires into a lot, moving n
 
 ## When a person runs out
 
-Before each call, camelRun checks the UTC day's posted usage and the person's allowance and paid balance.
-A call can start while it has any allowance or paid spendable credit. It finishes normally and charges its
-full cost to its usage day. Paid spend may go over a daily or bucket limit, and the balance can go below zero.
-Calls admitted concurrently can each settle in full.
+camelRun checks a person's credit before each model call and each run: the call starts when the bucket has
+allowance left today, or the person's balance is above zero, and the daily and bucket limits are not reached.
+Nothing is held or reserved, so calls in parallel (sub-agents, several of their agents at once) each see the
+balance as it is, and a call's whole cost is charged when it settles, **even when that takes the balance below
+zero**. A balance below zero refuses the next call until a grant brings it back above zero (a grant repays the debt
+first, as above).
 
-When the next call has no credit available:
+When the check fails:
+
 - **A new run** is refused with `402` and code `END_USER_CREDIT`, with `endUser`,
   `bucket` and `reason` in the body. The SDKs throw `AgentError` with the same fields
   (`reason`, `bucket`, `endUser`; Python `end_user`).
 - **A run waiting in the queue** that is refused as it comes to start fails with code
   `end_user_credit`, `reason`, `bucket` and `endUser`, as below.
-- **A run already going** keeps the response already in progress. If its next model call is refused, it
-  fails with code `end_user_credit`, `stopped: "spend_limit"`, `limit: "end_user"`, a `reason`, the
-  `bucket` and the `endUser`.
+- **A run already going** finishes the model call it is in (what it costs is charged), and its next call is refused:
+  the run fails with code `end_user_credit`, `stopped: "spend_limit"`, `limit: "end_user"`, a `reason`, the `bucket`
+  and the `endUser`. It is never retried.
 - `run.failed` carries `code`, `limit`, `reason`, `bucket` and `endUser` too, and
   `voice.session.ended` its `endUserReason` and `bucket`.
 - Transcriptions, speech and images are refused before they are made, with the same 402.
@@ -249,7 +256,7 @@ When the next call has no credit available:
 - `balance`: no allowance left in the bucket today, and no balance.
 - `daily_limit`: the person's paid spend reached the daily limit.
 - `bucket_limit`: the bucket's paid spend reached its own limit (the person may still
-  have a balance for their other buckets).
+  have a balance, for their other buckets; a bucket limited to 0 spends only its allowance).
 
 `endUserCredit` (Python `end_user_credit`) reads these from a thrown error, a failed
 run or its error, so one place handles every path:
@@ -274,14 +281,17 @@ function notify(user: string, reason?: string) {
 
 Branch on `code` and `reason`, never on the message: its words are for people and may change.
 
-<a id="costs-past-a-calls-hold-written-off"></a>
+### Costs land in full
 
-### Usage corrections and historical write-offs
+Every call is charged what it cost, from the bucket's allowance first, then the balance, and a balance may go below
+zero. That includes output a provider bills without streaming it (hidden reasoning tokens), the gap between the
+input estimate and the real input, and a call whose node died, settled when the provider reports its cost. There is
+no write-off: what a person's calls cost is what they are charged. The debit that takes the balance to zero or below
+fires `end_user.credit.exhausted` (`reason: "balance"`), and the person's next call is refused for it.
 
-`writtenOff` remains visible in ledger entries and per-bucket and daily totals, in raw micro-USD.
-New calls post zero write-off. A cost corrected down later takes back any historical write-off first,
-then refunds what the balance paid, then the allowance. An upward correction charges the full increase
-against the original usage day.
+A cost corrected down later refunds what the balance paid, then the allowance. One corrected up is charged in full
+to the day it posts to (the day the call began).
+
 ## Webhooks
 
 Subscribe an endpoint (`POST /v1/webhooks`) to:
@@ -323,11 +333,12 @@ The rules:
   balance below the threshold from at or above it. Staying below fires nothing more,
   until one of the next rules applies.
 - **`credit.exhausted` (`balance`) fires on a debit** that takes the balance from above
-  zero to zero or below, once until the balance is back above zero or re-armed.
+  zero to zero or below, and on a call refused with no balance left
+  (`cause.kind: "refusal"`), once until the balance is back above zero or re-armed.
 - **A grant or a positive adjustment that leaves the balance short re-arms the event**:
   the next debit fires it again. So with a $10 threshold, a $5 top-up that leaves someone
   at $6 makes their next debit fire `balance.low` again, and a grant that leaves someone
-  at or below zero makes their next debit fire `credit.exhausted` again.
+  at or below zero makes their next debit or refused call fire `credit.exhausted` again.
 - **Any move that leaves the balance past the line** (at or above the threshold, above
   zero) resets the event, a call's cost corrected down included: the next crossing fires.
 - **Setting a threshold** fires `balance.low` once, with `cause.kind: "threshold_changed"`,
@@ -351,7 +362,7 @@ Every movement of a person's money is an entry, newest first:
 | `kind` | `amount` | Also |
 | --- | --- | --- |
 | `grant`, `refund`, `adjustment`, `spend` | what you posted (a refund's and a spend's negative) | your `key`, `reference`, `description` and `metadata` |
-| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (the cost past what was left for it, not charged), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
+| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (kept for history: entries from before charges landed in full may carry it; new ones are 0), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
 
 A call whose cost is corrected later (a provider's final figure) has another usage
 entry for the difference. `balanceAfter` is the balance after each entry.
@@ -421,8 +432,9 @@ charged, in the balance's units (raw cost with your markup).
 | a day's `freeRaw` (what allowances paid) | raw |
 | a day's `paidCharged` (what the balance paid), `granted`, `refunded`, `adjusted`, `spent` | charged |
 
-`held` is zero on accounts, buckets and pools. `available` is signed paid spendable credit within today's
-limit, and `allowanceLeft` is the remaining free allowance.
+`held` (a person's, a bucket's or a pool's) is always 0: nothing is held, and the field will be removed.
+`available` is what the person can spend, signed: it is negative when the balance is below zero. Read `available`
+and `allowanceLeft` for what is left. `writtenOff` stays readable for history, and no new write-offs are made.
 
 ## API
 
