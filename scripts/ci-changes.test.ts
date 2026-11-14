@@ -64,11 +64,18 @@ test("only allowlisted PR paths skip expensive tests", () => {
   assert.equal(changes({ event: "pull_request", paths: [".github/ISSUE_TEMPLATE/bug.yml"] }), "tests=true\nimage=false\nguest_image=false\n");
 });
 
-test("PR guest images follow camelfsd source, the build script, and the workflow", () => {
+test("PR guest images follow the guest's inputs, the build script, and the workflow", () => {
   for (const path of ["camelfsd/internal/guest/guest.go", "camelfsd/scripts/build-guest-image.sh", ".github/workflows/ci.yml"]) {
     assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=true$/m, path);
   }
   assert.match(changes({ event: "pull_request", paths: ["README.md", "jobhost/guest.ts"] }), /^guest_image=false$/m);
+  // camelfsd/scripts/guest-inputs.txt names the guest's inputs; host/tier-only camelfsd code does not rebuild it.
+  for (const path of ["camelfsd/internal/api/refs.go", "camelfsd/internal/computehost/host.go", "camelfsd/cmd/camelfsd/main.go"]) {
+    assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=false$/m, path);
+  }
+  for (const path of ["camelfsd/internal/wire/wire.go", "camelfsd/cmd/camelfsd/guest.go", "camelfsd/go.sum", "camelfsd/scripts/guest-inputs.txt"]) {
+    assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=true$/m, path);
+  }
 });
 
 test("manual runs always test", () => {
