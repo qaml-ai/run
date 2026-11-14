@@ -32,7 +32,7 @@ Node.
 **After the merge**, one Go binary has three roles:
 
 - **`camelfsd host`** owns the block device, Firecracker, the slots and the guest channel in one process.
-  - Compute is a module behind `--compute` (K2; the flag does not exist yet). Without the flag it is exactly today's storage-only host: no
+  - Compute is a module behind `--compute` (K2a; the flag does not exist yet). Without the flag it is exactly today's storage-only host: no
     Firecracker, no netns pool, no slots, no `/v1/vms` routes. With it, the host advertises its shape (vCPUs,
     memory, slots, pool, features) and runs VMs.
   - The module is the Go port of `vm.ts`/`firecracker.ts` (launcher, jailer, the `VmLauncher` seam kept as an
@@ -92,7 +92,7 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
   host (`boot[].image`) carries that sha.
 - **The host verifies and keeps no pin:** it downloads `guest/<sha>` if its cache lacks it, verifies the bytes
   against `guest/<sha>.json`, and boots only on a match. The interim host-side pin from #979/#1007 is ledger L101
-  and is deleted in K2.
+  and is deleted in K2c.
 - **`POST /v1/vms` refuses early, before placement:** `400 invalid_request` when `image` is not in the allowed set,
   and when `shape.diskGiB` is smaller than the image's filesystem size. The host's own guard (L100, #979) stays as
   the last line.
@@ -228,13 +228,17 @@ swap) and C4 (hosts do the CAS in-VPC, notify, `RepoDO` deleted). Compute slots 
 | step | what | depends on | note |
 |---|---|---|---|
 | K1 | **proto-block**: `camelfsd guest`: the Go guest agent, wire-compatible with today's `camel-guest` ops, clean poweroff; the guest image built once in CI, published content-addressed to the bucket, pinned by sha256 (L62, L64) | nothing; can start now beside C1 | |
-| K2 | **proto-block**: `camelfsd host --compute`: the Go port of `jobhost` (Firecracker + jailer in systemd scopes, netns pool, egress proxy, slots, vsock guest channel), **still speaking today's runtime WebSocket protocol**, so it replaces `jobhost` with no runtime change; persistent VM and mount state with re-adoption on restart; ublk recovery (L15, L16) | K1 | |
-| K3 | **proto-block**: periodic checkpoints for long jobs on the §1.3 cadence, and the synchronous checkpoint for sessions | K2, C4 (the in-VPC `cas`) | L45 |
+| K2a | **proto-block**: the launcher in `camelfsd host --compute`: Firecracker + jailer with each VM in its own systemd scope, taps and slots, the vsock guest channel | K1 | now |
+| K2b | **proto-block**: the egress proxy in Go | K2a, C3 | |
+| K2c | **proto-block**: the hostwire host side (#1016), and **only hostwire**: there is no Go port of today's runtime WebSocket, and the TypeScript `jobhost` keeps serving the pilot until K5 cuts over. It covers mTLS terminated in the Go server verifying `spiffe://camelfs/tier` (camel-fs-files.md §9.12), results to `results/<lineage>/<vm id>`, a persistent `vms` table with re-adoption on restart (L15's state half, L16), and the deletion of the `camelfs-host+jwt` code and of L101's host image pin. Tested end to end against K4c's tier | K2b, K4c | |
+| K2d | **proto-block**: ublk with user recovery (L15's restart-is-a-stall half), measured on the host before it is committed to | K2c | |
+| K3 | **proto-block**: periodic checkpoints for long jobs on the §1.3 cadence, and the synchronous checkpoint for sessions | K2c, C4 (the in-VPC `cas`) | L45 |
 | K4 | **wf-durable**: the compute API (§2) and control in Go on the tier: `hosts`/`vms` on DynamoDB, phases, placement, host channel in-VPC, reconcile, host-lost sweep, `vm.*` hints; K4b the `usage` table and the deadline lease; K4d `GET /v1/usage` | C1, C2 | — |
 | K5 | **wf-durable**: the runtime side: the small `HostJob` row, admission and reservation, the leased usage poller and settlement from pulled `usage.*` events, deadline extension, durable landing of `vm.*` events as outbox rows; `JobHost`, the registry and the WebSocket deleted | K4, C3 | — |
 | K6 | `bash` VM sessions in the runtime (owner named when K5 lands): `exec` with the persistent shell, per-turn checkpoint, idle stop; memory-snapshot sleep after | K5 | — |
 
-K1–K3 can start now. K4 starts after C2. Storage stays independent of all of K: a deployment without
+**Order** (the lead, 2026-11-14, option B): K2a now, then C3 (when wf-repos' R2 lands), then K2b → K2c → K2d.
+K4 starts after C2. Storage stays independent of all of K: a deployment without
 `--compute` is C1–C4 exactly.
 
 **Ledger rows** ([camel-fs-v0-limitations.md](camel-fs-v0-limitations.md)):
@@ -244,8 +248,8 @@ K1–K3 can start now. K4 starts after C2. Storage stays independent of all of K
 | L62 guest kernel panic instead of poweroff | open, next guest change | fixed by K1: the Go init calls `reboot(LINUX_REBOOT_CMD_POWER_OFF)` and verifies the guest exited |
 | L64 every host rebuilds the guest image with `debootstrap` | open | fixed by K1: built once in CI, content-addressed in the bucket, sha256-pinned; no Node in the guest |
 | L32 placement is not feature- or lineage-aware | open | fixed by K4 (warm-aware placement in the tier) |
-| L15 a daemon restart ends every cold-mounted job | open (v1 half) | **required** by K2: one process owns VMs and devices, so restarts must re-adopt (persistent state, VMs in their own scopes, ublk recovery) |
-| L16 crash fencing waits out the 5-minute lease | open | fixed by K2 + C2: the host's boot epoch is in its lease holder, and the tier fences a restarted host's old leases on sight |
+| L15 a daemon restart ends every cold-mounted job | open (v1 half) | **required** by K2c (state, re-adoption) and K2d (ublk recovery): one process owns VMs and devices, so restarts must re-adopt (persistent state, VMs in their own scopes, ublk recovery) |
+| L16 crash fencing waits out the 5-minute lease | open | fixed by K2c + C2: the host's boot epoch is in its lease holder, and the tier fences a restarted host's old leases on sight |
 | L45 one checkpoint at job end | open | fixed by K3 |
 
 L72 and L81 (wf-durable): L72's control-flow half is fixed for the pilot by PR (1) and for good by K4–K5, where a
