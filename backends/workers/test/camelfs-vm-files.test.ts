@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
@@ -121,9 +121,15 @@ function fixture(t: TestContext) {
       const fd = openSync(inputFile, "r");
       try {
         rmSync(inputFile);
-        const result = spawnSync("bash", ["-lc", body.command], {
-          cwd: dir, stdio: [fd, "pipe", "pipe"],
-          encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 5000,
+        // Asynchronous, as a real tier is to the client: a blocking spawnSync froze the event loop under load, so the
+        // client's own tier timeout fired first and the test saw transport_error (sprite flake).
+        const result = await new Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }>(resolve => {
+          const child = spawn("bash", ["-lc", body.command], { cwd: dir, stdio: [fd, "pipe", "pipe"] });
+          let out = "", err = "";
+          child.stdout!.setEncoding("utf8").on("data", chunk => { out += chunk; });
+          child.stderr!.setEncoding("utf8").on("data", chunk => { err += chunk; });
+          child.on("error", error => resolve({ status: null, stdout: out, stderr: err, error }));
+          child.on("close", status => resolve({ status, stdout: out, stderr: err }));
         });
         assert.equal(result.status, 0, result.stderr || result.error?.message);
         stdout = result.stdout;
