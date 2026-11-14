@@ -1058,8 +1058,8 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
 - **The poller's token only.** The route is cross-lineage, so §9.10's `lin` and `refs` cannot scope it.
   - It requires `sub == "runtime:usage"` exactly, and ignores `lin` and `refs` for authorization. The token
     still passes the verifier's shape rules.
-  - The runtime mints that token only for its one leased poller (K5). Any other `sub` is `403 forbidden`. Customers reconcile their own bill from the same events
-  through the runtime's API, filtered to their payer.
+  - The runtime mints that token only for its one leased poller (K5). Any other `sub` is `403 forbidden`.
+  - Customers reconcile their own bill from the same events through the runtime's API, filtered to their payer.
 
 **The poller.** The runtime runs one leased poller per camel-fs deployment, every ≈ 20 s.
 - One Postgres transaction per page: `INSERT … ON CONFLICT (id) DO NOTHING` for every event (on `eventId`), plus the
