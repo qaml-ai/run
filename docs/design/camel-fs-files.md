@@ -217,8 +217,9 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - Keys: `<lineage>/{o,t,k,r,c,ts}/<hash>`.
   - The guest image (K1) at `guest/<sha256>…`, put only by the GitHub OIDC role
     `camelfs-prod-guest-image-publisher`.
-  - VM results at `<lineage>/results/<vm>`, expired after 7 days, written by the host and verified by the tier
-    (camel-fs-compute.md §2; how the lifecycle selects them is fs-infra's open detail).
+  - VM results at `results/<lineage>/<vm>` (prefix first, so one 7-day lifecycle rule on `results/` expires them,
+    no tags; #1003), written by the host and verified by the tier (camel-fs-compute.md §2). Deleting a lineage
+    must cover `results/<lineage>/` as well as `<lineage>/` (ledger L101).
 - **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
   - `camelfs-prod-objects` (`lineage` + `id`);
   - `camelfs-prod-refs` (`lineage` + `name`);
@@ -238,8 +239,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
 
   The api task role reads no secret.
 - **IAM:** the host policy `camelfs-prod-host` allows the bucket and `objects` only. It explicitly denies every
-  other table, so a host moves a ref only through the tier's fence check. Hosts may `s3:PutObject` under
-  `*/results/*` (the K4 change; #967 had denied it).
+  other table, so a host moves a ref only through the tier's fence check. Hosts write results under their
+  existing bucket `PutObject`; #1003 removed #967's deny on results.
 
 Nothing in the runtime holds a ref. `camelfsd --role api` is a stateless Go tier behind an ALB in us-west-2: the §9
 plane plus a `refs` package, any node serving any request. Hosts run `camelfsd --role host` (the block layer and the
