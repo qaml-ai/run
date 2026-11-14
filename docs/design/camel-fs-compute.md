@@ -75,11 +75,11 @@ is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md 
 |---|---|
 | `POST /v1/vms` `{ id, lineage, ref, version?, image, shape: { vcpus, memoryMiB, diskGiB }, pool, idleStopS, network, usage: { payer }, deadline }` | idempotent by `id` (the runtime's id for this agent's VM on this branch). It takes the lease on `ref` (§9.9; the tier takes it just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase. `deadline` is the credit lease of §4 |
 | `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied. **A lapsed lease is final**: a call made at or after the current deadline (`now ≥ deadline`) answers `409 lease_expired` and never revives it (§4) |
-| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended`. Ended codes: `stopped` (a requested stop), `idle` (the idle stop), `host_lost`, `start_failed`, `lease_expired` (§4). Admission is the runtime's, before `POST /v1/vms`, so it is never an ended code |
+| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended` (v2 adds `sleeping` after `running`, §6). Ended codes: `stopped` (a requested stop), `idle` (the idle stop), `host_lost`, `start_failed`, `lease_expired` (§4). Admission is the runtime's, before `POST /v1/vms`, so it is never an ended code |
 | `POST /v1/vms/{id}/shells` → `{ shell }` | a persistent shell: cwd, environment and shell state survive between `exec`s, which are the `bash` tool's semantics |
 | `POST /v1/vms/{id}/exec` `{ command, shell, cwd?, timeoutS, env?, stdin? }` | runs one command in the shell. Output streams live as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`). The host keeps a bounded tail per exec (the last 1 MiB of stdout and stderr, plus the exit) in memory until the next `exec` on that shell or the VM stops. A client whose stream dropped re-reads it with `GET …/exec/{execId}`. Nothing is written to S3 or a table for an exec |
 | `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the host's in-VPC `cas` on the VM's ref under its lease (camel-fs-files.md §9.7). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved |
-| `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. The VM also stops by itself after `idleStopS` with no `exec`, with a checkpoint first. Memory-snapshot sleep (§1.5) is a later addition behind the same call |
+| `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. The VM also stops by itself after `idleStopS` (≈ 10 s by default) with no `exec` in flight, with a checkpoint first. Warm sleep (a memory snapshot, §6 v2) is a later addition behind the same API, as a `sleeping` state |
 | events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, version?, checkpointError? }` (on the notify webhook with `type: "vm.ended"`, camel-fs-files.md §9.11), `usage.vm` (§4) |
 
 **What the session-only shape removes from this API:**
@@ -285,27 +285,47 @@ scripts.
 - **One persistent shell per VM:** cwd and environment carry across calls, like a terminal.
 - **Timeouts:** `timeoutSeconds` defaults to 120 and is capped at 600. A timed-out command is killed and reported
   `timedOut: true`.
-- **Background work:** `cmd &` or `nohup` runs on in the VM between calls, and writes its output to files the agent
-  reads later. The idle stop does not wait for background processes.
+- **Background work:** `cmd &` or `nohup` runs on in the VM between calls only while the VM is awake. When the VM
+  sleeps (below), background processes die. A long-running server needs the agent to keep calling `bash`, or it
+  stops.
 - **Output limits:** the model sees at most 32 KiB of each stream: the head and the tail, with a marker for what
   was cut (`truncated: true`). The full stream passes through the runtime and is not stored.
 - **Checkpoints:** after every `bash` call that changed the tree, the runtime asks for a checkpoint (§2), so the
   ref moves and the change is a version. The idle stop checkpoints first. The agent's
   `checkpoint`/`restore`/`history`/`diff` tools are unchanged.
-- **File tools while a VM holds the branch:**
-  - The VM holds the branch's lease, so the API cannot write to it (camel-fs.md §1.2).
-  - The agent's file tools on that branch are routed into the VM: reads and writes execute in the guest, and the
-    next checkpoint makes them durable, so the agent never sees two versions of its files.
-  - When the VM stops, the file tools go back to the API on the ref.
-- **Idle stop and resume:**
-  - The VM stops after `idleStopS` with no `exec`: a default of 10 minutes, at most 1 hour.
-  - The next `bash` call creates it again on the ref's latest version. A warm host mounts it again; a cold one
-    hydrates it, ≈ 3.7 s for a 660 MB root.
+- **File tools and the lease, plainly:** while a VM is running on a branch, it holds the branch's lease, and the
+  agent's file tools on that branch go into the VM (reads and writes run in the guest; the next checkpoint makes
+  them durable). When the VM is stopped, the branch is unheld, and file tools and API writes work on the ref
+  directly. There is never a second writer.
+- **Sprite-like VMs: they sleep after seconds of inactivity and wake on the next call** (Miguel, 2026-11-14).
+  Two tiers:
+  - **v1 (now): idle stop with checkpoint.**
+    - After `idleStopS` with no `exec` in flight, the tier freezes the VM, checkpoints it (a commit to the agent's
+      branch, measured at ≈ 110–220 ms), and stops it.
+    - `idleStopS` is one constant with a default of ≈ 10 **seconds**, at most 1 hour, counted only while no
+      `exec` runs.
+    - The next `bash` call boots a fresh VM from the branch's latest tree: a warm mount ≈ 2 ms plus a Firecracker
+      boot ≈ 0.5 s (a cold host hydrates first, ≈ 3.7 s for a 660 MB root).
+    - **Files persist, processes do not**, and the tool's description says so to the model.
+    - Billing runs only while a VM runs, so a sleeping agent costs storage only.
+  - **v2 (later, gated on a measurement): warm sleep.**
+    - On idle, the host takes a Firecracker memory snapshot to its NVMe instead of stopping, and the next call
+      restores it with processes intact.
+    - It is host-affine: placement prefers the host that holds the snapshot.
+    - It falls back to v1's cold boot when that host or the snapshot is gone.
+    - It ships only after measuring restore time, snapshot size per VM shape, and the NVMe cost of keeping
+      snapshots. The checkpoint still runs before the snapshot, so the branch is current either way.
+  - **No API change for v2:** the VM row gains a `sleeping` state (`running → sleeping → running`) between
+    `running` and `stopping`, and `GET /v1/vms/{id}` reports it. v1 never enters it.
+- **The tool's description to the model** (in substance): "Runs a shell command in your machine. Your files
+  persist on your branch. The machine sleeps after about 10 seconds without a command, and processes, including
+  background `&` jobs and servers, do not survive the sleep. Keep calling to keep something running."
 - **Money (§4):** admission at balance > 0 before `POST /v1/vms`. The deadline is renewed every ≈ 3 min while the
   balance is > 0. Usage is pulled, and charges may go negative.
 
 **In the runtime, the agent's own object owns its VM.**
-- The agent's Durable Object keeps one small row per branch: `{ vmId, ref, deadline }`.
+- The agent's Durable Object keeps one small row per branch: `{ vmId, ref, deadline, state }`, where `state` is
+  `running` or `stopped` today and gains `sleeping` with v2.
 - It renews the deadline from its alarm while the agent is active, and drops the row on `vm.ended`.
 - There is no `HostJob`, `JobHost` or `JobHostRegistry`. Placement and host authority are the tier's (§3).
 
