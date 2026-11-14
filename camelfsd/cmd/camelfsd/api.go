@@ -96,7 +96,7 @@ func apiRole(args []string) error {
 		handler.ConfigureRefs(client, computeFlags.refs, *lineagesTable, nil, *marksTable)
 	}
 	if computeAPI != nil {
-		handler.EnableCompute(computeAPI.loop.C, computeAPI.images, computeAPI.pools, computeAPI.idle, computeFlags.heartbeat)
+		handler.EnableCompute(&computeAPI.loop, computeAPI.images, computeAPI.pools, computeAPI.idle, computeFlags.heartbeat)
 	}
 	storage := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)

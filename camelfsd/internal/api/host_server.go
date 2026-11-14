@@ -61,6 +61,8 @@ func (s *HostServer) authenticated(handler func(http.ResponseWriter, *http.Reque
 			reply = hostError{403, "forbidden"}
 		case errors.Is(err, compute.ErrHost), errors.Is(err, compute.ErrNotFound):
 			reply = hostError{409, "stale_epoch"}
+		case errors.Is(err, compute.ErrCapacityInUse):
+			reply = hostError{409, "capacity_in_use"}
 		case errors.Is(err, compute.ErrCondition), errors.Is(err, compute.ErrPhase):
 			reply = hostError{409, "conflict"}
 		case errors.Is(err, compute.ErrInvalid):

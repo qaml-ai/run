@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
+	"github.com/qaml-ai/run/camelfsd/internal/compute"
 	"github.com/qaml-ai/run/camelfsd/internal/ddb/ddbtest"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
@@ -303,7 +304,35 @@ func TestRefsRoutes(t *testing.T) {
 	if got := details(call("DELETE", "/refs/main?expect="+left, nil, "", 412, "stale")); got["current"] != merge {
 		t.Fatal(got)
 	}
+	_, vms := hostTable(t, "id")
+	_, hosts := hostTable(t, "pool", "host")
+	_, deliveries := hostTable(t, "shard", "id")
+	controller := &compute.Controller{DB: client, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries},
+		Now: func() time.Time { return now }, RuntimeURL: "https://runtime.example/ended"}
+	s.EnableCompute(&compute.Loop{C: controller}, nil, []string{"test"}, nil, 10*time.Second)
+	createWaiter := func(id, lineage, ref string) {
+		t.Helper()
+		if _, err := controller.Create(t.Context(), compute.CreateRequest{
+			ID: id, Lineage: lineage, Ref: ref, Pool: "test", Deadline: now.Add(time.Minute),
+			Session: &compute.Session{IdleStopS: 10},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertWaiter := func(id string, phase compute.Phase, reason string) {
+		t.Helper()
+		vm, err := controller.Get(t.Context(), id)
+		if err != nil || vm.Phase != phase || vm.Reason != reason || phase == compute.Ended && vm.Code != compute.StartFailed {
+			t.Fatalf("vm: %+v, err: %v", vm, err)
+		}
+	}
+	createWaiter("deleted-ref", lineage, "main")
+	createWaiter("deleted-lineage", lineage, "keep-until-lineage-delete")
+	createWaiter("other", "t:other", "main")
 	call("DELETE", "/refs/main?expect="+merge, nil, "", 204, "")
+	assertWaiter("deleted-ref", compute.Ended, "ref_deleted")
+	assertWaiter("deleted-lineage", compute.Requested, "")
+	assertWaiter("other", compute.Requested, "")
 	reborn := call("POST", "/refs", ref("main", base, nil), "", 201, "")
 	if reborn["leaseEpoch"] != next["epoch"] {
 		t.Fatal(reborn)
@@ -337,6 +366,8 @@ func TestRefsRoutes(t *testing.T) {
 	now = now.Add(time.Second)
 	call("DELETE", "", nil, "delete-lineage", 204, "")
 	call("DELETE", "", nil, "delete-lineage", 204, "")
+	assertWaiter("deleted-lineage", compute.Ended, "lineage_deleted")
+	assertWaiter("other", compute.Requested, "")
 	call("GET", "", nil, "", 410, "lineage_deleted")
 	call("GET", "/refs", nil, "", 410, "lineage_deleted")
 	call("GET", "/commits/"+base, nil, "", 410, "lineage_deleted")

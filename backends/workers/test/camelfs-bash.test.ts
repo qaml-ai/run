@@ -13,6 +13,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
   return next(specifier, context);
 } });
 const { BashSessions, BASH_WORKDIR, bashTool } = await import("../src/camelfs/bash.ts");
+const { agentRepoId } = await import("../src/repos/identity.ts");
 const { BASH_OUTPUT_KEEP } = await import("../src/camelfs/bash-stream.ts");
 const { handleCamelfsNotify } = await import("../src/camelfs/notify.ts");
 hooks.deregister();
@@ -43,19 +44,23 @@ function fixture(t: TestContext) {
   const pending: Promise<unknown>[] = [];
   const errors: string[] = [];
   const calls: { method: string; path: string; body: any }[] = [];
-  const vms = new Map<string, { phase: string; deadline: number; lastCheckpoint?: { version: string; tree: string } }>();
+  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string } }>();
   const results = new Map<string, string>();
   const flags = {
     refusal: undefined as { status: number; code?: string } | undefined,
     drop: false, leaseExpired: false, checkpointError: false,
     crash: "", crashAfter: "", runs: 0, pollerStarts: 0, tailStatus: 200, unchanged: false,
-    stdout: "ok",
+    stdout: "ok", startup: undefined as { phase: string; code?: string; reason?: string } | undefined,
+    onPoll: () => {},
   };
+  const repoId = agentRepoId(conf.tenantId, conf.id);
+  conf.config.mounts = [{ repo: repoId, path: "/", ref: "main", mode: "rw" }];
   let sessions: InstanceType<typeof BashSessions>;
   const env = {
     CAMELFS_URL: "https://tier.example", AGENT_PUBLIC_URL: "https://runtime.example",
     CAMELFS_COMPUTE: "1", CAMELFS_POOLS: JSON.stringify({ default: "test" }), GUEST_IMAGE_SHA256: "a".repeat(64), CAMELFS_NOTIFY_KEY: "fixture",
     CAMELFS_USAGE: { getByName: () => ({ start: async () => { flags.pollerStarts++; } }) },
+    TENANTS: { getByName: () => ({ repoRow: async () => ({ id: "child", lineage: branch.lineage, deletedAt: null }) }) },
     AGENTS: { getByName: (agent: string) => {
       assert.equal(agent, conf.id);
       return { vmEnded: (id: string, vm: string) => sessions.ended(id, vm) };
@@ -74,11 +79,11 @@ function fixture(t: TestContext) {
       assert.ok(JSON.parse(body.usage.payer).rate > 0);
       const vm = vms.get(body.id);
       if (vm) assert.equal(body.deadline, vm.deadline);
-      else vms.set(body.id, { phase: "running", deadline: body.deadline });
+      else vms.set(body.id, { phase: "running", ...flags.startup, deadline: body.deadline });
       return Response.json({ id: body.id, phase: "requested" }, { status: 202 });
     }
     const vm = vms.get(id)!;
-    if (!op) return Response.json(vm);
+    if (!op) { flags.onPoll(); return Response.json(vm); }
     if (op === "deadline") {
       if (flags.leaseExpired) return fail(409, "lease_expired");
       vm.deadline = body.deadline;
@@ -119,7 +124,7 @@ function fixture(t: TestContext) {
   restart();
   const run = (key: string, target = branch) => sessions.execute(conf, target, JSON.stringify(["run", key]), key, "run", { command: "echo hi" });
   const replayTool = (key: string) => bashTool({
-    config: async () => conf, currentRun: async () => ({ id: "run" }), bashSessions: sessions,
+    env, config: async () => conf, currentRun: async () => ({ id: "run" }), bashSessions: sessions,
   } as never).execute({ command: "echo hi" }, { callId: key } as never, {} as never);
   const flush = async () => { while (pending.length) await Promise.all(pending.splice(0)); };
   const row = () => db.prepare("SELECT vm_id,state,deadline FROM agent_vms").get() as { vm_id: string; state: string; deadline: number } | undefined;
@@ -341,4 +346,52 @@ test("the shape → pool mapping is CAMELFS_POOLS only, with no code-side defaul
   assert.throws(() => tierPool({ CAMELFS_POOLS: JSON.stringify({ test: "test" }) }, large), /no host pool for shape 64 vCPU/);
   assert.throws(() => tierPool({}, small), /no host pool for shape/);
   assert.throws(() => tierPool({ CAMELFS_POOLS: "not json" }, small), /no host pool for shape/);
+});
+
+test("an unfit VM ends with a plain bash tool result and one log", async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ["Date"] });
+  f.flags.startup = { phase: "ended", code: "start_failed", reason: "no_host_fits" };
+  const logs = t.mock.method(console, "log", () => {});
+  const result = await f.replayTool("unfit");
+  assert.deepEqual(result.output, [{
+    type: "text",
+    text: "No machine large enough for this agent is available, so the command did not run. Retrying will not help right now; tell the user that bash is unavailable.",
+  }]);
+  assert.equal(result.isError, true);
+  assert.equal(f.row()?.state, "stopped");
+  assert.equal(f.flags.runs, 0);
+  const { id, pool, shape } = f.calls[0].body;
+  assert.deepEqual(logs.mock.calls.map(call => JSON.parse(call.arguments[0])), [
+    { type: "bash_vm_unplaced", vm: id, pool, shape, reason: "no_host_fits", waitedMs: 0 },
+  ]);
+});
+
+test("bash reports a requested VM at the deadline and reuses it on retry", async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ["Date"] });
+  f.flags.startup = { phase: "requested" };
+  f.flags.onPoll = () => t.mock.timers.tick(60_000);
+  const logs = t.mock.method(console, "log", () => {});
+  const result = await f.replayTool("waiting");
+  assert.deepEqual(result.output, [{
+    type: "text",
+    text: "No machine is free for this agent right now, so the command did not run. It is still queued; try again in a minute.",
+  }]);
+  assert.equal(result.isError, true);
+  assert.equal(f.row()?.state, "creating");
+  assert.equal(f.flags.runs, 0);
+  const { id, pool, shape } = f.calls[0].body;
+  assert.deepEqual(logs.mock.calls.map(call => JSON.parse(call.arguments[0])), [
+    { type: "bash_vm_unplaced", vm: id, pool, shape, reason: "waiting", waitedMs: 60_000 },
+  ]);
+
+  f.flags.onPoll = () => {};
+  f.vms.get(id)!.phase = "running";
+  const retry = await f.replayTool("retry");
+  assert.equal(retry.isError, false);
+  assert.equal(f.row()?.vm_id, id);
+  assert.equal(f.row()?.state, "running");
+  assert.deepEqual(f.calls.filter(call => call.path === "/v1/vms").map(call => call.body.id), [id, id]);
+  await f.flush();
 });

@@ -16,7 +16,8 @@ import (
 )
 
 type StorageServer struct {
-	compute     http.Handler
+	compute     *http.ServeMux
+	vmAPI       *vmAPI
 	refs        *refstore.Store
 	marksTable  string
 	lineages    *lineageStore
@@ -63,7 +64,14 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		stats := s.repo().DB.DB.Stats()
 		jsonReply(w, http.StatusOK, map[string]int{"cacheConnections": stats.OpenConnections, "cacheInUse": stats.InUse})
-	case s.compute != nil && (r.URL.Path == "/v1/usage" || r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/")):
+	case r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/"):
+		route := "/v1/vms"
+		if s.compute != nil {
+			_, pattern := s.compute.Handler(r)
+			route = vmLogRoute(pattern)
+		}
+		loggedAccess(w, r, route, "", s.serveCompute)
+	case s.compute != nil && r.URL.Path == "/v1/usage":
 		if r = s.authorize(w, r); r != nil {
 			s.compute.ServeHTTP(w, r)
 		}
@@ -71,6 +79,16 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.loggedStorage(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (s *StorageServer) serveCompute(w http.ResponseWriter, r *http.Request) {
+	if s.compute == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r = s.authorize(w, r); r != nil {
+		s.compute.ServeHTTP(w, r)
 	}
 }
 

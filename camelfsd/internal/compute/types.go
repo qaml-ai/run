@@ -63,14 +63,15 @@ const (
 )
 
 var (
-	ErrNotFound     = errors.New("compute item not found")
-	ErrConflict     = errors.New("VM id already used by another request")
-	ErrTooManyExecs = errors.New("too many in-flight execs")
-	ErrNoHost       = errors.New("no host available")
-	ErrCondition    = errors.New("compute condition lost")
-	ErrPhase        = errors.New("invalid VM phase for operation")
-	ErrHost         = errors.New("host or boot epoch does not match")
-	ErrInvalid      = errors.New("invalid compute request")
+	ErrNotFound      = errors.New("compute item not found")
+	ErrConflict      = errors.New("VM id already used by another request")
+	ErrTooManyExecs  = errors.New("too many in-flight execs")
+	ErrNoHost        = errors.New("no host available")
+	ErrCondition     = errors.New("compute condition lost")
+	ErrPhase         = errors.New("invalid VM phase for operation")
+	ErrHost          = errors.New("host or boot epoch does not match")
+	ErrCapacityInUse = errors.New("host capacity is in use")
+	ErrInvalid       = errors.New("invalid compute request")
 	// ErrLeaseExpired: a lapsed lease is final. A renewal that arrives after the deadline never revives it.
 	ErrLeaseExpired = errors.New("VM lease has expired")
 )
@@ -117,6 +118,7 @@ type VM struct {
 	StopRequestedAt, EndedAt                *int64
 	StopCheckpoint                          bool
 	StopReason, Code                        EndCode
+	Reason                                  string
 	FirstExecAt                             *int64
 	execs                                   []string
 	LastCheckpoint                          *Checkpoint
@@ -133,6 +135,8 @@ type VM struct {
 type EndRequest struct {
 	At              time.Time
 	Code            EndCode
+	Reason          string
+	refErr          error
 	EndVersion      string
 	CheckpointError string
 }

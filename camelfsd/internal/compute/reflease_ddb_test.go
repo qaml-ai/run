@@ -70,14 +70,33 @@ func TestDDBRefLeaseRecovery(t *testing.T) {
 		t.Fatal(held)
 	}
 
+	var failed []map[string]any
+	c.Log = func(event string, fields map[string]any) {
+		if event == "vm_start_failed" {
+			failed = append(failed, fields)
+		}
+	}
 	v = place("held")
 	other := hostwire.Holder{Host: "other", Boot: 1, Mount: "job"}
 	must[refstore.Lease](t)(c.Refs.Acquire(ctx, v.Lineage, v.Ref, other.String(), refLeaseTTL))
 	v = must[VM](t)(c.MarkBooting(ctx, v.ID))
-	if v.Code != StartFailed || v.CheckpointError != "ref is leased by another holder" || v.StartedAt != nil || v.UsageSeq != 0 {
+	if v.Phase != Ended || v.Code != StartFailed || v.Reason != "ref_held" || v.CheckpointError != "ref is leased by another holder" || v.StartedAt != nil || v.UsageSeq != 0 {
 		t.Fatal(v)
 	}
 	f.checkHost(pool, 1)
+
+	v = place("missing")
+	if err := c.Refs.Delete(ctx, v.Lineage, v.Ref, nil); err != nil {
+		t.Fatal(err)
+	}
+	v = must[VM](t)(c.MarkBooting(ctx, v.ID))
+	if v.Phase != Ended || v.Code != StartFailed || v.Reason != "ref_unavailable" || v.CheckpointError != "mount version or ref unavailable" {
+		t.Fatal(v)
+	}
+	if len(failed) != 2 || failed[0]["reason"] != "ref_held" || failed[0]["refErr"] != "held" ||
+		failed[1]["reason"] != "ref_unavailable" || failed[1]["refErr"] != "no_ref" {
+		t.Fatal(failed)
+	}
 
 	v = place("fenced")
 	v = must[VM](t)(c.MarkBooting(ctx, v.ID))
