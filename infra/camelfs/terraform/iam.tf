@@ -120,6 +120,12 @@ locals {
         Action   = local.dynamodb_item_actions
         Resource = values(local.table_arns)
       },
+      {
+        Sid      = "QueryVMLineage"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${local.table_arns["vms"]}/index/lineage"]
+      },
       # The GC mark pass walks the marks table (C3b); no other table is ever scanned (a full scan of refs or usage
       # is a capability the tier does not get).
       {

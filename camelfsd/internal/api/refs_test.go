@@ -16,9 +16,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go/middleware"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
 	"github.com/qaml-ai/run/camelfsd/internal/ddb/ddbtest"
+	"github.com/qaml-ai/run/camelfsd/internal/delivery"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
@@ -308,13 +311,27 @@ func TestRefsRoutes(t *testing.T) {
 	if got := details(call("DELETE", "/refs/main?expect="+left, nil, "", 412, "stale")); got["current"] != merge {
 		t.Fatal(got)
 	}
-	_, vms := hostTable(t, "id")
+	_, vms := ddbtest.VMTable(t)
 	_, hosts := hostTable(t, "pool", "host")
 	_, deliveries := hostTable(t, "shard", "id")
-	controller := &compute.Controller{DB: client, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries},
+	// Force DynamoDB Local to return one index row per page.
+	indexQueries := 0
+	options := client.Options()
+	options.APIOptions = append(options.APIOptions, func(stack *middleware.Stack) error {
+		return stack.Initialize.Add(middleware.InitializeMiddlewareFunc("lineagePageSize", func(
+			ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler,
+		) (middleware.InitializeOutput, middleware.Metadata, error) {
+			if q, ok := in.Parameters.(*dynamodb.QueryInput); ok && aws.ToString(q.IndexName) == "lineage" {
+				q.Limit = aws.Int32(1)
+				indexQueries++
+			}
+			return next.HandleInitialize(ctx, in)
+		}), middleware.Before)
+	})
+	controller := &compute.Controller{DB: dynamodb.New(options), Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries},
 		Now: func() time.Time { return now }, RuntimeURL: "https://runtime.example/ended"}
 	s.EnableCompute(&compute.Loop{C: controller}, nil, []string{"test"}, nil, 10*time.Second)
-	createWaiter := func(id, lineage, ref string) {
+	createVM := func(id, lineage, ref string) {
 		t.Helper()
 		if _, err := controller.Create(t.Context(), compute.CreateRequest{
 			ID: id, Lineage: lineage, Ref: ref, Pool: "test", Deadline: now.Add(time.Minute),
@@ -323,20 +340,42 @@ func TestRefsRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assertWaiter := func(id string, phase compute.Phase, reason string) {
+	assertVM := func(id string, phase compute.Phase, reason string) {
 		t.Helper()
 		vm, err := controller.Get(t.Context(), id)
 		if err != nil || vm.Phase != phase || vm.Reason != reason || phase == compute.Ended && vm.Code != compute.StartFailed {
 			t.Fatalf("vm: %+v, err: %v", vm, err)
 		}
 	}
-	createWaiter("deleted-ref", lineage, "main")
-	createWaiter("deleted-lineage", lineage, "keep-until-lineage-delete")
-	createWaiter("other", "t:other", "main")
+	createVM("deleted-ref", lineage, "main")
+	createVM("deleted-lineage", lineage, "keep-until-lineage-delete")
+	createVM("other-ref", lineage, "other-ref")
+	createVM("placed-ref", lineage, "main")
+	const pool = "test"
+	hostEpoch, err := controller.Register(t.Context(), compute.HostInfo{Pool: pool, Host: "host", BootID: "boot",
+		Slots: 8, Shape: compute.Shape{VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeVM := func(id string) {
+		t.Helper()
+		if vm, err := controller.Place(t.Context(), id); err != nil || vm.Phase != compute.Placed {
+			t.Fatalf("place %s: %+v, %v", id, vm, err)
+		}
+	}
+	placeVM("placed-ref")
 	call("DELETE", "/refs/main?expect="+merge, nil, "", 204, "")
-	assertWaiter("deleted-ref", compute.Ended, "ref_deleted")
-	assertWaiter("deleted-lineage", compute.Requested, "")
-	assertWaiter("other", compute.Requested, "")
+	assertVM("deleted-ref", compute.Ended, "ref_deleted")
+	assertVM("placed-ref", compute.Ended, "ref_deleted")
+	if indexQueries < 4 {
+		t.Fatalf("ref delete queried only %d index pages for four VMs", indexQueries)
+	}
+	waiters, err := controller.Waiting(t.Context(), pool)
+	if err != nil || len(waiters) != 2 {
+		t.Fatalf("waiters after ref delete: %+v, %v", waiters, err)
+	}
+	assertVM("deleted-lineage", compute.Requested, "")
+	assertVM("other-ref", compute.Requested, "")
 	reborn := call("POST", "/refs", ref("main", base, nil), "", 201, "")
 	if reborn["leaseEpoch"] != next["epoch"] {
 		t.Fatal(reborn)
@@ -368,10 +407,76 @@ func TestRefsRoutes(t *testing.T) {
 	}
 	claims = runtime
 	now = now.Add(time.Second)
+	createVM("placed-lineage", lineage, "main")
+	placeVM("placed-lineage")
+	// Start VMs without a ref lease so the lineage delete can proceed.
+	for id, vmLineage := range map[string]string{"running": lineage, "booting": lineage, "other": "t:other"} {
+		createVM(id, vmLineage, "main")
+		placeVM(id)
+		if _, err := controller.MarkBooting(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+		if id != "booting" {
+			if _, err := controller.Started(t.Context(), id, "host", hostEpoch, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	getVM := func(id string) compute.VM {
+		t.Helper()
+		vm, err := controller.Get(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return vm
+	}
+	ended, other := getVM("deleted-ref"), getVM("other")
+	push := &deleteStopRecorder{orders: map[string]bool{}}
+	controller.Pusher = push
+	createVM("cleanup-fails", lineage, "main")
+	// A duplicate outbox ID makes this VM's end transaction fail atomically.
+	work, err := delivery.Stage(deliveries, delivery.Delivery{ID: "vm.ended:cleanup-fails"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.TransactWriteItems(t.Context(), &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{work},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var failures []any
+	controller.Log = func(event string, fields map[string]any) {
+		if event == "vm_delete_cleanup_failed" {
+			failures = append(failures, fields["vm"])
+		}
+	}
+	now = now.Add(time.Second)
 	call("DELETE", "", nil, "delete-lineage", 204, "")
 	call("DELETE", "", nil, "delete-lineage", 204, "")
-	assertWaiter("deleted-lineage", compute.Ended, "lineage_deleted")
-	assertWaiter("other", compute.Requested, "")
+	assertVM("deleted-lineage", compute.Ended, "lineage_deleted")
+	assertVM("other-ref", compute.Ended, "lineage_deleted")
+	assertVM("placed-lineage", compute.Ended, "lineage_deleted")
+	assertVM("cleanup-fails", compute.Requested, "")
+	waiters, err = controller.Waiting(t.Context(), pool)
+	if err != nil || len(waiters) != 1 || waiters[0].VM != "cleanup-fails" {
+		t.Fatalf("waiters after lineage delete: %+v, %v", waiters, err)
+	}
+	if !reflect.DeepEqual(failures, []any{"cleanup-fails"}) {
+		t.Fatalf("cleanup failures: %v", failures)
+	}
+	for _, id := range []string{"running", "booting"} {
+		vm := getVM(id)
+		if vm.Phase != compute.Stopping || vm.StopRequestedAt == nil || *vm.StopRequestedAt != now.UnixMilli() ||
+			vm.StopCheckpoint || vm.StopReason != "lineage_deleted" {
+			t.Fatalf("stop after lineage delete: %+v", vm)
+		}
+	}
+	if !reflect.DeepEqual(push.orders, map[string]bool{"running": false, "booting": false}) {
+		t.Fatalf("host stop orders: %v", push.orders)
+	}
+	if !reflect.DeepEqual(getVM("deleted-ref"), ended) || !reflect.DeepEqual(getVM("other"), other) {
+		t.Fatal("lineage delete changed an ended VM or a VM on another lineage")
+	}
 	call("GET", "", nil, "", 410, "lineage_deleted")
 	call("GET", "/refs", nil, "", 410, "lineage_deleted")
 	call("GET", "/commits/"+base, nil, "", 410, "lineage_deleted")
@@ -379,6 +484,19 @@ func TestRefsRoutes(t *testing.T) {
 	if _, err := s.refs.Get(t.Context(), lineage, "main"); err == nil {
 		t.Fatal("lineage refs were left live")
 	}
+}
+
+type deleteStopRecorder struct {
+	orders map[string]bool
+}
+
+func (*deleteStopRecorder) Boot(context.Context, compute.Host, hostwire.BootSpec) error {
+	return nil
+}
+
+func (p *deleteStopRecorder) Stop(_ context.Context, _ compute.Host, id string, checkpoint bool) error {
+	p.orders[id] = checkpoint
+	return nil
 }
 
 type beforeRefUpdate struct {

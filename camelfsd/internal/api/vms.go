@@ -371,11 +371,9 @@ func (v *vmAPI) usage(w http.ResponseWriter, r *http.Request, claims auth.Claims
 	return nil
 }
 
-// The VM table only has its ID key. Pool waiters can be looked up without a scan;
-// once placed, a VM is no longer a waiter and startup checks the ref itself.
-func (s *StorageServer) endDeletedWaiters(ctx context.Context, lineage, ref, reason string) {
+func (s *StorageServer) endDeletedVMs(ctx context.Context, lineage, ref, reason string) {
 	if s.vmAPI == nil {
 		return
 	}
-	s.vmAPI.controller.EndDeletedWaiters(ctx, s.vmAPI.pools, lineage, ref, reason)
+	s.vmAPI.controller.EndDeletedVMs(ctx, lineage, ref, reason)
 }

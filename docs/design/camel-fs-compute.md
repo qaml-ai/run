@@ -87,6 +87,8 @@ is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md 
 
 `reason` is set on some ended VMs. With `code: "start_failed"` it is one of `no_host_fits`, `no_capacity`, `ref_held`, `ref_unavailable`, `lineage_deleted` or `ref_deleted`.
 
+After a successful lineage delete, the tier uses the `lineage` index to find the lineage’s VMs, end unstarted VMs, and stop booting or running VMs without a checkpoint. A ref delete ends unstarted VMs on that ref.
+
 **What the session-only shape removes from this API:**
 - job mode (`mode`, `job: { command, timeoutS, env, outputs, commit }`);
 - the job's own timeout and the `exit` and `timeout` ended codes;

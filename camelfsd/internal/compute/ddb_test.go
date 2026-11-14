@@ -46,11 +46,11 @@ func table(t *testing.T, keys ...string) (*dynamodb.Client, string) {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	db, vms := table(t, "id")
+	db, vms := ddbtest.VMTable(t)
 	_, hosts := table(t, "pool", "host")
 	_, deliveries := table(t, "shard", "id")
 	_, usage := table(t, "shard", "ulid")
-	f := &fixture{Controller: Controller{DB: db, Tables: Tables{vms, hosts, deliveries, usage},
+	f := &fixture{Controller: Controller{DB: db, Tables: Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries, Usage: usage},
 		RuntimeURL: "https://runtime.example/ended"}, t: t, now: epoch}
 	f.EnableClockCheck()
 	f.Now = func() time.Time { return f.now }

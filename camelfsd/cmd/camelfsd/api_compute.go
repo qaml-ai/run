@@ -159,6 +159,7 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 		return nil, err
 	}
 	grace := 3 * f.heartbeat
+	f.tables.VMLineageIndex = "lineage"
 	controller := &compute.Controller{DB: db, Tables: f.tables, RuntimeURL: f.notifyURL, Objects: repo.Store,
 		Refs: refstore.New(db, f.refs, nil, repo), CommitTree: api.CommitTreeResolver(repo),
 		Pusher: api.HostPusher{TLS: credentials}, HostFresh: grace}

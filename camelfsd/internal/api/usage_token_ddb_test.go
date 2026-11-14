@@ -12,6 +12,7 @@ import (
 
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
+	"github.com/qaml-ai/run/camelfsd/internal/ddb/ddbtest"
 )
 
 // The runtime's usage poll, end to end through the real token verifier: the token the runtime mints (usage.ts
@@ -19,11 +20,11 @@ import (
 // no lineage) reads GET /v1/usage, and nothing else. Smoke 7 found the verifier refusing it (BadLineage), which no test
 // saw: the usage tests authenticate through a test header, not a token.
 func TestDDBUsageTokenContract(t *testing.T) {
-	db, vms := hostTable(t, "id")
+	db, vms := ddbtest.VMTable(t)
 	_, hosts := hostTable(t, "pool", "host")
 	_, deliveries := hostTable(t, "shard", "id")
 	_, usageTable := hostTable(t, "shard", "ulid")
-	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries, Usage: usageTable}}
+	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries, Usage: usageTable}}
 
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
