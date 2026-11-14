@@ -1044,5 +1044,8 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
 - The inbound usage webhook is deleted. A poller that falls behind by more than the 35-day TTL loses events, so its
   lag is an alarm (`usage_poll_lag`) long before that.
 
+**The credit deadline is a lease, and a lapsed one is final** (camel-fs-compute.md §4): no extension revives a
+VM's lease once `now ≥ deadline`, so the usage events never cover time the runtime did not extend credit for.
+
 **Notifications stay pushed.** `vm.ended` and ref moves remain on §9.11's webhook outbox. `vm.ended` is a hint:
 if one is lost, the next poll's final `usage.vm` event and `GET /v1/vms/{id}` reconcile the job.
