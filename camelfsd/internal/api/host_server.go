@@ -23,6 +23,42 @@ type HostServer struct {
 	grace      time.Duration
 	routes     *http.ServeMux
 	findHost   func(context.Context, []string, string) (compute.Host, error)
+	cas        HostCASFunc
+}
+
+// HostCASFunc moves a ref for a host checkpoint (StorageServer.HostCAS): lineage, ref, commit, expect, root,
+// the holder string and the lease epoch. It returns the reply body, or a storage error.
+type HostCASFunc func(ctx context.Context, lineage, name, commit, expect, root, holder string, epoch int64) (map[string]any, error)
+
+// EnableCAS serves POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas, the ref move after a session
+// checkpoint. Without it the route answers 404 like any unknown host route.
+func (s *HostServer) EnableCAS(cas HostCASFunc) {
+	s.cas = cas
+	s.routes.HandleFunc("POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas", s.authenticated(s.hostCAS))
+}
+
+func (s *HostServer) hostCAS(w http.ResponseWriter, r *http.Request, hostID string) error {
+	var q struct {
+		Commit string          `json:"commit"`
+		Expect string          `json:"expect"`
+		Root   string          `json:"root"`
+		Holder hostwire.Holder `json:"holder"`
+		Epoch  int64           `json:"epoch"`
+	}
+	if err := readHostRequest(w, r, &q); err != nil {
+		return err
+	}
+	// The holder must be this authenticated host on its current boot; the lease epoch fences the move itself.
+	if err := s.checkHolder(r.Context(), hostID, q.Holder); err != nil {
+		return err
+	}
+	reply, err := s.cas(r.Context(), r.PathValue("lineage"), r.PathValue("name"), q.Commit, q.Expect, q.Root, q.Holder.String(), q.Epoch)
+	if err != nil {
+		storageFail(w, err)
+		return nil
+	}
+	jsonReply(w, http.StatusOK, reply)
+	return nil
 }
 
 func NewHostServer(c *compute.Controller, pools, images []string, grace time.Duration) *HostServer {
