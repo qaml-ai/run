@@ -22,7 +22,7 @@ sprite_requires="leases dirty-denylist shards artifacts targeted hooks docker po
 sprite_prefix=rt-pool- sprite_pool=42 sprite_shards=8 sprite_dir=rt
 sprite_keep="node_modules/ /sandbox/v8-exec/target/"
 sprite_build_path=sandbox/v8-exec
-sprite_apt=""
+sprite_apt="unzip"
 sprite_pg_env=AGENT_TEST_DATABASE_URL
 sprite_sha_env=CONTRACT_REVISION
 # The v8-exec binary is rebuilt unless target/release/.sources names this tree's sandbox/v8-exec and the binary's own
@@ -35,6 +35,20 @@ bin=sandbox/v8-exec/target/release/v8-exec; built=sandbox/v8-exec/target/release
   rm -f "$built"; (cd sandbox/v8-exec && cargo clean -q --release -p v8-exec) && npm run -s build:v8-exec >/dev/null && sync \
     && [ -x "$bin" ] && echo "$build $(sha256sum < "$bin" | cut -d' ' -f1)" > "$built"; } || { echo "== building v8-exec failed"; exit 1; }
 [ -x "$bin" ] || { echo "== $bin is missing or not executable"; exit 1; }
+# The AWS CLI v2, pinned: the camelfsd contract tests create tables in DynamoDB Local with `aws dynamodb` (CI's runners
+# have it). Checksums are of AWS's release zips, whose PGP signatures verified against the AWS CLI Team key
+# (FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C) on 2026-11-14.
+aws_version=2.39.7
+[ "$(aws --version 2>/dev/null | cut -d' ' -f1)" = "aws-cli/$aws_version" ] || { echo "== installing the AWS CLI $aws_version"
+  case $(uname -m) in
+    x86_64) aws_sum=707a900fde102f486d92e79f979493c747f475b9e2b94f2a42687d5d95129fb7 ;;
+    aarch64) aws_sum=d64bf764ce41165ba16fa48372d46ecef50583a4621226e89e6269af8031e1c0 ;;
+    *) echo "== no AWS CLI for $(uname -m)"; exit 1 ;;
+  esac
+  aws_tmp=$(mktemp -d) && curl -fsSLo "$aws_tmp/aws.zip" "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$aws_version.zip" \
+    && echo "$aws_sum  $aws_tmp/aws.zip" | sha256sum -c --quiet && unzip -q "$aws_tmp/aws.zip" -d "$aws_tmp" \
+    && sudo "$aws_tmp/aws/install" --update >/dev/null && rm -rf "$aws_tmp" \
+    && [ "$(aws --version 2>/dev/null | cut -d' ' -f1)" = "aws-cli/$aws_version" ]; } || { echo "== installing the AWS CLI failed"; exit 1; }
 PREPARE
 sprite_default_job() { echo "env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 TEST_INCLUDE_SIM=true npm run -s test:shard -- $1/$2"; }
 
