@@ -1,4 +1,3 @@
-import { DoRepoClient } from "./client.ts";
 import { repoProvision, planRepo, plannedRow } from './provision.ts';
 import { agentRepoId } from "./identity.ts";
 export { agentRepoId } from "./identity.ts";
@@ -6,7 +5,7 @@ import { mountNotesTooLong } from "../../../../shared/mount-notes.ts";
 import { FileError, normalizePath } from "../file-errors.ts";
 import { MOUNT_LIMIT } from "../file-policy.ts";
 import { withSql } from "../postgres.ts";
-import { agentRepo, deleteRepo, type RepoEnv } from "./registry.ts";
+import { agentRepo, deleteRepo, repoContext, type RepoEnv } from "./registry.ts";
 import { refName, repoErrorFrom } from "./repo-policy.ts";
 export type Mount = { repo: string; ref?: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean; instructions?: string };
 export async function prepareMounts(
@@ -103,12 +102,12 @@ export async function prepareMounts(
       ...(m.notify ? { notify: true } : {}),
     });
   }
-  for (const mount of mounts) if (mount.notify && !repoProvision.getStore()) await new DoRepoClient(env, tenant, mount.repo).watch(mount.ref ?? "main", agent);
+  for (const mount of mounts) if (mount.notify && !repoProvision.getStore()) await (await repoContext(env, tenant, mount.repo, `agent:${agent}`)).repo.watch(mount.ref ?? "main", agent);
   return mounts;
 }
 
-export async function unwatchMount(env:Pick<RepoEnv,'REPOS'>,tenant:string,agent:string,mount:Mount) {
-  try { await new DoRepoClient(env, tenant, mount.repo).unwatch(mount.ref??'main',agent); }
+export async function unwatchMount(env:RepoEnv,tenant:string,agent:string,mount:Mount) {
+  try { await (await repoContext(env, tenant, mount.repo, `agent:${agent}`)).repo.unwatch(mount.ref??'main',agent); }
   catch(error) {
     const status=repoErrorFrom(error)?.status;
     if(status!==404&&status!==410)throw error;

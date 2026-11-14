@@ -9,6 +9,14 @@
     [
       "  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version?: number; snapshot?: string;\n",
       "  tenant: string; agent: string; call: string; tool: string; repo: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version: string;\n"
+    ],
+    [
+      "import type { Db } from \"./postgres.ts\";",
+      "import type { Db } from \"./postgres.ts\";\nimport type { TierClaims } from \"./camelfs/claims.ts\";"
+    ],
+    [
+      "  /** A file URL's token (file-arguments.ts),",
+      "  /** A tier request uses the published runtime key and the configured public issuer. */\n  async camelfsToken(claims: TierClaims): Promise<string> {\n    const { signing } = await this.load();\n    if (!signing) throw new Error(\"This runtime cannot sign camelFS requests\");\n    const iat = Math.floor(Date.now() / 1000);\n    return signJwt({ alg: ALGORITHM, kid: signing.kid, typ: \"camelfs+jwt\" }, {\n      ...claims, refs: claims.refs ?? [], iss: this.issuer, aud: \"camelrun:camelfs\", iat, exp: iat + 300, jti: randomUUID(),\n    }, signing.key);\n  }\n\n  /** A file URL's token (file-arguments.ts),"
     ]
   ],
   "admin/admin-usage.ts": [

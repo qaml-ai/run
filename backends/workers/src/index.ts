@@ -1,3 +1,6 @@
+import { handleCamelfsNotify, type NotifyEnv } from "./camelfs/notify.ts";
+import { handleCamelfsSmoke } from "./camelfs/smoke.ts";
+import { tierConfigured } from "./camelfs/tier.ts";
 import { storedConfiguration } from "./api-contract.ts";
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { vaultRoutes } from "./vault.ts";
@@ -58,7 +61,7 @@ import {
   resumeWebhookDeliveries,
   type DeliveryMessage,
 } from "./webhooks.ts";
-import { handleRepoRequest } from "./repos/routes.ts";
+import { handleRepoRequest, repoTransportFailure } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { handleFileRequest, retiredVolumes } from "./files.ts";
@@ -193,6 +196,8 @@ function shareInput<T>(schema: { safeParse(value: unknown): { success: true; dat
 }
 
 function httpFailure(error: unknown, env: Env): Response {
+  const transport = repoTransportFailure(error);
+  if (transport) return transport;
   const limited = admissionError(error);
   if (limited) return limited;
   // The shared core's errors (src/core/http-error.ts: decision questions, channels) answer as this backend's own do.
@@ -212,6 +217,11 @@ const worker = {
     // attestation for a credential bound to the host id it proves, then dials out with it (its socket's first message).
     const hosts = env as unknown as JobHostsEnv;
     const hostPath = new URL(request.url).pathname;
+    if (hostPath === "/v1/internal/camelfs/notify") {
+      try { return await handleCamelfsNotify(request, env as unknown as NotifyEnv); }
+      catch (error) { return httpFailure(error, env); }
+    }
+    if (hostPath === "/v1/internal/camelfs/smoke" && !tierConfigured(env as RepoEnv)) return new Response(null, { status: 404 });
     const retired = retiredVolumes(hostPath);
     if (retired) return publicPageHeaders(request, corsResponse(request, retired));
     if (hosts.JOB_HOST_ATTESTORS && hosts.JOB_HOSTS && hosts.JOB_HOST_REGISTRY && hostPath.startsWith("/v1/internal/job-hosts/")) {
@@ -394,6 +404,7 @@ const worker = {
           const workflow = await workflowTestRoute(request, env as unknown as WorkflowEnv, path, auth.tenantId);
           if (workflow) return workflow;
         }
+        if (path === "/v1/internal/camelfs/smoke") return handleCamelfsSmoke(request, env as RepoEnv, auth);
         const workflows = await workflowRoutes(request, env as unknown as WorkflowEnv & { AGENT_WORKFLOW_TENANTS?: string }, auth.tenantId);
         if (workflows) return workflows;
         const jobHosts = await jobHostRoutes(request, env as unknown as JobHostsEnv & { ADMIN_TENANTS?: string }, auth);
