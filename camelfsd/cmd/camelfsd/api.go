@@ -96,7 +96,7 @@ func apiRole(args []string) error {
 		handler.ConfigureRefs(client, computeFlags.refs, *lineagesTable, nil, *marksTable)
 	}
 	if computeAPI != nil {
-		handler.EnableCompute(computeAPI.loop.C, computeAPI.images, computeAPI.pools, computeAPI.idle, computeFlags.heartbeat)
+		handler.EnableCompute(&computeAPI.loop, computeAPI.images, computeAPI.pools, computeAPI.idle, computeFlags.heartbeat)
 		// Hosts move a session's ref after a checkpoint through the same fenced CAS as the runtime's cas route.
 		computeAPI.hostServer.EnableCAS(handler.HostCAS)
 	}

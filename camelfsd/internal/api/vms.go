@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 
 type vmAPI struct {
 	controller *compute.Controller
+	loop       *compute.Loop
 	storage    *StorageServer
 	host       HostPusher
 	images     []string
@@ -35,8 +37,9 @@ type vmAPI struct {
 	imageBytes map[string]int64
 }
 
-func (s *StorageServer) EnableCompute(c *compute.Controller, images, pools []string, idle map[string]int64, heartbeat time.Duration) {
-	v := &vmAPI{controller: c, storage: s, images: images, pools: pools, idle: idle, heartbeat: heartbeat,
+func (s *StorageServer) EnableCompute(loop *compute.Loop, images, pools []string, idle map[string]int64, heartbeat time.Duration) {
+	c := loop.C
+	v := &vmAPI{controller: c, loop: loop, storage: s, images: images, pools: pools, idle: idle, heartbeat: heartbeat,
 		imageBytes: make(map[string]int64)}
 	// The production controller already carries the pusher with the tier's rotating TLS credentials.
 	v.host, _ = c.Pusher.(HostPusher)
@@ -51,6 +54,7 @@ func (s *StorageServer) EnableCompute(c *compute.Controller, images, pools []str
 	mux.HandleFunc("POST /v1/vms/{id}/checkpoint", v.handle(v.checkpoint))
 	mux.HandleFunc("GET /v1/usage", v.handle(v.usage))
 	s.compute = mux
+	s.vmAPI = v
 }
 
 var vmForbidden = &storageError{403, "forbidden", nil}
@@ -174,7 +178,7 @@ func (v *vmAPI) create(w http.ResponseWriter, r *http.Request, claims auth.Claim
 	case q.Shape.MemoryMiB <= 0:
 		return invalid("shape.memoryMiB: must be positive")
 	}
-	vm, err := v.controller.Create(r.Context(), compute.CreateRequest{
+	vm, err := v.loop.Create(r.Context(), compute.CreateRequest{
 		ID: q.ID, Lineage: q.Lineage, Ref: q.Ref, Version: q.Version,
 		Image: q.Image, Pool: q.Pool, Payer: q.Usage.Payer, Internet: q.Network.Internet,
 		Shape:   compute.Shape{VCPUs: q.Shape.VCPUs, MemoryMiB: q.Shape.MemoryMiB, DiskGiB: q.Shape.DiskGiB},
@@ -260,6 +264,9 @@ func vmStatus(vm compute.VM) map[string]any {
 	}
 	if vm.Code != "" {
 		body["code"] = vm.Code
+	}
+	if vm.Reason != "" {
+		body["reason"] = vm.Reason
 	}
 	if vm.LastCheckpoint != nil {
 		body["lastCheckpoint"] = vm.LastCheckpoint
@@ -359,4 +366,13 @@ func (v *vmAPI) usage(w http.ResponseWriter, r *http.Request, claims auth.Claims
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out.Bytes())
 	return nil
+}
+
+// The VM table only has its ID key. Pool waiters can be looked up without a scan;
+// once placed, a VM is no longer a waiter and startup checks the ref itself.
+func (s *StorageServer) endDeletedWaiters(ctx context.Context, lineage, ref, reason string) {
+	if s.vmAPI == nil {
+		return
+	}
+	s.vmAPI.controller.EndDeletedWaiters(ctx, s.vmAPI.pools, lineage, ref, reason)
 }

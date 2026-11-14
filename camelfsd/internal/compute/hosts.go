@@ -32,11 +32,67 @@ func (c *Controller) hostCutoff(now int64) int64 {
 	return now - hostFreshMS
 }
 
+func fitsCapacity(capacity, shape Shape) bool {
+	return capacity.VCPUs >= shape.VCPUs && capacity.MemoryMiB >= shape.MemoryMiB && capacity.diskMiB() >= shape.diskMiB()
+}
+
+func liveHost(h Host, cutoff int64) bool {
+	return h.LastSeenAt > cutoff && !h.Lost
+}
+
+// The closest host is selected by memory, then vCPUs and disk for capacity, or by
+// slots and then memory for free capacity. Equal hosts are ordered by ID.
+func placementCapacity(hosts []Host, shape Shape, cutoff int64) (fits bool, live int, largest, freest *Host) {
+	for i := range hosts {
+		h := &hosts[i]
+		if !liveHost(*h, cutoff) {
+			continue
+		}
+		live++
+		if h.Draining || h.Restarting {
+			continue
+		}
+		if largest == nil || compareCapacity(*h, *largest) < 0 {
+			largest = h
+		}
+		if fitsCapacity(h.Shape, shape) {
+			fits = true
+			if freest == nil || compareFree(*h, *freest) < 0 {
+				freest = h
+			}
+		}
+	}
+	return
+}
+
+func compareCapacity(a, b Host) int {
+	if a.Shape.MemoryMiB != b.Shape.MemoryMiB {
+		return b.Shape.MemoryMiB - a.Shape.MemoryMiB
+	}
+	if a.Shape.VCPUs != b.Shape.VCPUs {
+		return b.Shape.VCPUs - a.Shape.VCPUs
+	}
+	if a.Shape.diskMiB() != b.Shape.diskMiB() {
+		return b.Shape.diskMiB() - a.Shape.diskMiB()
+	}
+	return strings.Compare(a.Host, b.Host)
+}
+
+func compareFree(a, b Host) int {
+	if a.Free != b.Free {
+		return b.Free - a.Free
+	}
+	if a.FreeMiB != b.FreeMiB {
+		return b.FreeMiB - a.FreeMiB
+	}
+	return strings.Compare(a.Host, b.Host)
+}
+
 func rankImage(hosts []Host, shape Shape, cutoff int64, image string) []Host {
 	var candidates []Host
 	for _, h := range hosts {
-		if h.Free > 0 && !h.Draining && h.LastSeenAt > cutoff &&
-			h.Shape.VCPUs >= shape.VCPUs && h.FreeMiB >= shape.MemoryMiB && h.Shape.diskMiB() >= shape.diskMiB() {
+		if h.Free > 0 && !h.Draining && !h.Restarting && liveHost(h, cutoff) &&
+			fitsCapacity(h.Shape, shape) && h.FreeMiB >= shape.MemoryMiB {
 			candidates = append(candidates, h)
 		}
 	}
@@ -48,13 +104,7 @@ func rankImage(hosts []Host, shape Shape, cutoff int64, image string) []Host {
 			}
 			return 1
 		}
-		if a.Free != b.Free {
-			return b.Free - a.Free
-		}
-		if a.FreeMiB != b.FreeMiB {
-			return b.FreeMiB - a.FreeMiB
-		}
-		return strings.Compare(a.Host, b.Host)
+		return compareFree(a, b)
 	})
 	return candidates
 }
@@ -102,16 +152,34 @@ func (c *Controller) Register(ctx context.Context, h HostInfo) (int64, error) {
 	if current.BootID == h.BootID && !current.Restarting {
 		if !i.flag("lost") {
 			replacement := hostItem(h, current.BootEpoch, now)
-			expr := "SET #addr = :addr"
-			values := attrs{":addr": replacement["addr"], ":epoch": n(current.BootEpoch)}
+			dSlots, dMiB := h.Slots-current.Slots, h.Shape.MemoryMiB-current.MemoryMiB
+			expr := "SET #addr = :addr, #shape = :shape, #slots = :slots, #memoryMiB = :memoryMiB"
+			values := attrs{":addr": replacement["addr"], ":shape": replacement["shape"], ":slots": replacement["slots"],
+				":memoryMiB": replacement["memoryMiB"], ":epoch": n(current.BootEpoch),
+				":oldSlots": n(int64(current.Slots)), ":oldMiB": n(int64(current.MemoryMiB)),
+				":dSlots": n(int64(dSlots)), ":dMiB": n(int64(dMiB)),
+				":minSlots": n(int64(max(0, -dSlots))), ":minMiB": n(int64(max(0, -dMiB)))}
 			if images := replacement["images"]; images != nil {
 				expr += ", #images = :images"
 				values[":images"] = images
 			} else {
 				expr += " REMOVE #images"
 			}
+			expr += " ADD #free :dSlots, #freeMiB :dMiB"
 			_, err := c.update(ctx, change(c.Tables.Hosts, key,
-				"#bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost)", expr, values))
+				"#bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost)"+
+					" AND #slots = :oldSlots AND #memoryMiB = :oldMiB AND #free >= :minSlots AND #freeMiB >= :minMiB", expr, values))
+			if errors.Is(err, ErrCondition) {
+				latest, readErr := c.Host(ctx, h.Pool, h.Host)
+				if readErr != nil {
+					return 0, readErr
+				}
+				if latest.BootEpoch == current.BootEpoch && !latest.Restarting && !latest.Lost &&
+					(latest.Free+h.Slots-latest.Slots < 0 || latest.FreeMiB+h.Shape.MemoryMiB-latest.MemoryMiB < 0) {
+					c.log("host_register_capacity_in_use", map[string]any{"host": h.Host, "pool": h.Pool, "reason": "capacity_in_use"})
+					return current.BootEpoch, ErrCapacityInUse
+				}
+			}
 			return current.BootEpoch, err
 		}
 		epoch := current.BootEpoch + 1
@@ -166,8 +234,8 @@ func (c *Controller) heartbeat(ctx context.Context, pool, host string, bootEpoch
 	// The report can predate a placement. The durable reservations bound
 	// capacity even when the host has yet to receive those placements.
 	free = max(0, min(free, h.Slots-len(h.VMs)))
-	cond := "#bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost) AND #lastSeenAt < :at"
-	values := attrs{":epoch": n(bootEpoch), ":at": n(at.UnixMilli()), ":free": n(int64(free))}
+	cond := "#bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost) AND #lastSeenAt < :at AND #slots = :slots"
+	values := attrs{":epoch": n(bootEpoch), ":at": n(at.UnixMilli()), ":free": n(int64(free)), ":slots": n(int64(h.Slots))}
 	if len(h.VMs) == 0 {
 		cond += " AND attribute_not_exists(#vms)"
 	} else {

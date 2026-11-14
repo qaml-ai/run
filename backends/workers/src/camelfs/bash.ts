@@ -46,6 +46,12 @@ const isTier = (error: unknown, status: number, code: string) => error instanceo
 const vmStopped = (error: unknown) => isTier(error, 409, "not_running") || isTier(error, 409, "ended") || isTier(error, 409, "lease_expired");
 const computeBusy = "compute is busy, retry shortly";
 
+const unplacedMessage = {
+  no_host_fits: "No machine large enough for this agent is available, so the command did not run. Retrying will not help right now; tell the user that bash is unavailable.",
+  waiting: "No machine is free for this agent right now, so the command did not run. It is still queued; try again in a minute.",
+};
+class BashVmUnplaced extends Error {}
+
 type Branch = { branch: string; lineage: string; ref: string };
 type Vm = Branch & { vm_id: string; shell: string | null; state: "creating" | "running" | "stopped"; deadline: number; created_at: number };
 type Boot = ReturnType<typeof bootSpec> & { id: string; lineage: string; ref: string; deadline: number };
@@ -64,7 +70,7 @@ type SessionResult = BashResult & { checkpointWarning?: string };
 type Receipt = { intent?: Intent; result?: SessionResult; checkpoint?: Checkpoint };
 type Args = { command: string; cwd?: string; timeoutSeconds?: number };
 type Head = { version: string; tree: string };
-type Status = { phase: string; code?: string; lastCheckpoint?: Head };
+type Status = { phase: string; code?: string; reason?: string; lastCheckpoint?: Head };
 
 function claims(vm: Branch): TierClaims {
   return { sub: "runtime:bash", lin: vm.lineage, acc: "w", refs: [vm.ref] };
@@ -236,7 +242,12 @@ export class BashSessions {
       });
     }
 
-    const until = Date.now() + 60_000;
+    const started = Date.now();
+    const until = started + 60_000;
+    const unplaced = (reason: keyof typeof unplacedMessage) => {
+      console.log(JSON.stringify({ type: "bash_vm_unplaced", vm: body.id, pool: body.pool, shape: body.shape, reason, waitedMs: Date.now() - started }));
+      return new BashVmUnplaced(unplacedMessage[reason]);
+    };
     try {
       await tierRequest(this.env, { method: "POST", path: "/v1/vms", claims: claims(vm), body, idempotencyKey: vm.vm_id });
     } catch (error) {
@@ -245,15 +256,28 @@ export class BashSessions {
     }
     // MONEY: make sure pulled usage starts even if this VM ends before an exec can attach.
     await startUsagePoller(this.env);
+    let lastStatus: Status | undefined;
     for (let delay = 100; ; delay = Math.min(2_000, delay * 2)) {
-      const status = await this.request<Status>(vm, "GET", "", undefined, Math.max(1, until - Date.now()));
+      let status: Status;
+      try {
+        status = await this.request<Status>(vm, "GET", "", undefined, Math.max(1, until - Date.now()));
+      } catch (error) {
+        if (lastStatus?.phase === "requested" && Date.now() >= until) throw unplaced("waiting");
+        throw error;
+      }
+      lastStatus = status;
       if (status.phase === "ended" || this.row(vm.branch)?.state === "stopped") {
         this.stop(vm.vm_id);
+        if (status.phase === "ended" && status.reason === "no_host_fits") throw unplaced("no_host_fits");
         throw new Error(`Bash VM ended during startup (${status.code ?? "stopped"})`);
       }
       if (status.phase === "running") break;
-      if (Date.now() >= until) throw new Error("Bash VM did not start within 60 seconds");
-      await sleep(Math.min(delay, until - Date.now()));
+      const remaining = until - Date.now();
+      if (remaining <= 0) {
+        if (status.phase === "requested") throw unplaced("waiting");
+        throw new Error("Bash VM did not start within 60 seconds");
+      }
+      await sleep(Math.min(delay, remaining));
     }
     let shell: string;
     try {
@@ -534,6 +558,7 @@ export function bashTool(runtime: AgentRuntime) {
         try {
           result = await runtime.bashSessions.execute(conf, { branch: JSON.stringify([lineage, ref]), lineage, ref }, key, api.callId, run.id, args);
         } catch (error) {
+          if (error instanceof BashVmUnplaced) return { output: [{ type: "text", text: error.message }], isError: true };
           if (error instanceof TierError && error.status === 429) throw new HttpError(429, computeBusy);
           throw error;
         }

@@ -87,22 +87,27 @@ func (c *Controller) Place(ctx context.Context, id string) (VM, error) {
 }
 
 func (c *Controller) place(ctx context.Context, v VM, now int64) (VM, error) {
-	id := v.ID
 	hosts, err := c.Hosts(ctx, v.Pool)
 	if err != nil {
 		return VM{}, err
 	}
+	return c.placeOnHosts(ctx, v, now, hosts)
+}
+
+func (c *Controller) placeOnHosts(ctx context.Context, v VM, now int64, hosts []Host) (VM, error) {
+	id := v.ID
 	for _, h := range rankImage(hosts, v.Shape, c.hostCutoff(now), v.Image) {
 		vm := change(c.Tables.VMs, vmKey(id), "#phase = :requested AND #leaseDeadline > :now",
 			"SET #phase = :placed, #host = :host, #hostEpoch = :epoch, #placedAt = :now",
 			attrs{":requested": s(string(Requested)), ":placed": s(string(Placed)), ":host": s(h.Host),
 				":epoch": n(h.BootEpoch), ":now": n(now)})
 		host := change(c.Tables.Hosts, hostKey(h.Pool, h.Host),
-			"#free > :zero AND #freeMiB >= :mem AND #bootEpoch = :epoch AND #draining = :false AND #lastSeenAt > :cutoff",
+			"#free > :zero AND #freeMiB >= :mem AND #bootEpoch = :epoch AND #draining = :false AND #lastSeenAt > :cutoff"+
+				" AND #shape = :shape",
 			"SET #free = #free - :one, #freeMiB = #freeMiB - :mem ADD #vms :vm",
 			attrs{":zero": n(0), ":epoch": n(h.BootEpoch), ":false": b(false), ":cutoff": n(c.hostCutoff(now)),
-				":one": n(1), ":mem": n(int64(v.Shape.MemoryMiB)), ":vm": ss(id)})
-		err = c.transact(ctx, types.TransactWriteItem{Update: vm}, types.TransactWriteItem{Update: host}, c.deleteWaiter(v))
+				":one": n(1), ":mem": n(int64(v.Shape.MemoryMiB)), ":vm": ss(id), ":shape": shapeItem(h.Shape)})
+		err := c.transact(ctx, types.TransactWriteItem{Update: vm}, types.TransactWriteItem{Update: host}, c.deleteWaiter(v))
 		if err == nil {
 			return c.Get(ctx, id)
 		}
@@ -143,9 +148,9 @@ func (c *Controller) markBooting(ctx context.Context, v VM) (VM, error) {
 			var refErr *refstore.Error
 			switch {
 			case errors.As(err, &refErr) && refErr.Code == "held":
-				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, CheckpointError: "ref is leased by another holder"}, c.now(), nil)
-			case errors.As(err, &refErr) && refErr.Code == "no_ref", errors.Is(err, os.ErrNotExist), errors.Is(err, ErrInvalid):
-				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, CheckpointError: "mount version or ref unavailable"}, c.now(), nil)
+				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, Reason: "ref_held", refErr: err, CheckpointError: "ref is leased by another holder"}, c.now(), nil)
+			case errors.As(err, &refErr) && (refErr.Code == "no_ref" || refErr.Code == "lineage_blocked"), errors.Is(err, os.ErrNotExist), errors.Is(err, ErrInvalid):
+				return c.end(ctx, v, EndRequest{At: c.now(), Code: StartFailed, Reason: "ref_unavailable", refErr: err, CheckpointError: "mount version or ref unavailable"}, c.now(), nil)
 			default:
 				return VM{}, err
 			}
@@ -336,7 +341,7 @@ func (c *Controller) ExpireWaiting(ctx context.Context, id string, waitMs int64)
 	if err != nil || v.Phase != Requested || now.UnixMilli()-v.CreatedAt <= waitMs {
 		return v, err
 	}
-	return c.end(ctx, v, EndRequest{At: now, Code: StartFailed}, now, nil)
+	return c.end(ctx, v, EndRequest{At: now, Code: StartFailed, Reason: "no_capacity"}, now, nil)
 }
 
 type stopIntent struct {
@@ -443,16 +448,19 @@ func (c *Controller) execActivity(ctx context.Context, id, execID string, at tim
 			continue
 		}
 		if err == nil && first {
-			c.firstExecLog(map[string]any{
-				"vm": id, "exec": execID, "createdAt": v.CreatedAt, "placedAt": v.PlacedAt,
-				"bootingAt": v.BootingAt, "runningAt": v.StartedAt, "latencyMs": max(0, at.UnixMilli()-v.CreatedAt),
-			})
+			c.firstExecLog(v, execID, at.UnixMilli())
 		}
 		return err == nil, err
 	}
 }
 
-func (c *Controller) firstExecLog(fields map[string]any) {
+func (c *Controller) firstExecLog(v VM, execID string, now int64) {
+	fields := map[string]any{"vm": v.ID, "exec": execID, "createdAt": v.CreatedAt, "latencyMs": max(0, now-v.CreatedAt)}
+	for key, value := range map[string]*int64{"placedAt": v.PlacedAt, "bootingAt": v.BootingAt, "runningAt": v.StartedAt} {
+		if value != nil {
+			fields[key] = *value
+		}
+	}
 	const event = "vm_first_exec"
 	if c.Log != nil {
 		c.Log(event, fields)

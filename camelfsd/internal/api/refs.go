@@ -262,6 +262,9 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 		if err != nil {
 			return err
 		}
+		for _, name := range deleted {
+			s.endDeletedWaiters(ctx, l, name, "ref_deleted")
+		}
 		jsonReply(w, 200, map[string][]string{"deleted": append([]string{}, deleted...), "held": append([]string{}, held...)})
 	case "delete":
 		var expect *string
@@ -275,6 +278,7 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 		if err := s.refs.Delete(ctx, l, name, expect); err != nil {
 			return err
 		}
+		s.endDeletedWaiters(ctx, l, name, "ref_deleted")
 		w.WriteHeader(204)
 	case "watch":
 		if !refstore.ValidOwner(q.watcher) {

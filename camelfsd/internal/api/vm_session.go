@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
@@ -267,7 +268,11 @@ func streamHostEvents(w http.ResponseWriter, r *http.Request, resp *http.Respons
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(resp.StatusCode)
-	copyHostEvents(resp.Body, func(frame []byte) {
+	// Frames and keepalives write whole, one at a time: a comment never lands inside a host frame.
+	var mu sync.Mutex
+	write := func(frame []byte) {
+		mu.Lock()
+		defer mu.Unlock()
 		if r.Context().Err() != nil || w == nil {
 			return
 		}
@@ -276,9 +281,36 @@ func streamHostEvents(w http.ResponseWriter, r *http.Request, resp *http.Respons
 		} else if err := control.Flush(); err != nil {
 			w = nil
 		}
-	}, onExit)
+	}
+	// A command can print nothing for minutes. The public load balancer drops a connection idle for 60 s, so a
+	// comment frame (ignored by SSE readers) keeps the stream open while the command runs.
+	stop := make(chan struct{})
+	var keeping sync.WaitGroup
+	keeping.Add(1)
+	// The writer is the handler's: no keepalive may write after this returns.
+	defer keeping.Wait()
+	defer close(stop)
+	go func() {
+		defer keeping.Done()
+		tick := time.NewTicker(execKeepalive)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-r.Context().Done():
+				return
+			case <-tick.C:
+				write([]byte(": keepalive\n\n"))
+			}
+		}
+	}()
+	copyHostEvents(resp.Body, write, onExit)
 	return nil
 }
+
+// execKeepalive is how often a quiet exec stream gets a comment frame: well under the public ALB's 60 s idle timeout.
+var execKeepalive = 20 * time.Second
 
 func supportsFlush(w http.ResponseWriter) bool {
 	for {
