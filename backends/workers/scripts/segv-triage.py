@@ -40,7 +40,8 @@ try:
     siginfo = gdb.parse_and_eval("$_siginfo")
     si_code = int(siginfo["si_code"])
     si_pid = int(siginfo["_sifields"]["_kill"]["si_pid"])
-    reraised = any(name in frame0 for name in ("raise", "pthread_kill", "tgkill", "abort"))
+    # A signal the process sent itself from code (raise, kill, pthread_kill, tgkill, abort) stops in that call.
+    reraised = any(name in frame0 for name in ("raise", "kill", "abort"))
     startup = has_startup_frame(frame)
     if si_code > 0 or reraised:
         classification = "fault"
