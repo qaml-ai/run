@@ -112,6 +112,10 @@ func readVM(i item) VM {
 	if session := i.object("session"); session != nil {
 		req.Session = &Session{IdleStopS: session.number("idleStopS")}
 	}
+	var checkpoint *Checkpoint
+	if saved := i.object("lastCheckpoint"); saved != nil {
+		checkpoint = &Checkpoint{Version: saved.text("version"), Tree: saved.text("tree"), At: saved.number("at")}
+	}
 	return VM{
 		CreateRequest: req, Phase: Phase(i.text("phase")), CreatedAt: i.number("createdAt"), LeaseDeadline: deadline,
 		Host: i.text("host"), HostEpoch: i.number("hostEpoch"), PlacedAt: i.timestamp("placedAt"),
@@ -120,7 +124,7 @@ func readVM(i item) VM {
 		StopCheckpoint: i.flag("stopCheckpoint"), StopReason: EndCode(i.text("stopReason")), Code: EndCode(i.text("code")),
 		ResultRef: i.text("resultRef"), EndVersion: i.text("endVersion"),
 		CheckpointError: i.text("checkpointError"), ResultSha256: i.text("resultSha256"), ResultBytes: i.number("resultBytes"),
-		FirstExecAt: i.timestamp("firstExecAt"), execs: i.set("execs"), seenExecs: i.set("seenExecs"),
+		FirstExecAt: i.timestamp("firstExecAt"), execs: i.set("execs"), LastCheckpoint: checkpoint,
 		RequestedVersion: i.text("requestedVersion"), RequestedDeadline: i.number("requestedDeadline"),
 		Tree: i.text("tree"), RefLeaseHolder: i.text("refLeaseHolder"), RefLeaseEpoch: i.number("refLeaseEpoch"),
 		RefLeaseDeadline: i.number("refLeaseDeadline"), RefLeaseReleased: i.flag("refLeaseReleased"), BilledTo: i.number("billedTo"), UsageSeq: i.number("usageSeq"),

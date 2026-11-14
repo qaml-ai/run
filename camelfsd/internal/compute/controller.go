@@ -371,7 +371,7 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 	}
 }
 
-// ExecStarted records an exec once, including after a replay of its end.
+// ExecStarted tracks an exec until its exit arrives, including on reattachment.
 func (c *Controller) ExecStarted(ctx context.Context, id, execID string, at time.Time) error {
 	return c.execActivity(ctx, id, execID, at, true)
 }
@@ -398,14 +398,20 @@ func (c *Controller) execActivity(ctx context.Context, id, execID string, at tim
 		cond := "#phase = :running"
 		values := attrs{":running": s(string(Running)), ":id": s(execID), ":set": ss(execID)}
 		expr := "DELETE #execs :set"
+		inFlight := slices.Contains(v.execs, execID)
+		if start == inFlight {
+			return nil
+		}
 		if start {
-			cond += " AND NOT contains(#seenExecs, :id)"
-			expr = "ADD #execs :set, #seenExecs :set"
+			if len(v.execs) >= maxExecsInFlight {
+				return ErrTooManyExecs
+			}
+			// Fence concurrent starts even if they have the same activity timestamp.
+			cond += " AND (attribute_not_exists(#execs) OR (size(#execs) < :max AND NOT contains(#execs, :id)))"
+			values[":max"] = n(maxExecsInFlight)
+			expr = "ADD #execs :set"
 		} else {
 			cond += " AND contains(#execs, :id)"
-		}
-		if (start && slices.Contains(v.seenExecs, execID)) || (!start && !slices.Contains(v.execs, execID)) {
-			return nil
 		}
 		activity := at.UnixMilli()
 		if v.LastActivityAt == nil {
@@ -423,7 +429,7 @@ func (c *Controller) execActivity(ctx context.Context, id, execID string, at tim
 			set = "SET #lastActivityAt = :at, #firstExecAt = :first "
 			values[":first"] = n(at.UnixMilli())
 		}
-		_, err = c.updateVM(ctx, id, cond, set+expr, values)
+		_, err = c.updateVM(ctx, id, cond, set+"REMOVE #seenExecs "+expr, values)
 		if errors.Is(err, ErrCondition) {
 			continue
 		}

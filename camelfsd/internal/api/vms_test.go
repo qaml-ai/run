@@ -88,7 +88,10 @@ func TestUnitVMValidation(t *testing.T) {
 		{name: "mode", old: `{"id"`, replacement: `{"mode":"job","id"`, message: "unknown field mode", status: 400},
 		{name: "job", old: `{"id"`, replacement: `{"job":{},"id"`, message: "unknown field job", status: 400},
 		{name: "id", old: `"vm"`, replacement: `"a/b"`, message: "id:", status: 400},
-		{name: "idle", old: `{"id"`, replacement: `{"session":{"idleStopS":4},"id"`, message: "session.idleStopS", status: 400},
+		{name: "old session field", old: `{"id"`, replacement: `{"session":{"idleStopS":4},"id"`, message: "unknown field session", status: 400},
+		{name: "idle zero", old: `{"id"`, replacement: `{"idleStopS":0,"id"`, message: "idleStopS", status: 400},
+		{name: "idle null", old: `{"id"`, replacement: `{"idleStopS":null,"id"`, message: "idleStopS", status: 400},
+		{name: "idle too long", old: `{"id"`, replacement: `{"idleStopS":3601,"id"`, message: "idleStopS", status: 400},
 		{name: "payer", old: `"payer":"p"`, replacement: `"payer":""`, message: "usage.payer", status: 400},
 		{name: "subject", header: "X-Subject", value: "agent:a", message: "forbidden", status: 403},
 		{name: "lineage", header: "X-Lineage", value: "elsewhere", message: "forbidden", status: 403},
@@ -114,6 +117,27 @@ func TestUnitVMValidation(t *testing.T) {
 	s.ServeHTTP(w, vmRequest("GET", "/v1/usage", ""))
 	if w.Code != 403 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestUnitVMStatus(t *testing.T) {
+	start, end := int64(30), int64(40)
+	vm := compute.VM{
+		CreateRequest: compute.CreateRequest{ID: "vm", Ref: "main", Version: "mounted", Session: &compute.Session{IdleStopS: 10}},
+		Phase:         compute.Ended, Host: "host", RefLeaseEpoch: 9, RefLeaseDeadline: 50, LeaseDeadline: 60,
+		Code: compute.Idle, StartedAt: &start, EndedAt: &end, StopRequestedAt: &end, LastActivityAt: &start,
+		LastCheckpoint: &compute.Checkpoint{Version: "saved", Tree: "tree", At: 35},
+	}
+	body, err := json.Marshal(vmStatus(vm))
+	want := `{"code":"idle","endedAt":40,"host":"host","id":"vm","lastCheckpoint":{"version":"saved","tree":"tree","at":35},"lease":{"deadline":50,"epoch":9},"phase":"ended","ref":"main","startedAt":30,"version":"mounted"}`
+	if err != nil || string(body) != want {
+		t.Fatalf("VM status: %s, %v", body, err)
+	}
+	vm = compute.VM{Phase: compute.Requested}
+	body, err = json.Marshal(vmStatus(vm))
+	want = `{"host":"","id":"","lease":{"deadline":0,"epoch":0},"phase":"requested","ref":"","version":""}`
+	if err != nil || string(body) != want {
+		t.Fatalf("VM status: %s, %v", body, err)
 	}
 }
 
@@ -145,14 +169,21 @@ func TestDDBVMClientAPI(t *testing.T) {
 	call("POST", "/v1/vms", body, "", 202, `"phase":"requested"`)
 	call("POST", "/v1/vms", body, "", 202, `"phase":"requested"`)
 	call("POST", "/v1/vms", strings.Replace(body, `"payer":"p"`, `"payer":"x"`, 1), "", 409, "conflict")
-	call("GET", "/v1/vms/vm", "", "", 200, `"idleStopS":42`)
+	checkIdle := func(id string, want int64) {
+		t.Helper()
+		vm, err := c.Get(ctx, id)
+		if err != nil || vm.Session == nil || vm.Session.IdleStopS != want {
+			t.Fatalf("idle stop for %s: %+v, %v, want %d", id, vm.Session, err, want)
+		}
+	}
+	checkIdle("vm", 42)
 	call("GET", "/v1/vms/missing", "", "", 404, "not_found")
 	other := strings.Replace(strings.Replace(body, `"vm"`, `"extra"`, 1), `"build"`, `"other"`, 1)
 	call("POST", "/v1/vms", other, "", 202, "requested")
-	call("GET", "/v1/vms/extra", "", "", 200, fmt.Sprintf(`"idleStopS":%d`, compute.DefaultIdleStopS))
-	override := strings.Replace(strings.Replace(body, `"vm"`, `"override"`, 1), `{"id"`, `{"session":{"idleStopS":7},"id"`, 1)
+	checkIdle("extra", compute.DefaultIdleStopS)
+	override := strings.Replace(strings.Replace(body, `"vm"`, `"override"`, 1), `{"id"`, `{"idleStopS":1,"id"`, 1)
 	call("POST", "/v1/vms", override, "", 202, "requested")
-	call("GET", "/v1/vms/override", "", "", 200, `"idleStopS":7`)
+	checkIdle("override", 1)
 	epoch, err := c.Register(ctx, compute.HostInfo{Host: "host", Pool: "build", BootID: "boot", Slots: 1, Shape: compute.Shape{MemoryMiB: 4096, VCPUs: 2, DiskGiB: 10}})
 	if err != nil {
 		t.Fatal(err)

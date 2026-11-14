@@ -63,6 +63,8 @@ func (v *vmAPI) handle(fn func(http.ResponseWriter, *http.Request, auth.Claims) 
 			err = &storageError{404, "not_found", nil}
 		case errors.Is(err, compute.ErrConflict), errors.Is(err, compute.ErrCondition):
 			err = &storageError{409, "conflict", nil}
+		case errors.Is(err, compute.ErrTooManyExecs):
+			err = &storageError{429, "too_many_execs", nil}
 		case errors.Is(err, compute.ErrLeaseExpired):
 			jsonReply(w, 409, map[string]string{"error": "lease_expired"})
 			return
@@ -95,11 +97,9 @@ type vmCreate struct {
 		MemoryMiB int `json:"memoryMiB"`
 		DiskGiB   int `json:"diskGiB"`
 	} `json:"shape"`
-	Pool    string `json:"pool"`
-	Session struct {
-		IdleStopS *int64 `json:"idleStopS"`
-	} `json:"session"`
-	Network struct {
+	Pool      string          `json:"pool"`
+	IdleStopS json.RawMessage `json:"idleStopS"`
+	Network   struct {
 		Internet bool `json:"internet"`
 	} `json:"network"`
 	Usage struct {
@@ -140,12 +140,15 @@ func (v *vmAPI) create(w http.ResponseWriter, r *http.Request, claims auth.Claim
 	if idle == 0 {
 		idle = compute.DefaultIdleStopS
 	}
-	if q.Session.IdleStopS != nil {
-		idle = *q.Session.IdleStopS
+	if q.IdleStopS != nil {
+		idle = 0
+		if err := json.Unmarshal(q.IdleStopS, &idle); err != nil {
+			return invalid("idleStopS: must be an integer between 1 and 3600")
+		}
 	}
 	switch {
 	case !compute.ValidIdleStop(idle):
-		return invalid("session.idleStopS: must be between 5 and 86400")
+		return invalid("idleStopS: must be between 1 and 3600")
 	case !hostwire.MountID.MatchString(q.ID) || q.ID == "." || q.ID == "..":
 		return invalid("id: invalid mount id")
 	case !store.Lineage(q.Lineage):
@@ -231,14 +234,17 @@ func (v *vmAPI) get(w http.ResponseWriter, r *http.Request, claims auth.Claims) 
 	if err != nil {
 		return err
 	}
+	jsonReply(w, 200, vmStatus(vm))
+	return nil
+}
+
+func vmStatus(vm compute.VM) map[string]any {
 	body := map[string]any{
 		"id": vm.ID, "phase": vm.Phase, "host": vm.Host, "ref": vm.Ref, "version": vm.Version,
-		"lease":    map[string]int64{"epoch": vm.RefLeaseEpoch, "deadline": vm.RefLeaseDeadline},
-		"deadline": vm.LeaseDeadline,
+		"lease": map[string]int64{"epoch": vm.RefLeaseEpoch, "deadline": vm.RefLeaseDeadline},
 	}
 	for key, at := range map[string]*int64{
 		"startedAt": vm.StartedAt, "endedAt": vm.EndedAt,
-		"stopRequestedAt": vm.StopRequestedAt, "lastActivityAt": vm.LastActivityAt,
 	} {
 		if at != nil {
 			body[key] = *at
@@ -247,11 +253,10 @@ func (v *vmAPI) get(w http.ResponseWriter, r *http.Request, claims auth.Claims) 
 	if vm.Code != "" {
 		body["code"] = vm.Code
 	}
-	if vm.Session != nil {
-		body["idleStopS"] = vm.Session.IdleStopS
+	if vm.LastCheckpoint != nil {
+		body["lastCheckpoint"] = vm.LastCheckpoint
 	}
-	jsonReply(w, 200, body)
-	return nil
+	return body
 }
 
 func (v *vmAPI) stop(w http.ResponseWriter, r *http.Request, claims auth.Claims) error {
