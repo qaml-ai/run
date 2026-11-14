@@ -236,7 +236,12 @@ func TestRefsRoutes(t *testing.T) {
 	if got := call("POST", "/refs/main/lease", lease, "lease", 200, ""); !reflect.DeepEqual(got, taken) {
 		t.Fatal(got)
 	}
-	call("POST", "/refs/main/lease", lease, "", 409, "held")
+	// The same holder re-acquiring keeps its epoch (a lost reply is retried safely); another holder is refused.
+	again := call("POST", "/refs/main/lease", lease, "", 200, "")
+	if again["epoch"] != taken["epoch"] {
+		t.Fatal(again)
+	}
+	call("POST", "/refs/main/lease", map[string]any{"holder": map[string]any{"host": "other", "boot": 1, "mount": "mount"}, "ttlMs": 1000}, "", 409, "held")
 	leased := call("GET", "/refs/main", nil, "", 200, "")
 	if !reflect.DeepEqual(leased["holder"], map[string]any{"host": "host", "boot": float64(1), "mount": "mount"}) {
 		t.Fatal(leased)

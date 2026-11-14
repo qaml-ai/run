@@ -245,13 +245,18 @@ func TestAcquireRace(t *testing.T) {
 	if fence.Holder == "" {
 		t.Fatal("no lease winner")
 	}
-	_, err := s.Acquire(ctx, lineage, "main", fence.Holder, 2000)
+	same, err := s.Acquire(ctx, lineage, "main", fence.Holder, 2000)
+	must(t, err)
+	if same.Epoch != fence.Epoch || same.Deadline != now.UnixMilli()+2000 {
+		t.Fatalf("same-holder acquisition = %+v", same)
+	}
+	_, err = s.Acquire(ctx, lineage, "main", "other", 1000)
 	wantError(t, err, "held", 409)
-	*now = now.Add(time.Second)
+	*now = time.UnixMilli(same.Deadline)
 	next, err := s.Acquire(ctx, lineage, "main", "takeover", 1000)
 	must(t, err)
 	if next.Epoch != fence.Epoch+1 {
-		t.Fatalf("takeover = %+v after %+v", next, fence)
+		t.Fatalf("takeover = %+v after %+v", next, same)
 	}
 	_, err = s.Cas(ctx, lineage, "main", Move{Kind: "commit", Version: id(2), Tree: id(9), Parents: []string{base}, Fence: &fence})
 	wantError(t, err, "fenced", 409)
