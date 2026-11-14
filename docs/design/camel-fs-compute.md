@@ -69,14 +69,14 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
 
 | route | semantics |
 |---|---|
-| `POST /v1/vms` `{ id, lineage, ref, version?, mode: "job" \| "session", image, shape: { vcpus, memoryMiB, diskGiB }, pool, job?: { command, timeoutS, env, outputs, commit }, session?: { idleStopS }, network, usage: { payer }, deadline }` | idempotent by `id` (the runtime's job id or computer id). It takes the lease on `ref` (§9.9; `job/<id>` branches are created by the caller first), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/repo` or `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase. `deadline` is the credit lease of §4 |
-| `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied |
+| `POST /v1/vms` `{ id, lineage, ref, version?, mode: "job" \| "session", image, shape: { vcpus, memoryMiB, diskGiB }, pool, job?: { command, timeoutS, env, outputs, commit }, session?: { idleStopS }, network, usage: { payer }, deadline }` | idempotent by `id` (the runtime's job id or computer id). It takes the lease on `ref` (§9.9; `job/<id>` branches are created by the caller first; the tier takes it just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/repo` or `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase. `deadline` is the credit lease of §4 |
+| `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied. **A lapsed lease is final**: a call made at or after the current deadline (`now ≥ deadline`) answers `409 lease_expired` and never revives it (§4) |
 | `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, exit?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended`. Ended codes: `exit`, `stopped`, `timeout`, `host_lost`, `start_failed`, `lease_expired` (§4) (admission is the runtime's, before `POST /v1/vms`, so it is never an ended code) |
-| `GET /v1/vms/{id}/result` | the full result body (`acc: r` on the VM's lineage): `{ exit, timedOut, stdout, stderr, outputs, version?, checkpointError?, timings }`, capped as `WireResult` today (up to 1 MiB). The host sends the body (≤ 1 MiB) in its in-VPC `POST /v1/hosts/{host}/vms/{id}/ended`. The **tier** first PUTs it to the bucket at `<lineage>/results/<vm id>` (tagged `kind=result`, expired by a 7-day lifecycle rule on that tag; the runtime lands it within seconds of `vm.ended`, and a read after expiry is a loud `404`). Only then does it commit `ended`, the host's `free`/`vms`, the `vm.ended` delivery and the final `usage.vm` in one `TransactWriteItems`. Write-then-commit stays in one process, hosts get no S3 write on result paths, and a replayed `ended` overwrites the same key with the same bytes. The `vms` row and `vm.ended` never carry the body (DynamoDB's 400 KB item limit, L93) |
+| `GET /v1/vms/{id}/result` | the full result body (`acc: r` on the VM's lineage): `{ exit, timedOut, stdout, stderr, outputs, version?, checkpointError?, timings }`, up to ≈ 33 MiB (the guest's 8 + 8 + 8 MiB stream and output limits, plus base64). **The host writes it** (reversing #972, approved by the lead 2026-11-14): it PUTs the full result JSON to `results/<lineage>/<vm id>`, then reports in-VPC `ended { code, exit, timedOut, version?, checkpointError?, resultKey, resultSha256, resultBytes }`. The tier checks that `resultKey` is exactly `results/<the VM's lineage>/<the VM's id>`, HEADs the object and checks its size, then records the sha in the same `TransactWriteItems` that commits `ended`, the host's `free`/`vms`, the `vm.ended` delivery and the final `usage.vm`. This route streams the object and verifies `resultSha256` as it goes, with a loud `500` on a mismatch, never a silent body. A 7-day prefix lifecycle rule on `results/` expires them (no tags; fs-infra #1003), and a read after expiry is a loud `404`. The key is prefix-first so one rule covers every result; the tier's exact-key check keeps each result scoped to its VM's lineage. The `vms` row and `vm.ended` never carry the body (DynamoDB's 400 KB item limit, L93) |
 | `POST /v1/vms/{id}/exec` `{ command, shell?, timeoutS, env?, stdin? }` | runs a command. Output streams as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`); a client that drops the stream can re-read the tail with `GET …/exec/{execId}`. `shell` names a persistent shell from `POST /v1/vms/{id}/shells` (cwd, env and shell state survive between calls: the `bash` tool's semantics). A `job`-mode VM runs its `job.command` once by itself and refuses `exec` |
 | `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the in-VPC `cas` on the VM's ref under its lease (§9.7, §9.9). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved. This is the per-turn checkpoint of the `bash` VM |
 | `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. A `session` stops by itself after `idleStopS` with no `exec`, with a checkpoint first; memory-snapshot sleep (§1.5) is a later addition behind the same call |
-| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, exit, timedOut, resultRef, version?, checkpointError? }` (the body is read with `GET …/result`), `usage.vm` (§4). Delivered at least once as signed webhooks into outbox rows (camel-fs-files.md §9.11's pipeline) |
+| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, exit, timedOut, resultKey, resultSha256, resultBytes, version?, checkpointError? }` (the body is read with `GET …/result`), `usage.vm` (§4). Delivered at least once as signed webhooks into outbox rows (camel-fs-files.md §9.11's pipeline) |
 
 **Mapping:**
 - `job({ at, commit })` is `POST /v1/vms` in `job` mode, followed by `vm.ended`.
@@ -168,7 +168,7 @@ camel-fs records usage, and the runtime pulls it and bills. Money stays in Postg
 balance, a price or a credit. **Decided (Miguel, 2026-11-13 ~18:50): pull, not push** (camel-fs-files.md §9.13).
 Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the poller).
 
-- **`usage.vm`** is written for each VM per 60 s of host-reported run time, closed on the heartbeat that crosses
+- **`usage.vm`** is written for each VM per 60 s of host-reported run time (never past `stopRequestedAt`, below), closed on the heartbeat that crosses
   the boundary, plus a final event at `ended`: `{ ulid, eventId, vm, payer, pool, shape: { vcpus, memoryMiB }, host,
   from, to, seconds, final }`, with `eventId = <vm>:<seq>`.
   - Each is written into the `usage` table (key `shard` + `ulid`) in the same `TransactWriteItems` that advances
@@ -192,7 +192,17 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
     payer's credit lasts.
   - A VM whose deadline lapses is stopped by camel-fs with code `lease_expired`, as `stop { checkpoint: true }`
     does, so the work up to that point is kept.
+  - **Billing ends at the lease deadline, not when the stop finishes.** The lease is the credit the runtime has
+    held, so the checkpoint and teardown after the deadline are not billed. In K4b, `stopRequestedAt` is set to
+    `leaseDeadline`, which caps the final `usage.vm`'s `to`. The same rule applies to every requested stop: a user
+    or runtime `stop` ends billing at the stop request (`stopRequestedAt`), not at the VM's exit.
   - camel-fs knows only the time, never why it was not extended.
+  - **A lapsed lease is final** (wf-durable, K4b). An extension that arrives when `now ≥ deadline` answers
+    `lease_expired` and does not revive the lease, even if the VM has not stopped yet. Reviving it would bill the
+    lapsed gap retroactively, against credit the runtime did not hold during it. The runtime's renewer treats
+    `lease_expired` as "the VM is stopping" and lands it through `vm.ended` and the usage poll like any other end.
+    It extends well before the deadline (at a fraction of the lease), so a slow round trip does not lapse a VM that
+    still has credit.
 - **Money-path review:** this section is the design; the implementation's money hunks (the event schema, the poller's
   insert and cursor, the settlement, the deadline extension) go to the lead line by line before any of them merges.
 
