@@ -42,11 +42,6 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      {
-        // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-        "name": "VOLUMES",
-        "class_name": "Volume"
-      },
       { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
@@ -124,7 +119,9 @@
         "JobHostRegistry"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    // Pilot Volume data is test data and is not migrated.
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
   // stopped by its code through ctx.container. Under the durable_object policy

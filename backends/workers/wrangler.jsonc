@@ -27,10 +27,6 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      {
-        "name": "VOLUMES",
-        "class_name": "Volume"
-      },
       { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
@@ -78,7 +74,8 @@
         "WorkflowResults"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] }
   ],
   "hyperdrive": [
     {

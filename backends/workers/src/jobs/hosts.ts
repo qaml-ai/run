@@ -23,12 +23,9 @@ import { keyServices } from "../security-services.ts";
 import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
 import type { CamelfsEnv } from "../repos/storage.ts";
-import type { Volume } from "../volume.ts";
-import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
-import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
+import { jobLifetimeMs, jobSpec, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
 import { JOB_LEASE_MS, prepareRepo, openJobRepo, renewJobRepo, releaseJobRepo, finishJobRepo, type RepoDispatch } from "./repo.ts";
-import { HostSyncStore } from "./host-sync-store.ts";
 import { HOST_POOL_PRICES, HOST_POOLS, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
 /** The provider our hosts' time is recorded under (usage rows, receipts), with the job's shape as its model. */
@@ -43,12 +40,6 @@ const HOST_FORGET_MS = 24 * 3600_000;
 const PLACEMENT_GRACE_MS = 60_000;
 /** How long a job waits for a host of its pool (a cold pool's host boots in a few minutes), at most; JOB_HOST_WAIT_SECONDS. */
 export const HOST_WAIT_MS = 10 * 60_000;
-/**
- * Inline files and a volume's files cross to the host inline, up to this much (raw). They cross DO RPC as base64 first
- * (dispatch), which carries at most 32 MiB: 16 MiB raw is about 21 MiB there, with room for the rest of the job. A
- * larger tree waits for host-side sync.
- */
-export const HOST_SYNC_BYTES = 16 * 1024 * 1024;
 /** A socket that has not sent a valid credential by then is closed. */
 const AUTH_DEADLINE_MS = 10_000;
 /** How long a host's credential lasts; the host enrolls again before then, and its socket closes at the end. */
@@ -57,10 +48,7 @@ export const HOST_CREDENTIAL_MS = 60 * 60_000;
 const ATTESTATION_MEMORY_MS = 20 * 60_000;
 export const HOST_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
-export type JobHostsEnv = KeyEnv & WebhookEnv & Omit<VolumeSyncEnv, "VOLUMES" | "BUCKET"> & HostPriceEnv & CamelfsEnv & {
-  // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-  VOLUMES?: DurableObjectNamespace<Volume>;
-  BUCKET?: R2Bucket;
+export type JobHostsEnv = KeyEnv & WebhookEnv & HostPriceEnv & CamelfsEnv & {
   /** Which attestors enroll hosts: "aws" (needs JOB_HOST_ROLE_ARNS), "test" (needs TEST_MODE and JOB_HOST_TEST_SECRET). */
   JOB_HOST_ATTESTORS?: string;
   /**
@@ -76,8 +64,6 @@ export type JobHostsEnv = KeyEnv & WebhookEnv & Omit<VolumeSyncEnv, "VOLUMES" | 
   JOB_HOST_LOST_SECONDS?: string;
   /** The scaler's credential (infra/job-hosts/scaler): it reads demand and drains hosts, nothing else. */
   JOB_HOST_SCALER_TOKEN?: string;
-  /** Host-side sync fetches per client address (a Cloudflare rate limiting binding; generous). Unset, not limited. */
-  JOB_HOST_SYNC_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   /** Enrollments per client address (a Cloudflare rate limiting binding). The aws attestor refuses to run without it outside TEST_MODE. */
   JOB_HOST_ENROLL_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   AGENT_PUBLIC_URL?: string;
@@ -752,14 +738,14 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const shape = saved?.shape ?? hostShape(spec), pool = saved?.pool ?? hostPool(shape);
     let rate = saved?.rate ?? session?.rate ?? 0;
     let host = saved?.host;
-    let files: WireFile[] = [], sync: WireJob["sync"], camelfs: WireJob["camelfs"];
+    let files: WireFile[] = [], camelfs: WireJob["camelfs"];
     if (!saved) {
       try { rate = session?.rate ?? hostSecondRate(pool, shape, this.env); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Pricing is misconfigured"); }
       try { await measure("admitMs", () => meter.admit(spec.payer)); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
       if (waiting.stopped) return fail("stopped", "The job was stopped");
-      try { if (!spec.repo) ({ files, sync } = await measure("filesMs", () => this.files(spec))); }
+      try { if (!spec.repo) files = await measure("filesMs", () => this.files(spec)); }
       catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
       if (waiting.stopped) return fail("stopped", "The job was stopped");
       // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
@@ -784,9 +770,9 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       }
       if (waiting.stopped) return stopped(host, true);
     } else {
-      // Recovery may precede JobHost's first durable insert. Rebuild the same snapshot's wire spec in that case too.
+      // Recovery may precede JobHost's first durable insert. Rebuild the same inline files in that case too.
       // Admission, placement and the computer reservation are already held.
-      if (!spec.repo) ({ files, sync } = await measure("filesMs", () => this.files(spec)));
+      if (!spec.repo) files = await measure("filesMs", () => this.files(spec));
     }
     const placedHost = host!;
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
@@ -846,7 +832,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
           // A stop during recovery still joins the result and ends its existing session in the same finally below.
           if (active.stopped) await this.env.JOB_HOSTS!.getByName(placedHost).cancel(spec.id, true);
           wire = await this.env.JOB_HOSTS!.getByName(placedHost).dispatch(spec.id, {
-            command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files, ...(sync ? { sync } : {}), ...(camelfs ? { camelfs } : {}),
+            command: spec.command, timeoutSeconds: spec.timeoutSeconds, outputs: spec.outputs, internet: !!spec.internet, files, ...(camelfs ? { camelfs } : {}),
             limits: { cpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskMiB: shape.diskMiB, ...(spec.limits?.pids ? { pids: spec.limits.pids } : {}) },
             ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
           }, Math.max(0, dispatchedAt + lifetimeMs - Date.now()));
@@ -910,63 +896,11 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     } finally {
       // Whatever ended it (a result, a refusal, a throw), it no longer waits: a later run or stop sees that.
       if (this.waiting === waiting) this.waiting = undefined;
-      // Its host-side sync ends with it: the token serves nothing more.
-      try { new HostSyncStore(this.ctx.storage.sql).clear(); } catch { /* none */ }
     }
   }
-  /**
-   * Its files as they cross to the host: inline ones, or a volume snapshot's. A tree up to HOST_SYNC_BYTES crosses
-   * inline; a larger one (within the job sync limits) the host fetches itself, file by file (host-side sync): the job
-   * gets a manifest and a token for this job's files only, valid for its lifetime, kept here hashed.
-   */
-  private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"] }> {
-    // A result, not a throw: a JobSpecError loses its class across this object's RPC, and the caller must land it.
-    if (spec.commit) throw new Error("Job checkpoints require a repo source");
-    const out: WireFile[] = [];
-    let bytes = 0;
-    const add = (path: string, data: Uint8Array) => {
-      bytes += data.byteLength;
-      if (bytes > HOST_SYNC_BYTES || out.length >= JOB_LIMITS.syncFiles) throw new Error(`A job's inline files on a host are at most ${HOST_SYNC_BYTES / 2 ** 20} MiB`);
-      out.push({ path, data: toBase64(data) });
-    };
-    if (spec.files) { for (const [path, data] of Object.entries(spec.files)) add(path, data); return { files: out }; }
-    // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-    if (!spec.volume) return { files: out };
-    if (!this.env.VOLUMES) throw new Error("Volume storage is not bound here");
-    const { files: entries } = await this.env.VOLUMES.getByName(`${spec.volume.tenant}:${spec.volume.volume}`).readSet("/", spec.volume.snapshot);
-    if (entries.length > JOB_LIMITS.syncFiles) throw new Error(`A job syncs at most ${JOB_LIMITS.syncFiles} files`);
-    const total = entries.reduce((sum, entry) => sum + entry.size, 0);
-    if (total > JOB_LIMITS.syncBytes) throw new Error(`A job syncs at most ${JOB_LIMITS.syncBytes} bytes`);
-    const large = entries.find(entry => entry.size > JOB_LIMITS.syncFileBytes);
-    if (large) throw new Error(`${large.path} is larger than a job syncs (${JOB_LIMITS.syncFileBytes} bytes)`);
-    if (total <= HOST_SYNC_BYTES) { for await (const file of volumeFiles(this.env, spec.volume)) add(file.path, file.bytes); return { files: out }; }
-    const origin = this.env.AGENT_PUBLIC_URL?.replace(/\/+$/, "");
-    if (!origin) throw new Error("Host-side sync needs AGENT_PUBLIC_URL");
-    const token = randomBytes(32).toString("base64url");
-    // Its deadline: the job's lifetime from now, after the longest it may wait for a host. The sync must end by then,
-    // and the token serves nothing after it.
-    const expiresAt = Date.now() + this.waitMs() + jobLifetimeMs(spec.timeoutSeconds);
-    const manifest = entries.map(entry => ({ path: jobPath(entry.path, "file path"), size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)!, key: entry.key }));
-    new HostSyncStore(this.ctx.storage.sql).put(token, expiresAt, manifest);
-    const files = manifest.map(({ key: _key, ...file }) => file);
-    return { files: out, sync: { url: `${origin}/v1/internal/job-hosts/sync/${encodeURIComponent(spec.id)}`, token, files, until: expiresAt } };
+  private async files(spec: JobSpec): Promise<WireFile[]> {
+    return Object.entries(spec.files ?? {}).map(([path, data]) => ({ path, data: toBase64(data) }));
   }
-  /**
-   * GET /sync/<index>, from the job's host (host-side sync): one file of its manifest, streamed from storage, for the
-   * job's token. Nothing else is served, and nothing once the job has ended or its token expired.
-   */
-  async fetch(request: Request): Promise<Response> {
-    const match = /^\/sync\/(\d{1,6})$/.exec(new URL(request.url).pathname);
-    if (!match || request.method !== "GET") return new Response("Not found", { status: 404 });
-    const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
-    const file = new HostSyncStore(this.ctx.storage.sql).file(token, Number(match[1]));
-    if (!file.ok) return new Response(file.status === 401 ? "Unauthorized" : "Not found", { status: file.status, headers: { "cache-control": "no-store" } });
-    if (!this.env.BUCKET) return new Response("Not found", { status: 404, headers: { "cache-control": "no-store" } });
-    const object = await this.env.BUCKET.get(file.key) as { body?: ReadableStream } | null;
-    if (!object?.body) return new Response("File object missing", { status: 404, headers: { "cache-control": "no-store" } });
-    return new Response(object.body, { headers: { "content-type": "application/octet-stream", "content-length": String(file.size), "cache-control": "no-store" } });
-  }
-
 
   private waiting?: { job: string; stopped: boolean; stoppedAt?: number };
   private waitMs() {
