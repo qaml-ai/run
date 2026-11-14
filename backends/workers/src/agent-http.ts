@@ -310,7 +310,9 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           if (conf) await this.bashSessions.stopAll();
           if (conf)
             await this.serializeComputer(() =>
-              new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
+              new ComputerService(this.env, conf.tenantId, undefined, {
+                agent: conf.id, clearComputerAttached: () => this.clearComputerAttached(),
+              }).removeAgent(conf.id),
             );
           await this.delegation.destroy();
           await this.harness.session().abort();
@@ -347,13 +349,17 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
         if (!conf) return json({ error: "Agent not found" }, 404);
         if (input.tenant !== conf.tenantId)
           return json({ error: "Forbidden" }, 403);
+        // Connections change outside this object; recheck before skipping a lease deadline.
+        await this.clearComputerAttached();
         // The fork route: its snapshot takes the serial queue itself (forkChildComputers), so it runs outside it.
         if (input.operation === "fork")
           return json(await forkComputerInto(this.env, conf.tenantId, conf.id, input.args.agents, {
             connectionOnly: !!input.args.connectionOnly, setup: async () => computerSetup(this.env, conf),
             serialize: run => this.serializeComputer(run) }), 201);
         return await this.serializeComputer(async () => {
-          const service = new ComputerService(this.env, conf.tenantId);
+          const service = new ComputerService(this.env, conf.tenantId, undefined, {
+            agent: conf.id, clearComputerAttached: () => this.clearComputerAttached(),
+          });
           if (input.operation === "sweep") {
             await service.sweepAgent(conf.id);
             await this.arm(undefined, invocation);

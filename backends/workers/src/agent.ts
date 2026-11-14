@@ -35,6 +35,8 @@ export class CamelAgent extends DurableObject<Env> {
     this.ctx.waitUntil(write.wait(BACKGROUND_CONTEXT).then(() => this.#runtime.historyIndex.changed()));
   }
 
+  clearComputerAttached() { return this.#runtime.clearComputerAttached(); }
+
   removeMember(member: string) { return AgentInvocation.run(invocation => this.#runtime.removeMember(invocation, member)); }
 
   /** Binding-only pilot counters; no runtime state, SQL or values are exposed. */
