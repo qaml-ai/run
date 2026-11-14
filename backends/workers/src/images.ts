@@ -190,8 +190,13 @@ export async function handleSignedFileRequest(
       throw new FileError("Expired or invalid file capability", 403);
     const object = await env.BUCKET.get(claim.key);
     if (!object) throw new FileError("File not found", 404);
+    const disposition = claim.key.startsWith(`files/${encodeURIComponent(claim.tenant)}/presented/`)
+      ? object.httpMetadata?.contentDisposition : undefined;
     return new Response(object.body, {
       headers: {
+        ...(disposition ? { "content-disposition": disposition } : {}),
+        ...(disposition && !object.httpMetadata?.contentType?.startsWith("application/pdf")
+          ? { "content-security-policy": "sandbox; default-src 'none'" } : {}),
         "content-type":
           object.httpMetadata?.contentType ?? "application/octet-stream",
         "cache-control": "private, no-store",

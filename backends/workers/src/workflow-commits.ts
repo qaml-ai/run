@@ -75,7 +75,11 @@ export class WorkflowCommits implements EffectExecutor {
       const ctx = await repoContext(this.env, this.host.tenant(), fork.repo);
       try {
         const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref }, new AgentInvocation());
-        return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed, ...('files' in merged ? { files: Object.keys(merged.files) } : {}) } };
+        if (!merged.changed || !('tree' in merged) || !merged.previous) return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed } };
+        // The tier reports text merges. A workflow needs every file changed on the destination ref.
+        const previous = await ctx.storage.getCommit(ctx.lineage, merged.previous);
+        const { changes } = await ctx.storage.diff(ctx.lineage, previous.tree, merged.tree);
+        return { ok: true, value: { committed: true, version: merged.version, changed: true, files: changes.map(change => change.path) } };
       } catch (error) {
         const found = repoErrorFrom(error);
         if (found?.code === 'conflicts') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };

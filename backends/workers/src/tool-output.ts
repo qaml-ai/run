@@ -36,7 +36,7 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
         try {
           const response = await handleAgentFileRequest(new Request('https://agent.invalid/files', {
             method: 'PUT', body: bytes as Uint8Array<ArrayBuffer>, headers: { 'x-camel-call':current.call.toolCallId,...(current.requestId?{'x-camel-run':current.requestId}:{}), 'Content-Type': extension === 'json' ? 'application/json' : 'text/plain; charset=utf-8' },
-          }), env, current.tenant, current.agent, path, current.mounts, "turn", undefined, invocation);
+          }), env, current.tenant, current.agent, path, current.mounts, "turn", undefined, undefined, invocation);
           return response.ok ? path : undefined;
         } catch { return; }
       };

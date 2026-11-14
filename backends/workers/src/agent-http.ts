@@ -787,6 +787,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           (conf.config.mounts ?? []) as never,
           path,
           this.repoTrees,
+          this.vmFiles,
           invocation,
         ))!;
       }
@@ -801,6 +802,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           conf.config.mounts as never,
           "turn",
           this.repoTrees,
+          this.vmFiles,
           invocation,
         );
       }
