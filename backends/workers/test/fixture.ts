@@ -59,6 +59,8 @@ export async function startFixture(
     entrypoint?: string;
     /** Disable the authenticated repo tier to test missing configuration. */
     noCamelfsTier?: boolean;
+    /** Clock shared with Worker entrypoints that freeze Date.now. */
+    now?: () => number;
     scheduled?: boolean;
     signal?: AbortSignal;
     /** No AGENT_PUBLIC_URL, as a local `wrangler dev` or a self-host without one: origins come from requests. */
@@ -191,10 +193,10 @@ export async function startFixture(
       [kid, jwk, { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }, Date.now()]);
     const notifyKey = randomBytes(24).toString("hex");
     camelfs = await serveFakeCamelfsd(randomBytes(24).toString("hex"), {
-      issuer, jwks: { keys: [jwk] },
+      issuer, jwks: { keys: [jwk] }, now: options.now,
       onRefMove(move) {
         const body = JSON.stringify({ ...move, type: "ref.moved", id: move.to });
-        const time = Math.floor(Date.now() / 1000);
+        const time = Math.floor((options.now ?? Date.now)() / 1000);
         const signature = createHmac("sha256", notifyKey).update(time + "." + body).digest("hex");
         void fetch(`http://127.0.0.1:${port}/v1/internal/camelfs/notify`, {
           method: "POST", headers: { "Camel-Signature": `t=${time},v1=${signature}` }, body,

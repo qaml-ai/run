@@ -837,7 +837,11 @@ export async function serveFakeCamelfsd(token: string, options: FakeOptions = {}
       const response = await fake.fetch(new Request(`http://camelfs${req.url}`, { method: req.method, headers: req.headers as Record<string, string>,
         ...(req.method !== "GET" && req.method !== "HEAD" ? { body: Buffer.concat(chunks) } : {}) }));
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer()));
-    } catch { res.writeHead(500); res.end(); }
+    } catch (error) {
+      console.error("camel-fs fake HTTP adapter:", req.method, req.url, error);
+      if (res.headersSent) res.destroy();
+      else res.writeHead(500).end();
+    }
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("missing server address");

@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
+import { repoMoveRequestId } from "../src/repos/notify.ts";
 
 test("mount preparation follows owner checks and an upsert preserves mounts read under the directory lock", { timeout: 90_000 }, async t => {
   const aliceToken = "fixture-alice-token-at-least-32-characters";
@@ -42,7 +43,7 @@ test("mount preparation follows owner checks and an upsert preserves mounts read
   assert.equal(watcher.status,201,JSON.stringify(watcher));
   const changed=await call(`/v1/repos/${a.body.id}/commit`,{body:{files:{'safe/note.txt':{text:'new memory'},'private.txt':{text:'hidden'}},message:'notify watcher'}});
   assert.equal(changed.status,200,JSON.stringify(changed));
-  const notificationId=`repo-${a.body.id}-${changed.body.version}-/memory`;
+  const notificationId = await repoMoveRequestId(a.body.id, changed.body.version, "/memory");
   const notificationPath = `/v1/agents/${watcher.body.id}/requests/${notificationId}?wait=20`;
   const deadline = Date.now() + 20_000;
   let notified = await call(notificationPath);

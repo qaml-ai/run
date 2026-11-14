@@ -1,6 +1,7 @@
-// Control time inside workerd: mocking Date in the Node test cannot reach it.
-// Keep every admission in the same UTC minute without freezing async timers.
-Date.now = () => Date.UTC(2026, 10, 9, 12, 0, 10);
+// Keep admissions in one UTC minute using the same clock as the fixture's tier verifier.
+import { PROMPT_ADMISSION_TIME } from "./prompt-admission-time.ts";
+
+Date.now = () => PROMPT_ADMISSION_TIME;
 
 export * from "../src/index.ts";
 export { default } from "../src/index.ts";

@@ -1,4 +1,9 @@
+import { sha256Hex } from './git.ts';
 import type { RepoContext } from './registry.ts';
+
+export async function repoMoveRequestId(repo: string, delivery: string, mount: string) {
+  return 'repo-' + await sha256Hex(new TextEncoder().encode(JSON.stringify([repo, delivery, mount])));
+}
 
 /** Coalesce pending deliveries for each mount and submit through normal prompt admission. */
 export async function deliverRepoMoves(env: RepoContext["env"], config: import("../agent-types.ts").Config, moves: import("../camelfs/notify.ts").RefMove[], admit: (request: Request) => Promise<Response>) {
@@ -38,7 +43,7 @@ export async function deliverRepoMoves(env: RepoContext["env"], config: import("
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        id: `repo-${ctx.repoId}-${matching.at(-1)!.id}-${mount.path}`,
+        id: await repoMoveRequestId(ctx.repoId, matching.at(-1)!.id, mount.path),
         method: "prompt",
         params: { text: `Files changed in a mounted volume:\n${[...shown.values()].slice(0, 50).join("\n")}`, allowDisconnected: true },
       }),
