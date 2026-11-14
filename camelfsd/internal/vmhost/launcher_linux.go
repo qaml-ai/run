@@ -73,7 +73,18 @@ type VM struct {
 	mu                                  sync.Mutex
 	gone                                bool
 	scopeAttempted, tapOwned, jailOwned bool
+	timings                             BootTimings
 }
+
+// BootTimings are one boot's phases for the compute_boot log line: disk (reflink clone plus
+// grow and resize2fs), assets (kernel/initrd/branch disk into the jail), tap, policy,
+// scope (systemd-run → jailer → Firecracker exec) and vsock (exec → first CONNECT 5000 OK).
+type BootTimings struct {
+	Disk, Assets, Tap, Policy, Scope, Vsock time.Duration
+}
+
+// BootTimings returns the phases of the boot that created v (zero for an adopted VM).
+func (v *VM) BootTimings() BootTimings { return v.timings }
 
 func (v *VM) Slot() int           { return v.record.Slot }
 func (v *VM) GuestSocket() string { return filepath.Join(v.root, "guest.vsock") }
@@ -126,7 +137,9 @@ func (l *Launcher) Boot(ctx context.Context, id string, shape Shape, boot Boot) 
 		case <-guestCtx.Done():
 		}
 	}()
+	vsock := time.Now()
 	v.channel, err = connectGuest(guestCtx, filepath.Join(v.root, "guest.vsock"), bootDeadline)
+	v.timings.Vsock = time.Since(vsock)
 	cancel()
 	<-watched
 	select {
@@ -412,9 +425,12 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc, imagePath string, size in
 	}
 	files := configFiles{kernel: "/kernel", disk: "/root.ext4", vsock: "guest.vsock"}
 	disk := filepath.Join(v.root, files.disk)
+	phase := time.Now()
+	lap := func(d *time.Duration) { *d, phase = time.Since(phase), time.Now() }
 	if err := cloneDisk(ctx, imagePath, disk, size, l.Reflink); err != nil {
 		return err
 	}
+	lap(&v.timings.Disk)
 	if err := os.Chown(disk, uid, uid); err != nil {
 		return err
 	}
@@ -438,14 +454,17 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc, imagePath string, size in
 			return err
 		}
 	}
+	lap(&v.timings.Assets)
 	addr, _ := JobAddress(r.Slot)
 	if err := TapUp(addr, uid); err != nil {
 		return fmt.Errorf("tap %s: %w", addr.Tap, err)
 	}
 	v.tapOwned = true
+	lap(&v.timings.Tap)
 	if err := writePolicy(l.PolicyDir, addr.GuestIP, l.policy(r.ID, boot.Internet)); err != nil {
 		return err
 	}
+	lap(&v.timings.Policy)
 	config := firecrackerConfig(files, addr, r.Shape, l.Build, l.KVM, boot.Internet, boot.Session)
 	if err := writeJSON(filepath.Join(v.root, "config.json"), config, 0644); err != nil {
 		return err
@@ -474,6 +493,7 @@ func (v *VM) prepareAndLaunch(ctx context.Context, fc, imagePath string, size in
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	lap(&v.timings.Scope)
 	v.scopeAttempted = true
 	v.cmd = cmd
 	v.exited = make(chan struct{})
