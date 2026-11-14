@@ -86,8 +86,11 @@ if [[ -f /etc/cloudflared/camelfs.token ]] && [[ ! -x /usr/bin/cloudflared ]]; t
   apt-get update -qq; apt-get install -y -qq cloudflared
 fi
 echo '== Modules'
-for module in nbd dm-clone ublk_drv dm-thin-pool vhost_vsock; do modprobe "$module"; done
-printf '%s\n' nbd dm-clone ublk_drv dm-thin-pool vhost_vsock > "$work/modules"
+# Exactly what camelfsd and Firecracker use: dm-snapshot (the job's writable layer over a dm-linear origin), nbd (the
+# lazy origin), loop (the hydrated image; a no-op where it is built in) and vhost_vsock (the guest channel). camelfsd
+# refuses to start without the snapshot target (dmsetup targets).
+for module in dm-snapshot nbd loop vhost_vsock; do modprobe "$module"; done
+printf '%s\n' dm-snapshot nbd loop vhost_vsock > "$work/modules"
 put "$work/modules" /etc/modules-load.d/camelfs.conf
 bash "$here/files/camel-kvm-prep" --storage-only
 
