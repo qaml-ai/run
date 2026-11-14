@@ -20,6 +20,7 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
     TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: "account-repos",
     AGENT_TENANTS_JSON: JSON.stringify({ tenants: { ops: { tokenSha256: createHash("sha256").update(operator).digest("hex"), apiKeys: {} } } }),
     AGENT_BILLING_ADMINS: "ops",
+    AGENT_CREATE_DIAGNOSTICS: "1",
     AGENT_MAX_AGENTS: "2100", AGENT_MAX_AGENTS_PER_TENANT: "2100",
   } });
   t.after(() => r.stop());
@@ -30,14 +31,17 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const created = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
-  assert.equal(created.status, 201);
+  const createLogs = () => r.worker.logs().split("\n")
+    .filter(line => /agent_create_(?:db|rpc)_failed|agent_http_failed|agent_start_(?:slow|stuck)|http_failed/.test(line))
+    .join("\n");
+  if (created.status !== 201) assert.fail(`initial create ${created.status}: ${await created.text()}\n${createLogs()}`);
   const { id } = await created.json() as { id: string };
   const ids = [id];
   let next = 0;
   await Promise.all(Array.from({ length: 10 }, async () => {
     while (next++ < AGENTS - 1) {
       const response = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
-      assert.equal(response.status, 201);
+      if (response.status !== 201) assert.fail(`create ${response.status}: ${await response.text()}\n${createLogs()}`);
       ids.push((await response.json() as { id: string }).id);
     }
   }));

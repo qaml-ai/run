@@ -1,7 +1,7 @@
 import { applyScope } from "../../../shared/apply-scope.ts";
 import pg, { Client } from "pg";
 import { transaction as policyTransaction } from "./postgres-policy.ts";
-import { profileConnect, profileSql } from "./db-profile.ts";
+import { profileConnect, profileSql, traceDatabaseFailure } from "./db-profile.ts";
 export { databaseRetryable, databaseUnavailable } from "./postgres-policy.ts";
 
 // Match src/db.ts: ledger amounts and millisecond timestamps are safe integers.
@@ -26,7 +26,7 @@ export type Db = Sql & {
   readonly idleCount: number;
   readonly waitingCount: number;
 };
-export type PostgresEnv = { HYPERDRIVE: { connectionString: string } };
+export type PostgresEnv = { HYPERDRIVE: { connectionString: string }; AGENT_CREATE_DIAGNOSTICS?: string };
 
 /** One short-lived client per operation; never pin an origin connection to a DO. */
 export async function withSql<T>(
@@ -42,8 +42,8 @@ export async function withSql<T>(
     application_name: new URL(env.HYPERDRIVE.connectionString).searchParams.get("application_name") ?? "camelrun-proto-workers",
   });
   try {
-    await profileConnect(() => client.connect());
-    return await run(profileSql(client));
+    await profileConnect(() => traceDatabaseFailure(env.AGENT_CREATE_DIAGNOSTICS === "1", "connect", () => client.connect()));
+    return await run(profileSql(client, env.AGENT_CREATE_DIAGNOSTICS === "1"));
   } finally {
     await client.end();
   }
@@ -60,12 +60,12 @@ export function database(env: PostgresEnv): Db {
         query_timeout: 10_000,
       });
       try {
-        await profileConnect(() => client.connect());
+        await profileConnect(() => traceDatabaseFailure(env.AGENT_CREATE_DIAGNOSTICS === "1", "connect", () => client.connect()));
       } catch (error) {
         await client.end().catch(() => {});
         throw error;
       }
-      return Object.assign(profileSql(client), {
+      return Object.assign(profileSql(client, env.AGENT_CREATE_DIAGNOSTICS === "1"), {
         close: () => client.end(),
         release: () => {
           void client.end();

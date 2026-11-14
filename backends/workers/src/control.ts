@@ -1,3 +1,4 @@
+import { safeError } from "./observability.ts";
 import type { AgentInvocation } from "./agent-invocation.ts";
 import { applying, prepareApply } from "../../../shared/apply-scope.ts";
 import { forgetAgentDreaming } from "../../../shared/dreaming.ts";
@@ -351,6 +352,7 @@ export class Directory {
   }
   private async initialize(entry: DirectoryEntry, runtimeOrigin?: string): Promise<DirectoryEntry | DirectoryFailure> {
     if (!entry.initialized) {
+      const started = Date.now();
       const response = await this.env.AGENTS.getByName(entry.id).fetch(
         new Request("https://agent/configuration", {
           method: "PUT",
@@ -365,7 +367,11 @@ export class Directory {
             runtimeOrigin,
           }),
         }),
-      ).catch(() => undefined);
+      ).catch(error => {
+        if (this.env.AGENT_CREATE_DIAGNOSTICS === "1")
+          console.error(JSON.stringify({ type: "agent_create_rpc_failed", ms: Date.now() - started, error: safeError(error) }));
+        return undefined;
+      });
       // The new revision is committed above (uninitialized): an agent that threw or failed applying it is a retry
       // away, as DELETE's cleanup is, so it answers 503 rather than a refusal. Another upsert applies it again.
       if (!response || response.status >= 500)

@@ -1,3 +1,4 @@
+import { safeError } from "./observability.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 export type DbPhase = "admission" | "hold" | "renew" | "settle" | "usage" | "webhooks" | "history" | "other" | "edge";
@@ -39,6 +40,21 @@ export function dbPhase<T>(phase: DbPhase, action: () => T): T {
   return active ? active.profile.run(phase, action) : action();
 }
 
+// Opt-in fixture diagnostics. Use static statement categories and sanitized errors.
+export async function traceDatabaseFailure<T>(enabled: boolean, operation: string, action: () => Promise<T>): Promise<T> {
+  if (!enabled) return action();
+  const started = Date.now();
+  try {
+    return await action();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const timeout = message === "Query read timeout" ? "query" :
+      /^(timeout expired|timeout exceeded when trying to connect|Connection terminated due to connection timeout)$/.test(message) ? "connect" : undefined;
+    console.error(JSON.stringify({ type: "agent_create_db_failed", operation, ms: Date.now() - started, timeout, error: safeError(error) }));
+    throw error;
+  }
+}
+
 export async function profileConnect<T>(action: () => Promise<T>): Promise<T> {
   const active = context.getStore();
   if (!active) return action();
@@ -50,13 +66,15 @@ export async function profileConnect<T>(action: () => Promise<T>): Promise<T> {
 /** One invocation is one pg query round trip, including BEGIN/COMMIT/ROLLBACK.
  * Hold time is measured from BEGIN acknowledgement through COMMIT/ROLLBACK
  * acknowledgement; connect/pool wait is recorded separately. */
-export function profileSql<T extends { query: (...args: any[]) => Promise<any> }>(client: T): T {
+export function profileSql<T extends { query: (...args: any[]) => Promise<any> }>(client: T, traceFailures = false): T {
   let transaction: { profile: DbProfile; phase: DbPhase; started: number } | undefined;
   const query = client.query.bind(client);
   client.query = async (...args: any[]) => {
     const active = context.getStore();
-    if (!active) return query(...args);
+    if (!active && !traceFailures) return query(...args);
     const text = typeof args[0] === "string" ? args[0] : "";
+    const execute = () => traceDatabaseFailure(traceFailures, statementCategory(text), () => query(...args));
+    if (!active) return execute();
     // Table classification partitions accounting's nested transaction SQL without
     // retaining the statement. Control statements remain in their parent phase.
     const phase: DbPhase = /\b(?:webhook_events|webhook_deliveries|webhooks)\b/i.test(text) ? "webhooks"
@@ -66,7 +84,7 @@ export function profileSql<T extends { query: (...args: any[]) => Promise<any> }
     const statement = m.statements[statementCategory(text)] ??= { queries: 0, queryMs: 0, errors: 0 };
     statement.queries++;
     try {
-      const result = await query(...args);
+      const result = await execute();
       if (/^\s*begin\b/i.test(text)) transaction = { ...active, started: performance.now() };
       return result;
     } catch (error) { m.errors++; statement.errors++; throw error; }
