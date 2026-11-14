@@ -81,7 +81,7 @@ finish, so a rerun cut short never leaves an earlier pass standing.
 
 When Node dies with `SIGSEGV` on a sprite (never seen in CI), the Workers harness writes a GDB triage of each new
 Node core to `sigsegv.txt` (`scripts/segv-triage.py`). `stack-corrupt` means the process faulted on a `ret` to a
-non-canonical address: so far every case had `/proc/meminfo` text written over the live stack (see the ledger).
+non-canonical address: so far every case had `/proc/meminfo` text written over the live stack.
 `fault` is any other genuine fault or a signal the process sent itself. A SIGSEGV fails its gate like any other
 failure; rerun the gate, and report the triage line. Node's handler re-raises the fault while the signal is blocked,
 so `si_code` reads `SI_TKILL` from the process itself whatever the cause: do not read anything into it.
