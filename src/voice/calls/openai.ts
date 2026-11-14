@@ -7,7 +7,7 @@ export interface OpenAICalls {
   readonly models: readonly string[];
   readonly defaultModel: string;
   readonly voices: readonly string[];
-  create(input: { sdp: string; model: string; voice: string; instructions: string; language?: string; tools: RealtimeTool[]; apiKey: string }, events: SidebandEvents): Promise<{ callId: string; sdpAnswer: string; sideband: Sideband }>;
+  create(input: { sdp: string; model: string; voice: string; instructions: string; language?: string; interruptResponse: boolean; tools: RealtimeTool[]; apiKey: string }, events: SidebandEvents): Promise<{ callId: string; sdpAnswer: string; sideband: Sideband }>;
   hangup(callId: string, apiKey: string): Promise<void>;
 }
 export interface SidebandEvents {
@@ -53,7 +53,7 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
         audio: {
           input: {
             format: pcm,
-            turn_detection: { type: "semantic_vad", eagerness: "auto", create_response: true, interrupt_response: true },
+            turn_detection: { type: "semantic_vad", eagerness: "auto", create_response: true, interrupt_response: input.interruptResponse },
             transcription: { model: "gpt-transcribe", ...(input.language ? { language: input.language } : {}) },
           },
           output: { format: pcm, voice: input.voice },

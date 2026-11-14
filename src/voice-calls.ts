@@ -16,7 +16,7 @@ import { webhookEvent, type EventType, type WebhookEvent } from "./webhooks.ts";
 
 export type VoiceCallOptions = {
   subject: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; metadata?: Record<string, unknown>;
-  speakers: Record<string, string>; maxMinutes: number; language?: string; instructions?: string;
+  speakers: Record<string, string>; maxMinutes: number; language?: string; instructions?: string; interruptResponse: boolean;
 };
 export type VoiceCallsOptions = {
   db: Db; node: string;
@@ -39,7 +39,8 @@ export type VoiceCallsOptions = {
 
 type Row = {
   id: string; tenant: string; agent: string; provider: VoiceCall["provider"]; model: string; voice: string;
-  state: VoiceCall["state"]; end_reason: string | null; provider_call: string | null; options: VoiceCallOptions;
+  state: VoiceCall["state"]; end_reason: string | null; provider_call: string | null;
+  options: Omit<VoiceCallOptions, "interruptResponse"> & { interruptResponse?: boolean };
   turns: number; asks: number; audio_seconds: string; cost: number;
   started_at: Date | null; ended_at: Date | null; expires_at: Date;
 };
@@ -61,7 +62,7 @@ function view(row: Row): VoiceCall {
     id, state, provider, model, voice, agent, subject: options.subject, startedAt: row.started_at?.getTime() ?? null,
     endedAt: row.ended_at?.getTime() ?? null, expiresAt: row.expires_at.getTime(), reason: row.end_reason,
     turns, asks, audioSeconds: Number(row.audio_seconds), costUsd: Number(row.cost) / 1_000_000,
-    metadata: options.metadata ?? {}, speakers: options.speakers,
+    metadata: options.metadata ?? {}, speakers: options.speakers, interruptResponse: options.interruptResponse ?? true,
   };
 }
 
@@ -152,7 +153,7 @@ export class VoiceCalls {
     try {
       connected = await provider.create({
         sdp, model, voice, instructions: realtimeInstructions(options.instructions ?? "", { agent: true, group: true }),
-        language: options.language, tools: [ASK_AGENT, STAY_SILENT], apiKey: key.apiKey,
+        language: options.language, interruptResponse: options.interruptResponse, tools: [ASK_AGENT, STAY_SILENT], apiKey: key.apiKey,
       }, {
         responseStarted: response => afterLive("voice_call_hold_failed", live => this.responseStarted(tenant, id, options, live, response)),
         responseDone: (response, outcome) => afterLive("voice_call_usage_failed", live => {

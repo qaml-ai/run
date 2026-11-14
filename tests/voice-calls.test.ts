@@ -43,7 +43,7 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
-      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
+      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: process.env.AGENT_HOSTING ?? "inline",
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-api-session-secret-with-32-chars!!",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_OPENAI_REALTIME_URL: openai.url,
       AGENT_VOICE_SESSIONS_PER_TENANT: discord ? "1" : "5",
@@ -91,6 +91,7 @@ test("client-held call brokers SDP and exposes the live row with AGENT_VOICE uns
   assert.equal((await f.http("POST", path, { discord: discordGrant() })).status, 404);
   const call = await f.live({ language: "en", instructions: "Talk like Ana." });
   assert.match(call.id, /^vc_[a-f0-9]{24}$/);
+  assert.equal(call.interruptResponse, true);
   assert.deepEqual(call.connect, { sdpAnswer: f.openai.answer });
   const posted = f.openai.offers[0];
   assert.equal(posted.sdp, offer);
@@ -113,6 +114,16 @@ test("client-held call brokers SDP and exposes the live row with AGENT_VOICE uns
   for (const [method, suffix] of [["POST", "say"], ["POST", "prompt"], ["DELETE", "speak"], ["GET", "audio"], ["POST", "recording"], ["POST", "browser-token"]]) {
     assert.equal((await f.http(method, `${path}/${call.id}/${suffix}`)).json.code, "VOICE_CALL_NO_AUDIO");
   }
+});
+
+test("client-held calls can disable OpenAI model interruptions", async t => {
+  const f = await fixture(t);
+  const call = await f.live({ interruptResponse: false });
+  assert.equal(call.interruptResponse, false);
+  assert.deepEqual(f.openai.offers[0].session.audio.input.turn_detection, {
+    type: "semantic_vad", eagerness: "auto", create_response: true, interrupt_response: false,
+  });
+  assert.equal((await f.http("GET", `${path}/${call.id}`)).json.interruptResponse, false);
 });
 
 test("responses hold, meter, settle or release, then hang up on a credit refusal", async t => {
