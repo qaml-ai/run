@@ -308,8 +308,8 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	mu.Lock()
 	runs := len(executions)
 	mu.Unlock()
-	if runs != 2 {
-		t.Fatalf("host ran %d distinct commands, want 2", runs)
+	if runs != 3 { // the one-off exec, the session exec "e", and the disconnected exec
+		t.Fatalf("host ran %d distinct commands, want 3", runs)
 	}
 
 	clock.Add(1_000)
