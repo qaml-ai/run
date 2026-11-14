@@ -4,7 +4,7 @@ import { checkRequest } from "../../../shared/monitors.ts";
 import { tenantRunCaps } from "./tenant-run-caps.ts";
 import { type AssistantMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { reserveTurn, settleTurn } from "./control.ts";
+import { settleTurn, verifyTurnAgent } from "./control.ts";
 import { applyModelReceipt, type ModelReceipt } from "./model-metering.ts";
 import { keyServices } from "./security-services.ts";
 import { runAdmission } from "./admission.ts";
@@ -20,7 +20,6 @@ import { flushAgentMediaUsage } from "./agent-media.ts";
 import { flushAttachmentTranscriptions } from "./attachment-transcription.ts";
 import { Config, RequestRecord, BillingReceipt, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
-import { dbPhase } from "./db-profile.ts";
 
 export function createLimits(this: AgentRuntime): AgentRunLimits {
   return new AgentRunLimits(this.ctx.storage, async invocation => {
@@ -98,7 +97,7 @@ export async function admitRequestImpl(this: AgentRuntime,
           status: 429,
           code: "BUSY_AGENT_LIMIT",
         });
-      await dbPhase("hold", () => reserveTurn(this.env, conf.tenantId, conf.id, id, undefined, undefined, invocation));
+      await verifyTurnAgent(this.env, conf.tenantId, conf.id, invocation);
       if (!spend) return { spend: null, childCostAtAdmission: 0, most };
       const { childCostAtAdmission, ...counter } = spend;
       return { spend: counter, childCostAtAdmission, most };

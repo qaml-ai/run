@@ -27,13 +27,16 @@ test('late tool usage keeps the originating run payer and bucket', async () => {
   const session = { header: { tenant: 'tenant', identity: { subject: 'owner' } }, requests: new Map([['first', first], ['next', next]]), running: new Map([['next', next]]) };
   const sessions = new Map([['agent', session]]);
   const clients = { sessions } as any;
-  const usage = ClientSessions.prototype.billingUsage.call(clients, 'agent', { requestId: 'first', searches: 1, usage: { cost: { total: 0.01 } } } as any);
+  const usage = ClientSessions.prototype.billingUsage.call(clients, 'agent', { requestId: 'first', timestamp: Date.UTC(2026, 0, 1), searches: 1, usage: { cost: { total: 0.01 } } } as any);
   assert.equal(usage.identity?.subject, 'guest');
-  let charge: unknown[] | undefined;
-  const ctx = { sessions, options: { endUsers: { charge: async (...args: unknown[]) => { charge = args; } } } } as any;
+  const debits: unknown[][] = [];
+  const ctx = { sessions, options: { endUsers: { debit: async (...args: unknown[]) => { debits.push(args); } } } } as any;
   endUserCharge(ctx, 'agent', usage);
-  assert.deepEqual(charge?.slice(0, 4), ['tenant', 'guest', 'first-bucket', 10_000]);
-  assert.equal((charge?.[5] as any).requestId, 'first');
+  assert.equal(debits.length, 1);
+  const [tenant, user, bucket, usd, key, metadata] = debits[0];
+  assert.deepEqual([tenant, user, bucket, usd], ['tenant', 'guest', 'first-bucket', 0.01]);
+  assert.match(String(key), /^charge:[\da-f-]+$/);
+  assert.deepEqual(metadata, { call: 'web_search', agent: 'agent', requestId: 'first', usageDay: '2026-01-01' });
 });
 
 test('web services preserve the originating request in their usage callbacks', async () => {

@@ -325,8 +325,7 @@ export async function wakeImpl(this: AgentRuntime, invocation: AgentInvocation) 
     await expireDecisions(this, invocation);
     this.kickInputPrompts();
     await this.restoreHostAdmissions(invocation);
-    // A call's live credit hold reserves its funds. Only check available credit
-    // between calls; checking here could abort work that already reserved it.
+    // Provider admission checks credit between calls. The watchdog enforces run limits.
     if (await this.limits.check(Date.now(), false, invocation)) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain(invocation);

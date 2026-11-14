@@ -75,7 +75,7 @@ class AgentRuntime(_RuntimeCalls):
         self.images = Images(self)
         # Your users' credit: configure, grant, get, ledger and the rest.
         self.end_users = EndUsers(self)
-        # Voice calls held for your bot: create, get, list, update, end.
+        # The shared Voice wrapper uses this runtime's synchronous transport for sessions and client-held calls.
         self.voice = Voice(self)
         self.voices = Voices(self)
 

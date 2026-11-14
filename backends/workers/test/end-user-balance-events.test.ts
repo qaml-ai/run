@@ -28,9 +28,9 @@ const events = async (db: Db, type?: string) => (await db.query("select body fro
   .map(row => ({ type: row.body.type, ...row.body.data })).filter(event => !type || event.type === type);
 
 const spend = async (credits: EndUserCredits, raw: number, user = "u", bucket = "default") => {
-  const reserved = await credits.reserve("t", user, bucket, { id: randomUUID(), want: raw, min: 1 });
-  if (reserved?.hold) await credits.settleHold("t", user, bucket, reserved.hold.id, raw, `call:${randomUUID()}`, { requestId: "req_1" });
-  return reserved;
+  const refused = await credits.refusal("t", user, bucket);
+  if (!refused) await credits.debit("t", user, bucket, raw / USD, `call:${randomUUID()}`, { requestId: "req_1" });
+  return { refused };
 };
 
 test("below $10, add $5: balance.low fires on the crossing, and again on the first debit after a top-up that left it under", async () => {
@@ -86,7 +86,7 @@ test("a person's own lowBalance overrides the tenant's, is shown under overrides
   assert.deepEqual((await events(db, "end_user.balance.low")).slice(3).map(event => event.endUser), []);
 });
 
-test("cause says what moved the balance: a negative adjustment, a corrected cost, a refused call; a refund stays silent", async () => {
+test("cause says what moved the balance: a negative adjustment, a corrected cost, a re-armed debit; a refund stays silent", async () => {
   const { db, credits } = await fixture({ lowBalance: 2 * USD });
   await credits.post("t", "u", { kind: "grant", amount: 3 * USD, key: "pay-1" });
   // A dispute on credit already spent: the tenant takes it back with an adjustment.
@@ -96,11 +96,12 @@ test("cause says what moved the balance: a negative adjustment, a corrected cost
   assert.deepEqual([low.cause.kind, low.cause.entryKey, low.cause.entryId], ["adjustment", "dp_123", entry.id]);
   assert.deepEqual([out.reason, out.cause.kind, out.cause.entryKey], ["balance", "adjustment", "dp_123"]);
 
-  // A refused call: credit.exhausted with no entry behind it, once the flag is re-armed by a grant that left it at zero.
+  // A grant that leaves the balance at zero re-arms exhaustion on the next posted debit.
   await credits.post("t", "u", { kind: "grant", amount: USD, key: "pay-2" });
-  assert.equal((await spend(credits, USD / 2))?.refused?.reason, "balance");
-  const refused = (await events(db, "end_user.credit.exhausted")).at(-1);
-  assert.deepEqual([refused.cause, refused.balance], [{ kind: "refusal", bucket: "default" }, 0]);
+  assert.equal((await credits.refusal("t", "u", "default"))?.reason, "balance");
+  await credits.debit("t", "u", "default", 0.000001, "in-flight");
+  const exhausted = (await events(db, "end_user.credit.exhausted")).at(-1);
+  assert.deepEqual([exhausted.cause.kind, exhausted.balance], ["usage", -1]);
 
   // A model call's cost, posted at an estimate and corrected later, with its run's request.
   await credits.post("t", "w", { kind: "grant", amount: 3 * USD, key: "pay-3" });
@@ -121,9 +122,9 @@ test("cause says what moved the balance: a negative adjustment, a corrected cost
 test("a person never credited (free allowances only) is never told their balance is low", async () => {
   const { db, credits } = await fixture({ allowances: { "bot:*": 100_000 }, lowBalance: 2 * USD });
   await spend(credits, 100_000, "free", "bot:1");
-  // A charge past the allowance (a web search): written off, nothing debited.
-  await credits.charge("t", "free", "bot:1", 5_000, "charge:1");
-  assert.equal((await credits.get("t", "free")).balance, 0);
+  // A charge past the allowance (a web search) creates debt.
+  await credits.debit("t", "free", "bot:1", (5_000) / 1_000_000, "charge:1");
+  assert.equal((await credits.get("t", "free")).balance, -5_000);
   await credits.setSettings("t", { lowBalance: 3 * USD }, { merge: true });
   assert.deepEqual(await events(db, "end_user.balance.low"), []);
   // Credited once, they are: the tenant's next threshold change tells them.
