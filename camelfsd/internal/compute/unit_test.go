@@ -124,7 +124,8 @@ func TestUnitExpressionNames(t *testing.T) {
 				return true
 			}
 			expr, _ := strconv.Unquote(lit.Value)
-			if !strings.ContainsAny(expr, "=<>#()") || strings.HasPrefix(expr, waitPrefix) || expr == releasePrefix || expr == aliasPattern.String() {
+			if !strings.ContainsAny(expr, "=<>#()") || strings.HasPrefix(expr, waitPrefix) || expr == releasePrefix ||
+				expr == enrollmentPrefix || expr == aliasPattern.String() {
 				return true
 			}
 			for _, token := range word.FindAllString(expr, -1) {

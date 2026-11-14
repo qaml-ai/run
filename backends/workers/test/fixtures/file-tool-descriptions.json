@@ -1,0 +1,10 @@
+{
+  "read": "Read UTF-8 text from a persistent file in /workspace or a mounted volume.",
+  "write": "Write UTF-8 text to a persistent file in /workspace or a writable mounted volume.",
+  "ls": "List persistent files under a /workspace or mounted directory.",
+  "present_file": "Hand a file you made to the user with your reply. Writing alone does not share it.",
+  "edit": "Replace exact text in a UTF-8 file. Each oldText must occur exactly once.",
+  "glob": "Find files by *, ?, ** and {a,b} patterns relative to a mounted directory.",
+  "grep": "Search UTF-8 file contents line by line for text, or with regex: true for a regular expression in RE2 syntax (no lookarounds or backreferences). Large and binary files are skipped.",
+  "cp": "Copy or move files between mounted volumes. Directories require recursive for cp."
+}

@@ -122,11 +122,16 @@ fi
 echo '== Firecracker'
 vm_changed=0
 if [[ ! -x /usr/local/bin/firecracker ]] || ! /usr/local/bin/firecracker --version | head -1 | grep -qx "Firecracker $FIRECRACKER_VERSION"; then
+  vm_changed=1
+fi
+if (( vm_changed )) || [[ ! -x /usr/local/bin/jailer ]]; then
   curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER_VERSION/firecracker-$FIRECRACKER_VERSION-x86_64.tgz" -o "$work/fc.tgz"
   verify FIRECRACKER_SHA256 "$FIRECRACKER_SHA256" "$work/fc.tgz"
   tar -xzf "$work/fc.tgz" -C "$work"
-  install -m 0755 "$work/release-$FIRECRACKER_VERSION-x86_64/firecracker-$FIRECRACKER_VERSION-x86_64" /usr/local/bin/firecracker
-  vm_changed=1
+  if (( vm_changed )); then
+    install -m 0755 "$work/release-$FIRECRACKER_VERSION-x86_64/firecracker-$FIRECRACKER_VERSION-x86_64" /usr/local/bin/firecracker
+  fi
+  install -m 0755 "$work/release-$FIRECRACKER_VERSION-x86_64/jailer-$FIRECRACKER_VERSION-x86_64" /usr/local/bin/jailer
 fi
 echo '== Guest kernel'
 kernel=/var/lib/camel/guest/vmlinux

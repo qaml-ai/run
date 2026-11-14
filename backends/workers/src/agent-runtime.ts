@@ -194,8 +194,8 @@ export class AgentRuntime extends AgentContext {
     return currentRunImpl.call(this, api);
   }
 
-  agentSpend(conf: Config) {
-    return agentSpendImpl.call(this, conf);
+  agentSpend(conf: Config, requestId?: string) {
+    return agentSpendImpl.call(this, conf, requestId);
   }
 
   imageTools() {

@@ -333,13 +333,13 @@ test("direct file reads expose source-compatible content without changing native
 
 test('repo file tools preserve the existing model descriptions byte for byte',async()=>{
   const {readFile}=await import('node:fs/promises');
-  const old=await readFile(new URL('../src/files.ts',import.meta.url),'utf8');
+  const old=JSON.parse(await readFile(new URL('./fixtures/file-tool-descriptions.json',import.meta.url),'utf8'));
   const repo=await readFile(new URL('../src/repos/tools.ts',import.meta.url),'utf8');
   for(const name of ['read','write','ls','present_file','edit','glob','grep']) {
     const pattern=new RegExp('name: "'+name+'",\\s+description:\\s*("(?:\\\\.|[^"\\\\])*")');
-    assert.equal(repo.match(pattern)?.[1],old.match(pattern)?.[1],name);
+    assert.equal(JSON.parse(repo.match(pattern)![1]),old[name],name);
     assert.ok(repo.match(pattern),name);
   }
   const copy=/description:\s*("Copy or move[^\n]+")/;
-  assert.equal(repo.match(copy)?.[1],old.match(copy)?.[1]);
+  assert.equal(JSON.parse(repo.match(copy)![1]),old.cp);
 });

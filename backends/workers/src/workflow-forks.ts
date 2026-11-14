@@ -1,35 +1,19 @@
-// The forks a workflow's children edit (workflow-volumes.ts) hold their base's content pinned for as long as they live.
-// A workflow that ended has no use for them: its commits landed or never will. So the object records each fork it makes
-// and deletes them all once the workflow has ended (completed, failed or aborted), which releases their pins. A delete
-// that fails (storage down) is tried again on the object's alarm, later each time, and a crash in between loses nothing:
-// a fork's record goes only after its volume is deleted, and deleting one twice is harmless. A fork whose child's result
-// the owner's result cache keeps is handed to the cache instead (workflow-results.ts `adopt`), which deletes it later.
-
-const ROW = "workflow-fork:";
-const RETRY = "workflow-fork-retry";
+const ROW = "workflow-repo:";
+const RETRY = "workflow-repo-retry";
 /** Kept while a commit() is in flight (WorkflowJobs' rows): its fork must outlive it. */
 const IN_FLIGHT = "workflow-job:";
 const FIRST_RETRY_MS = 60_000, MAX_RETRY_MS = 3_600_000;
 
-export interface ForkJanitorHost {
+export interface BranchJanitorHost {
   storage: Pick<DurableObjectStorage, "get" | "put" | "delete" | "list">;
-  /** Delete fork `volume` (its row, then its object, which lets go of its base's pins). Throws when it could not. */
-  deleteFork(volume: string): Promise<void>;
-  /**
-   * Whether the owner's result cache takes fork `volume` over (an entry of its names it): then the cache deletes it when
-   * the entry goes, and this workflow forgets it. Throws when it could not tell: the fork stays, tried again later.
-   */
-  adopt?(volume: string): Promise<boolean>;
+  deleteOwned(repo: string): Promise<{ held: string[] }>;
   now?: () => number;
 }
 
-export class ForkJanitor {
-  private readonly host: ForkJanitorHost;
-  constructor(host: ForkJanitorHost) { this.host = host; }
+export class BranchJanitor {
+  private readonly host: BranchJanitorHost;
+  constructor(host: BranchJanitorHost) { this.host = host; }
   private now() { return (this.host.now ?? Date.now)(); }
-
-  /** A fork made for a child: recorded before the child gets it, so no fork outlives the workflow unrecorded. */
-  async made(volume: string) { await this.host.storage.put(ROW + volume, { at: this.now() }); }
 
   /** When the next try is due (an alarm the object keeps armed), or undefined when nothing waits. */
   async retryAt() { return (await this.host.storage.get<{ at: number }>(RETRY))?.at; }
@@ -45,12 +29,11 @@ export class ForkJanitor {
     let failed = committing;
     if (!committing) for (const key of forks) {
       try {
-        // Handed to the result cache, which deletes it when its entry goes; or deleted now.
-        if (!await this.host.adopt?.(key.slice(ROW.length))) await this.host.deleteFork(key.slice(ROW.length));
+        if ((await this.host.deleteOwned(key.slice(ROW.length))).held.length) { failed = true; continue; }
         await this.host.storage.delete(key);
       } catch (error) {
         failed = true;
-        console.error(JSON.stringify({ type: "workflow_fork_delete_failed", fork: key.slice(ROW.length), error: error instanceof Error ? error.message.slice(0, 200) : "Error" }));
+        console.error(JSON.stringify({ type: "workflow_ref_delete_failed", fork: key.slice(ROW.length), error: error instanceof Error ? error.message.slice(0, 200) : "Error" }));
       }
     }
     if (!failed) { await this.host.storage.delete(RETRY); return undefined; }
