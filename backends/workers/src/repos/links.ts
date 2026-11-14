@@ -42,7 +42,7 @@ export async function signRepoLink(ctx: RepoContext, base: string, input: {
   check(method !== 'PUT' || input.version === undefined, 'bad_version');
   const path = normalizeRepoPath(input.path), ref = input.ref ?? 'main';
   if (method === 'GET') {
-    const v = await ctx.stub.resolve(input.version ?? ref);
+    const v = await ctx.repo.resolve(input.version ?? ref);
     await fileEntry(ctx, v, path);
   }
   const grant = { kind: 'repo' as const, tenant: ctx.tenant, repo: ctx.repoId, ref, version: input.version, path, method, maxBytes: input.maxBytes, contentType: input.contentType, agent: input.agent, run: input.run, call: input.call };
@@ -64,12 +64,12 @@ export async function handleSignedRepoRequest(request: Request, env: RepoEnv): P
       throw new RepoError('method_not_allowed', 405, 'method_not_allowed');
     const ctx = await repoContext(env, grant.tenant, grant.repo);
     if (grant.method === 'GET') {
-      const v = await ctx.stub.resolve(grant.version ?? grant.ref);
+      const v = await ctx.repo.resolve(grant.version ?? grant.ref);
       return await streamFile(request, ctx, v, await fileEntry(ctx, v, grant.path));
     }
     if (grant.contentType && declaredType(request.headers.get('content-type')) !== grant.contentType)
       throw new RepoError('content_type', 415, 'content_type');
-    const result = await commitChanges(ctx, { ref: grant.ref, changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, who: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, why: 'link', trailers: grant.agent ? { 'Camel-Agent': grant.agent, 'Camel-Checkpoint': 'automatic', ...(grant.run ? { 'Camel-Run': grant.run } : {}), ...(grant.call ? { 'Camel-Call': grant.call } : {}) } : { 'Camel-Checkpoint': 'api' } });
+    const result = await commitChanges(ctx, { ref: grant.ref, op: grant.agent ? 'turn' : 'api', changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, who: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, why: 'link', trailers: grant.agent ? { 'Camel-Agent': grant.agent, 'Camel-Checkpoint': 'automatic', ...(grant.run ? { 'Camel-Run': grant.run } : {}), ...(grant.call ? { 'Camel-Call': grant.call } : {}) } : { 'Camel-Checkpoint': 'api' } });
     return json({ version: result.version, path: grant.path, ...result.files[grant.path] }, 201);
   }
   catch (e) {

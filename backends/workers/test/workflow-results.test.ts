@@ -72,13 +72,13 @@ test("past its caps a scope drops the least recently hit first", async t => {
 
 
 test("cached forks are immutable versions retained by a three-day cache ref", async t => {
-  const f = fixture(t), repo = await f.create(), head = await repo.stub.resolve('main');
+  const f = fixture(t), repo = await f.create(), head = await repo.repo.resolve('main');
   const { object, state, db } = cache(t, f.env);
   const fork = { tenant: 't', owner: 'api', repo: repo.repoId, version: head.version };
   await object.put({ kind: 'agent', key: 'tree-key', source: 'wf:k:1', workflow: 'wf', value: { text: 'ok' }, fork });
   const hit = await object.lookup('agent', 'tree-key');
   assert.deepEqual(hit?.fork, { repo: repo.repoId, version: head.version });
-  const refs = await repo.stub.refs();
+  const refs = await repo.repo.refs();
   const kept = refs.find(r => r.name.startsWith('cache/'))!;
   assert.match(kept.name, /^cache\/[0-9a-f]{16}$/);
   assert.equal(kept.owner, 'cache:t:api');
@@ -89,14 +89,14 @@ test("cached forks are immutable versions retained by a three-day cache ref", as
 });
 
 test('a ref left by eviction is replaced before caching a new fork version', async t => {
-  const f = fixture(t), repo = await f.create(), head = await repo.stub.resolve('main');
+  const f = fixture(t), repo = await f.create(), head = await repo.repo.resolve('main');
   const {object,db} = cache(t,f.env);
   const entry = {kind:'agent',key:'same-key',source:'old:k:1',workflow:'old',value:{text:'old'},fork:{tenant:'t',owner:'api',repo:repo.repoId,version:head.version}};
   await object.put(entry);
   db.exec('DELETE FROM results');
   const edited = await f.write(repo,{'a':{bytes:new TextEncoder().encode('new')}});
   await object.put({...entry,source:'new:k:1',workflow:'new',value:{text:'new'},fork:{...entry.fork,version:edited.version}});
-  const retained = (await repo.stub.refs()).find(r=>r.name.startsWith('cache/'))!;
+  const retained = (await repo.repo.refs()).find(r=>r.name.startsWith('cache/'))!;
   assert.equal(retained.version,edited.version);
   assert.equal((await object.lookup('agent','same-key'))!.fork!.version,edited.version);
 });

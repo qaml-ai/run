@@ -142,7 +142,7 @@ test("fork retries resume the claimed history and file versions after interrupti
     if (before) assert.equal(await before.text(), `${point}: original a`);
     await write("a.txt", `${point}: newer a`);
     await write("b.txt", `${point}: newer b`);
-    const held = await json(`/v1/repos/${volume}/history`);
+    const held = await json(`/v1/repos/${volume}/history?ref=main`);
     assert.ok(held.versions.length>=4,"prior versions remain reachable through repo history");
     await f.worker.stop(true);
     await f.worker.start();
@@ -155,7 +155,7 @@ test("fork retries resume the claimed history and file versions after interrupti
       if (name === "a" && copiedVersion) assert.equal(response.headers.get("x-file-version"), copiedVersion, "a completed file is not copied again");
     }
     assert.deepEqual((await json(`/v1/agents/${pending.id}/history`)).messages.map((message: any) => message.content), ["Original history"]);
-    assert.ok((await json(`/v1/repos/${volume}/history`)).versions.length>=held.versions.length,"fork completion retains parent history");
+    assert.ok((await json(`/v1/repos/${volume}/history?ref=main`)).versions.length>=held.versions.length,"fork completion retains parent history");
     assert.equal((await json(`/v1/agents/${source.id}/fork`, { key })).id, pending.id);
   }
   const expiring = await call(`/v1/agents/${source.id}/fork`, {
@@ -172,7 +172,7 @@ test("fork retries resume the claimed history and file versions after interrupti
     assert.equal(expired.status, 410);
     assert.equal((await expired.json() as any).code, "FORK_EXPIRED");
   }
-  assert.ok((await json(`/v1/repos/${volume}/history`)).versions.length,"expired claims retain immutable versions");
+  assert.ok((await json(`/v1/repos/${volume}/history?ref=main`)).versions.length,"expired claims retain immutable versions");
   const raced = await call(`/v1/agents/${source.id}/fork`, {
     method: "POST", headers: { "content-type": "application/json", "x-camel-test-fork-failure": "claimed" },
     body: JSON.stringify({ key: "ordinary-create-race" }),

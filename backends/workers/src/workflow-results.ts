@@ -81,10 +81,10 @@ export class WorkflowResults extends DurableObject<FileBindings> {
     if (fork) {
       const ctx = await repoContext(this.env as RepoEnv, fork.tenant, fork.repo);
       const owner = `cache:${fork.tenant}:${fork.owner}`, name = `cache/${(await sha256(`${owner}\0${hash}`)).slice(0, 16)}`;
-      let retained = await ctx.stub.ref(name);
+      let retained = await ctx.repo.ref(name);
       if (retained && retained.owner !== owner) throw new RepoError('Cache ref belongs to another owner', 409, 'exists');
       if (retained && (retained.version !== fork.version || retained.expiresAt! <= Date.now())) {
-        await ctx.stub.deleteRef(name, retained.version);
+        await ctx.repo.deleteRef(name, retained.version);
         retained = null;
       }
       if (!retained) retained = await branch(ctx, { name, from: { version: fork.version }, owner, ttlSeconds: RESULT_CACHE_LIMITS.forkEntryMs / 1000, who: `workflow:${entry.workflow}`, why: 'workflow cache' });

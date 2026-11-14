@@ -259,7 +259,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         if (kind === 'job' && typeof source === 'string') base = (await (await volume(env, tenant, source)).info()).seq;
         else if (source !== undefined) {
           const at = repoAt(source), ctx = await repoContext(env as unknown as RepoEnv, tenant, at.repo);
-          base = (await ctx.stub.resolve(at.ref ?? at.version ?? 'main')).tree;
+          base = (await ctx.repo.resolve(at.ref ?? at.version ?? 'main')).tree;
         }
         let key = cacheKey(args, base);
         if (kind === "agent") {
@@ -283,7 +283,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         const fork = effect.kind === 'agent' && parse(effect.args).repo !== undefined ? (effect.value as { fork?: WorkflowFork })?.fork : undefined;
         // Awaited so the cache ref exists before the end deletes the fork branch; a cache failure only loses the entry.
         try {
-          const version = fork ? (await (await repoContext(env as unknown as RepoEnv, tenant, fork.repo)).stub.resolve(fork.ref)).version : undefined;
+          const version = fork ? (await (await repoContext(env as unknown as RepoEnv, tenant, fork.repo)).repo.resolve(fork.ref)).version : undefined;
           const owner = this.settings().owner;
           await cache.put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(fork ? { fork: { tenant, owner: owner?.kind === 'agent' ? owner.id : 'api', repo: fork.repo, version: version! } } : {}) });
         } catch (error) {

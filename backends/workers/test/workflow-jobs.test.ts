@@ -440,7 +440,7 @@ test('commit merges cleanly, reports conflicts, rejects snapshots and retries st
 });
 
 test('result cache keys on trees and recreates branches; a missing version is a logged miss', async t => {
-  const f = fixture(t), ctx = await f.create(), old = await ctx.stub.resolve('main');
+  const f = fixture(t), ctx = await f.create(), old = await ctx.repo.resolve('main');
   const rows = new Map<string, unknown>(), keys: string[] = [];
   let cached: any;
   const cache = { lookup: async (_kind: string,key: string) => { keys.push(key); return cached; } };
@@ -455,7 +455,7 @@ test('result cache keys on trees and recreates branches; a missing version is a 
   const agent = JSON.stringify({prompt:'edit',repo:ctx.repoId,model:'test/model'});
   cached = {value:{text:'cached'},source:'old:k:1',fork:{repo:ctx.repoId,version:old.version}};
   const hit = await results.lookup('agent',agent,{key:'a',attempt:1});
-  assert.equal((await ctx.stub.resolve(hit.hit.value.fork.ref)).version,old.version);
+  assert.equal((await ctx.repo.resolve(hit.hit.value.fork.ref)).version,old.version);
   assert.equal(rows.get(`workflow-repo:${ctx.repoId}`),true);
   cached = {...cached,fork:{repo:ctx.repoId,version:'f'.repeat(40)}};
   const lines: string[] = [], error = console.error;

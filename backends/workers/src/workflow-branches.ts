@@ -14,16 +14,16 @@ export async function childBranch(env: RepoEnv, tenant: string, storage: Pick<Du
   const row = `workflow-base:${at.repo}:${name}`;
   let base = await storage.get<{ version: string }>(row);
   if (!base) {
-    base = await ctx.stub.resolve(at.ref ?? at.version ?? 'main');
+    base = await ctx.repo.resolve(at.ref ?? at.version ?? 'main');
     await storage.put(row, { version: base.version });
   }
-  const existing = await ctx.stub.ref(name);
+  const existing = await ctx.repo.ref(name);
   if (existing && existing.owner !== `workflow:${effect.workflow}`) throw new RepoError('workflow branch belongs to another owner', 409, 'exists');
   if (!existing) {
     try { await branch(ctx, { name, from: { version: cached ?? base.version }, owner: `workflow:${effect.workflow}`, who: `workflow:${effect.workflow}`, why: 'workflow child' }); }
     catch (error) {
       if (repoErrorFrom(error)?.code !== 'exists') throw error;
-      if ((await ctx.stub.ref(name))?.owner !== `workflow:${effect.workflow}`) throw error;
+      if ((await ctx.repo.ref(name))?.owner !== `workflow:${effect.workflow}`) throw error;
     }
   }
   return { repo: at.repo, ref: name, base: { ...(at.version === undefined ? { ref: at.ref ?? 'main' } : {}), version: base.version } };

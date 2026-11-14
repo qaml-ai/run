@@ -227,8 +227,8 @@ export class WorkflowJobs implements EffectExecutor {
       const ctx = await repoContext(env, tenant, info.id), ref = `job/${id}`;
       const prepared = `workflow-job-files:${id}`;
       if (!await this.host.storage.get(prepared)) {
-        if (!await ctx.stub.ref(ref)) await branch(ctx, { name: ref, from: "main", owner, who: `job:${id}` });
-        await commitChanges(ctx, { ref, changes: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, { bytes: new TextEncoder().encode(text) }])), message: "job inline files", author: owner, who: `job:${id}`, why: "job inline files", allowEmpty: true, idempotencyKey: `job:${id}:files` });
+        if (!await ctx.repo.ref(ref)) await branch(ctx, { name: ref, from: "main", owner, who: `job:${id}` });
+        await commitChanges(ctx, { ref, op: "job", changes: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, { bytes: new TextEncoder().encode(text) }])), message: "job inline files", author: owner, who: `job:${id}`, why: "job inline files", allowEmpty: true, idempotencyKey: `job:${id}:files` });
         await this.host.storage.put(prepared, true);
       }
       source = { repo: { tenant, repo: info.id, ref, owner } };
@@ -289,7 +289,7 @@ export class WorkflowJobs implements EffectExecutor {
       stdout: await stream("stdout.txt", result.stdout), stderr: await stream("stderr.txt", result.stderr), outputs, missing: result.missing,
       timings: { totalMs: result.timings.totalMs, commandMs: result.timings.commandMs, steps: keptSteps },
     };
-    const kept = await commitChanges(ctx, { ref: 'main', changes, message: `job ${id}`, author: `workflow:${this.host.workflow.id}`, who: `workflow:${this.host.workflow.id}`, why: 'keep', idempotencyKey: `keep:${id}` });
+    const kept = await commitChanges(ctx, { ref: 'main', op: 'job', changes, message: `job ${id}`, author: `workflow:${this.host.workflow.id}`, who: `workflow:${this.host.workflow.id}`, why: 'keep', idempotencyKey: `keep:${id}` });
     value.version = kept.version;
     if (result.camelfs) {
       const { tree, root, commit, checkpointError, warm, mountMs, applyMs, checkpointMs, checkpoint } = result.camelfs;

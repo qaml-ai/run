@@ -38,7 +38,7 @@ export async function claimAgentWorkspace(env: FileBindings, tenant: string, sou
   if(saved?.workspace) return saved.workspace;
   const source = await agentRepo(env as RepoEnv,tenant,sourceId);
   const ctx=await repoContext(env as RepoEnv,tenant,source.info.id);
-  const head=await ctx.stub.ref('main');
+  const head=await ctx.repo.ref('main');
   return {repo:source.info.id,version:head?.version};
 }
 

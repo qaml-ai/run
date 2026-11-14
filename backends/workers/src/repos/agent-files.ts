@@ -16,14 +16,14 @@ export function mountTarget(mounts: Mount[], tenant: string, agent: string, raw?
   if (!mount) throw new FileError('Path is not inside a mount',403);
   return { mount, path, inside: normalizePath((mount.subpath??'/')+'/'+path.slice(mount.path.length)) };
 }
-export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: Mount[] = []): Promise<Response> {
+export async function handleAgentFileRequest(request: Request, env: FileBindings, tenant: string, agent: string, path: string, mounts: Mount[] = [], op: 'api' | 'turn' = 'turn'): Promise<Response> {
   try {
     path=normalizePath(path);
     const t=mountTarget(mounts.filter((m):m is Mount=>'repo' in m),tenant,agent,path);
     if(request.method!=='GET' && t.mount.mode!=='rw') throw new FileError('Mount is read-only',403);
     const store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent, { ...(request.headers.get("x-camel-run") ? {"Camel-Run":request.headers.get("x-camel-run")!} : {}), ...(request.headers.get("x-camel-call") ? {"Camel-Call":request.headers.get("x-camel-call")!} : {}) }), p=insideRepo(t.inside);
     if(request.method==='GET') {
-      const file=await store.stat(t.inside), v=await store.ctx.stub.resolve(file.version);
+      const file=await store.stat(t.inside), v=await store.ctx.repo.resolve(file.version);
       const response=await streamFile(request,store.ctx,v,{path:p,blob:file.blob,size:file.size,mode:'100644'});
       const headers=new Headers(response.headers);headers.set('x-file-version',file.version);headers.set('etag',`"${file.version}"`);
       return new Response(response.body,{status:response.status,headers});
@@ -33,8 +33,8 @@ export async function handleAgentFileRequest(request: Request, env: FileBindings
       const old=header ? await store.stat(t.inside) : undefined;
       if(old && old.version!==header) throw new FileError('File changed since the version given',412);
       const expected=request.headers.get('if-none-match')==='*' ? 'none' : old?.blob;
-      const result=await store.commit({[p]: request.method==='DELETE'?null:{bytes:await boundedBytes(request.body,256*2**20)}},expected?{[p]:expected}:{},`${request.method.toLowerCase()} ${p}`);
-      return Response.json(request.method==='DELETE'?{deleted:true,version:result.version}:{...await store.stat(t.inside),path:t.path,version:result.version,by:agent},{status:request.method==='PUT'?201:200});
+      const result=await store.commit({[p]: request.method==='DELETE'?null:{bytes:await boundedBytes(request.body,256*2**20)}},expected?{[p]:expected}:{},`${request.method.toLowerCase()} ${p}`,{},op);
+      return Response.json(request.method==='DELETE'?{deleted:true,version:result.version}:{...await store.stat(t.inside,result.version!),path:t.path,version:result.version,by:agent},{status:request.method==='PUT'?201:200});
     }
     throw new FileError('Method not allowed',405);
   } catch(e) {return failure(e);}
