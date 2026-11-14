@@ -9,7 +9,9 @@ trap 'rm -rf "$work"' EXIT
 root=$work/root
 image=$work/guest.ext4
 commit=$(git -C "$src" rev-parse HEAD)
-export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$src" log -1 --format=%ct)}
+# The last commit touching a guest input (guest-inputs.txt), so unchanged inputs rebuild the same image.
+mapfile -t inputs < <(grep -Ev '^(#|$)' "$src/camelfsd/scripts/guest-inputs.txt")
+export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$src" log -1 --format=%ct -- "${inputs[@]}")}
 export E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH
 
 (

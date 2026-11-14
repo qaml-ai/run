@@ -1,4 +1,5 @@
 import { vmFiles, type VmFilesScope } from "./camelfs/vm-files.ts";
+import type { VmFilesProvider } from "./repos/vm-route.ts";
 import { BashSessions } from "./camelfs/bash.ts";
 import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
@@ -274,7 +275,7 @@ export class AgentRuntime extends AgentContext {
       (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
   }
 
-  readonly vmFiles = (scope: VmFilesScope) => {
+  readonly vmFiles: VmFilesProvider = (scope: VmFilesScope) => {
     const runtime = this;
     return vmFiles({
       ...this.env,
