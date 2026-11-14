@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { UsageRecord } from "../src/client-sessions/state.ts";
 import { DEFAULT_BUCKET } from "../src/end-user-credits.ts";
 import { nodeConfig } from "../src/node-config.ts";
-import { createNode, nodeDeps, type NodeDeps, type RuntimeNode } from "../src/node.ts";
+import { createNode, nodeDeps, type NodeDeps } from "../src/node.ts";
 import { REALTIME_PRICES } from "../src/voice/realtime/provider.ts";
 import { enqueueEvents, type WebhookEvent } from "../src/webhooks.ts";
+import { agentStarted, ownNodes } from "./node-fixture.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
 import { until } from "./runtime-server.ts";
@@ -35,11 +36,7 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
   } }));
   const events: WebhookEvent[] = [];
   const usage: UsageRecord[] = [];
-  let node: RuntimeNode | undefined;
-  // The node is closed before its data directory goes: under process hosting its children still write until then.
-  t.after(async () => {
-    try { await node?.close(); } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); }
-  });
+  const { nodes } = ownNodes(t, root);
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
@@ -61,8 +58,8 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
         ...overrides,
       },
     });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const http = async (method: string, path: string, body?: unknown) => {
@@ -74,6 +71,7 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
   };
   const agent = await http("POST", "/v1/agents", { name: "voice-agent" });
   assert.equal(agent.status, 201, JSON.stringify(agent.json));
+  await agentStarted(nodes[0], agent.json.id);
   const create = (patch: Record<string, unknown> = {}) => http("POST", path, {
     agent: agent.json.id, provider: "openai", subject: "user-1", sdp: offer, ...patch,
   });
@@ -83,7 +81,7 @@ async function fixture(t: TestContext, overrides: NodeDeps["voiceCallOverrides"]
     return result.json;
   };
   const event = (type: WebhookEvent["type"], id: string) => until(() => events.find(e => e.type === type && e.data.session === id)?.data, type);
-  return { openai, http, create, live, events, event, usage, calls: node!.calls! };
+  return { openai, http, create, live, events, event, usage, calls: nodes[0].calls! };
 }
 
 test("client-held call brokers SDP and exposes the live row with AGENT_VOICE unset", async t => {

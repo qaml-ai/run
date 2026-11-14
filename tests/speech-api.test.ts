@@ -4,18 +4,19 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../src/node-config.ts";
-import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { createNode, nodeDeps } from "../src/node.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
+import { ownNodes } from "./node-fixture.ts";
 import { until } from "./runtime-server.ts";
 
 test("POST /v1/speech: OpenAI by default, streamed as made (pcm or wav), billed per second made", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-speech-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: {
     alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key" } },
     bob: { tokenSha256: sha("bob-token-0123456789"), apiKeys: { openrouter: "fixture-key" } },
@@ -36,8 +37,6 @@ test("POST /v1/speech: OpenAI by default, streamed as made (pcm or wav), billed 
   await once(openai, "listening");
   t.after(() => new Promise<void>(resolve => openai.close(() => resolve())));
   const { url: databaseUrl } = await testDatabase();
-  let node: RuntimeNode | undefined;
-  t.after(async () => { await node?.close().catch(() => {}); });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
@@ -46,8 +45,8 @@ test("POST /v1/speech: OpenAI by default, streamed as made (pcm or wav), billed 
       AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_SPEECH_URL: `http://127.0.0.1:${(openai.address() as { port: number }).port}/v1`,
     });
     const made = await createNode(config, await nodeDeps(config));
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const speak = (body: unknown, bearer = token) => fetch(`${base}/v1/speech`, { method: "POST", body: JSON.stringify(body), headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" } });
@@ -87,7 +86,7 @@ test("POST /v1/speech: OpenAI by default, streamed as made (pcm or wav), billed 
 
 test("POST /v1/speech through a chain of providers it names (or whose voices it names): the first with a key serves, and says so", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-speech-chain-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key", elevenlabs: "tenant-eleven-key" } } } }));
   const asked: { url: string; key?: string }[] = [];
   const fake = createServer(async (req, res) => {
@@ -99,8 +98,6 @@ test("POST /v1/speech through a chain of providers it names (or whose voices it 
   t.after(() => new Promise<void>(resolve => fake.close(() => resolve())));
   const fakeUrl = `http://127.0.0.1:${(fake.address() as { port: number }).port}`;
   const { url: databaseUrl } = await testDatabase();
-  let node: RuntimeNode | undefined;
-  t.after(async () => { await node?.close().catch(() => {}); });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
@@ -110,8 +107,8 @@ test("POST /v1/speech through a chain of providers it names (or whose voices it 
       AGENT_VOICE: "true", AGENT_VOICE_ISOLATION: "inline",
     });
     const made = await createNode(config, await nodeDeps(config));
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const response = await fetch(`${base}/v1/speech`, {
