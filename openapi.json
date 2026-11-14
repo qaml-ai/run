@@ -15037,6 +15037,9 @@
           "subject": {
             "type": "string"
           },
+          "interruptResponse": {
+            "type": "boolean"
+          },
           "startedAt": {
             "type": [
               "number",
@@ -15089,6 +15092,7 @@
           "voice",
           "agent",
           "subject",
+          "interruptResponse",
           "startedAt",
           "endedAt",
           "expiresAt",
@@ -15489,6 +15493,11 @@
               "minLength": 1,
               "maxLength": 40
             }
+          },
+          "interruptResponse": {
+            "type": "boolean",
+            "default": true,
+            "description": "OpenAI only: whether the model stops its own answer when someone speaks (semantic_vad interrupt_response). Set false when your app handles barge-in itself (an echo guard); the model still takes turns. ElevenLabs ignores this field because interruptions are client events."
           },
           "sdp": {
             "type": "string",
