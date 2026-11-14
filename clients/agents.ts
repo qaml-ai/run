@@ -240,8 +240,10 @@ export interface RunOptions {
   metadata?: Record<string, string>;
   /** The run's id: sending the same key again returns the same run, never a second one. */
   idempotencyKey?: string;
-  /** Stop waiting (the run goes on; `agent.abort()` stops it). There is no timeout otherwise. */
+  /** Stop waiting (the run goes on; `agent.abort()` stops it). */
   signal?: AbortSignal;
+  /** Stop waiting after this many milliseconds with an AgentError (the run goes on). There is no timeout otherwise. */
+  timeoutMs?: number;
   /** Resolve with a failed run instead of throwing RunError. Default true: failures throw. */
   throwOnError?: boolean;
   /** While a turn runs, "queue" (default) runs after it; "steer" hands the message to it. */
@@ -584,7 +586,8 @@ export class Agent {
 
   /**
    * Send a message and wait for the run it starts: its reply, or the input it waits on. There is no
-   * timeout (runs can take minutes, or wait on people for days); `signal` stops the wait. A failed run
+   * timeout unless `timeoutMs` says so (runs can take minutes, or wait on people for days); `timeoutMs` and `signal` only
+   * stop the wait. A failed run
    * throws a RunError (with the run) unless `throwOnError: false`.
    */
   async run<S extends OutputSchema = never>(text: string, options: RunOptions & { output?: S } = {}): Promise<Run<OutputOf<S>>> {
@@ -803,7 +806,8 @@ function promptOptions(id: string, options: RunOptions) {
   return {
     ...messageOptions(options), idempotencyKey: id,
     ...(options.endUser !== undefined ? { endUser: options.endUser } : {}),
-    ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
+    ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
     ...(options.runLimits ? { runLimits: options.runLimits } : {}),
     ...(options.output ? { output: outputRequest(options.output) } : {}),
