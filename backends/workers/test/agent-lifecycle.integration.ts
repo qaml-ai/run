@@ -1,11 +1,10 @@
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
 
 test("definition revisions, imported history, forks and hidden stateless sessions", { timeout: 180000 }, async t => {
-  const fixture = await repoFixture(t);
+  const fixture = await repoFixture();
   t.after(() => fixture.stop());
   async function request(path: string, input?: unknown, method = input === undefined ? "GET" : "POST", headers: Record<string,string> = {}) {
     const response = await fetch(fixture.url + path, { method, headers: { Authorization: `Bearer ${fixture.token}`, "content-type": "application/json", ...headers }, body: input === undefined ? undefined : JSON.stringify(input) });
@@ -58,7 +57,7 @@ test("definition revisions, imported history, forks and hidden stateless session
 });
 
 test("forks isolate a relocated private workspace, retain shared mounts, and preserve no workspace", { timeout: 180000 }, async t => {
-  const f = await repoFixture(t);
+  const f = await repoFixture();
   t.after(() => f.stop());
   const call = (path: string, options: RequestInit = {}) => fetch(f.url + path, {
     ...options, headers: { authorization: `Bearer ${f.token}`, ...options.headers },
@@ -72,7 +71,7 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
     return value;
   }
   const shared = await json("/v1/repos", { name: "shared" });
-  await call(`/v1/repos/${shared.id}/commit`, {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({files:{"docs/initial.txt":{text:"initial"}}})});
+  await json(`/v1/repos/${shared.id}/commit`, { files: { "docs/initial.txt": { text: "initial" } } });
   const sharedMount = { repo: shared.id, path: "/shared", subpath: "/docs", mode: "ro", notify: true, ref: "main" };
   const source = await json("/v1/agents", { mounts: [{ workspace: true, path: "/private" }, sharedMount] });
   const bytes = Buffer.alloc(5 * 1024 * 1024 + 37, 0xa5);
@@ -101,7 +100,7 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
 });
 
 test("fork retries resume the claimed history and file versions after interruption", { timeout: 180000 }, async t => {
-  const f = await repoFixture(t);
+  const f = await repoFixture();
   t.after(() => f.stop());
   const call = (path: string, options: RequestInit = {}) => fetch(f.url + path, {
     ...options, headers: { authorization: `Bearer ${f.token}`, ...options.headers },
@@ -186,7 +185,6 @@ test("fork retries resume the claimed history and file versions after interrupti
   assert.equal((await json(`/v1/agents/${ordinary.id}/configuration`)).name, "unrelated");
 });
 
-async function repoFixture(t:any) {
-  const api=await serveFakeCamelfsd('fork-test-token');t.after(()=>api.close());
-  return startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),vars:{TEST_CAMELFS_URL:api.url,CAMELFS_API_TOKEN:'fork-test-token'}});
+async function repoFixture() {
+  return startFixture({entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url))});
 }

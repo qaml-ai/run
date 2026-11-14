@@ -1,4 +1,3 @@
-import { serveFakeCamelfsd } from './fake-camelfsd.ts';
 import { fileURLToPath } from 'node:url';
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -879,9 +878,7 @@ test("workflows: children edit branches of a repo with their file tools, commit(
   });
   model.listen(0, "127.0.0.1"); await once(model, "listening");
   t.after(() => { model.closeAllConnections(); return new Promise<void>(resolve => model.close(() => resolve())); });
-  const camelfs = await serveFakeCamelfsd('workflow-test-token');
-  t.after(() => camelfs.close());
-  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", camelfsStub: true, entrypoint: fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)), vars: { TEST_CAMELFS_URL:camelfs.url, CAMELFS_API_TOKEN:'workflow-test-token', TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", entrypoint: fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)), vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
     AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "repo-fixture/repo-model", strong: "repo-fixture/repo-model", max: "repo-fixture/repo-model" }) } });
   t.after(async () => {
     const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));

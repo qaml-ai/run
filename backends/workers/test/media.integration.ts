@@ -4,7 +4,6 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { serveFakeCamelfsd } from './fake-camelfsd.ts';
 import { startFixture } from './fixture.ts';
 import { pngBytes } from '../../../tests/file-fixtures.ts';
 
@@ -22,8 +21,7 @@ test('standalone media uses source providers, repos and durable usage; rejects b
   res.writeHead(404).end();
  }).listen(0,'127.0.0.1');await once(fake,'listening');t.after(()=>new Promise<void>(r=>fake.close(()=>r())));
  const token='local-integration-only-token-with-at-least-32-characters', cappedToken='local-capped-media-token-with-at-least-32-characters';
- const daemon=await serveFakeCamelfsd('media-repos');t.after(()=>daemon.close());
- const f=await startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),tenants:[{id:'camelrun-proto-local',token},{id:'capped-media',token:cappedToken}],vars:{TEST_CAMELFS_URL:daemon.url,CAMELFS_API_TOKEN:'media-repos',AGENT_TENANTS_JSON:JSON.stringify({tenants:{'capped-media':{tokenSha256:createHash('sha256').update(cappedToken).digest('hex'),maxMonthlyCost:0}}}),PLATFORM_OPENAI_KEY:'fake-only-key',MEDIA_BASE_URL:`http://127.0.0.1:${(fake.address() as any).port}`}});t.after(()=>f.stop());
+ const f=await startFixture({entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),tenants:[{id:'camelrun-proto-local',token},{id:'capped-media',token:cappedToken}],vars:{AGENT_TENANTS_JSON:JSON.stringify({tenants:{'capped-media':{tokenSha256:createHash('sha256').update(cappedToken).digest('hex'),maxMonthlyCost:0}}}),PLATFORM_OPENAI_KEY:'fake-only-key',MEDIA_BASE_URL:`http://127.0.0.1:${(fake.address() as any).port}`}});t.after(()=>f.stop());
  const call=async(path:string,value:any)=>{const response=await fetch(f.url+path,{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify(value)});const body=await response.json() as any;assert.equal(response.status,200,JSON.stringify(body));return body;};
  const image=await call('/v1/images',{prompt:'synthetic image'});assert.equal(image.images[0].width,1024);assert.equal(image.model,'openai/gpt-image-2.5-flare');
  await call('/v1/images',{prompt:'synthetic edit',images:[{data:pngBytes(10,10).toString('base64')}]});assert.equal(calls[1].path,'/images/edits');
