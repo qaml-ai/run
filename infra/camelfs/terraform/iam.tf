@@ -7,8 +7,9 @@
 #              deliveries, hosts and vms. The token verification keys reach the task as an injected environment
 #              variable, so the task role reads no secret; the execution role reads that one secret for the
 #              injection.
-#   host       camelfsd --role host on the VM hosts: the bucket (no delete) and the objects table (trees and
-#              commits a checkpoint publishes), nothing else: a host moves no ref (it asks the tier, which checks
+#   host       camelfsd --role host on the VM hosts: the lineage object keys (<lineage>/{o,t,k,r,c,ts}/*, read and
+#              write, no delete), the guest image (read) and the objects table (trees and commits a checkpoint
+#              publishes), nothing else — every other prefix is denied by omission: a host moves no ref (it asks the tier, which checks
 #              its fence), reads no lineage registry and touches no control table; no secret at all: its identity
 #              is the certificate the tier issues it at enrollment (§9.12). Delivered as a customer-managed
 #              policy (host_policy_arn), attachable to the job-hosts pool roles (infra/job-hosts/terraform/iam.tf,
@@ -78,7 +79,8 @@ locals {
   table_arns = { for table, resource in aws_dynamodb_table.camelfs : table => resource.arn }
 
   # The bucket, read and write, never delete. CopyObject (a cross-lineage fork, camel-fs-files.md §9) is a GetObject
-  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject. Nothing tags.
+  # on the source and a PutObject on the destination. s3:GetObject covers HeadObject. Nothing tags. The API ROLE's
+  # statements: the whole bucket.
   bucket_rw_statements = [
     {
       Sid      = "ObjectsReadWrite"
@@ -204,9 +206,48 @@ locals {
     && try(tolist(statement.Principal.Service), [statement.Principal.Service]) == ["ec2.amazonaws.com"]
   ])
 
+  # A host's keys (camelfsd/README.md, "Durability and lineage scope"): <lineage>/{o,t,k,r,c,ts}/<hash>, the lineage
+  # first; and the guest image under guest/ (K1), read only. Scoped to exactly those (the lead, 2026-11-14): anything
+  # else in the bucket — another prefix, a future one — is denied by omission, not by a deny statement to keep up.
+  # A lineage is one path segment and hashes are hex, so "*/o/*" cannot match a key outside a lineage's objects.
+  host_object_kinds = ["o", "t", "k", "r", "c", "ts"]
+  host_object_arns  = [for kind in local.host_object_kinds : "${aws_s3_bucket.objects.arn}/*/${kind}/*"]
+  host_bucket_statements = [
+    {
+      Sid      = "LineageObjectsReadWrite"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
+      Resource = local.host_object_arns
+    },
+    {
+      Sid      = "GuestImageRead"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:GetObjectAttributes"]
+      Resource = ["${aws_s3_bucket.objects.arn}/${var.guest_image_prefix}guest/*"]
+    },
+    {
+      Sid      = "LineageObjectsList"
+      Effect   = "Allow"
+      Action   = ["s3:ListBucket"]
+      Resource = [aws_s3_bucket.objects.arn]
+      Condition = {
+        StringLike = { "s3:prefix" = concat([for kind in local.host_object_kinds : "*/${kind}/*"], ["${var.guest_image_prefix}guest/*"]) }
+      }
+    },
+    {
+      Sid      = "ObjectsKeyThroughS3"
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+      Resource = [aws_kms_key.objects.arn]
+      Condition = {
+        StringEquals = { "kms:ViaService" = "s3.${var.region}.amazonaws.com" }
+      }
+    },
+  ]
+
   host_policy = {
     Version = "2012-10-17"
-    Statement = concat(local.bucket_rw_statements, [
+    Statement = concat(local.host_bucket_statements, [
       # Trees and commits a checkpoint publishes (L74). Reads of a tree by id on a cache miss.
       {
         Sid      = "ObjectsTable"
