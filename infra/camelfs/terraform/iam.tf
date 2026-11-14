@@ -106,8 +106,9 @@ locals {
     },
   ]
 
+  # Scan: the GC mark pass walks the marks table (C3b); nothing else scans.
   dynamodb_item_actions = [
-    "dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query",
+    "dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query", "dynamodb:Scan",
     "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem",
     "dynamodb:ConditionCheckItem", "dynamodb:TransactGetItems", "dynamodb:TransactWriteItems",
   ]
