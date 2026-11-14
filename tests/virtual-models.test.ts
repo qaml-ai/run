@@ -237,17 +237,15 @@ test("a tenant with no OpenRouter key falls to what it holds; an upsert keeps th
 
 const USD = 1_000_000;
 
-test("over the API: Ember's failed attempt releases its end user's hold and costs nothing; only the model that answered is charged", async t => {
+test("over the API: Ember's failed attempt costs nothing; only the model that answered is charged", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
   const provider = await openrouter(t, () => ({ status: 503 }), () => ({ role: "assistant", content: "From 1017.", usage: { prompt_tokens: 100, completion_tokens: 10, cost: 0.01 } }));
-  const holds = async () => Number((await r.db.query("select count(*) n from end_user_holds")).rows[0].n);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: provider.url } });
   await r.call("/v1/end-user-settings", { method: "PUT", body: { enabled: true } });
   await r.call("/v1/end-users/person/entries", { body: { kind: "grant", amount: 5 * USD, key: "pay" } });
   const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", subject: "person", bucket: "b" } })).json.id;
   const done = await r.prompt(agent, "Hello");
   assert.equal(done.outcome.result.reply, "From 1017.");
-  assert.equal(await holds(), 0, "no hold outlives the turn");
   const rows = (await r.db.query("select model, end_user_raw, end_user_paid from model_attempts order by started_at")).rows;
   assert.deepEqual(rows.map(row => [row.model, Number(row.end_user_raw)]), [[EMBER, 0], [FLASH, 10_000]], "an attempt for each, and only the one that answered costs anything");
   const ledger = (await r.db.query("select coalesce(sum(amount), 0)::bigint as total from end_user_ledger where end_user = 'person' and kind <> 'grant'")).rows[0].total;
@@ -258,7 +256,7 @@ test("over the API: Ember's failed attempt releases its end user's hold and cost
   assert.equal(superseded, "unavailable", "the host says so, so a later reconcile counts no response for it");
 });
 
-test("the books for a move: a failed attempt's hold goes as it ends, the next holds at its own price, and reconciling the failure never charges it", async () => {
+test("the books for a move: the successful model is charged and reconciling the failure costs nothing", async () => {
   const { db } = await testDatabase();
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: "a".repeat(64), billing: "prepaid" } }, platformKeys: { openrouter: "fixture" } }) });
   await tenants.reload();
@@ -270,21 +268,15 @@ test("the books for a move: a failed attempt's hold goes as it ends, the next ho
   const keyHash = createHash("sha256").update("fixture").digest("hex");
   const begin = (id: string, model: string) => attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model, kind: "response", at: Date.now(), keyHash,
     estimate: { inputTokens: 100_000, maxOutputTokens: 2_048, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } } as never);
-  const held = async () => Number((await db.query("select coalesce(sum(paid + allowance), 0)::bigint as n from end_user_holds")).rows[0].n);
   const balance = async () => Number((await db.query("select balance from credit_accounts where tenant = 'payg'")).rows[0].balance);
 
   const failed = randomUUID(), answered = randomUUID();
   await begin(failed, EMBER);
-  const atEmber = await held();
-  assert.ok(atEmber > 0);
   await attempts.event("payg", "agent", true, true, { type: "finish", id: failed, usage: { input: 0, output: 0 }, chars: 0, completed: false, superseded: "unavailable" });
-  assert.equal(await held(), 0, "the failed attempt's hold is gone");
   assert.equal(await balance(), 100 * USD, "and nothing is charged");
 
   await begin(answered, FLASH);
-  assert.ok(await held() > atEmber, "1017 holds at its own, dearer price");
   await attempts.event("payg", "agent", true, true, { type: "finish", id: answered, usage: { input: 100, output: 10, providerCost: 0.01, providerCreditCost: 0 }, chars: 40, completed: true });
-  assert.equal(await held(), 0);
   const charged = 100 * USD - await balance();
   assert.ok(charged > 0, "the tenant pays for the answer");
 

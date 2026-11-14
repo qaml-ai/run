@@ -51,8 +51,8 @@
       "  if (request.mask && !sources.length) throw new HttpError(400, \"A mask needs an image to edit\");\n  if (request.repo && !service.save) throw new HttpError(404, \"Repos are not enabled on this runtime\");\n  if (request.repo && !await service.owns!(tenant, request.repo.id)) throw new HttpError(404, \"Unknown repo\");\n  await service.admit(tenant);\n"
     ],
     [
-      "  await held?.settle(usage.usage.cost.total as number);\n  const volume = request.volume;\n  const stamp = `${new Date().toISOString().replace(/[-:]/g, \"\").slice(0, 15)}-${randomBytes(3).toString(\"hex\")}`;\n",
-      "  await held?.settle(usage.usage.cost.total as number);\n  const repo = request.repo;\n  const stamp = `${new Date().toISOString().replace(/[-:]/g, \"\").slice(0, 15)}-${randomBytes(3).toString(\"hex\")}`;\n"
+      "  const volume = request.volume;\n  const stamp = `${new Date().toISOString().replace(/[-:]/g, \"\").slice(0, 15)}-${randomBytes(3).toString(\"hex\")}`;\n",
+      "  const repo = request.repo;\n  const stamp = `${new Date().toISOString().replace(/[-:]/g, \"\").slice(0, 15)}-${randomBytes(3).toString(\"hex\")}`;\n"
     ],
     [
       "    const facts = { contentType: image.contentType, ...(size ? { width: size.width, height: size.height } : {}) };\n    if (!volume) return { ...facts, data: Buffer.from(image.bytes).toString(\"base64\") };\n    const path = `${volume.path.replace(/\\/+$/, \"\")}/image-${stamp}${generated.images.length > 1 ? `-${index + 1}` : \"\"}.${EXTENSIONS[image.contentType] ?? \"png\"}`;\n    const saved = await service.save!(tenant, volume.id, path, image.bytes, image.contentType);\n    return { ...facts, volumeId: volume.id, path: saved.path, size: saved.size, version: saved.version };\n  }));\n",

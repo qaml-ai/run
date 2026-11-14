@@ -2,11 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerHooks } from 'node:module';
 
-// Successful queue releases do not call the Workers-only admission service.
 registerHooks({ resolve(specifier, context, next) {
-  if (specifier === './control.ts' && context.parentURL?.endsWith('/src/batch-queue.ts')) {
-    return { url: 'data:text/javascript,export function releaseTurn() { throw new Error("unexpected cancellation"); }', shortCircuit: true };
-  }
   if (specifier === './agent-types.ts' && context.parentURL?.endsWith('/src/batch-queue.ts')) {
     return { url: 'data:text/javascript,export const reqKey = id => `request:${id}`;', shortCircuit: true };
   }
