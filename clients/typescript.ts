@@ -1638,7 +1638,7 @@ export type VoiceCallInput = {
 export type VoiceCall = {
   id: `vc_${string}`; state: "connecting" | "live" | "ending" | "ended"; provider: "openai" | "elevenlabs";
   model: string; voice: string; agent: string; subject: string;
-  startedAt: number | null; endedAt: number | null; expiresAt: number; reason: string | null;
+  startedAt: number | null; endedAt: number | null; expiresAt: number; maxMinutes: number; reason: string | null;
   turns: number; asks: number; audioSeconds: number; costUsd: number;
   metadata: Record<string, unknown>; speakers: Record<string, string>;
 };

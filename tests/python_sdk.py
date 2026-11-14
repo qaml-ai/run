@@ -1251,9 +1251,11 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         call_id = "vc_" + "0" * 24
         with self.assertRaises(ValueError):
             self.agents.voice.create()
+        # This fresh runtime has only an OpenRouter key and inherits no provider keys from the parent environment.
         with self.assertRaises(AgentError) as refused:
             await self.agents.voice.create(agent=agent.id, provider="openai", sdp="v=0", subject="user_1")
         self.assertEqual((refused.exception.status, refused.exception.code), (400, "REALTIME_UNAVAILABLE"))
+        self.assertIn("No OpenAI key for voice calls", str(refused.exception))
         with self.assertRaises(AgentError) as missing:
             await self.agents.voice.end(call_id, reason="x")
         self.assertEqual((missing.exception.status, missing.exception.code), (404, "VOICE_CALL_NOT_FOUND"))
