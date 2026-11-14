@@ -1,9 +1,11 @@
+import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
 
 test("definition revisions, imported history, forks and hidden stateless sessions", { timeout: 180000 }, async t => {
-  const fixture = await startFixture();
+  const fixture = await repoFixture(t);
   t.after(() => fixture.stop());
   async function request(path: string, input?: unknown, method = input === undefined ? "GET" : "POST", headers: Record<string,string> = {}) {
     const response = await fetch(fixture.url + path, { method, headers: { Authorization: `Bearer ${fixture.token}`, "content-type": "application/json", ...headers }, body: input === undefined ? undefined : JSON.stringify(input) });
@@ -56,7 +58,7 @@ test("definition revisions, imported history, forks and hidden stateless session
 });
 
 test("forks isolate a relocated private workspace, retain shared mounts, and preserve no workspace", { timeout: 180000 }, async t => {
-  const f = await startFixture();
+  const f = await repoFixture(t);
   t.after(() => f.stop());
   const call = (path: string, options: RequestInit = {}) => fetch(f.url + path, {
     ...options, headers: { authorization: `Bearer ${f.token}`, ...options.headers },
@@ -69,8 +71,9 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
     assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}`);
     return value;
   }
-  const shared = await json("/v1/volumes", { name: "shared" });
-  const sharedMount = { volumeId: shared.id, path: "/shared", subpath: "/docs", mode: "ro", notify: true };
+  const shared = await json("/v1/repos", { name: "shared" });
+  await call(`/v1/repos/${shared.id}/commit`, {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({files:{"docs/initial.txt":{text:"initial"}}})});
+  const sharedMount = { repo: shared.id, path: "/shared", subpath: "/docs", mode: "ro", notify: true, ref: "main" };
   const source = await json("/v1/agents", { mounts: [{ workspace: true, path: "/private" }, sharedMount] });
   const bytes = Buffer.alloc(5 * 1024 * 1024 + 37, 0xa5);
   const write = await call(`/v1/agents/${source.id}/files/private/bytes.bin`, {
@@ -82,7 +85,7 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
   const after = await json(`/v1/agents/${fork.id}/mounts`);
   assert.equal(after.length, 2, "a relocated workspace must not introduce /workspace");
   assert.deepEqual(after.find((mount: any) => mount.path === "/shared"), sharedMount);
-  assert.notEqual(after.find((mount: any) => mount.path === "/private").volumeId, before.find((mount: any) => mount.path === "/private").volumeId);
+  assert.notEqual(after.find((mount: any) => mount.path === "/private").repo, before.find((mount: any) => mount.path === "/private").repo);
   const clone = await call(`/v1/agents/${fork.id}/files/private/bytes.bin`);
   assert.equal(clone.status, 200);
   assert.deepEqual(Buffer.from(await clone.arrayBuffer()), bytes, "multipart copy preserves all bytes");
@@ -93,12 +96,12 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
   const absent = await json("/v1/agents", { mounts: [{ workspace: false }, sharedMount] });
   const absentFork = await json(`/v1/agents/${absent.id}/fork`, {});
   assert.deepEqual(await json(`/v1/agents/${absentFork.id}/mounts`), [sharedMount]);
-  const privateVolume = (await f.db.query("select count(*)::int n from volumes where name='workspace'")).rows[0].n;
+  const privateVolume = (await json("/v1/repos")).repos.filter((r:any)=>r.key?.startsWith("agent:")).length;
   assert.equal(privateVolume, 2, "neither source without a workspace nor its fork creates one");
 });
 
 test("fork retries resume the claimed history and file versions after interruption", { timeout: 180000 }, async t => {
-  const f = await startFixture();
+  const f = await repoFixture(t);
   t.after(() => f.stop());
   const call = (path: string, options: RequestInit = {}) => fetch(f.url + path, {
     ...options, headers: { authorization: `Bearer ${f.token}`, ...options.headers },
@@ -112,7 +115,7 @@ test("fork retries resume the claimed history and file versions after interrupti
     return body;
   }
   const source = await json("/v1/agents", { initialMessages: [{ role: "user", content: "Original history" }] });
-  const mounts = await json(`/v1/agents/${source.id}/mounts`), volume = mounts[0].volumeId;
+  const mounts = await json(`/v1/agents/${source.id}/mounts`), volume = mounts[0].repo;
   const write = async (name: string, value: string) => {
     const response = await call(`/v1/agents/${source.id}/files/workspace/${name}`, { method: "PUT", body: value });
     assert.equal(response.status, 201, await response.text());
@@ -139,8 +142,8 @@ test("fork retries resume the claimed history and file versions after interrupti
     if (before) assert.equal(await before.text(), `${point}: original a`);
     await write("a.txt", `${point}: newer a`);
     await write("b.txt", `${point}: newer b`);
-    const held = await json(`/v1/volumes/${volume}/__gc?advance=82800000`, {});
-    assert.equal(held.held, 4, "the pending copy pins both old versions alongside current files");
+    const held = await json(`/v1/repos/${volume}/history`);
+    assert.ok(held.versions.length>=4,"prior versions remain reachable through repo history");
     await f.worker.stop(true);
     await f.worker.start();
     const forks = await Promise.all(Array.from({ length: 3 }, () => json(`/v1/agents/${source.id}/fork`, { key, atMessage: 0 })));
@@ -148,11 +151,11 @@ test("fork retries resume the claimed history and file versions after interrupti
     for (const name of ["a", "b"]) {
       const response = await call(`/v1/agents/${pending.id}/files/workspace/${name}.txt`);
       assert.equal(await response.text(), `${point}: original ${name}`);
-      if (name === "b") assert.equal(response.headers.get("x-file-version"), "2", "concurrent retries copy a pending file only once");
+      if (name === "b") assert.match(response.headers.get("x-file-version")!, /^[a-f0-9]{40}$/, "fork files name immutable commits");
       if (name === "a" && copiedVersion) assert.equal(response.headers.get("x-file-version"), copiedVersion, "a completed file is not copied again");
     }
     assert.deepEqual((await json(`/v1/agents/${pending.id}/history`)).messages.map((message: any) => message.content), ["Original history"]);
-    assert.equal((await json(`/v1/volumes/${volume}/__gc?advance=82800000`, {})).held, 2, "completion releases the source read-set pins");
+    assert.ok((await json(`/v1/repos/${volume}/history`)).versions.length>=held.versions.length,"fork completion retains parent history");
     assert.equal((await json(`/v1/agents/${source.id}/fork`, { key })).id, pending.id);
   }
   const expiring = await call(`/v1/agents/${source.id}/fork`, {
@@ -169,7 +172,7 @@ test("fork retries resume the claimed history and file versions after interrupti
     assert.equal(expired.status, 410);
     assert.equal((await expired.json() as any).code, "FORK_EXPIRED");
   }
-  assert.equal((await json(`/v1/volumes/${volume}/__gc`, {})).held, 2, "expired claims release their pins without recapturing new files");
+  assert.ok((await json(`/v1/repos/${volume}/history`)).versions.length,"expired claims retain immutable versions");
   const raced = await call(`/v1/agents/${source.id}/fork`, {
     method: "POST", headers: { "content-type": "application/json", "x-camel-test-fork-failure": "claimed" },
     body: JSON.stringify({ key: "ordinary-create-race" }),
@@ -182,3 +185,8 @@ test("fork retries resume the claimed history and file versions after interrupti
   assert.equal(conflict.status, 409, await conflict.text());
   assert.equal((await json(`/v1/agents/${ordinary.id}/configuration`)).name, "unrelated");
 });
+
+async function repoFixture(t:any) {
+  const api=await serveFakeCamelfsd('fork-test-token');t.after(()=>api.close());
+  return startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),vars:{TEST_CAMELFS_URL:api.url,CAMELFS_API_TOKEN:'fork-test-token'}});
+}

@@ -1,3 +1,4 @@
+import { storedConfiguration } from "./api-contract.ts";
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { vaultRoutes } from "./vault.ts";
 import { workerDreaming } from "./dreaming.ts";
@@ -635,7 +636,7 @@ const worker = {
         )
           throw new BadRequest("Only name and type may be patched here");
         return json(summary(result(await directory.upsert(
-          { ...entry.config, ...input }, entry.key ?? entry.id, url.origin,
+          { ...entry.config, mounts: undefined, ...input }, entry.key ?? entry.id, url.origin,
         ))));
       }
       if (tail === "/metadata" && request.method === "POST") {
@@ -646,7 +647,7 @@ const worker = {
         )
           throw new BadRequest("Expected name and type");
         const next = result(await directory.upsert(
-          { ...entry.config, ...input }, entry.key ?? entry.id, url.origin,
+          { ...entry.config, mounts: undefined, ...input }, entry.key ?? entry.id, url.origin,
         ));
         return json({ name: next.config.name ?? "", type: next.config.type ?? "agent" });
       }
@@ -667,7 +668,7 @@ const worker = {
         }
         if (requestId !== undefined && (typeof requestId !== "string" || !requestId.length))
           throw new BadRequest("requestId must be a nonempty string");
-        const patched = configuration({ ...withoutOnExpire(entry.config), ...params }, entry.config.model ?? env.MODEL, "patch").config;
+        const patched = storedConfiguration({ ...withoutOnExpire(entry.config), ...params }, entry.config.model ?? env.MODEL, "patch").config;
         if (Object.hasOwn(params, "model") || Object.hasOwn(params, "keyScope")) {
           try {
             const modelError = await configurationModelError(env, entry.tenantId, patched);

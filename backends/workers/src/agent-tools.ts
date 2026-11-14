@@ -26,7 +26,8 @@ import { withSql as shareSql } from "./postgres.ts";
 import { computerTool } from "./computers/tool.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { askHuman, makeAskUser, humanInputExtension } from "./human.ts";
-import { volumeTools, type Mount } from "./files.ts";
+import { repoTools } from "./repos/tools.ts";
+import type { Mount } from "./repos/mounts.ts";
 import { attachedComputerTools } from "./computers/agent-tools.ts";
 import { ComputerService } from "./computers/service.ts";
 import { modelRuntime } from "./model.ts";
@@ -92,6 +93,10 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
     async () => (await this.config()).tenantId,
     {
       agentId: async () => (await this.config()).id,
+      authorizeRepoFile: async file=>{
+        const conf=await this.config();
+        return (await import('./repos/attachments.ts')).authorizedAttachment(this.env,conf.tenantId,(conf.config.mounts??[]) as import('./files.ts').AgentMount[],file);
+      },
       onRetryEvent: async (event) => {
         await this.emit({ type: "event", requestId: (await this.currentRun()).id, event });
       },
@@ -293,7 +298,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
             await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
             site.messageIndex = this.historyIndex.messageIndex(site.assistant);
           }
-          return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
+          return { tenant: conf.tenantId, agent: conf.id, requestId:await this.fileRequestId(), mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
         }));
         // After the result is capped (tool-output.ts keeps the <agent_updates> part whole): children's progress rides on it.
         registry.install(agentUpdatesExtension(() => this.delegation, async (api, callId) => {
@@ -307,8 +312,8 @@ export function createHarness(this: AgentRuntime): PiHarness {
           async () => (await this.harness.pi()).root(BACKGROUND_CONTEXT),
           async failure => { await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
         ));
-        // User files live in the volume DO/R2; code runs in the separate sandbox.
-        const templates = volumeTools(
+        // User files live in repos; code runs in the separate sandbox.
+        const templates = repoTools(
           this.env,
           "_uninitialized",
           "_uninitialized",
@@ -318,7 +323,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
             ...tool,
             execute: async (args, api, context) => {
               const config = await this.config();
-              const impl = volumeTools(
+              const impl = repoTools(
                 this.env,
                 config.tenantId,
                 config.id,
@@ -345,6 +350,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
                     file,
                   ),
                 this.fileVersions,
+                { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
               )[index];
               return impl.execute(args as never, api, context);
             },
@@ -360,7 +366,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         const attachments = async (items: any[]) => {
           const conf = await this.config();
           const found: any[] = [];
-          const present = volumeTools(this.env, conf.tenantId, conf.id, async () => conf.config.mounts as Mount[] ?? [], async file => { found.push({ path: file.path, version: file.version, contentType: file.contentType, ...(file.caption ? { caption: file.caption } : {}) }); }).find(tool => tool.name === "present_file")!;
+          const present = repoTools(this.env, conf.tenantId, conf.id, async () => conf.config.mounts as Mount[] ?? [], async file => { found.push({ path: file.path, version: file.version, contentType: file.contentType, ...(file.caption ? { caption: file.caption } : {}) }); }).find(tool => tool.name === "present_file")!;
           for (const item of items) await present.execute(item, {} as never, BACKGROUND_CONTEXT);
           return found;
         };

@@ -1,3 +1,6 @@
+import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
+import { fileURLToPath } from "node:url";
+import {gunzipSync} from 'node:zlib';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
@@ -10,7 +13,8 @@ test(
   "R2 files, volume ordering, retained snapshots, signed images and restart",
   { timeout: 180000 },
   async (t) => {
-    const fixture = await startFixture();
+    const camelfs=await serveFakeCamelfsd("files-test-token");t.after(()=>camelfs.close());
+    const fixture = await startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),vars:{TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:"files-test-token"}});
     const worker = fixture.worker;
     t.after(() => fixture.stop());
     const call = async (path: string, options: RequestInit = {}) =>
@@ -20,6 +24,61 @@ test(
         signal: AbortSignal.timeout(20000),
       });
     try {
+      await t.test('stored legacy mounts keep tools, uploads and attachments on Volumes',async()=>{
+        const make=async(path:string,value:unknown)=>{const r=await call(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(value)});assert.ok(r.ok,await r.clone().text());return await r.json() as any;};
+        const agent=await make('/v1/agents',{});
+        await make('/__test/stored-legacy-mount',{agent:agent.id});
+        const storedMounts=await (await call(`/v1/agents/${agent.id}/mounts`)).json() as any[];
+        const legacy={id:storedMounts[0].volumeId};
+        const renamed=await call(`/v1/agents/${agent.id}/metadata`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'stored pilot'})});
+        assert.equal(renamed.status,200,await renamed.clone().text());
+        assert.deepEqual(await (await call(`/v1/agents/${agent.id}/mounts`)).json(),storedMounts);
+        const run=async(id:string,method:string,params:unknown)=>{
+          await make(`/v1/agents/${agent.id}/requests`,{id,method,params});
+          const r=await call(`/v1/agents/${agent.id}/requests/${id}?wait=20`),value=await r.json() as any;
+          assert.equal(value.state,'completed',JSON.stringify(value));assert.equal(value.outcome?.error,undefined,JSON.stringify(value));return value;
+        };
+        const result=await run('legacy-tools','execute',{code:'await tools.write({path:"/workspace/old.txt",content:"still works"}); return await tools.read({path:"/workspace/old.txt"});'});
+        assert.ok(JSON.stringify(result.outcome).includes('still works'));
+        const uploaded=await call(`/v1/agents/${agent.id}/uploads/legacy-upload/note.txt`,{method:'PUT',body:'legacy upload'});
+        assert.equal(uploaded.status,201,await uploaded.clone().text());
+        const ref=await uploaded.json() as any;assert.equal(typeof ref.version,'number');
+        const old=await call(`/v1/volumes/${legacy.id}/files/uploads/legacy-upload/note.txt`);assert.equal(await old.text(),'legacy upload');
+        await run('legacy-attach','prompt',{text:'Read the attachment',files:[{path:ref.path}]});
+        const history=await (await call(`/v1/agents/${agent.id}/history`)).json() as any;
+        const refs=history.messages.flatMap((m:any)=>m.content??[]).filter((p:any)=>p.type==='file');
+        assert.ok(refs.some((f:any)=>f.volume===legacy.id&&typeof f.version==='number'&&!f.repo));
+        const child=await make(`/v1/agents/${agent.id}/fork`,{key:'stored-legacy-fork'});
+        const childMounts=await (await call(`/v1/agents/${child.id}/mounts`)).json() as any[];
+        assert.ok(childMounts[0].repo);assert.equal(childMounts[0].volumeId,undefined);
+        const childFile=`/v1/agents/${child.id}/files/workspace/old.txt`;
+        assert.equal(await (await call(childFile)).text(),'still works');
+        assert.equal((await call(childFile,{method:'PUT',body:'child repo write'})).status,201);
+        assert.equal(await (await call(`/v1/agents/${agent.id}/files/workspace/old.txt`)).text(),'still works');
+      });
+      await t.test('repo tool-file URLs retain immutable files and directory archives',async()=>{
+        const created=await call('/v1/agents',{method:'POST',headers:{'content-type':'application/json','idempotency-key':'repo-tool-links'},body:JSON.stringify({})});
+        assert.equal(created.status,201,await created.clone().text());
+        const agent=(await created.json() as any).id;
+        const path=`/v1/agents/${agent}/files/workspace`;
+        const put=async(name:string,text:string)=>assert.equal((await call(`${path}/${name}`,{method:'PUT',body:text})).status,201);
+        await put('one.txt','original one');await put('nested/two.txt','original two');
+        const link=async(directory:boolean)=>{
+          const r=await call('/__test/agent-tool-file',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agent,path:directory?'/workspace':'/workspace/one.txt',directory})});
+          assert.equal(r.status,200,await r.clone().text());return (await r.json() as any).uri;
+        };
+        const file=await link(false),archive=await link(true);
+        assert.match(new URL(file).pathname,/^\/v1\/files\//);
+        await put('one.txt','replacement');await put('nested/two.txt','changed');
+        const downloaded=await fetch(file);assert.equal(downloaded.status,200);assert.equal(await downloaded.text(),'original one');
+        const tar=await fetch(archive);assert.equal(tar.status,200);
+        const contents=gunzipSync(Buffer.from(await tar.arrayBuffer())).toString();
+        assert.ok(contents.includes('one.txt'));assert.ok(contents.includes('nested/two.txt'));
+        assert.ok(contents.includes('original one'));assert.ok(contents.includes('original two'));assert.ok(!contents.includes('replacement'));
+        const mounts=await (await call(`/v1/agents/${agent}/mounts`)).json() as any[];
+        const refs=await (await call(`/v1/repos/${mounts[0].repo}/refs`)).json() as any;
+        assert.equal(refs.length,1,'directory links create no snapshot refs');
+      });
       const create = await call("/v1/volumes", {
         method: "POST",
         headers: { "content-type": "application/json" },

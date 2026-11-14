@@ -62,11 +62,12 @@ export async function handleSignedFileRequest(
 }
 export interface FileBindings extends ImageBindings, SecurityEnv, NativeStorageBindings {
   VOLUMES: DurableObjectNamespace<Volume>;
+  REPOS: DurableObjectNamespace<import("./repos/repo-do.ts").RepoDO>;
   HYPERDRIVE: {
     connectionString: string;
   };
 }
-export interface Mount {
+export interface LegacyVolumeMount {
   volumeId: string;
   path: string;
   mode: "ro" | "rw";
@@ -205,13 +206,13 @@ async function fileRequest(
   }
   throw new FileError("Method not allowed", 405);
 }
-export async function handleAgentFileRequest(
+export async function legacyAgentFileRequest(
   request: Request,
   env: FileBindings,
   tenant: string,
   agentId: string,
   path: string,
-  mounts: Mount[] = [],
+  mounts: LegacyVolumeMount[] = [],
 ): Promise<Response> {
   try {
     path = normalizePath(path);
@@ -659,12 +660,12 @@ async function fileRoute(
     return fileFailure(error);
   }
 }
-export async function handleAgentFilesRoute(
+export async function legacyAgentFilesRoute(
   request: Request,
   env: FileBindings,
   tenant: string,
   agent: string,
-  mounts: Mount[],
+  mounts: LegacyVolumeMount[],
   path = new URL(request.url).pathname,
 ): Promise<Response | null> {
   if (path !== "/files" && path !== "/links" && !path.startsWith("/uploads/")) return null;
@@ -778,12 +779,12 @@ export function volumeTools(
   env: FileBindings,
   tenant: string,
   agentId: string,
-  getMounts: () => Promise<Mount[]> = async () => [
+  getMounts: () => Promise<LegacyVolumeMount[]> = async () => [
     { volumeId: `agent:${agentId}`, path: "/workspace", mode: "rw" },
   ],
   onPresent?: (file: PresentedVolumeFile, volumePath: string) => Promise<void>,
   onWrite?: (file: WrittenVolumeFile) => Promise<void>,
-  seen?: FileVersions,
+  seen?: { get(key: string): number | undefined; remember(key: string, version: number): void },
 ) {
   const target = async (raw: string, write = false) => {
     const mounts = await getMounts();
@@ -821,7 +822,7 @@ export function volumeTools(
       },
     ],
   });
-  const seenKey = (target: { mount: Mount; path: string }) => `${target.mount.volumeId}:${target.path}`;
+  const seenKey = (target: { mount: LegacyVolumeMount; path: string }) => `${target.mount.volumeId}:${target.path}`;
   const stale = (target: { path: string; show(path: string): string }) =>
     new FileError(`${target.show(target.path)} changed since you last read it; read it again, then retry against its current content`, 412);
   const guard = async <T>(target: { path: string; show(path: string): string }, run: () => Promise<T>): Promise<T> => {
@@ -1158,3 +1159,7 @@ export function volumeTools(
     ),
   ];
 }
+
+export type { Mount, AgentMount } from "./repos/mounts.ts";
+export { handleAgentFileRequest, handleAgentFilesRoute } from "./repos/agent-files.ts";
+export type { PresentedRepoFile, WrittenRepoFile } from "./repos/agent-files.ts";

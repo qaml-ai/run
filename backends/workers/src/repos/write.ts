@@ -1,4 +1,4 @@
-import { waitUntil } from 'cloudflare:workers';
+import { notifyRepoWatchers } from './notify.ts';
 import { keyServices } from '../security-services.ts';
 import { RepoError, check, normalizeRepoPath, repoErrorFrom, type Entry, type Mode, type Fence, type Version } from './repo-policy.ts';
 import { repoContext, versionEntries, type RepoContext } from './registry.ts';
@@ -32,7 +32,12 @@ export type WriteInput = {
   allowEmpty?: boolean;
   idempotencyKey?: string;
 };
-export async function reportUsage(ctx: RepoContext) { const info = await ctx.stub.info(); waitUntil(Promise.resolve(ctx.env.TENANTS.getByName(ctx.tenant).repoUsage(ctx.repoId, info.bytes, info.files)).catch(e => console.error('repo usage update failed', String(e)))); }
+// Awaited (not waitUntil): the next write's quota check reads it, and the tool import graph runs outside cloudflare:workers in tests.
+export async function reportUsage(ctx: RepoContext) {
+  const info = await ctx.stub.info();
+  await Promise.resolve(ctx.env.TENANTS.getByName(ctx.tenant).repoUsage(ctx.repoId, info.bytes, info.files))
+    .catch(error => console.error('repo usage update failed', String(error)));
+}
 export async function quota(ctx: RepoContext, bytes: number) {
   const { accounts } = await keyServices(ctx.env);
   const limit = await accounts.billing.storageLimit(ctx.tenant);
@@ -133,6 +138,7 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
     try {
       const result = await ctx.stub.cas({ ref: input.ref, expect: current, commit: { version: c.commit, tree: c.tree, parents, author: input.author, message: input.message, trailers, at: c.time * 1000 }, changes: { ...delta }, pathExpect: { ...pathExpect }, fence: input.fence, who: input.who, why: input.why });
       await reportUsage(ctx);
+      await notifyRepoWatchers(ctx, input.ref, result, delta, input.author);
       return { ...result, tree: c.tree, changed: true, files: delta };
     }
     catch (e) {
@@ -151,6 +157,7 @@ export async function setRefToVersion(ctx: RepoContext, input: {
   who: string;
   why: string;
   newCommit: boolean;
+  trailers?: Record<string, string>;
 }) {
   for (let attempt = 0;; attempt++) {
     const head = await ctx.stub.ref(input.ref), current = head?.version ?? null;
@@ -163,13 +170,17 @@ export async function setRefToVersion(ctx: RepoContext, input: {
     await quota(ctx, await addedBytes(ctx, entries));
     let commit: Version = target;
     if (input.newCommit) {
-      const parents = input.parents ?? (current ? [current] : []), message = input.message ?? `restore ${input.version.slice(0, 12)}`, trailers = { 'Camel-User': input.author, 'Camel-Checkpoint': 'api' };
+      const parents = input.parents ?? (current ? [current] : []), message = input.message ?? `restore ${input.version.slice(0, 12)}`, trailers = input.trailers ?? { 'Camel-User': input.author, 'Camel-Checkpoint': 'api' };
       const c = await ctx.storage.commit(ctx.lineage, { parents, baseTree: target.tree, changes: [], author: input.author, message, trailers });
       commit = { version: c.commit, tree: c.tree, parents, author: input.author, message, trailers, at: c.time * 1000 };
     }
     try {
       const result = await ctx.stub.cas({ ref: input.ref, expect: current, commit, entries, who: input.who, why: input.why });
       await reportUsage(ctx);
+      if (result.previous !== result.version && result.watchers.length) {
+        const changes = head ? await diffEntries(ctx, head.tree, commit.tree) : Object.fromEntries(entries.map(e => [e.path, e]));
+        await notifyRepoWatchers(ctx, input.ref, result, changes, input.author);
+      }
       return { ...result, tree: commit.tree, changed: result.previous !== result.version };
     }
     catch (e) {

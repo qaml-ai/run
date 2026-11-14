@@ -135,46 +135,10 @@ test(
     const largeRead = await project.volume.read("large.bin");
     assert.equal(largeRead.data.length, large.length);
     assert.equal(largeRead.data.at(-1), 42);
-    const builder = await sdk.upsertAgent("files-builder", {
-      tools: {},
-      ...project.mount("/project"),
-    });
-    // Agent credentials use the /clients surface; /v1/agents requires an account key.
-    const agentPath = `${fixture.url}/clients/${builder.session.id}`;
-    const agentCall = (tail: string, init: RequestInit = {}) =>
-      fetch(agentPath + tail, {
-        ...init,
-        headers: {
-          authorization: `Bearer ${builder.session.token}`,
-          ...init.headers,
-        },
-      });
-    const mounted = await agentCall("/files?path=/project");
-    assert.equal(mounted.status, 200);
-    const listed = (await mounted.json()) as { files: { path: string }[] };
-    assert.ok(listed.files.some((f) => f.path === "/project/bot.ts"));
-    const uploaded = await agentCall("/files/workspace/note.txt", {
-      method: "PUT",
-      body: "private note",
-    });
-    assert.equal(uploaded.status, 201);
-    assert.equal(
-      await (await agentCall("/files/workspace/note.txt")).text(),
-      "private note",
-    );
-    const outside = await agentCall("/files/outside.txt", {
-      method: "PUT",
-      body: "refused",
-    });
-    assert.equal(outside.status, 403);
-    const linked = await agentCall("/links", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: "/project/bot.ts" }),
-    });
-    assert.equal(linked.status, 201);
-    const agentLink = (await linked.json()) as { url: string };
-    assert.equal((await fetch(agentLink.url)).status, 200);
+    // Mounting a project's volume into an agent is refused on Workers: agents mount repos
+    // (test/repos.integration.ts covers repo mounts and the refusal). The Node backend keeps it.
+    await assert.rejects(sdk.upsertAgent("files-builder", { tools: {}, ...project.mount("/project") }),
+      (error: Error) => /Volumes are replaced by repos/.test(error.message));
     await project.volume.delete();
     await assert.rejects(
       sdk.projects.create({ key: "project-fixture" }),

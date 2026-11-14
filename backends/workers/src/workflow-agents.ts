@@ -430,7 +430,8 @@ export function workflowChildren(env: Env & { AGENT_WORKFLOW_CLASS_MODELS?: stri
     },
     async create(config, key, place) {
       const { id, tenant } = workflow();
-      const entry = await new Directory(env, tenant).upsert(config, key, defaults.runtimeOrigin?.());
+      // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
+      const entry = await new Directory(env, tenant).upsert(config, key, defaults.runtimeOrigin?.(), undefined, false, Array.isArray(config.mounts) && config.mounts.some(m=>m && "volumeId" in m) ? config.mounts as import("./api-contract.ts").AgentConfiguration["mounts"] : undefined);
       if ("failed" in entry) throw Object.assign(new Error(entry.error), { status: entry.status ?? 400 });
       await recordChildParent(env, tenant, entry.id, id, place.ownerRun, place);
       return { id: entry.id };

@@ -14,10 +14,9 @@ const audio = readFileSync(
 const file: AttachedFile = {
   type: "file",
   path: "/workspace/voice.ogg",
-  volume: "volume",
-  key: "files/tenant/volume/audio",
-  chunks: ["a".repeat(64)],
-  version: 1,
+  repo: "repo",
+  blob: "b".repeat(40),
+  version: "a".repeat(40),
   size: audio.length,
   contentType: "audio/ogg",
 };

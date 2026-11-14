@@ -13,7 +13,6 @@ import type { FileBindings } from "./files.ts";
 import { provisionDefinition, visibleConfiguration, withoutOnExpire } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 import { runInput } from "./run-input.ts";
-import { inheritHistoryPins } from "./history-pins.ts";
 import { bridgeEvents, bridgeOptions, wantsEventStream } from "./sse-bridge.ts";
 
 type Record = { id: string; state: string; outcome?: { result?: any; error?: string; uncertain?: boolean }; metadata?: unknown; startedAt?: number; began?: number; endedAt?: number };
@@ -60,7 +59,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ input, files, retentionSeconds, output, actor, from, metadata, spendLimit, ...given }))));
     const old = await directory.get(directoryKey) as typeof entry | null;
     if (old?.run && old.run.fingerprint !== fingerprint) throw new ApiError(409, "Idempotency-Key was used for a different run", "IDEMPOTENCY_CONFLICT");
-    if (old) entry = old.initialized ? old : result(await directory.upsert(old.config, directoryKey, url.origin));
+    if (old) entry = old.initialized ? old : result(await directory.upsert({...old.config,mounts:undefined}, directoryKey, url.origin));
     else {
       const noTools = !given.definition && !given.builtins?.length && !given.delegate && !given.mcpServers?.length && !given.fileTools && !given.mounts?.length && !attached.length;
       const config = await provisionDefinition(env, auth.tenantId, { ...(noTools ? { codeMode:false, fileTools:false, decide:false } : {}), ...given, type: "run", ttlSeconds: 604800 + retentionSeconds });
@@ -161,30 +160,35 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     const initialMessages = snapshot.messages;
     const { key: _key, atMessage: _at, ...settings } = input;
     if (input.name !== undefined && typeof input.name !== "string") throw new ApiError(400, "name must be text");
-    const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId);
+    const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId, entry.tenantId);
     const config = { ...withoutOnExpire(entry.config), ...settings, name: input.name as string | undefined ?? (entry.config.name ? `${entry.config.name} (fork)`.slice(0, 120) : undefined), mounts: workspace.mounts, initialMessages, idleTtlSeconds: null, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
-    configuration(config, env.MODEL);
+    configuration({...config,mounts:config.mounts.filter(m=>!("volumeId"in m))}, env.MODEL);
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ sourceId: entry.id, atMessage: at, config }))));
     const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 1000 : 86400_000;
     claim = await claimFork(env, entry.tenantId, { sourceId: entry.id, targetId, key, fingerprint, atMessage: at, copyPrivate: workspace.copyPrivate, config, model: snapshot.model, origin: new URL(request.url).origin, expiresAt: Date.now() + ttl });
   }
   try {
-    // The plan predates Directory creation. Its source read set and pins are
-    // committed together, so a retry uses the same history and file versions.
+    // The plan predates Directory creation. Its immutable source version is
+    // retained in the claim, so retries use the same history and files.
     saved = await directory.get(key) as typeof saved;
     if (saved?.forkedFrom) return answer(saved);
     const captured = claim.copyPrivate ? await claimAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, claim.expiresAt) : undefined;
     const fail = env.TEST_MODE === "1" ? request.headers.get("x-camel-test-fork-failure") : null;
     if (fail === "claimed") throw new ApiError(503, "Injected fork interruption before creation");
-    const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint }));
+    if (claim.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, captured, fail === "copied" ? 1 : undefined);
+    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
+    const legacy=(claim.config.mounts??[]).filter(m=>m.volumeId);
+    const internalMounts=legacy.length?[...await (await import('./repos/mounts.ts')).prepareMounts(env as import('./repos/registry.ts').RepoEnv,entry.tenantId,targetId,(claim.config.mounts??[]).filter(m=>!m.volumeId)),...legacy]:undefined;
+    const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint },false,internalMounts));
     const workspaces = new Workspaces(database(env));
     const inherited = await workspaces.current(entry.tenantId, "agent", entry.id);
     await workspaces.assign(entry.tenantId, "agent", created.id, inherited?.workspace ?? null, true, true);
+    if (fail === "copied") throw new ApiError(503, "Injected fork interruption after repo creation");
     if (fail === "created") throw new ApiError(503, "Injected fork interruption after creation");
-    if (claim.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, captured, fail === "copied" ? 1 : undefined);
     if (claim.model) {
-      const pinnedVolumes = await inheritHistoryPins(env, entry.tenantId, claim.sourceId, created.id, claim.config.initialMessages ?? []);
-      await payload(await call(env, created.id, "/context/import", { model: claim.model, pinnedVolumes }));
+      // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
+      const legacyPinnedVolumes=await (await import('./legacy-prompt-attachments.ts')).inheritLegacyHistoryPins(env,entry.tenantId,claim.sourceId,created.id,claim.config.initialMessages??[]);
+      await payload(await call(env, created.id, "/context/import", { model: claim.model, ...(legacyPinnedVolumes.length?{legacyPinnedVolumes}:{}) }));
     }
     const forkedFrom = { agentId: claim.sourceId, atMessage: claim.atMessage };
     const updated = await withSql(env, sql => sql.query("update agents set header=(jsonb_set(header::jsonb,'{forkedFrom}',$3::jsonb)-'pendingFork')::json where tenant=$1 and id=$2 and not revoked returning header", [entry.tenantId, created.id, JSON.stringify(forkedFrom)]));

@@ -1,3 +1,5 @@
+import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fakeModel, lastUser, toolCall } from "../../../tests/runtime-server.ts";
@@ -11,7 +13,9 @@ test("file tools retain read versions through reopen and guard writes by volume 
     const call = JSON.parse(lastUser(body));
     return toolCall(call.name, call.args, `call_${crypto.randomUUID()}`);
   });
-  const f = await startFixture({ modelURL: model.url });
+  const camelfs=await serveFakeCamelfsd("agent-file-token");
+  t.after(()=>camelfs.close());
+  const f = await startFixture({ camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)), vars:{TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:"agent-file-token"}, modelURL: model.url });
   t.after(() => f.stop());
   const call = async (path: string, options: { method?: string; body?: unknown; raw?: string; key?: string } = {}) => {
     const response = await fetch(f.url + path, {
@@ -25,12 +29,12 @@ test("file tools retain read versions through reopen and guard writes by volume 
     assert.ok(response.ok, `${response.status}: ${text}`);
     return result;
   };
-  const volume = await call("/v1/volumes", { body: {} });
-  const file = `/v1/volumes/${volume.id}/files/team/plan.txt`;
+  const volume = await call("/v1/repos", { body: {} });
+  const file = `/v1/repos/${volume.id}/files/team/plan.txt`;
   await call(file, { method: "PUT", raw: "original" });
   const mounts = [
-    { volumeId: volume.id, path: "/project", subpath: "/team", mode: "rw" },
-    { volumeId: volume.id, path: "/mirror", subpath: "/team", mode: "rw" },
+    { repo: volume.id, path: "/project", subpath: "/team", mode: "rw" },
+    { repo: volume.id, path: "/mirror", subpath: "/team", mode: "rw" },
     { workspace: false },
   ];
   const agent = await call("/v1/agents", { key: "file-versions", body: { mounts } });
@@ -70,11 +74,11 @@ test("file tools retain read versions through reopen and guard writes by volume 
   assert.equal(await call(file), "ours twice", "the agent's own edits refresh its version");
   await run("write", { path: "new.txt", content: "created without a read" });
   await run("write", { path: "new.txt", content: "updated without a read" });
-  assert.equal(await call(`/v1/volumes/${volume.id}/files/team/new.txt`), "updated without a read");
+  assert.equal(await call(`/v1/repos/${volume.id}/files/team/new.txt`), "updated without a read");
 
-  const other = await call("/v1/volumes", { body: {} });
-  await call(`/v1/volumes/${other.id}/files/team/plan.txt`, { method: "PUT", raw: "other volume" });
-  await call(`/v1/agents/${agent.id}/mounts`, { method: "PUT", body: { mounts: [{ volumeId: other.id, path: "/project", subpath: "/team", mode: "rw" }, { workspace: false }] } });
+  const other = await call("/v1/repos", { body: {} });
+  await call(`/v1/repos/${other.id}/files/team/plan.txt`, { method: "PUT", raw: "other volume" });
+  await call(`/v1/agents/${agent.id}/mounts`, { method: "PUT", body: { mounts: [{ repo: other.id, path: "/project", subpath: "/team", mode: "rw" }, { workspace: false }] } });
   await run("write", { path: "plan.txt", content: "different identity" });
-  assert.equal(await call(`/v1/volumes/${other.id}/files/team/plan.txt`), "different identity", "the same shown path in another volume has its own version");
+  assert.equal(await call(`/v1/repos/${other.id}/files/team/plan.txt`), "different identity", "the same shown path in another volume has its own version");
 });

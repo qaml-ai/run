@@ -28,7 +28,8 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   });
   sts.listen(0, "127.0.0.1"); await once(sts, "listening");
   t.after(() => new Promise<void>(resolve => sts.close(() => resolve())));
-  const fixture = await startFixture({ vars: {
+  // Volume jobs without camelFS: their trees cross inline or by host-side sync, not as camelFS imports.
+  const fixture = await startFixture({ camelfsStub: false, vars: {
     AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "45",
     JOB_HOST_WAIT_SECONDS: "8", JOB_HOST_LOST_SECONDS: "20", JOB_HOST_SCALER_TOKEN: "scaler-token-for-the-fixture-at-least-32-characters",
     JOB_HOST_ROLE_ARNS: "test=arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,

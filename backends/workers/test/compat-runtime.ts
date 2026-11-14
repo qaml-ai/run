@@ -1,3 +1,5 @@
+import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
+import { fileURLToPath } from "node:url";
 /** Swap only the server fixture. All assertions and fake-provider responses stay upstream. */
 import {
   fakeModel,
@@ -35,12 +37,16 @@ export async function compatibilityRuntime(
       }),
     ),
   ];
+  const camelfs=await serveFakeCamelfsd("compat-repo-token");
+  t.after(()=>camelfs.close());
   const server = await startFixture({
+    camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),
     token: OPERATOR,
     tenant: "alice",
     modelURL: env.AGENT_BASE_URL ?? model.url,
     tenants,
     vars: {
+      TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:"compat-repo-token",
       ...env,
       ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile) } : env.AGENT_TENANTS_JSON ? {} : { AGENT_TENANTS_JSON: JSON.stringify(defaultTenants) }),
       ...(tenantsFile ? { TEST_DECISION_KEYS: JSON.stringify({ tenants: Object.fromEntries(Object.entries(tenantsFile.tenants ?? {}).map(([id, value]: [string, any]) => [id, { apiKeys: value.apiKeys, platformKeys: value.platformKeys }])), platformKeys: tenantsFile.platformKeys }) } : {}),

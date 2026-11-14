@@ -1,3 +1,5 @@
+import { readAttachment } from "./repos/attachments.ts";
+import type { RepoEnv } from "./repos/registry.ts";
 import { AUDIO_LIMITS } from "../../../src/limits.ts";
 import {
   checkedAudio,
@@ -180,10 +182,7 @@ export async function transcribeAttachments(
   const read =
     host.read ??
     (async (file) => {
-      const { boundedBytes } = await import("./images.ts");
-      const object = await env.BUCKET.get(file.key);
-      if (!object) throw new HttpError(503, "Attached audio is missing");
-      return boundedBytes(object.body, AUDIO_LIMITS.fileBytes);
+      return readAttachment(env as RepoEnv, scope.tenant, file);
     });
   const failed = (index: number, error: unknown) => {
     if (files[index].transcribe || errorStatus(error, 500) === 402) throw error;
@@ -212,7 +211,7 @@ export async function transcribeAttachments(
             "SHA-256",
             new TextEncoder().encode(
               JSON.stringify([
-                file.chunks,
+                "blob" in file ? file.blob : file.chunks,
                 file.contentType,
                 scope.keyScope,
                 scope.identity,

@@ -1,3 +1,4 @@
+import { RE2JS } from "re2js";
 import { createServer } from "node:http";
 import { EMPTY_TREE, gitHash, gitBlobSha1, sha256Hex, commitObject, parseCommit } from "../src/repos/git.ts";
 import type { FileEntry, TreeEntry, Change, CommitInfo, CommitResult, DiffChange, Conflict, GrepResult } from "../src/repos/storage.ts";
@@ -298,8 +299,8 @@ export function fakeCamelfsd(token: string) {
       const t = tree(l, s.get("tree") ?? ""), q = s.get("q"); if (q === null) bad();
       const limit = Number(s.get("limit") ?? 2000), context = Number(s.get("context") ?? 0);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 2000 || !Number.isSafeInteger(context) || context < 0) bad();
-      let re: RegExp | undefined;
-      try { if (s.get("regex") === "1") re = new RegExp(q!, s.get("ignoreCase") === "1" ? "i" : ""); } catch { bad(); }
+      let re: RE2JS | undefined;
+      try { if (s.get("regex") === "1") re = RE2JS.compile(q!, s.get("ignoreCase") === "1" ? RE2JS.CASE_INSENSITIVE : 0); } catch { bad(); }
       const filter = s.has("path") ? glob(s.get("path")!) : undefined, matches: GrepResult["matches"] = []; let files = 0, truncated = false;
       for (const f of [...t.files.values()].sort((a, b) => compare(a.path, b.path))) {
         if (filter && !filter.test(f.path)) continue; files++;
