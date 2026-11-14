@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { tierConfigured, TierError, tierRequest, type TierEnv } from "./tier.ts";
 import { StorageError } from "../repos/storage.ts";
+import { fetchWithoutRedirects } from "../../../../src/core/no-redirect.ts";
 import { repoStorage } from "./repo-storage.ts";
 
 const SMOKE_SUB = "runtime:camelfs-smoke";
@@ -122,8 +123,8 @@ export class CamelfsSmoke extends DurableObject<TierEnv> {
   async run(iterations: number, minSeconds: number, tenant: string): Promise<Response> {
     let colo: string | undefined, loc: string | undefined, rayColo: string | undefined;
     try {
-      const trace = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
-        cache: "no-store", redirect: "error", signal: AbortSignal.timeout(10_000),
+      const trace = await fetchWithoutRedirects(fetch, "https://www.cloudflare.com/cdn-cgi/trace", {
+        cache: "no-store", signal: AbortSignal.timeout(10_000),
       });
       if (trace.ok) {
         const body = await trace.text();
