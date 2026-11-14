@@ -129,7 +129,9 @@ test(`repo-backed agent tools see a write within the same turn (tier=${camelfsTi
     return { role: 'assistant', content: 'Read my write' };
   }, {}, undefined, { camelfsTier });
   const sdk = new AgentRuntime({ url: runtime.base, apiKey: OPERATOR });
-  const repo = (await runtime.call('/v1/repos', { body: {} })).json;
+  const created = await runtime.call('/v1/repos', { body: {} });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  const repo = created.json;
   const agent = await sdk.upsertAgent('repo-read-your-write', { tools: {}, mounts: [{ repo: repo.id, path: '/shared', mode: 'rw' }] });
   const run = await runtime.prompt(agent.session.id, 'Write the file, list its directory, and read it back');
   assert.equal(run.outcome.result.reply, 'Read my write');
