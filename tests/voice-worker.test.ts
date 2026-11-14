@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../src/node-config.ts";
-import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { createNode, nodeDeps } from "../src/node.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
+import { ownNodes } from "./node-fixture.ts";
 import { MediaHost } from "../src/voice/media-host.ts";
 import { MEDIA_CRASHES } from "../src/voice-sessions.ts";
 import type { Cut } from "../src/voice-audio.ts";
@@ -227,11 +228,9 @@ test("a node with voice on holds each session's media in a worker by default: th
   const voice = await fakeDiscordVoice(t);
   const openai = await fakeOpenAIRealtime(t);
   const root = await mkdtemp(join(tmpdir(), "agent-voice-worker-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "fixture-key" } } } }));
   const { url: databaseUrl } = await testDatabase();
-  let node: RuntimeNode | undefined;
-  t.after(async () => { await node?.close().catch(() => {}); });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
@@ -241,8 +240,8 @@ test("a node with voice on holds each session's media in a worker by default: th
     });
     assert.equal(config.voice.isolation, "worker");
     const made = await createNode(config, { ...await nodeDeps(config), voiceEndpoints: /^127\.0\.0\.1$/ });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const call = async (method: string, path: string, body?: unknown) => {
