@@ -104,9 +104,25 @@ test("provider preflight and legacy ticks read current spend", async () => {
   }));
   assert.equal(await limits.check(1000, false), undefined);
   assert.equal(reads, 0);
-  assert.equal((await limits.check())?.limit, "agent");
+  assert.equal((await limits.check(1000, "metered"))?.limit, "agent");
   assert.equal(reads, 1);
   delete run.limitsSnapshot;
   assert.equal((await limits.check(1000, false))?.limit, "agent");
   assert.equal(reads, 2);
+});
+
+test("metered preflight leaves credit admission to the provider call", async () => {
+  const storage = { get: async () => undefined, put: async () => {} } as unknown as DurableObjectStorage;
+  const credit = { error: "Out of credit", code: "spend_limit", stopped: "spend_limit", limit: "credit" } as const;
+  let creditChecks = 0;
+  const limits = new AgentRunLimits(storage, async () => ({
+    config: {}, run: { id: "run", state: "running" },
+  }), async () => {
+    creditChecks++;
+    return credit;
+  });
+  assert.equal(await limits.check(1000, "metered"), undefined);
+  assert.equal(creditChecks, 0);
+  assert.equal(await limits.check(1000), credit);
+  assert.equal(creditChecks, 1);
 });

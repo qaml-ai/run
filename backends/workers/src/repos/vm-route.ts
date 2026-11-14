@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import type { VmFiles, VmFilesScope } from "../camelfs/vm-files.ts";
 import { FileError } from "../file-errors.ts";
 import { HttpError } from "../errors.ts";
@@ -6,10 +7,10 @@ import { globMatch, insideRepo } from "./agent-store.ts";
 import { normalizeRepoPath, repoErrorFrom } from "./repo-policy.ts";
 import type { RepoEnv } from "./registry.ts";
 
-export type VmFilesProvider = (scope: VmFilesScope) => Promise<VmFiles | undefined>;
+export type VmFilesProvider = (scope: VmFilesScope, invocation?: AgentInvocation) => Promise<VmFiles | undefined>;
 
-export async function resolveVmFiles(_env: RepoEnv, scope: VmFilesScope, vmFiles?: VmFilesProvider) {
-  return vmFiles?.(scope);
+export async function resolveVmFiles(_env: RepoEnv, scope: VmFilesScope, vmFiles?: VmFilesProvider, invocation?: AgentInvocation) {
+  return vmFiles?.(scope, invocation);
 }
 
 // Model-facing text (reviewed by the lead, 2026-11-14): the model knows the VM as "your machine" (the bash tool).
