@@ -118,13 +118,11 @@ type VM struct {
 	LastCheckpoint                          *Checkpoint
 	RequestedVersion                        string
 	RequestedDeadline                       int64
-	ResultRef, EndVersion                   string
+	EndVersion                              string
 	CheckpointError                         string
 	Tree, RefLeaseHolder                    string
 	RefLeaseEpoch, RefLeaseDeadline         int64
 	RefLeaseReleased                        bool
-	ResultSha256                            string
-	ResultBytes                             int64
 	BilledTo, UsageSeq                      int64
 }
 
