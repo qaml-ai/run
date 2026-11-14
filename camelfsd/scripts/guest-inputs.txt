@@ -1,0 +1,14 @@
+# Every input of the guest image (camelfsd/scripts/build-guest-image.sh), one repository path per line; a trailing
+# slash means the directory. CI builds and publishes a guest image only when one of these changes, and the image's
+# SOURCE_DATE_EPOCH is the last commit touching them, so unchanged inputs rebuild the same image.
+# cmd/camelfsd: TestGuestInputs keeps this list equal to `go list -deps -tags guest ./cmd/camelfsd`.
+.github/workflows/ci.yml
+camelfsd/go.mod
+camelfsd/go.sum
+camelfsd/cmd/camelfsd/guest.go
+camelfsd/cmd/camelfsd/guest_only.go
+camelfsd/internal/guest/
+camelfsd/internal/wire/
+camelfsd/scripts/build-guest-image.sh
+camelfsd/scripts/publish-guest-image.sh
+camelfsd/scripts/guest-inputs.txt

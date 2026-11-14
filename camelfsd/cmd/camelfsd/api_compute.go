@@ -1,3 +1,5 @@
+//go:build !guest
+
 package main
 
 import (
@@ -47,7 +49,7 @@ func (c *apiComputeFlags) bind(f *flag.FlagSet) {
 	f.StringVar(&c.endpoint, "ddb-endpoint", "", "DynamoDB Local endpoint for tests")
 	f.StringVar(&c.pools, "pools", "", "comma-separated compute pools")
 	f.StringVar(&c.listenHosts, "listen-hosts", "", "private host mTLS address (required with compute, no unauthenticated routes, use TCP NLB health checks)")
-	f.StringVar(&c.listenEnroll, "listen-enroll", "", "private HTTP address for host enrollment behind the TLS ALB")
+	f.StringVar(&c.listenEnroll, "listen-enroll", "", "host enrollment TLS address (the tier's Private-CA certificate, no client certificate; behind a TCP-passthrough NLB)")
 	f.StringVar(&c.enrollAudience, "enroll-audience", "", "signed STS enrollment audience")
 	f.StringVar(&c.enrollRoles, "enroll-roles", "", "comma-separated pool=IAM role ARN mappings")
 	f.StringVar(&c.hostsCA, "hosts-ca", "", "AWS Private CA ARN for host and tier certificates")

@@ -111,7 +111,7 @@ run "first_apply_before_the_certificate" {
     condition = (
       aws_lb.hosts.load_balancer_type == "network" && aws_lb.hosts.internal == true && aws_lb.hosts.enable_cross_zone_load_balancing == true
       && aws_lb_listener.hosts.protocol == "TCP" && aws_lb_listener.hosts.port == 8794
-      && aws_lb_target_group.hosts.protocol == "TCP" && aws_lb_target_group.hosts.port == 8794 && aws_lb_target_group.hosts.health_check[0].path == "/v0/health" && aws_lb_target_group.hosts.health_check[0].port == "8790"
+      && aws_lb_target_group.hosts.protocol == "TCP" && aws_lb_target_group.hosts.port == 8794 && aws_lb_target_group.hosts.health_check[0].path == "/v1/health" && aws_lb_target_group.hosts.health_check[0].port == "8790"
       && length(aws_vpc_security_group_ingress_rule.nlb_hosts_from_hosts) == 0
     )
     error_message = "Host routes: an internal NLB in TCP passthrough on 8794 to the tier (the tier terminates mTLS), health-checked on the api port; no host admitted until the host groups are named."
@@ -199,7 +199,7 @@ run "balancers" {
     error_message = "The DNS records to make by hand: the public name proxied, the internal name DNS only."
   }
   assert {
-    condition     = alltrue([for group in aws_lb_target_group.api : group.health_check[0].path == "/v0/health" && group.health_check[0].matcher == "200"])
+    condition     = alltrue([for group in aws_lb_target_group.api : group.health_check[0].path == "/v1/health" && group.health_check[0].matcher == "200"])
     error_message = "Both target groups probe the daemon's health route for 200."
   }
 }
