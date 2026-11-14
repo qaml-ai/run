@@ -35,6 +35,7 @@ type refRestoreRequest struct {
 	Author, Version string
 	Message         *string
 	Time            *int64
+	Trailers        map[string]string
 	Quota           *quotaRequest
 }
 
@@ -285,11 +286,16 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 			if err != nil {
 				return err
 			}
-			if _, err := s.moveHead(ctx, head, "move", q.Theirs, theirs.tree, theirs.parents, q.Quota); err != nil {
+			bytes, err := s.moveHead(ctx, head, "move", q.Theirs, theirs.tree, theirs.parents, q.Quota)
+			if err != nil {
+				return err
+			}
+			files, err := repo.TreeFileCount(ctx, theirs.tree)
+			if err != nil {
 				return err
 			}
 			jsonReply(w, 201, map[string]any{"version": q.Theirs, "tree": theirs.tree, "ff": true,
-				"merged": []string{}, "took": mergeTook{Theirs: len(diff)}})
+				"merged": []string{}, "took": mergeTook{Theirs: len(diff)}, "bytes": bytes, "files": files})
 			return nil
 		}
 		var failure *refstore.Error
@@ -318,10 +324,16 @@ func (s *StorageServer) refMerge(w http.ResponseWriter, r *http.Request, l, name
 	if err := batch.Flush(ctx); err != nil {
 		return err
 	}
-	if _, err := s.moveHead(ctx, head, "commit", version, result.Tree, parents, q.Quota); err != nil {
+	bytes, err := s.moveHead(ctx, head, "commit", version, result.Tree, parents, q.Quota)
+	if err != nil {
 		return err
 	}
-	jsonReply(w, 201, map[string]any{"version": version, "tree": result.Tree, "ff": false, "merged": result.Merged, "took": result.Took})
+	files, err := repo.TreeFileCount(ctx, result.Tree)
+	if err != nil {
+		return err
+	}
+	jsonReply(w, 201, map[string]any{"version": version, "tree": result.Tree, "ff": false, "merged": result.Merged, "took": result.Took,
+		"bytes": bytes, "files": files})
 	return nil
 }
 
@@ -331,7 +343,7 @@ func (s *StorageServer) refRestore(w http.ResponseWriter, r *http.Request, l, na
 	if err := decodeStorage(r, &q); err != nil {
 		return err
 	}
-	metadata := commitMetadata{Author: q.Author, Message: q.Message, Time: q.Time}
+	metadata := commitMetadata{Author: q.Author, Message: q.Message, Time: q.Time, Trailers: q.Trailers}
 	if err := metadata.refOperation("restore"); err != nil {
 		return err
 	}
@@ -351,9 +363,14 @@ func (s *StorageServer) refRestore(w http.ResponseWriter, r *http.Request, l, na
 	if err != nil {
 		return err
 	}
-	if _, err := s.moveHead(ctx, head, "commit", version, target.tree, parents, q.Quota); err != nil {
+	bytes, err := s.moveHead(ctx, head, "commit", version, target.tree, parents, q.Quota)
+	if err != nil {
 		return err
 	}
-	jsonReply(w, 201, map[string]string{"version": version, "tree": target.tree})
+	files, err := repo.TreeFileCount(ctx, target.tree)
+	if err != nil {
+		return err
+	}
+	jsonReply(w, 201, map[string]any{"version": version, "tree": target.tree, "bytes": bytes, "files": files})
 	return nil
 }

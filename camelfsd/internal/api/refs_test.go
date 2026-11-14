@@ -520,10 +520,17 @@ func TestRefMutationRoutes(t *testing.T) {
 	details = mergeRef("main", version(theirs), "merge", 409, "conflict")
 	check(details["conflicts"].([]any)[0].(map[string]any)["path"], "a")
 	check(get("main"), before)
-	restored := call("POST", "/refs/main/restore", meta(map[string]any{"version": baseID}), 201, "")
+	restored := call("POST", "/refs/main/restore", meta(map[string]any{"version": baseID, "trailers": map[string]any{"Camel-Run": "r1"}}), 201, "")
 	check(restored["tree"], base["tree"])
+	if _, ok := restored["bytes"].(float64); !ok {
+		t.Fatalf("restore reply lacks bytes: %v", restored)
+	}
+	if _, ok := restored["files"].(float64); !ok {
+		t.Fatalf("restore reply lacks files: %v", restored)
+	}
 	check(history(version(restored))["parents"], []any{version(checkpoint)})
-	check(history(version(restored))["trailers"], map[string]any{"Camel-Op": "restore"})
+	// Caller trailers are kept; the tier adds Camel-Op when the caller did not name one.
+	check(history(version(restored))["trailers"], map[string]any{"Camel-Op": "restore", "Camel-Run": "r1"})
 	call("POST", "/refs/main/lease", map[string]any{"holder": map[string]any{"host": "h", "boot": 1, "mount": "m"}, "ttlMs": 60000}, 200, "")
 	write("main", []map[string]any{}, nil, 409, "held")
 }
