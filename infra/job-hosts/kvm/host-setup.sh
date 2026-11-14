@@ -64,12 +64,14 @@ verify() {
 }
 echo '== Packages'
 export DEBIAN_FRONTEND=noninteractive
-packages=(xfsprogs nbd-client dmsetup thin-provisioning-tools nftables iproute2 socat awscli zstd e2fsprogs curl jq git ca-certificates build-essential unzip rsync openssl xz-utils)
+packages=(xfsprogs nbd-client dmsetup thin-provisioning-tools nftables iproute2 socat zstd e2fsprogs curl jq git ca-certificates build-essential unzip rsync openssl xz-utils)
 missing=()
 for package in "${packages[@]}"; do
   [[ $(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true) == 'install ok installed' ]] || missing+=("$package")
 done
 if ((${#missing[@]})); then apt-get update -qq; apt-get install -y -qq "${missing[@]}"; fi
+# Ubuntu 24.04 has no awscli package: the host uses AWS CLI v2 from AWS's installer (aws.amazon.com/cli).
+aws --version 2>/dev/null | grep -q '^aws-cli/2\.' || fail 'Install AWS CLI v2 (https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)'
 ca_changed=0
 if (( compute )); then
   echo '== Tier CA'
