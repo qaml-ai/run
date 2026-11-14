@@ -222,7 +222,7 @@ resource "aws_lb_target_group" "hosts" {
 
   deregistration_delay = 30
 
-  # The same health route the ALBs probe, on the api port: a task that serves /v0/health serves its hosts port.
+  # The same health route the ALBs probe, on the api port: a task that serves /v1/health serves its hosts port.
   health_check {
     protocol            = "HTTP"
     port                = tostring(var.api_port)

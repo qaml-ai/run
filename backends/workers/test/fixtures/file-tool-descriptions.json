@@ -1,6 +1,6 @@
 {
   "read": "Read UTF-8 text from a persistent file in /workspace or a mounted volume.",
-  "write": "Write UTF-8 text to a persistent file in /workspace or a writable mounted volume.",
+  "write": "Write UTF-8 text to a persistent file in /workspace or a writable mounted repo.",
   "ls": "List persistent files under a /workspace or mounted directory.",
   "present_file": "Hand a file you made to the user with your reply. Writing alone does not share it.",
   "edit": "Replace exact text in a UTF-8 file. Each oldText must occur exactly once.",

@@ -1,4 +1,4 @@
-// Generated from src/billing.ts; only host imports/types are adapted.
+// Generated from src/billing.ts; Workers host imports/types and free-hourly error code.
 // Regenerate with scripts/reuse-billing.mjs; --check rejects policy drift.
 import { randomUUID } from "node:crypto";
 import type { Tenants } from "./billing-host.ts";
@@ -358,7 +358,7 @@ export class Billing {
     if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`, "INSUFFICIENT_CREDIT");
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
-      return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`);
+      return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`, "FREE_HOURLY_LIMIT");
     }
     return undefined;
   }

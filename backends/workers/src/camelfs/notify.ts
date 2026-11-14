@@ -19,6 +19,12 @@ export type RefMove = {
 
 class InvalidDelivery extends Error {}
 
+registerNotifyHandler("vm.ended", async (env, { id, body }) => {
+  const match = typeof body.vm === "string" && body.vm.length <= 96 && /^vm-([A-Za-z0-9_-]{1,80})-([a-f0-9]{1,16})-([a-z0-9]+)$/.exec(body.vm);
+  if (!match) throw new InvalidDelivery();
+  await env.AGENTS.getByName(match[1]).vmEnded(id, body.vm as string);
+});
+
 registerNotifyHandler("ref.moved", async (env, { id, body }) => {
   const { lineage, ref, from, to, tree, by, at, watchers } = body;
   if (typeof lineage !== "string" || typeof ref !== "string" || (from !== null && typeof from !== "string") ||
@@ -55,14 +61,17 @@ export async function handleCamelfsNotify(request: Request, env: NotifyEnv, now 
 }
 
 const prefix = "camelfs:move:";
-export async function stageRepoMove(storage: DurableObjectStorage, move: RefMove) {
+export async function stageRepoMove(storage: DurableObjectStorage, move: RefMove, arm?: () => Promise<void>) {
   await storage.transaction(async tx => {
     const key = prefix + move.id;
     if (await tx.get(key) !== undefined || await tx.get("camelfs:seen:" + move.id)) return;
     await tx.put(key, move);
-    const at = Date.now() + 1000, alarm = await tx.getAlarm();
-    if (alarm === null || alarm > at) await tx.setAlarm(at);
+    if (!arm) {
+      const at = Date.now() + 1000, alarm = await tx.getAlarm();
+      if (alarm === null || alarm > at) await tx.setAlarm(at);
+    }
   });
+  await arm?.();
 }
 
 export async function repoMoveDeadline(storage: DurableObjectStorage) {

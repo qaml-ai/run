@@ -759,8 +759,6 @@ Over the host's Unix socket (unchanged transport):
 - **`bash` VMs** (sessions; a checkpoint after every call that changed the tree, and before every stop): checkpoint → the host's CAS (in-VPC,
   ≈ 2 ms to the tier + ≈ 5 ms in DynamoDB) → `checkpointed { tree }` or `checkpointed { error }`, so the guest's
   index commits only after the ref moved. The runtime is not on this path.
-- **Until C4 and K2c**, today's TypeScript jobhost and the runtime keep the pre-C order of
-  `camelfsd/README.md` for the pilot's remaining host jobs; it goes with them (#1051, K5c).
 
 The CAS carries the checkpoint's `root`, so a later boot at that version mounts warm without the daemon rebuilding
 the image; the ref item carries `root?` (§6).

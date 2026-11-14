@@ -10,7 +10,7 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
     "removeMember", "databaseProfile",
     "purgeAccountData", "admitDelegateWake", "receiveAgentMessage", "receiveProgress", "receiveEnding", "admitDelegated",
     "hasChild", "cancelRequest", "fetch", "onStart", "onJob",
-    "webSocketMessage", "webSocketClose", "webSocketError", "stageRepoMove",
+    "webSocketMessage", "webSocketClose", "webSocketError", "vmEnded", "stageRepoMove",
   ];
   const source = readFileSync(new URL("../src/agent.ts", import.meta.url), "utf8");
   // Run the real wrapper with an inert runtime. Native private fields remain native,

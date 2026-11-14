@@ -85,6 +85,20 @@ func (h *HostTLS) ServerConfig() *tls.Config {
 	return config
 }
 
+// EnrollServerConfig serves --listen-enroll: TLS with the tier's own Private-CA certificate (SAN spiffe://camelfs/tier),
+// server authentication only. A new host has no certificate yet, so none is requested: it pins the Private CA and the
+// tier SAN, and proves itself with its STS attestation in the request body. The certificate rotates with --listen-hosts.
+func (h *HostTLS) EnrollServerConfig() *tls.Config {
+	enroll := func() *tls.Config {
+		current := h.current.Load().Config
+		return &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.NoClientCert, Certificates: current.Certificates,
+			SessionTicketsDisabled: true}
+	}
+	config := enroll()
+	config.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) { return enroll(), nil }
+	return config
+}
+
 func hostCAPool(caPEM string) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM([]byte(caPEM)) {

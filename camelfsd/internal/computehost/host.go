@@ -423,6 +423,7 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 	ctx, cancel := context.WithTimeout(h.ctx, h.Mounts.ApplyMax+time.Minute)
 	defer cancel()
 	var imageTime, mountTime, firstExec time.Duration
+	var phases vmhost.BootTimings
 	err := func() error {
 		if !validShape(q.Shape, h.Shape) || q.Session == nil {
 			return errors.New("invalid session or VM shape")
@@ -444,6 +445,7 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 		if err != nil {
 			return err
 		}
+		phases = vm.BootTimings()
 		h.mu.Lock()
 		r := s.row
 		r.Slot = vm.Slot()
@@ -471,7 +473,10 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 		s.vm = vm
 		return nil
 	}()
-	slog.Info("compute_boot", "vm", q.ID, "image", ms(imageTime), "mount", ms(mountTime), "first_exec", ms(firstExec), "error", err)
+	// first_exec spans Launcher.Boot through the first camelfs_apply round trip; disk..vsock are its launcher phases.
+	slog.Info("compute_boot", "vm", q.ID, "image", ms(imageTime), "mount", ms(mountTime), "first_exec", ms(firstExec),
+		"disk", ms(phases.Disk), "assets", ms(phases.Assets), "tap", ms(phases.Tap), "policy", ms(phases.Policy),
+		"scope", ms(phases.Scope), "vsock", ms(phases.Vsock), "error", err)
 	if err != nil {
 		h.failBoot(s, err)
 		return

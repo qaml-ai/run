@@ -1,3 +1,4 @@
+import { bashEnabled, bashTool } from "./camelfs/bash.ts";
 import { workflowTools } from "./workflow-tools.ts";
 import { workflowsEnabled } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
@@ -46,6 +47,7 @@ import { senderExtension } from "./sender-extension.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
+import { VmRouteError } from "./repos/vm-route.ts";
 import { selectAgentTools, wordedFileTools } from "./file-tool-selection.ts";
 import { Env } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
@@ -352,8 +354,18 @@ export function createHarness(this: AgentRuntime): PiHarness {
                   this.fileVersions,
                   { "Camel-Run": await this.fileRequestId(api.conversationId), "Camel-Call": api.callId },
                   scope,
+                  this.vmFiles,
                 )[index];
-                return await impl.execute(args as never, api, context);
+                try {
+                  return await impl.execute(args as never, api, context);
+                } catch (error) {
+                  if (!(error instanceof VmRouteError)) throw error;
+                  return {
+                    isError: true,
+                    output: [{ type: "text" as const, text: error.message }],
+                    diagnostics: [{ severity: "error" as const, code: error.code, message: error.message }],
+                  };
+                }
               } finally {
                 scope.close();
               }
@@ -521,7 +533,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         const noComputer = await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id));
         registry.install({
           name: "camel.linux",
-          tools: noComputer ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
+          tools: noComputer ? [] : bashEnabled(this.env) ? [bashTool(this)] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
         });
         const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
         registry.install({
