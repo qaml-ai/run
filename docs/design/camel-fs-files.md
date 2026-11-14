@@ -219,7 +219,7 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
     `camelfs-prod-guest-image-publisher`.
   - VM results at `results/<lineage>/<vm>` (prefix first, so one 7-day lifecycle rule on `results/` expires them,
     no tags; #1003), written by the host and verified by the tier (camel-fs-compute.md §2). Deleting a lineage
-    must cover `results/<lineage>/` as well as `<lineage>/` (ledger L101).
+    must cover `results/<lineage>/` as well as `<lineage>/` (ledger L102).
 - **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
   - `camelfs-prod-objects` (`lineage` + `id`);
   - `camelfs-prod-refs` (`lineage` + `name`);
