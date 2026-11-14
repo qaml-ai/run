@@ -133,8 +133,8 @@ run "first_apply_before_the_certificate" {
     error_message = "The bucket is camelfs-<env>-<account id>: globally unique, and not the prototype's."
   }
   assert {
-    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages", deliveries = "camelfs-prod-deliveries", hosts = "camelfs-prod-hosts", vms = "camelfs-prod-vms", usage = "camelfs-prod-usage" }
-    error_message = "Seven tables: objects, refs, lineages, deliveries, hosts, vms, usage."
+    condition     = output.table_names == { objects = "camelfs-prod-objects", refs = "camelfs-prod-refs", lineages = "camelfs-prod-lineages", deliveries = "camelfs-prod-deliveries", hosts = "camelfs-prod-hosts", vms = "camelfs-prod-vms", usage = "camelfs-prod-usage", marks = "camelfs-prod-marks" }
+    error_message = "Eight tables: objects, refs, lineages, deliveries, hosts, vms, usage, marks."
   }
 }
 
@@ -152,6 +152,7 @@ run "tables_keys_and_protection" {
       && aws_dynamodb_table.camelfs["hosts"].hash_key == "pool" && aws_dynamodb_table.camelfs["hosts"].range_key == "host"
       && aws_dynamodb_table.camelfs["vms"].hash_key == "id" && aws_dynamodb_table.camelfs["vms"].range_key == null
       && aws_dynamodb_table.camelfs["usage"].hash_key == "shard" && aws_dynamodb_table.camelfs["usage"].range_key == "ulid"
+      && aws_dynamodb_table.camelfs["marks"].hash_key == "lineage" && aws_dynamodb_table.camelfs["marks"].range_key == null
     )
     error_message = "Key schemas: objects (lineage, id), refs (lineage, name), lineages (lineage), deliveries (shard, id), hosts (pool, host), vms (id), usage (shard, ulid)."
   }
@@ -262,9 +263,9 @@ run "roles_and_policies" {
   assert {
     condition = (
       length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Effect == "Allow" && contains(flatten([statement.Action]), "dynamodb:PutItem")]) == 1
-      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 6]) == 1
+      && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 7]) == 1
     )
-    error_message = "The host policy writes the objects table only and explicitly denies the six other tables."
+    error_message = "The host policy writes the objects table only and explicitly denies the seven other tables."
   }
   assert {
     condition = (
@@ -406,7 +407,7 @@ run "service_with_every_feature" {
   }
 
   assert {
-    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]
+    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--marks-table", "camelfs-prod-marks", "--vms-table", "camelfs-prod-vms", "--hosts-table", "camelfs-prod-hosts", "--deliveries-table", "camelfs-prod-deliveries", "--usage-table", "camelfs-prod-usage", "--pools", "build,test", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--listen-enroll", "0.0.0.0:8793", "--enroll-audience", "camelfs:enroll", "--enroll-roles", "build=arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod,test=arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod", "--runtime-notify-url", "https://run-pilot.camelai.dev/v1/internal/camelfs/notify", "--token-max-ttl", "1h"]
     error_message = "With refs and compute on, the command carries C2's and K4c's full flag set (wf-durable, 2026-11-14; no file flags: the tier keeps its key in memory) and then api_extra_args."
   }
   assert {
