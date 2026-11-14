@@ -45,7 +45,7 @@ func TestUnitUsageInterval(t *testing.T) {
 
 func TestUnitRank(t *testing.T) {
 	now := int64(100000)
-	shape := Shape{2, 1024, 3}
+	shape := Shape{VCPUs: 2, MemoryMiB: 1024, DiskGiB: 3}
 	host := func(name string, free int) Host {
 		return Host{HostInfo: HostInfo{Host: name, Shape: shape}, Free: free, FreeMiB: 1024, LastSeenAt: now}
 	}
@@ -124,7 +124,7 @@ func TestUnitExpressionNames(t *testing.T) {
 				return true
 			}
 			expr, _ := strconv.Unquote(lit.Value)
-			if !strings.ContainsAny(expr, "=<>#()") || strings.HasPrefix(expr, "~wait#") || expr == aliasPattern.String() {
+			if !strings.ContainsAny(expr, "=<>#()") || strings.HasPrefix(expr, waitPrefix) || expr == releasePrefix || expr == aliasPattern.String() {
 				return true
 			}
 			for _, token := range word.FindAllString(expr, -1) {
@@ -135,5 +135,18 @@ func TestUnitExpressionNames(t *testing.T) {
 			}
 			return true
 		})
+	}
+}
+
+func TestUnitRankPrefersImageAfterFit(t *testing.T) {
+	shape := Shape{VCPUs: 2, MemoryMiB: 1024, DiskMiB: 128}
+	warm := Host{HostInfo: HostInfo{Host: "warm", Shape: shape, Images: []string{"image"}}, LastSeenAt: 1, Free: 1, FreeMiB: 1024}
+	cold := Host{HostInfo: HostInfo{Host: "cold", Shape: shape}, LastSeenAt: 1, Free: 10, FreeMiB: 10240}
+	noFit := warm
+	noFit.Host = "no-fit"
+	noFit.FreeMiB--
+	got := rankImage([]Host{cold, noFit, warm}, shape, 0, "image")
+	if len(got) != 2 || got[0].Host != "warm" || got[1].Host != "cold" {
+		t.Fatal(got)
 	}
 }

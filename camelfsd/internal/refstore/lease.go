@@ -38,14 +38,24 @@ func (s *Store) Acquire(ctx context.Context, lineage, name, holder string, ttlMs
 		if !r.live(now) {
 			return Lease{}, failure("no_ref", 404)
 		}
-		if r.held(now) {
-			return Lease{}, failure("held", 409)
-		}
-		lease := Lease{Epoch: r.LeaseEpoch + 1, Deadline: now + ttlMs, Version: r.Version, Tree: r.Tree}
+		lease := Lease{Epoch: r.LeaseEpoch, Deadline: now + ttlMs, Version: r.Version, Tree: r.Tree}
 		values := attributes{":current": str(r.Version), ":now": num(now), ":holder": str(holder),
-			":deadline": num(lease.Deadline), ":epoch": num(r.LeaseEpoch), ":next": num(lease.Epoch)}
-		condition := "#version = :current AND " + live + " AND " + unheld + " AND #leaseEpoch = :epoch"
-		update := "SET #leaseDeadline = :deadline, #holder = :holder, #leaseEpoch = :next"
+			":deadline": num(lease.Deadline), ":epoch": num(r.LeaseEpoch)}
+		condition := "#version = :current AND "
+		update := "SET #leaseDeadline = :deadline"
+		if r.held(now) {
+			// The same holder re-acquiring keeps its epoch and extends the deadline: a caller that lost
+			// the reply to its own acquire (compute's recovery) retries safely. Another holder is refused.
+			if *r.Holder != holder {
+				return Lease{}, failure("held", 409)
+			}
+			condition += heldBy
+		} else {
+			condition += live + " AND " + unheld + " AND #leaseEpoch = :epoch"
+			lease.Epoch++
+			values[":next"] = num(lease.Epoch)
+			update += ", #holder = :holder, #leaseEpoch = :next"
+		}
 		_, err = s.update(ctx, lineage, name, condition, update, values, types.ReturnValueNone)
 		if !ddb.IsConditionFailed(err) {
 			return lease, err

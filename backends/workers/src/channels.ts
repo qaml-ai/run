@@ -252,7 +252,7 @@ export async function workerChannels(env: Env, background?: (work: Promise<unkno
         const { mount, inside } = resolve(await mountsOf(env, agent, tenant), path);
         // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
         if('volumeId'in mount)return signVolumeLink(env,publicUrl,tenant,mount.volumeId,{path:inside,expiresIn:FILE_LIMITS.maxLinkSeconds}).url;
-        const ctx=await repoContext(env as RepoEnv,tenant,mount.repo),v=await ctx.stub.resolve(mount.ref??"main");
+        const ctx=await repoContext(env as RepoEnv,tenant,mount.repo),v=await ctx.repo.resolve(mount.ref??"main");
         return (await signRepoLink(ctx,publicUrl,{path:insideRepo(inside),version:v.version,expiresIn:FILE_LIMITS.maxLinkSeconds})).url;
       },
     },

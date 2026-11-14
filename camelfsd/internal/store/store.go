@@ -508,7 +508,7 @@ func (s *limited) Has(ctx context.Context, k string) (bool, error) {
 }
 
 func (s *S3) Open(ctx context.Context, key string) (io.ReadCloser, error) {
-	if !valid(key) {
+	if !validReadKey(key) {
 		return nil, fmt.Errorf("invalid key")
 	}
 	k := s.key(key)

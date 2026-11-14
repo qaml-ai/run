@@ -15,14 +15,39 @@ const hostFreshMS = int64(30_000)
 const waitPrefix = "~wait#"
 
 func rank(hosts []Host, shape Shape, now int64) []Host {
+	return rankImage(hosts, shape, now-hostFreshMS, "")
+}
+
+func (shape Shape) diskMiB() int {
+	if shape.DiskMiB != 0 {
+		return shape.DiskMiB
+	}
+	return shape.DiskGiB * 1024
+}
+
+func (c *Controller) hostCutoff(now int64) int64 {
+	if c.HostFresh > 0 {
+		return now - c.HostFresh.Milliseconds()
+	}
+	return now - hostFreshMS
+}
+
+func rankImage(hosts []Host, shape Shape, cutoff int64, image string) []Host {
 	var candidates []Host
 	for _, h := range hosts {
-		if h.Free > 0 && !h.Draining && h.LastSeenAt > now-hostFreshMS &&
-			h.Shape.VCPUs >= shape.VCPUs && h.FreeMiB >= shape.MemoryMiB && h.Shape.DiskGiB >= shape.DiskGiB {
+		if h.Free > 0 && !h.Draining && h.LastSeenAt > cutoff &&
+			h.Shape.VCPUs >= shape.VCPUs && h.FreeMiB >= shape.MemoryMiB && h.Shape.diskMiB() >= shape.diskMiB() {
 			candidates = append(candidates, h)
 		}
 	}
 	slices.SortFunc(candidates, func(a, b Host) int {
+		aWarm, bWarm := image != "" && slices.Contains(a.Images, image), image != "" && slices.Contains(b.Images, image)
+		if aWarm != bWarm {
+			if aWarm {
+				return -1
+			}
+			return 1
+		}
 		if a.Free != b.Free {
 			return b.Free - a.Free
 		}
@@ -38,10 +63,10 @@ func readHost(i item) Host {
 	return Host{
 		HostInfo: HostInfo{Pool: i.text("pool"), Host: i.text("host"), BootID: i.text("bootID"),
 			Addr: i.text("addr"), Shape: readShape(i.object("shape")), Slots: int(i.number("slots")),
-			Features: i.set("features"), Draining: i.flag("draining")},
+			Features: i.set("features"), Images: i.set("images"), Draining: i.flag("draining")},
 		BootEpoch: i.number("bootEpoch"), LastSeenAt: i.number("lastSeenAt"), Free: int(i.number("free")),
 		MemoryMiB: int(i.number("memoryMiB")), FreeMiB: int(i.number("freeMiB")),
-		VMs: i.set("vms"), Restarting: i.flag("restarting"), lost: i.flag("lost"),
+		VMs: i.set("vms"), Restarting: i.flag("restarting"), Lost: i.flag("lost"),
 	}
 }
 
@@ -53,6 +78,9 @@ func hostItem(h HostInfo, epoch, now int64) attrs {
 	i["lastSeenAt"], i["draining"], i["addr"] = n(now), b(h.Draining), s(h.Addr)
 	if len(h.Features) > 0 {
 		i["features"] = ss(h.Features...)
+	}
+	if len(h.Images) > 0 {
+		i["images"] = ss(h.Images...)
 	}
 	return i
 }
@@ -73,7 +101,18 @@ func (c *Controller) Register(ctx context.Context, h HostInfo) (int64, error) {
 	current := readHost(i)
 	if current.BootID == h.BootID && !current.Restarting {
 		if !i.flag("lost") {
-			return current.BootEpoch, nil
+			replacement := hostItem(h, current.BootEpoch, now)
+			expr := "SET #addr = :addr"
+			values := attrs{":addr": replacement["addr"], ":epoch": n(current.BootEpoch)}
+			if images := replacement["images"]; images != nil {
+				expr += ", #images = :images"
+				values[":images"] = images
+			} else {
+				expr += " REMOVE #images"
+			}
+			_, err := c.update(ctx, change(c.Tables.Hosts, key,
+				"#bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost)", expr, values))
+			return current.BootEpoch, err
 		}
 		epoch := current.BootEpoch + 1
 		replacement := put(c.Tables.Hosts, hostItem(h, epoch, now),
@@ -117,7 +156,7 @@ func (c *Controller) heartbeat(ctx context.Context, pool, host string, bootEpoch
 		return Host{}, time.Time{}, err
 	}
 	h := readHost(i)
-	if h.BootEpoch != bootEpoch || h.Restarting || h.lost {
+	if h.BootEpoch != bootEpoch || h.Restarting || h.Lost {
 		return Host{}, time.Time{}, ErrHost
 	}
 	at = time.UnixMilli(max(h.LastSeenAt, min(at.UnixMilli(), c.now().UnixMilli())))
@@ -142,7 +181,7 @@ func (c *Controller) heartbeat(ctx context.Context, pool, host string, bootEpoch
 			return Host{}, time.Time{}, readErr
 		}
 		h := readHost(current)
-		if h.BootEpoch != bootEpoch || h.Restarting || h.lost {
+		if h.BootEpoch != bootEpoch || h.Restarting || h.Lost {
 			return Host{}, time.Time{}, ErrHost
 		}
 	}
@@ -177,6 +216,37 @@ func (c *Controller) poolItems(ctx context.Context, pool string, waiting bool) (
 	return result, nil
 }
 
+func (c *Controller) Host(ctx context.Context, pool, host string) (Host, error) {
+	i, err := c.read(ctx, c.Tables.Hosts, hostKey(pool, host))
+	return readHost(i), err
+}
+
+// FindHost checks the exact host key within each configured pool partition.
+func (c *Controller) FindHost(ctx context.Context, pools []string, host string) (Host, error) {
+	var found Host
+	for _, pool := range pools {
+		const cond = "#pool = :pool AND #host = :host"
+		out, err := c.DB.Query(ctx, &dynamodb.QueryInput{
+			TableName: aws.String(c.Tables.Hosts), ConsistentRead: aws.Bool(true),
+			KeyConditionExpression: aws.String(cond), ExpressionAttributeNames: aliases(cond),
+			ExpressionAttributeValues: attrs{":pool": s(pool), ":host": s(host)},
+		})
+		if err != nil {
+			return Host{}, err
+		}
+		if len(out.Items) > 0 {
+			if found.Host != "" {
+				return Host{}, ErrHost
+			}
+			found = readHost(out.Items[0])
+		}
+	}
+	if found.Host == "" {
+		return Host{}, ErrHost
+	}
+	return found, nil
+}
+
 func (c *Controller) Hosts(ctx context.Context, pool string) ([]Host, error) {
 	items, err := c.poolItems(ctx, pool, false)
 	if err != nil {
@@ -184,7 +254,7 @@ func (c *Controller) Hosts(ctx context.Context, pool string) ([]Host, error) {
 	}
 	hosts := make([]Host, 0, len(items))
 	for _, i := range items {
-		if i.text("kind") != "wait" {
+		if i.text("kind") == "" {
 			hosts = append(hosts, readHost(i))
 		}
 	}

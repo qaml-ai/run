@@ -61,16 +61,16 @@ func (c *Controller) Reconcile(ctx context.Context, pool, host string, bootEpoch
 		}
 		switch v.Phase {
 		case Placed:
-			v, err = c.MarkBooting(ctx, id)
+			v, err = c.markBooting(ctx, v)
 			if err == nil && v.onHost(h) && v.Phase == Booting {
-				// The stop or end can have committed after the boot write.
+				c.pushBoot(ctx, v)
 				v, err = c.Get(ctx, id)
 				if err == nil && v.onHost(h) && v.Phase == Booting {
 					reply.Boot = append(reply.Boot, v)
 				}
 			}
 		case Booting:
-			if v.BootingAt != nil && *v.BootingAt < cutoff {
+			if v.LeaseDeadline > c.now().UnixMilli() && (c.Refs == nil || v.RefLeaseDeadline > c.now().UnixMilli()) {
 				reply.Boot = append(reply.Boot, v)
 			}
 		case Running, Stopping:
@@ -81,6 +81,13 @@ func (c *Controller) Reconcile(ctx context.Context, pool, host string, bootEpoch
 		if err != nil && !errors.Is(err, ErrCondition) {
 			return Reconcile{}, err
 		}
+	}
+	current, err := c.Host(ctx, pool, host)
+	if err != nil {
+		return Reconcile{}, err
+	}
+	if current.BootEpoch != bootEpoch || current.Lost || current.Restarting {
+		return Reconcile{}, ErrHost
 	}
 	return reply, nil
 }
@@ -113,7 +120,7 @@ func (c *Controller) reconcileListed(ctx context.Context, h Host, at time.Time, 
 		return false, nil
 	}
 	if entry.StartedAt != nil && v.StartedAt == nil {
-		v, err = c.Started(ctx, v.ID, h.Host, h.BootEpoch, *entry.StartedAt)
+		v, err = c.StartedFromHost(ctx, v.ID, h, *entry.StartedAt)
 		if err != nil {
 			return false, err
 		}

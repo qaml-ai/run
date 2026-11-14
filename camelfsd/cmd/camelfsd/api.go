@@ -30,21 +30,22 @@ func apiRole(args []string) error {
 	data := f.String("data", "", "local cache directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
 	region := f.String("region", "us-west-2", "AWS region")
-	refsTable := f.String("refs-table", "", "DynamoDB refs table")
+	// --refs-table and --ddb-endpoint are shared with the compute flags (api_compute.go): one refs table.
 	lineagesTable := f.String("lineages-table", "", "DynamoDB lineages table")
 	marksTable := f.String("marks-table", "marks", "DynamoDB pending mark work table keyed by lineage")
-	endpoint := f.String("ddb-endpoint", "", "DynamoDB Local endpoint")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	jwksFile := f.String("jwks-file", "", "runtime JWKS file (alternative to CAMELFS_JWKS)")
 	issuer := f.String("token-issuer", "", "runtime issuer URL")
 	maxTTL := f.Duration("token-max-ttl", auth.DefaultMaxTTL, "maximum token lifetime")
+	var computeFlags apiComputeFlags
+	computeFlags.bind(f)
 	if err := f.Parse(args); err != nil {
 		return err
 	}
 	if f.NArg() != 0 || *listen == "" || !filepath.IsAbs(*data) || *url == "" || *fetchDepth < 1 {
 		return fmt.Errorf("invalid api flags")
 	}
-	if (*refsTable == "") != (*lineagesTable == "") || (*endpoint != "" && *refsTable == "") {
+	if (computeFlags.refs == "") != (*lineagesTable == "") {
 		return fmt.Errorf("refs-table and lineages-table must be configured together")
 	}
 	var inline *string
@@ -82,22 +83,47 @@ func apiRole(args []string) error {
 		return err
 	}
 	repo := &objects.Repository{DB: db, Store: st, TempDir: tmp}
+	computeAPI, err := computeFlags.open(ctx, *region, repo)
+	if err != nil {
+		return err
+	}
 	handler := api.NewStorageServer(repo, version, keys)
-	if *refsTable != "" {
-		client, err := ddb.Open(ctx, ddb.Config{Region: *region, Endpoint: *endpoint})
+	if computeFlags.refs != "" {
+		client, err := ddb.Open(ctx, ddb.Config{Region: *region, Endpoint: computeFlags.endpoint})
 		if err != nil {
 			return err
 		}
-		handler.ConfigureRefs(client, *refsTable, *lineagesTable, nil, *marksTable)
+		handler.ConfigureRefs(client, computeFlags.refs, *lineagesTable, nil, *marksTable)
 	}
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	storage := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
 	}
-	stopped := make(chan error, 1)
-	go func() { stopped <- server.Serve(listener) }()
+	defer listener.Close()
+
+	var hosts *http.Server
+	var hostListener net.Listener
+	if computeAPI != nil {
+		hostListener, err = net.Listen("tcp", computeFlags.listenHosts)
+		if err != nil {
+			return fmt.Errorf("listen-hosts: %w", err)
+		}
+		defer hostListener.Close()
+		hosts = &http.Server{Handler: computeAPI.hostServer, TLSConfig: computeAPI.credentials.ServerConfig(),
+			ReadHeaderTimeout: 5 * time.Second}
+	}
+
+	defer computeAPI.start(ctx)()
+	defer storage.Close()
+	stopped := make(chan error, 2)
+	go func() { stopped <- storage.Serve(listener) }()
 	log.Printf("op=api listen=%s", listener.Addr())
+	if hosts != nil {
+		defer hosts.Close()
+		go func() { stopped <- hosts.ServeTLS(hostListener, "", "") }()
+		log.Printf("op=api-hosts listen=%s", hostListener.Addr())
+	}
 	for {
 		select {
 		case err := <-stopped:
@@ -106,17 +132,18 @@ func apiRole(args []string) error {
 			if err := keys.Reload(); err != nil {
 				log.Printf("op=jwks-reload error=%v", err)
 			}
+			if err := computeAPI.reload(); err != nil {
+				log.Printf("op=hosts-tls-reload error=%v", err)
+			}
 		case <-ctx.Done():
 			shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if err := server.Shutdown(shutdown); err != nil {
-				_ = server.Close()
-				return err
+			if hosts == nil {
+				return storage.Shutdown(shutdown)
 			}
-			if err := <-stopped; !errors.Is(err, http.ErrServerClosed) {
-				return err
-			}
-			return nil
+			hostDone := make(chan error, 1)
+			go func() { hostDone <- hosts.Shutdown(shutdown) }()
+			return errors.Join(storage.Shutdown(shutdown), <-hostDone)
 		}
 	}
 }

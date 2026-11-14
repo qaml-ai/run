@@ -76,7 +76,7 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
 | `POST /v1/vms/{id}/exec` `{ command, shell?, timeoutS, env?, stdin? }` | runs a command. Output streams as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`); a client that drops the stream can re-read the tail with `GET …/exec/{execId}`. `shell` names a persistent shell from `POST /v1/vms/{id}/shells` (cwd, env and shell state survive between calls: the `bash` tool's semantics). A `job`-mode VM runs its `job.command` once by itself and refuses `exec` |
 | `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the in-VPC `cas` on the VM's ref under its lease (§9.7, §9.9). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved. This is the per-turn checkpoint of the `bash` VM |
 | `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. A `session` stops by itself after `idleStopS` with no `exec`, with a checkpoint first; memory-snapshot sleep (§1.5) is a later addition behind the same call |
-| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, exit, timedOut, resultKey, resultSha256, resultBytes, version?, checkpointError? }` (the body is read with `GET …/result`), `usage.vm` (§4). Delivered at least once as signed webhooks into outbox rows (camel-fs-files.md §9.11's pipeline) |
+| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, exit, timedOut, resultKey, resultSha256, resultBytes, version?, checkpointError? }` (on the notify webhook with `type: "vm.ended"`, camel-fs-files.md §9.11) (the body is read with `GET …/result`), `usage.vm` (§4). Delivered at least once as signed webhooks into outbox rows (camel-fs-files.md §9.11's pipeline) |
 
 **Mapping:**
 - `job({ at, commit })` is `POST /v1/vms` in `job` mode, followed by `vm.ended`.
@@ -93,9 +93,16 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
 - **The host verifies and keeps no pin:** it downloads `guest/<sha>` if its cache lacks it, verifies the bytes
   against `guest/<sha>.json`, and boots only on a match. The interim host-side pin from #979/#1007 is ledger L101
   and is deleted in K2c.
-- **`POST /v1/vms` refuses early, before placement:** `400 invalid_request` when `image` is not in the allowed set,
-  and when `shape.diskGiB` is smaller than the image's filesystem size. The host's own guard (L100, #979) stays as
-  the last line.
+- **`POST /v1/vms` validates everything before any write**, in this order (K4d):
+  1. `image` is in the allowed set, else `400 invalid_request` ("not allowed");
+  2. `guest/<sha>.json` exists, else `400 invalid_request` ("unknown image"), and its recorded sha matches,
+     else `500` (a corrupt manifest, never the caller's fault);
+  3. the disk is at least the image's bytes, else `400 invalid_request` naming both sizes;
+  4. `deadline` is in `(now, now + 24 h]`, else `400 invalid_request`;
+  5. `mode`, `job` and `session` are coherent (a `job` mode has `job`, a `session` mode has `session`), else
+     `400 invalid_request`.
+
+  The host's own disk guard (L100, #979) stays as the last line.
 
 **Tokens:** the routes need a token on the VM's lineage with `acc: "w"` and the ref in `refs`. Reading a VM's
 status or its exec tail needs `r`. `POST /v1/vms` is runtime-only (`sub` in `runtime:*`), because it starts a
@@ -112,7 +119,7 @@ semantics. `HostJob` becomes a thin client of the compute API.
 **Owners:**
 - **wf-durable** owns the Go compute control (K4). Its approved durable-jobs design is the input: phases written
   before acting, host authority, outbox delivery, no load-bearing memory.
-- **wf-durable** also owns the runtime side of K5: the small `HostJob` row, admission and reservation, settlement,
+- **wf-durable** also owns the runtime side of K5: the small `HostJob` row, admission (balance > 0, no holds), settlement,
   and the durable landing of camel-fs results as outbox rows. Its earlier PR (2)/(3) work folds into that,
   smaller.
 - **proto-block** owns the host-agent merge (§1) and K1–K3.
@@ -142,8 +149,7 @@ receive work over the VPC.
 - **Stop:** the `stopRequested` write plus delivery to the host.
 
 **The runtime keeps:**
-- **admission**: the credit check and reservation before `POST /v1/vms`, in Postgres, as `meter.admit` and
-  `reserveComputer` today;
+- **admission**: the balance check before `POST /v1/vms` (balance > 0, in Postgres; no hold or reservation, §4);
 - **the agent and workflow meaning of a job**: `HostJob` shrinks to a small durable row (admitted → requested →
   ended) that calls `POST /v1/vms` with the job id and lands `vm.ended` from its outbox through the same `jobEnded`
   path;
@@ -198,21 +204,26 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
   - This replaces `meter.started`, `meter.stopped`, `meter.closed` and `lastSeen`, so L75's ≈ 2.1 s of Postgres
     around a host job moves off the job's path.
   - There is no usage webhook.
-- **Admission stays before the VM**: the runtime checks credit (and reserves, as `reserveComputer` does) before
-  `POST /v1/vms`. A VM never starts without an admitted payer.
+- **Balances may go negative** (Miguel, 2026-11-14).
+  - **Admission** requires the payer's balance > 0 before `POST /v1/vms`. A VM never starts without an admitted
+    payer, but nothing is held or reserved: today's `reserveComputer` and credit holds go.
+  - **Every charge lands**, even when it takes the balance below zero. The usage events are settled in full.
+  - **Long-running work re-checks at each renewal:** the runtime extends a VM's deadline (every ≈ 3 min) only while
+    the balance is still > 0. A voice call checks once, at create.
+  - **Spend limits are unchanged.**
 - **Credit enforcement is a deadline lease, not money.**
-  - `POST /v1/vms` carries a `deadline`, and the runtime extends it (`POST /v1/vms/{id}/deadline`) while the
-    payer's credit lasts.
+    - `POST /v1/vms` carries a `deadline`, and the runtime extends it (`POST /v1/vms/{id}/deadline`) at each
+    renewal while the payer's balance is > 0. The lease is the stop mechanism, and it involves no hold.
   - A VM whose deadline lapses is stopped by camel-fs with code `lease_expired`, as `stop { checkpoint: true }`
     does, so the work up to that point is kept.
-  - **Billing ends at the lease deadline, not when the stop finishes.** The lease is the credit the runtime has
-    held, so the checkpoint and teardown after the deadline are not billed. In K4b, `stopRequestedAt` is set to
+  - **Billing ends at the lease deadline, not when the stop finishes.** The runtime stopped extending at a renewal
+    that found the balance ≤ 0, so the checkpoint and teardown after the deadline are not billed. In K4b, `stopRequestedAt` is set to
     `leaseDeadline`, which caps the final `usage.vm`'s `to`. The same rule applies to every requested stop: a user
     or runtime `stop` ends billing at the stop request (`stopRequestedAt`), not at the VM's exit.
   - camel-fs knows only the time, never why it was not extended.
   - **A lapsed lease is final** (wf-durable, K4b). An extension that arrives when `now ≥ deadline` answers
     `lease_expired` and does not revive the lease, even if the VM has not stopped yet. Reviving it would bill the
-    lapsed gap retroactively, against credit the runtime did not hold during it. The runtime's renewer treats
+    lapsed gap retroactively, for time the runtime had already decided not to extend. The runtime's renewer treats
     `lease_expired` as "the VM is stopping" and lands it through `vm.ended` and the usage poll like any other end.
     It extends well before the deadline (at a fraction of the lease), so a slow round trip does not lapse a VM that
     still has credit.
@@ -234,7 +245,7 @@ swap) and C4 (hosts do the CAS in-VPC, notify, `RepoDO` deleted). Compute slots 
 | K2d | **proto-block**: ublk with user recovery (L15's restart-is-a-stall half), measured on the host before it is committed to | K2c | |
 | K3 | **proto-block**: periodic checkpoints for long jobs on the §1.3 cadence, and the synchronous checkpoint for sessions | K2c, C4 (the in-VPC `cas`) | L45 |
 | K4 | **wf-durable**: the compute API (§2) and control in Go on the tier: `hosts`/`vms` on DynamoDB, phases, placement, host channel in-VPC, reconcile, host-lost sweep, `vm.*` hints; K4b the `usage` table and the deadline lease; K4d `GET /v1/usage` | C1, C2 | — |
-| K5 | **wf-durable**: the runtime side: the small `HostJob` row, admission and reservation, the leased usage poller and settlement from pulled `usage.*` events, deadline extension, durable landing of `vm.*` events as outbox rows; `JobHost`, the registry and the WebSocket deleted | K4, C3 | — |
+| K5 | **wf-durable**: the runtime side: the small `HostJob` row, admission (balance > 0, no holds), the leased usage poller and settlement from pulled `usage.*` events, deadline extension, durable landing of `vm.*` events as outbox rows; `JobHost`, the registry and the WebSocket deleted | K4, C3 | — |
 | K6 | `bash` VM sessions in the runtime (owner named when K5 lands): `exec` with the persistent shell, per-turn checkpoint, idle stop; memory-snapshot sleep after | K5 | — |
 
 **Order** (the lead, 2026-11-14, option B): K2a now, then C3 (when wf-repos' R2 lands), then K2b → K2c → K2d.

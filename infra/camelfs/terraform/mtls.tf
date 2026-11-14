@@ -8,12 +8,14 @@
 #      the yearly leaf that is uploaded to Cloudflare; the public CA PEM is pinned by S3 version (aop_ca_version),
 #      exactly as the runtime's infra/terraform/origin-mtls.tf pins its bundle.
 #   2. Tier ↔ host: AWS Private CA in SHORT-LIVED mode (leaf validity ≤ 7 days; the tier asks for 24 h, renews every
-#      8 h). The tier is the registration authority: only the api task role may issue, and only end-entity
-#      templates. The internal ALB's 443 listener verifies host certificates against that CA; the host id is the
-#      certificate's URI SAN (spiffe://camelfs/host/<id>), which the ALB forwards in X-Amzn-Mtls-Clientcert-*
-#      after stripping any client-supplied copy. The tier's own client certificate (spiffe://camelfs/tier) comes
-#      from the same CA; hosts verify it on --listen-compute against the CA certificate their enroll reply carries
-#      (the host side is K2, not here; no host reads the trust bucket).
+#      8 h). The tier is the registration authority: only the api task role may issue, and only the end-entity
+#      template. Host → tier calls (/v1/hosts/*) go through an internal NLB in TCP PASSTHROUGH to the tier's
+#      --listen-hosts port, where the TIER terminates mutual TLS itself (the lead's K4c2 review, 2026-11-14: AWS does
+#      not guarantee that an ALB in verify mode strips client-supplied X-Amzn-Mtls-* headers, so no header is
+#      trusted anywhere); the host id is the client certificate's URI SAN (spiffe://camelfs/host/<id>). The tier's
+#      own certificate (spiffe://camelfs/tier, server + client EKU) comes from the same CA; it serves it on
+#      --listen-hosts and presents it on --listen-compute, and hosts verify it by SAN against the CA certificate
+#      their enroll reply carries (the host side is K2, not here; no host reads the trust bucket).
 #   3. Enrollment: a new host has no certificate yet, so it presents its STS attestation once on a SEPARATE
 #      internal listener without client certificates (enroll_listener_port), which forwards only
 #      POST /v1/hosts/enroll, to a SEPARATE container port (enroll_port) where the tier serves only that route and
@@ -158,25 +160,91 @@ resource "aws_acmpca_certificate_authority_certificate" "hosts" {
 
 data "aws_partition" "current" {}
 
-# The CA's public certificate, versioned in the trust bucket; the internal trust store pins that version.
-resource "aws_s3_object" "hosts_ca" {
-  bucket       = aws_s3_bucket.trust.bucket
-  key          = "hosts-ca.pem"
-  content      = aws_acmpca_certificate.hosts_root.certificate
-  content_type = "application/x-pem-file"
+# --- Host → tier: an internal NLB in TCP passthrough to the tier's --listen-hosts port ---
+#
+# No TLS termination and no header: the tier sees the host's client certificate itself. The NLB carries a security
+# group (hosts' groups in on hosts_port; api tasks out on hosts_port), the tasks admit hosts_port from that group
+# alone, and cross-zone balancing is on so any AZ's hosts reach any AZ's tasks. Client addresses are preserved to
+# the tasks, as NLBs do for IP targets, so the tier's logs carry the host's address.
 
-  depends_on = [aws_s3_bucket_versioning.trust]
+resource "aws_security_group" "nlb_hosts" {
+  name        = "${var.name}-${var.env}-nlb-hosts"
+  description = "camelFS hosts NLB: the hosts port from the VM hosts only, TCP passthrough to the api tasks"
+  vpc_id      = data.aws_vpc.default.id
+  tags        = { Name = "${var.name}-${var.env}-nlb-hosts" }
 }
 
-resource "aws_lb_trust_store" "hosts" {
-  name                                     = "${var.name}-${var.env}-hosts"
-  ca_certificates_bundle_s3_bucket         = aws_s3_bucket.trust.bucket
-  ca_certificates_bundle_s3_key            = aws_s3_object.hosts_ca.key
-  ca_certificates_bundle_s3_object_version = aws_s3_object.hosts_ca.version_id
-  tags                                     = { Name = "${var.name}-${var.env}-hosts" }
+resource "aws_vpc_security_group_ingress_rule" "nlb_hosts_from_hosts" {
+  for_each                     = toset(var.host_security_group_ids)
+  security_group_id            = aws_security_group.nlb_hosts.id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = var.hosts_port
+  to_port                      = var.hosts_port
+  description                  = "Host routes (mutual TLS, terminated by the tier) from camelfsd --role host"
+}
 
-  lifecycle {
-    create_before_destroy = true
+resource "aws_vpc_security_group_egress_rule" "nlb_hosts_to_api" {
+  security_group_id            = aws_security_group.nlb_hosts.id
+  referenced_security_group_id = aws_security_group.api.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.hosts_port
+  to_port                      = var.hosts_port
+  description                  = "API tasks, hosts port"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_hosts_from_nlb" {
+  security_group_id            = aws_security_group.api.id
+  referenced_security_group_id = aws_security_group.nlb_hosts.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.hosts_port
+  to_port                      = var.hosts_port
+  description                  = "hosts NLB, hosts port"
+}
+
+resource "aws_lb" "hosts" {
+  name                             = "${var.name}-${var.env}-hosts"
+  load_balancer_type               = "network"
+  internal                         = true
+  subnets                          = data.aws_subnets.default.ids
+  security_groups                  = [aws_security_group.nlb_hosts.id]
+  enable_cross_zone_load_balancing = true
+  enable_deletion_protection       = true
+  tags                             = { Name = "${var.name}-${var.env}-hosts" }
+}
+
+resource "aws_lb_target_group" "hosts" {
+  name        = "${var.name}-${var.env}-hosts"
+  target_type = "ip"
+  protocol    = "TCP"
+  port        = var.hosts_port
+  vpc_id      = data.aws_vpc.default.id
+
+  deregistration_delay = 30
+
+  # The same health route the ALBs probe, on the api port: a task that serves /v0/health serves its hosts port.
+  health_check {
+    protocol            = "HTTP"
+    port                = tostring(var.api_port)
+    path                = var.api_health_path
+    matcher             = "200"
+    interval            = 10
+    timeout             = 6
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+
+  tags = { Name = "${var.name}-${var.env}-hosts" }
+}
+
+resource "aws_lb_listener" "hosts" {
+  load_balancer_arn = aws_lb.hosts.arn
+  port              = var.hosts_port
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.hosts.arn
   }
 }
 

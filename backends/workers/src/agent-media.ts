@@ -45,7 +45,7 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Prom
   const directory = `${workspace.path}/tool-outputs/generate_image/${Array.from(hash.subarray(0, 12), byte => byte.toString(16).padStart(2, "0")).join("")}`;
   const request = async (path: string, init?: RequestInit) => {
     if (!path.startsWith("/")) path = `${scope.mounts[0].path}/${path}`;
-    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", {...init,headers:{...Object.fromEntries(new Headers(init?.headers)),"x-camel-call":scope.callId,...(scope.requestId?{"x-camel-run":scope.requestId}:{})}}), env, scope.tenant, scope.agent, path, scope.mounts);
+    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", {...init,headers:{...Object.fromEntries(new Headers(init?.headers)),"x-camel-call":scope.callId,...(scope.requestId?{"x-camel-run":scope.requestId}:{})}}), env, scope.tenant, scope.agent, path, scope.mounts, "api");
     if (!response.ok) {
       const error = await response.json() as { error?: string };
       throw new HttpError(response.status, error.error ?? "File operation failed");
