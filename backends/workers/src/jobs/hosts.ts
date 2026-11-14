@@ -22,10 +22,9 @@ import type { KeyEnv } from "../security-services.ts";
 import { keyServices } from "../security-services.ts";
 import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
-import type { CamelfsEnv } from "../repos/storage.ts";
 import { jobLifetimeMs, jobSpec, type JobResult, type JobSpec, type JobStream } from "./job.ts";
 import { needsContainer } from "./driver.ts";
-import { JOB_LEASE_MS, prepareRepo, openJobRepo, renewJobRepo, releaseJobRepo, finishJobRepo, type RepoDispatch } from "./repo.ts";
+import { JOB_LEASE_MS, openJobRepo, renewJobRepo, releaseJobRepo, finishJobRepo, type RepoDispatch } from "./repo.ts";
 // MONEY: use the shared provider for host job charges.
 import { HOST_POOL_PRICES, HOST_POOLS, HOSTS_PROVIDER, hostInstance, hostPool, hostRoles, hostSecondRate, hostSessionCost, hostShape, chargedSpan, type HostPool, type HostPriceEnv, type HostShape } from "./host-pricing.ts";
 
@@ -47,7 +46,7 @@ export const HOST_CREDENTIAL_MS = 60 * 60_000;
 const ATTESTATION_MEMORY_MS = 20 * 60_000;
 export const HOST_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
-export type JobHostsEnv = KeyEnv & WebhookEnv & HostPriceEnv & CamelfsEnv & {
+export type JobHostsEnv = KeyEnv & WebhookEnv & HostPriceEnv & {
   /** Which attestors enroll hosts: "aws" (needs JOB_HOST_ROLE_ARNS), "test" (needs TEST_MODE and JOB_HOST_TEST_SECRET). */
   JOB_HOST_ATTESTORS?: string;
   /**
@@ -715,6 +714,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     };
     const timings = () => ({ steps, startedAt: at, endedAt: Date.now(), startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: Date.now() - at });
     const fail = (code: Extract<JobResult, { ok: false }>["code"], message: string, costUsd?: number): JobResult => ({ ok: false, id: spec.id, code, message, timings: timings(), ...(costUsd !== undefined ? { costUsd } : {}) });
+
     // Running, or still waiting for a host (a workflow that restarted asks again): the earlier run lands it.
     if (this.active || this.waiting) return fail("job_running", `Job ${spec.id} is running`);
     // Stoppable from here until it is dispatched (this.waiting, kept until this.active is set): it ends `stopped`, its
@@ -727,6 +727,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     const previous = await this.ctx.storage.get<{ at: number; dispatch: HostDispatch; costUsd: number }>(`result:${spec.id}`);
     const completed = previous && previous.at > Date.now() - 24 * 3600_000 ? previous : undefined;
     const saved = await this.ctx.storage.get<HostDispatch>(`dispatch:${spec.id}`) ?? completed?.dispatch;
+    // TEMPORARY(K5): new repo jobs need tier-issued fences before placement or billing.
+    if (spec.repo && !saved) return fail("needs_k5", "Repo jobs require camel-fs job-host support (K5)");
     const machine = `job:${spec.id}`, meter = this.meter(saved?.lifetimeMs ?? jobLifetimeMs(spec.timeoutSeconds));
     const open = await meter.openSession();
     const session = open?.id === machine || open?.named === machine ? open : undefined;
@@ -804,11 +806,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     if (spec.repo) {
       try {
         dispatch.repo = saved?.repo;
-        if (saved && !dispatch.repo) throw new Error("Recovered repo dispatch has no persisted fence");
-        if (!dispatch.repo) {
-          const ctx = await measure("resolveMs", () => openJobRepo(this.env, spec.repo!));
-          dispatch.repo = await prepareRepo(ctx, spec, placedHost, measure);
-        } else if (!completed && !dispatch.repo.finished) {
+        if (!dispatch.repo) throw new Error("Recovered repo dispatch has no persisted fence");
+        if (!completed && !dispatch.repo.finished) {
           await measure("leaseMs", () => renewJobRepo(this.env, spec.id, dispatch.repo!));
         }
         camelfs = { lineage: dispatch.repo.lineage, tree: dispatch.repo.tree, parent: dispatch.repo.expect, fence: dispatch.repo.fence, ...(spec.commit ? { commit: true } : {}) };

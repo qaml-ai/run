@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { unzip } from "../../../tests/unzip.ts";
 import { startFixture } from "./fixture.ts";
 
@@ -14,10 +13,7 @@ const AGENTS = process.env.WORKERS_SLOW_TESTS === "1" ? 2001 : 101;
 test(`queued account deletion resumes after interruption with ${AGENTS} agents and retains accounting`, { timeout: 900_000 }, async t => {
   const operator = "large-account-deletion-operator-token-32-characters";
   const otherToken = "other-pending-account-token-at-least-32-characters";
-  const daemon = await serveFakeCamelfsd("account-repos");
-  t.after(() => daemon.close());
-  const r = await startFixture({ tenants: [{ id: "camelrun-proto-local", token: "local-integration-only-token-with-at-least-32-characters" }, { id: "other-pending", token: otherToken }], camelfsStub: true, entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
-    TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: "account-repos",
+  const r = await startFixture({ tenants: [{ id: "camelrun-proto-local", token: "local-integration-only-token-with-at-least-32-characters" }, { id: "other-pending", token: otherToken }], entrypoint: fileURLToPath(new URL("./camelfs-worker.ts", import.meta.url)), vars: {
     AGENT_TENANTS_JSON: JSON.stringify({ tenants: { ops: { tokenSha256: createHash("sha256").update(operator).digest("hex"), apiKeys: {} } } }),
     AGENT_BILLING_ADMINS: "ops",
     AGENT_MAX_AGENTS: "2100", AGENT_MAX_AGENTS_PER_TENANT: "2100",

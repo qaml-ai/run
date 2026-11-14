@@ -74,10 +74,10 @@ export class WorkflowCommits implements EffectExecutor {
       const ctx = await repoContext(this.env, this.host.tenant(), fork.repo);
       try {
         const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref });
-        return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed, ...('files' in merged ? { files: Object.keys(merged.files) } : {}) } };
+        return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed, ...(merged.files ? { files: merged.files } : {}) } };
       } catch (error) {
         const found = repoErrorFrom(error);
-        if (found?.code === 'conflicts') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };
+        if (found?.code === 'conflict') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };
         throw error;
       }
     } catch (error) {

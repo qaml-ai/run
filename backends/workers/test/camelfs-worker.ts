@@ -4,7 +4,6 @@ import type { JobHostsEnv } from "../src/jobs/hosts.ts";
 import type { JobSpec } from "../src/jobs/job.ts";
 export * from "../src/index.ts";
 
-export { CamelfsStub } from "./camelfs-stub.ts";
 
 /** Test-only RPC bridges for Worker integration fixtures. */
 export default {

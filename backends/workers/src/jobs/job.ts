@@ -68,6 +68,7 @@ export type JobFailureCode =
   /** A job with this id is running now. */
   | "job_running"
   | "start_failed"
+  | "needs_k5"
   | "disk_low"
   | "sync_failed"
   /** The container died while the command ran (the instance ran out of memory, or the host failed). */

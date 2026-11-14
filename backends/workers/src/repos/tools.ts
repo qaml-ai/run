@@ -389,11 +389,11 @@ function versionTools(
       const t = await target(path ?? await workspace(), true), head = await t.v.ctx.repo.ref(t.v.ref), previous = head && await t.v.ctx.repo.commit(head.version);
       // Naming the same point twice is free; a new name for it is a new (empty) commit, never a dropped message.
       if (previous?.trailers['Camel-Checkpoint'] === 'manual' && previous.message === message) return output(previous.version);
-      return output((await t.v.commit({}, {}, message, {'Camel-Checkpoint':'manual'}, 'turn', true, 'checkpoint')).version);
+      return output((await t.v.commit({}, {}, message, {'Camel-Checkpoint':'manual'})).version);
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
-      const result = await setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}});
+      const result = await setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}});
       t.v.moved(result);
       return output(result.version);
     }}),

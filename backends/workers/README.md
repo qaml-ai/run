@@ -46,6 +46,22 @@ needed for any result in this directory.
 Key measured results (hibernation, load stages, parity totals, test timings) are
 summarized in [measurements/README.md](measurements/README.md).
 
+## Repo storage
+
+Workers repos require `CAMELFS_URL`, the camel-fs tier origin, and
+`CAMELFS_NOTIFY_KEY`, the shared HMAC key for tier webhook delivery to
+`/v1/internal/camelfs/notify`. The tier verifies `camelfs+jwt` requests
+against the runtime JWKS. Set `AGENT_PUBLIC_URL` to the issuer configured
+on the tier. Repo routes return HTTP 503 with `storage_unavailable` when
+`CAMELFS_URL` is missing.
+
+The previous implementation kept refs in RepoDO. The
+`delete-repo-do` Wrangler migration drops that class and its stored data.
+The closed-alpha pilot is reset with `scripts/pilot-tier-reset.mjs` at the
+switch. There is no repo data migration.
+
+Repo-backed jobs require K5.
+
 ## Computers
 
 The optional native computer (`computer` tool, `src/computers/objects.ts`) is a

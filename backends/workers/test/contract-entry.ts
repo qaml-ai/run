@@ -6,7 +6,6 @@ import type { Env } from "../src/agent.ts";
 import { stageMissedEndings } from "../src/agent-endings.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
-export { CamelfsStub } from "./camelfs-stub.ts";
 
 const resizeFailureKey = "contract-fixture/image-resize-failures";
 const pendingQueues = new Set<Promise<void>>();

@@ -4,4 +4,3 @@ Date.now = () => Date.UTC(2026, 10, 9, 12, 0, 10);
 
 export * from "../src/index.ts";
 export { default } from "../src/index.ts";
-export { CamelfsStub } from "./camelfs-stub.ts";

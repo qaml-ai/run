@@ -36,7 +36,6 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   t.after(() => fake.close());
   const env = {
     AGENT_PUBLIC_URL: issuer, CAMELFS_URL: fake.url, ADMIN_TENANTS: "t",
-    CAMELFS_API_TOKEN: "old-token", CAMELFS: { fetch: () => assert.fail("legacy binding used") },
     HYPERDRIVE: { connectionString: "" },
     accounts: {
       canStoreKeys: true,
@@ -97,7 +96,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const foreign = new HttpRepoClient(env, "another", row, "api:another");
   await assert.rejects(foreign.prepareLineage(), { code: "lineage_conflict", status: 409, detail: { tenant: "t" } });
   const seed = await storage.commit(row.lineage, { ...meta, parents: [], changes: [] });
-  await repo.init({ ...row, tenant: "t", seed: { version: { ...meta, version: seed.commit, tree: seed.tree, at: seed.time * 1000, parents: [] }, entries: [] } });
+  await repo.init(seed.commit);
   assert.equal((await repo.info()).name, "r3");
   assert.equal((await repo.refs()).length, 1);
   assert.equal(await repo.ref("missing"), null);
@@ -110,12 +109,12 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   assert.equal(moved.changed.probe?.size, 5);
   await assert.rejects(repo.write({ ...write, quota: { limitBytes: 4, otherBytes: 0 }, changes: [{ path: "large", text: "larger" }], expect: moved.version, idempotencyKey: "quota" }), { code: "storage_limit", status: 507 });
   assert.equal((await repo.ref("main"))?.version, moved.version);
-  await repo.createRef({ name: "job/test", from: "main", who: meta.author, why: "test" });
+  await repo.createRef({ name: "job/test", from: "main" });
   const holder = { host: "host", boot: 1, mount: "mount" };
   const lease = await repo.acquire({ ref: "job/test", holder, ttlMs: 1000 });
   const fence = { ref: "job/test", holder, epoch: lease.epoch };
   await repo.renew(fence, 1000);
-  await repo.cas({ ref: fence.ref, fence, expect: moved.version, commit: (await repo.commit(moved.version!))!, who: meta.author, why: "test" });
+  await repo.cas({ ref: fence.ref, fence, expect: moved.version, commit: moved.version });
   assert.deepEqual(calls.at(-1)?.claims.fence, { holder: "host:1:mount", epoch: lease.epoch });
   assert.deepEqual(calls.at(-1)?.claims.refs, ["job/test"]);
   await assert.rejects(repo.delete(), { code: "held", status: 409, detail: { held: ["job/test"] } });
@@ -136,7 +135,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const retry = new HttpRepoClient(env, "t", another, "agent:caller");
   await retry.prepareLineage();
   const retrySeed = await storage.commit(another.lineage, { ...meta, parents: [], changes: [] });
-  await retry.createRef({ name: "main", from: { version: retrySeed.commit }, who: meta.author, why: "test" });
+  await retry.createRef({ name: "main", from: { version: retrySeed.commit } });
   const repos = fixtureIndex(t);
   repos.register({ ...row, bytes: 5, files: 1 });
   repos.register({ ...row, id: "fork", bytes: 5, files: 1 });
@@ -191,7 +190,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
       ({ id }) => new HttpRepoClient(env, "t", index.row(id)!, "api:t"),
     );
     for (const repo of [sourceRepo, firstFork, lastFork]) {
-      await repo.createRef({ name: "topic", from: "main", owner: "agent:shared", who: "api:t", why: "test" });
+      await repo.createRef({ name: "topic", from: "main", owner: "agent:shared" });
     }
     assert.deepEqual(await firstFork.deleteOwned("agent:shared"), { deleted: ["topic"], held: [] });
     assert.equal(await firstFork.ref("topic"), null);
@@ -200,7 +199,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
     assert.deepEqual(await sourceRepo.deleteOwned("agent:shared"), { deleted: ["topic"], held: [] });
     assert.ok(await lastFork.ref("topic"));
 
-    await firstFork.createRef({ name: "z-topic", from: "main", who: "api:t", why: "test" });
+    await firstFork.createRef({ name: "z-topic", from: "main" });
     const forkLease = await firstFork.acquire({ ref: "main", holder, ttlMs: 60_000 });
     await assert.rejects(deleteRepo(scoped, "t", first.id), { status: 409, code: "held", detail: { held: ["main"] } });
     assert.equal(index.row(first.id)?.deletedAt, null);

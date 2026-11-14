@@ -1,4 +1,3 @@
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -7,9 +6,7 @@ import { startFixture } from "./fixture.ts";
 test("mount preparation follows owner checks and an upsert preserves mounts read under the directory lock", { timeout: 90_000 }, async t => {
   const aliceToken = "fixture-alice-token-at-least-32-characters";
   const bobToken = "fixture-bob-token-at-least-32-characters";
-  const camelfs=await serveFakeCamelfsd("agent-file-token");
-  t.after(()=>camelfs.close());
-  const f = await startFixture({ camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)), vars:{TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:"agent-file-token"},
+  const f = await startFixture({ entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),
     tenant: "alice", token: aliceToken,
     tenants: [{ id: "alice", token: aliceToken }, { id: "bob", token: bobToken }],
   });
@@ -45,8 +42,14 @@ test("mount preparation follows owner checks and an upsert preserves mounts read
   assert.equal(watcher.status,201,JSON.stringify(watcher));
   const changed=await call(`/v1/repos/${a.body.id}/commit`,{body:{files:{'safe/note.txt':{text:'new memory'},'private.txt':{text:'hidden'}},message:'notify watcher'}});
   assert.equal(changed.status,200,JSON.stringify(changed));
-  const notificationId=`repo-${a.body.id}-${changed.body.version}`;
-  const notified=await call(`/v1/agents/${watcher.body.id}/requests/${notificationId}?wait=20`);
+  const notificationId=`repo-${a.body.id}-${changed.body.version}-/memory`;
+  const notificationPath = `/v1/agents/${watcher.body.id}/requests/${notificationId}?wait=20`;
+  const deadline = Date.now() + 20_000;
+  let notified = await call(notificationPath);
+  while (notified.body.state !== 'completed' && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    notified = await call(notificationPath);
+  }
   assert.equal(notified.body.state,'completed',JSON.stringify(notified));
   const watcherHistory=(await call(`/v1/agents/${watcher.body.id}/history`)).body;
   assert.match(JSON.stringify(watcherHistory),/Files changed in a mounted volume/);

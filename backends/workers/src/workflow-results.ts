@@ -87,7 +87,7 @@ export class WorkflowResults extends DurableObject<FileBindings> {
         await ctx.repo.deleteRef(name, retained.version);
         retained = null;
       }
-      if (!retained) retained = await branch(ctx, { name, from: { version: fork.version }, owner, ttlSeconds: RESULT_CACHE_LIMITS.forkEntryMs / 1000, who: `workflow:${entry.workflow}`, why: 'workflow cache' });
+      if (!retained) retained = await branch(ctx, { name, from: { version: fork.version }, owner, ttlSeconds: RESULT_CACHE_LIMITS.forkEntryMs / 1000 });
       if (!retained?.expiresAt) throw new Error('Cache ref has no expiry');
       expiresAt = Math.min(now + RESULT_CACHE_LIMITS.forkEntryMs, retained.expiresAt);
     }
@@ -128,7 +128,7 @@ export class WorkflowResults extends DurableObject<FileBindings> {
     await this.ctx.storage.setAlarm(Math.max(Math.min(...candidates), this.now() + 1_000));
   }
 
-  /** Expired entries go; RepoDO expires cache refs. */
+  /** Expired entries go; camel-fs expires cache refs. */
   override async alarm() {
     const now = this.now();
     this.evict("last_hit_at <= ? OR (expires_at IS NOT NULL AND expires_at <= ?)", [now - RESULT_CACHE_LIMITS.ttlMs, now]);

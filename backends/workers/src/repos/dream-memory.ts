@@ -25,14 +25,14 @@ export async function publishDreamMemory(env:RepoEnv,tenant:string,repo:string,f
   // A retry may find the branch created before the organizer's files were committed.
   if(metadata?.trailers['Camel-Dream']!==key) {
     const head=published??await ctx.repo.ref('main');
-    if(!published&&head)await branch(ctx,{name:ref,from:{version:head.version},who:'system:dream'});
+    if(!published&&head)await branch(ctx,{name:ref,from:{version:head.version}});
     const changes:WriteInput['changes']={};
     for(const e of head?await versionEntries(ctx,head.tree):[])changes[e.path]=null;
     for(const [path,text]of Object.entries(files))changes[path]={bytes:new TextEncoder().encode(text)};
-    await commitChanges(ctx,{ref,op:'turn',changes,expect:head?.version??null,message:`dream ${key}`,author:'system:dream',who:'system:dream',why:'dream',allowEmpty:true,trailers:{'Camel-Checkpoint':'automatic','Camel-Dream':key}});
+    await commitChanges(ctx,{ref,op:'turn',changes,expect:head?.version??null,message:`dream ${key}`,author:'system:dream',trailers:{'Camel-Checkpoint':'automatic','Camel-Dream':key}});
     published=await ctx.repo.ref(ref);
   }
   const current=await ctx.repo.ref('main'),commit=current&&await ctx.repo.commit(current.version);
   if(commit?.trailers['Camel-Dream']===key&&commit.tree===published!.tree)return;
-  await setRefToVersion(ctx,{ref:'main',version:published!.version,newCommit:true,op:'turn',author:'system:dream',who:'system:dream',why:'dream',trailers:{'Camel-Checkpoint':'automatic','Camel-Dream':key}});
+  await setRefToVersion(ctx,{ref:'main',version:published!.version,newCommit:true,op:'turn',author:'system:dream',trailers:{'Camel-Checkpoint':'automatic','Camel-Dream':key}});
 }

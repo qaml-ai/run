@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { listFiles, statPaths, versionEntries } from '../src/repos/reads.ts';
 import type { RepoContext } from '../src/repos/registry.ts';
 import type { Entry } from '../src/repos/repo-policy.ts';
-import { camelfsStorage } from '../src/repos/storage.ts';
 import { RepoTreeCache } from '../src/repos/tree-cache.ts';
-import { fakeCamelfsd } from './fake-camelfsd.ts';
+import { serveFakeCamelfsd } from './fake-camelfsd.ts';
+
+import { hookTierServices, tierIdentity } from './tier-env.ts';
+const hooks = hookTierServices();
+const { listFiles, statPaths, versionEntries } = await import('../src/repos/reads.ts');
+const { repoStorage } = await import('../src/camelfs/repo-storage.ts');
+hooks.deregister();
 
 function cacheFor(t: TestContext) {
   const db = new DatabaseSync(':memory:');
@@ -45,12 +49,11 @@ function cacheFor(t: TestContext) {
 
 const entry = (path: string, blob = 'b'.repeat(40), size = 1, mode: Entry['mode'] = '100644'): Entry => ({ path, blob, size, mode });
 
-async function fixture() {
-  const token = 'test-storage-token', fake = fakeCamelfsd(token);
-  const storage = camelfsStorage({
-    CAMELFS_API_TOKEN: token,
-    CAMELFS: { fetch: (url, init) => fake.fetch(new Request(url, init)) },
-  });
+async function fixture(t: TestContext) {
+  const { issuer, jwks, accounts } = tierIdentity();
+  const fake = await serveFakeCamelfsd('unused', { issuer, jwks });
+  t.after(() => fake.close());
+  const storage = repoStorage({ CAMELFS_URL: fake.url, AGENT_PUBLIC_URL: issuer, accounts } as never, 'agent:caller');
   const lineage = 'tenant:repo';
   const seed = await storage.putBlob(lineage, new Uint8Array([1]));
   const updated = await storage.putBlob(lineage, new Uint8Array([2, 3]));
@@ -68,7 +71,7 @@ async function fixture() {
 }
 
 test('the first full list fills SQLite, and an own write derives exactly the tier tree', async t => {
-  const { cache } = cacheFor(t), { ctx, fake, first, next, seed, updated } = await fixture();
+  const { cache } = cacheFor(t), { ctx, fake, first, next, seed, updated } = await fixture(t);
   cache.observe('main', first);
   const initialCalls = fake.calls.length;
   const entries = await versionEntries(ctx, first.tree, cache);
@@ -92,7 +95,7 @@ test('the first full list fills SQLite, and an own write derives exactly the tie
 });
 
 test('a foreign move only changes reachability, and an incomplete tree falls through', async t => {
-  const { cache, db } = cacheFor(t), { ctx, fake, first, next } = await fixture();
+  const { cache, db } = cacheFor(t), { ctx, fake, first, next } = await fixture(t);
   cache.observe('main', first);
   await versionEntries(ctx, first.tree, cache);
   cache.notify('main', first.version, next);

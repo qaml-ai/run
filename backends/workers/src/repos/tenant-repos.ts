@@ -52,7 +52,7 @@ export class TenantRepos {
       ).toArray().length === 0;
     });
   }
-  usage(id: string, bytes: number, files: number, lineage = false) { check(Number.isSafeInteger(bytes) && bytes >= 0 && Number.isSafeInteger(files) && files >= 0); this.storage.sql.exec('UPDATE repos SET bytes=?,files=? WHERE ' + (lineage ? 'lineage=(SELECT lineage FROM repos WHERE id=?)' : 'id=?'), bytes, files, id); }
+  usage(id: string, bytes: number, files: number) { check(Number.isSafeInteger(bytes) && bytes >= 0 && Number.isSafeInteger(files) && files >= 0); this.storage.sql.exec('UPDATE repos SET bytes=?,files=? WHERE lineage=(SELECT lineage FROM repos WHERE id=?)', bytes, files, id); }
   used(exclude = "") {
     return this.storage.sql.exec<{
       bytes: number;

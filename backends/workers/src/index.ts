@@ -107,7 +107,6 @@ export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
 export { CamelfsUsagePoller } from "./camelfs/usage-poller.ts";
 import { startUsagePoller } from "./camelfs/usage-poller.ts";
-export { RepoDO } from "./repos/repo-do.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";

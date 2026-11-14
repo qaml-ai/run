@@ -10,6 +10,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
   return next(specifier, context);
 } });
 const { JobHost, HostJob } = await import("../src/jobs/hosts.ts");
+const { HttpRepoClient } = await import("../src/repos/http-client.ts");
 hooks.deregister();
 const spec: WireJob = { command: "true", timeoutSeconds: 30, outputs: [], files: [], limits: {}, internet: false };
 const empty = { data: "", size: 0, truncated: false };
@@ -286,7 +287,20 @@ test("a stop during recovery cancels the host and ends the one open charge at th
   assert.equal(await store.get("dispatch:stop"), undefined);
 });
 
-test("repo dispatch recovery reuses the mounted tree and fence without resolving or acquiring again", async t => {
+test("a new repo job waits for K5 before placement and billing", async t => {
+  const job = new HostJob({ storage: storage(t) } as never, {} as never);
+  const result = await job.run({
+    id: "repo-k5", command: "true", timeoutSeconds: 30,
+    payer: { tenant: "test", agent: "wf_test", kind: "workflow" },
+    repo: { tenant: "test", repo: "repo_one", ref: "main", owner: "workflow:wf_test" },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.code, "needs_k5");
+  assert.deepEqual(result.timings.steps, {});
+});
+
+// TEMPORARY(K5)
+test.skip("repo dispatch recovery reuses the mounted tree and fence without resolving or acquiring again", async t => {
   const store = storage(t), began = Date.now() - 1000, fence = { holder: "host:host/resume-repo", epoch: 4 };
   const payer = { tenant: "test", agent: "wf_test", kind: "workflow" as const };
   const source = { tenant: "test", repo: "repo_one", ref: "main", owner: "workflow:wf_test" };
@@ -299,8 +313,10 @@ test("repo dispatch recovery reuses the mounted tree and fence without resolving
   const stub = { renew: async (got: any, ttl: number) => { assert.deepEqual(got, { ref: "job/resume-repo", ...fence }); assert.equal(ttl, 600000); renews++; },
     release: async (got: any) => { assert.deepEqual(got, { ref: "job/resume-repo", ...fence }); releases++; },
     acquire: async () => { throw Error("acquired twice"); }, resolve: async () => { throw Error("resolved twice"); } };
-  const env = { CAMELFS: { fetch: async () => { throw Error("imported"); } }, CAMELFS_API_TOKEN: "test-only",
-    TENANTS: { getByName: () => ({ repoRow: async () => ({ deletedAt: null, lineage: "test:repo_one" }) }) }, REPOS: { getByName: () => stub },
+  t.mock.method(HttpRepoClient.prototype, "renew", (...args: Parameters<typeof stub.renew>) => stub.renew(...args));
+  for (const method of ["release", "acquire", "resolve"] as const) t.mock.method(HttpRepoClient.prototype, method, stub[method]);
+  const env = { CAMELFS_URL: "https://tier.test",
+    TENANTS: { getByName: () => ({ repoRow: async () => ({ id: source.repo, deletedAt: null, lineage: "test:repo_one" }) }) },
     JOB_HOST_REGISTRY: { getByName: () => ({ touch: async () => {}, release: async () => {} }) },
     JOB_HOSTS: { getByName: () => ({ dispatch: async (_: string, wire: WireJob) => {
       dispatches++; assert.deepEqual(wire.camelfs, { lineage: "test:repo_one", tree: saved.repo.tree, parent: saved.repo.expect, fence }); assert.deepEqual(wire.files, []); assert.equal(wire.sync, undefined); return result;

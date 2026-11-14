@@ -1,4 +1,3 @@
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { fileURLToPath } from "node:url";
 /** Swap only the server fixture. All assertions and fake-provider responses stay upstream. */
 import {
@@ -16,7 +15,6 @@ export async function compatibilityRuntime(
   respond: any,
   env: Record<string, string> = {},
   tenantsFile?: any,
-  options?: { camelfsTier?: boolean },
 ) {
   const root = await mkdtemp(join(tmpdir(), 'camelrun-proto-sdk-files-'));
   t.after(() => rm(root, {recursive:true,force:true}));
@@ -37,16 +35,13 @@ export async function compatibilityRuntime(
       }),
     ),
   ];
-  const camelfs = options?.camelfsTier ? undefined : await serveFakeCamelfsd("compat-repo-token");
-  if (camelfs) t.after(() => camelfs.close());
   const server = await startFixture({
-    camelfsTier: options?.camelfsTier, camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),
+    entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),
     token: OPERATOR,
     tenant: "alice",
     modelURL: env.AGENT_BASE_URL ?? model.url,
     tenants,
     vars: {
-      ...(camelfs ? { TEST_CAMELFS_URL: camelfs.url, CAMELFS_API_TOKEN: "compat-repo-token" } : {}),
       ...env,
       ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile) } : env.AGENT_TENANTS_JSON ? {} : { AGENT_TENANTS_JSON: JSON.stringify(defaultTenants) }),
       ...(tenantsFile ? { TEST_DECISION_KEYS: JSON.stringify({ tenants: Object.fromEntries(Object.entries(tenantsFile.tenants ?? {}).map(([id, value]: [string, any]) => [id, { apiKeys: value.apiKeys, platformKeys: value.platformKeys }])), platformKeys: tenantsFile.platformKeys }) } : {}),
@@ -114,7 +109,7 @@ export async function compatibilityRuntime(
     call,
     prompt,
     model,
-    camelfsCalls: camelfs?.calls ?? server.camelfsCalls,
+    camelfsCalls: server.camelfsCalls,
     get logs() { return server.worker.logs().split("\n"); },
     child: {
       kill: () => {

@@ -21,4 +21,3 @@ export default {
     return worker.fetch(request, env, ctx);
   },
 };
-export { CamelfsStub } from "./camelfs-stub.ts";

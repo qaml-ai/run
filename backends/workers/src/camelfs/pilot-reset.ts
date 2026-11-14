@@ -1,6 +1,6 @@
 // TEMPORARY(pilot-switch): one-off, pilot only. Before the pilot switches CAMELFS_URL to the camel-fs tier, delete every
-// agent and repo (they live on RepoDO + the old VPC daemon, whose objects the tier does not have). Lead decision
-// 2026-11-14: start fresh, no backfill. Runs inside the Worker so no tenant API key ever leaves it; R5 deletes this route.
+// agent and repo. The old storage objects are discarded at the switch. This runs inside the Worker so no tenant API
+// key leaves it. Remove the route after the pilot reset has run.
 import { Directory, type ControlEnv } from "../control.ts";
 import { withSql } from "../postgres.ts";
 import { liveRepos } from "../account-repos.ts";

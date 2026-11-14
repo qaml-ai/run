@@ -217,7 +217,7 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
           const ctx = await repoContext(env as RepoEnv,t,id);
           const saved = await commitChanges(ctx, {
             op: 'api', ref: 'main', changes: { [path]: { bytes } }, pathExpect: { [path]: 'none' },
-            message: 'save image', author: `api:${t}`, who: `api:${t}`, why: 'image',
+            message: 'save image', author: `api:${t}`,
           });
           return { path, size: bytes.byteLength, version: saved.version!, contentType };
         },

@@ -6,9 +6,8 @@ import { AgentRuntime } from '../../../clients/typescript.ts';
 import { OPERATOR, toolCall } from '../../../tests/runtime-server.ts';
 import { toolResults } from '../../../tests/contract/http.ts';
 import { compatibilityRuntime } from './compat-runtime.ts';
-for (const camelfsTier of [false, true])
-test(`repo API routes over the real Worker (tier=${camelfsTier})`, { timeout: 180000 }, async (t) => {
-  const f = await startFixture({ camelfsTier, entrypoint: fileURLToPath(new URL('./camelfs-worker.ts', import.meta.url)), vars: { FILE_SIGNING_SECRET: 'repo-fixture-signing-secret-at-least-32-characters' } });
+test(`repo API routes over the real Worker`, { timeout: 180000 }, async (t) => {
+  const f = await startFixture({ entrypoint: fileURLToPath(new URL('./camelfs-worker.ts', import.meta.url)), vars: { FILE_SIGNING_SECRET: 'repo-fixture-signing-secret-at-least-32-characters' } });
   t.after(() => f.stop());
   const request = (path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) => fetch(f.url + path, { method, headers: { authorization: `Bearer ${f.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers }, ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }) });
   const call = async (path: string, method = 'GET', body?: unknown, status = 200, headers = {}) => { const r = await request(path, method, body, headers); const v = await r.json() as any; assert.equal(r.status, status, `${path}: ${JSON.stringify(v)}\n${r.status >= 500 ? f.worker.logs().split('\n').filter(line => /repo unexpected|http_failed|Error:|^\s+at /.test(line)).join('\n') : ''}`); assert.equal(r.headers.get('cache-control'), 'no-store'); return v; };
@@ -103,17 +102,18 @@ test(`repo API routes over the real Worker (tier=${camelfsTier})`, { timeout: 18
   await call('/v1/repos', 'POST', { key: 'integration' }, 409);
 });
 test('unconfigured repo storage returns 503', { timeout: 120000 }, async (t) => {
-  const f = await startFixture({ camelfsStub: false });
+  const f = await startFixture({ noCamelfsTier: true });
   t.after(() => f.stop());
   for (const method of ['GET', 'POST']) {
     const r = await fetch(f.url + '/v1/repos', { method, headers: { authorization: `Bearer ${f.token}` } });
     assert.equal(r.status, 503);
-    assert.equal((await r.json() as any).code, 'storage_unavailable');
+    const body = await r.json() as { code: string; error: string };
+    assert.equal(body.code, 'storage_unavailable');
+    assert.match(body.error, /CAMELFS_URL/);
   }
 });
 
-for (const camelfsTier of [false, true])
-test(`repo-backed agent tools see a write within the same turn (tier=${camelfsTier})`, { timeout: 90_000 }, async t => {
+test(`repo-backed agent tools see a write within the same turn`, { timeout: 90_000 }, async t => {
   const path = '/shared/notes/a.txt', content = 'agent read-your-write';
   const runtime = await compatibilityRuntime(t, (body: unknown, index: number) => {
     if (index === 0) return toolCall('write', { path, content });
@@ -123,7 +123,7 @@ test(`repo-backed agent tools see a write within the same turn (tier=${camelfsTi
     assert.match(results.at(-2), /"name":"a\.txt"/);
     assert.equal(results.at(-1), content);
     return { role: 'assistant', content: 'Read my write' };
-  }, {}, undefined, { camelfsTier });
+  }, {}, undefined);
   const sdk = new AgentRuntime({ url: runtime.base, apiKey: OPERATOR });
   const created = await runtime.call('/v1/repos', { body: {} });
   assert.equal(created.status, 201, JSON.stringify(created.json));
@@ -133,8 +133,7 @@ test(`repo-backed agent tools see a write within the same turn (tier=${camelfsTi
   assert.equal(run.outcome.result.reply, 'Read my write');
 });
 
-for (const camelfsTier of [false, true])
-test(`agent workspace reads reuse the derived tree (tier=${camelfsTier})`, { timeout: 90_000 }, async t => {
+test(`agent workspace reads reuse the derived tree`, { timeout: 90_000 }, async t => {
   const path = '/workspace/notes/a.txt', content = 'agent cached read-your-write';
   let afterWrite = 0;
   const runtime = await compatibilityRuntime(t, (body: unknown, index: number) => {
@@ -148,7 +147,7 @@ test(`agent workspace reads reuse the derived tree (tier=${camelfsTier})`, { tim
     if (index === 4) return toolCall('ls', { path: '/workspace/notes' }, 'second-ls');
     if (index === 5) return toolCall('read', { path }, 'second-read');
     return { role: 'assistant', content: JSON.stringify(toolResults(body).slice(-4)) };
-  }, {}, undefined, { camelfsTier });
+  }, {}, undefined);
   const sdk = new AgentRuntime({ url: runtime.base, apiKey: OPERATOR });
   const agent = await sdk.upsertAgent('repo-cache-read-your-write', { tools: {} });
   const run = await runtime.prompt(agent.session.id, 'List the workspace, write the file, then list and read it twice');
@@ -188,4 +187,12 @@ test('pilot reset: dry run lists, confirm deletes agents and repos, a rerun is a
   const again = await call('/v1/internal/camelfs/pilot-reset?confirm=1', 'POST');
   assert.equal(again.status, 200); assert.deepEqual(again.body.deleted, { agents: 0, repos: 0 });
   assert.ok(f.worker.logs().includes('"type":"pilot_reset"'));
+
+  const nonPilot = await startFixture({ vars: { ADMIN_TENANTS: tenant } });
+  t.after(() => nonPilot.stop());
+  const refused = await fetch(nonPilot.url + '/v1/internal/camelfs/pilot-reset?confirm=1', {
+    method: 'POST', headers: { authorization: `Bearer ${nonPilot.token}` },
+  });
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: 'The pilot reset runs only on the pilot', code: 'FORBIDDEN' });
 });

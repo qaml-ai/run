@@ -1,13 +1,14 @@
-import { tierConfigured, TierError } from "../camelfs/tier.ts";
+import { TierError } from "../camelfs/tier.ts";
 import { Buffer } from 'node:buffer';
 import { tar } from '../../../../src/tar.ts';
 import { sniffContentType, declaredType, downloadHeaders } from '../file-policy.ts';
 import { withMoneyIdempotency } from '../money-idempotency.ts';
-import { camelfsConfigured, StorageError } from './storage.ts';
+import { StorageError } from './storage.ts';
+import { requireCamelfs } from '../camelfs/repo-storage.ts';
 import { RepoError, repoErrorFrom, check, normalizeRepoPath, page, type Entry, type Mode } from './repo-policy.ts';
 import { createRepo, deleteRepo, repoContext, type RepoContext, type RepoEnv } from './registry.ts';
 import { versionEntries, statPaths, listFiles } from './reads.ts';
-import { commitChanges, setRefToVersion, branch, reportUsage, type WriteInput } from './write.ts';
+import { commitChanges, setRefToVersion, branch, type WriteInput } from './write.ts';
 import { repoHistory } from './history.ts';
 import { mergeRefs } from './merge.ts';
 import { signRepoLink } from './links.ts';
@@ -25,6 +26,7 @@ export function repoFailure(e: unknown): Response {
   throw e;
 }
 export function repoTransportFailure(e: unknown): Response | undefined {
+  if (e instanceof StorageError && e.code === "storage_unavailable") return repoFailure(e);
   if (e instanceof TierError && e.code === 'transport_error')
     return json({ error: e.message, code: e.code }, e.status);
   if ((e instanceof RepoError || e instanceof StorageError) && e.code === 'transport_error' && e.cause instanceof TierError)
@@ -66,7 +68,7 @@ const readJson = async (request: Request) => {
   check(value && typeof value === 'object' && !Array.isArray(value));
   return value;
 };
-export const apiWrite = (tenant: string) => ({ author: `api:${tenant}`, who: `api:${tenant}`, why: 'api', trailers: { 'Camel-User': `api:${tenant}`, 'Camel-Checkpoint': 'api' } });
+export const apiWrite = (tenant: string) => ({ author: `api:${tenant}`, trailers: { 'Camel-User': `api:${tenant}`, 'Camel-Checkpoint': 'api' } });
 export async function resolved(ctx: RepoContext, params: URLSearchParams) { return ctx.repo.resolve(params.get('version') ?? params.get('ref') ?? 'main'); }
 export async function fileEntry(ctx: RepoContext, v: { tree: string }, path: string): Promise<Entry> {
   const entry = (await statPaths(ctx, v.tree, [path]))[path];
@@ -147,9 +149,8 @@ export async function handleRepoRequest(request: Request, env: RepoEnv, principa
 }, path = new URL(request.url).pathname): Promise<Response | null> {
   if (path !== '/v1/repos' && !path.startsWith('/v1/repos/'))
     return null;
-  if (!camelfsConfigured(env))
-    return json({ code: 'storage_unavailable' }, 503);
   try {
+    requireCamelfs(env);
     if (request.method === 'POST' && request.headers.has('Idempotency-Key'))
       return await withMoneyIdempotency(request, env, principal.tenantId, r => route(r, env, principal.tenantId, path)) ?? null;
     return await route(request, env, principal.tenantId, path);
@@ -163,14 +164,14 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   const number = (k: string) => s.has(k) ? Number(s.get(k)) : undefined;
   if (path === '/v1/repos') {
     if (method === 'POST') {
-      const r = await createRepo(env, tenant, { ...await readJson(request), ...(tierConfigured(env) ? { author: `api:${tenant}` } : {}) });
+      const r = await createRepo(env, tenant, { ...await readJson(request), author: `api:${tenant}` });
       return json(r.info, r.existing ? 200 : 201);
     }
     if (method === 'GET') {
       const p = await env.TENANTS.getByName(tenant).listRepos({ after: s.get('after') ?? undefined, limit: number('limit') });
       return json({ ...p, repos: p.repos.map(({ id, name, key, createdAt, lineage, bytes, files }) => ({
         id, name, key, createdAt,
-        ...(tierConfigured(env) && lineage !== `${tenant}:${id}` ? { sharesStorageWith: lineage.slice(tenant.length + 1) } : { bytes, files }),
+        ...(lineage !== `${tenant}:${id}` ? { sharesStorageWith: lineage.slice(tenant.length + 1) } : { bytes, files }),
       })) });
     }
   }
@@ -204,13 +205,12 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
             throw error;
         }
       }
-      await reportUsage(ctx);
       return json({ deleted: true });
     }
   }
   if (tail === 'branches' && method === 'POST') {
     const b = await readJson(request);
-    return json(await branch(ctx, { name: b.name, from: b.from ?? 'main', owner: b.owner, ttlSeconds: b.ttl, who: actor.who }), 201);
+    return json(await branch(ctx, { name: b.name, from: b.from ?? 'main', owner: b.owner, ttlSeconds: b.ttl }), 201);
   }
   if (tail === 'history' && method === 'GET')
     return json(await repoHistory(ctx, { ref: s.get('ref') ?? '', after: s.get('after') ?? undefined, limit: number('limit'), path: s.get('path') ?? undefined }));

@@ -25,7 +25,6 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      { "name": "REPOS", "class_name": "RepoDO" },
       { "name": "JOB_HOSTS", "class_name": "JobHost" },
       { "name": "HOST_JOBS", "class_name": "HostJob" },
       { "name": "JOB_HOST_REGISTRY", "class_name": "JobHostRegistry" },
@@ -88,7 +87,8 @@
     },
     { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
     { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
-    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] }
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] }
   ],
   "hyperdrive": [
     {

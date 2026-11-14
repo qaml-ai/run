@@ -61,6 +61,9 @@ function mergeFile(data: Uint8Array[]) {
 type FakeOptions = CamelfsTokenOptions & {
   now?: () => number;
   beforeWriteMove?: () => Promise<void>;
+  onRefMove?: (move: {
+    lineage: string; ref: string; from: string; to: string; tree: string; by: string; at: number; watchers: string[];
+  }) => void;
 };
 type Ref = {
   name: string; version: string; tree: string; root?: string; owner: string;
@@ -427,6 +430,13 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
       try { value = JSON.parse(body); } catch { return bad(); }
       fields(value, []);
     };
+    const notify = (ref: Ref, result: { version: string; tree: string }) => {
+      const watchers = [...(own.watchers.get(ref.name) ?? [])];
+      if (watchers.length && ref.version !== result.version) options.onRefMove?.({
+        lineage: l, ref: ref.name, from: ref.version, to: result.version, tree: result.tree,
+        by: claims.sub, at: now(), watchers,
+      });
+    };
     const refs = () => [...own.refs.values()].filter(ref => isLive(ref, now())).sort((a, b) => compare(a.name, b.name));
     const absent = () => bad("ref_not_found", 404);
     const current = (name: string) => {
@@ -566,7 +576,9 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
         const diff = changes(tree(l, ref.tree), tree(l, c.tree));
         // This route names a recorded object. The one-call routes can validate
         // rule 1 because they construct the commit for the move themselves.
-        return json({ ...move(l, ref, version, c, quota, root), parents: c.parents, diff });
+        const result = move(l, ref, version, c, quota, root);
+        notify(ref, result);
+        return json({ ...result, parents: c.parents, diff });
       }
       const metadata = ["author", "message", "time", "trailers"];
       const required = ["author", "message", "time"];
@@ -594,7 +606,9 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
           unheld(latest);
           if (latest.version === ref.version) {
             const changed = changes(base, tree(l, c.tree)).map(({ oldMode, newMode, ...change }) => ({ ...change, mode: newMode ?? oldMode }));
-            return json({ ...move(l, latest, c.commit, c, input.quota, undefined, true), parents: c.parents, time: c.time, changed }, 201);
+            const result = move(l, latest, c.commit, c, input.quota, undefined, true);
+            notify(latest, result);
+            return json({ ...result, parents: c.parents, time: c.time, changed }, 201);
           }
           if (input.expect !== undefined) stale(latest);
           checkPaths(latest);
@@ -611,7 +625,9 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
           const latest = current(name);
           unheld(latest);
           if (ref.version !== latest.version) stale(latest);
-          return json({ ...move(l, latest, c.commit, c, input.quota, undefined, true), ...extra }, 201);
+          const result = move(l, latest, c.commit, c, input.quota, undefined, true);
+          notify(latest, result);
+          return json({ ...result, ...extra }, 201);
         };
         // As C3b (#1042): restore and merge take trailers, defaulting Camel-Op (caller keys win), and their replies carry
         // bytes + files like write and cas (move()).
@@ -626,7 +642,9 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
         if (ff && mode !== "squash") {
           // A fast-forward needed no 3-way merge: merged is empty; took counts the paths changed from head to theirs.
           const changed = changes(tree(l, ref.tree), tree(l, target.tree)).length;
-          return json({ ...move(l, ref, theirs, target, input.quota), ff, merged: [], took: { ours: 0, theirs: changed } }, 201);
+          const result = move(l, ref, theirs, target, input.quota);
+          notify(ref, result);
+          return json({ ...result, ff, merged: [], took: { ours: 0, theirs: changed } }, 201);
         }
         if (mode === "ff-only") bad("not_fast_forward", 409, { current: ref.version });
         const base = mergeBase(l, ref.version, theirs);
@@ -811,9 +829,8 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
   }
   return { fetch, blobs, trees, commits, calls, checkpoint };
 }
-export async function serveFakeCamelfsd(token: string, options: FakeOptions & { unref?: boolean } = {}) {
-  const { unref = false, ...fakeOptions } = options;
-  const fake = fakeCamelfsd(token, fakeOptions);
+export async function serveFakeCamelfsd(token: string, options: FakeOptions = {}) {
+  const fake = fakeCamelfsd(token, options);
   const server = createServer(async (req, res) => {
     try {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -822,9 +839,7 @@ export async function serveFakeCamelfsd(token: string, options: FakeOptions & { 
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer()));
     } catch { res.writeHead(500); res.end(); }
   });
-  if (unref) server.on("connection", socket => socket.unref());
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  if (unref) server.unref();
   const address = server.address(); if (!address || typeof address === "string") throw new Error("missing server address");
   return { url: `http://127.0.0.1:${address.port}`, checkpoint: fake.checkpoint, calls: fake.calls, close: () => new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve())) };
 }

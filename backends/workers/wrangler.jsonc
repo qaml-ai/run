@@ -28,7 +28,6 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
@@ -77,7 +76,8 @@
     },
     { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
     { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
-    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] }
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] }
   ],
   "hyperdrive": [
     {
