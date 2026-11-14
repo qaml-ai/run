@@ -87,6 +87,7 @@ export type JobFailureCode =
   /** A job with this id is running now. */
   | "job_running"
   | "start_failed"
+  | "needs_k5"
   /** The container had less than JOB_LIMITS.diskLowBytes free before the command: the snapshot is too full. */
   | "disk_low"
   | "sync_failed"

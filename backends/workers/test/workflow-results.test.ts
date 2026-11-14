@@ -72,7 +72,7 @@ test("past its caps a scope drops the least recently hit first", async t => {
 
 
 test("cached forks are immutable versions retained by a three-day cache ref", async t => {
-  const f = fixture(t), repo = await f.create(), head = await repo.repo.resolve('main');
+  const f = await fixture(t), repo = await f.create(), head = await repo.repo.resolve('main');
   const { object, state, db } = cache(t, f.env);
   const fork = { tenant: 't', owner: 'api', repo: repo.repoId, version: head.version };
   await object.put({ kind: 'agent', key: 'tree-key', source: 'wf:k:1', workflow: 'wf', value: { text: 'ok' }, fork });
@@ -89,7 +89,7 @@ test("cached forks are immutable versions retained by a three-day cache ref", as
 });
 
 test('a ref left by eviction is replaced before caching a new fork version', async t => {
-  const f = fixture(t), repo = await f.create(), head = await repo.repo.resolve('main');
+  const f = await fixture(t), repo = await f.create(), head = await repo.repo.resolve('main');
   const {object,db} = cache(t,f.env);
   const entry = {kind:'agent',key:'same-key',source:'old:k:1',workflow:'old',value:{text:'old'},fork:{tenant:'t',owner:'api',repo:repo.repoId,version:head.version}};
   await object.put(entry);

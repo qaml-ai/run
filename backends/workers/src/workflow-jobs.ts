@@ -199,8 +199,8 @@ export class WorkflowJobs implements EffectExecutor {
     const extra = Object.keys(args ?? {}).find(name => !known.includes(name));
     if (extra) throw new JobSpecError(`job() has no option ${extra}: it takes ${known.join(", ")}`);
     if (args.commit !== undefined && typeof args.commit !== "boolean") throw new JobSpecError("job() commit is true or false");
-    if (args.commit && args.at === undefined && !(args.files && this.env.CAMELFS)) throw new JobSpecError("job() commit needs at: the volume whose tree it checkpoints");
-    if (args.commit && !camelfsConfigured(this.env)) throw new JobSpecError("job() commit needs camelFS job hosts, which this deployment does not have");
+    if (args.commit && args.at === undefined && !args.files) throw new JobSpecError("job() commit needs at: the volume whose tree it checkpoints");
+    if (args.commit && typeof args.at === "string" && !camelfsConfigured(this.env)) throw new JobSpecError("job() commit needs camelFS job hosts, which this deployment does not have");
     if (args.at !== undefined && args.files !== undefined) throw new JobSpecError("job() takes at or files, not both");
     if (args.files !== undefined && (!args.files || typeof args.files !== "object" || Object.values(args.files).some(text => typeof text !== "string")))
       throw new JobSpecError("job() files maps paths to text");
@@ -220,15 +220,15 @@ export class WorkflowJobs implements EffectExecutor {
         snapshotMs = Date.now() - snapshotFrom;
         source = { volume: { tenant, volume: args.at, snapshot: snapshot.id } };
       }
-    } else if (args.files && this.env.CAMELFS) {
+    } else if (args.files && args.commit) {
       const env = this.env as RepoEnv, owner = `workflow:${this.host.workflow.id}`;
       const { info } = await createRepo(env, tenant, { key: owner, author: owner });
       await this.host.storage.put(`workflow-repo:${info.id}`, true);
       const ctx = await repoContext(env, tenant, info.id, owner), ref = `job/${id}`;
       const prepared = `workflow-job-files:${id}`;
       if (!await this.host.storage.get(prepared)) {
-        if (!await ctx.repo.ref(ref)) await branch(ctx, { name: ref, from: "main", owner, who: `job:${id}` });
-        await commitChanges(ctx, { ref, op: "job", changes: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, { bytes: new TextEncoder().encode(text) }])), message: "job inline files", author: owner, who: `job:${id}`, why: "job inline files", allowEmpty: true, idempotencyKey: `job:${id}:files` });
+        if (!await ctx.repo.ref(ref)) await branch(ctx, { name: ref, from: "main", owner });
+        await commitChanges(ctx, { ref, op: "job", changes: Object.fromEntries(Object.entries(args.files).map(([path, text]) => [path, { bytes: new TextEncoder().encode(text) }])), message: "job inline files", author: owner, idempotencyKey: `job:${id}:files` });
         await this.host.storage.put(prepared, true);
       }
       source = { repo: { tenant, repo: info.id, ref, owner } };
@@ -289,7 +289,7 @@ export class WorkflowJobs implements EffectExecutor {
       stdout: await stream("stdout.txt", result.stdout), stderr: await stream("stderr.txt", result.stderr), outputs, missing: result.missing,
       timings: { totalMs: result.timings.totalMs, commandMs: result.timings.commandMs, steps: keptSteps },
     };
-    const kept = await commitChanges(ctx, { ref: 'main', op: 'job', changes, message: `job ${id}`, author: `workflow:${this.host.workflow.id}`, who: `workflow:${this.host.workflow.id}`, why: 'keep', idempotencyKey: `keep:${id}` });
+    const kept = await commitChanges(ctx, { ref: 'main', op: 'job', changes, message: `job ${id}`, author: `workflow:${this.host.workflow.id}`, idempotencyKey: `keep:${id}` });
     value.version = kept.version;
     if (result.camelfs) {
       const { tree, root, commit, checkpointError, warm, mountMs, applyMs, checkpointMs, checkpoint } = result.camelfs;
@@ -318,10 +318,10 @@ export class WorkflowJobs implements EffectExecutor {
       const ctx = await repoContext(this.env as RepoEnv, this.host.workflow.tenant, fork.repo);
       try {
         const merged = await mergeRefs(ctx, { into: fork.base.ref, from: fork.ref });
-        return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed, ...('files' in merged ? { files: Object.keys(merged.files) } : {}) } };
+        return { ok: true, value: { committed: true, version: merged.version, changed: merged.changed, ...(merged.files ? { files: merged.files } : {}) } };
       } catch (error) {
         const found = repoErrorFrom(error);
-        if (found?.code === 'conflicts') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };
+        if (found?.code === 'conflict') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };
         throw error;
       }
     } catch (error) {

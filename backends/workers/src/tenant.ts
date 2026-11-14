@@ -94,9 +94,8 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   registerRepo(row: RepoRow, sourceId?: string) { return this.repos.register(row, sourceId); }
   repoRow(id: string) { return this.repos.row(id); }
   listRepos(input: {after?: string; limit?: number} = {}) { return this.repos.list(input); }
-  markRepoDeleted(id: string) { return this.repos.deleted(id); }
   markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
-  repoUsage(id: string, bytes: number, files: number, lineage?: boolean) { return this.repos.usage(id,bytes,files); }
+  repoUsage(id: string, bytes: number, files: number) { return this.repos.usage(id,bytes,files,true); }
   reposUsed(exclude?: string) { return this.repos.used(exclude); }
   nativeStorageUsed(tenant: string) { return this.files.used(tenant); }
   recordNativeFile(tenant: string, key: string, bytes: number) { return this.files.record(tenant, key, bytes); }

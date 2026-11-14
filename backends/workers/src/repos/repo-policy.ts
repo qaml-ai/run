@@ -35,20 +35,6 @@ export function normalizeRepoPath(input: string): string {
 export function refName(name: string) {
   check(typeof name === "string" && name.length <= 200 && /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(name) && name.split("/").every(s => s !== "." && s !== ".." && !s.endsWith(".lock")), "bad_ref");
 }
-export function sha1(value: string) { check(typeof value === "string" && /^[0-9a-f]{40}$/.test(value), "bad_sha1"); }
-export function entry(row: Entry): Entry {
-  check(row && typeof row === "object"); sha1(row.blob);
-  check(Number.isSafeInteger(row.size) && row.size >= 0, "bad_size"); check(["100644", "100755", "120000"].includes(row.mode), "bad_mode");
-  return { ...row, path: normalizeRepoPath(row.path) };
-}
-export function version(row: Version) {
-  check(row && typeof row === "object"); sha1(row.version); sha1(row.tree);
-  check(Array.isArray(row.parents)); row.parents.forEach(sha1);
-  check(typeof row.author === "string" && Number.isSafeInteger(row.at));
-  check(typeof row.message === "string" && bytes(row.message) <= 4096 && !row.message.includes("\0"), "bad_message");
-  check(row.trailers && typeof row.trailers === "object" && !Array.isArray(row.trailers) && Object.keys(row.trailers).length <= 16, "bad_trailers");
-  for (const [key, value] of Object.entries(row.trailers)) check(/^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(key) && typeof value === "string" && value.length <= 256 && !/[\r\n]/.test(value), "bad_trailers");
-}
 export function ownership(owner?: string | null, expiresAt?: number | null) {
   check(owner == null || (typeof owner === "string" && /^(agent|workflow|job|user|api|cache):[A-Za-z0-9._:-]{1,200}$/.test(owner)), "bad_owner");
   check(expiresAt == null || Number.isSafeInteger(expiresAt), "bad_expiry");

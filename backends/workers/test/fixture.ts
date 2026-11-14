@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, createCipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, createHmac, createCipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
 import { createMigratedDatabase } from "./migrated-database.ts";
@@ -75,10 +75,10 @@ export async function startFixture(
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
     entrypoint?: string;
-    /** Bind camelFS to the test-only CamelfsStub named entrypoint (default: on, served by an in-process fake
-     * camelfsd unless `vars.TEST_CAMELFS_URL` names one). Every agent's workspace is a repo, so agents need it. */
-    camelfsStub?: boolean;
-    camelfsTier?: boolean;
+    /** Disable the authenticated repo tier to test missing configuration. */
+    noCamelfsTier?: boolean;
+    /** Bind the separate /v0 job-host import endpoint. */
+    camelfsImport?: boolean;
     scheduled?: boolean;
     signal?: AbortSignal;
     /** No AGENT_PUBLIC_URL, as a local `wrangler dev` or a self-host without one: origins come from requests. */
@@ -190,10 +190,9 @@ export async function startFixture(
       dockerfile?: string;
     }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
-  const camelfs = !options.camelfsTier && (options.camelfsStub ?? true);
   let camelfsCalls: string[] | undefined;
   let camelfsVars: Record<string, string> = {};
-  if (options.camelfsTier) {
+  if (!options.noCamelfsTier) {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const kid = "fixture-camelfs", issuer = options.vars?.AGENT_PUBLIC_URL || `http://127.0.0.1:${port}`;
     const jwk = { ...publicKey.export({ format: "jwk" }), kid, alg: "EdDSA", use: "sig" };
@@ -203,18 +202,23 @@ export async function startFixture(
     const ciphertext = Buffer.concat([cipher.update(JSON.stringify(privateKey.export({ format: "jwk" }))), cipher.final()]);
     await db.query("INSERT INTO signing_keys(kid,public_jwk,private_sealed,created_at) VALUES ($1,$2,$3,$4)",
       [kid, jwk, { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }, Date.now()]);
-    const daemon = await serveFakeCamelfsd(randomBytes(24).toString("hex"), { issuer, jwks: { keys: [jwk] } });
+    const notifyKey = randomBytes(24).toString("hex");
+    const daemon = await serveFakeCamelfsd(randomBytes(24).toString("hex"), {
+      issuer, jwks: { keys: [jwk] },
+      onRefMove(move) {
+        const body = JSON.stringify({ ...move, type: "ref.moved", id: move.to });
+        const time = Math.floor(Date.now() / 1000);
+        const signature = createHmac("sha256", notifyKey).update(time + "." + body).digest("hex");
+        void fetch(`http://127.0.0.1:${port}/v1/internal/camelfs/notify`, {
+          method: "POST", headers: { "Camel-Signature": `t=${time},v1=${signature}` }, body,
+        }).catch(() => {});
+      },
+    });
     camelfsCalls = daemon.calls;
     cleanups.push(() => daemon.close());
-    camelfsVars = { CAMELFS_URL: daemon.url };
+    camelfsVars = { CAMELFS_URL: daemon.url, CAMELFS_NOTIFY_KEY: notifyKey };
   }
-  if (camelfs && !options.vars?.TEST_CAMELFS_URL) {
-    const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken);
-    camelfsCalls = daemon.calls;
-    cleanups.push(() => daemon.close());
-    camelfsVars = { TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: camelfsToken };
-  }
-  if (camelfs) config.services = [
+  if (options.camelfsImport) config.services = [
     ...(config.services ?? []),
     { binding: "CAMELFS", service: config.name, entrypoint: "CamelfsStub" },
   ];

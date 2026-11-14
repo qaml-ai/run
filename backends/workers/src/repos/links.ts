@@ -1,7 +1,7 @@
 import { FileLinks, declaredType } from '../file-policy.ts';
 import { RepoError, check, normalizeRepoPath, type Mode } from './repo-policy.ts';
 import { repoContext, type RepoContext, type RepoEnv } from './registry.ts';
-import { camelfsConfigured } from './storage.ts';
+import { requireCamelfs } from './storage.ts';
 import { commitChanges } from './write.ts';
 import { json, repoFailure, boundedBody, streamFile, fileEntry } from './routes.ts';
 type Grant = {
@@ -54,9 +54,8 @@ export async function handleSignedRepoRequest(request: Request, env: RepoEnv): P
   const url = new URL(request.url), m = /^\/v1\/repo-links\/([^/]+)\/[^/]+$/.exec(url.pathname);
   if (!m)
     return null;
-  if (!camelfsConfigured(env))
-    return json({ code: 'storage_unavailable' }, 503);
   try {
+    requireCamelfs(env);
     const grant = signer(env, url.origin).verify(m[1]) as unknown as Grant;
     if (grant.kind !== 'repo' || !grant.tenant || !/^repo_[a-f0-9]{24}$/.test(grant.repo) || normalizeRepoPath(grant.path) !== grant.path)
       throw new RepoError('invalid_link', 403, 'invalid_link');
@@ -69,7 +68,7 @@ export async function handleSignedRepoRequest(request: Request, env: RepoEnv): P
     }
     if (grant.contentType && declaredType(request.headers.get('content-type')) !== grant.contentType)
       throw new RepoError('content_type', 415, 'content_type');
-    const result = await commitChanges(ctx, { ref: grant.ref, op: grant.agent ? 'turn' : 'api', changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, who: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, why: 'link', trailers: grant.agent ? { 'Camel-Agent': grant.agent, 'Camel-Checkpoint': 'automatic', ...(grant.run ? { 'Camel-Run': grant.run } : {}), ...(grant.call ? { 'Camel-Call': grant.call } : {}) } : { 'Camel-Checkpoint': 'api' } });
+    const result = await commitChanges(ctx, { ref: grant.ref, op: grant.agent ? 'turn' : 'api', changes: { [grant.path]: { bytes: await boundedBody(request, Math.min(grant.maxBytes ?? 256 * 2 ** 20, 256 * 2 ** 20)), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, message: `put ${grant.path.slice(0, 1000)}`, author: grant.agent ? `agent:${grant.agent}` : `link:${grant.repo}`, trailers: grant.agent ? { 'Camel-Agent': grant.agent, 'Camel-Checkpoint': 'automatic', ...(grant.run ? { 'Camel-Run': grant.run } : {}), ...(grant.call ? { 'Camel-Call': grant.call } : {}) } : { 'Camel-Checkpoint': 'api' } });
     return json({ version: result.version, path: grant.path, ...result.files[grant.path] }, 201);
   }
   catch (e) {

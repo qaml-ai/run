@@ -5,7 +5,6 @@ import { listFiles, statPaths, versionEntries } from './reads.ts';
 import { commitChanges, type CommitOp, type WriteInput } from './write.ts';
 import { repoErrorFrom, type Entry } from './repo-policy.ts';
 import { agentRepoId } from './identity.ts';
-import { HttpRepoClient } from './http-client.ts';
 import { workspaceRefKey, type RepoTreeScope } from './tree-cache.ts';
 
 export const insideRepo = (path: string) => path.replace(/^\/+/, '');
@@ -13,7 +12,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
   const ctx = await repoContext(env, tenant, repo, agent ? `agent:${agent}` : undefined);
   const cache = scope?.cache;
   const workspaceRef = cache && repo === agentRepoId(tenant, agent)
-    ? workspaceRefKey(ctx.lineage, ctx.repo instanceof HttpRepoClient ? ctx.repo.tierRefName(ref) : ref)
+    ? workspaceRefKey(ctx.lineage, ctx.repo.tierRefName(ref))
     : undefined;
   const resolve = async (version?: string) => {
     const current = workspaceRef ? cache!.head(workspaceRef) : undefined;
@@ -39,12 +38,12 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
     const bytes = entry.size ? await ctx.storage.readBlob(ctx.lineage, entry.blob, head.tree, p, `bytes=0-${Math.min(512, entry.size) - 1}`) : new Uint8Array();
     return { ...decorate(entry, head.version), contentType: sniffContentType(bytes, p) };
   };
-  const commit = async (changes: WriteInput['changes'], pathExpect: WriteInput['pathExpect'] = {}, message = 'files changed', trailers: Record<string,string> = {}, op: CommitOp = 'turn', allowEmpty?: boolean, why = 'agent') => {
+  const commit = async (changes: WriteInput['changes'], pathExpect: WriteInput['pathExpect'] = {}, message = 'files changed', trailers: Record<string,string> = {}, op: CommitOp = 'turn') => {
     try {
-      const write = () => commitChanges(ctx, { ref, op, allowEmpty, changes, pathExpect, message, author: `agent:${agent}`, who: `agent:${agent}`, why, trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } });
+      const write = () => commitChanges(ctx, { ref, op, changes, pathExpect, message, author: `agent:${agent}`, trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } });
       return await (workspaceRef ? cache!.write(workspaceRef, write) : write());
     }
-    catch (error) { const repo = repoErrorFrom(error); if (repo?.code === 'stale_path' || (repo?.code === 'stale' && typeof repo.detail?.path === 'string')) throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
+    catch (error) { const repo = repoErrorFrom(error); if (repo?.code === 'stale' && typeof repo.detail?.path === 'string') throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
   };
   return { ctx, ref, stat, commit,
     moved(result: { previous: string | null; version: string; tree: string }) {

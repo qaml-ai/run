@@ -7,11 +7,14 @@ import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { camelfsdClient, serveImportProxy } from "../jobhost/camelfsd.ts";
 import { Guest } from "../jobhost/guest.ts";
-import { camelfsStorage, StorageError } from "../backends/workers/src/repos/storage.ts";
+import { hookTierServices, tierIdentity } from "../backends/workers/test/tier-env.ts";
+const hooks = hookTierServices();
+const { camelfsStorage, StorageError } = await import("../backends/workers/src/repos/storage.ts");
+hooks.deregister();
 import type { CommitInput, CommitResult } from "../backends/workers/src/repos/storage.ts";
 
 // Only a real binary enables this test. CI requires it so a broken setup cannot skip.
@@ -90,9 +93,6 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
     assert.equal(deniedHost.status, 404);
     await deniedHost.arrayBuffer();
   });
-
-  await timed("runtime storage client: every section 9 call",
-    () => storageContract(`http://127.0.0.1:${apiPort}`, () => token));
 
   // Read-only routes are deliberately absent from the import proxy.
   const get = <T>(path: string): Promise<T> => new Promise((resolve, reject) => {
@@ -197,17 +197,16 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
 
 // Error transport is independent of daemon setup. In particular the
 // authorization check must never turn an incomplete walk into false/null.
-async function storageContract(origin: string, tokenFor: (lineage: string) => string) {
+async function storageContract(t: TestContext, origin: string, tokenFor: (lineage: string) => string, identity: ReturnType<typeof tierIdentity>) {
   const statuses: { method: string; path: string; status: number }[] = [];
-  const storage = camelfsStorage({ CAMELFS_API_TOKEN: tokenFor("contract:storage"), CAMELFS: { async fetch(input, init) {
-    const url = new URL(typeof input === "string" ? input : input.url);
-    const lineage = decodeURIComponent(url.pathname.split("/")[3]);
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `Bearer ${tokenFor(lineage)}`);
-    const response = await fetch(origin + url.pathname + url.search, { ...init, headers });
+  const fetchReal = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const response = await fetchReal(url, init);
+    if (!(url instanceof URL)) return response;
     statuses.push({ method: init?.method ?? "GET", path: url.pathname, status: response.status });
     return response;
-  } } });
+  });
+  const storage = camelfsStorage({ CAMELFS_URL: origin, AGENT_PUBLIC_URL: identity.issuer, accounts: identity.accounts } as never, "agent:contract");
   const lineage = "contract:storage";
   const bytes = (s: string) => new TextEncoder().encode(s);
   const text = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -425,7 +424,7 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
     assert.equal(await stats(tokenFor("arbitrary", "r")), 200);
 
     if (source === "file") {
-      await storageContract(origin, tokenFor);
+      await storageContract(t, origin, tokenFor, tierIdentity(issuer, { privateKey, publicKey }, kid));
       await writeFile(jwksFile, "{");
       assert.ok(daemon.kill("SIGHUP"));
       await until(() => logs.includes("op=jwks-reload error=") || undefined);
@@ -435,10 +434,11 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
   });
 });
 
-test("camelFS storage client preserves too_deep and operation context", async () => {
-  const storage = camelfsStorage({ CAMELFS_API_TOKEN: "contract-error-token", CAMELFS: {
-    async fetch() { return new Response(JSON.stringify({ error: { code: "too_deep", message: "too_deep" } }), { status: 413 }); },
-  } });
+test("camelFS storage client preserves too_deep and operation context", async t => {
+  const { issuer, accounts } = tierIdentity();
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ error: { code: "too_deep", message: "too_deep" } }, { status: 413 }));
+  const storage = camelfsStorage({ CAMELFS_URL: "http://camelfs", AGENT_PUBLIC_URL: issuer, accounts } as never, "agent:contract");
   for (const [op, run] of [
     ["isAncestor", () => storage.isAncestor("l", "a", "b")],
     ["mergeBase", () => storage.mergeBase("l", "a", "b")],

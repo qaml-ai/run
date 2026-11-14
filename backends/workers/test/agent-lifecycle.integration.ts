@@ -1,4 +1,3 @@
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -187,6 +186,5 @@ test("fork retries resume the claimed history and file versions after interrupti
 });
 
 async function repoFixture(t:any) {
-  const api=await serveFakeCamelfsd('fork-test-token');t.after(()=>api.close());
-  return startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),vars:{TEST_CAMELFS_URL:api.url,CAMELFS_API_TOKEN:'fork-test-token'}});
+  return startFixture({entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url))});
 }

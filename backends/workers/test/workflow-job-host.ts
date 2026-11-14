@@ -6,24 +6,29 @@ import { dirname, join } from 'node:path';
 import { HostAgent } from '../../../jobhost/agent.ts';
 import { fakeLauncher } from '../../../jobhost/vm.ts';
 import type { Camelfsd } from '../../../jobhost/camelfsd.ts';
-import { camelfsStorage } from '../src/repos/storage.ts';
+import type { TreeEntry } from '../src/repos/storage.ts';
 
 /** A fake host runs real commands on trees materialized from the strict storage fake. */
 function createRepoJobHost(root: string, host: string, runtime: string, secret: string, url: string, token: string) {
-  const storage = camelfsStorage({ CAMELFS_API_TOKEN: token, CAMELFS: { fetch: (input, init) => {
-    const source = new URL(String(input));
-    return fetch(`${url}${source.pathname}${source.search}`, init);
-  } } });
+  const read = async (lineage: string, path: string) => {
+    const response = await fetch(`${url}/v1/lineages/${encodeURIComponent(lineage)}/${path}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.ok(response.ok, `fake host storage returned ${response.status}`);
+    return response;
+  };
   const launcher = fakeLauncher({ work: join(root,'jobs') });
   const daemon: Camelfsd = {
     async mount(input) {
       assert.ok(input.fence, 'repo jobs carry their lease fence');
       const image = join(root,input.jobId);
       await mkdir(image,{recursive:true});
-      for (const entry of await storage.listAll(input.lineage,input.tree)) if ('blob' in entry) {
+      const tree = await read(input.lineage, `trees/${input.tree}?recursive=1`);
+      const { entries } = await tree.json() as { entries: TreeEntry[] };
+      for (const entry of entries) if ('blob' in entry) {
         const path = join(image,entry.path);
         await mkdir(dirname(path),{recursive:true});
-        await writeFile(path,await storage.readBlob(input.lineage,entry.blob,input.tree,entry.path),{mode:parseInt(entry.mode,8)});
+        await writeFile(path,new Uint8Array(await (await read(input.lineage, `blobs/${entry.blob}?tree=${input.tree}&path=${encodeURIComponent(entry.path)}`)).arrayBuffer()),{mode:parseInt(entry.mode,8)});
       }
       return {image,warm:false,root:'test-root',tree:input.tree,mountMs:0,hydrating:false};
     },
@@ -50,7 +55,7 @@ export async function repoJobHost(t: TestContext, runtime: string, secret: strin
 // The host-loss test starts this in a child process so it can kill the host mid-job.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [root, host, runtime, url] = process.argv.slice(2);
-  const { JOB_HOST_TEST_SECRET: secret, CAMELFS_API_TOKEN: token } = process.env;
+  const { JOB_HOST_TEST_SECRET: secret, JOB_HOST_TEST_STORAGE_TOKEN: token } = process.env;
   if (!root || !host || !runtime || !url || !secret || !token) throw new Error('Missing fake repo host configuration');
   await createRepoJobHost(root, host, runtime, secret, url, token).start();
 }

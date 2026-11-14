@@ -57,7 +57,6 @@ export async function handleSignedFileRequest(
 }
 export interface FileBindings extends ImageBindings, SecurityEnv, NativeStorageBindings {
   VOLUMES: DurableObjectNamespace<Volume>;
-  REPOS: DurableObjectNamespace<import("./repos/repo-do.ts").RepoDO>;
   HYPERDRIVE: {
     connectionString: string;
   };

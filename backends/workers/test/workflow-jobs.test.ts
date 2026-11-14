@@ -103,7 +103,7 @@ function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, availab
   };
   const landed: [string, number, unknown, unknown?][] = [], specs: JobSpec[] = [], pending: Promise<unknown>[] = [], stopped: string[] = [];
   const driver = { provider: "cloudflare-containers" as const, run: async (spec: JobSpec) => { specs.push(spec); return result(spec); }, stop: async (id: string) => { stopped.push(id); return { stopped: true }; } };
-  const executor = new WorkflowJobs({ ...fixture({after: () => {}}).env, ...env }, {
+  const executor = new WorkflowJobs(env, {
     workflow: { id: "wf_1", tenant: "t1" }, storage: storage as never, payer: () => payer ?? undefined,
     land: async (key, attempt, outcome, usage) => { landed.push([key, attempt, outcome, usage]); },
     waitUntil: promise => { pending.push(promise); },
@@ -137,8 +137,8 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   assert.deepEqual(spec.payer, { tenant: "t1", agent: "agent_owner" }, "the agent that owns the workflow pays");
   assert.equal(spec.id, await jobId("wf_1", "c", 1));
   assert.match(spec.id, /^wf-[0-9a-f]{40}$/);
-  // With camelFS configured, inline files are committed on the job's branch of the workflow repo.
-  assert.equal(spec.files, undefined); assert.equal(spec.repo?.ref, `job/${spec.id}`); assert.equal(spec.repo?.owner, "workflow:wf_1");
+  assert.deepEqual(spec.files, { "a.txt": new TextEncoder().encode("x") });
+  assert.equal(spec.repo, undefined);
 
   // A failure lands its code; a run still held by an earlier start lands nothing (that run lands).
   j = jobs(spec => ({ ok: false, id: spec.id, code: "disk_low", message: "under 2 GiB free", timings }));
@@ -219,7 +219,7 @@ test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", as
   const step = { warm: true, mountMs: 2, applyMs: 3, checkpointMs: 4, checkpoint };
   for (const fields of [{ commit: "c".repeat(40), tree: "b".repeat(40), root: "r" }, { checkpointError: "checkpoint failed" }]) {
     const written: string[] = [];
-    const env = { ...fixture(t).env, VOLUMES: { getByName: () => ({
+    const env = { ...(await fixture(t)).env, CAMELFS: { fetch: async () => { throw new Error("unexpected import"); } }, CAMELFS_API_TOKEN: "test-import", VOLUMES: { getByName: () => ({
       initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
       write: async (path: string) => { written.push(path); return { path }; },
     }) } } as unknown as WorkflowJobsEnv;
@@ -260,7 +260,7 @@ test("WorkflowJobs: commit without camelFS, or refused by the driver, lands as t
   await without.executor.start(effect("nofs", { command: "true", timeoutSeconds: 5, at: "vol_source", commit: true }));
   await without.settled();
   assert.deepEqual(without.landed[0]![2], { ok: false, error: "job() commit needs camelFS job hosts, which this deployment does not have" });
-  const env = { ...fixture(t).env, VOLUMES: { getByName: () => ({
+  const env = { ...(await fixture(t)).env, CAMELFS: { fetch: async () => { throw new Error("unexpected import"); } }, CAMELFS_API_TOKEN: "test-import", VOLUMES: { getByName: () => ({
     initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
   }) } } as unknown as WorkflowJobsEnv;
   const sql = { query: async (text: string) => {
@@ -382,7 +382,7 @@ test("a job, commit or push whose landing a crash lost is found by the alarm's s
 });
 
 test('keep writes outputs and both streams in one commit with stable paths', async t => {
-  const f = fixture(t);
+  const f = await fixture(t);
   const bytes = (s: string) => new TextEncoder().encode(s);
   const j = jobs(spec => ({ok:true,id:spec.id,instance:'standard-1',exitCode:0,timedOut:false,
     stdout:{bytes:bytes('stdout'),size:6,truncated:false},stderr:{bytes:bytes('stderr'),size:6,truncated:false},
@@ -390,11 +390,13 @@ test('keep writes outputs and both streams in one commit with stable paths', asy
   await j.executor.start(effect('keep',{command:'true',timeoutSeconds:5,outputs:['report.txt']}));
   await j.settled();
   const value = (j.landed[0][2] as any).value;
-  const repo = f.env.REPOS.getByName(`t1:${value.repo}`), refs = repo.refs();
+  const { repoContext } = await import('../src/repos/registry.ts');
+  const { versionEntries } = await import('../src/repos/reads.ts');
+  const ctx = await repoContext(f.env, 't1', value.repo), repo = ctx.repo, refs = await repo.refs();
   const head = await repo.commit(value.version);
   assert.equal(head.parents.length,1);
   assert.equal((await repo.commit(head.parents[0])).parents.length,0,'one commit after repo creation');
-  const files = (await repo.list({version:value.version,limit:100})).entries;
+  const files = await versionEntries(ctx, head!.tree);
   const id = await jobId('wf_1','keep',1);
   assert.deepEqual(files.map((f:any)=>f.path).sort(),[`jobs/${id}/out/report.txt`,`jobs/${id}/stderr.txt`,`jobs/${id}/stdout.txt`]);
   assert.equal(refs.find((r:any)=>r.name==='main').version,value.version);
@@ -402,7 +404,7 @@ test('keep writes outputs and both streams in one commit with stable paths', asy
 });
 
 test('commit merges cleanly, reports conflicts, rejects snapshots and retries storage failures', async t => {
-  const f = fixture(t), ctx = await f.create();
+  const f = await fixture(t), ctx = await f.create();
   const { childBranch, repoAt } = await import('../src/workflow-branches.ts');
   const mem = { get:async()=>undefined,put:async()=>{} };
   const fork = await childBranch(f.env,'t',mem as never,{workflow:'wf_1',key:'a',attempt:1},repoAt(ctx.repoId));
@@ -427,12 +429,12 @@ test('commit merges cleanly, reports conflicts, rejects snapshots and retries st
   assert.equal(conflict.committed,false);
   assert.equal(conflict.conflicts[0].path,'a');
   assert.equal(conflict.conflicts[0].reason,'both_modified');
-  const fetch = f.env.CAMELFS.fetch;
-  f.env.CAMELFS.fetch = async () => { throw new Error('storage unavailable'); };
+  const origin = f.env.CAMELFS_URL;
+  f.env.CAMELFS_URL = undefined;
   await j.executor.start(effect('retry',{fork:conflicting},'commit')); await j.settled();
   assert.equal(j.landed.length,5,'storage failures do not land');
   assert.ok([...j.rows.values()].some((row:any)=>row.key==='retry'&&row.kind==='commit'));
-  f.env.CAMELFS.fetch = fetch;
+  f.env.CAMELFS_URL = origin;
   await j.executor.recover(); await j.settled();
   assert.equal((j.landed[5][2] as any).value.committed,false);
   assert.equal(j.rows.size,0);
@@ -440,7 +442,7 @@ test('commit merges cleanly, reports conflicts, rejects snapshots and retries st
 });
 
 test('result cache keys on trees and recreates branches; a missing version is a logged miss', async t => {
-  const f = fixture(t), ctx = await f.create(), old = await ctx.repo.resolve('main');
+  const f = await fixture(t), ctx = await f.create(), old = await ctx.repo.resolve('main');
   const rows = new Map<string, unknown>(), keys: string[] = [];
   let cached: any;
   const cache = { lookup: async (_kind: string,key: string) => { keys.push(key); return cached; } };

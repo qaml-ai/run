@@ -193,18 +193,21 @@ test("every Wrangler config adds WorkflowObject and WorkflowResults with their o
       migrations: { tag: string; new_sqlite_classes?: string[] }[];
     };
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowObject"), [{ name: "WORKFLOWS", class_name: "WorkflowObject" }], name);
+    assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "REPOS"), name);
     const tags = config.migrations.map(migration => migration.tag);
     assert.equal(new Set(tags).size, tags.length, `${name}: unique tags`);
     // After the existing ones: last, or followed only by the job hosts' (test configs, docs/design/job-hosts-plan.md).
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
-    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results" && tag !== "repos"), [], `${name}: nothing but the job hosts', the result cache's and the repos' after it`);
-    // The result cache (workflow-results.ts): bound, with only the pilot's job hosts and then the repos (repos/repo-do.ts) after its migration.
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results" && tag !== "repos" && tag !== "delete-volumes" && tag !== "delete-repo-do"), [], `${name}: nothing but the job hosts', the result cache's and the repos' after it`);
+    // Keep the original creation tags before the class deletions.
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
     assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
       { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },
       ...(name === "wrangler.pilot.jsonc" ? [{ tag: "job-hosts", new_sqlite_classes: ["JobHost", "HostJob", "JobHostRegistry"] }] : []),
       { tag: "repos", new_sqlite_classes: ["RepoDO"] },
+      ...(tags.includes("delete-volumes") ? [{ tag: "delete-volumes", deleted_classes: ["Volume"] }] : []),
+      { tag: "delete-repo-do", deleted_classes: ["RepoDO"] },
     ], name);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);
     // Every class bound locally has a migration that creates it.

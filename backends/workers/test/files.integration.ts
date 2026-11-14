@@ -1,4 +1,3 @@
-import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { fileURLToPath } from "node:url";
 import {gunzipSync} from 'node:zlib';
 import assert from "node:assert/strict";
@@ -13,8 +12,7 @@ test(
   "R2 files, volume ordering, retained snapshots, signed images and restart",
   { timeout: 180000 },
   async (t) => {
-    const camelfs=await serveFakeCamelfsd("files-test-token");t.after(()=>camelfs.close());
-    const fixture = await startFixture({camelfsStub:true,entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url)),vars:{TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:"files-test-token"}});
+    const fixture = await startFixture({entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url))});
     const worker = fixture.worker;
     t.after(() => fixture.stop());
     const call = async (path: string, options: RequestInit = {}) =>

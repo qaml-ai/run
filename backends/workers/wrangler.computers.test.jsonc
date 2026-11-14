@@ -28,7 +28,6 @@
         "name": "VOLUMES",
         "class_name": "Volume"
       },
-      { "name": "REPOS", "class_name": "RepoDO" },
       { "name": "JOB_HOSTS", "class_name": "JobHost" },
       { "name": "HOST_JOBS", "class_name": "HostJob" },
       { "name": "JOB_HOST_REGISTRY", "class_name": "JobHostRegistry" },
@@ -89,7 +88,8 @@
         "WorkflowResults"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] }
   ],
   "hyperdrive": [
     {
