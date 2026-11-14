@@ -3,6 +3,9 @@ import { test } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -10,7 +13,7 @@ import { startFixture } from "./fixture.ts";
 import { signGetCallerIdentity } from "../../../shared/job-host-attest.ts";
 import { hostSecondRate } from "../src/jobs/host-pricing.ts";
 
-const AGENT = fileURLToPath(new URL("../../../jobhost/agent.ts", import.meta.url));
+const REPO_HOST = fileURLToPath(new URL("./workflow-job-host.ts", import.meta.url));
 
 // docs/design/job-hosts-plan.md, slices 2-4 in fake mode: a host enrolls (an attestation for a credential bound to the
 // host id it proves), a workflow's job() goes to it (the host agent, dialing out over a WebSocket), runs in a fake VM
@@ -29,10 +32,11 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   });
   sts.listen(0, "127.0.0.1"); await once(sts, "listening");
   t.after(() => new Promise<void>(resolve => sts.close(() => resolve())));
-  const camelfs = await serveFakeCamelfsd('job-output-test-token');
+  const camelfsToken = "job-output-test-token";
+  const camelfs = await serveFakeCamelfsd(camelfsToken);
   t.after(() => camelfs.close());
   const fixture = await startFixture({ camelfsStub:true,entrypoint:fileURLToPath(new URL('./job-sync-worker.ts',import.meta.url)),vars: {
-    TEST_CAMELFS_URL:camelfs.url,CAMELFS_API_TOKEN:'job-output-test-token',
+    TEST_CAMELFS_URL: camelfs.url, CAMELFS_API_TOKEN: camelfsToken,
     AGENT_WORKFLOW_TENANTS: "*", JOB_HOST_ATTESTORS: "test,aws", JOB_HOST_TEST_SECRET: secret, JOB_HOST_CREDENTIAL_SECONDS: "45",
     JOB_HOST_WAIT_SECONDS: "8", JOB_HOST_LOST_SECONDS: "20", JOB_HOST_SCALER_TOKEN: "scaler-token-for-the-fixture-at-least-32-characters",
     JOB_HOST_ROLE_ARNS: "test=arn:aws:iam::123456789012:role/camelrun-job-host", JOB_HOST_STS_TEST_URL: `http://127.0.0.1:${(sts.address() as { port: number }).port}/`,
@@ -52,16 +56,18 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
 
   // A host with a wrong test secret is refused: it never registers.
   let agentLog = "";
-  const host = (name: string, secret: string) => {
-    const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", AGENT, "--fake", "--attestor", "test", "--runtime", fixture.url, "--name", name, "--slots", "2", "--disk-low", "0"],
-      { env: { ...process.env, JOB_HOST_TEST_SECRET: secret }, stdio: ["ignore", "pipe", "pipe"] });
+  const host = async (name: string, secret: string) => {
+    const root = await mkdtemp(join(tmpdir(), "workflow-host-"));
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", REPO_HOST, root, name, fixture.url, camelfs.url],
+      { env: { ...process.env, JOB_HOST_TEST_SECRET: secret, CAMELFS_API_TOKEN: camelfsToken }, stdio: ["ignore", "pipe", "pipe"] });
+    const exited = new Promise<void>(resolve => child.once("close", () => resolve()));
     child.stdout.on("data", chunk => { agentLog += chunk; });
     child.stderr.on("data", chunk => { agentLog += chunk; });
-    t.after(() => { child.kill("SIGKILL"); });
+    t.after(async () => { child.kill("SIGKILL"); await exited; await rm(root, { recursive: true, force: true }); });
     return child;
   };
-  host("intruder", "not-the-secret-but-also-at-least-32-characters");
-  const host1 = host("host-1", secret);
+  await host("intruder", "not-the-secret-but-also-at-least-32-characters");
+  const host1 = await host("host-1", secret);
   const hosts = await until(async () => { const list = await call("/__test/job-hosts") as { name: string }[]; return list.some(entry => entry.name === "host-1") && list; }, "the host's registration");
   assert.deepEqual(hosts.map(entry => entry.name), ["host-1"], "only the host with the secret registers");
 
@@ -70,8 +76,9 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const started = await call("/v1/workflows", { script, budget: { usd: 1 } });
   const done = await until(async () => { const value = await call(`/v1/workflows/${started.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the workflow");
   assert.equal(done.status, "completed", JSON.stringify(done));
+  if (done.result === null) assert.fail(JSON.stringify((await call(`/v1/workflows/${started.id}/items`)).items));
   assert.equal(done.result.exitCode, 0, JSON.stringify(done.result));
-  for (const name of ["admitMs", "filesMs", "waitMs", "reserveMs", "dispatchMs", "hostMs", "meterMs"]) {
+  for (const name of ["admitMs", "resolveMs", "branchMs", "leaseMs", "waitMs", "reserveMs", "dispatchMs", "hostMs", "meterMs"]) {
     assert.equal(typeof done.result.timings.steps[name], "number", name);
     assert.ok(Number.isInteger(done.result.timings.steps[name]) && done.result.timings.steps[name] >= 0, name);
   }
@@ -96,8 +103,6 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const after = await call("/__test/job-hosts") as { name: string; free: number; slots: number }[];
   assert.equal(after[0]!.free, after[0]!.slots);
 
-  // A tree past what crosses to a host inline (16 MiB): the job fails sync_failed, as a result, not a throw that would
-  // leave the effect to fail again on every restart. The workflow ends, and the host is free again.
   // A tree past what crosses inline (16 MiB): the host fetches it itself (host-side sync), file by file, each checked,
   // with a token for this job's files only. A random file, so a corrupted or reordered piece would not hash the same.
   const big = await call("/v1/volumes", { name: "bigger-than-inline" });
@@ -112,6 +117,7 @@ test("a workflow's job runs on a job host in fake mode: placed, run, its output 
   const syncedEnd = await until(async () => { const value = await call(`/v1/workflows/${synced.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the host-side sync workflow");
   assert.equal(syncedEnd.status, "completed", JSON.stringify(syncedEnd));
   assert.equal(syncedEnd.result.exitCode, 0, JSON.stringify(syncedEnd.result));
+  assert.equal(syncedEnd.result.timings.camelfs, undefined, "the volume job used legacy sync");
   assert.equal(syncedEnd.result.stdout.tail, `${digest}\nhi`);
   // The token is the job's alone, and only while it runs: after it, its files are served to no one.
   assert.equal((await fetch(`${fixture.url}/v1/internal/job-hosts/sync/whatever/0`, { headers: { authorization: "Bearer guess" } })).status, 401);
