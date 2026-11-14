@@ -2,9 +2,9 @@ package hostwire
 
 import "encoding/json"
 
-// ShellRequest is the body of POST /v1/vms/{id}/shells.
-// The same shellKey on the same VM returns the same shellId and never opens
-// a second shell. The key is recorded in the guest before the shell starts.
+// ShellRequest is the optional body of POST /v1/vms/{id}/shells.
+// The same shellKey on the same VM returns the same shellId and never opens a second shell; the key is recorded in the
+// guest before the shell starts. The guest retains the last 64 keys per VM, including keys for exited shells.
 // Without a key, the request opens a new shell.
 type ShellRequest struct {
 	ShellKey string `json:"shellKey,omitempty"`

@@ -105,6 +105,8 @@ export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
+export { CamelfsUsagePoller } from "./camelfs/usage-poller.ts";
+import { startUsagePoller } from "./camelfs/usage-poller.ts";
 export { RepoDO } from "./repos/repo-do.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
@@ -790,6 +792,7 @@ const worker = {
   },
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
+    await startUsagePoller(env).catch(error => failure(env, "usage_poll_start_failed", error));
     try { await (await workerTriggers(env)).scan(); }
     catch(error) { failure(env,"trigger_scan_failed",error); }
     try {

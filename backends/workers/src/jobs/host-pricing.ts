@@ -15,6 +15,9 @@
 import { INSTANCE_RESOURCES } from "../computers/meter.ts";
 import type { JobSpec } from "./job.ts";
 
+// MONEY: host jobs and pulled VM usage use the same billing provider.
+export const HOSTS_PROVIDER = "camelrun-hosts";
+
 export type HostPool = "build" | "test";
 export const HOST_POOLS: readonly HostPool[] = ["build", "test"];
 
@@ -69,7 +72,7 @@ export function hostSecondRate(pool: HostPool, shape: HostShape, env: HostPriceE
  * The meter's name for a host job's VM (usage rows' model): its pool and shape, e.g. `test-2vcpu-4096mib`. The meter
  * keeps it with the open session, so a charge made after a restart prices the same shape.
  */
-export function hostInstance(pool: HostPool, shape: HostShape) {
+export function hostInstance(pool: HostPool, shape: Pick<HostShape, "vcpus" | "memoryMiB">) {
   return `${pool}-${shape.vcpus}vcpu-${shape.memoryMiB}mib`;
 }
 export function parseHostInstance(instance: string): { pool: HostPool; shape: HostShape } | undefined {

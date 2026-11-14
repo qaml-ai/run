@@ -150,7 +150,10 @@ func (s *HostServer) heartbeat(w http.ResponseWriter, r *http.Request, id string
 	if err != nil {
 		return err
 	}
-	out := hostwire.HeartbeatReply{BootEpoch: q.BootEpoch, Stop: append([]string{}, reply.Stop...), Boot: make([]hostwire.BootSpec, 0, len(reply.Boot))}
+	out := hostwire.HeartbeatReply{BootEpoch: q.BootEpoch, Stop: make([]hostwire.StopOrder, 0, len(reply.Stop)), Boot: make([]hostwire.BootSpec, 0, len(reply.Boot))}
+	for _, stop := range reply.Stop {
+		out.Stop = append(out.Stop, hostwire.StopOrder{ID: stop.ID, Checkpoint: stop.Checkpoint})
+	}
 	for _, vm := range reply.Boot {
 		spec, err := vm.BootSpec()
 		if err != nil {

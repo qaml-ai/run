@@ -165,7 +165,7 @@ func TestDDBReconcile(t *testing.T) {
 		t.Fatalf("finished listing: %+v", v)
 	}
 	must[VM](t)(c.RequestStop(ctx, id, false))
-	if reply := must[Reconcile](t)(reconcile(c, Listed{ID: id}, Listed{ID: "unknown"})); !slices.Equal(reply.Stop, []string{id, "unknown"}) {
+	if reply := must[Reconcile](t)(reconcile(c, Listed{ID: id}, Listed{ID: "unknown"})); !slices.Equal(reply.Stop, []StopOrder{{ID: id}, {ID: "unknown"}}) {
 		t.Fatal(reply)
 	}
 	must[Reconcile](t)(reconcile(c))
@@ -175,7 +175,7 @@ func TestDDBReconcile(t *testing.T) {
 	}
 	// Heartbeat free was reported as zero before the end returned the slot.
 	f.assertOutcome(v, listed)
-	if reply := must[Reconcile](t)(reconcile(c, Listed{ID: id, Finished: true})); !slices.Equal(reply.Stop, []string{id}) {
+	if reply := must[Reconcile](t)(reconcile(c, Listed{ID: id, Finished: true})); !slices.Equal(reply.Stop, []StopOrder{{ID: id}}) {
 		t.Fatal(reply)
 	}
 	if _, err := c.Reconcile(ctx, "reconcile", "host", 0, 0, f.now, nil, grace); !errors.Is(err, ErrHost) {
@@ -287,7 +287,7 @@ func TestDDBBootTimeout(t *testing.T) {
 	}
 	f.assertOutcome(v, 0) // no usage: it never started
 	reply := must[Reconcile](t)(f.Reconcile(ctx, "boot", "host", 1, 0, f.now.Add(time.Second), []Listed{{ID: "stuck"}}, time.Minute))
-	if !slices.Equal(reply.Stop, []string{"stuck"}) {
+	if !slices.Equal(reply.Stop, []StopOrder{{ID: "stuck"}}) {
 		t.Fatalf("a late boot is stopped: %+v", reply)
 	}
 }

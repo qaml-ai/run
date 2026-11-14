@@ -25,7 +25,7 @@ func socket() (*os.File, error) {
 	return os.NewFile(uintptr(fd), "vsock"), nil
 }
 
-func ServeVM(ctx context.Context, repoDisk bool, r *reaper) error {
+func ServeVM(ctx context.Context, repoDisk bool, r *reaper, session bool) error {
 	listener, err := socket()
 	if err != nil {
 		return err
@@ -49,7 +49,10 @@ func ServeVM(ctx context.Context, repoDisk bool, r *reaper) error {
 	}
 	stop := context.AfterFunc(ctx, func() { listener.Close() })
 	defer stop()
-	g := &guest{root: "/", vm: true, vsock: repoDisk, reaper: r}
+	g := &guest{root: "/", vm: true, vsock: repoDisk, reaper: r, session: session}
+	if session {
+		g.repo, g.out = workspacePath, "/out"
+	}
 	defer g.sessions.close()
 	for {
 		var fd int
