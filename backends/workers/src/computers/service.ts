@@ -47,7 +47,13 @@ export class ComputerService {
   readonly env: ComputerEnv;
   readonly tenant: string;
   readonly factory: typeof remoteDriver;
-  constructor(env: ComputerEnv, tenant: string, factory = remoteDriver, private readonly localAttachmentHint?: LocalAttachmentHint) { this.env = env; this.tenant = tenant; this.factory = factory; }
+  private readonly localAttachmentHint?: LocalAttachmentHint;
+  constructor(env: ComputerEnv, tenant: string, factory = remoteDriver, localAttachmentHint?: LocalAttachmentHint) {
+    this.env = env;
+    this.tenant = tenant;
+    this.factory = factory;
+    this.localAttachmentHint = localAttachmentHint;
+  }
   get managedEnabled() {
     // This experiment does not enable unpaid platform compute. Money integration
     // must supply real settlement before this test-only switch can be removed.

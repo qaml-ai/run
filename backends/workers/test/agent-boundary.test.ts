@@ -7,6 +7,7 @@ import { ARM_AGENT, DUE_HUMAN_INPUTS } from "../src/agent-internals.ts";
 
 test("the Durable Object preserves its RPC boundary and gates pilot counters", async () => {
   const methods = [
+    "clearComputerAttached",
     "removeMember", "databaseProfile",
     "purgeAccountData", "admitDelegateWake", "receiveAgentMessage", "receiveProgress", "receiveEnding", "admitDelegated",
     "hasChild", "cancelRequest", "fetch", "onStart", "onJob",
@@ -51,10 +52,10 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   for (const name of methods) assert.equal(agent[name](...inputs), result, name);
   assert.deepEqual(calls.map(call => call.name), methods);
   assert.ok(calls.every(call => call.receiver instanceof Runtime));
-  assert.deepEqual(calls[0].args, [inputs[0]], "member removal forwards only the member ID");
-  assert.equal(calls[1].args[0], inputs[0], "the profiling reset argument is preserved");
-  assert.equal(calls[2].args[0], inputs[0], "argument identity is preserved");
-  assert.equal(calls[2].args[1], inputs[1]);
+  assert.deepEqual(calls[1].args, [inputs[0]], "member removal forwards only the member ID");
+  assert.equal(calls[2].args[0], inputs[0], "the profiling reset argument is preserved");
+  assert.equal(calls[3].args[0], inputs[0], "argument identity is preserved");
+  assert.equal(calls[3].args[1], inputs[1]);
   assert.equal(agent[ARM_AGENT](123), result);
   assert.deepEqual(calls.at(-1)?.args, [123]);
   assert.equal(calls.at(-1)?.name, "arm", "the subclass capability uses the runtime alarm implementation");
@@ -63,4 +64,6 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   const disabled = new Agent(ctx, {});
   await assert.rejects(disabled.databaseProfile(), /Pilot database profiling is disabled/);
   assert.equal(calls.at(-1)?.name, "dueHumanInputs", "disabled profiling never reaches the runtime");
+  assert.equal(disabled.clearComputerAttached(), result, "connection writes clear the local hint with pilot profiling disabled");
+  assert.deepEqual([calls.at(-1)?.name, calls.at(-1)?.args], ["clearComputerAttached", []]);
 });

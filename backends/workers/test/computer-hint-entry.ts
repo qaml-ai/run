@@ -2,8 +2,8 @@ import type { Placement } from "../../../shared/owner.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
 import { COMPUTER_ATTACHED } from "../src/agent-lifecycle.ts";
 
-export * from "../src/index.ts";
-export { default } from "../src/index.ts";
+export * from "./worker-entry.ts";
+export { default } from "./worker-entry.ts";
 
 export class CamelAgent extends RuntimeAgent {
   async admitDelegated(request: unknown, placement: Placement) {
@@ -23,8 +23,6 @@ export class CamelAgent extends RuntimeAgent {
   async fetch(request: Request) {
     const path = new URL(request.url).pathname;
     if (this.env.TEST_HOOKS === "1") {
-      if (path === "/__test/computer-hint" && request.method === "DELETE")
-        return Response.json(await this.clearComputerAttached());
       if (path === "/__test/computer-hint" && request.method === "GET")
         return Response.json({
           afterConfiguration: await this.ctx.storage.get("test:after-configuration"),
