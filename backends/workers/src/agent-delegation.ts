@@ -169,11 +169,15 @@ export function createDelegation(this: AgentRuntime): Delegation {
     create: async (config, key, parent) => {
       const conf = await this.config();
       const directory = new Directory(this.env, conf.tenantId);
+      // Every child of a turn is created inside this one agent invocation, which may hold at most 6 open sockets at once
+      // (the Workers per-invocation connection cap): each create holds one for its directory transaction. Never open a
+      // second connection inside that transaction (more creates than sockets would starve), and leave children out of
+      // the tenant's create counter, one hot row that would serialize them (Node counts only API creates too).
       const entry = await directory.upsert(
         config,
         key,
         conf.runtimeOrigin,
-        undefined, false,
+        undefined, false, false,
       );
       if ("failed" in entry)
         throw Object.assign(new Error(entry.error), { status: entry.status });
