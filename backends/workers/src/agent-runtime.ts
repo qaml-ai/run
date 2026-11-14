@@ -54,7 +54,7 @@ import { agentSpendImpl, admitRequestImpl, endUserLimitImpl, requestUsageImpl, u
 import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveProgressImpl, receiveEndingImpl, hasChildImpl, createNotifications, createDelegation, createOutbox } from "./agent-delegation.ts";
 import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl, admitDelegatedImpl } from "./agent-http.ts";
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
-import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
+import { COMPUTER_ATTACHED, purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
 import { DbProfile } from "./db-profile.ts";
 
@@ -235,6 +235,12 @@ export class AgentRuntime extends AgentContext {
   availableTools: ToolRegistration[] = [];
 
   computerSerial: Promise<unknown> = Promise.resolve();
+  computerAttachmentGeneration = 0;
+
+  clearComputerAttached() {
+    this.computerAttachmentGeneration++;
+    return this.ctx.storage.delete(COMPUTER_ATTACHED);
+  }
 
   serializeComputer<T>(run: () => Promise<T>): Promise<T> {
     const next = this.computerSerial.then(run);

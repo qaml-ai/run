@@ -335,6 +335,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!conf) return json({ error: "Agent not found" }, 404);
         if (input.tenant !== conf.tenantId)
           return json({ error: "Forbidden" }, 403);
+        // Connections change outside this object; recheck before skipping a lease deadline.
+        await this.clearComputerAttached();
         // The fork route: its snapshot takes the serial queue itself (forkChildComputers), so it runs outside it.
         if (input.operation === "fork")
           return json(await forkComputerInto(this.env, conf.tenantId, conf.id, input.args.agents, {

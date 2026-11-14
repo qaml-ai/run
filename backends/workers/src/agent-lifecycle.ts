@@ -23,6 +23,8 @@ import type { Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 import { purgeStart } from "./account-purge.ts";
 
+export const COMPUTER_ATTACHED = "computer-attached";
+
 /** Erase a revoked account's journal only after the normal shutdown completed. */
 export async function purgeAccountDataImpl(this: AgentRuntime,
   tenant: string,
@@ -39,6 +41,7 @@ export async function purgeAccountDataImpl(this: AgentRuntime,
     await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
     await this.closeWatchers(tenant, id);
     await this.ctx.storage.deleteAlarm();
+    await this.clearComputerAttached();
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.put("deleted", true);
   }
@@ -122,7 +125,7 @@ export async function armImpl(this: AgentRuntime,
         (child.background && child.status !== "running" && child.accepted && !child.notified && child.landedBy !== "wait"));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
-      config
+      await this.ctx.storage.get(COMPUTER_ATTACHED) !== false
         ? ((await new ComputerService(this.env, config.tenantId).nextDeadline(
             config.id,
           )) ?? Infinity)
@@ -208,6 +211,7 @@ export async function restorePendingImpl(this: AgentRuntime) {
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
     await timed(this, "restoreCancellations", () => this.restoreCancellations());
     await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
+    if (startConfig) await timed(this, "expireDecisions", () => expireDecisions(this));
     await timed(this, "delegation.recover", () => this.delegation.recover());
     await timed(this, "notifications.drain", () => this.notifications.drain());
     await timed(this, "outbox", async () => { await stageMissedEndings(this, await this.records()); await this.outbox.flush(); });
@@ -314,7 +318,8 @@ export async function wakeImpl(this: AgentRuntime) {
     const expire = this.admission.then(() => this.closeHumanInputs("expired"));
     this.admission = expire.catch(() => {});
     await expire;
-    await expireDecisions(this);
+    const decisionDeadline = await this.ctx.storage.get<number>("decision-input-deadline");
+    if (decisionDeadline !== undefined && decisionDeadline <= Date.now()) await expireDecisions(this);
     this.kickInputPrompts();
     await this.restoreHostAdmissions();
     // A call's live credit hold reserves its funds. Only check available credit
