@@ -1,9 +1,9 @@
 import { checkRequest } from "../../../shared/monitors.ts";
 import { pendingInputMirrors, upsertInputMirrors } from "./input-mirror.ts";
 import { outcomeEnding, type Outcome } from "../../../shared/client-protocol.ts";
-import { transaction, type PostgresEnv } from "./postgres.ts";
+import { transaction, withSql, type PostgresEnv } from "./postgres.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhook-policy.ts";
-import { publishPending, type WebhookEnv } from "./webhooks.ts";
+import { enqueueEventsWithoutMirrors, publishPending, type WebhookEnv } from "./webhooks.ts";
 
 const PENDING = "webhook-pending:";
 const SENT = "webhook-sent:";
@@ -69,38 +69,47 @@ export async function stageWebhook(tx: Pick<DurableObjectTransaction, "get" | "p
 
 export class AgentWebhooks {
   private pending: Promise<void> = Promise.resolve();
+  private needsPublish = false;
   private readonly storage: DurableObjectStorage;
   private readonly env: WebhookEnv;
   constructor(storage: DurableObjectStorage, env: WebhookEnv) { this.storage = storage; this.env = env; }
   settled(): Promise<void> { return this.pending; }
   flush(): Promise<void> {
     const next = this.pending.then(async () => {
-      const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
-      const mirrors = await pendingInputMirrors(this.storage);
-      if (!entries.size && !mirrors.size) return;
-      try {
-        await transaction(this.env, async sql => {
-          await upsertInputMirrors(sql, [...mirrors.values()]);
-          await enqueueEvents(sql, [...entries.values()]);
-        });
-        await this.storage.transaction(async tx => {
-          for (const [key, row] of mirrors) {
-            const current = await tx.get<typeof row>(key);
-            if (current?.version === row.version) await tx.delete(key);
-          }
-          for (const [key, event] of entries) {
-            await tx.put(`${SENT}${event.id}`, true);
-            await tx.delete(key);
-          }
-        });
-      } catch {
-        // Replaying the entire batch is safe: the Postgres outbox dedupes IDs.
-        // Leave every intent durable if either database or acknowledgement failed.
-        return;
-      }
+      // Leave intents durable on write or acknowledgement failure.
+      if (await this.writeBatch().catch(() => false)) this.needsPublish = true;
+      // A later queued flush inherits the wake-up, even if its own batch is empty.
+      if (this.pending !== next || !this.needsPublish) return;
+      this.needsPublish = false;
       await publishPending(this.env);
+    }).catch(() => {});
+    this.pending = next;
+    return next;
+  }
+
+  private async writeBatch(): Promise<boolean> {
+    const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
+    const mirrors = await pendingInputMirrors(this.storage);
+    if (!entries.size && !mirrors.size) return false;
+    const events = [...entries.values()];
+    if (mirrors.size) {
+      await transaction(this.env, async sql => {
+        await upsertInputMirrors(sql, [...mirrors.values()]);
+        await enqueueEvents(sql, events);
+      });
+    } else {
+      await withSql(this.env, sql => enqueueEventsWithoutMirrors(sql, events));
+    }
+    await this.storage.transaction(async tx => {
+      for (const [key, row] of mirrors) {
+        const current = await tx.get<typeof row>(key);
+        if (current?.version === row.version) await tx.delete(key);
+      }
+      for (const [key, event] of entries) {
+        await tx.put(`${SENT}${event.id}`, true);
+        await tx.delete(key);
+      }
     });
-    this.pending = next.catch(() => {});
-    return this.pending;
+    return true;
   }
 }

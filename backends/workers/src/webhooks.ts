@@ -8,6 +8,8 @@ import { digest } from "./api-contract.ts";
 import { isIP } from "node:net";
 import { HttpError } from "./errors.ts";
 import { metric } from './observability.ts';
+import { recordEventMetrics } from "./money-host.ts";
+import type { WebhookEvent } from "./webhook-policy.ts";
 
 export { webhookEvent, enqueueEvents, usageEvent, usageCost } from "./webhook-policy.ts";
 export type { WebhookEvent } from "./webhook-policy.ts";
@@ -21,6 +23,27 @@ export type WebhookEnv = PostgresEnv & {
   WEBHOOK_ALLOWED_HOSTS?: string;
   METRICS?: AnalyticsEngineDataset;
 };
+
+/** Write both outboxes atomically in one statement when there are no input mirrors. */
+export async function enqueueEventsWithoutMirrors(sql: Sql, events: WebhookEvent[]) {
+  const legacy = events.flatMap(event => event.legacy ? [event.legacy] : []);
+  await sql.query(`
+    with deliveries as (
+      insert into webhook_deliveries (id, tenant, endpoint, body, due, created_at)
+      select md5((e->>'id') || ':' || w.id)::uuid, w.tenant, w.id,
+        jsonb_build_object('id', e->'id', 'type', e->'type', 'created', e->'created', 'data', e->'data'), $3, $3
+      from jsonb_array_elements($1::jsonb) as e
+      join webhook_endpoints w on w.tenant = e->>'tenant' and e->>'type' = any(w.events)
+      on conflict (id) do nothing
+    )
+    insert into usage_webhook_outbox (id, tenant, body, due, created_at)
+    select (e->>'id')::uuid, e->>'tenant', e, $3, $3
+    from jsonb_array_elements($2::jsonb) as e
+    where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')`,
+  [JSON.stringify(events), JSON.stringify(legacy), Date.now()]);
+  recordEventMetrics(events);
+}
+
 const deliveryBoots = new WeakMap<Queue<DeliveryMessage>, Promise<void>>();
 
 /** Repair a missing queue wake-up once per isolate. Postgres owns the retry time. */
