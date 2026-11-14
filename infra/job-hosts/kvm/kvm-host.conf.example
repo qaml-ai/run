@@ -27,7 +27,5 @@ CAMELFSD_VIRTUAL_SIZE=68719476736
 AWS_REGION=us-west-2
 # Empty discovers instance store by model; an override still requires safety checks.
 NVME_DEVICE=
-# Empty uses http://archive.ubuntu.com/ubuntu for the noble guest.
-UBUNTU_MIRROR=
-# Size of the guest base image in GiB.
-GUEST_IMAGE_GIB=6
+# Optional artifact location; defaults to CAMELFSD_STORE.
+GUEST_IMAGE_S3_PREFIX=
