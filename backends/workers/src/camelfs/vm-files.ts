@@ -15,5 +15,8 @@ export type VmFiles = {
   delete(paths: string[], options?: { expectSha256?: Record<string, string> }): Promise<void>;
   list(options: { prefix?: string; after?: string; limit: number; recursive: boolean }): Promise<{ entries: { path: string; size: number; mode: string }[]; next?: string }>;
   grep(input: GrepInput): Promise<GrepResult>;
+  /** Saves the running branch now (the host checkpoint; the daemon writes Camel-Op) and returns the saved version: what
+   * present_file hands out, so a presented link never depends on the machine staying up. */
+  checkpoint(): Promise<{ version: string; tree: string }>;
 };
 export type VmFilesScope = { tenant: string; agent: string; repo: string; ref: string };

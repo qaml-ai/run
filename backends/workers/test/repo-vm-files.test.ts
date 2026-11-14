@@ -14,8 +14,6 @@ const hooks = registerHooks({
 });
 const { repoTools } = await import('../src/repos/tools.ts');
 const { handleAgentFileRequest, handleAgentFilesRoute } = await import('../src/repos/agent-files.ts');
-const { presentedFile } = await import('../src/file-output.ts');
-const { handleSignedFileRequest } = await import('../src/images.ts');
 hooks.deregister();
 
 const encode = (value: string) => new TextEncoder().encode(value);
@@ -32,6 +30,7 @@ function memoryVm() {
     ['nested/dir/c.json', encode('{}')],
     ['nested-other/private.txt', encode('private')],
   ]);
+  const checkpoints: number[] = [];
   const stat = (path: string) => {
     const bytes = files.get(path);
     return bytes ? { size: bytes.length, sha256: sha256(bytes), mode: '100644' } : null;
@@ -62,6 +61,7 @@ function memoryVm() {
       // Force the tools to follow a cursor through multiple pages.
       return { entries: paths.slice(0, 2).map(path => ({ path, ...stat(path)! })), next: paths.length > 2 ? paths[1] : undefined };
     },
+    async checkpoint() { checkpoints.push(Date.now()); return { version: 'c'.repeat(40), tree: 'd'.repeat(40) }; },
     async grep({ q, path, limit }) {
       assert.equal(path, 'nested/**');
       assert.equal(limit, 100);
@@ -73,15 +73,15 @@ function memoryVm() {
     assert.deepEqual(given, scope);
     return vm;
   };
-  return { files, vm, provider };
+  return { files, vm, provider, checkpoints };
 }
 
 test('all routed repo tools use the VM and preserve version and output semantics', async () => {
-  const { files, provider } = memoryVm();
+  const { files, provider, checkpoints } = memoryVm();
   const seen = new Map<string, string>();
   const presented: unknown[] = [];
   const tools = repoTools(noRef as never, 't', 'a', async () => mounts,
-    async (file, path, bytes) => { presented.push(file, path, decode(bytes!)); }, undefined,
+    async (file, path) => { presented.push(file, path); }, undefined,
     { get: key => seen.get(key), remember: (key, value) => { seen.set(key, value); } }, {}, provider);
   const run = async (name: string, args: any) => (await tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never)).output;
   const result = async (name: string, args: any) => JSON.parse((await run(name, args))[0].text);
@@ -106,9 +106,13 @@ test('all routed repo tools use the VM and preserve version and output semantics
   await run('read', { path });
   const written = await result('write', { path, content: 'updated' });
   assert.equal(written.version, sha256(encode('updated')));
-  assert.equal((await result('present_file', { path })).presented, true);
+  const shown = await result('present_file', { path });
+  assert.equal(shown.presented, true);
+  // One path for presented files: the running machine is saved first, and the saved repo version is presented.
+  assert.equal(checkpoints.length, 1);
+  assert.equal(shown.version, 'c'.repeat(40));
+  assert.equal((presented[0] as { version: string }).version, 'c'.repeat(40));
   assert.equal(presented[1], '/nested/a.txt');
-  assert.equal(presented[2], 'updated');
   assert.deepEqual(await result('delete', { path }), { deleted: true });
   assert.equal(files.has('nested/a.txt'), false);
   files.set('nested/a.txt', encode('recreated in bash'));
@@ -131,7 +135,7 @@ test('VM edit maps atomic stale_path and a failed VM call retains its underlying
   const stopped = Object.assign(new Error('session lost'), { code: 'session_lost' });
   vm.read = async () => { throw stopped; };
   await assert.rejects(run('read', { path }), {
-    code: 'session_lost', message: 'the VM for work stopped during the operation; run it again',
+    code: 'session_lost', message: 'The machine for work stopped during this operation, so it may not have completed. Check the file, then retry.',
   });
 });
 
@@ -162,28 +166,16 @@ test('agent file HTTP operations use VM pagination, ranges and conditional write
   assert.equal((await item()).status, 404);
   vm.stat = async () => { throw Object.assign(new Error('lost'), { code: 'session_lost' }); };
   assert.deepEqual(await (await item()).json(), {
-    code: 'session_lost', error: 'the VM for work stopped during the operation; run it again',
+    code: 'session_lost', error: 'The machine for work stopped during this operation, so it may not have completed. Check the file, then retry.',
   });
 });
 
-test('presentation downloads the bytes captured from the VM without a ref lookup', async () => {
-  const { provider } = memoryVm();
-  const objects = new Map();
-  const env = {
-    FILE_SIGNING_SECRET: 'test-only-signing-secret-for-presentations',
-    BUCKET: {
-      async put(key, body, options) { objects.set(key, { body, httpMetadata: options.httpMetadata }); },
-      async get(key) { return objects.get(key); },
-    },
-  };
-  const data = new Map();
-  const storage = { transaction: fn => fn({ get: key => data.get(key), put: (key, value) => data.set(key, value) }) };
-  const events: any[] = [];
-  const tools = repoTools(noRef as never, 't', 'a', async () => mounts, (file, path, bytes) =>
-    presentedFile(storage as never, env as never, { tenant: 't', requestId: 'r', callId: 'c', origin: 'https://agent.invalid' },
-      file, path, async event => { events.push(event); }, bytes), undefined, undefined, {}, provider);
+test('presenting on a running machine saves it first and never stores bytes outside the repo', async () => {
+  const { provider, checkpoints } = memoryVm();
+  const presented: any[] = [];
+  const tools = repoTools(noRef as never, 't', 'a', async () => mounts, async file => { presented.push(file); }, undefined, undefined, {}, provider);
   await tools.find(tool => tool.name === 'present_file')!.execute({ path: '/workspace/a.txt' }, {} as never, {} as never);
-  const response = await handleSignedFileRequest(new Request(events[0].event.url), env as never);
-  assert.equal(await response!.text(), 'hello\nworld');
-  assert.match(response!.headers.get('content-disposition')!, /a\.txt$/);
+  assert.equal(checkpoints.length, 1);
+  assert.equal(presented[0].version, 'c'.repeat(40));
+  assert.equal(presented[0].repoPath, 'nested/a.txt');
 });

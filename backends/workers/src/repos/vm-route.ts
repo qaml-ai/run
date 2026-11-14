@@ -12,9 +12,11 @@ export async function resolveVmFiles(_env: RepoEnv, scope: VmFilesScope, vmFiles
   return vmFiles?.(scope);
 }
 
-export const VM_HELD = "the VM holds this branch; stop it or let it checkpoint first";
+// Model-facing text (reviewed by the lead, 2026-11-14): the model knows the VM as "your machine" (the bash tool).
+export const vmHeld = (branch = "This branch") =>
+  `${branch} is in use by your running machine, so this can't run now. Retry after the machine goes to sleep (about 10 seconds with no command running).`;
 export const STALE_FILE = "File changed since you last read it; read it again, then retry against its current content";
-export const CHECKPOINTED_VERSIONS = "showing checkpointed versions; the running VM may have newer changes";
+export const lastSaved = (branch: string) => `Showing ${branch} as last saved; a command still running on your machine may change it.`;
 
 export class VmRouteError extends HttpError {
   constructor(status: number, message: string, code?: string, cause?: unknown) {
@@ -26,9 +28,9 @@ export class VmRouteError extends HttpError {
   declare readonly code: string;
 }
 
-export function heldFileError(error: unknown) {
+export function heldFileError(error: unknown, branch?: string) {
   const code = repoErrorFrom(error)?.code;
-  return code === "held" || code === "fenced" ? new VmRouteError(409, VM_HELD, code) : undefined;
+  return code === "held" || code === "fenced" ? new VmRouteError(409, vmHeld(branch), code) : undefined;
 }
 
 export async function vmOperation<T>(ref: string, run: () => Promise<T>): Promise<T> {
@@ -38,7 +40,7 @@ export async function vmOperation<T>(ref: string, run: () => Promise<T>): Promis
     const code = error && typeof error === "object" && "code" in error && typeof error.code === "string"
       ? error.code : undefined;
     if (code === "stale_path") throw new FileError(STALE_FILE, 412);
-    throw new VmRouteError(409, `the VM for ${ref} stopped during the operation; run it again`, code, error);
+    throw new VmRouteError(409, `The machine for ${ref} stopped during this operation, so it may not have completed. Check the file, then retry.`, code, error);
   }
 }
 

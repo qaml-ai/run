@@ -191,13 +191,13 @@ test('version tools read committed history and report a held ref', async t => {
   const tools = repoTools(env, 't', 'a', async () => [{ repo: ctx.repoId, path: '/workspace', mode: 'rw' }],
     undefined, undefined, undefined, {}, async () => running ? vm as never : undefined);
   const run = (name: string, args: any) => tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never);
-  const note = { type: 'text', text: 'showing checkpointed versions; the running VM may have newer changes' };
+  const note = { type: 'text', text: 'Showing main as last saved; a command still running on your machine may change it.' };
   const historyArgs = { path: '/workspace/a.txt' };
   const history = (await run('history', historyArgs)).output;
   assert.equal(JSON.parse(history[0].text).versions.length, 2);
   assert.deepEqual(history[1], note);
   assert.deepEqual((await run('diff', {})).output, [{ type: 'text', text: 'modified a.txt' }, note]);
-  const held = { code: 'held', message: 'the VM holds this branch; stop it or let it checkpoint first' };
+  const held = { code: 'held', message: 'main is in use by your running machine, so this can\'t run now. Retry after the machine goes to sleep (about 10 seconds with no command running).' };
   await assert.rejects(run('checkpoint', { message: 'held' }), held);
   await assert.rejects(run('restore', { version: first.version }), held);
 

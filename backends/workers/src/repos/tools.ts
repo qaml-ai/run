@@ -12,7 +12,7 @@ import { agentRepoId, workspaceMount, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
 import { commitChanges, setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
-import { CHECKPOINTED_VERSIONS, heldFileError, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, VM_HELD, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
+import { heldFileError, lastSaved, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, vmHeld, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
 
 const TOOL_READ_BYTES = 1024 * 1024;
 export function repoTools(
@@ -22,7 +22,7 @@ export function repoTools(
   getMounts: () => Promise<Mount[]> = async () => [
     { repo: agentRepoId(tenant, agentId), path: "/workspace", mode: "rw" },
   ],
-  onPresent?: (file: PresentedRepoFile, path: string, bytes?: Uint8Array) => Promise<void>,
+  onPresent?: (file: PresentedRepoFile, path: string) => Promise<void>,
   onWrite?: (file: WrittenRepoFile) => Promise<void>,
   seen?: FileVersions,
   identity: Record<string,string> = {},
@@ -63,7 +63,7 @@ export function repoTools(
   const refTarget = async (raw: string, write = false) => {
     const t = await mountPath(raw, write);
     const running = Boolean(await resolve(t));
-    if (write && running) throw new VmRouteError(409, VM_HELD, "held");
+    if (write && running) throw new VmRouteError(409, vmHeld(t.ref), "held");
     return { ...t, running, v: await store(t) };
   };
   const readFile = (t: Awaited<ReturnType<typeof target>>) =>
@@ -87,11 +87,11 @@ export function repoTools(
   const seenKey = (target: { mount: Mount; path: string; vm?: unknown }) => `${target.vm ? "vm:" : ""}${target.mount.repo}:${target.mount.ref ?? "main"}:${target.path}`;
   const stale = (target: { path: string; show(path: string): string }) =>
     new FileError(`${target.show(target.path)} changed since you last read it; read it again, then retry against its current content`, 412);
-  const guard = async <T>(target: { path: string; show(path: string): string }, run: () => Promise<T>): Promise<T> => {
+  const guard = async <T>(target: { path: string; ref?: string; show(path: string): string }, run: () => Promise<T>): Promise<T> => {
     try { return await run(); }
     catch (error) {
       if ((error as { status?: number }).status === 412 || /FILE_412:/.test(String(error))) throw stale(target);
-      throw heldFileError(error) ?? error;
+      throw heldFileError(error, target.ref) ?? error;
     }
   };
   return [
@@ -118,7 +118,7 @@ export function repoTools(
             throw new FileError("Invalid offset");
           return output({
             path,
-            ...(t.vm ? { version: file.version } : {}),
+            version: file.version,
             size: file.size,
             contentType: file.contentType,
             offset: start,
@@ -144,7 +144,7 @@ export function repoTools(
     defineTool({
       name: "write",
       description:
-        "Write UTF-8 text to a persistent file in /workspace or a writable mounted volume.",
+        "Write UTF-8 text to a persistent file in /workspace or a writable mounted repo.",
       replay: "unsafe",
       parameters: obj({
         path: str(),
@@ -226,9 +226,15 @@ export function repoTools(
         const t = await target(path);
         if (caption && caption.length > 1000)
           throw new FileError("Caption exceeds 1000 characters");
-        const { file, bytes } = t.vm
-          ? await readVmToolFile(t.vm, t.ref, t.path)
-          : { file: await t.v.stat(t.path), bytes: undefined };
+        // One path for presented files: always a saved repo version. On a running machine, save first (the host
+        // checkpoint, through the VM backend), then present the ref's version, so the link survives the machine's sleep.
+        const file = t.vm
+          ? await (async (vm) => {
+            const { file } = await readVmToolFile(vm, t.ref, t.path);
+            const saved = await vmOperation(t.ref, () => vm.checkpoint());
+            return { ...file, version: saved.version };
+          })(t.vm)
+          : await t.v.stat(t.path);
         const presented: PresentedRepoFile = {
           type: "file",
           path: t.show(t.path),
@@ -240,10 +246,10 @@ export function repoTools(
           blob: file.blob,
           ...(caption ? { caption } : {}),
         };
-        await onPresent?.(presented, t.path, bytes);
+        await onPresent?.(presented, t.path);
         return output({
           path: presented.path,
-          ...(t.vm ? { version: file.version } : {}),
+          version: file.version,
           size: file.size,
           contentType: file.contentType,
           presented: true,
@@ -342,7 +348,7 @@ export function repoTools(
     }),
     defineTool({
       name: "delete",
-      description: "Delete a file from /workspace or a writable mounted volume.",
+      description: "Delete a file from /workspace or a writable mounted repo.",
       replay: "unsafe",
       parameters: obj({ path: str() }),
       async execute({ path }) {
@@ -430,14 +436,14 @@ function versionTools(
   agent: string,
   identity: Record<string,string>,
 ) {
-  const committed = (t: { running: boolean }, value: unknown) => {
+  const committed = (t: { running: boolean; v: { ref: string } }, value: unknown) => {
     const result = output(value);
-    if (t.running) result.output.push({ type: 'text', text: CHECKPOINTED_VERSIONS });
+    if (t.running) result.output.push({ type: 'text', text: lastSaved(t.v.ref) });
     return result;
   };
-  const explicitWrite = async <T>(run: () => Promise<T>) => {
+  const explicitWrite = async <T>(ref: string, run: () => Promise<T>) => {
     try { return await run(); }
-    catch (error) { throw heldFileError(error) ?? error; }
+    catch (error) { throw heldFileError(error, ref) ?? error; }
   };
   const resolve = async (t: Awaited<ReturnType<typeof target>>, value: string) => {
     if (!/^[a-f0-9]{7,40}$/.test(value)) throw new FileError('Version must be an id or unique prefix of at least 7 hex characters');
@@ -457,11 +463,11 @@ function versionTools(
       const t = await target(path ?? await workspace(), true), head = await t.v.ctx.repo.ref(t.v.ref), previous = head && await t.v.ctx.repo.commit(head.version);
       // Naming the same point twice is free; a new name for it is a new (empty) commit, never a dropped message.
       if (previous?.trailers['Camel-Checkpoint'] === 'manual' && previous.message === message) return output(previous.version);
-      return output((await explicitWrite(() => commitChanges(t.v.ctx, {ref:t.v.ref, op:'turn', changes:{}, message, allowEmpty:true, author:`agent:${agent}`,who:`agent:${agent}`,why:'checkpoint',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'manual'}}))).version);
+      return output((await explicitWrite(t.v.ref, () => commitChanges(t.v.ctx, {ref:t.v.ref, op:'turn', changes:{}, message, allowEmpty:true, author:`agent:${agent}`,who:`agent:${agent}`,why:'checkpoint',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'manual'}}))).version);
     }}),
     defineTool({ name: 'restore', description: "Put a mount's files back to an earlier version (an id or prefix from history). This adds a new version, so nothing is lost and you can restore again.", replay:'unsafe',parameters:obj({version:str(),path:opt(str())}),async execute({version,path}) {
       const t = await target(path ?? await workspace(),true), v=await resolve(t,version);
-      return output((await explicitWrite(() => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}))).version);
+      return output((await explicitWrite(t.v.ref, () => setRefToVersion(t.v.ctx,{ref:t.v.ref,version:v.version,newCommit:true,author:`agent:${agent}`,who:`agent:${agent}`,why:'restore',trailers:{'Camel-Agent':agent,...identity,'Camel-Checkpoint':'automatic'}}))).version);
     }}),
     defineTool({name:'history',description:"List a mount's versions, newest first. With a file path, only versions that changed it. Pass next as after to continue.",replay:'safe',parameters:obj({path:opt(str()),limit:opt(int()),after:opt(str())}),async execute({path,limit,after}) {
       const t = await target(path ?? await workspace());
