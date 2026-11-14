@@ -78,10 +78,15 @@ export function tokenVerifier({ jwks, issuer = "https://runtime.contract.example
     if (!Array.isArray(refs) || refs.length > 64 || refs.some(ref => typeof ref !== "string" || !/^[A-Za-z0-9._*-]+(?:\/[A-Za-z0-9._*-]+)*$/.test(ref))) {
       throw new Error("invalid refs claim");
     }
-    if (fence !== undefined && (!record(fence) || !validHolder(fence.holder) || !Number.isSafeInteger(fence.epoch))) {
-      throw new Error("invalid fence claim");
+    // Inside the token the holder is the canonical string <host>:<boot>:<mount> (hostwire.Holder.String()).
+    let parsed: Fence | undefined;
+    if (fence !== undefined) {
+      const f = record(fence) ? fence as { holder?: unknown; epoch?: unknown } : undefined;
+      const m = f && typeof f.holder === "string" ? /^([^:]+):(\d+):(.+)$/.exec(f.holder) : null;
+      if (!f || !m || !Number.isSafeInteger(f.epoch)) throw new Error("invalid fence claim");
+      parsed = { holder: { host: m[1], boot: Number(m[2]), mount: m[3] }, epoch: f.epoch as number };
     }
-    return { sub, lin, acc, refs: refs as string[], fence: fence as Fence | undefined };
+    return { sub, lin, acc, refs: refs as string[], fence: parsed };
   };
 }
 

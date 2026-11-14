@@ -228,6 +228,19 @@ export async function usageForRequestImpl(this: AgentRuntime,
 
 export async function flushBillingImpl(this: AgentRuntime,
   propagate = false) {
+    const run = () => flushBillingPass.call(this, propagate);
+    const previous = this.billingFlush;
+    // A failed pass still hands off the queue. Only its caller sees its error.
+    const pass = previous ? previous.then(run, run) : run();
+    this.billingFlush = pass;
+    try {
+      await pass;
+    } finally {
+      if (this.billingFlush === pass) this.billingFlush = undefined;
+    }
+  }
+
+async function flushBillingPass(this: AgentRuntime, propagate: boolean) {
     try {
       await flushAttachmentTranscriptions(this.env, this.ctx.storage);
       await flushAgentMediaUsage(this.env, this.ctx.storage);

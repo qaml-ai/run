@@ -461,7 +461,7 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
           const { tenant, kind, defaultBranch } = await q(["tenant", "kind", "defaultBranch"], ["tenant", "kind", "defaultBranch"]);
           if (typeof tenant !== "string" || !tenant || (kind !== "workspace" && kind !== "image") || !validName(defaultBranch)) return bad();
           if (own.deleted) bad("lineage_deleted", 410);
-          if (own.metadata && own.metadata.tenant !== tenant) bad("ref_exists", 409);
+          if (own.metadata && own.metadata.tenant !== tenant) bad("lineage_conflict", 409, { tenant: own.metadata.tenant });
           if (own.metadata) return json(own.metadata);
           own.metadata = { tenant, kind, defaultBranch };
           return json(own.metadata, 201);
@@ -558,6 +558,8 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
         checkFence(ref, false);
         checked(ref, expect);
         const c = info(l, version, true);
+        // After stale and fence (they win): a commit with more than two parents is never a move (C3a).
+        if (c.parents.length > 2) bad("bad_parent", 409, { parents: c.parents, current: ref.version });
         const diff = changes(tree(l, ref.tree), tree(l, c.tree));
         // This route names a recorded object. The one-call routes can validate
         // rule 1 because they construct the commit for the move themselves.
@@ -617,8 +619,9 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
         const theirs = requireHash(input.theirs), target = info(l, theirs, true);
         const ff = reaches(l, ref.version, theirs);
         if (ff && mode !== "squash") {
-          const merged = changes(tree(l, ref.tree), tree(l, target.tree)).map(c => c.path);
-          return json({ ...move(l, ref, theirs, target, input.quota), ff, merged, took: { ours: 0, theirs: merged.length } }, 201);
+          // A fast-forward needed no 3-way merge: merged is empty; took counts the paths changed from head to theirs.
+          const changed = changes(tree(l, ref.tree), tree(l, target.tree)).length;
+          return json({ ...move(l, ref, theirs, target, input.quota), ff, merged: [], took: { ours: 0, theirs: changed } }, 201);
         }
         if (mode === "ff-only") bad("not_fast_forward", 409, { current: ref.version });
         const base = mergeBase(l, ref.version, theirs);
@@ -654,7 +657,9 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
     try { l = decodeURIComponent(match![1]); route = decodeURIComponent(match![2] ?? ""); }
     catch { return bad(); }
     const own = scope(l);
-    if (own.deleted) bad("lineage_deleted", 410);
+    // A replayed lineage DELETE (same Idempotency-Key) answers its first 204; anything else on a deleted lineage is 410.
+    const replayedDelete = request.method === "DELETE" && !route && own.replays.has(`DELETE\0\0${request.headers.get("Idempotency-Key")}`);
+    if (own.deleted && !replayedDelete) bad("lineage_deleted", 410);
     const readBody: ReadBody = async (allowed, required = []) => {
       let value: unknown;
       try { value = await request.json(); } catch { return bad(); }

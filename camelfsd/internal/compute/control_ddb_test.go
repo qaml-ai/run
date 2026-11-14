@@ -96,7 +96,7 @@ func TestDDBLoop(t *testing.T) {
 	if err := l.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if v := must[VM](t)(f.Get(ctx, "fits")); v.Phase != Placed || events[len(events)-1] != "vm_placed" {
+	if v := must[VM](t)(f.Get(ctx, "fits")); v.Phase != Booting || events[len(events)-1] != "vm_placed" {
 		t.Fatalf("placement: %+v, events %v", v, events)
 	}
 	f.assertOutcome(must[VM](t)(f.Get(ctx, lost.ID)), lastListed)
@@ -144,7 +144,7 @@ func TestDDBReconcile(t *testing.T) {
 		t.Fatalf("boot not durable: %s", v.Phase)
 	}
 	c = f.fresh()
-	if reply := must[Reconcile](t)(reconcile(c)); len(reply.Boot) != 0 {
+	if reply := must[Reconcile](t)(reconcile(c)); len(reply.Boot) != 1 || reply.Boot[0].ID != id {
 		t.Fatal(reply)
 	}
 	f.now = f.now.Add(grace + time.Millisecond)
