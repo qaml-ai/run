@@ -203,15 +203,22 @@ export const VoiceRecording = z.object({
   expiresAt: z.number().nullable().openapi({ description: "When its files are deleted (retentionHours after it ended)" }),
 }).openapi("VoiceRecording");
 const callFacts = z.object({
-  provider: z.literal("openai"), session: z.string(), agent: z.string(), subject: z.string(), metadata: z.record(z.string(), z.unknown()),
+  provider: z.enum(["openai", "elevenlabs"]), session: z.string(), agent: z.string(), subject: z.string(), metadata: z.record(z.string(), z.unknown()),
 });
 const callEnded = callFacts.extend({
   reason: z.string(), detail: z.string().optional(), limit: z.literal("end_user").optional(), endUserReason: creditReason.optional(), bucket: creditBucket.optional(),
   startedAt: z.number().nullable(), endedAt: z.number(), turns: z.number(), asks: z.number(), audioSeconds: z.number(), costUsd: z.number(),
 });
-const callUtterance = callFacts.extend({
-  reported: z.literal("sideband"), text: z.string(), seconds: z.number(), seq: z.number(),
-});
+const callUtterance = z.union([
+  callFacts.extend({ provider: z.literal("openai"), reported: z.literal("sideband"), text: z.string(), seconds: z.number(), seq: z.number() }),
+  callFacts.extend({
+    provider: z.literal("elevenlabs"), reported: z.literal("client"), speakerId: z.string(), text: z.string(), seq: z.number(),
+    seconds: z.number().optional(), startedAt: z.number().optional(), endedAt: z.number().optional(),
+  }),
+  callFacts.extend({
+    provider: z.literal("elevenlabs"), reported: z.literal("provider"), text: z.string(), seq: z.number(), secondsIntoCall: z.number().optional(),
+  }),
+]);
 export const WebhookEvents = {
   "run.started": envelope("run.started", z.object({ ...runFacts, resumes: z.number().optional().openapi({ description: "Set when a node resumed a turn whose node was lost" }) }), "A run began"),
   "run.completed": envelope("run.completed", z.object({
@@ -258,7 +265,7 @@ export const WebhookEvents = {
     request: z.string(), from: z.object({ id: z.string(), name: z.string().optional() }).optional(),
   }), "The call asked its agent to do something"),
   "voice.agent.replied": envelope("voice.agent.replied", callFacts.extend({
-    outcome: z.enum(["ok", "empty", "error", "timeout"]), ms: z.number(), late: z.boolean(), replyChars: z.number(),
+    outcome: z.enum(["ok", "empty", "error", "timeout"]), ms: z.number(), late: z.boolean(), replyChars: z.number(), reply: z.string().max(4_000).optional(),
   }), "The call's agent finished its request"),
   "voice.session.error": envelope("voice.session.error", z.object({
     ...voiceFacts,
@@ -1968,7 +1975,8 @@ export const VoiceCallInput = z.strictObject({
   bucket: z.string().optional(),
   context: z.record(z.string(), z.unknown()).optional(),
   keyScope: z.string().min(1).max(100).optional(),
-  maxMinutes: z.number().int().min(VOICE_LIMITS.maxMinutes.min).max(VOICE_LIMITS.maxMinutes.max).default(VOICE_LIMITS.maxMinutes.default),
+  maxMinutes: z.number().int().min(VOICE_LIMITS.maxMinutes.min).max(VOICE_LIMITS.maxMinutes.max).optional()
+    .openapi({ description: "For ElevenLabs, defaults to 30 and is capped at 30. Sets the call's expiry in camelRun. The provider enforces a fixed 30-minute limit." }),
   metadata: callMetadata.optional(),
   speakers: callSpeakers.optional(),
   interruptResponse: z.boolean().default(true).openapi({
@@ -1983,7 +1991,7 @@ export const VoiceCall = z.object({
   id: z.string(), state: z.enum(["connecting", "live", "ending", "ended"]), provider: z.enum(["openai", "elevenlabs"]),
   model: z.string(), voice: z.string(), agent: z.string(), subject: z.string(),
   interruptResponse: z.boolean(),
-  startedAt: z.number().nullable(), endedAt: z.number().nullable(), expiresAt: z.number(), reason: z.string().nullable(),
+  startedAt: z.number().nullable(), endedAt: z.number().nullable(), expiresAt: z.number(), maxMinutes: z.number(), reason: z.string().nullable(),
   turns: z.number(), asks: z.number(), audioSeconds: z.number(), costUsd: z.number(),
   metadata: z.record(z.string(), z.unknown()), speakers: z.record(z.string(), z.string()),
 }).openapi("VoiceCall");
@@ -1996,6 +2004,14 @@ export type VoiceCallCreated = z.output<typeof VoiceCallCreated>;
 
 export const VoiceCallUpdate = z.strictObject({ speakers: callSpeakers.optional(), metadata: callMetadata.optional() }).openapi("VoiceCallUpdate");
 export type VoiceCallUpdate = z.output<typeof VoiceCallUpdate>;
+export const VoiceTranscriptInput = z.strictObject({
+  speaker: z.string().min(1).max(100),
+  text: z.string().min(1).max(4_000),
+  seconds: z.number().min(0).max(600).optional(),
+  startedAt: z.number().min(0).optional(),
+  endedAt: z.number().min(0).optional(),
+}).openapi("VoiceTranscriptInput");
+export type VoiceTranscriptInput = z.output<typeof VoiceTranscriptInput>;
 export const VoiceCallEndInput = z.strictObject({ reason: z.string().max(100).optional() }).openapi("VoiceCallEndInput");
 export const VoiceCallList = z.object({ calls: z.array(VoiceCall), next: z.string().optional() }).openapi("VoiceCallList");
 

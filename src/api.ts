@@ -56,6 +56,7 @@ import { admitEndUser, bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "
 import { getVoice, VoiceLookupInput, VoiceLookupResult, searchVoices, VoiceSearchInput, VoiceSearchResult } from "./voice-library.ts";
 import { voiceRoutes } from "./voice-api.ts";
 import type { VoiceCalls } from "./voice-calls.ts";
+import { ELEVENLABS_INBOUND } from "./voice/calls/elevenlabs.ts";
 import type { VoiceSessions } from "./voice-sessions.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
@@ -354,6 +355,25 @@ export function api(context: ApiContext) {
       return json(c,result.code,result.body);
     });
   }
+  route(createRoute({
+    method: "post", path: `${ELEVENLABS_INBOUND}/post-call`, security: [],
+    request: { headers: z.object({ "elevenlabs-signature": z.string() }) },
+    responses: { 200: reply("Webhook acknowledged", z.object({})) },
+  }), async c => {
+    if (!context.calls) throw new HttpError(404, "Unknown ElevenLabs agent");
+    await context.calls.elevenLabsPostCall(await readBytes(c.req.raw.body, 1024 * 1024), c.req.header("ElevenLabs-Signature"));
+    return json(c, 200, {});
+  });
+  route(createRoute({
+    method: "post", path: `${ELEVENLABS_INBOUND}/tools/{name}`, security: [],
+    request: { params: z.object({ name: z.string() }), headers: z.object({ "x-voice-tool-secret": z.string() }),
+      body: content(z.object({ conversation_id: z.string(), request: z.string().optional() })) },
+    responses: { 200: reply("Tool result", z.union([z.object({ ok: z.literal(true) }), z.object({ reply: z.string() }), z.object({ error: z.string() })])),
+      404: reply("Unknown tool or call", z.object({})) },
+  }), async c => {
+    const result = await context.calls?.elevenLabsTool(c.req.param("name")!, await readJson(c.req.raw.body, 64 * 1024), c.req.header("X-Voice-Tool-Secret"));
+    return result ? json(c, 200, result) : json(c, 404, {});
+  });
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);
