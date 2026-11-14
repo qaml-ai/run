@@ -3,7 +3,9 @@ package compute
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -24,7 +26,8 @@ type UsageShape struct {
 	MemoryMiB int `json:"memoryMiB"`
 }
 
-// MONEY: ID is the runtime's dedupe key. ULID is only the ledger's ordering key.
+// MONEY: ID is the runtime's dedupe key. ULID is only the ledger's ordering key. Settlement prices the integer
+// milliseconds To - From; Seconds is informational (a float) and must never be summed for billing.
 type UsageEvent struct {
 	ID      string     `json:"id"`
 	Type    string     `json:"type"`
@@ -104,7 +107,9 @@ func (c *Controller) writeWithUsage(ctx context.Context, event *UsageEvent, seq 
 		return err
 	}
 
-	// MONEY: Mint a fresh ULID for each attempt immediately before the write.
+	// MONEY: Mint a fresh ULID for each attempt immediately before the write. The ULID's time is the WRITER task's
+	// clock and the watermark is the READER task's: tier tasks on Fargate keep Amazon Time Sync, so skew stays at
+	// milliseconds, far inside the 15 s left after this 5 s bound.
 	// GET /v1/usage uses a watermark of now minus two heartbeats (20s), which
 	// relies on the ULID time being within 5s of commit. The 5s deadline
 	// covers the entire call, including any SDK retries.
@@ -120,7 +125,12 @@ func (c *Controller) writeWithUsage(ctx context.Context, event *UsageEvent, seq 
 		"body": s(string(body)), "vm": s(event.VM), "seq": n(seq),
 		"expiresAt": n(now.Add(35 * 24 * time.Hour).Unix()),
 	}
-	return c.transact(ctx, append(writes, put(c.Tables.Usage, row, "attribute_not_exists(#ulid)"))...)
+	// MONEY: the token covers this exact request (event id + its ULID), so the SDK's retries of it are idempotent and
+	// report success if an earlier attempt committed. A re-minted ULID is a different request with its own token: its
+	// CAS on usageSeq/billedTo, not the token, keeps it from doubling an event.
+	sum := sha256.Sum256([]byte(event.ID + "/" + id))
+	token := hex.EncodeToString(sum[:])[:36]
+	return c.transactIdempotent(ctx, token, append(writes, put(c.Tables.Usage, row, "attribute_not_exists(#ulid)"))...)
 }
 
 const ulidAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

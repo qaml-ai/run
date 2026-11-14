@@ -192,6 +192,14 @@ func (c *Controller) wrote(err error) error {
 	return err
 }
 
+// transactIdempotent lets the SDK retry an ambiguous failure under a ClientRequestToken. DynamoDB answers a retry of a
+// transaction that already committed with success (within its 10-minute token window) instead of a lost condition, so
+// a committed usage event is never reported to the caller as a failure.
+func (c *Controller) transactIdempotent(ctx context.Context, token string, writes ...types.TransactWriteItem) error {
+	_, err := c.DB.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: writes, ClientRequestToken: aws.String(token)})
+	return c.wrote(err)
+}
+
 func (c *Controller) transact(ctx context.Context, writes ...types.TransactWriteItem) error {
 	_, err := c.DB.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: writes}, noRetry)
 	return c.wrote(err)
