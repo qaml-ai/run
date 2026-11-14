@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"net/url"
+	"testing"
+)
 
 func TestStorageLogRouteRefActions(t *testing.T) {
 	l := "lin_abc"
@@ -16,8 +19,13 @@ func TestStorageLogRouteRefActions(t *testing.T) {
 		{"POST", "/v1/lineages/" + l + "/refs/main/lease/renew", "/v1/lineages/:lineage/refs/:name/lease/renew"},
 		{"PUT", "/v1/lineages/" + l + "/refs/main/watchers/w1", "/v1/lineages/:lineage/refs/:name/watchers/:watcher"},
 		{"POST", "/v1/lineages/" + l + "/refs/main/bogus", "/v1/lineages/:lineage/refs/:name"},
+		{"POST", "/v1/lineages/" + l + "/refs/x%2Fcas", "/v1/lineages/:lineage/refs/:name"},
 	} {
-		got, lineage := storageLogRoute(c.method, c.path)
+		u, err := url.Parse(c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, lineage := storageLogRoute(c.method, u)
 		if got != c.want || lineage != l {
 			t.Errorf("%s %s: got %q want %q", c.method, c.path, got, c.want)
 		}

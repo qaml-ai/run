@@ -36,7 +36,10 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Only route templates and a validated, escaped lineage enter the access log.
 // Unknown paths, object ids, queries and request bodies are never logged.
-func storageLogRoute(method, path string) (route, lineage string) {
+// The lineage is validated on the decoded path; the ref action is read from the escaped path (like
+// parseRefRequest) so an encoded slash in a ref name cannot pose as an action.
+func storageLogRoute(method string, u *url.URL) (route, lineage string) {
+	path := u.Path
 	route, lineage = "/v1/unknown", "-"
 	if !strings.HasPrefix(path, "/v1/lineages/") {
 		return
@@ -53,7 +56,7 @@ func storageLogRoute(method, path string) (route, lineage string) {
 		if len(parts) == 2 {
 			return "/v1/lineages/:lineage/refs", lineage
 		}
-		return "/v1/lineages/:lineage/refs/:name" + refLogAction(method, path), lineage
+		return "/v1/lineages/:lineage/refs/:name" + refLogAction(method, u.EscapedPath()), lineage
 	}
 	if len(parts) == 2 {
 		switch parts[1] {
@@ -94,7 +97,7 @@ func refLogAction(method, path string) string {
 
 func (s *StorageServer) loggedStorage(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	route, lineage := storageLogRoute(r.Method, r.URL.EscapedPath())
+	route, lineage := storageLogRoute(r.Method, r.URL)
 	rw := &statusWriter{ResponseWriter: w}
 	var timing *commitTiming
 	if r.Method == http.MethodPost && route == "/v1/lineages/:lineage/commits" {
