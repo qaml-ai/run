@@ -137,8 +137,8 @@ export class BashSessions {
     });
   }
 
-  private request<T>(vm: Vm, method: string, suffix = "", body?: unknown, timeoutMs?: number) {
-    return tierRequest<T>(this.env, { method, path: "/v1/vms/" + vm.vm_id + suffix, body, claims: claims(vm), timeoutMs });
+  private request<T>(vm: Vm, method: string, suffix = "", body?: unknown, timeoutMs?: number, idempotencyKey?: string) {
+    return tierRequest<T>(this.env, { method, path: "/v1/vms/" + vm.vm_id + suffix, body, claims: claims(vm), timeoutMs, idempotencyKey });
   }
 
   private receipt(key: string): Receipt | undefined {
@@ -218,7 +218,8 @@ export class BashSessions {
     }
     let shell: string;
     try {
-      ({ shell } = await this.request<{ shell: string }>(vm, "POST", "/shells"));
+      // One shell per VM: the VM id is the key, so a retry after a crash gets the same shell (#1071, L104).
+      ({ shell } = await this.request<{ shell: string }>(vm, "POST", "/shells", undefined, undefined, vm.vm_id));
     } catch (error) {
       if (isTier(error, 409, "not_running")) this.stop(vm.vm_id);
       throw error;
