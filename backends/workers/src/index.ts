@@ -107,6 +107,7 @@ export { VoiceCall } from "./voice-call.ts";
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
+export { CamelfsSmoke } from "./camelfs/smoke.ts";
 export { CamelfsUsagePoller } from "./camelfs/usage-poller.ts";
 import { startUsagePoller } from "./camelfs/usage-poller.ts";
 export { WorkflowObject } from "./workflow-object.ts";
