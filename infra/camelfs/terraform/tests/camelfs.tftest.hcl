@@ -173,6 +173,15 @@ run "tables_keys_and_protection" {
     )
     error_message = "A DynamoDB TTL on the usage table only (expiresAt: pulled copies); expiry everywhere else is the service's decision."
   }
+  assert {
+    condition = (
+      length(aws_dynamodb_table.camelfs["vms"].global_secondary_index) == 1
+      && one([for index in aws_dynamodb_table.camelfs["vms"].global_secondary_index : index.name == "lineage" && index.hash_key == "lineage" && index.projection_type == "INCLUDE" && toset(index.non_key_attributes) == toset(["phase", "ref"])])
+      && contains([for attribute in aws_dynamodb_table.camelfs["vms"].attribute : attribute.name], "lineage")
+      && alltrue([for name, table in aws_dynamodb_table.camelfs : length(table.global_secondary_index) == 0 if name != "vms"])
+    )
+    error_message = "One secondary index, on vms only: lineage (keys plus phase and ref), for a lineage or ref delete to end its VMs (L127)."
+  }
 }
 
 # --- Load balancers: HTTP/1.1 only, TLS on both, the right sources ---
