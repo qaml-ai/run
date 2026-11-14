@@ -114,6 +114,11 @@ func authorizeToken(w http.ResponseWriter, r *http.Request, keys *auth.Keys) *ht
 		authFail(w, http.StatusUnauthorized, "unauthorized", err.Error())
 		return nil
 	}
+	// The lineage-less usage token (auth.UsageSubject) is good for the usage ledger and nothing else.
+	if claims.Lineage == "" && !(r.Method == http.MethodGet && r.URL.Path == "/v1/usage") {
+		authFail(w, http.StatusForbidden, "forbidden", "a usage token reads only GET /v1/usage")
+		return nil
+	}
 	log.Printf("op=token sub=%q lin=%q acc=%q kid=%q", claims.Subject, claims.Lineage, claims.Access, claims.KeyID)
 	return r.WithContext(context.WithValue(r.Context(), claimsKey{}, claims))
 }

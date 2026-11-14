@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { guardAlarms } from "../alarm-guard.ts";
 import { withMoneyMetrics } from "../money-metrics.ts";
 import { failure, type MetricsEnv } from "../observability.ts";
-import { tierConfigured } from "./tier.ts";
+import { TierError, tierConfigured } from "./tier.ts";
 import { pollUsage, settleUsage, type UsageEnv } from "./usage.ts";
 
 type PollerEnv = UsageEnv & MetricsEnv;
@@ -43,7 +43,13 @@ export class CamelfsUsagePoller extends DurableObject<PollerEnv> {
     this.running = true;
     try {
       await withMoneyMetrics(this.env, async () => {
-        await pollUsage(this.env).catch(error => failure(this.env, "usage_poll_failed", error));
+        await pollUsage(this.env).catch(error => {
+          failure(this.env, "usage_poll_failed", error);
+          // The tier's refusal names its reason (an auth reason, a validation message): log it, so a refused poll says
+          // why (smoke 7's BadLineage showed only as a class and a length).
+          if (error instanceof TierError)
+            console.error(JSON.stringify({ type: "usage_poll_refused", status: error.status, code: error.code, reason: error.message.slice(0, 200) }));
+        });
         await settleUsage(this.env);
       });
     } finally {
