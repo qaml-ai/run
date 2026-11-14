@@ -128,7 +128,7 @@ test('inline workflow files surface a missing main instead of creating it', asyn
   await ctx.stub.deleteRef('main', main.version);
   const host: any = { workflow: { id: 'wf_one', tenant: 't' }, payer: () => 'a', storage: { get: async () => undefined, put: async () => assert.fail('failed preparation must not be recorded') } };
   const jobs: any = new WorkflowJobs(f.env, host);
-  await assert.rejects(jobs.jobSpec('missing-main', { files: { 'hello.txt': 'hello' }, command: 'true', timeoutSeconds: 30 }), err('no-ref'));
+  await assert.rejects(jobs.jobSpec('missing-main', { files: { 'hello.txt': 'hello' }, command: 'true', timeoutSeconds: 30 }), err('no_ref'));
   assert.equal(await ctx.stub.ref('main'), null);
   assert.equal(await ctx.stub.ref('job/missing-main'), null);
 });

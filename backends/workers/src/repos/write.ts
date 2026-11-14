@@ -42,7 +42,7 @@ export async function quota(ctx: RepoContext, bytes: number) {
   const { accounts } = await keyServices(ctx.env);
   const limit = await accounts.billing.storageLimit(ctx.tenant);
   if (limit !== undefined && await ctx.env.TENANTS.getByName(ctx.tenant).reposUsed() + bytes > limit)
-    throw new RepoError('storage-limit', 507, 'storage-limit', { limit });
+    throw new RepoError('storage_limit', 507, 'storage_limit', { limit });
 }
 /** RepoDO accounts for each blob once across all heads. */
 export const addedBytes = (ctx: RepoContext, incoming: Entry[]) => ctx.stub.unseenBytes(incoming.map(({ blob, size }) => ({ blob, size })));
@@ -54,18 +54,18 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
   } | null> = Object.create(null);
   check(input.changes && typeof input.changes === 'object' && !Array.isArray(input.changes));
   const changes = Object.entries(input.changes);
-  check(changes.length <= 1000, 'too-many-paths');
+  check(changes.length <= 1000, 'too_many_paths');
   let offset = 0;
   await Promise.all(Array.from({ length: Math.min(8, changes.length) }, async () => {
     while (offset < changes.length) {
       const [raw, c] = changes[offset++], path = normalizeRepoPath(raw);
-      check(!(path in prepared), 'bad-path');
+      check(!(path in prepared), 'bad_path');
       prepared[path] = null;
       if (c === null)
         continue;
       check(c && typeof c === 'object');
       if ('mode' in c && c.mode !== undefined)
-        check(['100644', '100755', '120000'].includes(c.mode!), 'bad-mode');
+        check(['100644', '100755', '120000'].includes(c.mode!), 'bad_mode');
       if ('bytes' in c) {
         const b = await ctx.storage.putBlob(ctx.lineage, c.bytes);
         prepared[path] = { blob: b.blob, size: b.size, mode: c.mode };
@@ -76,7 +76,7 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
         const e = v.ref ? (await src.stub.stat(v.ref, [sourcePath])).entries[sourcePath]
           : (await src.storage.listAll(src.lineage, v.tree, sourcePath.includes('/') ? sourcePath.slice(0, sourcePath.lastIndexOf('/')) : undefined)).find((x): x is Entry => 'blob' in x && x.path === sourcePath);
         if (!e)
-          throw new RepoError('no-file', 404, 'no-file');
+          throw new RepoError('no_file', 404, 'no_file');
         const b = src.lineage === ctx.lineage ? e : await ctx.storage.putBlob(ctx.lineage, await src.storage.readBlob(src.lineage, e.blob, v.tree, sourcePath));
         prepared[path] = { blob: b.blob, size: b.size, mode: e.mode };
       }
@@ -106,7 +106,7 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
       pathExpect[path] = expected;
       const actual = old.get(path)?.blob ?? null;
       if (actual !== (expected === 'none' ? null : expected))
-        throw new RepoError('stale-path', 412, 'stale-path', { path, current: actual });
+        throw new RepoError('stale_path', 412, 'stale_path', { path, current: actual });
     }
     const delta: Record<string, Entry | null> = Object.create(null), storageChanges: Change[] = [];
     for (const [path, c] of Object.entries(prepared)) {
@@ -117,13 +117,13 @@ export async function commitChanges(ctx: RepoContext, input: WriteInput) {
         if (c.blob && c.size === undefined) {
           const known = await ctx.stub.blobSize(c.blob);
           if (known === null)
-            throw new RepoError('unknown-blob', 400, 'unknown-blob');
+            throw new RepoError('unknown_blob', 400, 'unknown_blob');
           size = known;
         }
         if (!blob || size === undefined)
-          throw new RepoError('no-file', 404, 'no-file');
+          throw new RepoError('no_file', 404, 'no_file');
         next = { path, blob, size, mode: c.mode ?? prev?.mode ?? '100644' };
-        check(['100644', '100755', '120000'].includes(next.mode), 'bad-mode');
+        check(['100644', '100755', '120000'].includes(next.mode), 'bad_mode');
       }
       if ((!prev && !next) || (prev && next && prev.blob === next.blob && prev.mode === next.mode))
         continue;
@@ -165,7 +165,7 @@ export async function setRefToVersion(ctx: RepoContext, input: {
       throw new RepoError('stale', 412, 'stale', { current });
     const target = await ctx.stub.commit(input.version);
     if (!target)
-      throw new RepoError('no-commit', 404, 'no-commit');
+      throw new RepoError('no_commit', 404, 'no_commit');
     const entries = await versionEntries(ctx, target.version, target.tree);
     await quota(ctx, await addedBytes(ctx, entries));
     let commit: Version = target;
@@ -198,7 +198,7 @@ export async function branch(ctx: RepoContext, input: {
   ttlSeconds?: number;
   who: string;
 }) {
-  check(input.ttlSeconds === undefined || (Number.isSafeInteger(input.ttlSeconds) && input.ttlSeconds > 0), 'bad-ttl');
+  check(input.ttlSeconds === undefined || (Number.isSafeInteger(input.ttlSeconds) && input.ttlSeconds > 0), 'bad_ttl');
   const expiresAt = input.ttlSeconds === undefined ? undefined : Date.now() + input.ttlSeconds * 1000;
   try {
     const r = await ctx.stub.createRef({ ...input, expiresAt, why: 'branch' });
@@ -206,7 +206,7 @@ export async function branch(ctx: RepoContext, input: {
     return r;
   }
   catch (e) {
-    if (repoErrorFrom(e)?.code !== 'not-cached')
+    if (repoErrorFrom(e)?.code !== 'not_cached')
       throw e;
   }
   const target = await ctx.stub.resolve(typeof input.from === 'string' ? input.from : input.from.version), commit = await ctx.stub.commit(target.version);
@@ -237,7 +237,7 @@ export async function diffEntries(ctx: RepoContext, from: string, to: string) {
       changes[c.path] = null;
     else {
       const e = byPath.get(c.path);
-      check(e, 'missing-entry');
+      check(e, 'missing_entry');
       changes[c.path] = e;
     }
   }
