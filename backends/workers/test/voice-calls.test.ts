@@ -177,7 +177,7 @@ test("OpenAI brokers SDP, journals speech without a run, meters raw cost once, a
   const hungUp = await f.request(`/v1/voice/sessions/${exhausted.json.id}`, "DELETE");
   assert.equal(hungUp.status, 200, JSON.stringify(hungUp.json));
   assert.equal(hungUp.json.state, "ended");
-  assert.equal(hungUp.json.reason, "client");
+  assert.equal(hungUp.json.reason, "requested");
   assert.equal(hangups.length, hangupsBefore + 1, "the provider call was hung up");
 
   await setBalance(100_000_000);
