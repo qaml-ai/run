@@ -663,30 +663,23 @@ func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase
 	}
 	out.files = map[string]objects.File{}
 	out.sizes = map[string]int64{}
-	hashes := map[string]string{}
-	rows, err := m.objects().DB.DB.QueryContext(ctx, "SELECT sha1,sha256,size FROM lineage_blobs WHERE lineage=?", v.Lineage)
+	// Resolve the base tree's blobs through the repository: rows this host already has, else a durable HEAD
+	// that records membership. A host serves trees whose blobs another writer (the tier) uploaded.
+	ids := make([]string, len(entries))
+	for i, f := range entries {
+		ids[i] = f.SHA1
+	}
+	blobs, err := m.objects(v.Lineage).BlobInfos(ctx, v.Lineage, ids)
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var sha1, sha256 string
-		var size int64
-		if err = rows.Scan(&sha1, &sha256, &size); err != nil {
-			return out, err
-		}
-		hashes[sha1] = sha256
-		out.sizes[sha256] = size
-	}
-	if err = rows.Err(); err != nil {
-		return out, err
-	}
 	for _, f := range entries {
-		sha, ok := hashes[f.SHA1]
-		if !ok {
-			return out, fmt.Errorf("missing lineage blob")
+		found := blobs[f.SHA1]
+		if found.Err != nil {
+			return out, fmt.Errorf("lineage blob %s: %w", f.SHA1, found.Err)
 		}
-		out.files[f.Path] = objects.File{SHA256: sha, Mode: f.Mode}
+		out.files[f.Path] = objects.File{SHA256: found.Blob.SHA256, Mode: f.Mode}
+		out.sizes[found.Blob.SHA256] = found.Blob.Size
 	}
 	return out, nil
 }

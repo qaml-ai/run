@@ -317,6 +317,8 @@ func assertOutput(t *testing.T, response []byte, want string) {
 type kvmDaemonConfig struct {
 	Data, Tier, HostID, Kernel string
 	Shape                      hostwire.Shape
+	Store                      string // s3://… for the cold-host benchmark; empty uses <data>/objects
+	VirtualSize                int64  // blank branch image size; 0 means 32 MiB
 }
 
 func TestKVMComputeDaemonProcess(t *testing.T) {
@@ -333,11 +335,22 @@ func TestKVMComputeDaemonProcess(t *testing.T) {
 	var q kvmDaemonConfig
 	must(json.Unmarshal([]byte(raw), &q))
 	ctx := t.Context()
-	local := store.Local{Dir: filepath.Join(q.Data, "objects")}
+	var objectStore store.Store = store.Local{Dir: filepath.Join(q.Data, "objects")}
+	depth := 4
+	if q.Store != "" {
+		var err error
+		objectStore, err = store.Open(ctx, q.Store, "us-west-2", 64)
+		must(err)
+		depth = 64
+	}
+	virtual := q.VirtualSize
+	if virtual == 0 {
+		virtual = 32 << 20
+	}
 	db, err := refs.Open(filepath.Join(q.Data, "refs.db"))
 	must(err)
 	defer db.Close()
-	m, err := image.New(image.Config{Data: q.Data, VirtualSize: 32 << 20}, local, cache.New(filepath.Join(q.Data, "cache"), local, 4), db)
+	m, err := image.New(image.Config{Data: q.Data, VirtualSize: virtual}, objectStore, cache.New(filepath.Join(q.Data, "cache"), objectStore, depth), db)
 	must(err)
 	defer m.Close()
 	// Enrollment is already persisted by the harness.
