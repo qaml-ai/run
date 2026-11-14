@@ -38,17 +38,30 @@ bin=sandbox/v8-exec/target/release/v8-exec; built=sandbox/v8-exec/target/release
 # The AWS CLI v2, pinned: the camelfsd contract tests create tables in DynamoDB Local with `aws dynamodb` (CI's runners
 # have it). Checksums are of AWS's release zips, whose PGP signatures verified against the AWS CLI Team key
 # (FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C) on 2026-11-14.
-aws_version=2.39.7
-[ "$(aws --version 2>/dev/null | cut -d' ' -f1)" = "aws-cli/$aws_version" ] || { echo "== installing the AWS CLI $aws_version"
+aws_version=2.39.7 aws_bin=/usr/local/bin/aws
+aws_at() { [ "$("$1" --version 2>/dev/null | cut -d' ' -f1)" = "aws-cli/$aws_version" ]; }
+aws_at "$aws_bin" || { echo "== installing the AWS CLI $aws_version"
   case $(uname -m) in
     x86_64) aws_sum=707a900fde102f486d92e79f979493c747f475b9e2b94f2a42687d5d95129fb7 ;;
     aarch64) aws_sum=d64bf764ce41165ba16fa48372d46ecef50583a4621226e89e6269af8031e1c0 ;;
     *) echo "== no AWS CLI for $(uname -m)"; exit 1 ;;
   esac
-  aws_tmp=$(mktemp -d) && curl -fsSLo "$aws_tmp/aws.zip" "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$aws_version.zip" \
-    && echo "$aws_sum  $aws_tmp/aws.zip" | sha256sum -c --quiet && unzip -q "$aws_tmp/aws.zip" -d "$aws_tmp" \
-    && sudo "$aws_tmp/aws/install" --update >/dev/null && rm -rf "$aws_tmp" \
-    && [ "$(aws --version 2>/dev/null | cut -d' ' -f1)" = "aws-cli/$aws_version" ]; } || { echo "== installing the AWS CLI failed"; exit 1; }
+  aws_tmp=$(mktemp -d); trap 'rm -rf "$aws_tmp"' EXIT
+  # Each step names itself when it fails; the download is retried (a sprite's network blips).
+  curl -fsSL --retry 3 --retry-all-errors -o "$aws_tmp/aws.zip" "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$aws_version.zip" \
+    || { echo "== downloading the AWS CLI failed"; exit 1; }
+  echo "$aws_sum  $aws_tmp/aws.zip" | sha256sum -c --quiet || { echo "== the AWS CLI zip does not match its pinned checksum"; exit 1; }
+  unzip -q "$aws_tmp/aws.zip" -d "$aws_tmp" || { echo "== unzipping the AWS CLI failed ($(df -h "$aws_tmp" | awk 'NR == 2 { print $4 }') free)"; exit 1; }
+  sudo "$aws_tmp/aws/install" --update --bin-dir /usr/local/bin >/dev/null || { echo "== the AWS CLI installer failed"; exit 1; }
+  aws_at "$aws_bin" || { echo "== $aws_bin is not the AWS CLI $aws_version after installing it: $("$aws_bin" --version 2>&1 | head -1)"; exit 1; }
+}
+# The tests run the aws on PATH. A user-level pip AWS CLI (v1, in ~/.local/bin; one was found on rt-pool-23,
+# 2026-11-14) shadows the pinned one there: it goes, as nothing in a run installs it.
+if [ "$(command -v aws)" != "$aws_bin" ]; then
+  shadow=$(command -v aws); echo "== $shadow ($("$shadow" --version 2>&1 | cut -d' ' -f1)) shadows $aws_bin on PATH; removing it"
+  { python3 -m pip uninstall -y -q awscli 2>/dev/null || pip3 uninstall -y -q awscli 2>/dev/null; } >/dev/null; hash -r
+  [ "$(command -v aws)" = "$aws_bin" ] || { echo "== $(command -v aws) still shadows $aws_bin; remove it from this sprite"; exit 1; }
+fi
 PREPARE
 sprite_default_job() { echo "env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 TEST_INCLUDE_SIM=true npm run -s test:shard -- $1/$2"; }
 
