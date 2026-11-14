@@ -132,57 +132,10 @@ func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree stri
 			suspended = false
 		}
 	}
-	sf, e := os.Open(snap)
+	r, e = m.uploadSnapshot(ctx, v.Request, r, snap, tree, ranges, &out)
 	if e != nil {
 		return out, e
 	}
-	defer sf.Close()
-	for _, rg := range ranges {
-		out.ChangedBytes += rg.Length
-	}
-	pending := map[string][]byte{}
-	out.ParentRoot = v.Root
-	out.Tree = tree
-	r.Tree = tree
-	r.ParentRoot = v.Root
-	ht := time.Now()
-	e = (chunk.Chunker{}).Ranges(sf, r.VirtualSize, ranges, func(o int64, h string, b []byte) error {
-		k := strconv.FormatInt(o, 10)
-		if r.Chunks[k] == h {
-			return nil
-		}
-		out.ChangedChunks++
-		if h == "" {
-			delete(r.Chunks, k)
-		} else {
-			r.Chunks[k] = h
-			pending[h] = append([]byte(nil), b...)
-		}
-		return nil
-	})
-	out.HashMs = ms(ht)
-	if e != nil {
-		return out, e
-	}
-	ut := time.Now()
-	out.UploadedChunks, e = store.PutChunks(ctx, store.ForLineage(m.Store, v.Lineage), pending)
-	if e != nil {
-		return out, e
-	}
-	if out.ChangedChunks == 0 && tree == v.Tree && v.Root != "" {
-		out.Root = v.Root
-	} else {
-		b, e := root.Encode(r)
-		if e != nil {
-			return out, e
-		}
-		out.Root = root.Hash(b)
-		if e = store.ForLineage(m.Store, v.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
-			return out, e
-		}
-	}
-
-	out.UploadMs = ms(ut)
 	set := v.Parent
 	set.Root = out.Root
 	set.Tree = tree
@@ -214,6 +167,9 @@ func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree stri
 	if e != nil {
 		return out, e
 	}
+	if r.Tree != "" && (out.ChangedChunks != 0 || out.ParentRoot != out.Root) {
+		m.shareTreeRoot(ctx, v.Lineage, tree, out.Root)
+	}
 	if publish != nil {
 		if e = publish(ctx, out); e != nil {
 			return out, e
@@ -236,6 +192,81 @@ func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree stri
 	}
 	out.ImageMs = ms(t)
 	return out, nil
+}
+
+// uploadSnapshot records immutable chunks and the root shared by checkpoints and baselines.
+func (m *Manager) uploadSnapshot(ctx context.Context, v Request, r root.Root, snap, tree string, ranges []chunk.Range, out *Checkpoint) (root.Root, error) {
+	sf, e := os.Open(snap)
+	if e != nil {
+		return r, e
+	}
+	defer sf.Close()
+	for _, rg := range ranges {
+		out.ChangedBytes += rg.Length
+	}
+	pending := map[string][]byte{}
+	out.ParentRoot = v.Root
+	out.Tree = tree
+	baseTree := r.Tree
+	r.Tree = tree
+	r.ParentRoot = v.Root
+	var hashTime, uploadTime time.Duration
+	flush := func() error {
+		start := time.Now()
+		n, err := store.PutChunks(ctx, store.ForLineage(m.Store, v.Lineage), pending)
+		out.UploadedChunks += n
+		uploadTime += time.Since(start)
+		clear(pending)
+		return err
+	}
+	ht := time.Now()
+	e = (chunk.Chunker{}).Ranges(sf, r.VirtualSize, ranges, func(o int64, h string, b []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		k := strconv.FormatInt(o, 10)
+		if r.Chunks[k] == h {
+			return nil
+		}
+		out.ChangedChunks++
+		if h == "" {
+			delete(r.Chunks, k)
+		} else {
+			r.Chunks[k] = h
+			if _, ok := pending[h]; !ok {
+				pending[h] = append([]byte(nil), b...)
+			}
+			if len(pending) == 64 {
+				return flush()
+			}
+		}
+		return nil
+	})
+	hashTime = time.Since(ht) - uploadTime
+	out.HashMs = float64(hashTime.Microseconds()) / 1000
+	if e != nil {
+		return r, e
+	}
+	e = flush()
+	if e != nil {
+		return r, e
+	}
+	ut := time.Now()
+	if out.ChangedChunks == 0 && tree == baseTree && v.Root != "" {
+		out.Root = v.Root
+	} else {
+		b, e := root.Encode(r)
+		if e != nil {
+			return r, e
+		}
+		out.Root = root.Hash(b)
+		if e = store.ForLineage(m.Store, v.Lineage).Put(ctx, "r/"+out.Root, b); e != nil {
+			return r, e
+		}
+	}
+
+	out.UploadMs = float64(uploadTime.Microseconds())/1000 + ms(ut)
+	return r, nil
 }
 
 type ImportRequest struct {

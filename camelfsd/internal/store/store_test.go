@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -116,4 +117,24 @@ func TestUploadInventoryScope(t *testing.T) {
 func (s blockedStore) Head(ctx context.Context, k string) (Info, error) {
 	_, e := s.Has(ctx, k)
 	return Info{}, e
+}
+
+func TestTreeRootFirstWriterWins(t *testing.T) {
+	ctx := t.Context()
+	s := ForLineage(Local{Dir: t.TempDir()}, "l")
+	tree := "tr/" + strings.Repeat("a", 40)
+	first := strings.Repeat("b", 64)
+	if err := s.Put(ctx, tree, []byte(first+"\n")); err == nil {
+		t.Fatal("accepted malformed mapping")
+	}
+	if err := s.Put(ctx, tree, []byte(first)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(ctx, tree, []byte(strings.Repeat("c", 64))); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, tree)
+	if err != nil || string(got) != first {
+		t.Fatalf("mapping = %q, %v", got, err)
+	}
 }

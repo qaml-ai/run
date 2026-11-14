@@ -47,6 +47,7 @@ type request struct {
 	TimeoutS                  float64
 	Offset                    int64
 	LegacyCheckpoint          bool
+	BaselineIfUnchanged       bool
 }
 
 type guest struct {
@@ -59,6 +60,7 @@ type guest struct {
 	pending         []operation
 	pendingEntries  map[string]entry
 	freeze          func() (func() error, error)
+	syncWorkspace   func(string) error
 	sessions        sessionState
 	vm              bool
 	session         bool
@@ -231,7 +233,7 @@ func (g *guest) handle(ctx context.Context, req request) (message, error) {
 		return message{"freeBytes": st.Bavail * uint64(st.Bsize)}, err
 	case "camelfs_apply":
 		return g.apply(ctx, req)
-	case "camelfs_checkpoint":
+	case "camelfs_checkpoint", "camelfs_baseline":
 		return g.checkpoint(ctx, req)
 	case "camelfs_checkpointed":
 		return g.checkpointed(req)
