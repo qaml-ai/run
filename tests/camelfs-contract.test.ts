@@ -132,10 +132,30 @@ test("camelFS contract: runtime storage, import, jobhost proxy and guest against
       controller.enqueue(bytes.subarray(0, 2)); controller.enqueue(bytes.subarray(2)); controller.close();
     } }) };
   } };
-  // Workers has its own TypeScript project and Cloudflare fetch types. Load the
-  // real module at runtime without pulling that project into the Node typecheck.
-  const { importTree } = await import(new URL("../backends/workers/src/jobs/camelfs.ts", import.meta.url).href) as {
-    importTree(environment: typeof env, treeInput: typeof input): Promise<{ tree: string; uploaded: number }>;
+  // The Workers volume import bridge is deleted (spec 5); this test-local phase-1 importer seeds the daemon's
+  // phase-1 mount the same way (POST /v0/trees, PUT only the missing blobs) until unit 11 deletes /v0.
+  // TEMPORARY: removed with jobhost phase 2
+  const importTree = async (environment: typeof env, treeInput: typeof input) => {
+    const auth = { authorization: `Bearer ${environment.CAMELFS_API_TOKEN}` };
+    const byHash = new Map(treeInput.files.map(f => [f.sha256, f]));
+    const files = Object.fromEntries(treeInput.files.map(f => [f.path.replace(/^\/+/, ""), { sha256: f.sha256 }]));
+    let uploaded = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await environment.CAMELFS.fetch("http://camelfs/v0/trees", { method: "POST",
+        headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ lineage: treeInput.lineage, files }) });
+      const value = await response.json() as { tree?: string; missing?: string[] };
+      if (response.status === 200) return { tree: value.tree!, uploaded };
+      assert.equal(response.status, 409, JSON.stringify(value));
+      for (const hash of new Set(value.missing ?? [])) {
+        const { body, size } = await treeInput.read(byHash.get(hash)!);
+        const put = await environment.CAMELFS.fetch(`http://camelfs/v0/blobs/${hash}?lineage=${encodeURIComponent(treeInput.lineage)}`, {
+          method: "PUT", headers: { ...auth, "content-type": "application/octet-stream", "content-length": String(size) },
+          body, duplex: "half" } as RequestInit);
+        assert.ok(put.status === 200 || put.status === 201, `blob ${put.status}`);
+        await put.body?.cancel(); uploaded++;
+      }
+    }
+    throw new Error("tree import retries exhausted");
   };
   const first = await timed("import streamed blobs through proxy", () => importTree(env, input));
   assert.match(first.tree, /^[a-f0-9]{40}$/);
@@ -429,6 +449,15 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
     assert.equal(await stats(tokenFor("arbitrary", "r")), 200);
 
     if (source === "file") {
+      if (process.env.CAMELFS_DDB_LOCAL) {
+        const lineage = "contract:storage";
+        const registration = await fetch(origin + "/v1/lineages/" + lineage, {
+          method: "PUT",
+          headers: { authorization: `Bearer ${tokenFor(lineage)}`, "content-type": "application/json" },
+          body: JSON.stringify({ tenant: "contract", kind: "workspace", defaultBranch: "main" }),
+        });
+        assert.equal(registration.status, 201, await registration.text());
+      }
       await storageContract(origin, tokenFor);
       if (process.env.CAMELFS_DDB_LOCAL) {
         await refsContract(request => fetch(request), origin, tokenFor);
@@ -464,7 +493,9 @@ async function refsTableFlags(t: import("node:test").TestContext, endpoint: stri
         AWS_SESSION_TOKEN: "", AWS_PAGER: "" },
     });
   const suffix = randomUUID();
-  const tables = { refs: `contract-refs-${suffix}`, lineages: `contract-lineages-${suffix}` };
+  const tables = {
+    refs: `contract-refs-${suffix}`, lineages: `contract-lineages-${suffix}`, marks: `contract-marks-${suffix}`,
+  };
   for (const [kind, name] of Object.entries(tables)) {
     const keys = kind === "refs" ? ["lineage", "name"] : ["lineage"];
     await run("create-table", "--table-name", name, "--billing-mode", "PAY_PER_REQUEST",
@@ -473,13 +504,13 @@ async function refsTableFlags(t: import("node:test").TestContext, endpoint: stri
     t.after(async () => { await run("delete-table", "--table-name", name); });
     await run("wait", "table-exists", "--table-name", name);
   }
-  return ["--ddb-endpoint", endpoint, "--refs-table", tables.refs, "--lineages-table", tables.lineages];
+  return ["--ddb-endpoint", endpoint, "--refs-table", tables.refs, "--lineages-table", tables.lineages, "--marks-table", tables.marks];
 }
 
 type RefToken = (lineage: string, access?: string, extra?: Record<string, unknown>) => string;
 
 async function refsContract(send: (request: Request) => Promise<Response>, origin: string, tokenFor: RefToken,
-  fakeFence = false) {
+  fake = false) {
   const lineage = "contract:refs";
   const runtime = tokenFor(lineage, "w", { sub: "runtime:contract", refs: ["main", "fork/*"] });
   const read = tokenFor(lineage, "r", { refs: ["main", "fork/*"] });
@@ -538,7 +569,7 @@ async function refsContract(send: (request: Request) => Promise<Response>, origi
   assert.equal(moved.version, tip.commit);
   assert.equal(moved.tree, tip.tree);
   assert.equal(moved.files, 1);
-  assert.equal(moved.bytes, 0);
+  assert.equal(moved.bytes, blob.size);
   assert.deepEqual(moved.parents, [base.commit]);
   assert.equal(moved.diff[0].path, "nested/a");
   assert.deepEqual(await call("POST", "/refs/main/cas", 200, { body: cas, key: "move" }), moved);
@@ -566,7 +597,7 @@ async function refsContract(send: (request: Request) => Promise<Response>, origi
   assert.deepEqual(refused.error.details.held, ["main"]);
   assert.deepEqual(await call("GET", "/refs/main", 200), held);
   const fence = tokenFor(lineage, "w", { sub: "runtime:contract", refs: ["main"], fence: {
-    holder: fakeFence ? holder : `${holder.host}:${holder.boot}:${holder.mount}`, epoch: lease.epoch,
+    holder: `${holder.host}:${holder.boot}:${holder.mount}`, epoch: lease.epoch,
   } });
   await call("POST", "/refs/main/lease/renew", 200, { token: fence, body: { ttlMs: 60000 } });
   await call("DELETE", "/refs/main/lease", 204, { token: fence });
@@ -574,7 +605,54 @@ async function refsContract(send: (request: Request) => Promise<Response>, origi
   await call("DELETE", "/refs/main?expect=" + tip.commit, 204);
   const reborn = await call("POST", "/refs", 201, { body: create });
   assert.equal(reborn.leaseEpoch, lease.epoch);
-  assert.deepEqual(await call("DELETE", "/refs?owner=" + owner, 200), { deleted: ["fork/a", "main"], held: [] });
+  const metadataFor = { author: owner, message: "ref mutation", time: 321 };
+  const write = (changes: unknown[], expect?: string) => ({ ...metadataFor, changes, expect });
+  const edit = write([{ path: "inline", text: "hello", expectBlob: "none" }], base.commit);
+  const written = await call("POST", "/refs/main/write", 201, { body: edit, key: "write" });
+  assert.deepEqual(await call("POST", "/refs/main/write", 201, { body: edit, key: "write" }), written);
+  assert.deepEqual(Object.keys(written).sort(), ["bytes", "changed", "files", "parents", "time", "tree", "version"]);
+  assert.deepEqual(written.parents, [base.commit]);
+  assert.equal(written.time, 321);
+  assert.equal(written.files, 1);
+  const [added] = written.changed;
+  assert.deepEqual(added, {
+    path: "inline", status: "added", newBlob: createHash("sha1").update("blob 5\0hello").digest("hex"),
+    newSize: 5, mode: "100644",
+  });
+  const mismatch = await call("POST", "/refs/main/write", 412, {
+    body: write([{ path: "inline", delete: true, expectBlob: "none" }]), code: "stale",
+  });
+  assert.deepEqual(mismatch.error.details, { current: written.version, path: "inline", blob: added.newBlob });
+  await call("POST", "/refs/main/write", 413, {
+    body: write([{ path: "huge", text: "x".repeat(8 * 1024 ** 2 + 1) }]), code: "too_large",
+  });
+
+  await call("POST", "/refs", 201, { body: { ...create, name: "fork/ff" } });
+  const mergeBody = (theirs: string, mode: string) => ({ ...metadataFor, theirs, mode });
+  const ff = await call("POST", "/refs/fork%2Fff/merge", 201, { body: mergeBody(written.version, "ff-only") });
+  assert.equal(ff.version, written.version);
+  assert.equal(ff.tree, written.tree);
+  assert.equal(ff.ff, true);
+  assert.deepEqual(ff.merged, []);
+  assert.deepEqual(ff.took, { ours: 0, theirs: 1 });
+  await call("POST", "/refs/main/merge", 409, { body: mergeBody(tip.commit, "ff-only"), code: "not_fast_forward" });
+  const merged = await call("POST", "/refs/main/merge", 201, { body: mergeBody(tip.commit, "merge") });
+  assert.equal(merged.ff, false);
+  assert.deepEqual((await storage.getCommit(lineage, merged.version)).parents, [written.version, tip.commit]);
+  const squashed = await call("POST", "/refs/fork%2Fff/merge", 201, { body: mergeBody(tip.commit, "squash") });
+  assert.equal(squashed.ff, false);
+  assert.deepEqual((await storage.getCommit(lineage, squashed.version)).parents, [written.version]);
+  assert.equal(squashed.tree, merged.tree);
+  const restored = await call("POST", "/refs/main/restore", 201, { body: { ...metadataFor, version: base.commit } });
+  assert.equal(restored.tree, base.tree);
+  assert.deepEqual((await storage.getCommit(lineage, restored.version)).parents, [merged.version]);
+  if (!fake) {
+    assert.deepEqual(Object.keys(ff).sort(), ["bytes", "ff", "files", "merged", "took", "tree", "version"]);
+    assert.deepEqual(Object.keys(restored).sort(), ["bytes", "files", "tree", "version"]);
+    assert.equal((await storage.getCommit(lineage, restored.version)).trailers["Camel-Op"], "restore");
+    assert.equal((await storage.getCommit(lineage, written.version)).trailers["Camel-Op"], "api");
+  }
+  assert.deepEqual(await call("DELETE", "/refs?owner=" + owner, 200), { deleted: ["fork/a", "fork/ff", "main"], held: [] });
   await call("DELETE", "", 204);
   await call("GET", "", 410, { code: "lineage_deleted" });
   await call("GET", "/refs/main", 410, { code: "lineage_deleted" });

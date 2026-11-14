@@ -4,8 +4,16 @@ export * from "../src/index.ts";
 
 export { CamelfsStub } from "./camelfs-stub.ts";
 
+/** Test-only RPC bridges for Worker integration fixtures. */
 export default {
+  ...worker,
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    if (new URL(request.url).pathname === "/__test/r2" && env.TEST_MODE === "1") {
+      if (request.headers.get("authorization") !== `Bearer ${env.API_TOKEN}`) return new Response(null, { status: 401 });
+      const bucket = (env as unknown as { BUCKET: R2Bucket }).BUCKET, key = new URL(request.url).searchParams.get("key")!;
+      if (request.method === "PUT") { await bucket.put(key, await request.arrayBuffer()); return new Response(null, { status: 201 }); }
+      return Response.json({ keys: (await bucket.list({ prefix: key })).objects.map(object => object.key) });
+    }
     if(new URL(request.url).pathname==='/__test/stored-legacy-mount'&&env.TEST_MODE==='1') {
       if(request.headers.get('authorization')!==`Bearer ${env.API_TOKEN}`)return new Response(null,{status:401});
       const {agent,volume:givenVolume}=await request.json() as {agent:string;volume?:string};

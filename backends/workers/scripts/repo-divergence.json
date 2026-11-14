@@ -1,14 +1,60 @@
 {
- "hosted-mcp-tools.ts": [
-  [
-   "    mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),\n",
-   "    mounts: z.array(z.union([z.object({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).optional(),\n"
+  "hosted-mcp-tools.ts": [
+    [
+      "    mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),\n",
+      "    mounts: z.array(z.union([z.object({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum([\"ro\",\"rw\"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).optional(),\n"
+    ]
+  ],
+  "runtime-identity.ts": [
+    [
+      "  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version?: number; snapshot?: string;\n",
+      "  tenant: string; agent: string; call: string; tool: string; repo: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version: string;\n"
+    ]
+  ],
+  "admin/admin-usage.ts": [
+    [
+      "  { key: \"end_user_credits\", label: \"Meters their own users\", sql: \"select tenant from end_user_settings where enabled\" },\n  { key: \"volumes\", label: \"Volumes\", sql: \"select tenant from volumes where purged_at is null\" },\n  { key: \"voice\", label: \"Voice calls\", sql: \"select tenant from voice_sessions\" },\n",
+      "  { key: \"end_user_credits\", label: \"Meters their own users\", sql: \"select tenant from end_user_settings where enabled\" },\n  { key: \"voice\", label: \"Voice calls\", sql: \"select tenant from voice_sessions\" },\n"
+    ],
+    [
+      "  channels: { type: string; name: string }[];\n  counts: { api_keys: number; definitions: number; volumes: number; schedules: number };\n  /** Providers it keeps its own key for, and the MCP clients it connected. */\n",
+      "  channels: { type: string; name: string }[];\n  counts: { api_keys: number; definitions: number; schedules: number };\n  /** Providers it keeps its own key for, and the MCP clients it connected. */\n"
+    ],
+    [
+      "      select (select count(*) from api_tokens where tenant = $1) as api_keys, (select count(*) from definitions where tenant = $1) as definitions,\n        (select count(*) from volumes where tenant = $1 and purged_at is null) as volumes, (select count(*) from schedules where tenant = $1) as schedules`, [tenant]),\n    sql.query(\"select provider from provider_keys where tenant = $1 order by provider\", [tenant]),\n",
+      "      select (select count(*) from api_tokens where tenant = $1) as api_keys, (select count(*) from definitions where tenant = $1) as definitions,\n        (select count(*) from schedules where tenant = $1) as schedules`, [tenant]),\n    sql.query(\"select provider from provider_keys where tenant = $1 order by provider\", [tenant]),\n"
+    ],
+    [
+      "    channels: channels.rows.map(channel => ({ type: String(channel.type), name: String(channel.name ?? \"\") })),\n    counts: { api_keys: n(counts.rows[0].api_keys), definitions: n(counts.rows[0].definitions), volumes: n(counts.rows[0].volumes), schedules: n(counts.rows[0].schedules) },\n    provider_keys: keys.rows.map(key => String(key.provider)),\n",
+      "    channels: channels.rows.map(channel => ({ type: String(channel.type), name: String(channel.name ?? \"\") })),\n    counts: { api_keys: n(counts.rows[0].api_keys), definitions: n(counts.rows[0].definitions), schedules: n(counts.rows[0].schedules) },\n    provider_keys: keys.rows.map(key => String(key.provider)),\n"
+    ]
+  ],
+  "media/images.ts": [
+    [
+      "  keyScope?: string;\n  /** A volume of the tenant's to save the images into, under `path` (a directory), instead of answering their bytes. */\n  volume?: { id: string; path: string };\n  /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */\n",
+      "  keyScope?: string;\n  /** A repo of the tenant's to save the images into, under `path` (a directory), instead of answering their bytes. */\n  repo?: { id: string; path: string };\n  /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */\n"
+    ],
+    [
+      "  record(tenant: string, usage: UsageRecord): void;\n  /** Whether the tenant owns the volume; without it, images are not saved to volumes. */\n  owns?(tenant: string, volume: string): Promise<boolean>;\n  /** Saves an image to a volume of the tenant's. */\n  save?(tenant: string, volume: string, path: string, bytes: Uint8Array, contentType: string): Promise<{ path: string; size: number; version: number; contentType?: string }>;\n}\n\n/** Images asked for alone (`POST /v1/images`): answered as base64, or saved to a volume of the tenant's; nothing else is kept. */\nexport async function imageRequest(service: ImageService, tenant: string, request: ImageRequest, signal: AbortSignal) {\n",
+      "  record(tenant: string, usage: UsageRecord): void;\n  /** Whether the tenant owns the repo; without it, images are not saved to repos. */\n  owns?(tenant: string, repo: string): Promise<boolean>;\n  /** Saves an image to a repo of the tenant's. */\n  save?(tenant: string, repo: string, path: string, bytes: Uint8Array, contentType: string): Promise<{ path: string; size: number; version: string; contentType?: string }>;\n}\n\n/** Images asked for alone (`POST /v1/images`): answered as base64, or saved to a repo of the tenant's; nothing else is kept. */\nexport async function imageRequest(service: ImageService, tenant: string, request: ImageRequest, signal: AbortSignal) {\n"
+    ],
+    [
+      "  if (request.mask && !sources.length) throw new HttpError(400, \"A mask needs an image to edit\");\n  if (request.volume && !service.save) throw new HttpError(404, \"Volumes are not enabled on this runtime\");\n  if (request.volume && !await service.owns!(tenant, request.volume.id)) throw new HttpError(404, \"Unknown volume\");\n  await service.admit(tenant);\n",
+      "  if (request.mask && !sources.length) throw new HttpError(400, \"A mask needs an image to edit\");\n  if (request.repo && !service.save) throw new HttpError(404, \"Repos are not enabled on this runtime\");\n  if (request.repo && !await service.owns!(tenant, request.repo.id)) throw new HttpError(404, \"Unknown repo\");\n  await service.admit(tenant);\n"
+    ],
+    [
+      "  await held?.settle(usage.usage.cost.total as number);\n  const volume = request.volume;\n  const stamp = `${new Date().toISOString().replace(/[-:]/g, \"\").slice(0, 15)}-${randomBytes(3).toString(\"hex\")}`;\n",
+      "  await held?.settle(usage.usage.cost.total as number);\n  const repo = request.repo;\n  const stamp = `${new Date().toISOString().replace(/[-:]/g, \"\").slice(0, 15)}-${randomBytes(3).toString(\"hex\")}`;\n"
+    ],
+    [
+      "    const facts = { contentType: image.contentType, ...(size ? { width: size.width, height: size.height } : {}) };\n    if (!volume) return { ...facts, data: Buffer.from(image.bytes).toString(\"base64\") };\n    const path = `${volume.path.replace(/\\/+$/, \"\")}/image-${stamp}${generated.images.length > 1 ? `-${index + 1}` : \"\"}.${EXTENSIONS[image.contentType] ?? \"png\"}`;\n    const saved = await service.save!(tenant, volume.id, path, image.bytes, image.contentType);\n    return { ...facts, volumeId: volume.id, path: saved.path, size: saved.size, version: saved.version };\n  }));\n",
+      "    const facts = { contentType: image.contentType, ...(size ? { width: size.width, height: size.height } : {}) };\n    if (!repo) return { ...facts, data: Buffer.from(image.bytes).toString(\"base64\") };\n    const path = `${repo.path.replace(/\\/+$/, \"\")}/image-${stamp}${generated.images.length > 1 ? `-${index + 1}` : \"\"}.${EXTENSIONS[image.contentType] ?? \"png\"}`;\n    const saved = await service.save!(tenant, repo.id, path, image.bytes, image.contentType);\n    return { ...facts, repo: repo.id, path: saved.path, size: saved.size, version: saved.version };\n  }));\n"
+    ]
+  ],
+  "test/billing-core.test.ts": [
+    [
+      "import { StorageUsage } from \"../src/storage-usage.ts\";",
+      "import { StorageUsage } from \"../../../src/storage-usage.ts\";"
+    ]
   ]
- ],
- "runtime-identity.ts": [
-  [
-   "  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version?: number; snapshot?: string;\n",
-   "  tenant: string; agent: string; call: string; tool: string; repo: string; path: string; agentPath: string;\n  kind: \"file\" | \"manifest\" | \"archive\"; version: string;\n"
-  ]
- ]
 }

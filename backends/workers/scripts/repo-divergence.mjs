@@ -1,6 +1,6 @@
 // TEMPORARY(node-backend): a bridge until the Node backend retires; then the generators and this file go.
-// Workers has no Volumes (camel-fs-files.md): a few generated copies of src/ intentionally differ from Node's
-// where Node still speaks volumes (mounts, file refs, file grants). The differences are data in
+// Workers agent files use repos; legacy job snapshots still use the Volume DO. Generated copies of src/
+// intentionally differ where Node still speaks volumes (mounts, file refs, file grants). The differences are data in
 // repo-divergence.json, applied to the generated text; a `from` that no longer occurs in the generated text is
 // an error, so a change in src/ to the diverged lines still fails check:reuse instead of being silently kept.
 import { readFileSync } from "node:fs";

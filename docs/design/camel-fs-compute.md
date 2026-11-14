@@ -147,6 +147,11 @@ Every transition is a conditional write:
 
 Placement is warm- and feature-aware, from the `warm` table camel-fs.md §1.2 already names (L32).
 
+**A host's `bootEpoch` follows its kernel boot.** The host sends `/proc/sys/kernel/random/boot_id` as
+`Register.BootID`, and the tier answers the same epoch for the same `BootID`.
+- So VMs and their leases survive a daemon restart.
+- A new kernel boot bumps the epoch, which fences every older holder and ends that boot's VMs `host_lost`.
+
 Hosts reach the tier in-VPC over mutual TLS (camel-fs-files.md §9.12). They enroll once with their STS
 attestation for a host certificate, which is then their identity, heartbeat with `running`, and pull or
 receive work over the VPC.

@@ -14,7 +14,7 @@ import { searchOrder } from "./web-search-policy.ts";
 import { spendInput } from "./agent-spend-policy.ts";
 import { identityInput, bucketInput } from "./security-policy.ts";
 import { checkScope } from "./key-scopes.ts";
-import { VOLUME_LIMITS } from "./volume-policy.ts";
+import { MOUNT_LIMIT } from "./file-policy.ts";
 import { attachmentMessages } from "./attachment-markers.ts";
 import { humanInputSettings, type HumanInputSettings } from "./input-policy.ts";
 import { rejectWorkflow } from "./workflow-refusal.ts";
@@ -208,7 +208,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
     } catch (error) { throw new ApiError((error as {status?: number}).status ?? 400, (error as Error).message, (error as Error).message.startsWith("HISTORY_TOO_LARGE") ? "HISTORY_TOO_LARGE" : "INVALID_HISTORY"); }
   }
   if (fields.mounts !== undefined) {
-    if (!Array.isArray(fields.mounts) || fields.mounts.length > VOLUME_LIMITS.mounts) throw new BadRequest(`At most ${VOLUME_LIMITS.mounts} mounts`);
+    if (!Array.isArray(fields.mounts) || fields.mounts.length > MOUNT_LIMIT) throw new BadRequest(`At most ${MOUNT_LIMIT} mounts`);
     config.mounts = fields.mounts.map(raw => {
       if (raw && typeof raw === "object" && "volumeId" in raw) throw new BadRequest("Volumes are replaced by repos: mount { repo }");
       const mount = object(raw, ["repo", "ref", "path", "mode", "subpath", "workspace", "notify", "instructions"]);

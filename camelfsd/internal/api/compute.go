@@ -59,11 +59,8 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	if len(q.Changes) > 10000 {
 		return nil, large("")
 	}
-	if q.Author == "" || !safeLine(q.Author) {
-		return nil, invalid("author: required single line without NUL")
-	}
-	if strings.ContainsRune(q.Message, 0) {
-		return nil, invalid("message: NUL is forbidden")
+	if err := q.metadata().validate(); err != nil {
+		return nil, err
 	}
 	start := time.Now()
 	base, blobs, err := commitPrechecks(ctx, r, l, q)
@@ -84,20 +81,44 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 	}
 
 	start = time.Now()
+	changed, bytes, err := applyCommitChanges(paths, q.Changes, blobs)
+	if err != nil {
+		return nil, err
+	}
+	r = r.BeginPublication()
+	treeID, err := tree.build(ctx, r, true)
+	if err != nil {
+		return nil, err
+	}
+	if base != "" && treeID != base {
+		r.StageTreeParent(treeID, base)
+	}
+	id, now, err := q.metadata().stage(ctx, r, l, treeID, parents)
+	if err != nil {
+		return nil, err
+	}
+	timing.build += time.Since(start)
+	if err = r.FlushTimed(ctx, &timing.FlushTiming); err != nil {
+		return nil, err
+	}
+	return map[string]any{"tree": treeID, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
+}
+
+func applyCommitChanges(paths []commitPath, changes []change, blobs map[string]objects.BlobLookup) (int, int64, error) {
 	changed := 0
 	var bytes int64
-	for i, c := range q.Changes {
+	for i, c := range changes {
 		if paths[i].dir == nil {
-			return nil, invalid("invalid path %s", c.Path)
+			return 0, 0, invalid("invalid path %s", c.Path)
 		}
 		if c.Mode != "" && c.Mode != "100644" && c.Mode != "100755" && c.Mode != "120000" {
-			return nil, invalid("invalid mode %s", c.Mode)
+			return 0, 0, invalid("invalid mode %s", c.Mode)
 		}
 		dir, name := paths[i].dir, paths[i].name
 		prev, exists := dir.files[name]
 		if c.Delete {
 			if c.Blob != "" || c.Mode != "" {
-				return nil, invalid("delete: blob and mode must be absent")
+				return 0, 0, invalid("delete: blob and mode must be absent")
 			}
 			if exists {
 				delete(dir.files, name)
@@ -108,19 +129,19 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		next := prev
 		if c.Blob != "" {
 			if !root.Hex(c.Blob, 40) {
-				return nil, invalid("blob: expected a 40-character Git id")
+				return 0, 0, invalid("blob: expected a 40-character Git id")
 			}
 			found := blobs[c.Blob]
 			if errors.Is(found.Err, sql.ErrNoRows) {
-				return nil, bad("unknown_blob")
+				return 0, 0, bad("unknown_blob")
 			}
 			if found.Err != nil {
-				return nil, found.Err
+				return 0, 0, found.Err
 			}
 			next.SHA1, next.Size = found.Blob.SHA1, found.Blob.Size
 			bytes += found.Blob.Size
 		} else if !exists {
-			return nil, invalid("blob: required for new path %q", c.Path)
+			return 0, 0, invalid("blob: required for new path %q", c.Path)
 		}
 		next.Path = name
 		if c.Mode != "" {
@@ -134,48 +155,58 @@ func makeCommit(ctx context.Context, r *objects.Repository, l string, q commitRe
 		}
 		dir.files[name] = next
 	}
-	for k, v := range q.Trailers {
+	return changed, bytes, nil
+}
+
+type commitMetadata struct {
+	Author   string
+	Message  *string
+	Trailers map[string]string
+	Time     *int64
+}
+
+func (q commitRequest) metadata() commitMetadata {
+	return commitMetadata{q.Author, &q.Message, q.Trailers, q.Time}
+}
+
+func (m commitMetadata) validate() error {
+	if m.Author == "" || !safeLine(m.Author) {
+		return invalid("author: required single line without NUL")
+	}
+	if m.Message == nil || strings.ContainsRune(*m.Message, 0) {
+		return invalid("message: required without NUL")
+	}
+	for k, v := range m.Trailers {
 		if k == "" || !safeLine(k) || strings.Contains(k, ":") {
-			return nil, invalid("invalid trailer key %s", k)
+			return invalid("invalid trailer key %s", k)
 		}
 		if !safeLine(v) {
-			return nil, invalid("invalid trailer value %s", k)
+			return invalid("invalid trailer value %s", k)
 		}
 	}
-	r = r.BeginPublication()
-	treeID, e := tree.build(ctx, r, true)
-	if e == nil && base != "" && treeID != base {
-		r.StageTreeParent(treeID, base)
-	}
-	if e != nil {
-		return nil, e
-	}
+	return nil
+}
+
+func (m commitMetadata) stage(ctx context.Context, r *objects.Repository, l, treeID string, parents []string) (string, int64, error) {
 	now := time.Now().Unix()
-	if q.Time != nil {
-		now = *q.Time
+	if m.Time != nil {
+		now = *m.Time
 	}
 	body := "tree " + treeID + "\n"
 	for _, parent := range parents {
 		body += "parent " + parent + "\n"
 	}
-	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n", q.Author, q.Author, now, now, q.Message)
+	body += fmt.Sprintf("author %s <%s@camelfs> %d +0000\ncommitter camelfs <camelfs@camelfs> %d +0000\n\n%s\n\n", m.Author, m.Author, now, now, *m.Message)
 	keys := []string{}
-	for k := range q.Trailers {
+	for k := range m.Trailers {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		body += k + ": " + q.Trailers[k] + "\n"
+		body += k + ": " + m.Trailers[k] + "\n"
 	}
-	id, e := r.PutObject(ctx, l, "commit", []byte(body))
-	if e != nil {
-		return nil, e
-	}
-	timing.build += time.Since(start)
-	if e = r.FlushTimed(ctx, &timing.FlushTiming); e != nil {
-		return nil, e
-	}
-	return map[string]any{"tree": treeID, "commit": id, "changed": changed, "bytes": bytes, "parents": parents, "time": now}, nil
+	id, err := r.PutObject(ctx, l, "commit", []byte(body))
+	return id, now, err
 }
 func commitPrechecks(ctx context.Context, r *objects.Repository, l string, q commitRequest) (string, map[string]objects.BlobLookup, error) {
 	var base string

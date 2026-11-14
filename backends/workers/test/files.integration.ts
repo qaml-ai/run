@@ -10,7 +10,7 @@ const png = Buffer.from(
   "base64",
 );
 test(
-  "R2 files, volume ordering, retained snapshots, signed images and restart",
+  "repo files, retired volume routes and signed images",
   { timeout: 180000 },
   async (t) => {
     const camelfs=await serveFakeCamelfsd("files-test-token");t.after(()=>camelfs.close());
@@ -64,146 +64,14 @@ test(
         const refs=await (await call(`/v1/repos/${mounts[0].repo}/refs`)).json() as any;
         assert.equal(refs.length,1,'directory links create no snapshot refs');
       });
-      const create = await call("/v1/volumes", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "files experiment" }),
+      await t.test("retired endpoints bypass authentication and idempotency", async () => {
+        const error = { error: "Volumes are replaced by repos: use /v1/repos", code: "gone" };
+        for (const [path, method] of [["/v1/volumes", "GET"], ["/v1/volumes", "POST"], ["/v1/volumes/old/files/a/b", "DELETE"]]) {
+          const response = await fetch(fixture.url + path, { method, headers: { "Idempotency-Key": "ignored" } });
+          assert.equal(response.status, 410);
+          assert.deepEqual(await response.json(), error);
+        }
       });
-      assert.equal(create.status, 201, await create.clone().text());
-      const { id } = (await create.json()) as {
-        id: string;
-      };
-      const base = `/v1/volumes/${id}`;
-      await t.test(
-        "conditional concurrent writers have exactly one winner",
-        async () => {
-          const initial = await call(base + "/files/hello.txt", {
-            method: "PUT",
-            body: "initial",
-            headers: { "content-type": "text/plain", "if-none-match": "*" },
-          });
-          assert.equal(initial.status, 201);
-          const { version } = (await initial.json()) as {
-            version: number;
-          };
-          const writes = await Promise.all(
-            ["writer one", "writer two"].map((body) =>
-              call(base + "/files/hello.txt", {
-                method: "PUT",
-                body,
-                headers: { "if-match": String(version) },
-              }),
-            ),
-          );
-          assert.deepEqual(writes.map((r) => r.status).sort(), [201, 412]);
-          const read = await call(base + "/files/hello.txt");
-          assert.ok(["writer one", "writer two"].includes(await read.text()));
-          const range = await call(base + "/files/hello.txt", {
-            headers: { range: "bytes=0-5" },
-          });
-          assert.equal(range.status, 206);
-          assert.equal(await range.text(), "writer");
-        },
-      );
-      await t.test(
-        "snapshot keeps immutable bytes after overwrite and restart",
-        async () => {
-          const saved = await (await call(base + "/files/hello.txt")).text();
-          const snap = await call(base + "/snapshots", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: '{"name":"saved"}',
-          });
-          assert.equal(snap.status, 201);
-          const snapshot = (await snap.json()) as {
-            id: string;
-          };
-          assert.equal(
-            (
-              await call(base + "/files/hello.txt", {
-                method: "PUT",
-                body: "changed",
-              })
-            ).status,
-            201,
-          );
-          const bulk = await call(
-            base + "/files?content=true&snapshot=" + snapshot.id,
-          );
-          assert.equal(bulk.status, 200);
-          const snapshotContents = (await bulk.json()) as {
-            files: { path: string; data?: string; text?: string }[];
-          };
-          assert.equal(
-            snapshotContents.files.find((file) => file.path === "/hello.txt")!
-              .text ??
-              Buffer.from(
-                snapshotContents.files.find(
-                  (file) => file.path === "/hello.txt",
-                )!.data!,
-                "base64",
-              ).toString(),
-            saved,
-          );
-          await worker.stop(true);
-          await worker.start();
-          assert.equal(
-            await (
-              await call(base + "/files/hello.txt?snapshot=" + snapshot.id)
-            ).text(),
-            saved,
-          );
-          assert.equal(
-            (
-              await call(base + "/restore", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ snapshot: snapshot.id }),
-              })
-            ).status,
-            200,
-          );
-          assert.equal(
-            await (await call(base + "/files/hello.txt")).text(),
-            saved,
-          );
-        },
-      );
-      await t.test(
-        "file control JSON rejects an oversized body before parsing",
-        async () => {
-          const oversized = await call("/v1/volumes", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: "x".repeat(65536) }),
-          });
-          assert.equal(oversized.status, 413);
-        },
-      );
-      await t.test(
-        "file links are signed and do not require API credentials",
-        async () => {
-          const response = await call(base + "/links", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: '{"path":"/hello.txt","expiresIn":60}',
-          });
-          assert.equal(response.status, 201);
-          const link = (await response.json()) as {
-            url: string;
-          };
-          const content = await fetch(link.url);
-          assert.equal(content.status, 200);
-          assert.match(await content.text(), /^writer /);
-          const url = new URL(link.url);
-          url.pathname = url.pathname.replace(
-            /\/([^/]+)\/[^/]+$/,
-            (whole, signature: string) =>
-              `/${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}/hello.txt`,
-          );
-          assert.equal((await fetch(url)).status, 403);
-        },
-      );
       await t.test(
         "stored image derivative yields bounded base64 and signed URL",
         async () => {

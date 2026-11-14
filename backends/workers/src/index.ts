@@ -61,7 +61,8 @@ import {
 import { handleRepoRequest } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
-import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
+import { handleFileRequest, retiredVolumes } from "./files.ts";
+import { handleSignedFileRequest } from "./images.ts";
 import { channelRoutes, channelWebhook } from "./channel-routes.ts";
 import { githubAppRoutes } from "./github-app-routes.ts";
 import { workerChannels } from "./channels.ts";
@@ -100,6 +101,7 @@ export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
+// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
 export { Volume } from "./volume.ts";
 export { RepoDO } from "./repos/repo-do.ts";
 export { WorkflowObject } from "./workflow-object.ts";
@@ -206,6 +208,9 @@ function httpFailure(error: unknown, env: Env): Response {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const hostPath = new URL(request.url).pathname;
+    const retired = retiredVolumes(hostPath);
+    if (retired) return publicPageHeaders(request, corsResponse(request, retired));
     if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
       try {
         const result=await handleHook(request,request.headers.get('cf-connecting-ip')??'unknown',()=>workerTriggers(env));
