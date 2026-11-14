@@ -13,14 +13,14 @@ import test from "node:test";
 import { startFixture } from "./fixture.ts";
 
 const CEILINGS = {
-  // Limit ticks read the admission snapshot, and balance reads no longer flush durable usage receipts (nothing on
-  // Workers writes an unaccounted one): a few statements of run-to-run slack.
-  // Measured 73 / 73 / 67 / 73 / 72 (was 87 / 82 / 93 / 82 / 82).
-  simple: 80,
-  // Measured 96 / 96 / 96 / 96 / 106 (was 128 / 123 / 123 / 123 / 123).
-  tool: 112,
-  // A 3 s model call; measured 88 / 81 / 83 / 88 / 81 (was 97 / 96 / 96 / 103 / 97).
-  slow: 94,
+  // The tenant row is read once per invocation or turn step, the balance once per provider call: a few statements of
+  // run-to-run slack.
+  // Measured 57 / 57 / 57 / 63 / 57 (was 67 / 73 / 67 / 67 / 67).
+  simple: 66,
+  // Measured 84 / 89 / 84 / 79 / 79 (was 102 / 101 / 113 / 96 / 106).
+  tool: 95,
+  // A 3 s model call; measured 73 / 73 / 72 / 78 / 73 (was 82 / 87 / 87 / 83 / 88).
+  slow: 84,
 } as const;
 
 test("a turn's Postgres statements stay under the budget", { timeout: 180_000 }, async t => {
