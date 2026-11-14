@@ -52,3 +52,30 @@ func TestComputeErrorEnvelopes(t *testing.T) {
 	report(w, &tierError{Status: 412, Code: "stale", Body: []byte(`{"error":"stale","current":"head"}`)})
 	check(w, 502, "host_unavailable") // a flat tier error is malformed, never relayed
 }
+
+func TestShellKeyValidation(t *testing.T) {
+	maxKey := strings.Repeat("a", 96)
+	h := new(Host).Handler()
+	for _, tc := range []struct {
+		body, code string
+		status     int
+	}{
+		{"", "vm_unknown", 404},
+		{`{}`, "vm_unknown", 404},
+		{`{"shellKey":"job_1.part-2"}`, "vm_unknown", 404},
+		{`{"shellKey":"` + maxKey + `"}`, "vm_unknown", 404},
+		{`{"shellKey":"` + maxKey + `a"}`, "invalid_request", 400},
+		{`{"shellKey":""}`, "invalid_request", 400},
+		{`{"shellKey":null}`, "invalid_request", 400},
+		{`{"shellKey":1}`, "invalid_request", 400},
+		{`{"shellKey":"bad/key"}`, "invalid_request", 400},
+		{`{"shellKey":"valid"} {}`, "invalid_request", 400},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/vms/vm/shells", strings.NewReader(tc.body)))
+		var out errorEnvelope
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != tc.status || out.Error.Code != tc.code {
+			t.Errorf("body %q: HTTP %d %s, want %d %s", tc.body, w.Code, w.Body, tc.status, tc.code)
+		}
+	}
+}

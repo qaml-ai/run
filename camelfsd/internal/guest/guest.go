@@ -43,6 +43,7 @@ type request struct {
 	Env                       map[string]string
 	Outputs                   []string
 	ExecID, Shell, Stdin, Cwd string
+	ShellKey                  string
 	TimeoutS                  float64
 	Offset                    int64
 	LegacyCheckpoint          bool

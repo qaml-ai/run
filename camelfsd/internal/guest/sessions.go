@@ -19,11 +19,13 @@ type sessionChannel struct {
 }
 
 type sessionState struct {
-	mu     sync.Mutex
-	shells map[string]*shell
-	execs  map[string]*execution
-	tails  []*execution
-	exits  []*execution
+	mu            sync.Mutex
+	shells        map[string]*shell
+	shellIDsByKey map[string]string
+	shellKeys     []string
+	execs         map[string]*execution
+	tails         []*execution
+	exits         []*execution
 }
 
 type execution struct {
@@ -56,6 +58,10 @@ func (g *guest) sessionRequest(c *sessionChannel, req request) bool {
 	defer s.mu.Unlock()
 	switch req.Op {
 	case "shell_open":
+		if id := s.shellIDsByKey[req.ShellKey]; id != "" {
+			c.send(message{"ok": true, "shellId": id})
+			break
+		}
 		sh, err := g.openShell()
 		if err != nil {
 			c.send(message{"ok": false, "error": errorText(err)})
@@ -65,6 +71,18 @@ func (g *guest) sessionRequest(c *sessionChannel, req request) bool {
 			s.shells = make(map[string]*shell)
 		}
 		s.shells[sh.id] = sh
+		if req.ShellKey != "" {
+			if s.shellIDsByKey == nil {
+				s.shellIDsByKey = make(map[string]string)
+			}
+			s.shellIDsByKey[req.ShellKey] = sh.id
+			s.shellKeys = append(s.shellKeys, req.ShellKey)
+			if len(s.shellKeys) > execExits {
+				delete(s.shellIDsByKey, s.shellKeys[0])
+				s.shellKeys[0] = ""
+				s.shellKeys = s.shellKeys[1:]
+			}
+		}
 		go func() {
 			<-sh.done
 			s.mu.Lock()

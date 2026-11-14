@@ -80,9 +80,16 @@ func report(w http.ResponseWriter, err error) {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, body any) error {
+	return decodeBody(w, r, body, false)
+}
+
+func decodeBody(w http.ResponseWriter, r *http.Request, body any, optional bool) error {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
 	d.DisallowUnknownFields()
 	if err := d.Decode(body); err != nil {
+		if optional && err == io.EOF {
+			return nil
+		}
 		return invalidRequest
 	}
 	var extra any
@@ -146,12 +153,30 @@ func (h *Host) stopRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Host) shellRoute(w http.ResponseWriter, r *http.Request) {
+	// Retain presence so an explicit empty or null key is rejected.
+	body := &struct {
+		ShellKey json.RawMessage `json:"shellKey"`
+	}{}
+	var q hostwire.ShellRequest
+	if err := decodeBody(w, r, &body, true); err != nil || body == nil {
+		report(w, invalidRequest)
+		return
+	}
+	if body.ShellKey != nil {
+		if err := json.Unmarshal(body.ShellKey, &q.ShellKey); err != nil || !hostwire.MountID.MatchString(q.ShellKey) {
+			report(w, invalidRequest)
+			return
+		}
+	}
 	_, vm, err := h.lookup(r.PathValue("id"))
 	if err != nil {
 		report(w, err)
 		return
 	}
-	reply, err := guestRequest(r.Context(), vm, map[string]string{"op": "shell_open"})
+	reply, err := guestRequest(r.Context(), vm, struct {
+		Op string `json:"op"`
+		hostwire.ShellRequest
+	}{"shell_open", q})
 	if err != nil {
 		report(w, err)
 		return
