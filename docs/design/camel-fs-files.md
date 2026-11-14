@@ -924,8 +924,14 @@ claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_12
 - A token with `fence` writes exactly the one ref in its `refs`. Its `cas`, lease renew and release are conditioned
   on that holder and epoch. No route on the API listener takes a fence in a request body.
 - **Hosts use no token** (decided 2026-11-14). Their CAS is the host route of §9.7, on `--listen-hosts`.
-  - There the fence arrives in the body and is trusted only after `checkHolder` binds it to the verified client
-    certificate's host id and the host's live `bootEpoch` (§9.12).
+  - There the fence arrives in the body (approved by the lead, 2026-11-14). It is accepted only when all three
+    conditions hold:
+    1. the holder's host is the verified client certificate's host id (`checkHolder`, §9.12);
+    2. the holder's boot is that host's live `bootEpoch` (`checkHolder`);
+    3. refstore's fenced CAS finds the ref's current lease holder and epoch **equal** to the body's: the lease the
+       tier actually issued (`fenced` otherwise).
+  - So a host can use only leases issued to it, on its current boot. A host is already trusted with every VM it
+    runs.
   - The earlier design, in which `HostJob` minted a fence-scoped token per lease and per renewal, is superseded.
 
 **Who gets which token:**
