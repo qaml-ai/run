@@ -105,7 +105,7 @@ test('attachments of a message are one commit; fork and deletion preserve the pa
   await removedMount.stub.watch('main','b');
   await deleteRepo(env,'t',removedMount.repoId);
   await releaseAgentFiles(env,'t','b',[{repo:removedMount.repoId,path:'/removed',mode:'ro',notify:true}]);
-  await assert.rejects(repoContext(env,'t',fork.info.id),err('no-repo'));
+  await assert.rejects(repoContext(env,'t',fork.info.id),err('no_repo'));
   assert.ok(await ctx.stub.ref('main'));
 });
 test('stored legacy volume mounts still read and write through volume tools',async()=>{

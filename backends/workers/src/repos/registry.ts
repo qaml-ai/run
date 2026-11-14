@@ -9,7 +9,7 @@ export type RepoEnv = Env & CamelfsEnv & {
 export async function repoContext(env: RepoEnv, tenant: string, repoId: string) {
   const row = await env.TENANTS.getByName(tenant).repoRow(repoId);
   if (!row || row.deletedAt !== null)
-    throw new RepoError('no-repo', 404, 'no-repo');
+    throw new RepoError('no_repo', 404, 'no_repo');
   return { env, tenant, repoId, stub: env.REPOS.getByName(`${tenant}:${repoId}`), storage: camelfsStorage(env), lineage: row.lineage };
 }
 export type RepoContext = Awaited<ReturnType<typeof repoContext>>;
@@ -25,7 +25,7 @@ export async function versionEntries(ctx: RepoContext, version: string, tree: st
     return entries;
   }
   catch (e) {
-    if (repoErrorFrom(e)?.code !== 'not-cached')
+    if (repoErrorFrom(e)?.code !== 'not_cached')
       throw e;
   }
   return (await ctx.storage.listAll(ctx.lineage, tree)).filter((e): e is Entry => 'blob' in e) as Entry[];
@@ -42,8 +42,8 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
   };
 } = {}) {
   const name = input.name ?? 'repo';
-  check(typeof name === 'string' && name.length >= 1 && name.length <= 120, 'bad-name');
-  check(input.key === undefined || (typeof input.key === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(input.key)), 'bad-key');
+  check(typeof name === 'string' && name.length >= 1 && name.length <= 120, 'bad_name');
+  check(input.key === undefined || (typeof input.key === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(input.key)), 'bad_key');
   const id = 'repo_' + (input.key === undefined ? randomBytes(12).toString('hex') : createHash('sha256').update(`repo-key:${tenant}:${input.key}`).digest('hex').slice(0, 24));
   let lineage = `${tenant}:${id}`, seed;
   if (input.from) {
@@ -57,7 +57,7 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
   const index = env.TENANTS.getByName(tenant);
   const { row, existing } = await index.registerRepo({ id, name, key: input.key ?? null, lineage, createdAt: Date.now(), deletedAt: null, bytes: 0, files: 0 });
   if (row.deletedAt !== null)
-    throw new RepoError('deleted-key', 409, 'deleted-key');
+    throw new RepoError('deleted_key', 409, 'deleted_key');
   const stub = env.REPOS.getByName(`${tenant}:${id}`);
   if (existing) {
     // Registered earlier; init is idempotent, so only a create that stopped before it falls through.

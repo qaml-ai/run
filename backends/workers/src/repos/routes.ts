@@ -16,9 +16,9 @@ export function repoFailure(e: unknown): Response {
   if (e instanceof StorageError)
     return json({ error: `storage ${e.op ?? 'call'}: ${e.reason}`, code: e.code, storage: e.op ?? null, ...(e.details ? { detail: e.details } : {}) }, e.status >= 400 ? e.status : e.status === 0 ? 503 : 502);
   if (e instanceof SyntaxError || e instanceof URIError)
-    return json({ error: 'bad-input', code: 'bad-input' }, 400);
+    return json({ error: 'bad_input', code: 'bad_input' }, 400);
   if (e && typeof e === 'object' && 'status' in e && typeof e.status === 'number')
-    return json({ error: String(e), code: 'bad-input' }, e.status);
+    return json({ error: String(e), code: 'bad_input' }, e.status);
   throw e;
 }
 export async function boundedBody(request: Request, limit: number): Promise<Uint8Array> {
@@ -35,7 +35,7 @@ export async function boundedBody(request: Request, limit: number): Promise<Uint
       size += value.length;
       if (size > limit) {
         await reader.cancel();
-        throw new RepoError('too-large', 413, 'too-large');
+        throw new RepoError('too_large', 413, 'too_large');
       }
       chunks.push(value);
     }
@@ -69,7 +69,7 @@ export async function fileEntry(ctx: RepoContext, v: {
     if (stat.version === v.version) {
       const entry = stat.entries[path];
       if (!entry)
-        throw new RepoError('no-file', 404, 'no-file');
+        throw new RepoError('no_file', 404, 'no_file');
       return entry;
     }
   }
@@ -82,14 +82,14 @@ export async function fileEntry(ctx: RepoContext, v: {
       return entry as Entry;
     after = list.next;
   } while (after);
-  throw new RepoError('no-file', 404, 'no-file');
+  throw new RepoError('no_file', 404, 'no_file');
 }
 export async function streamFile(request: Request, ctx: RepoContext, v: {
   version: string;
   tree: string;
 }, e: Entry, immutable = false) {
   const range = request.headers.get('range');
-  check(!range || /^bytes=(?:\d+-\d*|-\d+)$/.test(range), 'bad-range');
+  check(!range || /^bytes=(?:\d+-\d*|-\d+)$/.test(range), 'bad_range');
   const response = await ctx.storage.openBlob(ctx.lineage, e.blob, v.tree, e.path, range ?? undefined), headers = new Headers(response.headers);
   headers.set('x-blob', e.blob);
   headers.set('x-version', v.version);
@@ -129,17 +129,17 @@ export async function streamFile(request: Request, ctx: RepoContext, v: {
 }
 async function contents(ctx: RepoContext, tree: string, entries: Entry[], limit = 16 * 2 ** 20) {
   if (entries.length > 1000 || entries.reduce((s, e) => s + e.size, 0) > limit)
-    throw new RepoError('too-large', 413, 'too-large');
+    throw new RepoError('too_large', 413, 'too_large');
   const result: unknown[] = [];
   let used = 0;
   for (let i = 0; i < entries.length; i += 256) {
     const batch = await ctx.storage.readBatch(ctx.lineage, tree, entries.slice(i, i + 256).map(e => e.path), limit - used);
     for (const e of batch) {
       if ('error' in e)
-        throw new RepoError('no-file', 404, 'no-file');
+        throw new RepoError('no_file', 404, 'no_file');
       used += e.bytes.length;
       if (used > limit)
-        throw new RepoError('too-large', 413, 'too-large');
+        throw new RepoError('too_large', 413, 'too_large');
       const { bytes, ...rest } = e;
       let content;
       try {
@@ -159,7 +159,7 @@ export async function handleRepoRequest(request: Request, env: RepoEnv, principa
   if (path !== '/v1/repos' && !path.startsWith('/v1/repos/'))
     return null;
   if (!camelfsConfigured(env))
-    return json({ code: 'storage-unavailable' }, 503);
+    return json({ code: 'storage_unavailable' }, 503);
   try {
     if (request.method === 'POST' && request.headers.has('Idempotency-Key'))
       return await withMoneyIdempotency(request, env, principal.tenantId, r => route(r, env, principal.tenantId, path)) ?? null;
@@ -184,7 +184,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   }
   const match = /^\/v1\/repos\/([^/]+)(?:\/(.*))?$/.exec(path);
   if (!match)
-    throw new RepoError('not-found', 404, 'not-found');
+    throw new RepoError('not_found', 404, 'not_found');
   const id = decodeURIComponent(match[1]), tail = match[2] ?? '', ctx = await repoContext(env, tenant, id), ref = s.get('ref') ?? 'main', actor = apiWrite(tenant);
   if (!tail && method === 'GET')
     return json(await ctx.stub.info());
@@ -202,7 +202,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
       for (let attempt = 0;; attempt++) {
         const head = await ctx.stub.ref(name);
         if (!head)
-          throw new RepoError('no-ref', 404, 'no-ref');
+          throw new RepoError('no_ref', 404, 'no_ref');
         try {
           await ctx.stub.deleteRef(name, s.get('expect') ?? head.version);
           break;
@@ -227,7 +227,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   if (tail.startsWith('commits/') && method === 'GET') {
     const v = await ctx.stub.commit(decodeURIComponent(tail.slice(8)));
     if (!v)
-      throw new RepoError('no-commit', 404, 'no-commit');
+      throw new RepoError('no_commit', 404, 'no_commit');
     return json(v);
   }
   if (tail === 'diff' && method === 'GET') {
@@ -268,7 +268,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
       }
     }
     if (size > 16 * 2 ** 20)
-      throw new RepoError('too-large', 413, 'too-large');
+      throw new RepoError('too_large', 413, 'too_large');
     return json(await commitChanges(ctx, { ref: b.ref ?? 'main', expect: b.expect, changes, message: b.message ?? 'commit', ...actor }));
   }
   if (tail.startsWith('files/') && (method === 'PUT' || method === 'DELETE')) {
@@ -276,7 +276,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
     if (method === 'DELETE') {
       const head = await ctx.stub.ref(ref);
       if (!head || (await ctx.stub.stat(ref, [p])).entries[p] === null)
-        throw new RepoError('no-file', 404, 'no-file');
+        throw new RepoError('no_file', 404, 'no_file');
     }
     const result = await commitChanges(ctx, { ref, changes: { [p]: method === 'DELETE' ? null : { bytes: await boundedBody(request, 256 * 2 ** 20), mode: (request.headers.get('x-mode') ?? undefined) as Mode | undefined } }, pathExpect: expect ? { [p]: expect } : undefined, message: `${method === 'PUT' ? 'put' : 'delete'} ${p.slice(0, 1000)}`, ...actor });
     const e = result.files[p];
@@ -302,7 +302,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   if ((tail.startsWith('files/') || tail.startsWith('blobs/')) && (method === 'GET' || method === 'HEAD')) {
     const blob = tail.startsWith('blobs/'), p = normalizeRepoPath(blob ? s.get('path') ?? '' : decodeURIComponent(tail.slice(6))), e = await fileEntry(ctx, v, p);
     if (blob && e.blob !== decodeURIComponent(tail.slice(6)))
-      throw new RepoError('not-in-tree', 404, 'not-in-tree');
+      throw new RepoError('not_in_tree', 404, 'not_in_tree');
     return streamFile(request, ctx, v, e, blob);
   }
   if (tail === 'files' && method === 'GET') {
@@ -321,7 +321,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   if (tail === 'export' && method === 'GET') {
     const entries = await versionEntries(ctx, v.version, v.tree);
     if (entries.length > 10000 || entries.reduce((s, e) => s + e.size, 0) > 2 ** 30)
-      throw new RepoError('too-large', 413, 'too-large');
+      throw new RepoError('too_large', 413, 'too_large');
     async function* files() {
       for (let i = 0; i < entries.length;) {
         const paths: string[] = [];
@@ -353,7 +353,7 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
         const batch = await ctx.storage.readBatch(ctx.lineage, v.tree, paths);
         for (const e of batch) {
           if ('error' in e)
-            throw new RepoError('no-file', 404, 'no-file');
+            throw new RepoError('no_file', 404, 'no_file');
           yield { name: e.path, size: e.size, mtime: 0, async *stream() { yield e.bytes; } };
         }
       }
@@ -372,5 +372,5 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
       }, async cancel() { await archive.return(undefined); } });
     return new Response(body, { headers: { 'content-type': 'application/x-tar', 'cache-control': 'no-store' } });
   }
-  throw new RepoError('not-found', 404, 'not-found');
+  throw new RepoError('not_found', 404, 'not_found');
 }
