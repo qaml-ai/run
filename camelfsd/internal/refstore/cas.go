@@ -55,13 +55,16 @@ func (s *Store) Cas(ctx context.Context, lineage, name string, m Move) (Result, 
 	if m.APIWrite {
 		attempts = 1 // The API rebuilds a write once, against the newly read head.
 	}
+	known := m.Known
 	for range attempts {
 		var r Ref
 		now := s.now().UnixMilli()
-		if known := m.Known; m.APIWrite && known != nil &&
+		// The supplied head serves the first attempt only; a later attempt rereads.
+		if known != nil && m.APIWrite &&
 			known.Lineage == lineage && known.Name == name && known.live(now) && !known.held(now) &&
 			m.Fence == nil && m.Version != known.Version {
 			r = *known
+			known = nil
 		} else {
 			// No-ops and an expired or held snapshot need a fresh read.
 			var err error
