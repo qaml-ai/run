@@ -11,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.78.0
 	github.com/aws/smithy-go v1.22.2
 	github.com/mattn/go-sqlite3 v1.14.24
+	golang.org/x/net v0.37.0
 	golang.org/x/sys v0.31.0
 )
 
