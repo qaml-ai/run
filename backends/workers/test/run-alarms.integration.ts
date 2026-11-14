@@ -31,14 +31,13 @@ async function fixture(t: TestContext) {
   return { f, call, receiptCount, waitForReceipt };
 }
 
-test("a tracked slow turn only checks live limits between deadlines and settles without polling", { timeout: 60000 }, async t => {
+test("a tracked slow turn checks its admission limits between deadlines and settles without polling", { timeout: 60000 }, async t => {
   const { call, receiptCount, waitForReceipt } = await fixture(t);
   const { id } = await call("/v1/agents", { model: "test/echo" });
   await call(`/v1/agents/${id}/requests`, {
     id: "slow-tracked", method: "prompt", params: { text: "slow:6500:tracked completion" },
   });
-  // Let any alarm armed before the tracker was attached finish. Keep live
-  // policy checks without repeating maintenance or its duplicate limit reads.
+  // Let any alarm armed before the tracker was attached finish.
   await delay(1700);
   const before = await call(`/experimental/agents/${id}/__test/alarm-state`);
   await delay(2200);
@@ -46,8 +45,7 @@ test("a tracked slow turn only checks live limits between deadlines and settles 
   assert.ok(after.wakes > before.wakes, "the durable watchdog must remain armed for a crash");
   const queries = (state: any) => Object.values(state.profile.phases).reduce((sum: number, phase: any) => sum + phase.queries, 0);
   const idleQueries = queries(after) - queries(before);
-  assert.ok(idleQueries > 0 && idleQueries <= 3 * (after.wakes - before.wakes),
-    `only three live-limit reads per watchdog: ${idleQueries} queries in ${after.wakes - before.wakes} wakes`);
+  assert.equal(idleQueries, 0, `Postgres statements in ${after.wakes - before.wakes} watchdog wakes`);
   assert.equal(await receiptCount(), 0);
   await waitForReceipt();
   assert.equal(await receiptCount(), 1);
@@ -56,11 +54,11 @@ test("a tracked slow turn only checks live limits between deadlines and settles 
   assert.equal(result.status, "completed");
 });
 
-test("a live tenant time-limit change stops a tracked model without an agent request", { timeout: 60000 }, async t => {
+test("a tracked model keeps its admission time limit when tenant policy changes", { timeout: 60000 }, async t => {
   const { f, call, waitForReceipt } = await fixture(t);
   const { id } = await call("/v1/agents", { model: "test/echo", runLimits: { maxSeconds: 60 } });
   await call(`/v1/agents/${id}/requests`, {
-    id: "live-limit", method: "prompt", params: { text: "slow:15000:must observe tenant policy" },
+    id: "live-limit", method: "prompt", params: { text: "slow:4000:keeps its admitted time limit" },
   });
   let started = false;
   for (let i = 0; i < 100; i++) {
@@ -69,12 +67,10 @@ test("a live tenant time-limit change stops a tracked model without an agent req
   }
   assert.ok(started, "the provider call must start before the tenant limit changes");
   await delay(1200);
-  const updated = Date.now();
   await f.db.query("update tenants set limits=coalesce(limits,'{}'::jsonb) || '{\"maxRunSeconds\":1}'::jsonb where id=$1", ["camelrun-proto-local"]);
   await waitForReceipt();
-  assert.ok(Date.now() - updated < 6000, "the one-second watchdog must observe the tighter tenant cap");
   const result = await call(`/v1/agents/${id}/requests/live-limit`);
-  assert.equal(result.outcome.result.code, "turn_limit", JSON.stringify(result));
+  assert.equal(result.status, "completed", JSON.stringify(result));
 });
 
 test("an interrupted result waiter re-arms durable settlement recovery", { timeout: 60000 }, async t => {

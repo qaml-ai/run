@@ -826,9 +826,9 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
         if (!resumed) {
           await this.flushBilling(true);
-          if (!system) await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined, old.params?.endUser as string | undefined);
+          const limitsSnapshot = system ? undefined : await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined, old.params?.endUser as string | undefined);
           resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
-            outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined,
+            limitsSnapshot, outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined,
             usageBaseline: this.usageView(await this.usageForRequest(piId)) };
           await this.ctx.storage.put(reqKey(resumeId), resumed);
           await this.emit({ type: "event", requestId: resumeId, event: { type: "agent_start" } });
