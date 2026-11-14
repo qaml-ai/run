@@ -8,11 +8,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 )
 
 type StorageServer struct {
+	compute     http.Handler
+	refs        *refstore.Store
+	marksTable  string
+	lineages    *lineageStore
 	repo        func() *objects.Repository
 	version     string
 	authorize   func(http.ResponseWriter, *http.Request) *http.Request
@@ -30,6 +37,20 @@ func NewStorageServer(repo *objects.Repository, version string, keys *auth.Keys)
 	}
 }
 
+// ConfigureRefs enables the tier's DynamoDB-backed lineage and ref routes.
+func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineagesTable string, now func() time.Time, marksTable ...string) {
+	if now == nil {
+		now = time.Now
+	}
+	s.lineages = &lineageStore{client: client, table: aws.String(lineagesTable), now: now}
+	s.refs = refstore.New(client, refsTable, now, commitParents{s.repo()})
+	s.refs.GuardLineages(lineagesTable)
+	s.marksTable = "marks"
+	if len(marksTable) != 0 {
+		s.marksTable = marksTable[0]
+	}
+}
+
 func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/v0/health":
@@ -41,6 +62,10 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		stats := s.repo().DB.DB.Stats()
 		jsonReply(w, http.StatusOK, map[string]int{"cacheConnections": stats.OpenConnections, "cacheInUse": stats.InUse})
+	case s.compute != nil && (r.URL.Path == "/v1/usage" || r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/")):
+		if r = s.authorize(w, r); r != nil {
+			s.compute.ServeHTTP(w, r)
+		}
 	case strings.HasPrefix(r.URL.Path, "/v1/lineages/"):
 		s.loggedStorage(w, r)
 	default:

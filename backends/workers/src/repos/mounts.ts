@@ -2,8 +2,8 @@ import { repoProvision, planRepo, plannedRow } from './provision.ts';
 import { agentRepoId } from "./identity.ts";
 export { agentRepoId } from "./identity.ts";
 import { mountNotesTooLong } from "../../../../shared/mount-notes.ts";
-import { FileError, normalizePath } from "../volume.ts";
-import { VOLUME_LIMITS } from "../volume-policy.ts";
+import { FileError, normalizePath } from "../file-errors.ts";
+import { MOUNT_LIMIT } from "../file-policy.ts";
 import { withSql } from "../postgres.ts";
 import { agentRepo, deleteRepo, repoContext, type RepoEnv } from "./registry.ts";
 import { refName, repoErrorFrom } from "./repo-policy.ts";
@@ -15,9 +15,9 @@ export async function prepareMounts(
   requested: unknown,
 ): Promise<Mount[]> {
   if (requested === undefined) requested = [];
-  if (!Array.isArray(requested) || requested.length > VOLUME_LIMITS.mounts)
+  if (!Array.isArray(requested) || requested.length > MOUNT_LIMIT)
     throw new FileError(
-      `mounts must be an array of at most ${VOLUME_LIMITS.mounts}`,
+      `mounts must be an array of at most ${MOUNT_LIMIT}`,
     );
   const own = agentRepoId(tenant, agent),
     asked = requested as Record<string, unknown>[];
@@ -52,7 +52,7 @@ export async function prepareMounts(
     !expanded.some((m) => normalizePath(m.path) === "/workspace")
   )
     expanded.push({ repo: own, path: "/workspace", mode: "rw" });
-  if (expanded.length > VOLUME_LIMITS.mounts) throw new FileError(`mounts must be an array of at most ${VOLUME_LIMITS.mounts}`);
+  if (expanded.length > MOUNT_LIMIT) throw new FileError(`mounts must be an array of at most ${MOUNT_LIMIT}`);
   if (mountNotesTooLong(expanded)) throw new FileError("Mount instructions total must be at most 8192 characters");
   const mounts: Mount[] = [];
   for (const m of expanded) {

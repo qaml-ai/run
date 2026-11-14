@@ -68,12 +68,14 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const auth = { tenantId: "t", scopes: ["*"] };
   assert.equal((await handleCamelfsSmoke(request(), { ...env, CAMELFS_URL: undefined }, auth)).status, 404);
   assert.equal((await handleCamelfsSmoke(request(), env, { ...auth, scopes: [] })).status, 403);
+  assert.equal((await handleCamelfsSmoke(new Request("https://runtime/v1/internal/camelfs/smoke?iterations=501", { method: "POST" }), env, auth)).status, 400);
   const response = await handleCamelfsSmoke(request(), env, auth);
-  const smoke = await response.json() as { lineage: string; ok: boolean; timings: Record<string, number> };
+  const smoke = await response.json() as { lineage: string; ok: boolean; routes: Record<string, { count: number; p50: number; p95: number; p99: number }> };
   assert.equal(response.status, 200, JSON.stringify(smoke));
   assert.equal(smoke.ok, true);
   assert.match(smoke.lineage, /^smoke:/);
-  assert.deepEqual(Object.keys(smoke.timings), ["putBlob", "commit", "readBatch", "getCommit"]);
+  assert.deepEqual(Object.keys(smoke.routes), ["putBlob", "commit", "readBatch", "getCommit"]);
+  assert.ok(Object.values(smoke.routes).every(r => r.count === 1 && r.p50 >= 0 && r.p99 >= r.p50));
   assert.deepEqual(calls.map(c => [c.method, c.claims.lin, c.claims.acc, c.claims.sub, c.claims.refs]), [
     ["PUT", smoke.lineage, "w", "runtime:camelfs-smoke", []],
     ["POST", smoke.lineage, "w", "runtime:camelfs-smoke", []],
@@ -81,10 +83,10 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
     ["GET", smoke.lineage, "r", "runtime:camelfs-smoke", []],
   ]);
 
-  const { camelfsStorage } = await import("../src/repos/storage.ts");
+  const { repoStorage } = await import("../src/camelfs/repo-storage.ts");
   const row = { id: "repo_r3", name: "r3", key: null, createdAt: 1, deletedAt: null, lineage: "t:repo_r3", files: 0, bytes: 0 };
   const repo = new HttpRepoClient(env, "t", row, "agent:caller");
-  const storage = camelfsStorage(env, "agent:caller");
+  const storage = repoStorage(env, "agent:caller");
   const meta = { author: "agent:caller", message: "test", time: 1763046000, trailers: { "Camel-Op": "api" } };
   await repo.prepareLineage();
   const foreign = new HttpRepoClient(env, "another", row, "api:another");

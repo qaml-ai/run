@@ -10,9 +10,15 @@ server is needed. No production service is changed. Read
 limitations of this experiment.
 
 The app uses real Postgres migrations, Pi Durable in an agent DO, an isolated
-remote codemode worker, tenant admission DOs, volume DOs, R2, Images and Queues.
+remote codemode worker, tenant admission DOs, repo DOs, R2, Images and Queues.
 Its default configuration deliberately uses a deterministic local model and
 local-only fixture credentials. It is not a deployable production configuration.
+
+Workers files use `/v1/repos`. Agent mounts use `{ repo, path, mode }`, image saves
+use `{ repo, path }`, and apply takes repo IDs in mounts. Requests to
+`/v1/volumes` and its subpaths return 410. The internal Volume binding still
+serves snapshots for the old job paths. Pilot Volume data is test data and
+will not be migrated when that binding is removed.
 
 ## Run locally
 

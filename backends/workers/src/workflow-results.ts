@@ -32,7 +32,7 @@ export async function sha256(text: string) {
 
 /**
  * The cache key of an effect: its canonical arguments (the VM's JSON, which already keys an effect's identity), and for
- * a repo reader its resolved tree, or a volume reader its seq before it started.
+ * a repo reader its resolved tree. Legacy jobs use the source sequence.
  */
 export function cacheKey(args: string, baseSeq?: number | string) {
   return baseSeq === undefined ? args : `${args}\n@base:${baseSeq}`;

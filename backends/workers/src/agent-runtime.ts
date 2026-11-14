@@ -1,3 +1,4 @@
+import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
 import { SharedAgents } from "../../../src/shared-agents.ts";
@@ -421,6 +422,9 @@ export class AgentRuntime extends AgentContext {
   resumeKeptQueue() {
     return resumeKeptQueueImpl.call(this);
   }
+
+  /** A notify delivery for a repo this agent watches: an idempotent outbox row, drained by the alarm. */
+  stageRepoMove(move: RefMove) { return stageRepoMove(this.ctx.storage, move); }
 
   removeMember(member: string) {
     return removeMemberImpl.call(this, member);

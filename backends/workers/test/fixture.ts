@@ -1,20 +1,16 @@
 import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createCipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
+import { checkFixtureLifecycle, registerFixture } from "./fixture-lifecycle.ts";
 import { createMigratedDatabase } from "./migrated-database.ts";
 import { publicAssets } from "../scripts/public-assets.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const activeFixtures = new Set<() => Promise<void>>();
-function stopActiveFixtures() {
-  for (const stop of activeFixtures) void stop().catch(error => {
-    console.error(`Local Worker signal cleanup failed: ${error.message}`);
-  });
-}
 /** The alarm guard's lines in a worker's log (src/alarm-guard.ts): hot loops, and immediate re-arms counted per object. */
 export function alarmFindings(logs: string) {
   const hot: string[] = [], due: Record<string, number> = {};
@@ -28,20 +24,6 @@ export function alarmFindings(logs: string) {
   return { hot, due: Object.entries(due).map(([object, count]) => ({ object, count })) };
 }
 
-function registerFixture(stop: () => Promise<void>) {
-  if (!activeFixtures.size) {
-    process.on("SIGTERM", stopActiveFixtures);
-    process.on("SIGINT", stopActiveFixtures);
-  }
-  activeFixtures.add(stop);
-  return () => {
-    activeFixtures.delete(stop);
-    if (!activeFixtures.size) {
-      process.off("SIGTERM", stopActiveFixtures);
-      process.off("SIGINT", stopActiveFixtures);
-    }
-  };
-}
 /** pg-pool removes idle clients from its count before their socket-end callback.
  * Wait for those callbacks too before DROP DATABASE can terminate the sockets. */
 async function closePool(db: pg.Pool) {
@@ -142,16 +124,23 @@ export async function startFixture(
   const admin = new pg.Client({ connectionString: base });
   cleanups.push(() => admin.end());
   try {
+  checkFixtureLifecycle();
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   await admin.connect();
   await createMigratedDatabase(admin, base, schema);
-  cleanups.push(async () => { await admin.query(`drop database ${schema} with (force)`); });
+  // Keep migration and teardown alive while they use the maintenance connection.
+  // Between them an abandoned fixture must be able to exit.
+  const adminSocket = admin.connection.stream as Socket;
+  cleanups.push(async () => {
+    adminSocket.ref();
+    await admin.query(`drop database ${schema} with (force)`);
+  });
   // Hyperdrive validates a password even when isolated local Postgres uses trust auth.
   if (!parsed.password) parsed.password = "local-only-unused";
   parsed.pathname = `/${schema}`;
   parsed.search = "";
   const databaseUrl = parsed.toString(),
-    db = new pg.Pool({ connectionString: databaseUrl });
+    db = new pg.Pool({ connectionString: databaseUrl, allowExitOnIdle: true });
   cleanups.push(() => closePool(db));
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
@@ -207,7 +196,7 @@ export async function startFixture(
     camelfsVars = { CAMELFS_URL: daemon.url };
   }
   if (camelfs && !options.vars?.TEST_CAMELFS_URL) {
-    const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken);
+    const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken, { unref: true });
     cleanups.push(() => daemon.close());
     camelfsVars = { TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: camelfsToken };
   }
@@ -248,8 +237,8 @@ export async function startFixture(
     token,
   );
   startingWorker = worker;
-  cleanups.push(() => worker.stop());
-  await worker.start();
+  adminSocket.unref();
+  await worker.start(options.signal);
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   finishStartup();
   if ((config.vars.MAIL_TEST_URL || options.scheduled) && !stopped) {
@@ -271,7 +260,7 @@ export async function startFixture(
       await worker.stop(crash);
       Object.assign(config.vars, vars);
       await writeFile(configPath, JSON.stringify(config));
-      await worker.start();
+      await worker.start(options.signal);
     },
   };
   } catch (error) {

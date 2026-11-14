@@ -32,8 +32,7 @@ import { readAttachment } from "./repos/attachments.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import type { WriteInput } from "./repos/write.ts";
 
-import { uploadFile } from "./file-upload.ts";
-import { normalizePath, type FileEntry } from "./volume.ts";
+import { normalizePath } from "./file-errors.ts";
 import {
   boundedBytes,
   imageReferenceInput,

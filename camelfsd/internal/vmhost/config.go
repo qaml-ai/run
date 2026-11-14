@@ -60,13 +60,14 @@ var defaultEgress = []string{
 	"proxy.golang.org", "sum.golang.org",
 }
 
-type policy struct {
+// EgressPolicy is the policy written for one guest address.
+type EgressPolicy struct {
 	Job   string   `json:"job"`
 	Allow []string `json:"allow"`
 }
 
-func (l *Launcher) policy(id string, internet bool) policy {
-	p := policy{Job: id, Allow: []string{}}
+func (l *Launcher) policy(id string, internet bool) EgressPolicy {
+	p := EgressPolicy{Job: id, Allow: []string{}}
 	if internet {
 		allowed := l.Egress
 		if allowed == nil {
@@ -80,7 +81,7 @@ func (l *Launcher) policy(id string, internet bool) policy {
 	return p
 }
 
-func writePolicy(dir string, ip netip.Addr, p policy) error {
+func writePolicy(dir string, ip netip.Addr, p EgressPolicy) error {
 	if !ip.Is4() {
 		return errors.New("invalid guest address")
 	}

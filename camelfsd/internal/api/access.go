@@ -46,6 +46,15 @@ func storageLogRoute(path string) (route, lineage string) {
 		return
 	}
 	lineage = url.PathEscape(parts[0])
+	if len(parts) == 1 {
+		return "/v1/lineages/:lineage", lineage
+	}
+	if parts[1] == "refs" {
+		if len(parts) == 2 {
+			return "/v1/lineages/:lineage/refs", lineage
+		}
+		return "/v1/lineages/:lineage/refs/:name", lineage
+	}
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "blobs", "commits", "read", "diff", "merge", "grep":

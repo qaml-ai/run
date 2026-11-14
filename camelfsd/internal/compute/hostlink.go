@@ -46,10 +46,6 @@ func (v VM) BootSpec() (hostwire.BootSpec, error) {
 		Shape:    hostwire.Shape{VCPUs: v.Shape.VCPUs, MemoryMiB: v.Shape.MemoryMiB, DiskMiB: v.Shape.diskMiB()},
 		Internet: v.Internet, Deadline: v.LeaseDeadline,
 	}
-	if v.Job != nil {
-		q.Job = &hostwire.Job{Command: v.Job.Command, TimeoutS: v.Job.TimeoutS, Env: v.Job.Env,
-			Outputs: v.Job.Outputs, Commit: v.Job.Commit, Pids: v.Job.Pids}
-	}
 	if v.Session != nil {
 		q.Session = &hostwire.Session{IdleStopS: v.Session.IdleStopS}
 	}
@@ -84,4 +80,22 @@ func (c *Controller) pushStop(ctx context.Context, v VM) {
 	if err != nil && !errors.Is(err, context.Canceled) {
 		c.log("host_stop_push_failed", map[string]any{"vm": v.ID, "host": v.Host, "error": err.Error()})
 	}
+}
+
+// RunningHost resolves the current boot of a running VM for session requests.
+func (c *Controller) RunningHost(ctx context.Context, v VM) (Host, error) {
+	if v.Phase != Running {
+		return Host{}, ErrPhase
+	}
+	h, err := c.Host(ctx, v.Pool, v.Host)
+	if errors.Is(err, ErrNotFound) {
+		return Host{}, ErrPhase
+	}
+	if err != nil {
+		return Host{}, err
+	}
+	if !v.onHost(h) || h.Lost || h.Restarting || h.LastSeenAt <= c.hostCutoff(c.now().UnixMilli()) {
+		return Host{}, ErrPhase
+	}
+	return h, nil
 }

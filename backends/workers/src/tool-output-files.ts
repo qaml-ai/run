@@ -7,7 +7,7 @@ import type { FileBindings, Mount as Mount } from './files.ts';
 import { scratchMount } from './media/files-policy.ts';
 import type { WebFiles } from './web-policy-host.ts';
 
-/** Files returned by a tool share the volume writer and the source's per-call cap. */
+/** Files returned by a tool share the repo writer and the source's per-call cap. */
 export async function toolResultFiles(env: FileBindings, scope: { tenant: string; agent: string; mounts: Mount[]; tool: string; call: string; requestId?:string }): Promise<WebFiles | undefined> {
   const own = agentRepoId(scope.tenant, scope.agent);
   const mount = scratchMount(scope.mounts.map(value => ({ ...value, workspace: value.repo === own })));

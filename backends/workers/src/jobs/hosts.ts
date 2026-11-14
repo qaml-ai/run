@@ -22,7 +22,7 @@ import type { KeyEnv } from "../security-services.ts";
 import { keyServices } from "../security-services.ts";
 import { transaction, withSql } from "../postgres.ts";
 import type { WebhookEnv } from "../webhooks.ts";
-import { camelfsConfigured, importTree, volumeLineage, type CamelfsEnv } from "./camelfs.ts";
+import type { CamelfsEnv } from "../repos/storage.ts";
 import type { Volume } from "../volume.ts";
 import { volumeFiles, type VolumeSyncEnv } from "./camel-sync.ts";
 import { jobLifetimeMs, jobPath, jobSpec, JOB_LIMITS, type JobResult, type JobSpec, type JobStream } from "./job.ts";
@@ -57,6 +57,7 @@ const ATTESTATION_MEMORY_MS = 20 * 60_000;
 export const HOST_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
 export type JobHostsEnv = KeyEnv & WebhookEnv & Omit<VolumeSyncEnv, "VOLUMES" | "BUCKET"> & HostPriceEnv & CamelfsEnv & {
+  // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
   VOLUMES?: DurableObjectNamespace<Volume>;
   BUCKET?: R2Bucket;
   /** Which attestors enroll hosts: "aws" (needs JOB_HOST_ROLE_ARNS), "test" (needs TEST_MODE and JOB_HOST_TEST_SECRET). */
@@ -757,9 +758,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       try { await measure("admitMs", () => meter.admit(spec.payer)); }
       catch (error) { return fail("admission_refused", error instanceof Error ? error.message.slice(0, 500) : "Refused"); }
       if (waiting.stopped) return fail("stopped", "The job was stopped");
-      try { if (!spec.repo) ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec))); }
+      try { if (!spec.repo) ({ files, sync } = await measure("filesMs", () => this.files(spec))); }
       catch (error) { return fail("sync_failed", error instanceof Error ? error.message.slice(0, 500) : "The job's files could not be read"); }
-      if (camelfs) steps.importMs = steps.filesMs!;
       if (waiting.stopped) return fail("stopped", "The job was stopped");
       // A host of its pool, in turn: it waits (counted as demand, which the scaler grows the pool by) until one is free.
       const stopped = async (host?: string, slot = false) => {
@@ -785,7 +785,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     } else {
       // Recovery may precede JobHost's first durable insert. Rebuild the same snapshot's wire spec in that case too.
       // Admission, placement and the computer reservation are already held.
-      if (!spec.repo) ({ files, sync, camelfs } = await measure("filesMs", () => this.files(spec)));
+      if (!spec.repo) ({ files, sync } = await measure("filesMs", () => this.files(spec)));
     }
     const placedHost = host!;
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
@@ -918,9 +918,9 @@ export class HostJob extends DurableObject<JobHostsEnv> {
    * inline; a larger one (within the job sync limits) the host fetches itself, file by file (host-side sync): the job
    * gets a manifest and a token for this job's files only, valid for its lifetime, kept here hashed.
    */
-  private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"]; camelfs?: WireJob["camelfs"] }> {
+  private async files(spec: JobSpec): Promise<{ files: WireFile[]; sync?: WireJob["sync"] }> {
     // A result, not a throw: a JobSpecError loses its class across this object's RPC, and the caller must land it.
-    if (spec.commit && !camelfsConfigured(this.env)) throw new Error("commit needs camelFS, which this deployment does not have");
+    if (spec.commit) throw new Error("Job checkpoints require a repo source");
     const out: WireFile[] = [];
     let bytes = 0;
     const add = (path: string, data: Uint8Array) => {
@@ -929,27 +929,9 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       out.push({ path, data: toBase64(data) });
     };
     if (spec.files) { for (const [path, data] of Object.entries(spec.files)) add(path, data); return { files: out }; }
+    // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
     if (!spec.volume) return { files: out };
     if (!this.env.VOLUMES) throw new Error("Volume storage is not bound here");
-    if (camelfsConfigured(this.env)) {
-      const { tenant, volume: name, snapshot } = spec.volume, lineage = volumeLineage(tenant, name);
-      const volume = this.env.VOLUMES.getByName(lineage);
-      const cached = await volume.camelfsTree(snapshot);
-      if (cached) return { files: [], camelfs: { ...cached, ...(spec.commit ? { commit: true } : {}) } };
-      const { files: entries } = await volume.readSet("/", snapshot);
-      const files = entries.map(entry => ({ path: entry.path, key: entry.key, size: entry.size, sha256: entry.sha256 ?? entry.key.split("/").at(-1)! }));
-      const { tree } = await importTree(this.env, {
-        lineage, parentTree: await volume.latestCamelfsTree() ?? undefined, files,
-        read: async file => {
-          const object = await this.env.BUCKET?.get(file.key);
-          if (!object) throw new Error("camelFS import: a volume file object is missing");
-          // R2's body has a known length; stream it so concurrent uploads never buffer whole files in the DO.
-          return { body: object.body, size: object.size };
-        },
-      });
-      await volume.setCamelfsTree(snapshot, lineage, tree);
-      return { files: [], camelfs: { lineage, tree, ...(spec.commit ? { commit: true } : {}) } };
-    }
     const { files: entries } = await this.env.VOLUMES.getByName(`${spec.volume.tenant}:${spec.volume.volume}`).readSet("/", spec.volume.snapshot);
     if (entries.length > JOB_LIMITS.syncFiles) throw new Error(`A job syncs at most ${JOB_LIMITS.syncFiles} files`);
     const total = entries.reduce((sum, entry) => sum + entry.size, 0);
