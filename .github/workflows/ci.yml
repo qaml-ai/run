@@ -376,6 +376,8 @@ jobs:
         run: |
           out=$(go test -count=1 -v ./internal/refstore/... 2>&1)
           if grep -q -- "--- SKIP" <<<"$out" || ! grep -q -- "--- PASS: TestCasRace" <<<"$out"; then echo "$out" | tail -40; exit 1; fi
+          out=$(go test -count=1 -v -run TestDDBHostTierContract ./internal/computehost/ 2>&1)
+          if grep -q -- "--- SKIP" <<<"$out" || ! grep -q -- "--- PASS: TestDDBHostTierContract" <<<"$out"; then echo "$out" | tail -40; exit 1; fi
       - run: go build -o "$RUNNER_TEMP/camelfsd" ./cmd/camelfsd
       - uses: ./.github/actions/node-dependencies
       - name: Real camelfsd contract
