@@ -1,5 +1,6 @@
 import { handleCamelfsNotify, type NotifyEnv } from "./camelfs/notify.ts";
 import { handleCamelfsSmoke } from "./camelfs/smoke.ts";
+import { handlePilotReset } from "./camelfs/pilot-reset.ts";
 import { tierConfigured } from "./camelfs/tier.ts";
 import { storedConfiguration } from "./api-contract.ts";
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
@@ -421,6 +422,8 @@ const worker = {
           if (workflow) return workflow;
         }
         if (path === "/v1/internal/camelfs/smoke") return handleCamelfsSmoke(request, env as RepoEnv, auth);
+        // TEMPORARY(pilot-switch): R5 deletes this route.
+        if (path === "/v1/internal/camelfs/pilot-reset") return handlePilotReset(request, env as never, auth);
         const workflows = await workflowRoutes(request, env as unknown as WorkflowEnv & { AGENT_WORKFLOW_TENANTS?: string }, auth.tenantId);
         if (workflows) return workflows;
         const jobHosts = await jobHostRoutes(request, env as unknown as JobHostsEnv & { ADMIN_TENANTS?: string }, auth);

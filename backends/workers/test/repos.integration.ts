@@ -160,3 +160,32 @@ test(`agent workspace reads reuse the derived tree (tier=${camelfsTier})`, { tim
   assert.ok(afterWrite > 0);
   assert.deepEqual(runtime.camelfsCalls!.slice(afterWrite).filter(call => /^GET .*\/trees\//.test(call)), []);
 });
+
+test('pilot reset: dry run lists, confirm deletes agents and repos, a rerun is a no-op, other origins refuse', { timeout: 180000 }, async (t) => {
+  const tenant = 'camelrun-proto-local';
+  const f = await startFixture({ entrypoint: fileURLToPath(new URL('./camelfs-worker.ts', import.meta.url)),
+    vars: { ADMIN_TENANTS: tenant, AGENT_PUBLIC_URL: 'https://run-pilot.camelai.dev' } });
+  t.after(() => f.stop());
+  const call = async (path: string, method = 'GET', body?: unknown) => {
+    const r = await fetch(f.url + path, { method, headers: { authorization: `Bearer ${f.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: r.status, body: await r.json() as any };
+  };
+  const agent = await call('/v1/agents', 'POST', { model: 'test/echo' });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  const repo = await call('/v1/repos', 'POST', { name: 'standalone' });
+  assert.equal(repo.status, 201, JSON.stringify(repo.body));
+  const dry = await call('/v1/internal/camelfs/pilot-reset', 'POST');
+  assert.equal(dry.status, 200, JSON.stringify(dry.body));
+  assert.equal(dry.body.dryRun, true);
+  assert.ok(dry.body.wouldDelete.agents.some((a: { id: string }) => a.id === agent.body.id));
+  assert.ok(dry.body.wouldDelete.repos.some((r: { id: string }) => r.id === repo.body.id));
+  assert.match(dry.body.untouched, /balances/);
+  assert.equal((await call(`/v1/agents/${agent.body.id}`)).status, 200, 'a dry run changes nothing');
+  const done = await call('/v1/internal/camelfs/pilot-reset?confirm=1', 'POST');
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.equal(done.body.done, true); assert.deepEqual(done.body.remaining, { agents: 0, repos: 0 }); assert.deepEqual(done.body.failed, []);
+  assert.equal((await call('/v1/repos')).body.repos.length, 0);
+  const again = await call('/v1/internal/camelfs/pilot-reset?confirm=1', 'POST');
+  assert.equal(again.status, 200); assert.deepEqual(again.body.deleted, { agents: 0, repos: 0 });
+  assert.ok(f.worker.logs().includes('"type":"pilot_reset"'));
+});
