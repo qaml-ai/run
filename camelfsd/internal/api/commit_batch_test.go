@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestCommitBatchesBaseBlobMetadata(t *testing.T) {
+func TestCommitModeChangeUsesTreeSizes(t *testing.T) {
 	s := storageServer(t, store.Local{Dir: t.TempDir()})
 	repo := s.repository().ForLineage("l")
 	ctx := context.Background()
@@ -36,7 +36,7 @@ func TestCommitBatchesBaseBlobMetadata(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if queries != 3 {
-		t.Fatalf("metadata queries=%d, want 3 for 1001 blobs", queries)
+	if queries != 0 {
+		t.Fatalf("metadata queries=%d, want none for a mode-only change", queries)
 	}
 }
