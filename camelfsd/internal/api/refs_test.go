@@ -50,7 +50,7 @@ func TestRefsRoutes(t *testing.T) {
 	now := time.UnixMilli(1_800_000_000_000)
 	s.ConfigureRefs(client, refTable, lineages, func() time.Time { return now })
 	const lineage = "t:repo"
-	runtime := auth.Claims{Subject: "runtime:test", Lineage: lineage, Access: "w", Refs: []string{"**"}}
+	runtime := auth.Claims{Subject: "runtime:test", Lineage: lineage, Access: "w", Refs: []string{"*", "fork/*"}}
 	var claims = runtime
 	s.authorize = func(_ http.ResponseWriter, r *http.Request) *http.Request {
 		return r.WithContext(context.WithValue(r.Context(), claimsKey{}, claims))
@@ -208,28 +208,50 @@ func TestRefsRoutes(t *testing.T) {
 	}
 	expectUnchanged("main", before)
 
+	deny := func(reason, method, path string, body any, key string) {
+		t.Helper()
+		failure := call(method, path, body, key, 403, "forbidden")["error"].(map[string]any)
+		if failure["message"] != reason {
+			t.Fatalf("%s %s: want %q, got %v", method, path, reason, failure)
+		}
+	}
+	claims.Lineage = "t:other"
+	deny("token lineage does not match path", "GET", "/refs/main", nil, "")
+	claims = runtime
 	claims.Refs = []string{"fork/*"}
-	call("GET", "/refs/main", nil, "", 403, "forbidden")
-	call("POST", "/refs", ref("fork/a/b", base, nil), "", 403, "forbidden")
+	deny("ref fork/a/b is outside the token's refs", "POST", "/refs", ref("fork/a/b", base, nil), "")
+	deny("ref main is outside the token's refs", "POST", "/refs", ref("fork/a", base, nil), "create")
+	deny("ref main is outside the token's refs", "DELETE", "/refs/main", nil, "")
+	claims.Refs = []string{}
+	claims.Access = "r"
+	call("GET", "/refs/main", nil, "", 200, "")
+	call("GET", "", nil, "", 200, "")
+	call("GET", "/commits/"+base, nil, "", 200, "")
 	page := call("GET", "/refs?limit=1", nil, "", 200, "")
 	if page["next"] != "fork/a" || len(page["refs"].([]any)) != 1 {
 		t.Fatal(page)
 	}
 	page = call("GET", "/refs?prefix=fork/&after=fork/a", nil, "", 200, "")
-	if _, ok := page["next"]; ok || len(page["refs"].([]any)) != 1 {
+	if _, ok := page["next"]; ok || len(page["refs"].([]any)) != 1 || page["refs"].([]any)[0].(map[string]any)["name"] != "fork/pre" {
 		t.Fatal(page)
 	}
-	claims.Access = "r"
-	call("DELETE", "/refs/fork/a", nil, "", 403, "forbidden")
+	deny("write access required", "DELETE", "/refs/fork/a", nil, "")
 	claims = runtime
-	call("PUT", "/refs/main/watchers/workflow:w", nil, "", 204, "")
-	call("DELETE", "/refs/main/watchers/workflow:w", nil, "", 204, "")
+	const watcher = "/refs/main/watchers/workflow:w"
+	call("PUT", watcher, nil, "watch", 204, "")
+	call("PUT", watcher, map[string]string{"url": "https://example.invalid"}, "watch", 400, "invalid_request")
+	call("DELETE", watcher, map[string]any{}, "", 400, "invalid_request")
+	call("DELETE", watcher, nil, "", 204, "")
 	call("PUT", "/refs/main/watchers/invalid", nil, "", 400, "invalid_request")
 	holder := map[string]any{"host": "host", "boot": 1, "mount": "mount"}
 	lease := map[string]any{"holder": holder, "ttlMs": 1000}
 	claims.Subject = "agent:test"
-	call("POST", "/refs/main/lease", lease, "", 403, "forbidden")
-	call("DELETE", "", nil, "", 403, "forbidden")
+	deny("runtime token required", "POST", "/refs/main/lease", lease, "")
+	deny("runtime token required", "POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 1000}, "")
+	deny("runtime token required", "DELETE", "/refs/main/lease", nil, "")
+	deny("runtime token required", "PUT", watcher, nil, "")
+	deny("runtime token required", "DELETE", watcher, nil, "")
+	deny("runtime token required", "DELETE", "", nil, "")
 	claims = runtime
 	call("POST", "/refs/main/lease", map[string]any{"holder": holder, "ttlMs": 600001}, "", 400, "invalid_request")
 	taken := call("POST", "/refs/main/lease", lease, "lease", 200, "")
@@ -249,7 +271,7 @@ func TestRefsRoutes(t *testing.T) {
 	if !reflect.DeepEqual(leased["holder"], map[string]any{"host": "host", "boot": float64(1), "mount": "mount"}) {
 		t.Fatal(leased)
 	}
-	call("DELETE", "/refs/main?expect="+left, nil, "", 412, "stale")
+	call("DELETE", "/refs/main?expect="+left, nil, "", 409, "held")
 	call("DELETE", "/refs/main", nil, "", 409, "held")
 	cas("main", merge, merge, "", 409, "fenced")
 	if got := details(call("DELETE", "", nil, "", 409, "held")); !reflect.DeepEqual(got["held"], []any{"main"}) {
@@ -259,6 +281,11 @@ func TestRefsRoutes(t *testing.T) {
 	claims = auth.Claims{Subject: "host:one", Lineage: lineage, Access: "w", Refs: []string{"main"},
 		Fence: &auth.Fence{Holder: "host:1:mount", Epoch: int64(taken["epoch"].(float64))}}
 	cas("main", merge, merge, "", 200, "")
+	claims.Subject = runtime.Subject
+	bodyFence := map[string]any{"holder": holder, "epoch": taken["epoch"]}
+	call("POST", "/refs/main/cas", map[string]any{"commit": merge, "expect": merge, "fence": bodyFence}, "", 400, "invalid_request")
+	call("POST", "/refs/main/lease/renew", map[string]any{"ttlMs": 1000, "fence": bodyFence}, "", 400, "invalid_request")
+	call("DELETE", "/refs/main/lease", map[string]any{"fence": bodyFence}, "", 400, "invalid_request")
 	renew := call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 2000}, "", 200, "")
 	now = time.UnixMilli(int64(renew["deadline"].(float64)))
 	call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 1000}, "", 409, "fenced")
@@ -273,6 +300,9 @@ func TestRefsRoutes(t *testing.T) {
 	call("DELETE", "/refs/main/lease", nil, "release", 204, "")
 	call("DELETE", "/refs/main/lease", nil, "release", 204, "")
 	claims = runtime
+	if got := details(call("DELETE", "/refs/main?expect="+left, nil, "", 412, "stale")); got["current"] != merge {
+		t.Fatal(got)
+	}
 	call("DELETE", "/refs/main?expect="+merge, nil, "", 204, "")
 	reborn := call("POST", "/refs", ref("main", base, nil), "", 201, "")
 	if reborn["leaseEpoch"] != next["epoch"] {
@@ -294,10 +324,16 @@ func TestRefsRoutes(t *testing.T) {
 	}
 
 	call("POST", "/refs/main/lease", lease, "", 200, "")
-	result = call("DELETE", "/refs?owner=agent:test", nil, "", 200, "")
+	claims.Refs = []string{}
+	claims.Subject = "agent:test"
+	result = call("DELETE", "/refs?owner=agent:test", nil, "delete-owner", 200, "")
 	if !reflect.DeepEqual(result["held"], []any{"main"}) || !reflect.DeepEqual(result["deleted"], []any{"fork/a", "temp"}) {
 		t.Fatal(result)
 	}
+	if got := call("DELETE", "/refs?owner=agent:test", nil, "delete-owner", 200, ""); !reflect.DeepEqual(got, result) {
+		t.Fatal(got)
+	}
+	claims = runtime
 	now = now.Add(time.Second)
 	call("DELETE", "", nil, "delete-lineage", 204, "")
 	call("DELETE", "", nil, "delete-lineage", 204, "")
@@ -352,7 +388,7 @@ func TestRefMutationRoutes(t *testing.T) {
 	s.refs.GuardLineages(lineages)
 	const l = "test:mutations"
 	s.authorize = func(_ http.ResponseWriter, r *http.Request) *http.Request {
-		claims := auth.Claims{Subject: "runtime:test", Lineage: l, Access: "w", Refs: []string{"**"}}
+		claims := auth.Claims{Subject: "runtime:test", Lineage: l, Access: "w", Refs: []string{"*"}}
 		return r.WithContext(context.WithValue(r.Context(), claimsKey{}, claims))
 	}
 	call := func(method, path string, body any, status int, code string) map[string]any {

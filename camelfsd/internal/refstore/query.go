@@ -11,10 +11,6 @@ import (
 )
 
 func (s *Store) List(ctx context.Context, lineage, prefix, after string, limit int) ([]Ref, string, error) {
-	return s.ListMatching(ctx, lineage, prefix, after, limit, nil)
-}
-
-func (s *Store) ListMatching(ctx context.Context, lineage, prefix, after string, limit int, matches func(string) bool) ([]Ref, string, error) {
 	if !store.Lineage(lineage) || (after != "" && !ValidName(after)) || limit <= 0 {
 		return nil, "", failure("invalid", 400)
 	}
@@ -23,7 +19,7 @@ func (s *Store) ListMatching(ctx context.Context, lineage, prefix, after string,
 	refs := make([]Ref, 0, limit)
 	next := ""
 	err := s.scan(ctx, lineage, prefix, after, func(r Ref) (bool, error) {
-		if !r.live(now) || (matches != nil && !matches(r.Name)) {
+		if !r.live(now) {
 			return true, nil
 		}
 		if len(refs) == limit {

@@ -16,11 +16,11 @@ func deleteCheck(r Ref, expect *string, now int64) error {
 	if !r.live(now) {
 		return failure("no_ref", 404)
 	}
-	if expect != nil && r.Version != *expect {
-		return stale(r, now)
-	}
 	if r.held(now) {
 		return failure("held", 409)
+	}
+	if expect != nil && r.Version != *expect {
+		return stale(r, now)
 	}
 	return nil
 }
@@ -54,16 +54,12 @@ func (s *Store) Delete(ctx context.Context, lineage, name string, expect *string
 }
 
 func (s *Store) DeleteOwned(ctx context.Context, lineage, owner string) (deleted, held []string, err error) {
-	return s.DeleteOwnedMatching(ctx, lineage, owner, nil)
-}
-
-func (s *Store) DeleteOwnedMatching(ctx context.Context, lineage, owner string, matches func(string) bool) (deleted, held []string, err error) {
 	if !store.Lineage(lineage) || !ValidOwner(owner) {
 		return nil, nil, failure("invalid", 400)
 	}
 	err = s.scan(ctx, lineage, "", "", func(r Ref) (bool, error) {
 		now := s.now().UnixMilli()
-		if !r.live(now) || (matches != nil && !matches(r.Name)) || r.Owner == nil || *r.Owner != owner {
+		if !r.live(now) || r.Owner == nil || *r.Owner != owner {
 			return true, nil
 		}
 		if r.held(now) {

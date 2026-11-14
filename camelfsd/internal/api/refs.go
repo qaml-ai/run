@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,7 +78,7 @@ func replyRef(r refstore.Ref) (refReply, error) {
 func refMatcher(globs []string) func(string) bool {
 	patterns := make([]*regexp.Regexp, 0, len(globs))
 	for _, glob := range globs {
-		pattern := strings.NewReplacer(`\*\*`, `.*`, `\*`, `[^/]*`).Replace(regexp.QuoteMeta(glob))
+		pattern := strings.ReplaceAll(regexp.QuoteMeta(glob), `\*`, `[^/]*`)
 		patterns = append(patterns, regexp.MustCompile("^"+pattern+"$"))
 	}
 	return func(name string) bool {
@@ -101,7 +102,7 @@ type refRequest struct {
 
 // Ref names may contain slashes. The method disambiguates route suffixes.
 func parseRefRequest(r *http.Request, route string, claims auth.Claims) (refRequest, error) {
-	q := refRequest{matches: refMatcher(claims.Refs)}
+	var q refRequest
 	switch {
 	case route == "refs":
 		switch r.Method {
@@ -161,20 +162,38 @@ func parseRefRequest(r *http.Request, route string, claims auth.Claims) (refRequ
 		if !refstore.ValidName(q.name) {
 			return q, invalid("invalid ref name")
 		}
-		if !q.matches(q.name) {
-			return q, &storageError{403, "forbidden", nil}
+		if r.Method != http.MethodGet {
+			q.matches = refMatcher(claims.Refs)
+			if !q.matches(q.name) {
+				return q, refOutsideScope(q.name)
+			}
 		}
 	}
-	if (q.action == "watch" || (q.action == "lease" && r.Method == "POST")) && !runtimeSubject(claims) {
-		return q, &storageError{403, "forbidden", nil}
+	if (q.action == "watch" || q.action == "lease" || q.action == "renew") && !runtimeSubject(claims) {
+		return q, forbidden("runtime token required")
 	}
-	if r.Method != "GET" && claims.Fence != nil && (len(claims.Refs) != 1 || claims.Refs[0] != q.name) {
-		return q, &storageError{403, "forbidden", nil}
+	release := q.action == "lease" && r.Method == http.MethodDelete
+	if r.Method != http.MethodGet && claims.Fence != nil {
+		if len(claims.Refs) != 1 || claims.Refs[0] != q.name {
+			return q, forbidden("fence requires one exact ref")
+		}
+		if q.action != "cas" && q.action != "renew" && !release {
+			return q, forbidden("fence token cannot be used on this route")
+		}
 	}
-	if r.Method != "GET" && claims.Fence != nil && q.action != "cas" && q.action != "renew" && !(q.action == "lease" && r.Method == "DELETE") {
-		return q, &storageError{403, "forbidden", nil}
+	if q.action == "watch" || release {
+		if r.Body != nil {
+			var first [1]byte
+			if _, err := io.ReadFull(r.Body, first[:]); err != io.EOF {
+				return q, invalid("request body must be empty")
+			}
+		}
 	}
 	return q, nil
+}
+
+func refOutsideScope(name string) error {
+	return forbidden("ref " + name + " is outside the token's refs")
 }
 
 func runtimeSubject(c auth.Claims) bool { return strings.HasPrefix(c.Subject, "runtime:") }
@@ -204,7 +223,7 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 				return invalid("limit must be between 1 and 1000")
 			}
 		}
-		rows, next, err := s.refs.ListMatching(ctx, l, query.Get("prefix"), query.Get("after"), limit, q.matches)
+		rows, next, err := s.refs.List(ctx, l, query.Get("prefix"), query.Get("after"), limit)
 		if err != nil {
 			return err
 		}
@@ -238,7 +257,7 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 		}
 		jsonReply(w, 201, body)
 	case "deleteOwned":
-		deleted, held, err := s.refs.DeleteOwnedMatching(ctx, l, query.Get("owner"), q.matches)
+		deleted, held, err := s.refs.DeleteOwned(ctx, l, query.Get("owner"))
 		if err != nil {
 			return err
 		}

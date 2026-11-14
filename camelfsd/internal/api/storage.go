@@ -34,6 +34,10 @@ type invalidRequest string
 func (e invalidRequest) Error() string         { return string(e) }
 func invalid(format string, args ...any) error { return invalidRequest(fmt.Sprintf(format, args...)) }
 
+type forbidden string
+
+func (e forbidden) Error() string { return string(e) }
+
 type storageError struct {
 	status  int
 	code    string
@@ -57,10 +61,13 @@ func storageFail(w http.ResponseWriter, e error) {
 	var re *refstore.Error
 	var ae *apierr.Error
 	var validation invalidRequest
+	var denied forbidden
 	var missingSizes *objects.MissingTreeSizes
 	message := ""
 	if errors.As(e, &missingSizes) {
 		message = missingSizes.Error()
+	} else if errors.As(e, &denied) {
+		status, code, message = 403, "forbidden", denied.Error()
 	} else if errors.As(e, &validation) {
 		status, code, message = 400, "invalid_request", validation.Error()
 	} else if errors.As(e, &re) {
@@ -176,7 +183,6 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 	handler := func(w http.ResponseWriter) { s.storageRoute(w, r, l, route, repo) }
 	idemRoute := route
 	var replayRefMatches func(string) bool
-	var replayOwnerMatches func(string) bool
 	if s.lineages != nil {
 		claims, _ := ClaimsFromContext(r.Context())
 		item, err := s.lineages.get(r.Context(), l)
@@ -203,8 +209,12 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 			idemRoute = r.Method + " " + route
 			var request refRequest
 			if route == "" {
-				if (isDelete && !runtimeSubject(claims)) || (write && claims.Fence != nil) {
-					storageFail(w, &storageError{403, "forbidden", nil})
+				if isDelete && !runtimeSubject(claims) {
+					storageFail(w, forbidden("runtime token required"))
+					return
+				}
+				if write && claims.Fence != nil {
+					storageFail(w, forbidden("fence requires one exact ref"))
 					return
 				}
 			} else {
@@ -215,9 +225,6 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 				request, err = parseRefRequest(r, route, claims)
 				if request.action == "create" {
 					replayRefMatches = request.matches
-				}
-				if request.action == "deleteOwned" {
-					replayOwnerMatches = request.matches
 				}
 				if request.name != "" && request.action != "create" {
 					idemRoute = r.Method + " " + request.action + " " + request.name + " " + request.watcher
@@ -265,21 +272,8 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if !replayRefMatches(original.Name) {
-					storageFail(w, &storageError{403, "forbidden", nil})
+					storageFail(w, refOutsideScope(original.Name))
 					return
-				}
-			}
-			if replayOwnerMatches != nil {
-				var original struct{ Deleted, Held []string }
-				if err := json.Unmarshal(body, &original); err != nil {
-					storageFail(w, err)
-					return
-				}
-				for _, name := range append(original.Deleted, original.Held...) {
-					if !replayOwnerMatches(name) {
-						storageFail(w, &storageError{403, "forbidden", nil})
-						return
-					}
 				}
 			}
 			if status != http.StatusNoContent {
