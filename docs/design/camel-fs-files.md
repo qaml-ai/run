@@ -982,9 +982,22 @@ small range (`hash(id) mod 16`), so the tier nodes find pending deliveries with 
 ```
 POST {runtime}/v1/internal/camelfs/notify
 Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
-{ "id": "dlv_…", "lineage", "ref", "from": "<version>", "to": "<version>", "tree", "by": "agent:ag_123",
-  "at": 1763046000, "watchers": ["agent:ag_7", "workflow:wf_2"] }
+{ "id": "dlv_…", "type": "ref.moved", "lineage", "ref", "from": "<version>", "to": "<version>", "tree",
+  "by": "agent:ag_123", "at": 1763046000, "watchers": ["agent:ag_7", "workflow:wf_2"] }
+
+{ "id": "dlv_…", "type": "vm.ended", "vm": "<vm id>", "lineage", "code", "exit", "timedOut", "resultKey",
+  "resultSha256", "resultBytes", "version"?, "checkpointError"?, "at" }
 ```
+
+- **Every body carries `type`, and it is required** (wf-repos and wf-durable, for the K5 receiver).
+  - `ref.moved` is for ref moves, `vm.ended` for compute's end hint (camel-fs-compute.md §2), and future compute
+    events take their own `vm.*` names.
+  - The receiver dispatches on `type`. A body with a missing or unknown `type` is refused with `400`, never a silent
+    `2xx`. The tier then retries and finally logs `notify_dropped`, so a new event type cannot be lost quietly to an
+    old receiver.
+  - There is no default: a missing `type` does not mean `ref.moved`.
+  - `ref.moved` goes to its `watchers`, and `vm.ended` to the VM's owner by `vm` id (its `HostJob`, which reconciles
+    with `GET /v1/vms/{id}` and the usage poll if the hint is lost).
 
 - The runtime rejects a signature older than 5 minutes.
 - For each watcher it writes an outbox row keyed by `id` into the receiving object; the insert is idempotent, so
