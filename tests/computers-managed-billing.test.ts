@@ -138,14 +138,14 @@ test("an internal account with no purchased credit starts, records usage without
   } finally { f.done(); }
 });
 
-test("internal accounts still enforce end-user credit", async () => {
+test("an internal account refuses a computer at zero end-user credit and starts at one micro-dollar", async () => {
   const f = await fixture({ billing: "none", purchased: false, balance: 0, payer: USER });
   try {
-    await fund(f, 1);
+    await f.endUsers.setSettings("payg", { enabled: true });
     await f.connect();
-    await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 402);
+    await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 402 && error.code === "END_USER_CREDIT");
     assert.equal(f.state.creates, 0);
-    await f.endUsers.post("payg", "u", { kind: "grant", amount: micros(1), key: "enough" });
+    await fund(f, 1);
     await f.start("payg", "a", "funded-user");
     assert.equal(f.state.creates, 1);
     assert.equal((await f.row()).end_user, "u");

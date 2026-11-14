@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setMetricSink } from "../src/metrics.ts";
-import { testBrain, until, utter } from "./voice-realtime-fakes.ts";
+import { HttpError } from "../src/http.ts";
+import { cut, testBrain, until, utter } from "./voice-realtime-fakes.ts";
 
 function metrics(t: { after(fn: () => void): void }) {
   const lines: any[] = [];
@@ -94,14 +95,57 @@ test("dropping a short utterance discards its held speculative answer", async t 
   await utter(state.brain, "1", 200, { open: true });
   state.brain.turnEvent({ type: "likely_end", speaker: "1", at: Date.now(), silenceMs: 200, probability: 1 });
   const c = state.connection();
+  assert.equal(c.responses, 1, "speculative dispatch is immediate");
   await c.answer("stale", { ms: 100 });
   assert.equal(state.playback.plays.length, 0, "speculative audio is held");
   state.brain.drop("1");
   assert.equal(state.brain.stats.speculativeDiscarded, 1);
   assert.equal(c.of("truncate")[0].response, "stale");
   await utter(state.brain, "1", 300);
-  assert.equal(c.responses, 2, "a new turn asks for a new response");
+  await until(() => c.responses === 2, "new turn response dispatch");
   await c.answer("fresh", { ms: 100 });
   await until(() => spoken().length === 1, "only the new answer played");
   assert.equal(spoken()[0].speculative, false);
 });
+
+for (const refusal of [undefined, new HttpError(429, "Rate limited"), new HttpError(429, "Out of free credit", "FREE_HOURLY_LIMIT")]) {
+  test(`speculation dispatches before credit settles and waits to play (${refusal?.message ?? "admitted"})`, async t => {
+    let finish!: () => void;
+    const credit = new Promise<void>((resolve, reject) => {
+      finish = () => refusal ? reject(refusal) : resolve();
+    });
+    let checks = 0;
+    const debits: number[] = [];
+    const state = testBrain({
+      speculative: true,
+      refusal: () => ++checks === 1 ? credit : Promise.resolve(),
+      debit: async usd => { debits.push(usd); },
+    });
+    t.after(() => state.brain.close());
+    await utter(state.brain, "1", 300, { open: true });
+    const c = state.connection();
+    state.brain.turnEvent({ type: "likely_end", speaker: "1", at: Date.now(), silenceMs: 200, probability: 1 });
+    assert.equal(c.responses, 1, "provider received the request before the credit read");
+    await until(() => checks === 1, "credit read started");
+    await c.answer("held", { ms: 100, usage: { outputAudio: 100 } });
+    state.brain.cut(cut("1", Date.now() - 300, 300));
+    assert.equal(state.playback.plays.length, 0, "turn ended while admission was pending");
+    finish();
+    if (!refusal) {
+      await until(() => state.spoke.some(event => event.type === "ended"), "admitted audio played");
+    } else {
+      await until(() => c.of("truncate").length === 1, "refused audio discarded");
+      assert.equal(state.playback.plays.length, 0);
+      assert.deepEqual(c.of("truncate"), [{ type: "truncate", response: "held", heardMs: 0 }]);
+      if (refusal.code === "FREE_HOURLY_LIMIT") {
+        await until(() => state.budget.length === 1, "budget ending");
+      } else {
+        assert.deepEqual(state.budget, []);
+        await utter(state.brain, "1", 300);
+        await until(() => c.responses === 2, "next response after rate refusal");
+      }
+    }
+    await until(() => debits.length === 1, "provider usage debited");
+    assert.deepEqual(debits, [state.usage[0].costUsd]);
+  });
+}

@@ -78,6 +78,29 @@ test("at its time a lot's unspent part expires: an expiry entry, the balance dow
   await checkLotBalances(db);
 });
 
+test("expiry removes only a lot's unspent part: never below what was paid, and a debit before it is not re-attributed", async () => {
+  const { db, credits } = await fixture();
+  const now = Date.now(), end = now + DAY;
+  await credits.post("t", "u", { kind: "grant", amount: USD, key: "plan:1", expiresAt: end });
+  await spend(credits, "b", 400_000, now);
+  // At its time only the $0.60 left of the lot goes: the balance lands at zero, not below what was paid.
+  const after = await credits.get("t", "u", [], end + 1);
+  assert.equal(after.balance, 0);
+  const expiries = (await credits.ledger("t", "u", { kinds: ["expiry"] })).entries;
+  assert.deepEqual(expiries.map(entry => entry.amount), [-600_000]);
+  // The debit made before expiry keeps its amount and balance.
+  const [usage] = (await credits.ledger("t", "u", { kinds: ["usage"] })).entries;
+  assert.deepEqual([usage.amount, usage.balanceAfter], [-400_000, 600_000]);
+  await checkLotBalances(db);
+
+  // In debt before its time (a call settled in full past the balance), a lot has nothing unspent: its expiry takes nothing.
+  await credits.post("t", "v", { kind: "grant", amount: USD, key: "plan:2", expiresAt: end });
+  assert.equal(await credits.refusal("t", "v", "b", { now }), undefined);
+  await credits.debit("t", "v", "b", 1.5, "call:big", {}, { now });
+  assert.equal((await credits.get("t", "v", [], end + 1)).balance, -500_000);
+  assert.deepEqual((await credits.ledger("t", "v", { kinds: ["expiry"] })).entries, []);
+});
+
 test("an expiring lot stops funding admission at its expiry", async () => {
   const { credits } = await fixture();
   const now = Date.now(), expiresAt = now + 1_000;

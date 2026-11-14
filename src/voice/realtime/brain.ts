@@ -232,6 +232,7 @@ type Response = {
   done: boolean; played: boolean; cancelled?: "barge_in" | "resume" | "superseded" | "budget" | "close" | "requested";
   tool?: boolean; silent?: boolean; costUsd: number;
   budgetCheck?: Promise<void>;
+  speculativeCredit?: Promise<boolean>;
   dispatched?: boolean;
   askedAt: number;
   /** What it was asked with: instructions for this response alone, and whether this is already the second try. */
@@ -652,6 +653,35 @@ export class RealtimeBrain {
     }
   }
 
+  private async admitSpeculation(response: Response, connection: RealtimeConnection) {
+    try {
+      await this.posting;
+      if (this.closed || response.cancelled || this.current !== response || this.connection !== connection) return false;
+      if (this.budgetEnding) throw this.budgetEnding;
+      await this.checkCredit();
+      if (this.budgetEnding) throw this.budgetEnding;
+    } catch (error) {
+      if (this.closed || response.cancelled || this.current !== response || this.connection !== connection) return false;
+      const rate = rateRefusal(error), spend = spendRefusal(error);
+      response.turn?.end(rate || spend ? "no_reply" : "error");
+      this.cancel(response, spend ? "budget" : "requested", 0);
+      if (rate) {
+        this.hooks.log("voice_realtime_response_refused", { error: safeError(error) });
+        this.release();
+      } else if (spend) {
+        this.budgetEnding = error as HttpError;
+        await this.posting;
+        this.budget(error);
+      } else this.hooks.failed("realtime_credit_failed", safeError(error));
+      return false;
+    }
+    if (this.closed || response.cancelled || this.current !== response || this.connection !== connection) return false;
+    response.speculativeCredit = undefined;
+    if (response.done && !response.audio.bytes) this.current = undefined;
+    this.release();
+    return true;
+  }
+
   private postCredit(usd: number, key: string, now: number, checkpoint = false) {
     const pending = (this.posting ?? Promise.resolve()).then(async () => {
       if (usd > 0) await this.hooks.debit(usd, key, now);
@@ -972,7 +1002,7 @@ export class RealtimeBrain {
   private respond(request: { speaker?: string; turn?: TurnClock; instructions?: string; retried?: boolean; carry?: string }) {
     if (this.closed || this.budgetEnding) return;
     if (this.options.ownsTurns) { void this.respondOnProvider(request.instructions ? { instructions: request.instructions } : {}); return; }
-    const busy = (this.current && !this.current.done) || [...this.speaking].length > 0 || !!this.leaving;
+    const busy = (this.current && (!this.current.done || this.current.speculativeCredit)) || [...this.speaking].length > 0 || !!this.leaving;
     if (busy) {
       // One waits at most: a newer turn's replaces it (the model hears both).
       this.waitingRespond?.turn?.end("no_reply");
@@ -995,10 +1025,19 @@ export class RealtimeBrain {
     this.fresh = false;
     this.lastLabel = undefined;
     this.stats.responses++;
-    void this.admitResponse(response).then(admitted => {
-      if (!admitted || this.connection !== connection) return;
+    const dispatch = () => {
       response.dispatched = true;
       connection.respond(request.instructions ? { instructions: request.instructions } : {});
+    };
+    if (request.speculative) {
+      // Generate while credit is checked. Audio and tool calls wait for the result.
+      response.speculativeCredit = this.admitSpeculation(response, connection);
+      try { dispatch(); }
+      catch (error) { this.hooks.failed("realtime_failed", safeError(error)); }
+      return;
+    }
+    void this.admitResponse(response).then(admitted => {
+      if (admitted && this.connection === connection) dispatch();
     }).catch(error => this.hooks.failed("realtime_failed", safeError(error)));
   }
 
@@ -1016,11 +1055,11 @@ export class RealtimeBrain {
     if (this.budgetEnding) { this.budget(this.budgetEnding); return; }
     if (this.speaking.size) return;
     const current = this.current;
-    if (current && current.held && !current.speculative && !current.cancelled) {
+    if (current && current.held && !current.speculative && !current.speculativeCredit && !current.cancelled) {
       current.held = false;
       if (current.audio.bytes) this.play(current);
     }
-    if (this.waitingRespond && !(this.current && !this.current.done) && !this.leaving) {
+    if (this.waitingRespond && !(this.current && (!this.current.done || this.current.speculativeCredit)) && !this.leaving) {
       const { at, ...request } = this.waitingRespond;
       this.waitingRespond = undefined;
       // An answer that waited too long would answer what is no longer being talked about: the next turn will be.
@@ -1057,7 +1096,7 @@ export class RealtimeBrain {
 
   /** Play a response's audio: once it is not held, after the response before has finished playing. */
   private play(response: Response) {
-    if (response.held || response.cancelled || response.playback || this.closed) return;
+    if (response.held || response.speculativeCredit || response.cancelled || response.playback || this.closed) return;
     if (this.playing && this.playing !== response) return;
     const player = this.hooks.player();
     if (!player) return;
@@ -1118,10 +1157,10 @@ export class RealtimeBrain {
       void this.posting?.then(() => { if (this.budgetEnding) this.budget(this.budgetEnding); });
       return;
     }
-    if (!response.audio.bytes && outcome.status === "failed" && this.retries(response)) this.retry(response, moved ? 0 : this.options.retryMs ?? REALTIME_LIMITS.retryMs);
+    if (!response.audio.bytes && outcome.status === "failed" && !response.speculativeCredit && this.retries(response)) this.retry(response, moved ? 0 : this.options.retryMs ?? REALTIME_LIMITS.retryMs);
     else if (!response.audio.bytes) response.turn?.end(response.silent ? "silent" : response.cancelled ? "interrupted" : outcome.status === "failed" ? "error" : "no_reply");
     // Done making: one with audio left to play stays current until it has played (or is held, until it may).
-    if (this.current === response && (response.cancelled || !response.audio.bytes)) this.current = undefined;
+    if (this.current === response && (response.cancelled || (!response.audio.bytes && !response.speculativeCredit))) this.current = undefined;
     this.release();
   }
 
@@ -1190,6 +1229,17 @@ export class RealtimeBrain {
     const response = this.byId(call.response);
     const connection = this.connection;
     if (!connection) return;
+    if (response?.speculativeCredit) {
+      void response.speculativeCredit.then(admitted => {
+        if (admitted && !response.cancelled && !this.closed && this.connection === connection) this.runTool(call, connection, response);
+      }).catch(error => this.hooks.failed("realtime_failed", safeError(error)));
+      return;
+    }
+    if (response?.cancelled) return;
+    this.runTool(call, connection, response);
+  }
+
+  private runTool(call: { id: string; name: string; args: Record<string, unknown> }, connection: RealtimeConnection, response: Response | undefined) {
     if (call.name === STAY_SILENT.name) {
       this.stats.staySilent++;
       if (response) response.silent = true;

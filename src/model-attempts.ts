@@ -80,7 +80,7 @@ export class ModelAttempts {
     }
     if (event.type === "progress") {
       await this.db.query("update model_attempts set updated_at=$4 where id=$1 and tenant=$2 and agent=$3 and state<>'settled'", [event.id, tenant, agent, Date.now()]);
-      return true;
+      return { tracked: true };
     }
     if (event.type === "generation") {
       if (!/^gen-[a-zA-Z0-9-]{1,200}$/.test(event.generation)) return true;

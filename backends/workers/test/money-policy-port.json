@@ -122,6 +122,11 @@
   },
   {
     "file": "tests/end-user-lots.test.ts",
+    "test": "expiry removes only a lot's unspent part: never below what was paid, and a debit before it is not re-attributed",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
     "test": "an expiring lot stops funding admission at its expiry",
     "included": true
   },
