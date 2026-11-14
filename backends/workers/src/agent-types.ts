@@ -1,3 +1,4 @@
+import type { BashEnv } from "./camelfs/bash.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { ComputerBindings } from "./computers/tool.ts";
@@ -80,6 +81,7 @@ export interface Env
     ComputerEnv,
     MediaBindings,
     AdminEnv,
+    BashEnv,
     UsagePollerBinding {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;

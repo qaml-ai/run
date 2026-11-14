@@ -1,3 +1,4 @@
+import { bashEnabled } from "./camelfs/bash.ts";
 import { drainRepoMoves, repoMoveDeadline } from "./camelfs/notify.ts";
 import { deliverRepoMoves } from "./repos/notify.ts";
 import type { RepoEnv } from "./repos/registry.ts";
@@ -139,6 +140,7 @@ export async function armImpl(this: AgentRuntime,
       pendingEvents ? Date.now() + 1000 : Infinity,
       await this.outbox.deadline() ?? Infinity,
       await repoMoveDeadline(this.ctx.storage) ?? Infinity,
+      bashEnabled(this.env) ? this.bashSessions.deadline() : Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.batchQueue.deadline(config),
@@ -311,6 +313,7 @@ export async function wakeImpl(this: AgentRuntime) {
       await this.arm();
       return;
     }
+    if (conf && bashEnabled(this.env)) await this.bashSessions.wake(conf);
     await restageInputMirrors(this);
     await this.flushBilling();
     await this.flushTerminalEvents();
