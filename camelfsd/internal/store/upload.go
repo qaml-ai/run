@@ -183,20 +183,10 @@ func (s *Uploaded) PutBatch(ctx context.Context, puts map[string][]byte) ([]stri
 	return written, err
 }
 
-func (s *Uploaded) putFile(ctx context.Context, k string, f *os.File, metadata ...string) error {
-	ok, e := s.known(ctx, k)
-	if e != nil || ok {
-		return e
+func (s *Uploaded) putFile(ctx context.Context, k string, f *os.File, metadata ...string) (bool, error) {
+	created, err := PutBlobFileIfAbsent(ctx, s.Store, k, f, metadata...)
+	if err != nil {
+		return false, err
 	}
-	exists, e := s.Store.Has(ctx, k)
-	if e != nil {
-		return e
-	}
-	if exists {
-		return s.record(ctx, k)
-	}
-	if e = PutBlobFile(ctx, s.Store, k, f, metadata...); e != nil {
-		return e
-	}
-	return s.record(ctx, k)
+	return created, s.record(ctx, k)
 }

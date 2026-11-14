@@ -163,7 +163,8 @@ export function firecrackerLauncher(options: FirecrackerOptions): VmLauncher {
         exited.catch(() => {}); // after boot, a Firecracker that exits shows up as the guest no longer answering
         channel = await Promise.race([vsockChannel(vsock, GUEST_PORT, options.bootDeadlineMs ?? BOOT_DEADLINE_MS), exited]);
         const ready = channel;
-        return { id, request: (request, onLog) => ready.request(request, onLog), destroy };
+        return { id, request: (request, onLog) => ready.request(
+          request.op === "camelfs_checkpoint" ? { ...request, legacyCheckpoint: true } : request, onLog), destroy };
       } catch (error) {
         await destroy().catch(() => {});
         throw error;
