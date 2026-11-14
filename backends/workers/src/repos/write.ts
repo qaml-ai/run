@@ -239,21 +239,3 @@ export async function diffEntries(ctx: RepoContext, from: string, to: string) {
   }
   return changes;
 }
-export async function advanceRef(ctx: RepoContext, input: {
-  ref: string;
-  expect: string;
-  commit: string;
-  root?: string;
-  fence?: Fence;
-  who: string;
-  why: string;
-}) {
-  const head = await ctx.repo.ref(input.ref);
-  if (head?.version !== input.expect)
-    throw new RepoError('stale', 412, 'stale', { current: head?.version ?? null });
-  const c = await ctx.storage.getCommit(ctx.lineage, input.commit), changes = await diffEntries(ctx, head.tree, c.tree);
-  await quota(ctx, await addedBytes(ctx, Object.values(changes).filter((entry): entry is Entry => entry !== null)));
-  const result = await ctx.repo.cas({ ...input, expect: head.version, commit: { version: input.commit, tree: c.tree, parents: c.parents, author: c.author, message: c.message, trailers: c.trailers, at: c.time * 1000 }, changes: { ...changes } });
-  await reportUsage(ctx);
-  return { ...result, tree: c.tree, changed: true, files: changes };
-}

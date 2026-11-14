@@ -13,7 +13,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
   } });
 const { RepoDO } = await import('../src/repos/repo-do.ts');
 const { TenantRepos } = await import('../src/repos/tenant-repos.ts');
-const { commitChanges, setRefToVersion, branch, advanceRef } = await import('../src/repos/write.ts');
+const { commitChanges, setRefToVersion, branch } = await import('../src/repos/write.ts');
 const { mergeRefs } = await import('../src/repos/merge.ts');
 const { createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
 const { repoTools } = await import("../src/repos/tools.ts");

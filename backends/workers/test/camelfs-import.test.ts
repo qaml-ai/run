@@ -1,25 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { camelfsConfigured, importTree, uploadTimeoutMs, volumeLineage } from "../src/jobs/camelfs.ts";
+import { importTree } from "../src/jobs/camelfs.ts";
 
 const env = { CAMELFS: { fetch: async () => { throw new Error("unexpected binding call"); } }, CAMELFS_API_TOKEN: "unit-test-private-token" };
-const tree = "a".repeat(40), lineage = volumeLineage("tenant", "volume");
+const tree = "a".repeat(40), lineage = "tenant:volume";
 const file = (path: string, text: string) => ({ path, key: `files/${path}`, size: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") });
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status });
 
-test("blob upload timeouts scale with size and stop at thirty minutes", () => {
-  assert.equal(uploadTimeoutMs(0), 60_000);
-  assert.equal(uploadTimeoutMs(2 * 2 ** 20), 61_000);
-  assert.equal(uploadTimeoutMs(10 * 2 ** 30), 30 * 60_000);
-});
-
 test("imports missing blobs once, then only a changed blob with its parent tree", async () => {
-  assert.equal(camelfsConfigured(env), true);
-  assert.equal(camelfsConfigured({}), false);
-  assert.equal(camelfsConfigured({ CAMELFS: env.CAMELFS }), false);
-  assert.equal(camelfsConfigured({ ...env, CAMELFS_API_TOKEN: "" }), false);
-  assert.equal(camelfsConfigured({ CAMELFS_API_TOKEN: "x" }), false);
   const stored = new Set<string>(), puts: string[] = [], posts: unknown[] = [];
   const bytes = new Map([["/a", "hello"], ["/b", "world"]]);
   const fetcher: typeof fetch = async (url, init) => {

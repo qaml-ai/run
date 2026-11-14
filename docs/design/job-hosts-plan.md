@@ -1,5 +1,7 @@
 # Our own job hosts: implementation plan (phase 2)
 
+Historical implementation plan. The Workers job-host plane was removed. See [camel-fs compute](camel-fs-compute.md).
+
 Phase 2 of [Durable multi-agent workflows](swarm-workflows.md) ("Our own job hosts"; phases table). It turns that
 section and the 2026-11-11 Firecracker spike into PR slices. **Nothing here creates AWS resources.** Every slice that
 touches AWS infrastructure lands as code and stops before `apply`; resources are created only after Miguel's go-ahead,
@@ -102,28 +104,6 @@ The admin dashboard gains cost per job by driver.
 
 ## PR slices
 
-**Status (2026-11-12):** slices 2 and 3 have landed in fake mode, with the runtime side of slice 4 (no `job_hosts`
-table yet: a `JobHostRegistry` object holds the connected hosts). The pieces are `jobhost/guest.ts`, `jobhost/vm.ts`,
-`jobhost/agent.ts`, `shared/job-host-protocol.ts` and `backends/workers/src/jobs/hosts.ts`, tested end to end by
-`backends/workers/test/job-hosts.integration.ts`. The bindings are in the test config only.
-
-Per-host enrollment from slice 4 has landed too (`shared/job-host-attest.ts`), replacing the shared host token. A host
-enrolls at `POST /v1/internal/job-hosts/enroll` with an attestation, and gets a credential bound to the host id the
-attestation proves:
-- **Attestors:** in production, a SigV4-signed `sts:GetCallerIdentity`. The runtime checks it, sends it to STS once,
-  and accepts an allowlisted instance role (`JOB_HOST_ROLE_ARNS`); the host id is the role session, which is the
-  instance id. Tests use a test secret (`TEST_MODE`). `JOB_HOST_ATTESTORS` says which attestors a deployment takes.
-- **Credential:** it lasts an hour, and only its hash is kept. It is the socket's first message, and the socket closes
-  when it ends; the host enrolls again before then.
-- **Revoking:** an admin account revokes a host with `DELETE /v1/job-hosts/:host`. That drops its credentials, closes
-  its socket and fails its jobs in flight, and the host can enroll again only after `POST /v1/job-hosts/:host/allow`.
-  `GET /v1/job-hosts` lists the hosts.
-- **Unauthenticated enroll:** the Worker runs the attestor's checks and the STS call. The registry object only claims
-  the signed request (once; given back when STS refuses it) and issues the credential, so forged requests can't tie up
-  the one registry object. Bodies over 16 KiB are refused unread, and callers get only a fixed refusal. A host keeps
-  at most its two newest credentials. `JOB_HOST_ENROLL_LIMITER`, a Cloudflare rate limiting binding keyed by the
-  client address, limits enrollments. The aws attestor refuses to run without it (outside tests), as it does without
-  `AGENT_PUBLIC_URL` and `JOB_HOST_ROLE_ARNS`; no config has it yet.
 - **Required trust policy (slice 7's Terraform must enforce it):** the host id is the role session name, and whoever
   assumes the role chooses it. EC2 sets it to the instance id, but any other principal allowed to assume an allowlisted
   role could name a running instance and take its jobs and their secrets. Each role in `JOB_HOST_ROLE_ARNS` must

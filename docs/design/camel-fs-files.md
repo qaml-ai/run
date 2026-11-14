@@ -383,8 +383,7 @@ files must free quota.
 **Notify** is a signed webhook from the tier to the runtime (§9.11), at least once, landing as an outbox row in the
 receiving object, which the receiver's alarm then drains, as wf-durable's design already does for host results. A
 move of a watched ref writes its delivery item in the same transaction as the move, so a crash between the two
-cannot lose a notification. A host checkpoint's result already carries `{version, tree}` and the diff to the
-`HostJob` that dispatched it, so the job's owner learns of the move without a webhook.
+cannot lose a notification. See [camel-fs compute](camel-fs-compute.md) for VM delivery.
 
 **Agents cache trees by tree id** in their own Durable Object's SQLite. The cache is not a TTL cache: an id never
 changes meaning, and the cache is bounded by size, oldest tree first. After its own write the agent knows the new
@@ -431,8 +430,7 @@ the model requires two refs to move together.
 3. The Go `refs` package with the ref-move rules checked before a `version = :expect` condition, leases, fences, watchers and
    the quota check (its bookkeeping waits on Miguel). Its contract
    tests are ported from `RepoDO`'s tests and the strict fake.
-4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted; `HostJob`'s lease and renew over
-   HTTPS; the agent-side tree cache.
+4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted, and the agent-side tree cache.
 5. Hosts do the CAS in-VPC, notify arrives as webhooks into outbox rows, the public `/v1/repos` moves onto the tier,
    and `RepoDO` is deleted.
 6. Node on the same API.
@@ -763,9 +761,6 @@ Over the host's Unix socket (unchanged transport):
 - **Computers and `bash` VMs** (per-turn checkpoints in a long-lived VM): checkpoint → the host's CAS (in-VPC,
   ≈ 2 ms to the tier + ≈ 5 ms in DynamoDB) → `checkpointed { tree }` or `checkpointed { error }`, so the guest's
   index commits only after the ref moved. The runtime is not on this path.
-- **Until C4 and K2c**, today's TypeScript jobhost and the runtime keep the pre-C order of
-  `camelfsd/README.md`: `checkpointed` first, then `HostJob` → `RepoDO` CASes after the result. That order is safe
-  only for jobs.
 
 The CAS carries the checkpoint's `root`, so a later job at that version mounts warm without the daemon rebuilding
 the image; the ref item carries `root?` (§6).
@@ -1014,8 +1009,7 @@ Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
     `2xx`. The tier then retries and finally logs `notify_dropped`, so a new event type cannot be lost quietly to an
     old receiver.
   - There is no default: a missing `type` does not mean `ref.moved`.
-  - `ref.moved` goes to its `watchers`, and `vm.ended` to the VM's owner by `vm` id (its `HostJob`, which reconciles
-    with `GET /v1/vms/{id}` and the usage poll if the hint is lost).
+  - `ref.moved` goes to its `watchers`, and `vm.ended` to the VM's owner by `vm` id. See [camel-fs compute](camel-fs-compute.md) for reconciliation.
 
 - The runtime rejects a signature older than 5 minutes.
 - For each watcher it writes an outbox row keyed by `id` into the receiving object; the insert is idempotent, so

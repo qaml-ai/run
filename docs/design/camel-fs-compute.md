@@ -161,8 +161,8 @@ receive work over the VPC.
   one row per branch, calls `POST /v1/vms`, and lands `vm.ended` from its outbox;
 - **settlement** from the `usage.vm` events it pulls (§4), and extending each VM's credit deadline.
 
-`JobHost`, `JobHostRegistry`, the host WebSocket, `shared/job-host-protocol.ts` and the runtime's enrollment route
-are deleted in K5.
+K5c removes the Workers host objects, WebSocket and enrollment route. The TypeScript host agent and its shared
+protocol and attestation stay until the Go host runs on the prototype host.
 
 **wf-durable's in-flight PRs:**
 
@@ -343,10 +343,10 @@ scripts.
 
 | where | what |
 |---|---|
-| runtime: jobs | `backends/workers/src/jobs/` whole: `hosts.ts` (`JobHost`, `HostJob`, `JobHostRegistry`, enrollment, scaler routes), `job.ts`, `driver.ts`, `container-job.ts`, `camelfs.ts`, `camel-sync.ts`, `host-sync-store.ts`, `host-pricing.ts`, `repo.ts`; `agent-jobs.ts` (`job_run`); `workflow-jobs.ts` and `job()` in the workflow runner and its builtins; `shared/job-host-protocol.ts` |
+| runtime: jobs | the Workers job-host plane: `hosts.ts` (`JobHost`, `HostJob`, `JobHostRegistry`, enrollment, scaler routes), the job parser in `job.ts`, `driver.ts`, `container-job.ts`, `camel-sync.ts`, `host-sync-store.ts`, `repo.ts`; `agent-jobs.ts` (`job_run`); `workflow-jobs.ts` and `job()` in the workflow runner and its builtins. Host pricing and its input type remain for VM usage, and `camelfs.ts` retains the legacy import helper for the daemon contract test. |
 | runtime: computers | `backends/workers/src/computers/` whole (the `computer` tool, `ContainerComputer`, the container provider, native and child forks, the egress gateway, `ComputerMeter` and its billing); `SHARED_COMPUTER_CONTROL`; the `COMPUTER_CONTAINERS` binding and its container image |
 | runtime: surface | `job_run` and `computer` in tool selection, definitions, the API contract, OpenAPI, the SDKs' job and computer handles, the guides' job and computer sections |
-| host | the TypeScript `jobhost` (already planned, K5); the job half of the guest (`run` and `collect` ops) |
+| host | the TypeScript `jobhost` and its shared protocol and attestation (after the Go host runs on the prototype host); the job half of the guest (`run` and `collect` ops) |
 | camel-fs | job mode, `GET /v1/vms/{id}/result`, `results/` and its lifecycle rule, the result fields on `ended` and `vm.ended` (§2) |
 
 Roughly 2,600 lines of jobs (with `agent-jobs.ts` and `workflow-jobs.ts`) and 3,100 lines of computers go from the

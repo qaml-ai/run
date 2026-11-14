@@ -36,18 +36,6 @@
         "class_name": "WorkflowCapacity"
       },
       {
-        "name": "JOB_HOSTS",
-        "class_name": "JobHost"
-      },
-      {
-        "name": "HOST_JOBS",
-        "class_name": "HostJob"
-      },
-      {
-        "name": "JOB_HOST_REGISTRY",
-        "class_name": "JobHostRegistry"
-      },
-      {
         "name": "WORKFLOWS",
         "class_name": "WorkflowObject"
       },
@@ -97,7 +85,11 @@
         "WorkflowResults"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    {
+      "tag": "delete-job-hosts",
+      "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
+    }
   ],
   "hyperdrive": [
     {

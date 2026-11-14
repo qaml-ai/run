@@ -52,18 +52,6 @@
         "class_name": "WorkflowCapacity"
       },
       {
-        "name": "JOB_HOSTS",
-        "class_name": "JobHost"
-      },
-      {
-        "name": "HOST_JOBS",
-        "class_name": "HostJob"
-      },
-      {
-        "name": "JOB_HOST_REGISTRY",
-        "class_name": "JobHostRegistry"
-      },
-      {
         "name": "WORKFLOWS",
         "class_name": "WorkflowObject"
       },
@@ -123,7 +111,11 @@
         "JobHostRegistry"
       ]
     },
-    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    {
+      "tag": "delete-job-hosts",
+      "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
+    }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
   // stopped by its code through ctx.container. Under the durable_object policy
@@ -186,13 +178,6 @@
       "* * * * *"
     ]
   },
-  "ratelimits": [
-    {
-      "name": "JOB_HOST_ENROLL_LIMITER",
-      "namespace_id": "1001",
-      "simple": { "limit": 10, "period": 60 }
-    }
-  ],
   "vars": {
     "AGENT_WORKFLOW_TENANTS": "pilot-camel-code",
     "PILOT_DB_PROFILE": "1",
@@ -209,12 +194,6 @@
     "TENANT_MAX_ACTIVE": "2100",
     "COMPUTER_IMAGE": "workspace",
     "COMPUTER_INSTANCE": "standard-1",
-    // Enroll EC2 job hosts through AWS instance attestation.
-    "JOB_HOST_ATTESTORS": "aws",
-    // Admit the pilot's EC2 role to the test host pool.
-    "JOB_HOST_ROLE_ARNS": "test=arn:aws:iam::904534089871:role/camel-fs-proto",
-    // Send jobs too large for containers to our hosts.
-    "JOB_PROVIDER": "auto",
     "AGENT_FREE_HOURLY_SPEND_USD": "100"
   },
   "account_id": "85bbd288051330fb51ee1c86031a299b",

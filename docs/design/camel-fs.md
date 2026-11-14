@@ -1,5 +1,7 @@
 # camelFS: the file system for agents, on our own AWS machines
 
+The Workers job-host plane discussed here was removed. See [camel-fs compute](camel-fs-compute.md).
+
 Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions; merged in #874; §6 records the v0 defaults he approved (questions 8, 9, 10, 12). Docs
 only; nothing here creates AWS resources (Miguel applies every AWS change himself). It supersedes the file half of
 [swarm-workflows.md](swarm-workflows.md) Part 2 (the repository object, layers, search, git without a VM,

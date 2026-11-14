@@ -1,11 +1,8 @@
-export type CamelfsEnv = { CAMELFS?: { fetch(input: Request | string, init?: RequestInit): Promise<Response> }; CAMELFS_API_TOKEN?: string };
-export const camelfsConfigured = (env: CamelfsEnv): boolean => !!env.CAMELFS && !!env.CAMELFS_API_TOKEN;
-export type CamelfsFile = { path: string; sha256: string; size: number; key: string };
-/** The lineage of a volume is stable across snapshots. */
-export const volumeLineage = (tenant: string, volume: string): string => `${tenant}:${volume}`;
-
+type CamelfsEnv = { CAMELFS?: { fetch(input: Request | string, init?: RequestInit): Promise<Response> }; CAMELFS_API_TOKEN?: string };
+const camelfsConfigured = (env: CamelfsEnv): boolean => !!env.CAMELFS && !!env.CAMELFS_API_TOKEN;
+type CamelfsFile = { path: string; sha256: string; size: number; key: string };
 /** A blob upload's deadline (ledger L26): 60 s plus the time to send it at 2 MiB/s, at most 30 minutes. */
-export function uploadTimeoutMs(size: number): number {
+function uploadTimeoutMs(size: number): number {
   return Math.min(60_000 + Math.ceil(size / (2 * 2 ** 20)) * 1000, 30 * 60_000);
 }
 

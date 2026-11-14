@@ -40,6 +40,8 @@ needed for any result in this directory.
 Key measured results (hibernation, load stages, parity totals, test timings) are
 summarized in [measurements/README.md](measurements/README.md).
 
+The Workers job-host plane was removed. See the [camel-fs compute design](../../docs/design/camel-fs-compute.md).
+
 ## Computers
 
 The optional native computer (`computer` tool, `src/computers/objects.ts`) is a

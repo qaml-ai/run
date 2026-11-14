@@ -15,7 +15,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
 const { statPaths, versionEntries } = await import('../src/repos/reads.ts');
 const { RepoDO } = await import('../src/repos/repo-do.ts');
 const { TenantRepos } = await import('../src/repos/tenant-repos.ts');
-const { commitChanges, setRefToVersion, branch, advanceRef } = await import('../src/repos/write.ts');
+const { commitChanges, setRefToVersion, branch } = await import('../src/repos/write.ts');
 const { mergeRefs } = await import('../src/repos/merge.ts');
 const { agentRepo, createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
 const { handleRepoRequest } = await import('../src/repos/routes.ts');
@@ -92,7 +92,7 @@ test('openBlob streams response, preserves ranges and maps fake authorization er
   assert.equal(await r.text(), 'bcd');
   await assert.rejects(ctx.storage.openBlob(ctx.lineage, e.blob, v.tree!, 'missing'), e => e instanceof StorageError && e.status === 404);
 });
-test('restore creates a commit; branch fallback loads old trees; advanceRef uses daemon metadata and diff', async (t) => {
+test('restore creates a commit; branch fallback loads old trees', async (t) => {
   const { create, write } = fixture(t), ctx = await create(), a = await write(ctx, { a: { bytes: bytes('one') } });
   const b = await write(ctx, { a: { bytes: bytes('two') } });
   await branch(ctx, { name: 'old', from: { version: a.version! }, who: 'api:t' });
@@ -102,16 +102,6 @@ test('restore creates a commit; branch fallback loads old trees; advanceRef uses
   assert.deepEqual((await ctx.repo.commit(r.version))?.parents, [b.version]);
   assert.equal((await ctx.repo.commit(r.version))?.trailers['Camel-Op'], 'restore');
   assert.equal((await statPaths(ctx, (await ctx.repo.ref('main'))!.tree, ['a'])).a!.blob, a.files.a!.blob);
-  const blob = await ctx.storage.putBlob(ctx.lineage, bytes('checkpoint'));
-  const commit = await ctx.storage.commit(ctx.lineage, { parents: [r.version], changes: [{ path: 'cp', blob: blob.blob, mode: '100644' }], author: 'api:t', message: 'checkpoint', trailers: {} });
-  for (const parents of [[], [a.version!]]) {
-    const invalid = await ctx.storage.commit(ctx.lineage, { parents, baseTree: commit.tree, changes: [], author: 'api:t', message: 'invalid checkpoint', trailers: {} });
-    await assert.rejects(advanceRef(ctx, { ref: 'main', expect: r.version, commit: invalid.commit, who: 'api:t', why: 'checkpoint' }), err('bad_parent'));
-    assert.equal((await ctx.repo.ref('main'))?.version, r.version);
-  }
-  const advanced = await advanceRef(ctx, { ref: 'main', expect: r.version, commit: commit.commit, who: 'api:t', why: 'checkpoint' });
-  assert.equal(advanced.files.cp!.size, 10);
-  assert.equal((await ctx.storage.diff(ctx.lineage, a.tree!, commit.tree)).changes.length, 1);
 });
 test('merge clean, conflicts, ff, squash and already merged', async (t) => {
   const { create, write } = fixture(t), ctx = await create();
@@ -172,7 +162,7 @@ test('a keyed commitChanges that loses the ref to a concurrent write commits aga
   assert.equal(head.version, keyed.version);
   assert.ok((await statPaths(ctx, head.tree, ['other'])).other, 'the winner is kept under the keyed write');
 });
-for (const operation of ['setRefToVersion', 'branch', 'advanceRef', 'mergeRefs'])
+for (const operation of ['setRefToVersion', 'branch', 'mergeRefs'])
   test(`${operation} detects a concurrent ref move`, async (t) => {
     const { create, write } = fixture(t), ctx = await create(), a = await write(ctx, { a: { bytes: bytes('base') } });
     await branch(ctx, { name: 'topic', from: 'main', who: 'api:t' });
@@ -197,12 +187,8 @@ for (const operation of ['setRefToVersion', 'branch', 'advanceRef', 'mergeRefs']
       promise = setRefToVersion(ctx, { ref: 'main', version: a.version!, expect: current, newCommit: false, author: 'api:t', who: 'api:t', why: 'test' });
     else if (operation === 'branch')
       promise = branch(ctx, { name: 'old', from: { version: a.version! }, who: 'api:t' });
-    else if (operation === 'mergeRefs')
+    else
       promise = mergeRefs(ctx, { into: 'main', from: 'topic' });
-    else {
-      const c = await ctx.storage.commit(ctx.lineage, { parents: [current], changes: [], author: 'api:t', message: 'cp', trailers: {} });
-      promise = advanceRef(ctx, { ref: 'main', expect: current, commit: c.commit, who: 'api:t', why: 'test' });
-    }
     await assert.rejects(promise, err('stale'));
   });
 test('tenant index pages equal timestamps, retains tombstones, and sums only live usage', async (t) => {
