@@ -284,3 +284,39 @@ func TestDDBHostChannel(t *testing.T) {
 	}
 	post(clientA, "a/heartbeat", hostwire.Heartbeat{BootEpoch: 1}, 409, nil)
 }
+
+func TestDDBHostEnrollmentReplay(t *testing.T) {
+	db, hosts := hostTable(t, "pool", "host")
+	now := time.Now()
+	clock := func() time.Time { return now }
+	c := &compute.Controller{DB: db, Tables: compute.Tables{Hosts: hosts}, Now: clock}
+	server, _ := enrollmentServer(t, clock)
+	server.Record = c.RecordEnrollment
+	loop := compute.Loop{C: c, Enrollment: true, Pools: func(context.Context) ([]string, error) {
+		return []string{"build"}, nil
+	}}
+	a := attestationAt(now)
+	csr, _ := enrollCSR(t, hostSANPrefix+enrollmentHost, nil, false)
+	for _, want := range []int{200, 409} {
+		w := postEnrollment(t, server, a, csr, "build")
+		if w.Code != want {
+			t.Fatalf("want %d, got %d: %s", want, w.Code, w.Body)
+		}
+	}
+	checked, _ := checkAwsAttestation(a, enrollmentAudience, now)
+	key := map[string]types.AttributeValue{"pool": &types.AttributeValueMemberS{Value: "build"},
+		"host": &types.AttributeValueMemberS{Value: "~enroll#" + checked.signature}}
+	for _, elapsed := range []time.Duration{14 * time.Minute, 2 * time.Minute} {
+		now = now.Add(elapsed)
+		if err := loop.Pass(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		row, err := db.GetItem(t.Context(), &dynamodb.GetItemInput{TableName: &hosts, Key: key, ConsistentRead: aws.Bool(true)})
+		if err != nil || (len(row.Item) == 0) != (elapsed == 2*time.Minute) {
+			t.Fatalf("unexpected replay row after sweep: %v, %v", row, err)
+		}
+	}
+	if w := postEnrollment(t, server, a, csr, "build"); w.Code != 401 {
+		t.Fatalf("expired attestation: %d %s", w.Code, w.Body)
+	}
+}

@@ -135,10 +135,11 @@ locals {
           StringEquals = { "acm-pca:TemplateArn" = ["arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1"] }
         }
       },
+      # DescribeCertificateAuthority: the tier reads the CA's key algorithm to pick the signing algorithm (K4c3).
       {
         Sid      = "FetchIssuedCertificates"
         Effect   = "Allow"
-        Action   = ["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate"]
+        Action   = ["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate", "acm-pca:DescribeCertificateAuthority"]
         Resource = [aws_acmpca_certificate_authority.hosts.arn]
       },
       {
