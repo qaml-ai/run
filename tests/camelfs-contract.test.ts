@@ -627,7 +627,7 @@ async function refsContract(send: (request: Request) => Promise<Response>, origi
   assert.equal(restored.tree, base.tree);
   assert.deepEqual((await storage.getCommit(lineage, restored.version)).parents, [merged.version]);
   if (!fake) {
-    assert.deepEqual(Object.keys(ff).sort(), ["ff", "merged", "took", "tree", "version"]);
+    assert.deepEqual(Object.keys(ff).sort(), ["bytes", "ff", "files", "merged", "took", "tree", "version"]);
     assert.deepEqual(Object.keys(restored).sort(), ["tree", "version"]);
     assert.equal((await storage.getCommit(lineage, restored.version)).trailers["Camel-Op"], "restore");
     assert.equal((await storage.getCommit(lineage, written.version)).trailers["Camel-Op"], "api");
