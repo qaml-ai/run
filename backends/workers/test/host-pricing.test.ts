@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chargedSpan, DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostSessionCost, hostShare, parseHostInstance, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
+import { DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostShare, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
 import { hostShape } from "../src/jobs/host-pricing.ts";
 import { ComputerMeter, CONTAINER_RATES, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 
@@ -53,36 +53,9 @@ test("a job goes to the test pool up to a shard's size, and to the build pool ab
   assert.equal(hostPool({ vcpus: 1, memoryMiB: TEST_POOL_MAX.memoryMiB + 1, diskMiB: 0 }), "build");
 });
 
-test("the meter's instance name carries the pool and shape, so a charge after a restart prices the same VM", () => {
+test("the meter's instance name carries the pool and shape", () => {
   const name = hostInstance("test", { vcpus: 2, memoryMiB: 6144, diskMiB: 12000 });
   assert.equal(name, "test-2vcpu-6144mib");
-  assert.deepEqual(parseHostInstance(name), { pool: "test", shape: { vcpus: 2, memoryMiB: 6144, diskMiB: 0 } });
-  for (const bad of ["standard-2", "test-2vcpu", "gpu-2vcpu-1mib", "test-1000vcpu-1mib"]) assert.equal(parseHostInstance(bad), undefined, bad);
-  close(hostSessionCost(name, 60), 60 * hostSecondRate("test", { vcpus: 2, memoryMiB: 6144, diskMiB: 0 }), "a minute");
-  assert.throws(() => hostSessionCost("standard-2", 60), /Not a host job instance/);
-});
-
-test("the meter charges a host job through its pricing, from start to stop, once", async () => {
-  const data = new Map<string, unknown>(), charges: ComputerCharge[] = [];
-  let now = 1_000_000;
-  const store: MeterStore = {
-    async get<T>(key: string) { return structuredClone(data.get(key)) as T | undefined; },
-    async put(key, value) { data.set(key, structuredClone(value)); },
-    async delete(key) { return data.delete(key); },
-    async list<T>({ prefix }: { prefix: string }) { return new Map([...data].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value) as T])); },
-  };
-  const meter = new ComputerMeter({ store, idleMs: 3_600_000, now: () => now, schedule: async () => {},
-    billing: { async admit() {}, async charge(charge) { if (!charges.some(c => c.id === charge.id)) charges.push(charge); } },
-    price: (instance, seconds) => hostSessionCost(instance, seconds) });
-  const instance = hostInstance("test", { vcpus: 2, memoryMiB: 4096, diskMiB: 0 });
-  await meter.started({ tenant: "t1", agent: "a1" }, instance, 3_600_000, 0, "job:j1");
-  now += 90_000;
-  await meter.stopped();
-  assert.equal(charges.length, 1);
-  assert.equal(charges[0]!.instance, instance);
-  assert.equal(charges[0]!.seconds, 90);
-  close(charges[0]!.costUsd, hostSessionCost(instance, 90), "the job's charge");
-  close(meter.spentUsd(), charges[0]!.costUsd, "spent");
 });
 
 test("a session's rate fixed at its start, and its span as reported, are what it is charged", async () => {
@@ -118,24 +91,4 @@ test("a session's rate fixed at its start, and its span as reported, are what it
   await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j3", { at: now + 10_000, rate: 0.001 });
   await meter.stopped(undefined, now - 1_000);
   assert.equal(charges.length, 1);
-});
-
-test("the charged span: a job whose result says it ran is never charged nothing, whatever was lost on the way", () => {
-  const timings = { startMs: 2_000, syncMs: 100, commandMs: 30_000, collectMs: 100, totalMs: 32_500 };
-  const dispatched = 1_000_000, result = 1_040_000;
-  // Its host's `started` seen: from it to the result.
-  assert.deepEqual(chargedSpan({ ok: true, timings, ranFrom: 1_005_000 }, dispatched, result), { from: 1_005_000, until: result });
-  // The `started` lost (a reconnect, or the job object evicted and the job run again by key): from what its timings say.
-  assert.deepEqual(chargedSpan({ ok: true, timings }, dispatched, result), { from: result - 30_500, until: result });
-  // Timings that say nothing ran still cost a second: a VM booted.
-  const none = chargedSpan({ ok: true, timings: { ...timings, totalMs: 2_000 } }, dispatched, result);
-  assert.ok(none.until - none.from >= 1_000, JSON.stringify(none));
-  // Never before dispatch, nor past the result.
-  assert.deepEqual(chargedSpan({ ok: true, timings: { ...timings, totalMs: 900_000 } }, dispatched, result), { from: dispatched, until: result });
-  // A failure after its VM started (stopped, or the command could not run), its `started` lost: from its timings.
-  assert.deepEqual(chargedSpan({ ok: false, timings: { startMs: 2_000, totalMs: 22_000 } }, dispatched, result), { from: result - 20_000, until: result });
-  // A failure whose VM never started: nothing.
-  assert.deepEqual(chargedSpan({ ok: false }, dispatched, result), { from: result, until: result });
-  // Its host went away: from its start to when the host was last heard from.
-  assert.deepEqual(chargedSpan({ ok: false, ranFrom: 1_002_000, ranUntil: 1_010_000 }, dispatched, result), { from: 1_002_000, until: 1_010_000 });
 });

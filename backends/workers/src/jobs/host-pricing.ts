@@ -19,7 +19,6 @@ import type { JobSpec } from "./job.ts";
 export const HOSTS_PROVIDER = "camelrun-hosts";
 
 export type HostPool = "build" | "test";
-export const HOST_POOLS: readonly HostPool[] = ["build", "test"];
 
 /** A job VM's shape on a host: whole vCPUs, memory and disk in MiB. */
 export type HostShape = { vcpus: number; memoryMiB: number; diskMiB: number };
@@ -75,18 +74,6 @@ export function hostSecondRate(pool: HostPool, shape: HostShape, env: HostPriceE
 export function hostInstance(pool: HostPool, shape: Pick<HostShape, "vcpus" | "memoryMiB">) {
   return `${pool}-${shape.vcpus}vcpu-${shape.memoryMiB}mib`;
 }
-export function parseHostInstance(instance: string): { pool: HostPool; shape: HostShape } | undefined {
-  const match = /^(build|test)-(\d{1,3})vcpu-(\d{1,7})mib$/.exec(instance);
-  if (!match) return undefined;
-  return { pool: match[1] as HostPool, shape: { vcpus: Number(match[2]), memoryMiB: Number(match[3]), diskMiB: 0 } };
-}
-
-/** A host job session's cost: its VM's rate for its time (a VM holds its vCPUs whether or not they compute). */
-export function hostSessionCost(instance: string, seconds: number, env: HostPriceEnv = {}) {
-  const parsed = parseHostInstance(instance);
-  if (!parsed) throw new Error(`Not a host job instance: ${instance}`);
-  return seconds * hostSecondRate(parsed.pool, parsed.shape, env);
-}
 
 /**
  * The largest test-pool job: a test shard's size (4 vCPU and 8–16 GiB in the design doc). Anything larger goes to the
@@ -108,23 +95,5 @@ export function hostShape(spec: Pick<JobSpec, "limits"> & { instance: keyof type
     memoryMiB: spec.limits?.memoryMiB ?? resources.memoryGiB * 1024,
     diskMiB: spec.limits?.diskMiB ?? Math.ceil(resources.diskGB * 1e9 / 2 ** 20),
   };
-}
-
-
-/**
- * The span a host job is charged, from dispatch to its result (`resultAt`): from its host's `started` report, or, for a
- * result that says it ran, what its timings say (so a `started` lost on a reconnect, or held by a job object that was
- * evicted, never makes a job that ran free); until its result, or until its host was last heard from if it went away.
- * A VM that never started (no report, no result that ran) spans nothing; a result that ran spans at least a second.
- */
-export function chargedSpan(wire: { ok: boolean; timings?: { totalMs: number; startMs: number }; ranFrom?: number; ranUntil?: number }, dispatchedAt: number, resultAt: number) {
-  // Any result that says its VM started carries timings (a failure after boot too): a job that ran is never free.
-  const ranFrom = wire.ranFrom ?? (wire.timings ? resultAt - Math.max(0, wire.timings.totalMs - wire.timings.startMs) : undefined);
-  if (ranFrom === undefined && !wire.ok) return { from: resultAt, until: resultAt };
-  const until = Math.max(dispatchedAt, Math.min(resultAt, wire.ranUntil ?? resultAt));
-  let from = Math.min(until, Math.max(dispatchedAt, ranFrom ?? dispatchedAt));
-  // A job that ran is charged at least a second: its VM booted and ran its command.
-  if (wire.ok) from = Math.min(from, until - 1000);
-  return { from, until };
 }
 
