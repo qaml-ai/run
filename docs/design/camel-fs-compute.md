@@ -66,7 +66,9 @@ suite, attested enrollment (`shared/job-host-attest.ts`), and the guest vsock pr
 **Decided (Miguel, 2026-11-14): one `bash` tool, one VM per agent per branch, no jobs.** Agents get one `bash` tool,
 backed by a VM that starts on the agent's first call and lives on that agent's branch (§6). The job interface goes:
 there is no `job()` in workflows and no `job_run` agent tool. Parallel compute comes from child agents, each with
-its own `bash` VM on its own branch. QuickJS code mode stays for small scripts that need no VM.
+its own `bash` VM on its own branch. QuickJS code mode stays for small scripts that need no VM. A code-mode script
+may call `bash`, and that wait is **off the script's clock** (`OFF_THE_CLOCK`, as `delegate` is): the bash tool's own
+`timeoutSeconds` bounds it, not the script deadline (L124).
 
 So the VM has one shape, a **session**: it boots, runs many `exec`s, checkpoints, and stops when idle. Every route
 is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md §9.10).
