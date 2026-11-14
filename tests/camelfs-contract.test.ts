@@ -234,13 +234,13 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
     const version = await health.json();
     assert.deepEqual(Object.keys(version), ["version"]);
     assert.match(version.version, /^\d+\.\d+\.\d+$/);
-    const stats = async (token?: string) => {
-      const response = await fetch(origin + "/v0/stats", token ? { headers: { authorization: `Bearer ${token}` } } : undefined);
+    // An authenticated read of the empty tree that storageContract commits in contract:storage.
+    const readTree = async (token?: string) => {
+      const response = await fetch(origin + "/v1/lineages/contract:storage/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        token ? { headers: { authorization: `Bearer ${token}` } } : undefined);
       await response.arrayBuffer();
       return response.status;
     };
-    assert.equal(await stats(), 401);
-    assert.equal(await stats(tokenFor("arbitrary", "r")), 200);
 
     if (source === "file") {
       if (process.env.CAMELFS_DDB_LOCAL) {
@@ -253,13 +253,15 @@ test("camelFS contract: stateless API with runtime-signed tokens", {
         assert.equal(registration.status, 201, await registration.text());
       }
       await storageContract(origin, tokenFor);
+      assert.equal(await readTree(), 401);
+      assert.equal(await readTree(tokenFor("contract:storage", "r")), 200);
       if (process.env.CAMELFS_DDB_LOCAL) {
         await refsContract(request => fetch(request), origin, tokenFor);
       }
       await writeFile(jwksFile, "{");
       assert.ok(daemon.kill("SIGHUP"));
       await until(() => logs.includes("op=jwks-reload error=") || undefined);
-      assert.equal(await stats(tokenFor("arbitrary", "r")), 200);
+      assert.equal(await readTree(tokenFor("contract:storage", "r")), 200);
     }
     completed = true;
   });

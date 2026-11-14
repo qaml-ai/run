@@ -378,19 +378,8 @@ Automatic mount recovery remains a later unit. Privileged smoke scripts
 require the host availability gate and must only be run with human approval.
 The unit-3 smoke uses explicit fences and tree mounts instead of forks.
 
-Reviewer validation: `scripts/ec2-unit7.sh SOCKET DATA SOURCE_IMAGE [FIRST_FILE]`
-runs against a disposable, already running daemon. It removes only imported
-benchmark images to force cold mounts. Use a fresh daemon/data directory for
-cold-cache trials. It reports the same 65 MiB of data at 1 and 16 GiB and the
-large source root at 4, 16 and 64 GiB, swap time, hydration bytes, sampled
-demand latency, and optional first-file time including filesystem mount.
-Whole-device SHA-256 is compared after swap. Three raw chunk edits check the
-checkpoint delta; a second checkpoint checks that unchanged exceptions do
-not upload again. This harness does not measure a three-file guest stream
-checkpoint. Use the loop guest-cycle tests for guest protocol coverage.
 No real-host performance or COW integrity result is claimed until a reviewer
-runs the root tests and harness. The demand samples include NBD misses and
-cache hits; they are not an isolated cache-hit microbenchmark.
+runs the root tests.
 Host /v0 tree, blob and commit GETs now require ?lineage=NAME. The development
 CLI tree and cat commands take --lineage NAME before the tree id.
 
