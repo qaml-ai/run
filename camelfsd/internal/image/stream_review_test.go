@@ -170,3 +170,43 @@ func TestApplyStreamsBeforeBatchCompletes(t *testing.T) {
 	}
 	client.Close()
 }
+
+// A symlink in the apply stream is a link op with its target in JSON and no raw
+// frames: jobhost's guest rejects put with mode 120000.
+func TestApplySendsSymlinkAsLinkOp(t *testing.T) {
+	m, _ := unit3(t)
+	ctx := context.Background()
+	target := []byte("../elsewhere")
+	h := store.GitHash("blob", target)
+	if e := m.Store.Put(ctx, "l/o/"+h, target); e != nil {
+		t.Fatal(e)
+	}
+	server, client := net.Pipe()
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(time.Second))
+	done := make(chan error, 1)
+	go func() {
+		done <- m.sendApply(server, "l", "j", Apply{Files: 1, Bytes: int64(len(target))},
+			[]objects.Entry{{Path: "link", Mode: "120000", SHA1: h, Size: int64(len(target))}},
+			[]wire.Op{{Path: "link", Op: "put", Mode: "120000", Size: int64(len(target))}})
+		server.Close()
+	}()
+	for i := 0; i < 3; i++ {
+		var v any
+		if e := wire.JSON(client, &v); e != nil {
+			t.Fatal(e)
+		}
+	}
+	var op wire.Op
+	if e := wire.JSON(client, &op); e != nil {
+		t.Fatal(e)
+	}
+	if op.Op != "link" || op.Path != "link" || op.Target != string(target) || op.Size != 0 || op.Mode != "" {
+		t.Fatalf("symlink sent as %+v", op)
+	}
+	// The next frame is the trailer, not raw symlink bytes.
+	var end wire.Op
+	if e := wire.JSON(client, &end); e != nil || !end.End {
+		t.Fatalf("expected the trailer, got %+v (%v)", end, e)
+	}
+}

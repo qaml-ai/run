@@ -35,7 +35,12 @@ func TestMountClientSendsExplicitFence(t *testing.T) {
 	defer server.Close()
 	for _, holder := range []string{"", "runtime"} {
 		var out bytes.Buffer
-		if e := client.Run([]string{"--socket", socket, "mount", "--job", "j", "--lineage", "l", "--tree", strings.Repeat("a", 40), "--holder", holder, "--epoch", "7"}, &out); e != nil {
+		args := []string{"--socket", socket, "mount", "--job", "j", "--lineage", "l", "--tree", strings.Repeat("a", 40), "--holder", holder, "--epoch", "7"}
+		parent := strings.Repeat("b", 40)
+		if holder != "" {
+			args = append(args, "--parent", parent)
+		}
+		if e := client.Run(args, &out); e != nil {
 			t.Fatal(e)
 		}
 		body := <-requests
@@ -44,6 +49,10 @@ func TestMountClientSendsExplicitFence(t *testing.T) {
 				t.Fatal("read-only CLI mount must not select legacy mode", string(body["fence"]))
 			}
 		} else {
+			var gotParent string
+			if e := json.Unmarshal(body["parent"], &gotParent); e != nil || gotParent != parent {
+				t.Fatal(gotParent, e)
+			}
 			var fence refs.Fence
 			if e := json.Unmarshal(body["fence"], &fence); e != nil || fence.Holder != holder || fence.Epoch != 7 {
 				t.Fatal(fence, e)

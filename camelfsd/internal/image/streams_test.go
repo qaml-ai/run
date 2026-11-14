@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,7 +44,7 @@ func unit3(t *testing.T) (*Manager, string) {
 }
 func mount3(t *testing.T, m *Manager, tree, job string) *Mount {
 	t.Helper()
-	v, e := m.Mount(context.Background(), Request{Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+	v, e := m.Mount(context.Background(), Request{Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 	if e != nil {
 		t.Fatal(e)
 	}

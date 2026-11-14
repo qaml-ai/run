@@ -10,6 +10,11 @@
 # (a deployment at 0 tasks completes at once), then `infra/camelfs/apply.sh api_min_count=2` starts the tasks and
 # the autoscaling. Every later deploy is this script alone.
 #
+# After a COMPLETED deployment the revision's ARN is saved as service_task_definition_arn in camelfs/prod.tfvars
+# (the state bucket), so the next Terraform plan pins the revision this script chose instead of rolling the
+# service back to Terraform's own (which the service runs only until the first deploy). A failed or rolled-back
+# deployment saves nothing: the service is back on the revision prod.tfvars already names.
+#
 # The new revision copies the family's latest revision and swaps only the image, so settings Terraform changed
 # (environment, cpu/memory) ship with the next deploy. To ship a settings change alone, redeploy the running tag.
 # Wait for the deployment to COMPLETED, not just services-stable (which a rollback also reaches).
@@ -75,6 +80,15 @@ while :; do
   esac
   sleep "$poll"
 done
+
+# Pin the revision for Terraform (see the header). Same file and format apply.sh uses.
+tfvars_s3=s3://camelai-terraform-state-$ACCOUNT_ID/agent-runtime/camelfs/prod.tfvars
+tfvars=$(mktemp -t camelfs-tfvars.XXXXXX)
+aws s3 cp --only-show-errors "$tfvars_s3" "$tfvars" 2>/dev/null || : > "$tfvars"
+grep -Ev '^[[:space:]]*service_task_definition_arn[[:space:]]*=' "$tfvars" > "$tfvars.new" || true
+echo "service_task_definition_arn = \"$revision\"" >> "$tfvars.new"
+aws s3 cp --only-show-errors "$tfvars.new" "$tfvars_s3"; rm -f "$tfvars" "$tfvars.new"
+log "Saved service_task_definition_arn = $revision to prod.tfvars"
 
 # Every running task runs exactly this image (none at all while api_min_count is 0).
 mapfile -t running < <(aws ecs list-tasks --cluster "$cluster" --service-name "$service" --desired-status RUNNING --query 'taskArns[]' --output text | tr '\t' '\n' | sed '/^$/d')

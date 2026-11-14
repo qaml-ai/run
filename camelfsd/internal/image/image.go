@@ -68,6 +68,7 @@ type Request struct {
 	Fence       *refs.Fence `json:"fence"`
 	Root        string      `json:"root"`
 	Tree        string      `json:"tree"`
+	Parent      string      `json:"parent,omitempty"`
 	Hydrate     bool        `json:"hydrate"`
 	Vsock       string      `json:"vsock"`
 }
@@ -107,10 +108,19 @@ type Mount struct {
 func (q *Request) UnmarshalJSON(b []byte) error {
 	type plain Request
 	v := plain{Hydrate: true}
+	body := struct {
+		*plain
+		Parent json.RawMessage `json:"parent"`
+	}{plain: &v}
 	decoder := json.NewDecoder(bytes.NewReader(b))
 	decoder.DisallowUnknownFields()
-	if e := decoder.Decode(&v); e != nil {
+	if e := decoder.Decode(&body); e != nil {
 		return e
+	}
+	if body.Parent != nil {
+		if e := json.Unmarshal(body.Parent, &v.Parent); e != nil || !root.Hex(v.Parent, 40) {
+			return &apierr.Error{Status: 400, Code: "invalid_request", Cause: fmt.Errorf("invalid parent commit")}
+		}
 	}
 	// TEMPORARY: removed with jobhost phase 2
 	var fields struct{ Fence json.RawMessage }
@@ -213,6 +223,12 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if forms != 1 || !JobID.MatchString(q.JobID) || q.JobID == "." || q.JobID == ".." || !store.Lineage(q.Lineage) || q.Root != "" && !root.Hex(q.Root, 64) || q.Tree != "" && !root.Hex(q.Tree, 40) {
 		return nil, apierr.Invalid("invalid mount request")
 	}
+	if q.Fence != nil && q.Parent == "" {
+		return nil, &apierr.Error{Status: 400, Code: "invalid_request", Cause: fmt.Errorf("missing field parent")}
+	}
+	if q.Parent != "" && !root.Hex(q.Parent, 40) {
+		return nil, &apierr.Error{Status: 400, Code: "invalid_request", Cause: fmt.Errorf("invalid parent commit")}
+	}
 	m.mu.Lock()
 	if _, exists := m.mounts[q.JobID]; exists {
 		m.mu.Unlock()
@@ -267,7 +283,8 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if q.Tree != "" {
 		v.Root = treeRoot
 	}
-	v.Parent = refs.Value{Tree: q.Tree, Root: v.Root}
+	v.Parent = refs.Value{Commit: q.Parent, Tree: q.Tree, Root: v.Root}
+	v.Request.Parent = ""
 	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
 	if e != nil {
 		return nil, e

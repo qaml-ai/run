@@ -21,40 +21,56 @@
 #                                        unfindable without an index), then claim with a conditional claimedUntil
 #   hosts       pool (S) + host (S)     bootEpoch, shape, slots, free, vms, features, lastSeenAt, draining
 #   vms         id (S)                  the phase row: phase, host, lineage, ref, leaseEpoch, timestamps, result, payer
-# No DynamoDB TTL anywhere: a ref's expiresAt, an object's generation and a delivery's claim are the service's to
-# act on, never the store's (a TTL delete would move a ref without a CAS and without a log).
+#   usage       shard (S) + ulid (S)    usage events the runtime PULLS (Miguel, 2026-11-13 ~18:50; not webhooked):
+#                                        eventId, vm, seq, body, expiresAt; written in the same TransactWriteItems
+#                                        as vms. The ONE table with a DynamoDB TTL (expiresAt, 35 days): its rows
+#                                        are copies the runtime has already pulled into Postgres, not authority.
+# No DynamoDB TTL on any other table: a ref's expiresAt, an object's generation and a delivery's claim are the
+# service's to act on, never the store's (a TTL delete would move a ref without a CAS and without a log).
 
 locals {
   tables = {
     objects = {
       hash_key  = "lineage"
       range_key = "id"
+      ttl       = null
       purpose   = "trees and commits - git bytes by lineage and id"
     }
     refs = {
       hash_key  = "lineage"
       range_key = "name"
+      ttl       = null
       purpose   = "refs leases and fences - one conditional write per move"
     }
     lineages = {
       hash_key  = "lineage"
       range_key = null
+      ttl       = null
       purpose   = "lineage registry - tenant kind quota default branch last mark"
     }
     deliveries = {
       hash_key  = "shard"
       range_key = "id"
+      ttl       = null
       purpose   = "notify and vm/usage event outbox - written with the state change"
     }
     hosts = {
       hash_key  = "pool"
       range_key = "host"
+      ttl       = null
       purpose   = "VM hosts - capacity heartbeats draining - compute control K4"
     }
     vms = {
       hash_key  = "id"
       range_key = null
+      ttl       = null
       purpose   = "VM phase rows - compute control K4"
+    }
+    usage = {
+      hash_key  = "shard"
+      range_key = "ulid"
+      ttl       = "expiresAt"
+      purpose   = "usage events the runtime pulls - copies with a 35 day TTL"
     }
   }
   table_names = { for table in keys(local.tables) : table => "${var.name}-${var.env}-${table}" }
@@ -84,6 +100,15 @@ resource "aws_dynamodb_table" "camelfs" {
 
   point_in_time_recovery {
     enabled = true
+  }
+
+  # Only the usage table (see the header): expiresAt, unix seconds, set by the tier to 35 days.
+  dynamic "ttl" {
+    for_each = each.value.ttl == null ? [] : [each.value.ttl]
+    content {
+      attribute_name = ttl.value
+      enabled        = true
+    }
   }
 
   deletion_protection_enabled = true

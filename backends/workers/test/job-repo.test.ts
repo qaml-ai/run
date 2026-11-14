@@ -64,10 +64,12 @@ test('repo job resolves, branches, leases, advances with root and releases', asy
   assert.deepEqual(events, ['resolveMs', 'branchMs', 'leaseMs']);
   assert.equal((await ctx.stub.ref('job/attempt'))?.owner, 'workflow:w');
   assert.deepEqual(saved.fence, { holder: 'host:h/attempt', epoch: 1 });
-  const c = await ctx.storage.commit(ctx.lineage, { parents: [saved.expect], changes: [], message: 'checkpoint', author: 'job:attempt', trailers: {} });
+  const mount = { lineage: saved.lineage, tree: saved.tree, parent: saved.expect };
+  const c = await f.fake.checkpoint(mount, spec.id);
   const result = output(c.commit, c.tree);
   await finishJobRepo(ctx, spec, saved, result, measure);
   assert.equal(result.camelfs.ref, 'job/attempt'); assert.equal(result.camelfs.version, c.commit);
+  assert.deepEqual((await ctx.stub.commit(c.commit))?.parents, [saved.expect]);
   assert.equal((await ctx.stub.ref('job/attempt'))?.root, 'a'.repeat(64));
   await releaseJobRepo(f.env, spec.id, saved);
   assert.equal((await ctx.stub.ref('job/attempt'))?.holder, null);

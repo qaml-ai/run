@@ -410,27 +410,32 @@ test("repo job mounts its version without import and advances its own ref", { ti
   assert.ok(repoId, JSON.stringify(repo));
   await call(`/v1/repos/${repoId}/commit`, { files: { "seed.txt": { text: "seed" } }, message: "init" });
   const head = (await call(`/v1/repos/${repoId}/refs`)).find((r: any) => r.name === "main");
-  const checkpoint = await fetch(`${api.url}/v1/lineages/${encodeURIComponent(repo.lineage ?? `camelrun-proto-local:${repoId}`)}/commits`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ parents: [head.version], changes: [], message: "job checkpoint", author: "job:repo-integration", trailers: {}, time: Math.floor(Date.now() / 1000) }) });
-  assert.ok(checkpoint.ok, `${checkpoint.status} ${await checkpoint.clone().text()}`); const c = await checkpoint.json() as any;
   const enrolled = await call("/v1/internal/job-hosts/enroll", { attestation: { kind: "test", host: "repo-host", secret } });
   const socket = new WebSocket(`${fixture.url.replace(/^http/, "ws")}/v1/internal/job-hosts/connect?host=repo-host`);
   t.after(() => socket.close());
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve); socket.addEventListener("error", reject); });
-  const registered = Promise.withResolvers<void>(); let mounted: any;
-  socket.addEventListener("message", event => {
+  const registered = Promise.withResolvers<void>(), checkpoint = Promise.withResolvers<Awaited<ReturnType<typeof api.checkpoint>>>(); let mounted: any;
+  socket.addEventListener("message", async event => {
     const message = JSON.parse(String(event.data));
     if (message.type === "registered") registered.resolve();
     if (message.type !== "job") return;
     mounted = message.spec;
+    const c = await api.checkpoint(mounted.camelfs, message.id).catch(error => { checkpoint.reject(error); return null; });
+    if (!c) return;
+    checkpoint.resolve(c);
     const stream = { data: "", size: 0, truncated: false };
-    socket.send(JSON.stringify({ type: "result", id: message.id, result: { ok: true, exitCode: 7, timedOut: false, stdout: stream, stderr: stream, outputs: {}, missing: [], pids: "enforced", timings: { startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 0 }, camelfs: { commit: c.commit, tree: c.tree, root: "a".repeat(64), warm: true, mountMs: 0, applyMs: 0 } } }));
+    socket.send(JSON.stringify({ type: "result", id: message.id, result: { ok: true, exitCode: 7, timedOut: false, stdout: stream, stderr: stream, outputs: {}, missing: [], pids: "enforced", timings: { startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 0 }, camelfs: c } }));
   });
   socket.send(JSON.stringify({ type: "auth", credential: enrolled.credential }));
   socket.send(JSON.stringify({ type: "hello", host: "repo-host", slots: 1, free: 1, vcpus: 1, memoryMiB: 4096, version: "test", features: ["camelfs"] }));
   await registered.promise;
-  const result = await call("/__test/camelfs-job", { id: "repo-integration", command: "true", timeoutSeconds: 30, commit: true, repo: { tenant: "camelrun-proto-local", repo: repoId, owner: "job:repo-integration" }, payer: { tenant: "camelrun-proto-local", agent: workflow.id, kind: "workflow" } });
+  const [c, result] = await Promise.all([checkpoint.promise, call("/__test/camelfs-job", { id: "repo-integration", command: "true", timeoutSeconds: 30, commit: true, repo: { tenant: "camelrun-proto-local", repo: repoId, owner: "job:repo-integration" }, payer: { tenant: "camelrun-proto-local", agent: workflow.id, kind: "workflow" } })]);
   assert.equal(result.ok, true); assert.equal(result.exitCode, 7);
   assert.equal(result.camelfs.ref, "job/repo-integration"); assert.equal(result.camelfs.version, c.commit);
   assert.equal(mounted.camelfs.tree, head.tree); assert.ok(mounted.camelfs.fence);
+  assert.equal(mounted.camelfs.parent, head.version);
+  const stored = await fetch(`${api.url}/v1/lineages/${encodeURIComponent(mounted.camelfs.lineage)}/commits/${c.commit}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.ok(stored.ok);
+  assert.deepEqual((await stored.json() as { parents: string[] }).parents, [head.version]);
   assert.deepEqual(mounted.files, []); assert.equal(mounted.sync, undefined);
 });

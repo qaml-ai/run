@@ -67,6 +67,9 @@ func TestPhase1MountFenceCompatibility(t *testing.T) {
 			if tc.job != "missing" {
 				q["fence"] = tc.fence
 			}
+			if tc.job == "given" {
+				q["parent"] = strings.Repeat("a", 40)
+			}
 			if w := call("POST", "/v0/mounts", q); w.Code != 200 {
 				t.Fatal(w.Code, w.Body.String())
 			}
