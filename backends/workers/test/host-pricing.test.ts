@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
 import { chargedSpan, DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostSessionCost, hostShare, parseHostInstance, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
 import { hostRoles, hostShape } from "../src/jobs/host-pricing.ts";
 import { jobSpec } from "../src/jobs/job.ts";
@@ -28,13 +27,6 @@ test("about what a job costs at the defaults", () => {
   assert.ok(Math.abs(hostRates("build").hostSecond * 3600 - 1.48) < 0.01);
   // Cloudflare's for the same 2 vCPU / 8 GiB, at its provisioned rates, for comparison: hosts serve the larger jobs.
   assert.ok(2 * CONTAINER_RATES.vcpuSecond * 3600 + 8 * CONTAINER_RATES.memoryGiBSecond * 3600 < hour({ vcpus: 2, memoryMiB: 8192 }));
-});
-
-test("the pools' sandbox memory is what the image reserves (versions.env)", () => {
-  const pins = readFileSync(new URL("../../../infra/job-hosts/image/versions.env", import.meta.url), "utf8");
-  const gib = (name: string) => Number(pins.split("\n").find(line => line.startsWith(`NE_MEMPOOL_${name}=`))?.split("=")[1]?.replace(/G$/, ""));
-  assert.equal(gib("TEST"), HOST_POOL_PRICES.test.memoryGiB);
-  assert.equal(gib("BUILD"), HOST_POOL_PRICES.build.memoryGiB);
 });
 
 test("a job's VM: its limits, else its instance type's resources, in whole vCPUs; its pool by size", () => {

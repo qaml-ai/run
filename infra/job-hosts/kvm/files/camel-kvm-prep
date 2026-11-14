@@ -37,12 +37,4 @@ if ! grep -Eq '^LABEL=camel-nvme[[:space:]]+/nvme[[:space:]]+xfs[[:space:]]+noat
   fi
   echo 'LABEL=camel-nvme /nvme xfs noatime,nofail 0 0' >> /etc/fstab
 fi
-mkdir -p /nvme/camel/jobs /nvme/camelfs /run/camel/egress /run/camelfsd
-[[ ${1:-} != --storage-only ]] || exit 0
-echo '== Base image on NVMe'
-base=/var/lib/camel/images/base.ext4
-[[ -f $base ]] || fail 'Root-disk base image is missing'
-if ! cmp -s "$base" /nvme/camel/base.ext4; then
-  cp --sparse=always "$base" /nvme/camel/base.ext4.new
-  mv /nvme/camel/base.ext4.new /nvme/camel/base.ext4
-fi
+mkdir -p /nvme/camelfs /run/camel/egress /run/camelfsd

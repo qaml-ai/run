@@ -166,7 +166,7 @@ func route(kind, flags uint16, payload []byte) error {
 }
 
 func BaseRules() string {
-	return `# camelRun job host base rules (generated from jobhost/network.ts baseRules; a test checks this file matches).
+	return `# camelFS compute host base rules (generated from camelfsd/internal/vmhost BaseRules; TestBaseRules checks this file matches).
 table inet camel_jobs
 delete table inet camel_jobs
 table inet camel_jobs {

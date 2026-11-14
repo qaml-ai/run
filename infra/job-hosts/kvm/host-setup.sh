@@ -10,12 +10,11 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 fail() { echo "ERROR: $*" >&2; exit 1; }
 summary() {
   echo '== Summary'
-  node --version || true
   /usr/local/go/bin/go version || true
   /usr/local/bin/firecracker --version || true
   if [[ -f /usr/local/bin/camelfsd.commit ]]; then cat /usr/local/bin/camelfsd.commit; fi
   df -h /nvme || true
-  systemctl --no-pager is-active camel-kvm-prep nftables camel-egress-proxy camelfsd camel-jobhost || true
+  systemctl --no-pager is-active camel-kvm-prep nftables camel-egress-proxy camelfsd || true
 }
 if [[ ${1:-} == --check ]]; then summary; exit 0; fi
 [[ $# == 0 ]] || fail 'Usage: host-setup.sh [--check]'
@@ -27,11 +26,11 @@ source /etc/os-release
 [[ $(uname -m) == x86_64 ]] || fail 'x86_64 is required'
 [[ -c /dev/kvm ]] || fail '/dev/kvm is missing; enable nested KVM'
 [[ -f /etc/camel/kvm-host.conf ]] || fail 'Copy kvm-host.conf.example to /etc/camel/kvm-host.conf and fill it in'
-RUN_REF=main CAMELFSD_REF=main
+CAMELFSD_REF=main
 # No xtrace: configuration and secret files must never be echoed.
 # shellcheck source=/dev/null
 source /etc/camel/kvm-host.conf
-[[ -n ${RUNTIME_URL:-} && -n ${CAMELFSD_STORE:-} ]] || fail 'Set RUNTIME_URL and CAMELFSD_STORE'
+[[ -n ${CAMELFSD_STORE:-} ]] || fail 'Set CAMELFSD_STORE'
 compute=0
 if [[ -n ${TIER_ENROLL_URL:-}${TIER_HOSTS_ENDPOINT:-} ]]; then
   compute=1
@@ -42,10 +41,6 @@ if [[ -n ${TIER_ENROLL_URL:-}${TIER_HOSTS_ENDPOINT:-} ]]; then
 elif [[ -n ${CAMELFSD_COMPUTE_FLAGS:-} ]]; then
   fail 'Replace CAMELFSD_COMPUTE_FLAGS with the tier settings in kvm-host.conf.example'
 fi
-source "$here/guest-image.conf"
-[[ $GUEST_IMAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || fail 'Pin the published GUEST_IMAGE_SHA256 in guest-image.conf'
-GUEST_IMAGE_S3_PREFIX=${GUEST_IMAGE_S3_PREFIX:-$CAMELFSD_STORE}
-[[ $GUEST_IMAGE_S3_PREFIX == s3://?* ]] || fail 'Set GUEST_IMAGE_S3_PREFIX to s3://bucket/prefix'
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # Compare before installing, so an unchanged run does not restart services.
@@ -79,15 +74,6 @@ if (( compute )); then
   put "$work/tier-ca.pem" "${TIER_CA:-/etc/camel/tier-ca.pem}"
   ca_changed=$changed
 fi
-if ! command -v node >/dev/null || [[ $(node --version) != v22.* ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_22.x -o "$work/nodesource.sh"
-  bash "$work/nodesource.sh"
-  apt-get install -y -qq nodejs
-fi
-node_path=$(command -v node)
-if [[ $node_path != /usr/local/bin/node && $(readlink /usr/local/bin/node 2>/dev/null || true) != "$node_path" ]]; then
-  ln -sfn "$node_path" /usr/local/bin/node
-fi
 if [[ ! -x /usr/local/go/bin/go ]] || [[ $(/usr/local/go/bin/go version) != "go version go$GO_VERSION linux/amd64" ]]; then
   curl -fsSL "https://go.dev/dl/go$GO_VERSION.linux-amd64.tar.gz" -o "$work/go.tgz"
   # Check against go.dev's published digest as well as HTTPS.
@@ -98,12 +84,6 @@ if [[ ! -x /usr/local/go/bin/go ]] || [[ $(/usr/local/go/bin/go version) != "go 
   rm -rf /usr/local/go
   mv "$work/go" /usr/local/go
 fi
-if [[ -f /etc/cloudflared/camelfs.token ]] && [[ ! -x /usr/bin/cloudflared ]]; then
-  install -d /usr/share/keyrings
-  curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
-  echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main' > /etc/apt/sources.list.d/cloudflared.list
-  apt-get update -qq; apt-get install -y -qq cloudflared
-fi
 echo '== Modules'
 # Exactly what camelfsd and Firecracker use: dm-snapshot (the job's writable layer over a dm-linear origin), nbd (the
 # lazy origin), loop (the hydrated image; a no-op where it is built in) and vhost_vsock (the guest channel). camelfsd
@@ -111,7 +91,7 @@ echo '== Modules'
 for module in dm-snapshot nbd loop vhost_vsock; do modprobe "$module"; done
 printf '%s\n' dm-snapshot nbd loop vhost_vsock > "$work/modules"
 put "$work/modules" /etc/modules-load.d/camelfs.conf
-bash "$here/files/camel-kvm-prep" --storage-only
+bash "$here/files/camel-kvm-prep"
 
 echo '== Source'
 checkout() {
@@ -120,14 +100,7 @@ checkout() {
   git -C "$dir" fetch -q origin "$ref"
   git -C "$dir" checkout -q --detach FETCH_HEAD
 }
-install -d /opt/camel /var/lib/camel/guest /var/lib/camel/images
-checkout /opt/camel/src "$RUN_REF"
-agent_changed=0
-for tree in jobhost shared; do
-  if [[ -n $(rsync -rcni --delete "/opt/camel/src/$tree/" "/opt/camel/$tree/") ]]; then
-    rsync -rc --delete "/opt/camel/src/$tree/" "/opt/camel/$tree/"; agent_changed=1
-  fi
-done
+install -d /opt/camel /var/lib/camel/guest
 checkout /opt/camel/camelfsd-src "$CAMELFSD_REF"
 commit=$(git -C /opt/camel/camelfsd-src rev-parse HEAD)
 daemon_changed=0
@@ -163,28 +136,6 @@ if [[ ! -f $kernel || $(cat "$kernel.url" 2>/dev/null || true) != "$GUEST_KERNEL
 else
   verify GUEST_KERNEL_SHA256 "$GUEST_KERNEL_SHA256" "$kernel"
 fi
-echo '== Guest rootfs'
-base=/var/lib/camel/images/base.ext4
-if [[ ! -f $base || $(cat "$base.sha256" 2>/dev/null || true) != "$GUEST_IMAGE_SHA256" ]]; then
-  artifact=${GUEST_IMAGE_S3_PREFIX%/}/guest/$GUEST_IMAGE_SHA256
-  aws s3 cp --region "${AWS_REGION:-us-west-2}" --only-show-errors "$artifact.json" "$work/guest.json"
-  aws s3 cp --region "${AWS_REGION:-us-west-2}" --only-show-errors "$artifact.ext4.zst" "$work/guest.ext4.zst"
-  manifest_sha=$(jq -er '.sha256 | select(test("^[0-9a-f]{64}$"))' "$work/guest.json")
-  zstd_sha=$(jq -er '.zstdSha256 | select(test("^[0-9a-f]{64}$"))' "$work/guest.json")
-  [[ $manifest_sha == "$GUEST_IMAGE_SHA256" ]] || fail 'Guest manifest does not match the pin'
-  verify GUEST_ZSTD_SHA256 "$zstd_sha" "$work/guest.ext4.zst"
-  zstd -qd --sparse "$work/guest.ext4.zst" -o "$work/guest.ext4"
-  verify GUEST_IMAGE_SHA256 "$GUEST_IMAGE_SHA256" "$work/guest.ext4"
-  install -d -m 0755 "$(dirname "$base")"
-  cp --sparse=always "$work/guest.ext4" "$base.new"
-  chmod 0644 "$base.new"
-  mv "$base.new" "$base"
-  printf '%s\n' "$GUEST_IMAGE_SHA256" > "$base.sha256"
-  vm_changed=1
-else
-  verify GUEST_IMAGE_SHA256 "$GUEST_IMAGE_SHA256" "$base"
-fi
-bash "$here/files/camel-kvm-prep"
 echo '== Secrets'
 if [[ ! -f /etc/camel/camelfs-api.env ]]; then
   (umask 077; printf 'CAMELFS_API_TOKEN=%s\n' "$(openssl rand -hex 32)" > /etc/camel/camelfs-api.env)
@@ -207,29 +158,27 @@ if [[ -e /usr/local/sbin/camelfsd-cleanup ]]; then rm -f /usr/local/sbin/camelfs
 put "$here/systemd/camelfsd.service" /etc/systemd/system/camelfsd.service
 restart[camelfsd]=$((changed | daemon_changed | ca_changed))
 changed=0
-put "$here/systemd/camel-jobhost.service" /etc/systemd/system/camel-jobhost.service
-restart[camel-jobhost]=$((changed | agent_changed | vm_changed))
-changed=0
+if [[ -e /etc/systemd/system/camel-jobhost.service ]]; then
+  # The TypeScript job host is gone: stop it and remove its unit (camelfsd is the only host process).
+  systemctl disable --now camel-jobhost.service
+  rm -f /etc/systemd/system/camel-jobhost.service
+fi
 put "$here/systemd/camel-egress-proxy.service" /etc/systemd/system/camel-egress-proxy.service
 if [[ -e /etc/systemd/system/camel-egress-proxy.service.d/kvm.conf ]]; then rm -f /etc/systemd/system/camel-egress-proxy.service.d/kvm.conf; changed=1; fi
 restart[camel-egress-proxy]=$((changed | daemon_changed))
 changed=0
-put /opt/camel/src/infra/job-hosts/image/files/camel-host.nft /etc/nftables.d/camel-host.nft
+put "$here/files/camel-host.nft" /etc/nftables.d/camel-host.nft
 if ! grep -qF 'include "/etc/nftables.d/camel-host.nft"' /etc/nftables.conf; then
   echo 'include "/etc/nftables.d/camel-host.nft"' >> /etc/nftables.conf; changed=1
 fi
 restart[nftables]=$changed
-if [[ -f /etc/cloudflared/camelfs.token ]]; then
-  if [[ $(systemctl show cloudflared-camelfs.service -p LoadState --value) == not-found ]]; then
-    changed=0
-    put "$here/systemd/cloudflared-camelfs.service" /etc/systemd/system/cloudflared-camelfs.service
-    restart[cloudflared-camelfs]=$changed
-  else
-    echo '== Existing cloudflared-camelfs.service left alone'
-  fi
+if [[ -e /etc/systemd/system/cloudflared-camelfs.service ]]; then
+  # The tunnel fronted the removed /v0 socket API; nothing reaches the host through it any more.
+  systemctl disable --now cloudflared-camelfs.service
+  rm -f /etc/systemd/system/cloudflared-camelfs.service
 fi
 systemctl daemon-reload
-for unit in camel-kvm-prep nftables camel-egress-proxy camelfsd camel-jobhost cloudflared-camelfs; do
+for unit in camel-kvm-prep nftables camel-egress-proxy camelfsd; do
   [[ -v restart[$unit] ]] || continue
   systemctl enable "$unit.service"
   if [[ ${restart[$unit]} == 1 ]]; then
