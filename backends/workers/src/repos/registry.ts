@@ -5,7 +5,8 @@ import type { Env } from '../agent.ts';
 import { DoRepoClient, type RepoClient } from './client.ts';
 import type { RepoDO } from './repo-do.ts';
 import { versionEntries } from './reads.ts';
-import { camelfsStorage, type CamelfsEnv } from './storage.ts';
+import { type CamelfsEnv } from './storage.ts';
+import { repoStorage } from '../camelfs/repo-storage.ts';
 import { check, RepoError, repoErrorFrom } from './repo-policy.ts';
 export type RepoEnv = Env & CamelfsEnv & {
   REPOS: DurableObjectNamespace<RepoDO>;
@@ -14,7 +15,7 @@ export async function repoContext(env: RepoEnv, tenant: string, repoId: string, 
   const row = await env.TENANTS.getByName(tenant).repoRow(repoId);
   if (!row || row.deletedAt !== null)
     throw new RepoError('no_repo', 404, 'no_repo');
-  const { lineage } = row, storage = camelfsStorage(env, sub);
+  const { lineage } = row, storage = repoStorage(env, sub);
   // TEMPORARY(R5)
   const repo: RepoClient = tierConfigured(env)
     ? new HttpRepoClient(env, tenant, row, sub, () => env.TENANTS.getByName(tenant).repoRow(repoId))
@@ -66,7 +67,7 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
   if (!seed) {
     const author = input.author ?? `api:${tenant}`, message = 'create', trailers = { 'Camel-Checkpoint': 'api', 'Camel-Op': 'api' };
     if (repo instanceof HttpRepoClient) await repo.prepareLineage();
-    const c = await camelfsStorage(env, sub).commit(row.lineage, { parents: [], changes: [], author, message, trailers });
+    const c = await repoStorage(env, sub).commit(row.lineage, { parents: [], changes: [], author, message, trailers });
     seed = { version: { version: c.commit, tree: c.tree, parents: [], author, message, trailers, at: c.time * 1000 }, entries: [] };
   }
   const info = await repo.init({ tenant, ...row, seed });

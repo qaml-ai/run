@@ -1,10 +1,10 @@
 import type { FileRef } from '../attachment-policy.ts';
-import { camelfsStorage } from './storage.ts';
+import { repoStorage } from '../camelfs/repo-storage.ts';
 import { repoContext, type RepoEnv } from './registry.ts';
 export async function readAttachment(env: RepoEnv, tenant: string, file: FileRef, range?: string) {
   const row=await env.TENANTS.getByName(tenant).repoRow(file.repo);
   if(!row)throw new Error('Attached repo is missing');
-  const storage=camelfsStorage(env, `api:${tenant}`),v=await storage.getCommit(row.lineage,file.version);
+  const storage=repoStorage(env, `api:${tenant}`),v=await storage.getCommit(row.lineage,file.version);
   const path=file.repoPath ?? file.path.replace(/^\/+/, '');
   return storage.readBlob(row.lineage,file.blob,v.tree,path,range);
 }
@@ -14,7 +14,7 @@ export async function authorizedAttachment(env:RepoEnv,tenant:string,mounts:impo
   const index=env.TENANTS.getByName(tenant),source=await index.repoRow(file.repo);
   if(!source)return false;
   const path=file.repoPath??file.path.replace(/^\/+/,'');
-  const storage=camelfsStorage(env, `api:${tenant}`);
+  const storage=repoStorage(env, `api:${tenant}`);
   for(const mount of mounts) {
     if(!('repo'in mount))continue;
     const row=await index.repoRow(mount.repo),base=(mount.subpath??'/').replace(/^\/+/,'');

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { tierConfigured, TierError, type TierEnv } from "./tier.ts";
-import { camelfsStorage, StorageError } from "../repos/storage.ts";
+import { StorageError } from "../repos/storage.ts";
+import { repoStorage } from "./repo-storage.ts";
 
 export async function camelfsSmoke(env: TierEnv) {
   const lineage = "smoke:" + randomUUID(), path = "probe.txt", sub = "runtime:camelfs-smoke";
   const bytes = new TextEncoder().encode(lineage);
-  const storage = camelfsStorage(env, sub);
+  const storage = repoStorage(env, sub);
   const timings: Record<string, number> = {};
   async function measure<T>(op: string, run: () => Promise<T>) {
     const start = performance.now();

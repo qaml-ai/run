@@ -81,10 +81,10 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
     ["GET", smoke.lineage, "r", "runtime:camelfs-smoke", []],
   ]);
 
-  const { camelfsStorage } = await import("../src/repos/storage.ts");
+  const { repoStorage } = await import("../src/camelfs/repo-storage.ts");
   const row = { id: "repo_r3", name: "r3", key: null, createdAt: 1, deletedAt: null, lineage: "t:repo_r3", files: 0, bytes: 0 };
   const repo = new HttpRepoClient(env, "t", row, "agent:caller");
-  const storage = camelfsStorage(env, "agent:caller");
+  const storage = repoStorage(env, "agent:caller");
   const meta = { author: "agent:caller", message: "test", time: 1763046000, trailers: { "Camel-Op": "api" } };
   await repo.prepareLineage();
   const foreign = new HttpRepoClient(env, "another", row, "api:another");
