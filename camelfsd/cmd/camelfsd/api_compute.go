@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"log"
@@ -13,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/api"
@@ -25,9 +22,9 @@ import (
 )
 
 type apiComputeFlags struct {
-	tables                                                                  compute.Tables
-	endpoint, refs, pools, hostsCA, tierCert, tierKey, notifyURL, notifyKey string
-	heartbeat                                                               time.Duration
+	tables                                                                               compute.Tables
+	endpoint, refs, pools, listenHosts, hostsCA, tierCert, tierKey, notifyURL, notifyKey string
+	heartbeat                                                                            time.Duration
 }
 
 func (c *apiComputeFlags) bind(f *flag.FlagSet) {
@@ -38,41 +35,35 @@ func (c *apiComputeFlags) bind(f *flag.FlagSet) {
 	f.StringVar(&c.refs, "refs-table", "", "DynamoDB refs table for VM mount leases")
 	f.StringVar(&c.endpoint, "ddb-endpoint", "", "DynamoDB Local endpoint for tests")
 	f.StringVar(&c.pools, "pools", "", "comma-separated compute pools")
+	f.StringVar(&c.listenHosts, "listen-hosts", "", "private host mTLS address (required with compute, no unauthenticated routes, use TCP NLB health checks)")
 	f.StringVar(&c.hostsCA, "hosts-ca-pem", "", "private host CA PEM bundle")
-	f.StringVar(&c.tierCert, "tier-cert", "", "tier TLS client certificate PEM")
-	f.StringVar(&c.tierKey, "tier-key", "", "tier TLS client key PEM")
+	f.StringVar(&c.tierCert, "tier-cert", "", "tier TLS server and client certificate PEM")
+	f.StringVar(&c.tierKey, "tier-key", "", "tier TLS private key PEM")
 	f.StringVar(&c.notifyURL, "runtime-notify-url", "", "runtime webhook URL")
 	f.StringVar(&c.notifyKey, "notify-key-file", "", "runtime webhook HMAC key file")
 	f.DurationVar(&c.heartbeat, "heartbeat-interval", 10*time.Second, "host heartbeat interval")
 }
 
 type apiCompute struct {
-	hostServer *api.HostServer
-	loop       compute.Loop
-	sender     delivery.Sender
-	caFile     string
-	ca         atomic.Pointer[x509.CertPool]
+	hostServer  *api.HostServer
+	loop        compute.Loop
+	sender      delivery.Sender
+	credentials *api.HostTLS
 }
 
 func (c *apiCompute) reload() error {
 	if c == nil {
 		return nil
 	}
-	raw, err := os.ReadFile(c.caFile)
-	if err != nil {
-		return err
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(raw) {
-		return errors.New("invalid hosts CA PEM bundle")
-	}
-	c.ca.Store(pool)
-	return nil
+	return c.credentials.Reload()
 }
 
 func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.Repository) (*apiCompute, error) {
 	if f.tables == (compute.Tables{}) {
 		return nil, nil
+	}
+	if f.listenHosts == "" {
+		return nil, errors.New("compute requires --listen-hosts")
 	}
 	if slices.Contains([]string{f.tables.VMs, f.tables.Hosts, f.tables.Deliveries, f.tables.Usage, f.refs, f.pools,
 		f.hostsCA, f.tierCert, f.tierKey, f.notifyURL, f.notifyKey}, "") || f.heartbeat <= 0 || f.heartbeat > time.Duration(1<<63-1)/3 {
@@ -89,7 +80,7 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 	if err != nil || target.Hostname() == "" || target.User != nil || (target.Scheme != "http" && target.Scheme != "https") {
 		return nil, errors.New("invalid runtime-notify-url")
 	}
-	cert, err := tls.LoadX509KeyPair(f.tierCert, f.tierKey)
+	credentials, err := api.LoadHostTLS(f.hostsCA, f.tierCert, f.tierKey)
 	if err != nil {
 		return nil, err
 	}
@@ -104,10 +95,7 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 	if err != nil {
 		return nil, err
 	}
-	c := &apiCompute{caFile: f.hostsCA}
-	if err := c.reload(); err != nil {
-		return nil, err
-	}
+	c := &apiCompute{credentials: credentials}
 	db, err := ddb.Open(ctx, ddb.Config{Region: region, Endpoint: f.endpoint})
 	if err != nil {
 		return nil, err
@@ -115,8 +103,8 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 	grace := 3 * f.heartbeat
 	controller := &compute.Controller{DB: db, Tables: f.tables, RuntimeURL: f.notifyURL, Objects: repo.Store,
 		Refs: refstore.New(db, f.refs, nil, repo), CommitTree: api.CommitTreeResolver(repo),
-		Pusher: api.HostPusher{CA: c.ca.Load, Certificate: cert}, HostFresh: grace}
-	c.hostServer = api.NewHostServer(controller, pools, c.ca.Load, grace)
+		Pusher: api.HostPusher{TLS: credentials}, HostFresh: grace}
+	c.hostServer = api.NewHostServer(controller, pools, grace)
 	c.loop = compute.Loop{C: controller, Pools: func(context.Context) ([]string, error) { return pools, nil }}
 	c.sender = delivery.Sender{DB: db, Table: f.tables.Deliveries, Node: node + ":" + strconv.Itoa(os.Getpid()), Signer: delivery.HMAC(key)}
 	return c, nil

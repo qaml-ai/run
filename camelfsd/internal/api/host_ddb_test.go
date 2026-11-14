@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -48,15 +47,15 @@ func TestDDBHostChannel(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	clock := func() time.Time { return now }
 	objects := store.Local{Dir: t.TempDir()}
-	ca, other := newHostTestCA(t), newHostTestCA(t)
-	pusher := HostPusher{CA: func() *x509.CertPool { return ca.pool }, Certificate: ca.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier")}
+	ca := newHostTestCA(t)
+	credentials := testHostTLS(t, ca, ca.leaf(t, x509.ExtKeyUsageClientAuth, "spiffe://camelfs/tier"), t.TempDir())
+	pusher := HostPusher{TLS: credentials}
 	c := &compute.Controller{DB: db, Tables: compute.Tables{VMs: vms, Hosts: hosts, Deliveries: deliveries, Usage: usage},
 		Now: clock, Refs: refstore.New(db, refs, clock, nil), Pusher: pusher, RuntimeURL: "https://runtime.example/ended", Objects: objects}
 	pools := []string{"pool"}
 	loop := compute.Loop{C: c, Pools: func(context.Context) ([]string, error) { return pools, nil }}
-	server := NewHostServer(c, pools, pusher.CA, 30*time.Second)
-	tier := httptest.NewServer(server)
-	t.Cleanup(tier.Close)
+	server := NewHostServer(c, pools, 30*time.Second)
+	tier := testTier(t, credentials, server)
 	var mu sync.Mutex
 	var boots []hostwire.BootSpec
 	var stops []hostwire.Stop
@@ -86,9 +85,9 @@ func TestDDBHostChannel(t *testing.T) {
 		}
 		w.WriteHeader(204)
 	}))
-	certA := certHeader(ca.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+"a"))
-	certB := certHeader(ca.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+"b"))
-	post := func(cert, path string, q any, want int, reply any) string {
+	clientA := testHostClient(t, ca.pool, ca.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+"a"))
+	clientB := testHostClient(t, ca.pool, ca.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+"b"))
+	post := func(client *http.Client, path string, q any, want int, reply any) string {
 		t.Helper()
 		raw, err := json.Marshal(q)
 		if err != nil {
@@ -98,8 +97,7 @@ func TestDDBHostChannel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set(leafHeader, cert)
-		resp, err := tier.Client().Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,13 +117,12 @@ func TestDDBHostChannel(t *testing.T) {
 	register := hostwire.Register{Pool: "pool", BootID: "initial", Addr: host.Listener.Addr().String(),
 		Shape: hostwire.Shape{VCPUs: 4, MemoryMiB: 4096, DiskMiB: 1024}, Slots: 1, Images: []string{image}}
 	var registered hostwire.Registered
-	post(certA, "a/register", register, 200, &registered)
-	post(certB, "b/register", register, 200, nil)
-	post(certHeader(other.leaf(t, x509.ExtKeyUsageClientAuth, hostSANPrefix+"a")), "a/register", register, 403, nil)
+	post(clientA, "a/register", register, 200, &registered)
+	post(clientB, "b/register", register, 200, nil)
 	heartbeat := func(epoch int64, free int, running ...hostwire.Running) hostwire.HeartbeatReply {
 		t.Helper()
 		var reply hostwire.HeartbeatReply
-		post(certA, "a/heartbeat", hostwire.Heartbeat{BootEpoch: epoch, At: now.UnixMilli(), Free: free, Running: running}, 200, &reply)
+		post(clientA, "a/heartbeat", hostwire.Heartbeat{BootEpoch: epoch, At: now.UnixMilli(), Free: free, Running: running}, 200, &reply)
 		return reply
 	}
 	heartbeat(registered.BootEpoch, 1)
@@ -167,8 +164,8 @@ func TestDDBHostChannel(t *testing.T) {
 		t.Fatalf("boot specs: %+v", gotBoots)
 	}
 	start := hostwire.Started{BootEpoch: 1, At: now.UnixMilli()}
-	post(certB, "b/vms/life/started", start, 409, nil)
-	post(certA, "a/vms/life/started", start, 204, nil)
+	post(clientB, "b/vms/life/started", start, 409, nil)
+	post(clientA, "a/vms/life/started", start, 204, nil)
 	for range 4 {
 		now = now.Add(time.Minute)
 		heartbeat(1, 0, hostwire.Running{ID: "life", StartedAt: &start.At})
@@ -195,11 +192,11 @@ func TestDDBHostChannel(t *testing.T) {
 	key, _ := store.ResultKey(lin, "life")
 	end := hostwire.Ended{BootEpoch: 1, At: now.UnixMilli(), Code: "stopped", ResultKey: key, ResultBytes: int64(len(body)), ResultSha256: root.Hash(body)}
 	path := "a/vms/life/ended"
-	post(certB, "b/vms/life/ended", end, 409, nil)
+	post(clientB, "b/vms/life/ended", end, 409, nil)
 	q := end
 	q.ResultKey = lin + "/results/life"
-	post(certA, path, q, 400, nil)
-	if resp := post(certA, path, end, 409, nil); !strings.Contains(resp, "result not found") {
+	post(clientA, path, q, 400, nil)
+	if resp := post(clientA, path, end, 409, nil); !strings.Contains(resp, "result not found") {
 		t.Fatal(resp)
 	}
 	if err := store.Atomic(filepath.Join(objects.Dir, key), body); err != nil {
@@ -207,7 +204,7 @@ func TestDDBHostChannel(t *testing.T) {
 	}
 	q = end
 	q.ResultBytes++
-	post(certA, path, q, 409, nil)
+	post(clientA, path, q, 409, nil)
 
 	// Fail after HEAD succeeds and before End is attempted.
 	server.headResult = func(ctx context.Context, key string) (store.Info, error) {
@@ -217,13 +214,13 @@ func TestDDBHostChannel(t *testing.T) {
 		}
 		return info, errors.New("injected interruption after HEAD")
 	}
-	post(certA, path, end, 500, nil)
+	post(clientA, path, end, 500, nil)
 	if v := get("life"); v.Phase != compute.Stopping {
 		t.Fatal(v)
 	}
 	server.headResult = objects.Head
-	post(certA, path, end, 204, nil)
-	post(certA, path, end, 204, nil)
+	post(clientA, path, end, 204, nil)
+	post(clientA, path, end, 204, nil)
 	v = get("life")
 	if v.Phase != compute.Ended || !v.RefLeaseReleased || v.ResultRef != key || v.ResultSha256 != end.ResultSha256 || v.ResultBytes != end.ResultBytes || v.UsageSeq != 5 {
 		t.Fatalf("ended: %+v", v)
@@ -272,18 +269,18 @@ func TestDDBHostChannel(t *testing.T) {
 	if len(reply.Boot) != 1 || reply.Boot[0].ID != "fallback" {
 		t.Fatal(reply)
 	}
-	post(certA, "a/vms/fallback/started", hostwire.Started{BootEpoch: 1, At: now.UnixMilli()}, 204, nil)
+	post(clientA, "a/vms/fallback/started", hostwire.Started{BootEpoch: 1, At: now.UnixMilli()}, 204, nil)
 	if reply := heartbeat(1, 0, hostwire.Running{ID: "fallback"}); len(reply.Boot) != 0 {
 		t.Fatal(reply)
 	}
 
-	if got := post(certA, "a/heartbeat", hostwire.Heartbeat{BootEpoch: 0}, 409, nil); !strings.Contains(got, "stale_epoch") {
+	if got := post(clientA, "a/heartbeat", hostwire.Heartbeat{BootEpoch: 0}, 409, nil); !strings.Contains(got, "stale_epoch") {
 		t.Fatal(got)
 	}
 	register.BootID = "reboot"
-	post(certA, "a/register", register, 200, &registered)
+	post(clientA, "a/register", register, 200, &registered)
 	if registered.BootEpoch != 2 || get("fallback").Code != compute.HostLost {
 		t.Fatal(registered, get("fallback"))
 	}
-	post(certA, "a/heartbeat", hostwire.Heartbeat{BootEpoch: 1}, 409, nil)
+	post(clientA, "a/heartbeat", hostwire.Heartbeat{BootEpoch: 1}, 409, nil)
 }

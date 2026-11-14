@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/compute"
@@ -23,15 +21,14 @@ import (
 type HostServer struct {
 	controller *compute.Controller
 	pools      []string
-	ca         func() *x509.CertPool
 	grace      time.Duration
 	routes     *http.ServeMux
 	headResult func(context.Context, string) (store.Info, error)
 	findHost   func(context.Context, []string, string) (compute.Host, error)
 }
 
-func NewHostServer(c *compute.Controller, pools []string, ca func() *x509.CertPool, grace time.Duration) *HostServer {
-	s := &HostServer{controller: c, pools: slices.Clone(pools), ca: ca, grace: grace, routes: http.NewServeMux(),
+func NewHostServer(c *compute.Controller, pools []string, grace time.Duration) *HostServer {
+	s := &HostServer{controller: c, pools: slices.Clone(pools), grace: grace, routes: http.NewServeMux(),
 		headResult: c.Objects.Head, findHost: c.FindHost}
 	s.routes.HandleFunc("POST /v1/hosts/{host}/register", s.authenticated(s.register))
 	s.routes.HandleFunc("POST /v1/hosts/{host}/heartbeat", s.authenticated(s.heartbeat))
@@ -53,7 +50,7 @@ func (e hostError) Error() string { return e.code }
 
 func (s *HostServer) authenticated(handler func(http.ResponseWriter, *http.Request, string) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := hostIdentity(r, s.ca())
+		id, err := hostIdentity(r)
 		if err == nil {
 			err = handler(w, r, id)
 		}
@@ -62,8 +59,6 @@ func (s *HostServer) authenticated(handler func(http.ResponseWriter, *http.Reque
 		case err == nil:
 			return
 		case errors.As(err, &reply):
-		case errors.Is(err, errHostCertificateMissing):
-			reply = hostError{401, "unauthorized"}
 		case errors.Is(err, errHostForbidden):
 			reply = hostError{403, "forbidden"}
 		case errors.Is(err, compute.ErrHost), errors.Is(err, compute.ErrNotFound):
@@ -175,6 +170,7 @@ func (s *HostServer) currentHost(ctx context.Context, id string, epoch int64) (c
 }
 
 // checkHolder binds the body of a host CAS to the authenticated host and its current boot.
+// C4 must call it before performing a host CAS.
 func (s *HostServer) checkHolder(ctx context.Context, hostID string, holder hostwire.Holder) error {
 	if _, err := hostwire.ParseHolder(holder.String()); err != nil || holder.Host != hostID {
 		return errHostForbidden
@@ -257,20 +253,6 @@ func (s *HostServer) checkResult(ctx context.Context, v compute.VM, q hostwire.E
 		return hostError{409, "result size mismatch"}
 	}
 	return err
-}
-
-// WithHostRoutes keeps the storage handler as the fallback, including when compute is disabled.
-func WithHostRoutes(storage http.Handler, hosts *HostServer) http.Handler {
-	if hosts == nil {
-		return storage
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/hosts/") {
-			hosts.ServeHTTP(w, r)
-		} else {
-			storage.ServeHTTP(w, r)
-		}
-	})
 }
 
 // CommitTreeResolver resolves an explicitly pinned version within its lineage.

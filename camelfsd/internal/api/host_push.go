@@ -20,8 +20,7 @@ import (
 )
 
 type HostPusher struct {
-	CA          func() *x509.CertPool
-	Certificate tls.Certificate
+	TLS *HostTLS
 }
 
 func (p HostPusher) Boot(ctx context.Context, host compute.Host, spec hostwire.BootSpec) error {
@@ -67,9 +66,10 @@ func (p HostPusher) post(ctx context.Context, host compute.Host, path string, bo
 }
 
 func (p HostPusher) tlsConfig(hostID string) *tls.Config {
+	credentials := p.TLS.current.Load()
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{p.Certificate},
+		Certificates: credentials.Certificates,
 		// Verify the private chain and SPIFFE URI in place of DNS verification.
 		InsecureSkipVerify: true,
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
@@ -88,7 +88,7 @@ func (p HostPusher) tlsConfig(hostID string) *tls.Config {
 				}
 				chain.AddCert(cert)
 			}
-			return verifyHostCertificate(leaf, chain, p.CA(), x509.ExtKeyUsageServerAuth, hostID)
+			return verifyHostCertificate(leaf, chain, credentials.ClientCAs, x509.ExtKeyUsageServerAuth, hostID)
 		},
 	}
 }

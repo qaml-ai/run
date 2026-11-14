@@ -1,4 +1,6 @@
 // Package hostwire defines the compute protocol between the API tier and hosts.
+// Hosts send callbacks over mTLS to the tier's private host listener.
+// The tier reads the host identity from the verified TLS client certificate.
 package hostwire
 
 type Shape struct {

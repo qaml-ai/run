@@ -1,50 +1,38 @@
 package api
 
 import (
-	"bytes"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
+	"slices"
 
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 )
 
 const hostSANPrefix = "spiffe://camelfs/host/"
-const leafHeader = "X-Amzn-Mtls-Clientcert-Leaf"
 
-var errHostCertificateMissing = errors.New("missing or malformed host certificate")
+var errHostCertificateMissing = errors.New("missing host certificate")
 var errHostForbidden = errors.New("host identity does not match")
 
-func hostIdentity(r *http.Request, ca *x509.CertPool) (string, error) {
-	if len(r.Header.Values(leafHeader)) != 1 {
-		return "", errHostCertificateMissing
+func hostIdentity(r *http.Request) (string, error) {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		return "", errHostForbidden
 	}
-	raw, err := url.PathUnescape(r.Header.Get(leafHeader))
-	if err != nil {
-		return "", errHostCertificateMissing
-	}
-	block, rest := pem.Decode([]byte(raw))
-	if block == nil || block.Type != "CERTIFICATE" || len(bytes.TrimSpace(rest)) != 0 ||
-		!strings.HasPrefix(strings.TrimSpace(raw), "-----BEGIN CERTIFICATE-----") {
-		return "", errHostCertificateMissing
-	}
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", errHostCertificateMissing
-	}
+	leaf := r.TLS.VerifiedChains[0][0]
 	id := r.PathValue("host")
-	if err := verifyHostCertificate(leaf, nil, ca, x509.ExtKeyUsageClientAuth, id); err != nil {
+	if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) || !matchesHostSAN(leaf, id) {
 		return "", errHostForbidden
 	}
 	return id, nil
 }
 
+func matchesHostSAN(leaf *x509.Certificate, id string) bool {
+	return hostwire.HostID.MatchString(id) && len(leaf.URIs) == 1 && leaf.URIs[0].String() == hostSANPrefix+id
+}
+
 func verifyHostCertificate(leaf *x509.Certificate, intermediates, ca *x509.CertPool, usage x509.ExtKeyUsage, id string) error {
-	if ca == nil || !hostwire.HostID.MatchString(id) || len(leaf.URIs) != 1 || leaf.URIs[0].String() != hostSANPrefix+id {
+	if ca == nil || !matchesHostSAN(leaf, id) {
 		return errHostForbidden
 	}
 	if _, err := leaf.Verify(x509.VerifyOptions{Roots: ca, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{usage}}); err != nil {
