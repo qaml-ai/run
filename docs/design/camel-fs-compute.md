@@ -329,10 +329,12 @@ scripts.
       branch, measured at ≈ 110–220 ms), and stops it.
     - `idleStopS` is one constant with a default of ≈ 10 **seconds**, at most 1 hour, counted only while no
       `exec` runs.
-    - The next `bash` call boots a fresh VM from the branch's latest tree. **Measured** (proto-block, 2026-11-14,
-      create → first exec): ≈ 0.6–0.7 s when this host checkpointed that version (a reflink of its root), but
-      ≈ 10 s for 10k files plus ≈ 9 s per GB when it did not, because the branch disk is applied file by file and
-      tree → root is host-local (ledger L111). A host's first boot of a guest image adds ≈ 23 s once (L112).
+    - The next `bash` call boots a fresh VM from the branch's latest tree. **Measured after K2f** (#1116, proto host,
+      create → first exec at 50 MB / 500 MB / 2 GB):
+      - the same host, on the same or a checkpointed tree: ≈ 0.6–0.7 s;
+      - a new host reusing the tree's shared root: 1.7 / 5.8 / 20.2 s (chunk download, ledger L119);
+      - a tree no host has a root for: 8.5 / 12.5 / 27.6 s (the per-file apply, L120);
+      - a host's guest image is prewarmed after it registers, so no wake waits for it (L112).
         - **A fresh root per boot.** Every boot starts from the guest image's root filesystem, with the branch mounted
       at `/workspace` (the shell starts there). Only `/workspace` is the branch; installed packages, `/tmp` and
       the shell's environment are gone after a sleep.
