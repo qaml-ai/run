@@ -242,7 +242,7 @@ export interface RunOptions {
   idempotencyKey?: string;
   /** Stop waiting (the run goes on; `agent.abort()` stops it). */
   signal?: AbortSignal;
-  /** Stop waiting after this many milliseconds with an AgentError (the run goes on). There is no timeout otherwise. */
+  /** Stop waiting after this many milliseconds, with a TimeoutError as an aborted `signal` gives (the run goes on). There is no timeout otherwise. */
   timeoutMs?: number;
   /** Resolve with a failed run instead of throwing RunError. Default true: failures throw. */
   throwOnError?: boolean;
@@ -802,12 +802,18 @@ export class Agent {
 function messageOptions(options: Pick<RunOptions, "user" | "files" | "metadata">) {
   return { ...(options.user ? { from: senderOf(options.user) } : {}), ...(options.files ? { files: options.files } : {}), ...(options.metadata ? { metadata: options.metadata } : {}) };
 }
+/** `signal` and `timeoutMs` as one signal: a timeout stops the wait as an aborted signal does (a TimeoutError), never as a failed run. */
+function waitSignal(options: Pick<RunOptions, "signal" | "timeoutMs">): { signal?: AbortSignal } {
+  const timeout = options.timeoutMs === undefined ? undefined : AbortSignal.timeout(options.timeoutMs);
+  const signal = options.signal && timeout ? AbortSignal.any([options.signal, timeout]) : options.signal ?? timeout;
+  return signal ? { signal } : {};
+}
+
 function promptOptions(id: string, options: RunOptions) {
   return {
     ...messageOptions(options), idempotencyKey: id,
     ...(options.endUser !== undefined ? { endUser: options.endUser } : {}),
-    ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-    ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
+    ...waitSignal(options), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
     ...(options.runLimits ? { runLimits: options.runLimits } : {}),
     ...(options.output ? { output: outputRequest(options.output) } : {}),

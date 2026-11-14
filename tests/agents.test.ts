@@ -200,11 +200,12 @@ test("a run's wait has no timeout, and an AbortSignal stops the wait without sto
   assert.equal((await agent.run("Slow", { idempotencyKey: "slow-1" })).text, "Late.");
 });
 
-test("timeoutMs stops a run's wait with an AgentError and leaves the run going", async t => {
+test("timeoutMs stops a run's wait with a TimeoutError, never a failed run, and leaves the run going", async t => {
   const { make } = await setup(t, () => ({ role: "assistant", content: "Late.", delayMs: 1500 }));
   const agent = await make();
   const started = Date.now();
-  await assert.rejects(agent.run("Slow", { timeoutMs: 100, idempotencyKey: "slow-timeout" }), (error: Error) => error.name === "AgentError" && /timed out/.test(error.message));
+  await assert.rejects(agent.run("Slow", { timeoutMs: 100, idempotencyKey: "slow-timeout" }), (error: Error) => error.name === "TimeoutError");
+  await assert.rejects(agent.run("Slow", { timeoutMs: 100, idempotencyKey: "slow-timeout", throwOnError: false }), (error: Error) => error.name === "TimeoutError");
   assert.ok(Date.now() - started < 1400, "the wait ended before the run did");
   assert.equal((await agent.run("Slow", { idempotencyKey: "slow-timeout" })).text, "Late.");
 });
