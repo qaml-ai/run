@@ -198,7 +198,7 @@ test("a watcher whose streams deliver nothing (a proxy that buffers them) falls 
     }
     return fetch(input, init);
   }) as typeof fetch;
-  const watcher = watchAgent({ url: r.base, agentId: agent, token, fetch: buffering, stallMs: 300 });
+  const watcher = watchAgent({ url: r.base, agentId: agent, token, fetch: buffering, firstFrameMs: 300 });
   t.after(() => watcher.close());
   await until(() => watcher.state.transport === "poll", "the fallback to polls", 10_000);
   const done = await r.prompt(agent, "hi");

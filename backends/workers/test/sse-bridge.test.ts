@@ -50,6 +50,7 @@ test("the object's frames become Node's SSE frames, and its closed frame ends th
   assert.equal(upstream.headers.get("authorization"), "Bearer token");
   assert.equal(upstream.headers.get("last-event-id"), "7", "resume semantics are the object's");
   assert.equal(response.headers.get("content-type"), "text/event-stream");
+  assert.match(response.headers.get("cache-control") ?? "", /\bno-transform\b/);
   assert.equal(response.headers.get("x-agent-transport"), null);
   assert.ok(socket.accepted);
   socket.frame({ event: "ready", data: { version: 5, agentId: "a", watch: true } });
