@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,16 +35,17 @@ type Config struct {
 
 type Host struct {
 	Config
-	ctx        context.Context
-	cancel     context.CancelFunc
-	db         *sql.DB
-	images     images
-	mu         sync.Mutex // VM inventory, persisted records and current registration.
-	pollMu     sync.Mutex
-	epoch      int64
-	registered bool
-	vms        map[string]*session
-	work       sync.WaitGroup
+	ctx              context.Context
+	cancel           context.CancelFunc
+	db               *sql.DB
+	images           images
+	mu               sync.Mutex // VM inventory, persisted records and current registration.
+	pollMu           sync.Mutex
+	epoch            int64
+	registered       bool
+	registeredImages []string
+	vms              map[string]*session
+	work             sync.WaitGroup
 }
 
 type bootState struct {
@@ -182,7 +184,7 @@ func (h *Host) register(ctx context.Context) error {
 		}
 		h.epoch = result.BootEpoch
 	}
-	h.registered = true
+	h.registered, h.registeredImages = true, q.Images
 	return nil
 }
 
@@ -277,10 +279,13 @@ func (h *Host) poll(ctx context.Context) error {
 	h.pollMu.Lock()
 	defer h.pollMu.Unlock()
 	h.mu.Lock()
-	registered := h.registered
+	registered := h.registered && slices.Equal(h.registeredImages, h.images.list())
 	h.mu.Unlock()
 	if !registered {
-		if err := h.register(ctx); err != nil {
+		registration, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := h.register(registration)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}

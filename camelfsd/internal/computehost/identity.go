@@ -55,6 +55,9 @@ func AWSIdentity(ctx context.Context, region, audience string) (string, func(con
 		if err != nil {
 			return attestation{}, err
 		}
+		// STS replay reconstructs the body. Sign only headers retained by the
+		// enrollment endpoint, leaving Content-Length to its HTTP transport.
+		req.ContentLength = 0
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
 		req.Header.Set("x-camelrun-job-host-audience", audience)
 		creds, err := cfg.Credentials.Retrieve(ctx)
@@ -298,9 +301,15 @@ func post(ctx context.Context, client *http.Client, endpoint string, body, out a
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		var payload struct{ Error string }
-		_ = json.Unmarshal(raw, &payload)
-		return &tierError{resp.StatusCode, raw, payload.Error}
+		var envelope errorEnvelope
+		_ = json.Unmarshal(raw, &envelope)
+		code := envelope.Error.Code
+		if code == "" {
+			var legacy struct{ Error string }
+			_ = json.Unmarshal(raw, &legacy)
+			code = legacy.Error
+		}
+		return &tierError{resp.StatusCode, raw, code}
 	}
 	if out == nil {
 		return nil

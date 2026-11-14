@@ -58,7 +58,7 @@ func TestSessionCheckpointNoChangeAndFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	casCalls := 0
-	refusal := &tierError{Status: 409, Code: "fenced", Body: []byte(`{"error":"fenced"}`)}
+	refusal := &tierError{Status: 409, Code: "fenced", Body: []byte(`{"error":{"code":"fenced","message":"Lease fenced"}}`)}
 	h, err := Open(t.Context(), Config{Data: data, Mounts: m, Post: func(ctx context.Context, path string, q, out any) error {
 		casCalls++
 		if path != "/lineages/l/refs/fork%2Fvm/cas" {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
@@ -38,19 +39,49 @@ func jsonReply(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+type errorBody struct {
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+type errorEnvelope struct {
+	Error errorBody `json:"error"`
+}
+
+func replyError(w http.ResponseWriter, status int, code, message string, details json.RawMessage) {
+	if message == "" {
+		message = strings.ReplaceAll(code, "_", " ")
+	}
+	jsonReply(w, status, errorEnvelope{Error: errorBody{Code: code, Message: message, Details: details}})
+}
+
 func report(w http.ResponseWriter, err error) {
 	var host *httpError
 	var tier *tierError
 	switch {
 	case errors.As(err, &host):
-		jsonReply(w, host.status, map[string]string{"error": host.code})
+		replyError(w, host.status, host.code, "", nil)
 	case errors.As(err, &tier) && tier.Code != "":
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(tier.Status)
-		_, _ = w.Write(tier.Body)
+		var envelope errorEnvelope
+		if json.Unmarshal(tier.Body, &envelope) == nil && envelope.Error.Code != "" && envelope.Error.Message != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(tier.Status)
+			_, _ = w.Write(tier.Body)
+			return
+		}
+		// Older tier handlers send a flat error and may attach fields such as current.
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(tier.Body, &fields)
+		delete(fields, "error")
+		var details json.RawMessage
+		if len(fields) > 0 {
+			details, _ = json.Marshal(fields)
+		}
+		replyError(w, tier.Status, tier.Code, "", details)
 	default:
 		slog.Warn("compute_host_request_failed", "error", err)
-		jsonReply(w, 502, map[string]string{"error": "host_unavailable"})
+		replyError(w, 502, "host_unavailable", "The host could not complete the request", nil)
 	}
 }
 
@@ -75,7 +106,14 @@ func (h *Host) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{id}/exec", h.execRoute)
 	mux.HandleFunc("GET /v1/vms/{id}/exec/{execId}", h.execRoute)
 	mux.HandleFunc("POST /v1/vms/{id}/checkpoint", h.checkpointRoute)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, pattern := mux.Handler(r)
+		if pattern == "" {
+			replyError(w, 404, "not_found", "No compute route matches this request", nil)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (h *Host) bootRoute(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +250,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if tail {
 		if first, ok := reply["firstOffset"].(float64); ok && first > float64(offset) {
-			jsonReply(w, 410, map[string]any{"error": "tail_truncated", "firstOffset": first})
+			replyTruncatedTail(w, int64(first))
 			return
 		}
 	}
@@ -243,6 +281,11 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func replyTruncatedTail(w http.ResponseWriter, firstOffset int64) {
+	details, _ := json.Marshal(map[string]int64{"firstOffset": firstOffset})
+	replyError(w, http.StatusGone, "tail_truncated", "The requested offset precedes retained output", details)
 }
 
 type checkpointIntent struct {
@@ -392,8 +435,11 @@ func (h *Host) cas(ctx context.Context, r record, recovering bool) (out hostwire
 	if err != nil && recovering {
 		var reply *tierError
 		if errors.As(err, &reply) && reply.Status == 412 && reply.Code == "stale" {
-			var stale struct{ Current string }
-			if json.Unmarshal(reply.Body, &stale) == nil && stale.Current == p.Commit {
+			var stale struct {
+				Current string
+				Error   struct{ Details struct{ Current string } }
+			}
+			if json.Unmarshal(reply.Body, &stale) == nil && (stale.Current == p.Commit || stale.Error.Details.Current == p.Commit) {
 				return hostwire.CheckpointReply{Version: p.Commit, Tree: p.Tree, Diff: json.RawMessage("[]"), Changed: true}, nil
 			}
 		}
