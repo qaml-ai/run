@@ -79,12 +79,12 @@ under load), rerun just that gate with `--gates=<gate>`: the new status combines
 results. The same rerun posts a status GitHub could not take earlier. A rerun marks its gates failed until they
 finish, so a rerun cut short never leaves an earlier pass standing.
 
-When Node dies with `SIGSEGV`, the Workers sprite harness records core classifications in `sigsegv.txt`.
-`segv-triage.py` uses GDB to identify a platform startup kill from a self-directed `SI_TKILL` and V8 startup
-frames on the stack. It flags positive signal codes and frames that indicate a re-raised signal as faults.
-A Workers unit or integration gate reruns the failed files once if all failures are `SIGSEGV`, there is at
-least one new Node core per failed file by count, and all new Node cores classify as platform startup kills.
-The gate logs `SEGV_RETRY` and uses the retry result to decide whether it passes.
+When Node dies with `SIGSEGV` on a sprite (never seen in CI), the Workers harness writes a GDB triage of each new
+Node core to `sigsegv.txt` (`scripts/segv-triage.py`). `stack-corrupt` means the process faulted on a `ret` to a
+non-canonical address: so far every case had `/proc/meminfo` text written over the live stack (see the ledger).
+`fault` is any other genuine fault or a signal the process sent itself. A SIGSEGV fails its gate like any other
+failure; rerun the gate, and report the triage line. Node's handler re-raises the fault while the signal is blocked,
+so `si_code` reads `SI_TKILL` from the process itself whatever the cause: do not read anything into it.
 
 A failure on one sprite that does not reproduce elsewhere is usually load on that sprite, often in the Docker tests.
 Before calling it noise, rerun that gate pinned to one sprite (`SPRITE_NAME=rt-pool-30 scripts/sprite-test ...`)
