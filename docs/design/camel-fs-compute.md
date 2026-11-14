@@ -308,7 +308,8 @@ scripts.
 - **Output limits:** the model sees at most 32 KiB of each stream: the head and the tail, cut in the middle, and
   the result says how many bytes were dropped (`truncated`). The full stream passes through the runtime and is not stored.
 - **Checkpoints:** after every `bash` call that changed the tree, the runtime asks for a checkpoint (§2), so the
-  ref moves and the change is a version. The idle stop checkpoints first. The agent's
+  ref moves and the change is a version. This is the cadence (the lead, 2026-11-14); an earlier K5 spec line that
+  checkpointed only at the end of a turn is superseded. The idle stop checkpoints first. The agent's
   `checkpoint`/`restore`/`history`/`diff` tools are unchanged.
 - **File tools and the lease, plainly:** while a VM is running on a branch, it holds the branch's lease, and the
   agent's file tools on that branch go into the VM (reads and writes run in the guest; the next checkpoint makes

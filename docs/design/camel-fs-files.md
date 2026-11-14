@@ -224,7 +224,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
     `camelfs-prod-guest-image-publisher`.
     - `results/<lineage>/<vm>` (job results, with a 7-day lifecycle rule; #1003): **retired by the session-only
     design** (camel-fs-compute.md §2), but still in the infra and in `camelfsd`'s compute code as of 2026-11-14,
-    flagged for deletion with K5c (ledger L102).
+    to be deleted everywhere (the lead, 2026-11-14): proto-block in `camelfsd`, fs-infra in the bucket rule and the
+    host policy (ledger L102).
 - **Tables** (on demand, PITR, deletion protection, no TTL, no indexes):
   - `camelfs-prod-objects` (`lineage` + `id`);
   - `camelfs-prod-refs` (`lineage` + `name`);
