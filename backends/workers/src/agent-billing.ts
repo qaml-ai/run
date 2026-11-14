@@ -20,6 +20,8 @@ import { flushAgentMediaUsage } from "./agent-media.ts";
 import { flushAttachmentTranscriptions } from "./attachment-transcription.ts";
 import { Config, RequestRecord, BillingReceipt, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
+import { emitSourceMetric } from "./money-metrics.ts";
+import { safeError } from "./observability.ts";
 
 export function createLimits(this: AgentRuntime): AgentRunLimits {
   return new AgentRunLimits(this.ctx.storage, async invocation => {
@@ -236,6 +238,10 @@ export async function usageForRequestImpl(this: AgentRuntime,
     };
   }
 
+// Alert once a receipt has repeatedly failed across at least a minute.
+export const SETTLE_STUCK_FAILURES = 5;
+export const SETTLE_STUCK_MS = 60_000;
+
 export async function flushBillingImpl(this: AgentRuntime,
   invocation: AgentInvocation,
   propagate = false) {
@@ -274,6 +280,8 @@ async function flushBillingPass(this: AgentRuntime, propagate: boolean, invocati
       prefix: "billing:",
       limit: 100,
     })) {
+      const { tenantId, agentId, requestId } = receipt;
+      const failingKey = `settle-failing:${requestId}`;
       try {
         await this.dbProfile.run("settle", () => settleTurn(this.env, receipt, invocation));
         if (await this.testStorage.get("test:crash-settlement")) {
@@ -293,9 +301,28 @@ async function flushBillingPass(this: AgentRuntime, propagate: boolean, invocati
         await this.env.TENANTS.getByName(receipt.tenantId).release(
           `${receipt.agentId}:${receipt.requestId}`,
         );
-        await this.ctx.storage.delete(key);
+        await this.ctx.storage.delete([key, failingKey]);
       } catch (error) {
         await this.arm(Date.now() + 1000, invocation);
+        try {
+          const now = Date.now();
+          const previous = await this.ctx.storage.get<{ failures: number; first: number; alerted: boolean }>(failingKey);
+          const failures = (previous?.failures ?? 0) + 1;
+          const first = previous?.first ?? now;
+          const ageMs = now - first;
+          const thresholds = this.env.TEST_HOOKS === "1"
+            ? await this.testStorage.get<{ failures?: number; ms?: number }>("test:settle-stuck")
+            : undefined;
+          const alert = !previous?.alerted && failures >= (thresholds?.failures ?? SETTLE_STUCK_FAILURES)
+            && ageMs >= (thresholds?.ms ?? SETTLE_STUCK_MS);
+          await this.ctx.storage.put(failingKey, { failures, first, alerted: alert || (previous?.alerted ?? false) });
+          if (alert) {
+            console.error(JSON.stringify({ type: "run_settle_stuck", tenantId, agentId, requestId, failures, ageMs, error: safeError(error) }));
+            emitSourceMetric("run_settle_stuck", { dimensions: {}, rollups: [[]], metrics: { run_settle_stuck: 1 } });
+          }
+        } catch (trackingError) {
+          console.error(JSON.stringify({ type: "settle_failing_write_failed", requestId, error: safeError(trackingError) }));
+        }
         if (propagate) throw error;
       }
     }

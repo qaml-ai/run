@@ -139,9 +139,10 @@ test(
       "crash after Postgres commit before DO acknowledgement never charges twice",
       async () => {
         const before = await request("/v1/credits");
+        const settlementState = `/experimental/agents/${alpha.id}/__test/settlement-state`;
         await request(
           `/experimental/agents/${alpha.id}/__test/crash-next-settlement`,
-          {},
+          { stuckFailures: 3, stuckMs: 0 },
         );
         // The injected crash leaves this workerd unable to acknowledge the settlement: until it is
         // restarted, reading the completed request fails (its settlement is retried and fails again),
@@ -154,9 +155,7 @@ test(
         first.catch(() => {});
         let checkpoint: any;
         for (let i = 0; i < 1000; i++) {
-          checkpoint = await request(
-            `/experimental/agents/${alpha.id}/__test/settlement-state`,
-          );
+          checkpoint = await request(settlementState);
           if (checkpoint.crashReached) break;
           await delay(10);
         }
@@ -166,6 +165,24 @@ test(
           "PG commit checkpoint reached before killing workerd",
         );
         assert.equal(checkpoint.pending, 1);
+        const pollPending = async () => {
+          const response = await fetch(`${fixture.url}/clients/${alpha.session.id}/requests/charge-once?wait=1`, {
+            headers: { Authorization: `Bearer ${alpha.session.token}` },
+          });
+          assert.equal(response.status, 503);
+          assert.equal((await response.json() as { code: string }).code, "SETTLEMENT_PENDING");
+          assert.equal(response.headers.get("Retry-After"), "1");
+        };
+        await pollPending();
+        await assert.rejects(
+          alpha.run("charge once", { idempotencyKey: "charge-once", timeoutMs: 3000 }),
+          { name: "TimeoutError" },
+        );
+        for (let i = 0; i < 4; i++) await pollPending();
+        assert.equal((await request(settlementState)).settleFailing, true);
+        const stuckLogs = fixture.worker.logs().split("\n").filter(line =>
+          line.includes('"type":"run_settle_stuck"') && line.includes('"requestId":"charge-once"'));
+        assert.equal(stuckLogs.length, 1);
         await fixture.worker.stop(true);
         await fixture.worker.start();
         assert.equal((await first).text, "Echo: charge once");
@@ -185,6 +202,7 @@ test(
           Number((await request("/v1/credits")).balance),
           Number(after.balance),
         );
+        assert.equal((await request(settlementState)).settleFailing, false);
       },
     );
   },

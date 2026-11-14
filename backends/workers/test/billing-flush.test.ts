@@ -7,7 +7,7 @@ import ts from "typescript";
 import { AgentInvocation } from "../src/agent-invocation.ts";
 
 const source = readFileSync(new URL("../src/agent-billing.ts", import.meta.url), "utf8");
-const { outputText } = ts.transpileModule(source.slice(source.indexOf("export async function flushBillingImpl")), {
+const { outputText } = ts.transpileModule(source.slice(source.indexOf("export const SETTLE_STUCK_FAILURES")), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 });
 
@@ -20,6 +20,7 @@ function fixture(settleTurn: () => Promise<void>) {
     settleTurn,
   });
   const receipts = new Map([["billing:request", { tenantId: "tenant", agentId: "agent", requestId: "request" }]]);
+  const failures = new Map<string, unknown>();
   const lists: number[] = [];
   const releases: string[] = [];
   const retries: number[] = [];
@@ -32,7 +33,14 @@ function fixture(settleTurn: () => Promise<void>) {
         lists.push(receipts.size);
         return new Map(receipts);
       },
-      delete: async (key: string) => receipts.delete(key),
+      get: async (key: string) => failures.get(key),
+      put: async (key: string, value: unknown) => { failures.set(key, value); },
+      delete: async (keys: string[]) => {
+        for (const key of keys) {
+          receipts.delete(key);
+          failures.delete(key);
+        }
+      },
     } },
     env: { TENANTS: { getByName: () => ({ release: async (id: string) => { releases.push(id); } }) } },
     dbProfile: { run: (_phase: string, action: () => Promise<void>) => action() },
