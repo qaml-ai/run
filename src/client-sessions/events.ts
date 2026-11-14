@@ -347,7 +347,7 @@ export async function watchAgent(ctx: EventContext, c: Context<ClientEnv>, heade
   idle.watchers.add(res);
   ctx.state.watches.set(res, { agent: id, release, expiry });
   res.on("close", () => unwatch(ctx, res));
-  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" });
   res.write(`event: ready\ndata: ${JSON.stringify({ version: 5, agentId: id, watch: true })}\n\n`);
   if (snapshot) send(res, `id: ${cursor}\ndata: ${JSON.stringify(shown(snapshot))}\n\n`);
   return RESPONSE_ALREADY_SENT;
@@ -438,7 +438,7 @@ export async function subscribe(ctx: EventContext, c: Context<ClientEnv>, sessio
     session.response = res;
     res.on("close", () => { if (session.response === res) session.response = undefined; });
   }
-  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" });
   if (mode === "attach") {
     // Each connection is a new MCP session with the application's attached server; `connection` names it.
     const attached = new AttachedServer(res);
