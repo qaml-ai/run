@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/qaml-ai/run/camelfsd/internal/compute"
 )
 
 func TestUnitNotifyKeySources(t *testing.T) {
@@ -66,5 +69,16 @@ func TestUnitPoolIdleStop(t *testing.T) {
 		if _, err := parseIdleStop(bad, pools); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
+	}
+}
+
+func TestUnitComputeRequiresClockCheck(t *testing.T) {
+	c := &compute.Controller{DB: dynamodb.New(dynamodb.Options{Region: "us-east-1"})}
+	if err := requireClockCheck(c); err == nil {
+		t.Fatal("started without the clock check")
+	}
+	c.EnableClockCheck()
+	if err := requireClockCheck(c); err != nil {
+		t.Fatal(err)
 	}
 }

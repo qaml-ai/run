@@ -50,6 +50,9 @@ func (o *clockObservation) observe(ctx context.Context, in middleware.Deserializ
 	return out, meta, err
 }
 
+// ClockCheckEnabled reports whether EnableClockCheck instrumented this controller's DynamoDB client.
+func (c *Controller) ClockCheckEnabled() bool { return c.clock != nil }
+
 // MONEY: Fail closed before minting a usage ULID. Date has one-second granularity.
 func (c *Controller) requireClock(ctx context.Context, id string) error {
 	// MONEY: no instrumented client means no observation: fail closed.

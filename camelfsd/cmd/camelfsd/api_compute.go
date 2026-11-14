@@ -161,6 +161,10 @@ func (f apiComputeFlags) open(ctx context.Context, region string, repo *objects.
 		Refs: refstore.New(db, f.refs, nil, repo), CommitTree: api.CommitTreeResolver(repo),
 		Pusher: api.HostPusher{TLS: credentials}, HostFresh: grace}
 	controller.EnableClockCheck()
+	// MONEY: a compute process whose usage writes would all be refused must not start.
+	if err := requireClockCheck(controller); err != nil {
+		return nil, err
+	}
 	c.hostServer = api.NewHostServer(controller, pools, grace)
 	if issuer != nil {
 		certificates := api.HostCertificates{Issuer: issuer, TLS: credentials}
@@ -262,4 +266,13 @@ func parseIdleStop(value string, pools []string) (map[string]int64, error) {
 		overrides[pool] = idle
 	}
 	return overrides, nil
+}
+
+// requireClockCheck refuses to start compute without the DynamoDB clock check: an un-enabled controller refuses every
+// usage write, so a config slip would silently stop billing.
+func requireClockCheck(c *compute.Controller) error {
+	if !c.ClockCheckEnabled() {
+		return errors.New("compute: the DynamoDB clock check is not enabled; refusing to start (usage writes would all be refused)")
+	}
+	return nil
 }
