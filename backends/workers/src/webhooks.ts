@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import {
   withSql,
   transaction,
@@ -168,9 +169,9 @@ export async function pendingDeliveries(sql: Sql, now = Date.now()) {
   return pending as { pending: number; oldest: number | null; deliveries: string[]; emails: string[] };
 }
 
-export async function publishPending(env: WebhookEnv): Promise<number> {
+export async function publishPending(env: WebhookEnv, invocation?: AgentInvocation): Promise<number> {
   if (!env.WEBHOOKS) return 0;
-  const backlog = await withSql(env, sql => pendingDeliveries(sql));
+  const backlog = await withSql(env, sql => pendingDeliveries(sql), invocation);
   metric(env,'webhook_backlog',{WebhookBacklog:Number(backlog.pending),WebhookOldestPendingMs:backlog.oldest === null ? 0 : Math.max(0,Date.now()-Number(backlog.oldest))});
   if (backlog.deliveries.length)
     await env.WEBHOOKS.sendBatch(backlog.deliveries.map(id => ({ body: { id } })));

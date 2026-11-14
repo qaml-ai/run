@@ -29,9 +29,11 @@ func Run(args []string, out io.Writer) error {
 	g := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	job := g.String("job", "", "job id")
 	lineage := g.String("lineage", "", "lineage")
-	ref := g.String("ref", "", "ref")
+	holder := g.String("holder", "", "runtime fence holder (empty means read-only)")
+	epoch := g.Int64("epoch", 0, "runtime fence epoch")
 	root := g.String("root", "", "root id")
 	tree := g.String("tree", "", "git tree SHA")
+	parent := g.String("parent", "", "git parent commit SHA")
 	vsock := g.String("vsock", "", "vsock path")
 	hydrate := g.Bool("hydrate", true, "hydrate")
 	path := g.String("path", "", "import image")
@@ -45,7 +47,13 @@ func Run(args []string, out io.Writer) error {
 	switch cmd {
 	case "mount":
 		route = "/v0/mounts"
-		body = map[string]any{"jobId": *job, "lineage": *lineage, "ref": *ref, "root": *root, "tree": *tree, "hydrate": *hydrate, "vsock": *vsock}
+		body = map[string]any{"jobId": *job, "lineage": *lineage, "root": *root, "tree": *tree, "hydrate": *hydrate, "vsock": *vsock, "fence": nil}
+		if *parent != "" {
+			body.(map[string]any)["parent"] = *parent
+		}
+		if *holder != "" {
+			body.(map[string]any)["fence"] = map[string]any{"holder": *holder, "epoch": *epoch}
+		}
 	case "checkpoint":
 		route += "/checkpoint"
 	case "release":

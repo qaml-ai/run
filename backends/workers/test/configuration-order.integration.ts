@@ -214,9 +214,11 @@ test('a refused configuration waiter releases its attachment admission', { timeo
 
 test('keyed configuration preserves mounts unless it explicitly remounts', { timeout: 90_000 }, async t => {
   const fixture = await createWorkersFixture(t);
-  const volume = (await fixture.call('/v1/volumes', { body: { name: 'mounted' } })).json.id;
+  const made = await fixture.call('/v1/repos', { body: { name: 'mounted' } });
+  assert.equal(made.status, 201, made.text);
+  const repo = made.json.id;
   const headers = { 'Idempotency-Key': 'mounted-configuration' };
-  const mounts = (path: string) => [{ volumeId: volume, path, mode: 'rw' }, { workspace: true }];
+  const mounts = (path: string) => [{ repo, path, mode: 'rw' }, { workspace: true }];
   const initial = await fixture.call('/v1/agents', { body: { mounts: mounts('/data') }, headers });
   assert.equal(initial.status, 201, initial.text);
   const repeated = await fixture.call('/v1/agents', { body: { mounts: mounts('/data') }, headers });

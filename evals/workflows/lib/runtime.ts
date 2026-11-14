@@ -60,7 +60,7 @@ export class Runtime {
   }
   /**
    * The tenant's spend today, by served model: the run's cost is the change across it (runs are serialized), which
-   * counts everything an agent, its workflows' children and their jobs charged, however usage rolls up.
+   * counts everything an agent and its workflows' children charged, however usage rolls up.
    */
   async tenantSpend() {
     const page = await this.client.usage({ groupBy: ["model"], days: 1, limit: 500 });
@@ -243,7 +243,7 @@ export class Runtime {
       await new Promise(resolve => setTimeout(resolve, pollMs));
     }
   }
-  /** Effects, children, jobs, retries and conflicts from a workflow's items; cost from its ledger. */
+  /** Effects, children, retries and conflicts from a workflow's items; cost from its ledger. */
   workflowStats(items: Record<string, any>[], workflow: Record<string, any>, types: Record<string, AgentType> = {}) {
     const byStatus: Record<string, number> = {};
     for (const item of items) byStatus[item.status] = (byStatus[item.status] ?? 0) + 1;
@@ -261,7 +261,7 @@ export class Runtime {
     const inputs = cost.tokens.input + cost.tokens.cacheRead;
     cost.cacheShare = inputs ? +(cost.tokens.cacheRead / inputs).toFixed(4) : 0;
     return {
-      effects: { children: agents.length, grandchildren: 0, effects: items.length, jobs: items.filter(item => item.kind === "job").length, failedChildren: agents.filter(item => ["failed", "aborted", "refused"].includes(item.status)).length, byStatus },
+      effects: { children: agents.length, grandchildren: 0, effects: items.length, failedChildren: agents.filter(item => ["failed", "aborted", "refused"].includes(item.status)).length, byStatus },
       retries: items.filter(item => Number(item.attempt ?? 1) > 1 && item.current !== false).reduce((sum, item) => sum + Number(item.attempt) - 1, 0),
       conflicts: items.filter(item => /conflict/i.test(String(item.error ?? item.reason ?? ""))).length,
       cost,
@@ -270,7 +270,7 @@ export class Runtime {
 }
 
 /**
- * Dry mode's stand-in for phase 1's `job()`: tools the harness serves to the orchestrator that run one command over
+ * Dry mode's build tools: tools the harness serves to the orchestrator that run one command over
  * the volume as it is now, in the task's judge image with no network, and answer its output. They never run the
  * hidden judge. Model-facing: the descriptions are the tools' wording.
  */
@@ -345,7 +345,7 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   const workflowIds = new Set<string>();
   const spendBefore = options.mode === "workflow" ? await runtime.tenantSpend() : undefined;
   const agent = await runtime.client.createAgent({
-    // Dry mode's stand-in build tools; workflow mode has the real job().
+    // Build tools supplied by the dry eval harness.
     tools: options.mode === "dry" ? jobTools(runtime, task, volumeId, log, jobs) : {},
     name: `wf-eval ${task.id}`, model: options.classes.orchestrator, systemPrompt: (options.mode === "dry" && task.jobs?.length ? ORCHESTRATOR.replace("You cannot run commands.", "You cannot run commands except through the build tools you are given.") : ORCHESTRATOR) + (options.split === "required" ? SPLIT_REQUIRED : "") + (options.guidance ? `\n\n${options.guidance.text.trim()}` : ""), ttlSeconds: 86_400,
     mounts: [{ volumeId, path: "/workspace", mode: "rw" }], spendLimit: { usd: options.budgetUsd }, subagents: true,
@@ -378,8 +378,8 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   }, 30_000);
   let reply: string | undefined, runError: string | undefined, runStatus: RunResult["status"] = "completed";
   try {
-    // Workflow mode: the agent is told which volume its /workspace is, which agent({ repo }) and job({ at }) take. Model-facing.
-    const prompt = options.mode === "workflow" ? `${task.prompt}${task.workflowNote ? ` ${task.workflowNote}` : ""}\n\nYour /workspace is volume ${volumeId}.` : `${task.prompt}${task.dryNote ? ` ${task.dryNote}` : ""}`;
+    // Workflow mode: the agent is told which volume its /workspace is, which agent({ repo }) take. Model-facing.
+    const prompt = options.mode === "workflow" ? `${task.prompt}\n\nYour /workspace is volume ${volumeId}.` : `${task.prompt}${task.dryNote ? ` ${task.dryNote}` : ""}`;
     const result = await agent.prompt(prompt, { timeoutMs: Math.max(60_000, deadline - Date.now()) });
     reply = result.reply;
     // toolCalls includes code mode's inner calls, which the event stream does not show as tool calls.
@@ -413,7 +413,7 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
         log({ workflow: ended });
         for (const item of items) if (["failed", "refused"].includes(item.status) && item.reason) failures.push({ source: `workflow ${item.kind}`, message: String(item.reason).slice(0, 500) });
         if (ended.fault || ended.error) failures.push({ source: "workflow", message: String(ended.fault?.message ?? ended.error).slice(0, 500) });
-        workflowStats = workflowStats ? { ...stats, effects: { ...stats.effects, children: stats.effects.children + workflowStats.effects.children, effects: (stats.effects.effects ?? 0) + (workflowStats.effects.effects ?? 0), jobs: (stats.effects.jobs ?? 0) + (workflowStats.effects.jobs ?? 0), failedChildren: stats.effects.failedChildren + workflowStats.effects.failedChildren }, retries: workflowStats.retries + stats.retries, conflicts: workflowStats.conflicts + stats.conflicts, cost: mergeCost(workflowStats.cost, stats.cost) } : stats;
+        workflowStats = workflowStats ? { ...stats, effects: { ...stats.effects, children: stats.effects.children + workflowStats.effects.children, effects: (stats.effects.effects ?? 0) + (workflowStats.effects.effects ?? 0), failedChildren: stats.effects.failedChildren + workflowStats.effects.failedChildren }, retries: workflowStats.retries + stats.retries, conflicts: workflowStats.conflicts + stats.conflicts, cost: mergeCost(workflowStats.cost, stats.cost) } : stats;
         if (ended.status === "budget_exhausted") runStatus = "budget"; else if (ended.stalled) runStatus = "timeout";
       }
       // The owner's turns on the notifications may start more.
@@ -445,11 +445,10 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   }
   return {
     ...base, agentId: agent.id, status: runStatus, error: runError, reply, wallMs: Date.now() - started, volumeId, cleanup,
-    cost, effects: workflowStats ? { ...workflowStats.effects, children: workflowStats.effects.children + children.children, grandchildren: children.grandchildren, jobs: (workflowStats.effects.jobs ?? 0) + jobs.count } : { ...children, ...(jobs.count ? { jobs: jobs.count } : {}) },
+    cost, effects: workflowStats ? { ...workflowStats.effects, children: workflowStats.effects.children + children.children, grandchildren: children.grandchildren } : { ...children, ...(jobs.count ? { jobs: jobs.count } : {}) },
     conflicts: children.conflicts + (workflowStats?.conflicts ?? 0), retries: workflowStats ? workflowStats.retries : null,
     choice: { delegated: children.children > 0 || delegateCalls > 0, delegateCalls: Math.max(delegateCalls, children.children), workflowStarted: workflowIds.size > 0 || !!toolCalls.workflow_start, workflowIds: [...workflowIds], toolCalls,
-      ...(workflowStats ? { workflowAgents: workflowStats.effects.children, workflowJobs: workflowStats.effects.jobs ?? 0 } : {}),
-      jobRuns: (toolCalls.job_run ?? 0) + (toolCalls["codemode:job_run"] ?? 0) },
+      ...(workflowStats ? { workflowAgents: workflowStats.effects.children } : {}) },
     failures, ...(notified ? { notifications: notified } : {}),
   };
 }

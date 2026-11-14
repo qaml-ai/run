@@ -1,12 +1,9 @@
 // A local Workers runtime for workflow evals: the Workers app of a checkout (default: this one) with workflows on, real
-// models, and job() on local Docker containers, so evals never need the pilot. It derives a config from
-// backends/workers/wrangler.computers.test.jsonc (the one the jobs e2e uses) into backends/workers/.wrangler/evals/
+// models, and native computers on local Docker. It derives a config from
+// backends/workers/wrangler.computers.test.jsonc into backends/workers/.wrangler/evals/
 // (gitignored), with:
 // - vars: real models (TEST_MODEL off, camelrun/default) and AGENT_WORKFLOW_TENANTS for the local tenant;
 // - a throwaway .dev.vars (a random AGENT_SECRETS_KEY, so the tenant can store a provider key);
-// - the job image: the computers Dockerfile plus the toolchains the tasks' jobs need (Go 1.27.3 for m-toml-go), since
-//   job() has one image in phase 1. On the pilot the image is the deployed one: a task whose jobs need Go there waits
-//   for an image per job (PR 8 follow-up) or uses `internet` to fetch it.
 // Then it starts Postgres (scripts/local-postgres.mjs), `wrangler dev`, and stores OPENROUTER_API_KEY from the
 // environment on the local tenant (never on a command line or in a file). It prints the URL and token and keeps running.
 //
@@ -17,7 +14,7 @@
 // resets every Durable Object mid-run.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { REPO } from "./lib/score.ts";
 
@@ -25,7 +22,6 @@ const argv = process.argv.slice(2);
 const arg = (name: string) => { const at = argv.indexOf(`--${name}`); return at >= 0 ? argv[at + 1] : undefined; };
 const checkout = resolve(arg("checkout") ?? REPO), workers = join(checkout, "backends/workers"), out = join(workers, ".wrangler/evals");
 export const LOCAL_TOKEN = "local-integration-only-token-with-at-least-32-characters";
-const GO = "1.27.3";
 
 if (argv.includes("--stop")) {
   spawnSync(process.execPath, ["scripts/local-postgres.mjs", "--stop"], { cwd: workers, stdio: "inherit" });
@@ -43,17 +39,9 @@ const config = jsonc(readFileSync(join(workers, "wrangler.computers.test.jsonc")
 config.main = join(workers, config.main);
 config.vars = { ...config.vars, TEST_MODEL: "0", MODEL: "camelrun/default", AGENT_WORKFLOW_TENANTS: "camelrun-proto-local" };
 delete config.vars.TEST_HOOKS;
-for (const container of config.containers ?? []) for (const image of Object.values(container.images ?? {}) as { dockerfile?: string }[]) image.dockerfile = join(out, "Dockerfile");
+for (const container of config.containers ?? []) for (const image of Object.values(container.images ?? {}) as { dockerfile?: string }[]) image.dockerfile = join(workers, "computers/Dockerfile");
 if (config.assets?.directory) config.assets.directory = join(workers, config.assets.directory);
 writeFileSync(join(out, "wrangler.jsonc"), JSON.stringify(config, null, 2));
-copyFileSync(join(workers, "computers/parse.mjs"), join(out, "parse.mjs"));
-const dockerfile = readFileSync(join(workers, "computers/Dockerfile"), "utf8").replace(/^CMD .*$/m, "");
-writeFileSync(join(out, "Dockerfile"), `${dockerfile}
-# Eval toolchains (local only): Go for m-toml-go's build jobs.
-RUN curl -fsSL https://go.dev/dl/go${GO}.linux-$(dpkg --print-architecture).tar.gz | tar -C /usr/local -xz
-ENV PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=local GOFLAGS=-mod=mod CGO_ENABLED=0
-CMD ["sleep", "infinity"]
-`);
 if (!existsSync(join(out, ".dev.vars"))) writeFileSync(join(out, ".dev.vars"), `AGENT_SECRETS_KEY=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
 
 const pg = spawnSync(process.execPath, ["scripts/local-postgres.mjs"], { cwd: workers, encoding: "utf8" });

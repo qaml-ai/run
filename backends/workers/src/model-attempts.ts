@@ -3,7 +3,7 @@ import { recordUsageDetails, resolveUsageAttribution } from "../../../shared/usa
 import { applyWorkspaceUsage } from "./workspaces.ts";
 import { createHash } from "node:crypto";
 import { Accounts, applyUsageRows, lockBalances, type Totals } from "./accounts.ts";
-import { postLedger } from "./billing.ts";
+import { postLedger, type BillingReads } from "./billing.ts";
 import { databaseUnavailable, databaseRetryable, transaction, type Db } from "./postgres.ts";
 import { isSubscriptionProvider, platformUsage, usageMissing } from "./platform-pricing.ts";
 import { enqueueEvents } from "./webhook-policy.ts";
@@ -34,10 +34,10 @@ export class ModelAttempts {
     this.db = db; this.accounts = accounts; this.fetcher = fetcher; this.retryMs = retryMs; this.scopedKey = scopedKey; this.endUsers = endUsers;
   }
 
-  async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean | AttemptAck> {
+  async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent, reads?: BillingReads): Promise<boolean | AttemptAck> {
     const deadline = Date.now() + this.retryMs;
     for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
-      try { return await this.persistEvent(tenant, agent, platform, catalogPriced, event); }
+      try { return await this.persistEvent(tenant, agent, platform, catalogPriced, event, reads); }
       catch (error) {
         if ((!databaseUnavailable(error) && !databaseRetryable(error)) || Date.now() + delay > deadline) throw error;
         // Retry the accounting delivery with the same ID, never the provider request.
@@ -46,15 +46,15 @@ export class ModelAttempts {
     }
   }
 
-  private async persistEvent(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean | AttemptAck> {
+  private async persistEvent(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent, reads?: BillingReads): Promise<boolean | AttemptAck> {
     if (!uuid.test(event.id)) throw new Error("Invalid model attempt id");
     if (event.type === "begin") {
       if (!/^[a-f0-9]{64}$/.test(event.keyHash)) throw new Error("Invalid model key fingerprint");
-      const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
+      const prepaid = await this.accounts.billing.mode(tenant, undefined, reads) === "prepaid";
       const subscription = isSubscriptionProvider(event.provider);
       const metered = event.endUser && !subscription && await this.endUsers?.enabled(tenant) ? event.endUser : undefined;
       const tenantRefused = prepaid && platform && !subscription && !/:free$/.test(event.model)
-        && await this.accounts.billing.spendable(tenant, this.db) <= 0;
+        && await this.accounts.billing.spendable(tenant, this.db, reads) <= 0;
       const refused = !tenantRefused && metered ? await this.endUsers!.refusal(tenant, metered.id, metered.bucket) : undefined;
       if (tenantRefused || refused) {
         // A delivery retry can follow a committed begin after another call spent the balance.
@@ -203,7 +203,7 @@ export class ModelAttempts {
     });
     this.accounts.invalidateModelUsage(tenant);
     // A committed debit must still wake automatic top-up, but its delivery cannot undo settlement.
-    void this.accounts.billing.autoTopup?.balanceChanged([tenant]).catch(() => {
+    await this.accounts.billing.autoTopup?.balanceChanged([tenant]).catch(() => {
       console.error(JSON.stringify({ type: "model_attempt_topup_notify_failed", attempt: id, tenant }));
     });
   }

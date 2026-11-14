@@ -1,4 +1,5 @@
 import openapi from "../../../openapi.json" with { type: "json" };
+import { workersOpenApi } from "./workers-openapi.ts";
 import { publicDocs } from "./public-docs.ts";
 import { publicOrigins } from "./account-origins.ts";
 
@@ -41,7 +42,7 @@ export async function publicRoutes(request: Request, env: PublicEnv): Promise<Re
   const origin = env.AGENT_PUBLIC_URL || url.origin;
   const read = request.method === "GET" || request.method === "HEAD";
   const content = (body: string, type: string, headers: Record<string, string> = {}) => new Response(request.method === "HEAD" ? null : body, { headers: { "Content-Type": type, ...headers } });
-  if (read && path === "/v1/openapi.json") return content(JSON.stringify(openapi), "application/json; charset=utf-8");
+  if (read && path === "/v1/openapi.json") return content(JSON.stringify(workersOpenApi(openapi)), "application/json; charset=utf-8");
   if (path === "/r" || path.startsWith("/r/")) {
     const eligible = /^\/r\/[^/]+\.json$/.test(path);
     const asset = read && eligible && env.PUBLIC_ASSETS ? await env.PUBLIC_ASSETS.fetch(new Request(url, { method: "GET" })) : undefined;

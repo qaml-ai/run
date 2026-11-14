@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -139,31 +138,4 @@ func (m *Manager) evict(used, low int64, usage ...func() (int64, error)) (freed 
 		}
 	}
 	return freed, nil
-}
-
-// packWindows groups sparse chunk offsets into aligned bulk-pull windows.
-// dm-clone owns destination writes; these windows are used by prehydrate mode.
-func packWindows(r root.Root, size int64) [][]string {
-	by := map[int64][]string{}
-	for o := range r.Chunks {
-		off, _ := strconv.ParseInt(o, 10, 64)
-		key := off / size * size
-		by[key] = append(by[key], o)
-	}
-	keys := make([]int64, 0, len(by))
-	for k := range by {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	out := make([][]string, 0, len(keys))
-	for _, k := range keys {
-		v := by[k]
-		sort.Slice(v, func(i, j int) bool {
-			a, _ := strconv.ParseInt(v[i], 10, 64)
-			b, _ := strconv.ParseInt(v[j], 10, 64)
-			return a < b
-		})
-		out = append(out, v)
-	}
-	return out
 }

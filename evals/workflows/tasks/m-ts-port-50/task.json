@@ -5,7 +5,6 @@
   "title": "Port a 52-file CommonJS package to TypeScript (a port large enough to split)",
   "status": "ready",
   "prompt": "/workspace holds ledger-labels, a CommonJS JavaScript package: 50 modules in lib/ (lib/m01.js to lib/m50.js), lib/index.js and util/legacy-format.js. Port the whole package to TypeScript ES modules: a .ts file for each, with the same exports and the same behaviour for any input, typed precisely enough to pass tsc under the strict tsconfig.json given (do not change it). Node will run the result by stripping types, so use only erasable TypeScript and import with .ts extensions. A module that exported a single function (module.exports = fn) exports it as export default and keeps its other properties as named exports; lib/index.ts re-exports each module as a namespace (export * as m01 from \"./m01.ts\"). Set \"type\": \"module\" in package.json and delete each .js file you replace. Reply with a short summary when done.",
-  "workflowNote": "job_run and a workflow's job() run in containers with Node 24 and Python, and no network.",
   "budget": { "usd": 4, "wallMinutes": 45 },
   "units": 52,
   "workflowArgs": { "glob": "lib/m*.js" }

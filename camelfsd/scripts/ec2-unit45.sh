@@ -1,6 +1,5 @@
 # Sourced by ec2-smoke.sh after unit3. Uses the existing store and daemon.
 unit45() {
- [[ $MODE == clone ]] || return 0
  rec 'units 4–5'
  local img=$W/large.img imported root mounted dev start status state cp release
  truncate -s 4G "$img"

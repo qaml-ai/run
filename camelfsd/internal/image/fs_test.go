@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	m, e := New(Config{Data: data, Cold: "prehydrate", HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
+	m, e := New(Config{Data: data, HostID: "test"}, s, cache.New(filepath.Join(data, "cache"), s, 4), db)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -46,7 +47,7 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v, e := m.Mount(ctx, Request{JobID: "job", Lineage: "test", Ref: "main"})
+	v, e := m.Mount(ctx, Request{JobID: "job", Lineage: "test", Root: imp.Root, Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -67,7 +68,7 @@ func TestRealReflinkCheckpoint(t *testing.T) {
 	if e != nil || cp2.ChangedChunks != 1 || cp2.ParentRoot != cp.Root {
 		t.Fatal(cp2, e)
 	}
-	r, e := m.load(ctx, cp2.Root)
+	r, e := m.load(ctx, "test", cp2.Root)
 	if e != nil || r.Chunks["524288"] != "" {
 		t.Fatal(r, e)
 	}

@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { CANCELLABLE_METHODS } from "../../../shared/queue-mode.ts";
 import { type LiveState } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -7,7 +8,7 @@ import { startHostExecution, admitHostExecution, abortHostExecution, hostExecuti
 import { RequestRecord, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
-export async function abortRequestsImpl(this: AgentRuntime,
+export async function abortRequestsImpl(this: AgentRuntime, invocation: AgentInvocation,
   queued: 'cancel' | 'keep' = 'cancel',
   keepChildren = false) {
     // Prompts held for a batch are cancelled with the queue; kept, they go once the turn ends.
@@ -37,11 +38,11 @@ export async function abortRequestsImpl(this: AgentRuntime,
         keepChildren ? Promise.resolve() : this.delegation.cancel(),
         (async () => {
           await this.cancelHumanInputs();
-          await this.abortExecutions();
+          await this.abortExecutions(invocation);
           await this.harness.session().abort();
         })(),
       ]);
-      await this.notifications.abortPending();
+      await this.notifications.abortPending(invocation);
     } else {
       for (const queued of pending.filter(item => item.status === 'queued')) {
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(queued.operationId));
@@ -136,7 +137,7 @@ export async function resumeKeptQueueImpl(this: AgentRuntime) {
   }
 
 /** Withdraw only this delegated input, including a cancellation that arrives before it. */
-export async function cancelRequestImpl(this: AgentRuntime,
+export async function cancelRequestImpl(this: AgentRuntime, invocation: AgentInvocation,
   id: string) {
     // A gone agent runs nothing: there is nothing to stop, and its owner's cancel is done.
     if (await this.gone("cancelRequest", "owner")) return false;
@@ -145,7 +146,7 @@ export async function cancelRequestImpl(this: AgentRuntime,
       await this.ctx.storage.put(`cancelled-request:${id}`, true);
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (!record || (record.state === "completed" && record.status !== "input_required")) return false;
-      this.resumeCancellation(record);
+      this.resumeCancellation(invocation, record);
       return true;
     });
     this.admission = cancel.catch(() => {});
@@ -153,44 +154,45 @@ export async function cancelRequestImpl(this: AgentRuntime,
     return cancelled;
   }
 
-export function resumeCancellationImpl(this: AgentRuntime,
+export function resumeCancellationImpl(this: AgentRuntime, _invocation: AgentInvocation,
   record: RequestRecord) {
     if (this.cancellations.has(record.id)) return;
     this.cancellations.add(record.id);
     // A child tool may be waiting on its parent's admission queue. Acknowledge
     // the durable cancellation before draining tools or calling another object.
-    const work = (async () => {
-      await abortRequestWork.call(this, record);
-      if (record.method === "execute" && !record.accepted)
-        await this.cancelHostIntent(record);
-      else this.track(record.id);
-    })()
-      .catch(async () => {
-        await this.arm(Date.now() + 1000);
-      })
+    const work = AgentInvocation.run(async invocation => {
+      try {
+        await abortRequestWork.call(this, record);
+        if (record.method === "execute" && !record.accepted)
+          await this.cancelHostIntent(invocation, record);
+        else this.track(record.id);
+      } catch {
+        await this.arm(Date.now() + 1000, invocation);
+      }
+    })
       .finally(() => this.cancellations.delete(record.id));
     this.ctx.waitUntil(work);
   }
 
-export async function restoreCancellationsImpl(this: AgentRuntime) {
+export async function restoreCancellationsImpl(this: AgentRuntime, invocation: AgentInvocation) {
     for (const record of await this.records()) {
       if (record.state === "completed" && record.status !== "input_required") continue;
       const cancelled = await this.ctx.storage.get(`cancelled-request:${record.id}`);
       if (cancelled && record.noticeQueued) {
-        await this.notifications.abortPending();
+        await this.notifications.abortPending(invocation);
         continue;
       }
       if (cancelled === 'keep-queue') this.track(record.id);
-      else if (cancelled) this.resumeCancellation(record);
+      else if (cancelled) this.resumeCancellation(invocation, record);
     }
   }
 
-export async function abortExecutionsImpl(this: AgentRuntime) {
+export async function abortExecutionsImpl(this: AgentRuntime, invocation: AgentInvocation) {
     const pi = await this.harness.pi();
     for (const record of await this.records())
       if (record.method === "execute" && record.state !== "completed") {
         await abortHostExecution(pi, record.id);
-        if (!record.accepted) await this.cancelHostIntent(record);
+        if (!record.accepted) await this.cancelHostIntent(invocation, record);
       }
   }
 
@@ -200,7 +202,7 @@ export async function markCancelledRequestsImpl(this: AgentRuntime) {
         await this.ctx.storage.put(`cancelled-request:${record.id}`, true);
   }
 
-export async function cancelHostIntentImpl(this: AgentRuntime,
+export async function cancelHostIntentImpl(this: AgentRuntime, invocation: AgentInvocation,
   record: RequestRecord) {
     // Pi may have committed the task before the adapter's acceptance write was
     // interrupted. Cancel that real work through its normal receipt path.
@@ -210,7 +212,7 @@ export async function cancelHostIntentImpl(this: AgentRuntime,
       if (latest.state === "completed") return;
       await this.ctx.storage.put(reqKey(record.id), { ...latest, task: Number(task), accepted: true, state: "running" });
       await abortHostExecution(pi, record.id);
-      await this.settle(record.id, 0);
+      await this.settle(record.id, 0, invocation);
       return;
     }
     const completed = { ...record, state: "completed" as const, status: "failed", endedAt: Date.now(),
@@ -243,27 +245,28 @@ export async function cancelHumanInputsImpl(this: AgentRuntime,
       await this.emit({ type: "event", requestId: owner, event: { type: "input_resolved", id: key, state: "cancelled", by: { system: "aborted" } } });
   }
 
-export async function startHostRequestImpl(this: AgentRuntime,
+export async function startHostRequestImpl(this: AgentRuntime, invocation: AgentInvocation,
   intent: RequestRecord) {
     if (await this.ctx.storage.get(`cancelled-request:${intent.id}`)) {
       await abortHostExecution(await this.harness.pi(), intent.id);
-      await this.cancelHostIntent(intent);
+      await this.cancelHostIntent(invocation, intent);
       return (await this.ctx.storage.get<RequestRecord>(reqKey(intent.id)))!;
     }
     if (!intent.accepted) {
       const conf = await this.config();
-      const { accounts } = await keyServices(this.env);
-      const limit = await accounts.runLimit(conf.tenantId);
+      const { accounts } = await keyServices(this.env, invocation);
+      const reads = invocation.tenant(accounts.billing, conf.tenantId);
+      const limit = await accounts.runLimit(conf.tenantId, reads);
       if (limit) throw typeof limit === "string" ? Object.assign(new Error(limit), { status: 402, code: "SPEND_LIMIT" }) : limit;
       if (!intent.admitted) {
-        await this.admitRequest(conf, intent.id);
+        intent.limitsSnapshot = await this.admitRequest(invocation, conf, intent.id);
         intent.admitted = true;
         await this.ctx.storage.put(reqKey(intent.id), intent);
       }
     }
     if (await this.ctx.storage.get(`cancelled-request:${intent.id}`)) {
       await abortHostExecution(await this.harness.pi(), intent.id);
-      await this.cancelHostIntent(intent);
+      await this.cancelHostIntent(invocation, intent);
       return (await this.ctx.storage.get<RequestRecord>(reqKey(intent.id)))!;
     }
     // Host-only work needs input observation too, including after a restart.
@@ -288,8 +291,8 @@ export async function startHostRequestImpl(this: AgentRuntime,
     return record;
   }
 
-export async function restoreHostAdmissionsImpl(this: AgentRuntime) {
+export async function restoreHostAdmissionsImpl(this: AgentRuntime, invocation: AgentInvocation) {
     for (const record of await this.records())
       if (record.method === "execute" && !record.accepted && record.state !== "completed")
-        await this.startHostRequest(record);
+        await this.startHostRequest(invocation, record);
   }

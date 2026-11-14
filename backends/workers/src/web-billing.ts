@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { transaction } from "./postgres.ts";
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from "./auxiliary-usage.ts";
@@ -5,22 +6,29 @@ import { HttpError } from "./errors.ts";
 import { publishPending, type WebhookEnv } from "./webhooks.ts";
 import type { BuiltinScope } from "./agent-builtins.ts";
 import type { UsageRecord } from "./web-policy-host.ts";
-import { utcDay, EndUserCredits } from "./end-user-credits.ts";
+import { creditError, utcDay, EndUserCredits } from "./end-user-credits.ts";
 import { digest } from "./api-contract.ts";
 
 /** Every web request rechecks credit, including calls made inside one codemode execution. */
-export async function admitWebUsage(env: KeyEnv, scope: BuiltinScope, platform: boolean) {
-  const { accounts } = await keyServices(env);
+export async function admitWebUsage(env: KeyEnv, scope: BuiltinScope, platform: boolean, invocation?: AgentInvocation) {
+  const { accounts } = await keyServices(env, invocation);
   await admitAuxiliaryUsage(env, scope, platform, async () => {
-    const refused = await accounts.billing.creditLimit(scope.tenant);
+    const refused = await accounts.billing.creditLimit(scope.tenant, {
+      ...invocation?.tenant(accounts.billing, scope.tenant),
+      account: () => accounts.billing.readAccount(scope.tenant),
+    });
     if (refused) throw refused;
-  });
+  }, invocation);
+  if (scope.identity?.subject) {
+    const refused = await new EndUserCredits(accounts.db).refusal(scope.tenant, scope.identity.subject, scope.bucket ?? "default");
+    if (refused) throw creditError(refused);
+  }
 }
 
 /** Use the source accounting path so platform prices, workspaces and ledger metadata agree. */
-export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinScope, usage: UsageRecord) {
+export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinScope, usage: UsageRecord, invocation?: AgentInvocation) {
   if (!scope.callId || scope.startedAt === undefined) throw new HttpError(503, "Web call identity is unavailable");
-  const { accounts } = await keyServices(env);
+  const { accounts } = await keyServices(env, invocation);
   const chargeKey = `charge:web:${await digest(JSON.stringify([scope.agent, scope.requestId, scope.callId]))}`;
   await transaction(env, async sql => {
     if (!await recordAuxiliaryUsage(sql, { tenant: scope.tenant, agent: scope.agent, requestId: scope.requestId,
@@ -33,8 +41,7 @@ export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinSco
     await accounts.recordUsageIn(sql, scope.tenant, scope.agent, { ...usage, bucket: scope.bucket,
       ...(scope.requestId ? { requestId: scope.requestId } : {}), ...(scope.keyScope ? { keyScope: scope.keyScope } : {}),
       ...(scope.identity ? { identity: scope.identity } : {}), ...(scope.actor ? { actor: scope.actor } : {}) });
-
-  });
+  }, {}, invocation);
   await accounts.usageCommitted(scope.tenant);
-  await publishPending(env);
+  await publishPending(env, invocation);
 }

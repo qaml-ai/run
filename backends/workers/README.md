@@ -10,9 +10,15 @@ server is needed. No production service is changed. Read
 limitations of this experiment.
 
 The app uses real Postgres migrations, Pi Durable in an agent DO, an isolated
-remote codemode worker, tenant admission DOs, volume DOs, R2, Images and Queues.
+remote codemode worker, tenant admission DOs, repo DOs, R2, Images and Queues.
 Its default configuration deliberately uses a deterministic local model and
 local-only fixture credentials. It is not a deployable production configuration.
+
+Workers files use `/v1/repos`. Agent mounts use `{ repo, path, mode }`, image saves
+use `{ repo, path }`, and apply takes repo IDs in mounts. Requests to
+`/v1/volumes` and its subpaths return 410. The `delete-volumes` migration
+removes the Volume Durable Object. Pilot Volume data is test data and is
+not migrated. Account deletion still removes that tenant's legacy R2 objects.
 
 ## Run locally
 
@@ -39,6 +45,16 @@ needed for any result in this directory.
 
 Key measured results (hibernation, load stages, parity totals, test timings) are
 summarized in [measurements/README.md](measurements/README.md).
+
+The Workers job-host plane was removed. See the [camel-fs compute design](../../docs/design/camel-fs-compute.md).
+
+## Repo storage
+
+Workers repos require `CAMELFS_URL`, the camel-fs tier origin, and
+`CAMELFS_NOTIFY_KEY`, the shared HMAC key for webhook delivery to
+`/v1/internal/camelfs/notify`. Set `AGENT_PUBLIC_URL` to the issuer configured
+on the tier so it can verify requests against the runtime JWKS. Repo routes
+return HTTP 503 with `storage_unavailable` when `CAMELFS_URL` is missing.
 
 ## Computers
 
@@ -240,3 +256,9 @@ Test workerd processes, temporary directories and computer containers are
 stopped by test cleanup. No Cloudflare resource, paid model call or snapshot is
 created by this experiment. The earlier prototype's approximately $5 spend is
 unchanged.
+
+### Client-held voice calls
+
+The `VoiceCall` Durable Object owns each call and its alarms. OpenAI audio goes directly between the client and OpenAI. The object holds the outbound sideband WebSocket while the call is live. Workers have no node-retirement cut. If the sideband closes, the object ends the call through the provider.
+
+ElevenLabs uses a workspace webhook to settle the completed call. If that report is absent, the object reads the provider conversation and settles at the post-call deadline.

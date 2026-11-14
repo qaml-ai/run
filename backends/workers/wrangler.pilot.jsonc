@@ -34,6 +34,8 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "VOICE_CALLS", "class_name": "VoiceCall" },
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -43,24 +45,8 @@
         "class_name": "TenantAdmission"
       },
       {
-        "name": "VOLUMES",
-        "class_name": "Volume"
-      },
-      {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
-      },
-      {
-        "name": "JOB_HOSTS",
-        "class_name": "JobHost"
-      },
-      {
-        "name": "HOST_JOBS",
-        "class_name": "HostJob"
-      },
-      {
-        "name": "JOB_HOST_REGISTRY",
-        "class_name": "JobHostRegistry"
       },
       {
         "name": "WORKFLOWS",
@@ -121,7 +107,17 @@
         "HostJob",
         "JobHostRegistry"
       ]
-    }
+    },
+    { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    // Pilot Volume data is test data and is not migrated.
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] },
+    {
+      "tag": "delete-job-hosts",
+      "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
+    },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
+    { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
   // stopped by its code through ctx.container. Under the durable_object policy
@@ -139,8 +135,6 @@
       }
     }
   ],
-  // The camelFS v0 host (EC2 m8id) through the camel-fs-proto tunnel to its import proxy on 127.0.0.1:8790 (VPC service camel-fs-proto).
-  "vpc_services": [{ "binding": "CAMELFS", "service_id": "01a1d207-1c73-78f3-bba9-42db316bf4f2" }],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
@@ -184,13 +178,6 @@
       "* * * * *"
     ]
   },
-  "ratelimits": [
-    {
-      "name": "JOB_HOST_ENROLL_LIMITER",
-      "namespace_id": "1001",
-      "simple": { "limit": 10, "period": 60 }
-    }
-  ],
   "vars": {
     "AGENT_WORKFLOW_TENANTS": "pilot-camel-code",
     "PILOT_DB_PROFILE": "1",
@@ -201,18 +188,16 @@
     "AGENT_ACCOUNT_EMAIL_FROM": "camelrun@staging.camelai.dev",
     "SCHEDULE_EMAIL_FROM": "camelrun@staging.camelai.dev",
     "ADMIN_TENANTS": "pilot-admin",
+    "CAMELFS_URL": "https://fs.camelai.dev",
+    "CAMELFS_COMPUTE": "1",
+    "CAMELFS_POOLS": "{\"default\":\"test\"}",
+    "GUEST_IMAGE_SHA256": "b349e90c1ff2e860408ca4ebfe7236292ab167983c95fbcdd253ea8893f04083",
     "AGENT_OPEN_SIGNUP": "false",
     "AGENT_MAX_AGENTS": "2100",
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",
     "TENANT_MAX_ACTIVE": "2100",
     "COMPUTER_IMAGE": "workspace",
     "COMPUTER_INSTANCE": "standard-1",
-    // Enroll EC2 job hosts through AWS instance attestation.
-    "JOB_HOST_ATTESTORS": "aws",
-    // Admit the pilot's EC2 role to the test host pool.
-    "JOB_HOST_ROLE_ARNS": "test=arn:aws:iam::904534089871:role/camel-fs-proto",
-    // Send jobs too large for containers to our hosts.
-    "JOB_PROVIDER": "auto",
     "AGENT_FREE_HOURLY_SPEND_USD": "100"
   },
   "account_id": "85bbd288051330fb51ee1c86031a299b",

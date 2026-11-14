@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { Buffer } from 'node:buffer';
 import { Imager, imageRequest, imageOptions, type ImageSource } from './media/images.ts';
 import { Transcriber, openaiTranscription, transcribeRequest, languageInput } from './media/transcription.ts';
@@ -7,8 +8,10 @@ import { speechRequest, speechInput, speechChoiceInput } from './media/speech-ap
 import { speechProvider, DEFAULT_VOICES } from './media/voice-providers/tts.ts';
 import { speechPrices, ttsCost } from '../../../src/voice-providers/prices.ts';
 import { boundedBytes } from './images.ts';
-import { volume, type FileBindings } from './files.ts';
-import { normalizePath } from './volume.ts';
+import type { FileBindings } from './files.ts';
+import { repoContext, type RepoEnv } from './repos/registry.ts';
+import { commitChanges } from './repos/write.ts';
+import { normalizeRepoPath, repoErrorFrom } from './repos/repo-policy.ts';
 import { HttpError } from './errors.ts';
 import { withSql, transaction, database } from './postgres.ts';
 import { admitEndUser, EndUserCredits } from './end-user-credits.ts';
@@ -38,8 +41,8 @@ const json = (value: unknown) => Response.json(value, { headers: { 'cache-contro
 const testConfig = (env: MediaBindings) => env.TEST_MODE === '1' ? JSON.parse(env.TEST_MEDIA_TENANTS ?? '{}') : {};
 
 /** Credentials resolve at call time; they never enter agent history or public responses. */
-export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string) {
-  const { accounts, keyScopes } = services ?? await keyServices(env);
+export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string, invocation?: AgentInvocation, checkCredit = true) {
+  const { accounts, keyScopes } = services ?? await keyServices(env, invocation);
   // Match src/node.ts's standalone media resolution: an address-only scope is
   // a gateway that needs no key, while an absent entry falls back to the account.
   const entry = scope ? await keyScopes.entry(tenant, scope, provider) : undefined;
@@ -47,10 +50,14 @@ export async function mediaKey(env: MediaBindings, tenant: string, scope: string
     apiKey: entry.apiKey ?? '', ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
     ...(entry.headers ? { headers: entry.headers } : {}), platform: false,
   };
-  const resolved = await accounts.providerKey(tenant, provider);
+  const reads = {
+    ...invocation?.tenant(accounts.billing, tenant),
+    account: () => accounts.billing.readAccount(tenant),
+  };
+  const resolved = await accounts.providerKey(tenant, provider, reads);
   if (resolved) {
     const platform = chargesPlatform(resolved.source);
-    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    if (platform && checkCredit) { const limited = await accounts.billing.creditLimit(tenant, reads); if (limited) throw limited; }
     const azure = platform && provider === 'openai' && azureDeployment ? mediaAzure(env) : undefined;
     if (azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform: true };
     return { apiKey: resolved.key, platform };
@@ -174,14 +181,15 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
     const file=form.get('file'); if (file instanceof Blob) audio={bytes:new Uint8Array(await file.arrayBuffer())};
   } else { try { input=JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400,'Expected JSON object'); } }
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new HttpError(400,'Expected object');
+  if ('volumeId' in input) throw new HttpError(400, 'Volumes are replaced by repos: use { repo, path }');
   const extras = ['subject','actor','context','keyScope','bucket'];
-  const fields = kind === 'images' ? ['prompt','images','mask','size','quality','format','n','background','volumeId','path'] : kind === 'transcriptions' ? ['data','url','language','prompt'] : ['text','voice','instructions','language','format','speech'];
+  const fields = kind === 'images' ? ['prompt','images','mask','size','quality','format','n','background','repo','path'] : kind === 'transcriptions' ? ['data','url','language','prompt'] : ['text','voice','instructions','language','format','speech'];
   if (Object.keys(input).some(k=>![...fields,...extras].includes(k))) throw new HttpError(400,'Unknown request field');
   for (const key of ['subject','actor','keyScope','bucket']) if (input[key]!==undefined && (typeof input[key]!=='string' || !input[key].length || input[key].length>256)) throw new HttpError(400,`Invalid ${key}`);
   for (const key of ['subject','actor']) if (input[key]!==undefined && (!input[key].trim() || input[key].length>200)) throw new HttpError(400,`Invalid ${key}`);
   if (input.context!==undefined && (!input.context || typeof input.context!=='object' || Array.isArray(input.context))) throw new HttpError(400,'context must be an object');
   if (input.context!==undefined && Buffer.byteLength(JSON.stringify(input.context))>4096) throw new HttpError(400,'context must be at most 4 KB of JSON');
-  for (const key of ['volumeId','path','text','voice','instructions','language','prompt','format']) if (input[key]!==undefined && typeof input[key]!=='string') throw new HttpError(400,`${key} must be a string`);
+  for (const key of ['repo','path','text','voice','instructions','language','prompt','format']) if (input[key]!==undefined && typeof input[key]!=='string') throw new HttpError(400,`${key} must be a string`);
   if (input.path?.length>1000 || (kind==='transcriptions' && input.prompt?.length>2000)) throw new HttpError(400,'Request field is too long');
   if (kind==='speech' && typeof input.text!=='string') throw new HttpError(400,'text must be a string');
   const tenant=auth.tenantId, pending: Promise<void>[]=[];
@@ -199,9 +207,34 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
   if (kind==='images') {
     if (typeof input.prompt!=='string' || !input.prompt.trim() || input.prompt.length>32000) throw new HttpError(400,'prompt must contain 1–32000 characters');
     if (!multipart) { if(input.images!==undefined && !Array.isArray(input.images)) throw new HttpError(400,'images must be an array'); const checked=(value:any)=>{if (value && Object.keys(value).some(k=>k!=='data' && k!=='url')) throw new HttpError(400,'Unknown image source field');return source(value);}; images=(input.images??[]).map(checked); mask=input.mask!==undefined?checked(input.mask):undefined; }
-    if (input.path!==undefined && input.volumeId===undefined) throw new HttpError(400,'path requires volumeId');
-    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.imageDeployment),price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(admitCredit?{admitCredit}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
-    return json(made);
+    if (input.path!==undefined && input.repo===undefined) throw new HttpError(400,'path requires repo');
+    try {
+      const made = await drain(imageRequest({
+        ...common,
+        imager: new Imager({
+          provider: openaiImages({ outbound: common.outbound, baseUrl }),
+          key: (t,s,p) => mediaKey(env,t,s,p,services,azure?.imageDeployment),
+          price: () => prices.image,
+        }),
+        owns: async (t,id) => !!await repoContext(env as RepoEnv,t,id),
+        save: async (t,id,path,bytes,contentType) => {
+          const ctx = await repoContext(env as RepoEnv,t,id);
+          const saved = await commitChanges(ctx, {
+            op: 'api', ref: 'main', changes: { [path]: { bytes } }, pathExpect: { [path]: 'none' },
+            message: 'save image', author: `api:${t}`,
+          });
+          return { path, size: bytes.byteLength, version: saved.version!, contentType };
+        },
+      }, tenant, {
+        prompt: input.prompt, images, mask, options: imageOptions(input), ...facts, ...(admitCredit ? { admitCredit } : {}),
+        ...(input.repo !== undefined ? { repo: { id: input.repo, path: normalizeRepoPath(input.path ?? 'images') } } : {}),
+      }, request.signal));
+      return json(made);
+    } catch (error) {
+      const repoError = repoErrorFrom(error);
+      if (repoError) throw new HttpError(repoError.status, repoError.code, repoError.code, repoError.detail);
+      throw error;
+    }
   }
   if(kind==='transcriptions') {
     audio??=source(input);

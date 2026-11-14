@@ -8,8 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
+
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -35,12 +37,14 @@ type arm struct {
 	conn chan net.Conn
 }
 type streams struct {
-	mu        sync.Mutex
-	listeners []net.Listener
-	conns     map[net.Conn]bool
-	armed     *arm
-	used      bool
-	closed    bool
+	mu         sync.Mutex
+	listeners  []net.Listener
+	paths      []string
+	conns      map[net.Conn]bool
+	armed      *arm
+	execInputs map[string]io.Reader
+	used       bool
+	closed     bool
 }
 
 func (s *streams) close() {
@@ -50,38 +54,86 @@ func (s *streams) close() {
 	for _, l := range s.listeners {
 		l.Close()
 	}
+	for _, path := range s.paths {
+		_ = os.Remove(path)
+	}
 	for c := range s.conns {
 		c.Close()
 	}
 }
-func (m *Manager) entries(ctx context.Context, t string) ([]objects.Entry, error) {
+
+// acceptCheckpoint shares the checkpoint listener with the baseline handshake.
+func (s *streams) acceptCheckpoint(ctx context.Context, armed chan<- struct{}) (net.Conn, func(), error) {
+	a := &arm{ctx: ctx, conn: make(chan net.Conn)}
+	s.mu.Lock()
+	s.armed = a
+	s.mu.Unlock()
+	if armed != nil {
+		close(armed)
+	}
+	defer func() {
+		s.mu.Lock()
+		if s.armed == a {
+			s.armed = nil
+		}
+		s.mu.Unlock()
+	}()
+	select {
+	case c := <-a.conn:
+		return c, func() {
+			c.Close()
+			s.mu.Lock()
+			delete(s.conns, c)
+			s.mu.Unlock()
+		}, nil
+	case <-ctx.Done():
+		return nil, nil, ErrStreamTimeout
+	}
+}
+
+func (m *Manager) entries(ctx context.Context, lineage, t string) ([]objects.Entry, error) {
 	if t == "" {
 		return []objects.Entry{}, nil
 	}
-	return m.objects().Entries(ctx, t)
+	return m.objects(lineage).Entries(ctx, t)
 }
 
 // v0-limitation: L53
 func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error {
-	old, e := m.entries(ctx, from)
-	if e != nil {
-		return e
+	return m.listenStreams(ctx, v, from, true, -1)
+}
+
+func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, apply bool, uid int) error {
+	if v.Vsock == "" && v.Session {
+		return nil
 	}
-	next, e := m.entries(ctx, v.Tree)
-	if e != nil {
-		return e
+	var old, next []objects.Entry
+	if apply {
+		var e error
+		if from != v.Tree {
+			old, e = m.entries(ctx, v.Lineage, from)
+			if e != nil {
+				return e
+			}
+		}
+		next, e = m.entries(ctx, v.Lineage, v.Tree)
+		if e != nil {
+			return e
+		}
 	}
 	prev := map[string]objects.Entry{}
 	for _, f := range old {
 		prev[f.Path] = f
 	}
 	var ops []wire.Op
-	for _, f := range next {
-		p, ok := prev[f.Path]
-		if !ok || p.SHA1 != f.SHA1 || p.Mode != f.Mode {
-			ops = append(ops, wire.Op{Path: f.Path, Op: "put", Mode: f.Mode, Size: f.Size})
+	if from != v.Tree {
+		for _, f := range next {
+			p, ok := prev[f.Path]
+			if !ok || p.SHA1 != f.SHA1 || p.Mode != f.Mode {
+				ops = append(ops, wire.Op{Path: f.Path, Op: "put", Mode: f.Mode, Size: f.Size})
+			}
+			delete(prev, f.Path)
 		}
-		delete(prev, f.Path)
 	}
 	for p := range prev {
 		ops = append(ops, wire.Op{Path: p, Op: "del"})
@@ -96,21 +148,65 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 	for _, o := range ops {
 		a.Bytes += o.Size
 	}
-	if from != v.Tree {
-		v.Apply = &a
+	if apply {
+		v.Apply = nil
+		if from != v.Tree {
+			v.Apply = &a
+		}
+		if v.Session {
+			v.needsBaseline = a.Files > 0
+		}
 	}
 	if v.Vsock == "" {
 		return nil
 	}
 	s := &streams{conns: map[net.Conn]bool{}}
 	v.streams = s
-	for _, port := range []string{"5200", "5201"} {
-		l, e := net.Listen("unix", v.Vsock+"_"+port)
+	ports := []string{"5200"}
+	if apply {
+		ports = append(ports, "5201")
+	}
+	execPort := strconv.Itoa(hostwire.ExecInputPort)
+	if v.Session {
+		ports = append(ports, execPort)
+	}
+	for _, port := range ports {
+		path := v.Vsock + "_" + port
+		bind := path
+		var dir *os.File
+		if uid >= 0 {
+			var e error
+			dir, e = os.Open(filepath.Dir(path))
+			if e != nil {
+				s.close()
+				return e
+			}
+			bind = fmt.Sprintf("/proc/self/fd/%d/%s", dir.Fd(), filepath.Base(path))
+			if e = os.Remove(path); e != nil && !os.IsNotExist(e) {
+				dir.Close()
+				s.close()
+				return e
+			}
+		}
+		l, e := net.ListenUnix("unix", &net.UnixAddr{Name: bind, Net: "unix"})
+		if dir != nil {
+			if e == nil {
+				l.SetUnlinkOnClose(false)
+				s.paths = append(s.paths, path)
+			}
+			dir.Close()
+		}
 		if e != nil {
 			s.close()
 			return e
 		}
-		if e = os.Chmod(v.Vsock+"_"+port, 0600); e != nil {
+		if uid >= 0 {
+			e = os.Chown(path, uid, uid)
+		}
+		if e == nil {
+			e = os.Chmod(path, 0600)
+		}
+		if e != nil {
 			s.close()
 			l.Close()
 			return e
@@ -142,7 +238,16 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 					case armed.conn <- c:
 					case <-armed.ctx.Done():
 						c.Close()
+						s.mu.Lock()
+						delete(s.conns, c)
+						s.mu.Unlock()
 					}
+					continue
+				}
+				if port == execPort {
+					s.conns[c] = true
+					s.mu.Unlock()
+					go s.sendExecInput(c, m.StreamIdle, m.ApplyMax)
 					continue
 				}
 				if s.used {
@@ -158,7 +263,7 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 					defer raw.Close()
 					defer func() { s.mu.Lock(); delete(s.conns, raw); s.mu.Unlock() }()
 					c = &wire.DeadlineConn{Conn: c, Idle: m.StreamIdle, Overall: time.Now().Add(m.ApplyMax)}
-					if e := m.sendApply(c, v.JobID, a, next, ops); e != nil {
+					if e := m.sendApply(c, v.Lineage, v.JobID, a, next, ops); e != nil {
 						c.(*wire.DeadlineConn).Final()
 						if ne, ok := e.(net.Error); ok && ne.Timeout() {
 							e = ErrStreamTimeout
@@ -190,7 +295,7 @@ func (m *Manager) startStreams(ctx context.Context, v *Mount, from string) error
 	}
 	return nil
 }
-func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.Entry, ops []wire.Op) error {
+func (m *Manager) sendApply(c net.Conn, lineage, job string, a Apply, entries []objects.Entry, ops []wire.Op) error {
 	ctx, cancel := context.WithTimeout(context.Background(), m.ApplyMax)
 	defer cancel()
 	if e := wire.Send(c, wire.Header{V: 1, Kind: "apply", JobID: job, FromTree: a.FromTree, ToTree: a.ToTree}); e != nil {
@@ -227,13 +332,18 @@ func (m *Manager) sendApply(c net.Conn, job string, a Apply, entries []objects.E
 					return fmt.Errorf("apply blob exceeds byte limit")
 				}
 				var e error
-				b, e = m.Store.Get(ctx, "o/"+f.SHA1)
+				b, e = store.ForLineage(m.Store, lineage).Get(ctx, "o/"+f.SHA1)
 				if e != nil {
 					return e
 				}
 				if int64(len(b)) != f.Size || store.GitHash("blob", b) != f.SHA1 {
 					return fmt.Errorf("corrupt blob")
 				}
+			}
+			// Both production guests use a link operation, with the target in JSON.
+			if op.Op == "put" && op.Mode == "120000" {
+				op.Op, op.Mode, op.Size, op.Target = "link", "", 0, string(b)
+				b = nil
 			}
 			writeMu.Lock()
 			defer writeMu.Unlock()
@@ -271,7 +381,15 @@ type received struct {
 	dir                  string
 }
 
-func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared receiveBase) (out received, err error) {
+func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared receiveBase) (received, error) {
+	var h wire.Header
+	if err := wire.JSON(c, &h); err != nil {
+		return received{}, err
+	}
+	return m.receiveCheckpoint(ctx, v, c, prepared, h)
+}
+
+func (m *Manager) receiveCheckpoint(ctx context.Context, v *Mount, c net.Conn, prepared receiveBase, h wire.Header) (out received, err error) {
 	start := time.Now()
 	out.dir, err = os.MkdirTemp(m.Data, "checkpoint-")
 	if err != nil {
@@ -286,23 +404,22 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 	quota := prepared.quota
 	out.files = prepared.files
 	var e error
-	var h wire.Header
-	if e = wire.JSON(c, &h); e != nil {
-		return out, e
-	}
 	if h.V != 1 || h.Kind != "checkpoint" || h.JobID != v.JobID || h.BaseTree != v.Tree {
 		return out, fmt.Errorf("header mismatch")
 	}
 	out.walk = h.WalkMs
 	seen := map[string]bool{}
-	var pathsBytes int64
+	var pathsBytes, linkBytes int64
 	for {
 		var o wire.Op
 		if e = wire.JSON(c, &o); e != nil {
 			return out, e
 		}
 		if o.End {
-			if o.Error != "" || o.Files != out.count || o.Bytes != out.bytes {
+			// One convention: the trailer counts the raw payload bytes streamed after
+			// put ops. A link op's target travels in its JSON, so it is not in the
+			// trailer, while the receiver still charges it against quota and byte caps.
+			if o.Error != "" || o.Files != out.count || o.Bytes != out.bytes-linkBytes {
 				return out, fmt.Errorf("trailer mismatch")
 			}
 			out.freeze = o.FreezeMs
@@ -342,6 +459,7 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 		if o.Op == "link" {
 			o.Size = int64(len(o.Target))
 			o.Mode = "120000"
+			linkBytes += o.Size
 		}
 		if o.Size < 0 || o.Mode == "120000" && o.Size > 4096 || o.Size > m.MaxBytes-out.bytes || o.Size > quota-out.bytes {
 			return out, fmt.Errorf("size cap exceeded")
@@ -424,7 +542,12 @@ func (m *Manager) receive(ctx context.Context, v *Mount, c net.Conn, prepared re
 	out.stream = ms(start)
 	return out, nil
 }
-func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, metadata ...CheckpointRequest) (out Checkpoint, err error) {
+func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, metadata ...CheckpointRequest) (Checkpoint, error) {
+	return m.streamCheckpoint(ctx, id, timeout, false, nil, metadata...)
+}
+
+func (m *Manager) streamCheckpoint(ctx context.Context, id string, timeout int, baseline bool, publish func(context.Context, Checkpoint) error, metadata ...CheckpointRequest) (out Checkpoint, err error) {
+	defer func() { out.RefreshTimings() }()
 	if timeout == 0 {
 		timeout = 120000
 	}
@@ -447,42 +570,26 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	_ = m.Heartbeat(id)
-	if v.fenced.Load() || v.Ref == "" {
-		return out, refs.ErrFenced
+	if v.Fence == nil {
+		return out, &apierr.Error{Status: 409, Code: "no_fence", Cause: fmt.Errorf("mount has no fence")}
 	}
 	if v.streams == nil {
 		return out, apierr.Invalid("invalid missing vsock")
 	}
-	if err = m.Refs.Check(v.Lineage, v.Ref, v.Fence); err != nil {
-		return
+	raw, closeStream, e := v.streams.acceptCheckpoint(ctx, nil)
+	if e != nil {
+		return out, e
 	}
-	s := v.streams
-	a := &arm{ctx: ctx, conn: make(chan net.Conn)}
-	s.mu.Lock()
-	s.armed = a
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		if s.armed == a {
-			s.armed = nil
-		}
-		s.mu.Unlock()
-	}()
-	var c net.Conn
-	select {
-	case c = <-a.conn:
-	case <-ctx.Done():
-		return out, ErrStreamTimeout
-	}
-	defer c.Close()
-	raw := c
-	defer func() { s.mu.Lock(); delete(s.conns, raw); s.mu.Unlock() }()
+	defer closeStream()
+	c := net.Conn(raw)
 	cancelDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() { raw.SetDeadline(time.Now()); close(cancelDone) })
 	defer stopCancel()
 	deadline, _ := ctx.Deadline()
 	c = &wire.DeadlineConn{Conn: raw, Idle: m.StreamIdle, Overall: deadline}
+	if e := m.awaitHydration(ctx, v); e != nil {
+		return out, e
+	}
 	streamStart := time.Now()
 	prepared, e := m.prepareReceive(ctx, v)
 	if e != nil {
@@ -491,7 +598,27 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	if err = wire.Send(c, map[string]bool{"ready": true}); err != nil {
 		return out, ErrStreamTimeout
 	}
-	r, e := m.receive(ctx, v, c, prepared)
+	var header wire.Header
+	e = wire.JSON(c, &header)
+	if e == nil && baseline && header.Kind == "baseline" {
+		start := time.Now()
+		snap, err := m.reserveBaseline(v)
+		if err == nil {
+			err = snap.capture(v, c, header)
+			if err == nil {
+				go m.publishCapturedBaseline(v, snap, start, ms(start))
+				return out, nil
+			}
+			m.discardBaseline(snap)
+		}
+		logBaseline(v.JobID, v.Tree, start, ms(start), Checkpoint{}, err)
+		wire.Send(c, map[string]any{"ack": false, "error": err.Error()})
+		return out, nil
+	}
+	var r received
+	if e == nil {
+		r, e = m.receiveCheckpoint(ctx, v, c, prepared, header)
+	}
 	if e != nil {
 		if !stopCancel() {
 			<-cancelDone
@@ -513,12 +640,64 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 		return out, fmt.Errorf("%w: %v", ErrBadStream, e)
 	}
 	defer os.RemoveAll(r.dir)
+	if publish != nil {
+		base, e := m.mountRoot(ctx, v.Lineage, v.Root)
+		if e != nil {
+			return out, e
+		}
+		v.Snapshot++
+		snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
+		defer os.Remove(snap)
+		if e = clone(v.Dest, snap); e != nil {
+			return out, e
+		}
+		f, e := os.Open(snap)
+		if e != nil {
+			return out, e
+		}
+		ranges, e := sessionRanges(f, base.VirtualSize, base.Chunks)
+		f.Close()
+		if e != nil {
+			return out, e
+		}
+		v.preparedSnapshot, v.preparedRanges = snap, ranges
+		defer func() { v.preparedSnapshot = ""; v.preparedRanges = nil }()
+	} else if v.DM != "" {
+		root, e := m.mountRoot(ctx, v.Lineage, v.Root)
+		if e != nil {
+			return out, e
+		}
+		v.Snapshot++
+		snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
+		if _, e = run(ctx, "dmsetup", "suspend", v.DM); e != nil {
+			return out, e
+		}
+		ranges, captureErr := snapshotCopy(ctx, v.Dest, filepath.Join(filepath.Dir(v.Dest), "cow.img"), snap, root.VirtualSize)
+		_, resumeErr := resumeDM(v.DM)
+		if captureErr != nil {
+			os.Remove(snap)
+			return out, captureErr
+		}
+		if resumeErr != nil {
+			os.Remove(snap)
+			return out, resumeErr
+		}
+		v.preparedSnapshot = snap
+		v.preparedRanges = ranges
+		defer func() {
+			if v.preparedSnapshot != "" {
+				os.Remove(v.preparedSnapshot)
+				v.preparedSnapshot = ""
+				v.preparedRanges = nil
+			}
+		}()
+	}
 	if err = wire.Send(c, map[string]bool{"ack": true}); err != nil {
 		return out, ErrStreamTimeout
 	}
 	c.Close()
-	publish := time.Now()
-	repo := m.objects()
+	publishing := time.Now()
+	repo := m.objects(v.Lineage)
 	keys := make([]string, len(r.blobs))
 	blobs := map[string]staged{}
 	for i, b := range r.blobs {
@@ -532,10 +711,10 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 			return e
 		}
 		defer f.Close()
-		if e = store.PutBlobFile(ctx, m.Store, "o/"+b.sha1, f); e != nil {
+		if e = store.PutBlobFile(ctx, store.ForLineage(m.Store, v.Lineage), "o/"+b.sha1, f, b.sha256); e != nil {
 			return e
 		}
-		_, e = repo.DB.DB.ExecContext(ctx, "INSERT OR IGNORE INTO lineage_blobs VALUES(?,?,?,?,?)", v.Lineage, b.sha256, b.sha1, b.size, time.Now().UnixMilli())
+		e = repo.Record(ctx, v.Lineage, b.sha1, "blob", &objects.Blob{SHA1: b.sha1, SHA256: b.sha256, Size: b.size})
 		return e
 	})
 	if e != nil {
@@ -545,13 +724,13 @@ func (m *Manager) StreamCheckpoint(ctx context.Context, id string, timeout int, 
 	if e != nil {
 		return out, e
 	}
-	out, err = m.checkpoint(ctx, v, tree.Tree, metadata...)
+	out, err = m.checkpointWithPublish(ctx, v, tree.Tree, publish, metadata...)
 	out.FilesChanged = r.count
 	out.BytesReceived = r.bytes
 	out.WalkMs = r.walk
-	out.StreamMs = float64(publish.Sub(streamStart).Microseconds()) / 1000
+	out.StreamMs = float64(publishing.Sub(streamStart).Microseconds()) / 1000
 	out.FreezeMs = r.freeze
-	out.PublishMs = ms(publish)
+	out.PublishMs = ms(publishing)
 	return
 }
 
@@ -613,42 +792,35 @@ type receiveBase struct {
 }
 
 func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase, err error) {
-	r, err := m.mountRoot(ctx, v.Root)
+	r, err := m.mountRoot(ctx, v.Lineage, v.Root)
 	if err != nil {
 		return out, err
 	}
 	out.quota = r.VirtualSize
 	// v0-limitation: L53
-	entries, err := m.entries(ctx, v.Tree)
+	entries, err := m.entries(ctx, v.Lineage, v.Tree)
 	if err != nil {
 		return out, err
 	}
 	out.files = map[string]objects.File{}
 	out.sizes = map[string]int64{}
-	hashes := map[string]string{}
-	rows, err := m.objects().DB.DB.QueryContext(ctx, "SELECT sha1,sha256,size FROM lineage_blobs WHERE lineage=?", v.Lineage)
+	// Resolve the base tree's blobs through the repository: rows this host already has, else a durable HEAD
+	// that records membership. A host serves trees whose blobs another writer (the tier) uploaded.
+	ids := make([]string, len(entries))
+	for i, f := range entries {
+		ids[i] = f.SHA1
+	}
+	blobs, err := m.objects(v.Lineage).BlobInfos(ctx, v.Lineage, ids)
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var sha1, sha256 string
-		var size int64
-		if err = rows.Scan(&sha1, &sha256, &size); err != nil {
-			return out, err
-		}
-		hashes[sha1] = sha256
-		out.sizes[sha256] = size
-	}
-	if err = rows.Err(); err != nil {
-		return out, err
-	}
 	for _, f := range entries {
-		sha, ok := hashes[f.SHA1]
-		if !ok {
-			return out, fmt.Errorf("missing lineage blob")
+		found := blobs[f.SHA1]
+		if found.Err != nil {
+			return out, fmt.Errorf("lineage blob %s: %w", f.SHA1, found.Err)
 		}
-		out.files[f.Path] = objects.File{SHA256: sha, Mode: f.Mode}
+		out.files[f.Path] = objects.File{SHA256: found.Blob.SHA256, Mode: f.Mode}
+		out.sizes[found.Blob.SHA256] = found.Blob.Size
 	}
 	return out, nil
 }

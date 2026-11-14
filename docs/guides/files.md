@@ -1,5 +1,10 @@
 # Files
 
+On Workers, use `POST /v1/repos` to create a repo and mount it with
+`{ repo, path, mode }`. Reads can name a ref or an immutable version.
+`/v1/volumes` and its subpaths return 410 on Workers. The volume API and SDK
+examples below apply to the Node runtime.
+
 Every agent has files: its own workspace at `/workspace` by default, or the
 **volumes** you mount. Files you attach to a message land there, the model works
 on them with its file tools and with code, tools save their outputs there, and

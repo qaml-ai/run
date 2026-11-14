@@ -1,5 +1,9 @@
 # Provision an application
 
+On Workers, create repos with `POST /v1/repos` and set agent mounts to
+`{ repo, path, mode }`. Apply returns 400 for a `volumes` declaration,
+including in dry runs. The manifest below applies to the Node runtime.
+
 `POST /v1/apply` accepts objects keyed by resource key. Volumes are processed first, then definitions, then agents. Each group follows JSON property order. References must point to an earlier resource in the same manifest. All resources belong to the authenticated tenant.
 
 ```json

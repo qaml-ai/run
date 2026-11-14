@@ -5,11 +5,10 @@ After=network-online.target camel-kvm-prep.service nftables.service camel-egress
 Requires=camel-kvm-prep.service nftables.service camel-egress-proxy.service camelfsd.service
 
 [Service]
-Environment=ATTESTOR=aws POOL=test SLOTS=1 JOB_VCPUS=2 JOB_MEMORY_MIB=2048 CAMELFS_API_PORT=8790
+Environment=ATTESTOR=aws POOL=test SLOTS=1 JOB_VCPUS=2 JOB_MEMORY_MIB=2048
 EnvironmentFile=/etc/camel/kvm-host.conf
-EnvironmentFile=/etc/camel/camelfs-api.env
 EnvironmentFile=-/etc/camel/jobhost-test.env
-ExecStart=/usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/jobhost/agent.ts --firecracker --kvm --reflink always --initrd none --kernel /var/lib/camel/guest/vmlinux --image /nvme/camel/base.ext4 --work /nvme/camel/jobs --policies /run/camel/egress --camelfs-socket /run/camelfsd/api.sock --camelfs-repo-mount --camelfs-api-port ${CAMELFS_API_PORT} --attestor ${ATTESTOR} --runtime ${RUNTIME_URL} --pool ${POOL} --slots ${SLOTS} --vcpus ${JOB_VCPUS} --memory ${JOB_MEMORY_MIB}
+ExecStart=/usr/local/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /opt/camel/jobhost/agent.ts --firecracker --kvm --reflink always --initrd none --kernel /var/lib/camel/guest/vmlinux --image /nvme/camel/base.ext4 --work /nvme/camel/jobs --policies /run/camel/egress --camelfs-socket /run/camelfsd/api.sock --camelfs-repo-mount --attestor ${ATTESTOR} --runtime ${RUNTIME_URL} --pool ${POOL} --slots ${SLOTS} --vcpus ${JOB_VCPUS} --memory ${JOB_MEMORY_MIB}
 Restart=always
 RestartSec=5
 KillMode=mixed

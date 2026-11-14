@@ -15,12 +15,12 @@ func warmDevice(t testing.TB) *device {
 	b := make([]byte, root.ChunkSize)
 	b[0] = 1
 	h := root.Hash(b)
-	if e := s.Put(context.Background(), "c/"+h, b); e != nil {
+	if e := s.Put(context.Background(), "l/c/"+h, b); e != nil {
 		t.Fatal(e)
 	}
-	c := cache.New(t.TempDir(), s, 64)
+	c := cache.New(t.TempDir(), store.ForLineage(s, "l"), 64)
 	t.Cleanup(c.Close)
-	d := &device{s: &Server{Cache: c}, r: root.Root{VirtualSize: root.ChunkSize, Chunks: map[string]string{"0": h}}}
+	d := &device{lineage: "l", s: &Server{Cache: c}, r: root.Root{VirtualSize: root.ChunkSize, Chunks: map[string]string{"0": h}}}
 	if e := d.readAt(make([]byte, 4096), 0); e != nil {
 		t.Fatal(e)
 	}

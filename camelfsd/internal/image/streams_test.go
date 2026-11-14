@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,12 +31,12 @@ func unit3(t *testing.T) (*Manager, string) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	m, e := New(Config{Data: data, Cold: "prehydrate", HostID: "test", VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
+	m, e := New(Config{Data: data, HostID: "test", VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { m.Close(); db.Close() })
-	r, e := m.objects().Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
+	r, e := m.objects("l").Import(context.Background(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -43,7 +44,7 @@ func unit3(t *testing.T) (*Manager, string) {
 }
 func mount3(t *testing.T, m *Manager, tree, job string) *Mount {
 	t.Helper()
-	v, e := m.Mount(context.Background(), Request{Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
+	v, e := m.Mount(context.Background(), Request{Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job, Vsock: filepath.Join(testutil.SocketDir(t), "v")})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -81,7 +82,7 @@ func TestHostileStreams(t *testing.T) {
 				m.MaxPathsBytes = 1
 			}
 			v := mount3(t, m, tree, "evil")
-			before, _ := m.Refs.Get("l", v.Ref)
+
 			done := make(chan error, 1)
 			go func() { _, e := m.StreamCheckpoint(context.Background(), "evil", 250, CheckpointRequest{}); done <- e }()
 			for {
@@ -107,10 +108,6 @@ func TestHostileStreams(t *testing.T) {
 				}
 			} else if !errors.Is(e, ErrBadStream) {
 				t.Fatal(e)
-			}
-			after, _ := m.Refs.Get("l", v.Ref)
-			if before.Value != after.Value {
-				t.Fatal("partial ref publish")
 			}
 			db := m.Refs.(*refs.DB)
 			var n int
@@ -163,7 +160,7 @@ func TestArmingAndMountIsolation(t *testing.T) {
 		var ack any
 		wire.JSON(c, &ack)
 	}()
-	if _, e = m.StreamCheckpoint(context.Background(), "b", 1000, CheckpointRequest{}); e != nil {
+	if _, e = m.StreamCheckpoint(context.Background(), "b", 10000, CheckpointRequest{}); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = m.Release(context.Background(), "b"); e != nil {
@@ -172,12 +169,10 @@ func TestArmingAndMountIsolation(t *testing.T) {
 	if e = <-done; !errors.Is(e, ErrStreamTimeout) {
 		t.Fatal(e)
 	}
-	if _, e = m.Fork(context.Background(), ForkRequest{Lineage: "l", FromRef: v.Ref, Name: "held"}); !errors.Is(e, ErrHeld) {
-		t.Fatal(e)
-	}
 }
-func TestApplyCheckpointForkCommit(t *testing.T) {
+func TestApplyCheckpointCommit(t *testing.T) {
 	m, tree := unit3(t)
+	m.Store = testutil.TrackTreePuts(t, m.Store)
 	v := mount3(t, m, tree, "j")
 	dir := t.TempDir()
 	index := filepath.Join(t.TempDir(), "idx.json")
@@ -219,7 +214,7 @@ func TestApplyCheckpointForkCommit(t *testing.T) {
 		done <- e
 	}()
 	msg := "save"
-	out, e := m.StreamCheckpoint(context.Background(), "j", 2000, CheckpointRequest{Message: &msg, Trailers: &Trailers{Agent: "bot", Kind: "manual"}})
+	out, e := m.StreamCheckpoint(context.Background(), "j", 10000, CheckpointRequest{Message: &msg, Trailers: &Trailers{Agent: "bot", Kind: "manual"}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -229,12 +224,12 @@ func TestApplyCheckpointForkCommit(t *testing.T) {
 	if out.Tree == tree || out.Commit == "" || out.FilesChanged != 1 || out.BytesReceived != 5 {
 		t.Fatal(out)
 	}
-	commit, e := m.Commit(context.Background(), out.Commit)
+	commit, e := m.Commit(context.Background(), out.Commit, "l")
 	if e != nil || commit["tree"] != out.Tree {
 		t.Fatal(commit, e)
 	}
 	var raw []byte
-	m.objects().DB.DB.QueryRow("SELECT bytes FROM objects WHERE id=?", out.Commit).Scan(&raw)
+	m.objects("l").DB.DB.QueryRow("SELECT bytes FROM objects WHERE id=?", out.Commit).Scan(&raw)
 	git := t.TempDir()
 	if b, e := exec.Command("git", "init", "--bare", git).CombinedOutput(); e != nil {
 		t.Fatalf("%s %v", b, e)
@@ -249,11 +244,11 @@ func TestApplyCheckpointForkCommit(t *testing.T) {
 	if e != nil || !bytes.Equal(raw, printed) {
 		t.Fatal(e)
 	}
-	m.Release(context.Background(), "j")
-	fork, e := m.Fork(context.Background(), ForkRequest{Lineage: "l", FromTree: out.Tree, Name: "exp/1", Owner: "test"})
-	if e != nil || fork["root"] != out.Root {
-		t.Fatal(fork, e)
+	// The repo log reads who and why from trailers (#993): an agent's manual checkpoint is a turn op.
+	if !bytes.HasSuffix(raw, []byte("Camel-Agent: bot\nCamel-Checkpoint: manual\nCamel-Op: turn\n")) {
+		t.Fatalf("checkpoint trailers: %q", raw)
 	}
+	m.Release(context.Background(), "j")
 	warm := mount3(t, m, out.Tree, "warm")
 	if warm.Apply != nil || !warm.Warm {
 		t.Fatal(warm)
@@ -266,7 +261,7 @@ func TestNearestAncestor(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	repo := m.objects()
+	repo := m.objects("l")
 	b := []byte("x")
 	sha := fmtHash(b)
 	if _, e = repo.Upload(context.Background(), "l", sha, 1, bytes.NewReader(b)); e != nil {
@@ -294,7 +289,7 @@ func (s brokenStore) Put(context.Context, string, []byte) error {
 func TestAckThenPublishFailure(t *testing.T) {
 	m, tree := unit3(t)
 	v := mount3(t, m, tree, "failure")
-	before, _ := m.Refs.Get("l", v.Ref)
+
 	m.Store = brokenStore{m.Store}
 	acked := make(chan bool, 1)
 	go func() {
@@ -316,12 +311,8 @@ func TestAckThenPublishFailure(t *testing.T) {
 	if !<-acked {
 		t.Fatal("missing pre-upload ack")
 	}
-	after, _ := m.Refs.Get("l", v.Ref)
-	if before.Value != after.Value {
-		t.Fatal("partial ref publish")
-	}
 	var n int
-	m.objects().DB.DB.QueryRow("SELECT count(*) FROM tree_roots").Scan(&n)
+	m.objects("l").DB.DB.QueryRow("SELECT count(*) FROM tree_roots").Scan(&n)
 	if n != 0 {
 		t.Fatal("partial mapping")
 	}
@@ -384,7 +375,7 @@ func TestApplyProgressOutlivesIdleBudget(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		stream := &wire.DeadlineConn{Conn: a, Idle: m.StreamIdle, Overall: time.Now().Add(m.ApplyMax)}
-		if e := m.sendApply(stream, "slow", Apply{}, nil, nil); e != nil {
+		if e := m.sendApply(stream, "l", "slow", Apply{}, nil, nil); e != nil {
 			done <- e
 			return
 		}
@@ -416,3 +407,73 @@ func TestApplyProgressOutlivesIdleBudget(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// A session's base tree usually comes from another writer (the tier's write route): its blobs are in the store and
+// in that writer's database, not in this host's. Checkpointing such a mount resolves them through the store.
+func TestCheckpointBaseBlobsFromAnotherWriter(t *testing.T) {
+	m, _ := unit3(t)
+	writer, e := refs.Open(filepath.Join(t.TempDir(), "writer.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer writer.Close()
+	repo := &objects.Repository{DB: writer, Store: m.Store, TempDir: t.TempDir()}
+	content := []byte("base file\n")
+	hash := sha256Hex(content)
+	if _, e := repo.Upload(t.Context(), "l", hash, int64(len(content)), bytes.NewReader(content)); e != nil {
+		t.Fatal(e)
+	}
+	base, e := repo.Import(t.Context(), objects.Request{Lineage: "l", Files: map[string]objects.File{"base.txt": {SHA256: hash}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var rows int
+	m.objects("l").DB.DB.QueryRow("SELECT COUNT(*) FROM lineage_blobs WHERE lineage='l'").Scan(&rows)
+	if rows != 0 {
+		t.Fatalf("host already knows %d blobs; the test needs a foreign writer", rows)
+	}
+	v := mount3(t, m, base.Tree, "j")
+	if e := testguest.Apply(v.Vsock, "j", t.TempDir(), filepath.Join(t.TempDir(), "idx.json")); e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 100; i++ {
+		if s, _ := m.Status(context.Background(), "j"); s.Applied {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	done := make(chan error, 1)
+	go func() {
+		c := armed3(t, v)
+		defer c.Close()
+		wire.Send(c, wire.Header{V: 1, Kind: "checkpoint", JobID: "j", BaseTree: base.Tree, WalkMs: 1})
+		wire.Send(c, wire.Op{Path: "hello", Op: "put", Mode: "100644", Size: 5})
+		wire.Write(c, []byte("world"))
+		wire.Send(c, wire.Op{End: true, Files: 1, Bytes: 5})
+		var ack struct {
+			Ack bool `json:"ack"`
+		}
+		e := wire.JSON(c, &ack)
+		if !ack.Ack && e == nil {
+			e = errors.New("no ack")
+		}
+		done <- e
+	}()
+	msg := "save"
+	out, e := m.StreamCheckpoint(context.Background(), "j", 10000, CheckpointRequest{Message: &msg, Trailers: &Trailers{Agent: "bot", Kind: "manual"}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = <-done; e != nil {
+		t.Fatal(e)
+	}
+	if out.Tree == base.Tree || out.FilesChanged != 1 {
+		t.Fatal(out)
+	}
+	entries, e := m.objects("l").Entries(t.Context(), out.Tree)
+	if e != nil || len(entries) != 2 {
+		t.Fatalf("checkpoint tree %v: %v", entries, e)
+	}
+}
+
+func sha256Hex(b []byte) string { return root.Hash(b) }

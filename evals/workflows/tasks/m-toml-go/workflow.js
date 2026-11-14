@@ -1,9 +1,6 @@
 // The reference workflow for m-toml-go (workflow-direct mode): a lead fixes the Go package's shape, a worker ports
-// each TypeScript file against it, critics review each file against the original, fixers apply findings, then
-// build rounds: a job compiles and runs toml-test-free checks, and a fixer takes the compiler's errors, up to three
-// times. Children are made from the run's definitions (`args.definitions`); `type` is kept for PR 8. `job()` comes
-// with PR 8's job driver; on a runner without it the script ends after the fix round.
-const meta = { name: "toml-go", phases: [{ title: "Plan" }, { title: "Port" }, { title: "Review" }, { title: "Fix" }, { title: "Build" }] };
+// each TypeScript file against it, critics review each file against the original, fixers apply findings.
+const meta = { name: "toml-go", phases: [{ title: "Plan" }, { title: "Port" }, { title: "Review" }, { title: "Fix" }] };
 const FINDINGS = { type: "object", properties: { findings: { type: "array", items: { type: "string" } } }, required: ["findings"], additionalProperties: false };
 const go = (file) => `go/${file.replace(/^src\//, "").replace(/\.ts$/, ".go")}`;
 
@@ -21,11 +18,4 @@ log("Fix");
 await parallel(args.files.map((file, index) => () => reviews[index]?.findings?.length
   ? agent(`Fix these findings in /workspace/${go(file)}:\n${reviews[index].findings.join("\n")}`, { key: `fix:${file}`, type: "worker", definition: args.definitions.worker })
   : null));
-if (typeof job !== "function") return { files: args.files.length, built: false };
-log("Build");
-for (let round = 0; round < 3; round++) {
-  const build = await job({ key: `build:${round}`, command: "cd go && go build ./... && go vet ./...", outputs: [] });
-  if (!build || build.exitCode === 0) break;
-  await agent(`Fix these compiler errors in /workspace/go:\n${String(build.stderr ?? build.stdout ?? "").slice(0, 8000)}`, { key: `build-fix:${round}`, type: "worker", definition: args.definitions.worker });
-}
 return { files: args.files.length };

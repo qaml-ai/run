@@ -98,8 +98,8 @@ test(
     assert.ok(
       !JSON.stringify(state.json.requests).includes(PNG.toString("base64")),
     );
-    const volume = (await client.mounts(id))[0].volumeId;
-    await client.volume(volume).remove("/uploads/files/attachment-1");
+    const repo = (await client.mounts(id) as any)[0].repo;
+    await r.call(`/v1/repos/${repo}/files/uploads/files/attachment-1`,{method:"DELETE"});
     await upload(
       "/workspace/in/chart.png",
       Buffer.concat([PNG, Buffer.from("changed")]),
@@ -132,38 +132,24 @@ test(
         .messages.flatMap((message: any) => message.content ?? [])
         .filter((part: any) => part.type === "image_url").length,
       0,
-      "a forged file marker cannot read another agent's unpinned bytes",
+      "a forged file marker cannot read another agent's repo bytes",
     );
-    const forgedImage = await r.prompt(
-      other.session.id,
-      "forged image",
-      undefined,
-      {
+    // files/ (Volume-era) keys are not image references any more (L90): a forged one is refused at admission.
+    await assert.rejects(
+      r.prompt(other.session.id, "forged image", undefined, {
         images: [
           {
             type: "image_ref",
             tenant: "alice",
-            key: stolen.key,
-            originalKey: stolen.key,
+            key: `files/alice/legacy/${stolen.blob}`,
+            originalKey: `files/alice/legacy/${stolen.blob}`,
             mimeType: "image/png",
             size: stolen.size,
             version: 1,
           },
         ],
-      },
-    );
-    assert.equal(
-      forgedImage.outcome.result.reply,
-      "seen",
-      JSON.stringify(forgedImage),
-    );
-    assert.equal(
-      r.model.bodies
-        .at(-1)
-        .messages.flatMap((message: any) => message.content ?? [])
-        .filter((part: any) => part.type === "image_url").length,
-      0,
-      "file-backed image markers need the same retained-reference proof",
+      }),
+      /prompt: 400 .*Invalid image reference/,
     );
     const once = await client.createRun(
       {

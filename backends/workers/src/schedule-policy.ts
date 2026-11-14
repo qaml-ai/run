@@ -5,7 +5,7 @@ import { calendarInput, nextCalendar, type Calendar } from '../../../src/calenda
 import type { Monitor } from '../../../shared/monitors.ts';
 export interface Schedule {
   id: string; agent: string; tenant: string; text?: string; code?: string;
-  dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: "continue" | "fresh"; spendLimit?: { usd: number }; mounts?: {volumeId?:string;path?:string;mode?:"ro"|"rw";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail; createdAt: number;
+  dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: "continue" | "fresh"; spendLimit?: { usd: number }; mounts?: {repo?:string;ref?:string;instructions?:string;path?:string;mode?:"ro"|"rw";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail; createdAt: number;
   /** Occurrences in a row whose delivery was given up, and why the latest attempt failed: until a delivery succeeds. */
   failures?: number; lastError?: string; lastErrorAt?: number;
   /** A monitor (shared/monitors.ts): `code` is its check, run every `everySeconds`; its state and counters are here. */
@@ -43,7 +43,7 @@ export function scheduleInput(body: any, now = Date.now()) {
   if (!body || typeof body !== "object") throw new Error("Send { text | code, history?, at | inSeconds, everySeconds? }");
   if (body.sessionMode !== undefined && !['continue','fresh'].includes(body.sessionMode)) throw new Error('sessionMode must be continue or fresh');
   if (body.spendLimit !== undefined && (!body.spendLimit || typeof body.spendLimit.usd !== 'number' || !Number.isFinite(body.spendLimit.usd) || body.spendLimit.usd < 0 || body.spendLimit.usd > 1000000)) throw new Error('spendLimit must be {usd} from 0 to 1000000');
-  const mounts = body.mounts === undefined ? undefined : z.array(z.union([z.strictObject({volumeId:z.string(),path:z.string(),mode:z.enum(['ro','rw']),subpath:z.string().optional(),notify:z.boolean().optional()}),z.strictObject({workspace:z.boolean(),path:z.string().optional()})])).max(16).parse(body.mounts);
+  const mounts = body.mounts === undefined ? undefined : z.array(z.union([z.strictObject({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum(['ro','rw']),subpath:z.string().optional(),notify:z.boolean().optional()}),z.strictObject({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).parse(body.mounts);
   if (mounts && body.sessionMode !== 'fresh') throw new Error('Schedule mounts require fresh mode');
   const cron = body.cron === undefined ? undefined : cronInput(body.cron);
   if (cron && [body.calendar, body.at, body.inSeconds, body.everySeconds].some(value => value !== undefined)) throw new Error('cron cannot be combined with other timing fields');

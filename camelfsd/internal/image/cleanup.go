@@ -48,7 +48,7 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 	if e != nil {
 		return e
 	}
-	type state struct{ DM, NBD, MetaLoop, DestLoop string }
+	type state struct{ DM, OriginDM, NBD, CowLoop, DestLoop string }
 	var mounts []state
 	for _, p := range files {
 		b, e := os.ReadFile(p)
@@ -62,7 +62,10 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 		if v.DM != "" && v.DM != DMPrefix(data)+filepath.Base(filepath.Dir(p)) {
 			return fmt.Errorf("foreign dm device")
 		}
-		for _, loop := range []string{v.MetaLoop, v.DestLoop} {
+		if v.OriginDM != "" && v.OriginDM != DMPrefix(data)+filepath.Base(filepath.Dir(p))+"-o" {
+			return fmt.Errorf("foreign origin device")
+		}
+		for _, loop := range []string{v.CowLoop, v.DestLoop} {
 			if loop != "" && !deviceNumber(loop, "/dev/loop") {
 				return fmt.Errorf("invalid loop device")
 			}
@@ -78,7 +81,12 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 				return e
 			}
 		}
-		for _, loop := range []string{v.MetaLoop, v.DestLoop} {
+		if v.OriginDM != "" {
+			if e = commands.Run(ctx, "dmsetup", "remove", v.OriginDM); e != nil {
+				return e
+			}
+		}
+		for _, loop := range []string{v.CowLoop, v.DestLoop} {
 			if loop != "" {
 				if e = commands.Run(ctx, "losetup", "-d", loop); e != nil {
 					return e

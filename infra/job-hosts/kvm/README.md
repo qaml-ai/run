@@ -30,25 +30,26 @@ The existing cloudflared unit is always left alone. A token file at
 only when no such unit already exists. Tunnel routing is configured separately.
 
 The root disk retains source, binaries, configuration, API token, guest kernel
-and the Ubuntu noble ext4 base image. Instance-store data disappears on stop/start.
+and the AL2023 ext4 base image. Instance-store data disappears on stop/start.
 At boot `camel-kvm-prep` recreates XFS with reflinks, the directories and the base
 image copy on `/nvme`. It refuses to format mounted devices, disks with children,
 or any device not identified as EC2 instance store. Instance store with an old
 label can be erased. `camelfsd cleanup --data /nvme/camelfs` replaces the path-scoped cleanup script; it releases dm/loop/nbd devices from mount state and clears `mounts/*` before the daemon starts.
 
-Download hashes start as literal `UNPINNED`. A first download prints
-`PIN FIRECRACKER_SHA256=...`, `PIN GUEST_KERNEL_SHA256=...`, or
-`PIN NODE_SHA256=...` and proceeds. Independently verify and paste each hash into
-the corresponding script constant. Other hash mismatches stop installation.
-Firecracker is skipped by version; pin its hash before the first trusted install.
-The kernel URL is an estimated Firecracker CI artifact path and needs checking;
-its built-in ext4, virtio block/net and vsock drivers must support boot without
-an initrd. Node is pinned to 22.21.1 in the guest; the host uses NodeSource 22.
+The CI `guest-image` artifact contains a compressed ext4 image and its manifest.
+An operator publishes the two files with
+`camelfsd/scripts/publish-guest-image.sh <artifact-dir> <s3-prefix>` and sets
+`GUEST_IMAGE_SHA256` in `guest-image.conf` to the manifest's `sha256`.
+Set `GUEST_IMAGE_S3_PREFIX` in the host config if the artifact is outside
+`CAMELFSD_STORE`. The instance role needs read access to the two objects.
+Setup verifies the compressed and raw hashes before replacing the installed
+base image. The guest uses the static Go agent. NodeSource 22 is for the host.
 
-Ubuntu adaptations: NodeSource's node is linked at `/usr/local/bin/node`;
-reused proxy dependencies are replaced by a systemd drop-in; rules copied from
-the source checkout are included via `/etc/nftables.d/camel-host.nft` in
-`/etc/nftables.conf`. UID 940 is required by those rules. Existing nftables rules
+NodeSource’s Node binary is linked at `/usr/local/bin/node` for the job host
+agent. `camel-egress-proxy.service` runs `camelfsd egress` as `camel-proxy`.
+Select a `CAMELFSD_REF` that contains the subcommand. The rules from the
+source checkout are included via `/etc/nftables.d/camel-host.nft` in
+`/etc/nftables.conf` and require `camel-proxy` to have UID 940. Existing nftables rules
 are preserved in the configuration (Ubuntu's default flush still applies on reload).
 `rsync`, `openssl` and `xz-utils` are installed alongside the host packages.
 

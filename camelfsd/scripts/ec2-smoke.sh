@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Root-only integration test. The caller must check /nvme/host-free first.
-# Usage: sudo ./scripts/ec2-smoke.sh [clone|prehydrate]
+# Usage: sudo ./scripts/ec2-smoke.sh
 set -euo pipefail
+MODE=snapshot
 [[ -e /nvme/host-free ]] || { echo "units 3–5 smoke skipped: /nvme/host-free is absent"; exit 0; }
 [[ $EUID == 0 ]] || { echo 'run as root' >&2; exit 1; }
-MODE=${1:-clone}
-[[ $MODE == clone || $MODE == prehydrate ]] || exit 2
 export PATH=/usr/local/go/bin:$PATH
 cd "$(dirname "$0")/.."
 D=/nvme/camelfs
@@ -76,7 +75,7 @@ sync
 umount "$W/mnt"
 STORE=s3://camel-fs-proto-904534089871-usw2/camelfsd/$(date +%s)-$MODE
 rec "mode=$MODE store=$STORE"
-"$BIN" host --socket "$SOCK" --data "$D" --store "$STORE" --region us-west-2 --cold "$MODE" >"$W/host.log" 2>&1 &
+"$BIN" host --socket "$SOCK" --data "$D" --store "$STORE" --region us-west-2 >"$W/host.log" 2>&1 &
 PID=$!
 for ((i=0;i<100;i++)); do
   if curl -fsS --unix-socket "$SOCK" http://localhost/v0/health >/dev/null 2>&1; then break; fi
@@ -110,11 +109,7 @@ cp --reflink=always "$D/images.away"/blank-*.img "$D/images/"
 # Drop the daemon's chunk cache as well as complete images to measure real cold S3.
 rm -rf "$D/cache"
 COLD=$(client mount --job j3 --lineage test --ref main --hydrate --vsock "$W/j3")
-if [[ $MODE == clone ]]; then
-  assert 'j["warm"] is False and j["image"]=="/dev/mapper/camelfs-j3"' <<<"$COLD"
-else
-  assert 'j["warm"] is True' <<<"$COLD"
-fi
+assert 'j["warm"] is False and j["hydrating"] is True' <<<"$COLD"
 rec "cold_mount $COLD"
 DEV=$(field image <<<"$COLD")
 T=$(now); mount -o loop "$DEV" "$W/mnt"

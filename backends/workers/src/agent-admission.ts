@@ -1,3 +1,5 @@
+import { AgentInvocation } from "./agent-invocation.ts";
+import { storedConfiguration } from "./api-contract.ts";
 import { checkRequest, RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../../../shared/monitors.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { requireActiveMember, sharedPromptInput } from "../../../src/shared-agents.ts";
@@ -36,7 +38,7 @@ import type { AgentRuntime } from "./agent-runtime.ts";
 export function createConfigurationQueue(this: AgentRuntime): ConfigurationQueue<RequestRecord> {
   return new ConfigurationQueue<RequestRecord>(this.ctx.storage, {
     busy: async order => (await this.harness.session().busy()) || (await this.records()).some(record => record.method !== 'configure' && record.state !== 'completed' && (record.configurationWait === undefined || record.configurationWait < order)),
-    released: order => this.releaseConfigurationWaiters(order),
+    released: order => AgentInvocation.run(invocation => this.releaseConfigurationWaiters(invocation, order)),
     apply: record => this.applyConfigurationRequest({ id: record.id, method: record.method, params: record.params }, record.configurationOrigin),
     failed: async (record, error) => {
       const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
@@ -49,13 +51,14 @@ export function createConfigurationQueue(this: AgentRuntime): ConfigurationQueue
 }
 
 export async function releaseConfigurationWaitersImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   order: number) {
     const pending = (await this.records()).sort((a, b) => (a.configurationWaitSequence ?? 0) - (b.configurationWaitSequence ?? 0));
     for (const record of pending) {
       if (record.state === 'completed' || record.configurationWait === undefined || record.configurationWait > order) continue;
       // Attachment bytes have already become stored file references. This is
       // internal continuation of the accepted request, not a new caller input.
-      try { await this.submit({ id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint); }
+      try { await this.submit(invocation, { id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint); }
       catch (error) {
         const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
         await this.ctx.storage.put(reqKey(record.id), completed);
@@ -78,7 +81,7 @@ export async function configureRequestImpl(this: AgentRuntime,
 export async function acceptConfigurationRequestImpl(this: AgentRuntime,
   input: unknown,
   replacement: boolean,
-  origin?: string) {
+  origin?: string, invocation?: AgentInvocation) {
     const request = object(input, ['id', 'method', 'params']);
     if (!request.params || typeof request.params !== 'object' || Array.isArray(request.params)) throw new BadRequest('Expected configuration object');
     const id = boundedText(request.id, 'id', 80);
@@ -86,6 +89,7 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
     if (!replacement && !Object.keys(request.params).length) throw new BadRequest("Give at least one configuration field");
     const conf = await this.config();
     const given = request.params as Record<string, unknown>;
+    if(given.mounts!==undefined)configuration({mounts:given.mounts},conf.config.model??this.env.MODEL);
     // A definition revision (only from the directory's /configuration-target) is checked against the configuration
     // now, and merged with the configuration it finds when it applies.
     const params = replacement && given.applyDefinition !== undefined
@@ -94,11 +98,11 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
     if (params.subject !== undefined && params.subject !== conf.config.subject)
       throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, withoutOnExpire(conf.config), params);
-    configuration(patched, conf.config.model ?? this.env.MODEL, "patch");
-    await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel });
+    storedConfiguration(patched, conf.config.model ?? this.env.MODEL, "patch");
+    await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel }, invocation);
     if (replacement && (params.model !== undefined || params.keyScope !== undefined)) {
       try {
-        const error = await configurationModelError(this.env, conf.tenantId, patched);
+        const error = await configurationModelError(this.env, conf.tenantId, patched, invocation);
         if (error) throw new BadRequest(error);
       } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
     }
@@ -108,14 +112,14 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
       // Like the source runtime, a new allowance takes effect before queued work.
       // Replaying the request must not reset its already consumed counter.
       if (Object.hasOwn(request.params, 'spendLimit'))
-        await setAgentSpendLimit(this.env, conf.tenantId, conf.id, (request.params as Record<string, unknown>).spendLimit);
+        await setAgentSpendLimit(this.env, conf.tenantId, conf.id, (request.params as Record<string, unknown>).spendLimit, undefined, invocation);
     }
     return this.configurationQueue.enqueue({ id, method: 'configure', params: given }, replacement, origin);
   }
 
 export async function applyConfigurationRequestImpl(this: AgentRuntime,
   input: unknown,
-  origin?: string) {
+  origin?: string, invocation?: AgentInvocation) {
     const request = object(input, ["id", "method", "params"]);
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new BadRequest("Invalid request id");
@@ -128,6 +132,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
       throw new BadRequest("Expected configuration object");
     const given = request.params as Record<string, unknown>;
     const conf = await this.config();
+    if(given.mounts!==undefined)configuration({mounts:given.mounts},conf.config.model??this.env.MODEL);
     const replacement = (await this.ctx.storage.get<RequestRecord>(reqKey(id)))?.replaceConfiguration === true;
     // A definition application merges its revision with the configuration as it is now, at the head of the queue, so
     // configuration queued before it stays. Keyed upserts inherit the definition revision the agent has by then.
@@ -138,9 +143,9 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
     const replacementInput = replacement && params.definition !== undefined && !applying
       ? definitionUpsert(params, conf.config) : params;
     const replacementParams = replacement ? replacementConfiguration(withoutOnExpire(conf.config), replacementInput) : params;
-    const patched = configuration(replacement ? replacementParams : { ...withoutOnExpire(conf.config), ...params }, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
+    const patched = storedConfiguration((replacement ? replacementParams : { ...withoutOnExpire(conf.config), ...params }) as import("./api-contract.ts").AgentConfiguration, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
-      ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
+      ? await configurationModelError(this.env, conf.tenantId, patched, invocation) : undefined;
     const fingerprint = canonical(request);
     const previous = await this.ctx.storage.transaction(async (tx) => {
       const old = await tx.get<RequestRecord>(reqKey(id));
@@ -174,6 +179,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
       previous?.replaceConfiguration ? replacementParams : await configurationPatch(this.env, conf.tenantId, current.config, params),
       current.key ?? current.id,
       origin ?? conf.runtimeOrigin,
+      undefined, false,
     );
     if ("failed" in updated)
       throw Object.assign(new Error(updated.error), {
@@ -208,6 +214,7 @@ export async function requireApplicationImpl(this: AgentRuntime,
   }
 
 export async function admitImpl(this: AgentRuntime,
+  invocation: AgentInvocation,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
@@ -282,12 +289,12 @@ export async function admitImpl(this: AgentRuntime,
           new Error("Request id reused with different input"),
           { status: 409, code: "IDEMPOTENCY_CONFLICT" },
         );
-      if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(old);
+      if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(invocation, old);
       if (await this.ctx.storage.get(`cancelled-request:${id}`))
         throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
       if (typeof actor === "string" && actor.startsWith("member:")) {
         const conf = await this.config();
-        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor));
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor), invocation);
       }
       await this.requireApplication(allowDisconnected);
       // A monitor's check does not keep an idle agent alive.
@@ -303,7 +310,7 @@ export async function admitImpl(this: AgentRuntime,
         state: "queued",
         startedAt: Date.now(),
       };
-      return this.startHostRequest(record);
+      return this.startHostRequest(invocation, record);
     }
     if (request.method === "abort") {
       const params = object(request.params ?? {}, ["queued", "children"]);
@@ -320,8 +327,8 @@ export async function admitImpl(this: AgentRuntime,
           { status: 409, code: "IDEMPOTENCY_CONFLICT" },
         );
       if (previous?.state === "completed") return previous;
-      const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
-      await this.state();
+      const stopped = await this.abortRequests(invocation, params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
+      await this.state(invocation);
       const record: RequestRecord = {
         id,
         method: "abort",
@@ -401,7 +408,7 @@ export async function admitImpl(this: AgentRuntime,
     const prior = await this.ctx.storage.get<RequestRecord>(reqKey(id));
     const lineage = await this.delegation.lineage(current.id, { id, metadata: params.metadata, delegation });
     const shared = prior && Object.hasOwn(prior, "sharedAgent") ? prior.sharedAgent
-      : await this.sharedAgents.get(lineage?.root ?? current.id, current.tenantId) ?? null;
+      : await this.sharedAgents(invocation).get(lineage?.root ?? current.id, current.tenantId) ?? null;
     if (notice) {
       // An agent's message, and a child's ending sent at once (delegate.notify "asap"), join the running turn.
       params.whileRunning =
@@ -497,12 +504,12 @@ export async function admitImpl(this: AgentRuntime,
     const actor = params.actor ?? (params.from as { id?: string } | undefined)?.id;
     const checkMember = async () => {
       if (!notice && typeof actor === "string" && actor.startsWith("member:"))
-        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, lineage?.root ?? conf.id, actor));
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, lineage?.root ?? conf.id, actor), invocation);
     };
     await checkMember();
     if (params.endUser !== undefined) {
       if (request.method !== "prompt") throw new BadRequest("endUser is for a prompt");
-      const { accounts } = await keyServices(this.env);
+      const { accounts } = await keyServices(this.env, invocation);
       const internal = /^(child_|msg_|delegate_|spawn_)/.test(id) && (notice !== undefined || !!await this.delegation.lineage(conf.id, { id, metadata: params.metadata, delegation }));
       if (!internal) await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
     }
@@ -510,16 +517,16 @@ export async function admitImpl(this: AgentRuntime,
     const effectiveBucket = requestedBucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default";
     params.bucket = effectiveBucket;
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
-    if (conf.config.spendLimit) await this.flushBilling(true);
+    if (conf.config.spendLimit) await this.flushBilling(invocation, true);
     if (notice) await this.delegation.landNotice(id, notice.costUsd, Array.isArray(notice.metadata.batch) ? notice.metadata.batch as { requestId: string; costUsd: number }[] : []);
-    const spend = await this.agentSpend(conf);
+    const spend = await this.agentSpend(conf, undefined, invocation);
     const refusal = agentSpendRefusal(conf.id, spend);
     if (refusal && !notice)
       throw Object.assign(new Error(refusal.error), {
         status: 402,
         code: "SPEND_LIMIT",
       });
-    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket, params.endUser as string | undefined);
+    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket, params.endUser as string | undefined, invocation);
     if (endUserRefusal && !notice) throw endUserRefusal;
     const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
@@ -533,7 +540,7 @@ export async function admitImpl(this: AgentRuntime,
     const running = old?.steerCommitted ? old.steeredInto : candidate?.owner;
     const messageWake = async () => {
       const wake = notice!.root === conf.id
-        ? await this.admitDelegateWake(id)
+        ? await this.admitDelegateWake(invocation, id)
         : await this.env.AGENTS.getByName(notice!.root).admitDelegateWake(id);
       return wake.allowed ? undefined : { error: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on`, code: 'agent_loop_limit', stopped: 'agent_loop_limit' };
     };
@@ -542,17 +549,17 @@ export async function admitImpl(this: AgentRuntime,
       : undefined;
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
-    if (preparing) {
-      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined));
-      await this.arm();
-    }
+    const preparedLimits = preparing
+      ? await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(invocation, conf, id, params.bucket as string | undefined, params.endUser as string | undefined))
+      : undefined;
+    if (preparing) await this.arm(undefined, invocation);
     let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
     try {
     const audioRunLimit = (params.spendLimit as { usd?: number } | undefined)?.usd;
     const audioBudget = params.files === undefined ? Infinity : Math.min(
       spend ? Math.max(0, spend.usd - spend.spent) : Infinity,
       audioRunLimit === undefined ? Infinity : Math.max(0,
-        audioRunLimit - await withSql(this.env, sql => runSpend(sql, conf.tenantId, conf.id, id)) - await this.delegation.cost(id)),
+        audioRunLimit - await withSql(this.env, sql => runSpend(sql, conf.tenantId, conf.id, id), invocation) - await this.delegation.cost(id)),
     );
     files =
       params.files === undefined
@@ -571,6 +578,7 @@ export async function admitImpl(this: AgentRuntime,
               bucket: (params.bucket as string | undefined) ?? conf.config.bucket,
             },
             params.files,
+            invocation,
           );
     if (request.method !== "continue" && !text.trim() && !files?.some(file => file.transcript))
       throw new BadRequest("Give the agent some text, or audio to transcribe");
@@ -583,7 +591,7 @@ export async function admitImpl(this: AgentRuntime,
       throw error;
     }
     if (request.method === "prompt" && !rawSteer && !notice && !old?.accepted)
-      await this.closeHumanInputs("superseded", (params.from as { id?: string } | undefined)?.id ?? params.actor as string | undefined, !!shared);
+      await this.closeHumanInputs(invocation, "superseded", (params.from as { id?: string } | undefined)?.id ?? params.actor as string | undefined, !!shared);
     const record: RequestRecord = old && !old.noticeQueued ? old : {
       id,
       method: String(request.method),
@@ -609,6 +617,7 @@ export async function admitImpl(this: AgentRuntime,
       startedAt: old?.startedAt ?? Date.now(),
     };
     delete record.noticeQueued;
+    if (preparedLimits) record.limitsSnapshot = preparedLimits;
     // Keep the suspended call live. Input settlement retries admission, without a polling alarm.
     if (request.method === "prompt" && shared) {
       const inputs = await (await this.harness.pi()).snapshot(HumanInputs, BACKGROUND_CONTEXT);
@@ -616,8 +625,9 @@ export async function admitImpl(this: AgentRuntime,
         delete record.inputAdmissionRetry;
         record.state = "queued";
         record.heldForInput = true;
-        if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+        if (preparing) record.admitted = true;
         await this.ctx.storage.put(reqKey(id), record);
+        if (preparing) await this.promptPreparations.finish(id);
         return record;
       }
     }
@@ -645,7 +655,7 @@ export async function admitImpl(this: AgentRuntime,
     }
     const configurationWait = record.configurationWait ?? await this.configurationQueue.pendingOrder();
     if (configurationWait > await this.configurationQueue.completedOrder()) {
-      if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+      if (preparing) record.admitted = true;
       record.configurationWait = configurationWait;
       record.state = 'queued';
       record.configurationWaitSequence = await this.ctx.storage.transaction(async tx => {
@@ -658,7 +668,8 @@ export async function admitImpl(this: AgentRuntime,
         await tx.put(reqKey(id), saved);
         return sequence;
       });
-      await this.arm(Date.now() + 1000);
+      if (preparing) await this.promptPreparations.finish(id);
+      await this.arm(Date.now() + 1000, invocation);
       return record;
     }
     delete record.configurationWait;
@@ -702,15 +713,15 @@ export async function admitImpl(this: AgentRuntime,
       return record;
     };
     if (noTurn && notice) return landWithoutTurn(noTurn);
-    await this.arm(Date.now() + 1000);
+    await this.arm(Date.now() + 1000, invocation);
     if (!record.admitted) {
-      await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
+      record.limitsSnapshot = await this.admitRequest(invocation, conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
       record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);
     await this.observe();
     // Attachment changes take effect on the next turn, including inherited ones.
-    await this.refreshComputerTools();
+    await this.refreshComputerTools(invocation);
     // No successful acceptance response until Pi has durably recorded the input.
     if (request.method === "continue")
       await this.harness.continue({ operationId: id });
@@ -747,7 +758,7 @@ export async function admitImpl(this: AgentRuntime,
       if (holding) {
         const accepted = await this.batchQueue.hold(record, prompt, submission, holding === "window");
         if (requestedBucket !== undefined && params.endUser === undefined) await this.ctx.storage.put("run-bucket", requestedBucket);
-        await this.arm();
+        await this.arm(undefined, invocation);
         return accepted;
       }
       if (held.size) await this.ctx.storage.put('held-steer-taking', { request: id, keys: [...held.keys()] });
@@ -767,7 +778,7 @@ export async function admitImpl(this: AgentRuntime,
             const owned = await this.batchQueue.hold(record, prompt, { operationId: id, whenBusy: "followUp",
               entry: { kind: "camel.prompt", data: { ...(submission.entry.data as Record<string, unknown>), logicalOwner: null } } }, false);
             await this.steeringOwner(owned, null);
-            await this.arm();
+            await this.arm(undefined, invocation);
             return (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? owned;
           }
           admitted = await admitAgentMessage(root, input, 'own');
@@ -798,7 +809,7 @@ export async function admitImpl(this: AgentRuntime,
           await tx.put(reqKey(steer.id), next);
           await tx.delete(key);
         });
-        try { await this.admit({ id: steer.id, method: "prompt", params: next.params }, undefined, undefined, old.fingerprint); }
+        try { await this.admit(invocation, { id: steer.id, method: "prompt", params: next.params }, undefined, undefined, old.fingerprint); }
         catch (error) {
           const outcome = { error: error instanceof Error ? error.message : String(error) };
           await this.ctx.storage.put(reqKey(steer.id), { ...next, state: "completed", status: "failed", endedAt: Date.now(), outcome });
@@ -814,6 +825,6 @@ export async function admitImpl(this: AgentRuntime,
       return accepted;
     });
     this.track(id);
-    await this.arm();
+    await this.arm(undefined, invocation);
     return accepted;
   }

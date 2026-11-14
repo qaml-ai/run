@@ -107,7 +107,7 @@ test("agent configuration preserves platform mount markers and the shared mount 
   assert.deepEqual(configuration({mounts:[{workspace:true,path:"/scratch"}]},"test/echo").config.mounts,[{workspace:true,path:"/scratch"}]);
   assert.deepEqual(configuration({mounts:[{workspace:false}]},"test/echo").config.mounts,[{workspace:false}]);
   assert.throws(() => configuration({mounts:[{workspace:false,path:"/scratch"}]},"test/echo"), /Invalid workspace/);
-  assert.throws(() => configuration({mounts:[{workspace:true,volumeId:"other"}]},"test/echo"), /Invalid workspace/);
+  assert.throws(() => configuration({mounts:[{workspace:true,repo:"other"}]},"test/echo"), /Invalid workspace/);
   assert.throws(() => configuration({mounts:Array.from({length:17},()=>({workspace:false}))},"test/echo"), /At most 16/);
   assert.throws(() => configuration({remount:"yes"},"test/echo"), /remount must be/);
 });

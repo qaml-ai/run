@@ -52,11 +52,11 @@ func TestImportTreeClient(t *testing.T) {
 	if first["uploadedBlobs"] != float64(3) || second["uploadedBlobs"] != float64(0) || second["tree"] != tree {
 		t.Fatal(first, second)
 	}
-	if string(run("cat", tree, "link")) != "file" {
+	if string(run("cat", "--lineage", "l", tree, "link")) != "file" {
 		t.Fatal("symlink target")
 	}
 	var listing struct{ Entries []any }
-	if e = json.Unmarshal(run("tree", tree), &listing); e != nil || len(listing.Entries) != 3 {
+	if e = json.Unmarshal(run("tree", "--lineage", "l", tree), &listing); e != nil || len(listing.Entries) != 3 {
 		t.Fatal(listing, e)
 	}
 }

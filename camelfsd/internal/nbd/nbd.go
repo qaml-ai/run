@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -27,6 +28,7 @@ type Server struct {
 	origins  map[string]*origin
 }
 type device struct {
+	lineage string
 	r       root.Root
 	s       *Server
 	p       *origin
@@ -34,25 +36,26 @@ type device struct {
 }
 
 func (s *Server) load(id string) (*device, error) {
-	if !root.Hex(id, 64) {
+	lineage, hash, ok := strings.Cut(id, "/")
+	if !ok || !store.Lineage(lineage) || !root.Hex(hash, 64) {
 		return nil, errors.New("invalid root")
 	}
-	b, e := s.Store.Get(context.Background(), "r/"+id)
+	b, e := store.ForLineage(s.Store, lineage).Get(context.Background(), "r/"+hash)
 	if e != nil {
 		return nil, e
 	}
-	if root.Hash(b) != id {
+	if root.Hash(b) != hash {
 		return nil, errors.New("root hash mismatch")
 	}
 	r, e := root.Decode(b)
 	if e != nil {
 		return nil, e
 	}
-	release := s.Register(id, "", r)
+	release := s.Register(hash, lineage, r)
 	s.mu.Lock()
 	p := s.origins[id]
 	s.mu.Unlock()
-	return &device{r: r, s: s, p: p, release: release}, nil
+	return &device{lineage: lineage, r: r, s: s, p: p, release: release}, nil
 }
 
 // v0-limitation: L15
@@ -77,7 +80,7 @@ func (d *device) readAt(buf []byte, offset int64) error {
 		if h == "" {
 			clear(buf[:n])
 		} else {
-			if e := d.s.Cache.ReadAt(h, buf[:n], in); e != nil {
+			if e := d.s.Cache.ReadAtLineage(d.lineage, h, buf[:n], in); e != nil {
 				return e
 			}
 

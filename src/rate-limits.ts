@@ -289,8 +289,8 @@ export class RateLimits {
   }
 
   /** Count a run (prompt, continue, execute) started for `tenant`: where it stands in its window after this one. */
-  run(tenant: string) {
-    return this.perTenant(tenant, "runs", "runs", "runs started", true);
+  run(tenant: string, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">) {
+    return this.perTenant(tenant, "runs", "runs", "runs started", true, policy);
   }
 
   /**
@@ -306,22 +306,22 @@ export class RateLimits {
    * A tenant's per-minute limit of `limit` (none: undefined), where it comes from (`source`; with `tier`, the tier and
    * the next one up), whether it is free credit's, and what buying credit would raise it to (`paid`, when that is more).
    */
-  async tenantLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<{ max: number; source: "tenant" | "tier" | "default"; free: boolean; paid?: number; tier?: { name: string; paid: number; next?: { tier: string; paid: number; limit: number } } } | undefined> {
-    const own = await this.options.override?.(tenant, limit);
+  async tenantLimit(tenant: string, limit: "agentCreates" | "runs", policy: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free"> = this.options): Promise<{ max: number; source: "tenant" | "tier" | "default"; free: boolean; paid?: number; tier?: { name: string; paid: number; next?: { tier: string; paid: number; limit: number } } } | undefined> {
+    const own = await policy.override?.(tenant, limit);
     if (own !== undefined) return own ? { max: own, source: "tenant", free: false } : undefined;
-    const tier = await this.options.tier?.(tenant, limit);
+    const tier = await policy.tier?.(tenant, limit);
     if (tier === null) return undefined;
     if (tier) return { max: tier.limit, source: "tier", free: false, tier: { name: tier.tier, paid: tier.paid, ...(tier.next ? { next: tier.next } : {}) } };
-    if (this.options.exempt?.(tenant)) return undefined;
-    const free = await this.options.free(tenant);
+    if (policy.exempt?.(tenant)) return undefined;
+    const free = await policy.free(tenant);
     const max = free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit];
     if (!max) return;
     const paid = this.config[limit];
     return { max, source: "default", free, ...(free && (!paid || paid > max) ? { paid } : {}) };
   }
 
-  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean): Promise<RateLimitState | undefined> {
-    const applies = await this.tenantLimit(tenant, limit);
+  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">): Promise<RateLimitState | undefined> {
+    const applies = await this.tenantLimit(tenant, limit, policy);
     return this.tenantState(tenant, limit, name, what, counted, this.options.db, applies);
   }
 

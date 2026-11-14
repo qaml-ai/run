@@ -1,3 +1,5 @@
+import { AgentInvocation } from "./agent-invocation.ts";
+import { agentRepoId } from "./repos/identity.ts";
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { compile } from "@earendil-works/pi-schema";
 import { GENERATE_IMAGE, generateImage, Imager, openaiImages } from "./media/images.ts";
@@ -9,7 +11,7 @@ import { database, transaction } from "./postgres.ts";
 import { utcDay, creditError, EndUserCredits } from "./end-user-credits.ts";
 import { publishPending } from "./webhooks.ts";
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from "./auxiliary-usage.ts";
-import type { FileBindings, Mount, WrittenVolumeFile } from "./files.ts";
+import type { FileBindings, Mount, WrittenRepoFile } from "./files.ts";
 import { HttpError } from "./errors.ts";
 import { TOOL_FILE_LIMITS } from "../../../src/limits.ts";
 import { scratchMount } from "./media/files-policy.ts";
@@ -23,7 +25,7 @@ type UsageScope = Pick<CallScope, "tenant" | "agent" | "requestId" | "callId" | 
 type MediaReceipt = { scope: UsageScope; usage: UsageRecord; debitEndUser?: true };
 type Host = {
   storage?: DurableObjectStorage;
-  onWrite?: (file: WrittenVolumeFile, scope: CallScope) => Promise<void>;
+  onWrite?: (file: WrittenRepoFile, scope: CallScope) => Promise<void>;
   /** Host seams keep policy testable without a provider, database or R2. */
   files?: (scope: CallScope) => Promise<ToolFiles>;
   imager?: (scope: CallScope) => Promise<Imager>;
@@ -34,18 +36,17 @@ type Host = {
 type Env = FileBindings & MediaBindings & KeyEnv;
 
 /** Mount operations use the platform's normal authorization and bounded streams. */
-async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Promise<ToolFiles> {
+async function imageFiles(env: FileBindings, scope: CallScope, host: Host, invocation: AgentInvocation): Promise<ToolFiles> {
   const { handleAgentFileRequest } = await import("./files.ts");
   const { boundedBytes } = await import("./images.ts");
-  const { workspaceId } = await import("./file-mounts.ts");
-  const own = await workspaceId(scope.agent);
-  const workspace = scratchMount(scope.mounts.map(mount => ({ ...mount, workspace: mount.volumeId === own || mount.volumeId === `agent:${scope.agent}` })));
+  const own = agentRepoId(scope.tenant, scope.agent);
+  const workspace = scratchMount(scope.mounts.map(mount => ({ ...mount, workspace: mount.repo === own })));
   if (!workspace) throw new Error("generate_image needs a workspace to save the image in, and this agent has none");
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(scope.callId)));
   const directory = `${workspace.path}/tool-outputs/generate_image/${Array.from(hash.subarray(0, 12), byte => byte.toString(16).padStart(2, "0")).join("")}`;
   const request = async (path: string, init?: RequestInit) => {
     if (!path.startsWith("/")) path = `${scope.mounts[0].path}/${path}`;
-    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", init), env, scope.tenant, scope.agent, path, scope.mounts);
+    const response = await handleAgentFileRequest(new Request("https://agent.invalid/files", {...init,headers:{...Object.fromEntries(new Headers(init?.headers)),"x-camel-call":scope.callId,...(scope.requestId?{"x-camel-run":scope.requestId}:{})}}), env, scope.tenant, scope.agent, path, scope.mounts, "api", undefined, undefined, invocation);
     if (!response.ok) {
       const error = await response.json() as { error?: string };
       throw new HttpError(response.status, error.error ?? "File operation failed");
@@ -70,7 +71,7 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Prom
       });
       const path = `${directory}/${name}`;
       const response = await request(path, { method: "PUT", body: bytes as Uint8Array<ArrayBuffer>, headers: { "content-type": contentType } });
-      const saved = await response.json() as { size: number; version: number; contentType?: string };
+      const saved = await response.json() as { size: number; version: string; contentType?: string };
       const file = { path, version: saved.version, size: saved.size, contentType: saved.contentType ?? contentType };
       await host.onWrite?.(file, scope);
       return { type: "file", ...file };
@@ -78,26 +79,26 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Prom
   };
 }
 
-async function recordImage(env: Env, services: KeyServices, { scope, usage, debitEndUser }: MediaReceipt) {
+async function recordImage(env: Env, services: KeyServices, { scope, usage, debitEndUser }: MediaReceipt, invocation?: AgentInvocation) {
   const facts = { ...usage, bucket: scope.bucket, ...(scope.identity ? { identity: scope.identity } : {}), ...(scope.actor ? { actor: scope.actor } : {}), ...(scope.keyScope ? { keyScope: scope.keyScope } : {}), ...(scope.requestId ? { requestId: scope.requestId } : {}) };
   await transaction(env, async sql => {
     if (!await recordAuxiliaryUsage(sql, { ...scope, kind: "image" }, { costUsd: usage.usage.cost.total, provider: usage.provider, model: usage.model })) return;
     if (debitEndUser && scope.identity?.subject) await new EndUserCredits(services.accounts.db).debit(scope.tenant, scope.identity.subject, scope.bucket ?? "default",
       usage.usage.cost.total, `image:${scope.callId}`, { call: "image", agent: scope.agent, requestId: scope.requestId, usageDay: utcDay(scope.startedAt) }, { sql });
     await services.accounts.recordUsageIn(sql, scope.tenant, scope.agent, facts);
-  });
+  }, {}, invocation);
   await services.accounts.usageCommitted(scope.tenant);
-  await publishPending(env);
+  await publishPending(env, invocation);
 }
 
 /** Known provider costs survive database outages without rerunning the image request. */
-export async function flushAgentMediaUsage(env: Env, storage: DurableObjectStorage, record?: (receipt: MediaReceipt) => Promise<void>) {
+export async function flushAgentMediaUsage(env: Env, storage: DurableObjectStorage, record?: (receipt: MediaReceipt) => Promise<void>, invocation?: AgentInvocation) {
   const receipts = await storage.list<MediaReceipt>({ prefix: "image-billing:" });
   if (!receipts.size) return;
-  const services = record ? undefined : await keyServices(env);
+  const services = record ? undefined : await keyServices(env, invocation);
   for (const [key, receipt] of receipts) {
     if (record) await record(receipt);
-    else await recordImage(env, services!, receipt);
+    else await recordImage(env, services!, receipt, invocation);
     await storage.delete(key);
   }
 }
@@ -109,23 +110,23 @@ export async function agentMediaTools(env: Env, context: (api?: ToolExecutionApi
   return [defineTool({
     name: GENERATE_IMAGE.name, description: GENERATE_IMAGE.description, parameters: GENERATE_IMAGE.parameters,
     structuredOutputSchema: {}, replay: "unsafe",
-    async execute(args, api, call) {
+    execute: (args, api, call) => AgentInvocation.run(async invocation => {
       if (!check.check(args)) throw new HttpError(400, "Invalid generate_image arguments");
       const scope = { ...await context(api), callId: `${api.conversationId}:${api.taskId}:${api.callId}`, startedAt: Date.now() };
       if (!scope.builtins?.includes("generate_image")) throw new HttpError(403, "generate_image is not enabled");
-      const files = await (host.files?.(scope) ?? imageFiles(env, scope, host));
-      const services = !host.imager || !host.admit || !host.record ? await keyServices(env) : undefined;
+      const files = await (host.files?.(scope) ?? imageFiles(env, scope, host, invocation));
+      const services = !host.imager || !host.admit || !host.record ? await keyServices(env, invocation) : undefined;
       if (host.admit) await host.admit(scope);
       else {
-        await admitAuxiliaryUsage(env, scope);
-        const refused = await services!.accounts.runLimit(scope.tenant);
+        await admitAuxiliaryUsage(env, scope, false, undefined, invocation);
+        const refused = await services!.accounts.runLimit(scope.tenant, invocation.tenant(services!.accounts.billing, scope.tenant));
         if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
       }
       const imager = host.imager ? await host.imager(scope) : await (async () => {
         const { mediaKey, mediaOutbound } = await import("./media-api.ts");
         return new Imager({
           provider: openaiImages({ outbound: mediaOutbound(env), baseUrl: env.MEDIA_BASE_URL }),
-          key: (tenant, keyScope, provider) => mediaKey(env, tenant, keyScope, provider, services, mediaAzure(env)?.imageDeployment),
+          key: (tenant, keyScope, provider) => mediaKey(env, tenant, keyScope, provider, services, mediaAzure(env)?.imageDeployment, invocation),
           price: () => ({ ...services!.accounts.billing.pricing, ...(env.TEST_MODE === "1" ? JSON.parse(env.MEDIA_PRICING ?? "{}") : {}) }).image,
         });
       })();
@@ -137,7 +138,7 @@ export async function agentMediaTools(env: Env, context: (api?: ToolExecutionApi
       const checkCredit = async () => {
         if (host.refusal) await host.refusal(scope);
         else if (scope.identity?.subject) {
-          const refused = await new EndUserCredits(database(env)).refusal(scope.tenant, scope.identity.subject, scope.bucket ?? "default");
+          const refused = await new EndUserCredits(database(env, invocation)).refusal(scope.tenant, scope.identity.subject, scope.bucket ?? "default");
           if (refused) throw creditError(refused);
         }
         return undefined;
@@ -157,10 +158,10 @@ export async function agentMediaTools(env: Env, context: (api?: ToolExecutionApi
       } finally {
         await Promise.all(durable);
         for (const usage of usages) {
-          await (host.record ? host.record(scope, usage) : recordImage(env, services!, { scope: receiptScope, usage, debitEndUser: true }));
+          await (host.record ? host.record(scope, usage) : recordImage(env, services!, { scope: receiptScope, usage, debitEndUser: true }, invocation));
           await host.storage?.delete(billingKey);
         }
       }
-    },
+    }),
   })];
 }

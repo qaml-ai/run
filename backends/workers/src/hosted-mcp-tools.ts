@@ -194,7 +194,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
   }, read);
   tool("add_schedule", "Add schedule", "Wake an agent later with a message: once (inSeconds or at), or repeatedly (everySeconds, at least 60; or calendar for a local time and weekdays). Optionally email the successful final report to a verified recipient. Each wake-up is a run that uses the account's model credit. Or cron: a 5-field cron expression with timeZone (IANA), in place of calendar.", {
     agent, text: z.string(),
-    mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum(["ro","rw"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),
+    mounts: z.array(z.union([z.object({repo:z.string(),ref:z.string().optional(),instructions:z.string().max(4096).optional(),path:z.string(),mode:z.enum(["ro","rw"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional(),instructions:z.string().max(4096).optional()})])).max(16).optional(),
     cron: z.object({expression:z.string(),timeZone:z.string().describe("IANA time zone for cron and calendar times.")}).optional().describe('A 5-field cron expression, e.g. "0 9 * * 1-5".'),
     sessionMode: z.enum(["continue","fresh"]).optional(),
     spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),

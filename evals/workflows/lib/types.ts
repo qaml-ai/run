@@ -20,10 +20,8 @@ export interface Task {
   workflowArgs?: Record<string, unknown>;
   /** The task's own judge image directory (a Dockerfile with pinned toolchains), for judges `node:22` cannot run; such a task scores only in docker. */
   judgeImage?: string;
-  /** A sentence added to the prompt in workflow mode (e.g. what job() containers have), and in dry mode (its stand-in tools). Model-facing. */
-  workflowNote?: string;
   dryNote?: string;
-  /** Dry mode's stand-in for `job()`: harness-served build tools for the orchestrator ("go": go_build and go_decode in the judge image). */
+  /** Dry mode's build tools: harness-served build tools for the orchestrator ("go": go_build and go_decode in the judge image). */
   jobs?: string[];
   /** Planned tasks: where the input comes from and how the judge runs. */
   source?: Record<string, unknown>;
@@ -84,16 +82,13 @@ export interface RunResult {
   integrity: Integrity | null;
   cost: CostBreakdown | null;
   budgetUsd: number;
-  /** Agents the run made: children of the orchestrator (or the workflow) and their children; effects and jobs in workflow modes. */
+  /** Agents the run made: children of the orchestrator (or the workflow) and their children; effects in workflow modes. */
   effects: { children: number; grandchildren: number; effects?: number; jobs?: number; failedChildren: number; byStatus: Record<string, number> };
   /** Write conflicts the agents' tools reported, and effects re-run under a new attempt (workflow modes only: dry mode has no attempts to count, so null). */
   conflicts: number;
   retries: number | null;
   /** Whether the orchestrator split the work at all, and how. */
-  /** workflowAgents and workflowJobs: the agent() and job() effects across its workflows; a workflow with jobs and no agents was used to run commands, not to split the work. */
-  choice: { delegated: boolean; delegateCalls: number; workflowStarted: boolean; workflowIds: string[]; toolCalls: Record<string, number>; workflowAgents?: number; workflowJobs?: number;
-    /** Commands run with the job_run builtin (#826), outside any workflow. */
-    jobRuns?: number };
+  choice: { delegated: boolean; delegateCalls: number; workflowStarted: boolean; workflowIds: string[]; toolCalls: Record<string, number>; workflowAgents?: number };
   reply?: string;
   /** Runtime failures seen in the run: model errors and retries, failed sub-agents, failed or refused workflow effects, faults. `recovered`: the runtime retried past it. */
   failures?: RunFailure[];

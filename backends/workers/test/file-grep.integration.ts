@@ -1,10 +1,11 @@
+import { fileURLToPath } from "node:url";
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agents } from '../../../clients/agents.ts';
 import { startFixture } from './fixture.ts';
 
 test('grep matches regular expressions in linear time, and names a pattern it cannot compile', { timeout: 120_000 }, async t => {
-  const fixture = await startFixture();
+  const fixture = await startFixture({entrypoint:fileURLToPath(new URL("./camelfs-worker.ts",import.meta.url))});
   t.after(() => fixture.stop());
   const agents = new Agents({ url: fixture.url, apiKey: fixture.token, connection: 'lazy', pollMs: 10 });
   t.after(() => agents.close());
