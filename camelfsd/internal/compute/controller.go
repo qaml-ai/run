@@ -356,7 +356,9 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 		values := attrs{":phase": s(string(v.Phase)), ":stopping": s(string(Stopping)), ":at": n(at),
 			":checkpoint": b(checkpoint), ":reason": s(string(reason)), ":lease": n(v.LeaseDeadline)}
 		if reason == Idle {
-			cond += " AND #lastActivityAt = :activity AND attribute_not_exists(#execs)"
+			cond += " AND #lastActivityAt = :activity AND attribute_not_exists(#execs)" +
+				" AND (attribute_not_exists(#checkpointing) OR #checkpointing.#at < :staleCheckpoint)"
+			values[":staleCheckpoint"] = n(now.Add(-CheckpointWindow).UnixMilli())
 			values[":activity"] = n(*v.LastActivityAt)
 		}
 		updated, err := c.updateVM(ctx, v.ID, cond,
@@ -373,38 +375,45 @@ func (c *Controller) stop(ctx context.Context, v VM, now time.Time, at int64, re
 
 // ExecStarted tracks an exec until its exit arrives, including on reattachment.
 func (c *Controller) ExecStarted(ctx context.Context, id, execID string, at time.Time) error {
-	return c.execActivity(ctx, id, execID, at, true)
+	_, err := c.TrackExecStart(ctx, id, execID, at)
+	return err
 }
 
 func (c *Controller) ExecEnded(ctx context.Context, id, execID string, at time.Time) error {
-	return c.execActivity(ctx, id, execID, at, false)
+	_, err := c.execActivity(ctx, id, execID, at, false)
+	return err
 }
 
-func (c *Controller) execActivity(ctx context.Context, id, execID string, at time.Time, start bool) error {
+// TrackExecStart reports whether this caller added a new in-flight entry.
+func (c *Controller) TrackExecStart(ctx context.Context, id, execID string, at time.Time) (bool, error) {
+	return c.execActivity(ctx, id, execID, at, true)
+}
+
+func (c *Controller) execActivity(ctx context.Context, id, execID string, at time.Time, start bool) (bool, error) {
 	if !hostwire.MountID.MatchString(execID) {
-		return ErrInvalid
+		return false, ErrInvalid
 	}
 	for {
 		v, err := c.Get(ctx, id)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if v.Phase != Running {
 			if !start && (v.Phase == Stopping || v.Phase == Ended) {
-				return nil
+				return false, nil
 			}
-			return ErrPhase
+			return false, ErrPhase
 		}
 		cond := "#phase = :running"
 		values := attrs{":running": s(string(Running)), ":id": s(execID), ":set": ss(execID)}
 		expr := "DELETE #execs :set"
 		inFlight := slices.Contains(v.execs, execID)
 		if start == inFlight {
-			return nil
+			return false, nil
 		}
 		if start {
 			if len(v.execs) >= maxExecsInFlight {
-				return ErrTooManyExecs
+				return false, ErrTooManyExecs
 			}
 			// Fence concurrent starts even if they have the same activity timestamp.
 			cond += " AND (attribute_not_exists(#execs) OR (size(#execs) < :max AND NOT contains(#execs, :id)))"
@@ -439,7 +448,7 @@ func (c *Controller) execActivity(ctx context.Context, id, execID string, at tim
 				"bootingAt": v.BootingAt, "runningAt": v.StartedAt, "latencyMs": max(0, at.UnixMilli()-v.CreatedAt),
 			})
 		}
-		return err
+		return err == nil, err
 	}
 }
 
