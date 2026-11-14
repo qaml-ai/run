@@ -524,8 +524,11 @@ export function fakeCamelfsd(token: string, options: FakeOptions = {}) {
         const { holder, ttlMs } = await q(["holder", "ttlMs"], ["holder", "ttlMs"]);
         if (!validHolder(holder)) return bad();
         const duration = ttl(ttlMs), ref = current(name);
-        unheld(ref);
-        const epoch = ref.leaseEpoch + 1, deadline = now() + duration;
+        // A re-acquire by the same holder while it holds is idempotent: same epoch, new deadline (C3a; compute's
+        // recovery relies on it). Only another holder gets 409 held.
+        const same = isHeld(ref, now()) && ref.holder!.host === holder.host && ref.holder!.boot === holder.boot && ref.holder!.mount === holder.mount;
+        if (!same) unheld(ref);
+        const epoch = same ? ref.leaseEpoch : ref.leaseEpoch + 1, deadline = now() + duration;
         own.epochs.set(name, epoch);
         own.refs.set(name, { ...ref, holder, leaseEpoch: epoch, leaseDeadline: deadline });
         return json({ epoch, deadline, version: ref.version, tree: ref.tree });
