@@ -2,7 +2,6 @@
 import { createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import type { Db, Sql } from "./postgres.ts";
-import { applyScope } from "../../../shared/apply-scope.ts";
 import { safeError } from "./account-metrics.ts";
 import { HttpError } from "./account-http.ts";
 
@@ -284,10 +283,10 @@ export class RateLimits {
     return this.perTenant(tenant, "agentCreates", "agent_creates", "agents created", counted);
   }
 
-  /** Resolve billing policy before the caller's transaction, then count on the limiter's database. */
+  /** Resolve billing policy before a caller's transaction, then count on its connection. */
   async prepareAgentCreate(tenant: string) {
     const applies = await this.tenantLimit(tenant, "agentCreates");
-    return (counted = true) => applyScope.exit(() => this.tenantState(tenant, "agentCreates", "agent_creates", "agents created", counted, this.options.db, applies));
+    return (sql: Sql, counted = true) => this.tenantState(tenant, "agentCreates", "agent_creates", "agents created", counted, sql, applies);
   }
 
   /** Count a run (prompt, continue, execute) started for `tenant`: where it stands in its window after this one. */

@@ -280,9 +280,8 @@ export class Directory {
       if (fields.metadata === undefined && old?.config.metadata !== undefined) config.metadata = old.config.metadata;
       const configHash=await digest(canonical(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
-      // Holding the tenant-wide counter lock for the directory transaction serializes every create in the tenant.
       if (admitCreate)
-        rate = await admitCreate(!(old?.initialized && old.configHash === configHash));
+        rate = await admitCreate(sql, !(old?.initialized && old.configHash === configHash));
       if (old?.initialized && old.configHash === configHash && sameModel) return old;
       const next: DirectoryEntry = {
         id,

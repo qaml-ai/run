@@ -25,11 +25,6 @@ for (const name of ["console-auth.ts", "email-accounts.ts", "passwords.ts", "oau
       .replace('"runs started", true, policy);', '"runs started", true, policy, sql);')
       .replace('policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">): Promise<RateLimitState', 'policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">, sql: Sql = this.options.db): Promise<RateLimitState')
       .replace('counted, this.options.db, applies);', 'counted, sql, applies);');
-    // The prepared create counter autocommits, including inside an atomic apply.
-    text = text.replace('import type { Db, Sql } from "./postgres.ts";', 'import type { Db, Sql } from "./postgres.ts";\nimport { applyScope } from "../../../shared/apply-scope.ts";')
-      .replace("Resolve billing policy before a caller's transaction, then count on its connection.", "Resolve billing policy before the caller's transaction, then count on the limiter's database.")
-      .replace('return (sql: Sql, counted = true) => this.tenantState(tenant, "agentCreates", "agent_creates", "agents created", counted, sql, applies);',
-        'return (counted = true) => applyScope.exit(() => this.tenantState(tenant, "agentCreates", "agent_creates", "agents created", counted, this.options.db, applies));');
   }
   outputs.set(`account-${name}`, `// Generated from src/${name}; infrastructure imports and static asset loading only.\n` + text);
 }

@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { applyScope } from "../../../shared/apply-scope.ts";
-import { RateLimits, rateLimitConfig } from "../src/account-rate-limits.ts";
 import { apiRequest, createAdmission, runAdmission, admissionHeaders, admissionError, RateLimited, errorHeaders, sweepAdmission } from "../src/admission.ts";
-import { transaction } from "../src/postgres.ts";
 import { keyServices } from "../src/security-services.ts";
 import { testDatabase } from "./billing-database.ts";
 
@@ -69,32 +66,6 @@ test("create and run counters are shared in Postgres, and replays consume nothin
   // Admin internal-tier requests have no counter unless their configuration overrides it.
   assert.equal(await runAdmission(env, "operator"), undefined);
   assert.equal((await db.query("select 1 from rate_limits where key = 'runs:operator'")).rowCount, 0);
-});
-
-test("prepared agent creates commit outside the caller transaction and count concurrent creates once each", async () => {
-  const { db } = await testDatabase();
-  const limits = new RateLimits({
-    db, config: rateLimitConfig({ AGENT_RATE_LIMIT_AGENT_CREATES: "100" }),
-    hashKey: "prepared-create-test", nodes: () => 1, free: async () => false,
-  });
-  const admit = await limits.prepareAgentCreate("subject");
-  const count = async () => (await db.query<{ count: number }>(
-    "select count from rate_limits where key = 'agent_creates:subject'",
-  )).rows[0]?.count;
-
-  await transaction(db, async sql => {
-    const state = await applyScope.run({ sql }, () => admit());
-    assert.equal(state?.remaining, 99);
-    assert.equal(await count(), 1);
-  });
-
-  const admitConcurrent = await limits.prepareAgentCreate("concurrent");
-  const states = await Promise.all(Array.from({ length: 64 }, () => admitConcurrent(true)));
-  assert.deepEqual(states.map(state => state?.remaining).sort((a, b) => Number(b) - Number(a)),
-    Array.from({ length: 64 }, (_, index) => 99 - index));
-  assert.equal((await admitConcurrent(false))?.remaining, 36);
-  const { rows } = await db.query("select count from rate_limits where key = 'agent_creates:concurrent'");
-  assert.equal(rows[0]?.count, 64);
 });
 
 test("rate errors preserve source body, retry headers, and bounded counter lifetime", async () => {
