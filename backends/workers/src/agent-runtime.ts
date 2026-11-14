@@ -1,3 +1,4 @@
+import { vmFiles, type VmFilesScope } from "./camelfs/vm-files.ts";
 import { BashSessions } from "./camelfs/bash.ts";
 import { workspaceRefKey } from "./repos/tree-cache.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
@@ -272,6 +273,14 @@ export class AgentRuntime extends AgentContext {
     return this.sessions ??= new BashSessions(this.ctx.storage, this.env, work => this.ctx.waitUntil(work), at => this.arm(at),
       (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
   }
+
+  readonly vmFiles = (scope: VmFilesScope) => {
+    const runtime = this;
+    return vmFiles({
+      ...this.env,
+      get bashSessions() { return runtime.bashSessions; },
+    }, scope);
+  };
 
   fileVersions = new DurableFileVersions(this.ctx.storage);
 

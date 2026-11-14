@@ -8,6 +8,7 @@ import { agentRepoId } from './identity.ts';
 import { HttpRepoClient } from './http-client.ts';
 import { workspaceRefKey, type RepoTreeScope } from './tree-cache.ts';
 
+export const TOOL_READ_BYTES = 1024 * 1024;
 export const insideRepo = (path: string) => path.replace(/^\/+/, '');
 export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref = 'main', agent = '', identity: Record<string,string> = {}, scope?: RepoTreeScope) {
   const ctx = await repoContext(env, tenant, repo, agent ? `agent:${agent}` : undefined);
@@ -71,7 +72,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
       } while (after);
       return entries.filter(e => !pattern || globMatch(e.path.slice(prefix ? prefix.length + 1 : 0), pattern)).map(e => decorate(e, head.version));
     },
-    async read(path: string, _version?: string, maxBytes = 1024 * 1024) {
+    async read(path: string, _version?: string, maxBytes = TOOL_READ_BYTES) {
       const { p, entry, head } = await entryAt(path);
       if (entry.size > maxBytes) throw new FileError('Tool file exceeds 1 MiB', 413);
       const bytes = await ctx.storage.readBlob(ctx.lineage, entry.blob, head.tree, p);
