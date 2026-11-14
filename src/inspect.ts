@@ -42,12 +42,12 @@ const waitingToParse: (() => void)[] = [];
  * first in frames the same way, and the result carries them as `data`. The answer is as untrusted
  * as the process; the caller checks it.
  */
-export async function parse(bytes: Uint8Array, text: boolean, fit = false): Promise<unknown> {
+export async function parse(bytes: Uint8Array, text: boolean, fit = false, { deadlineMs = FILE_LIMITS.inspectMs + 2_000 }: { deadlineMs?: number } = {}): Promise<unknown> {
   while (parsing >= PARSE_CONCURRENCY) await new Promise<void>(resolve => waitingToParse.push(resolve));
   parsing++;
   const job = new Confined("parse", { command: process.execPath, args: [...NODE_ARGS, fileURLToPath(new URL("./parse-job.ts", import.meta.url))], stderr: "inherit" });
   const done = Promise.withResolvers<unknown>();
-  const timer = setTimeout(() => done.reject(new Error("the parser took too long")), FILE_LIMITS.inspectMs + 2_000);
+  const timer = setTimeout(() => done.reject(new Error("the parser took too long")), deadlineMs);
   const data: Buffer[] = [];
   let received = 0;
   job.listen((message: any) => {
