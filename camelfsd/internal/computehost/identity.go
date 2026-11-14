@@ -303,13 +303,7 @@ func post(ctx context.Context, client *http.Client, endpoint string, body, out a
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		var envelope errorEnvelope
 		_ = json.Unmarshal(raw, &envelope)
-		code := envelope.Error.Code
-		if code == "" {
-			var legacy struct{ Error string }
-			_ = json.Unmarshal(raw, &legacy)
-			code = legacy.Error
-		}
-		return &tierError{resp.StatusCode, raw, code}
+		return &tierError{resp.StatusCode, raw, envelope.Error.Code}
 	}
 	if out == nil {
 		return nil

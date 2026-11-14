@@ -63,6 +63,7 @@ func report(w http.ResponseWriter, err error) {
 	case errors.As(err, &host):
 		replyError(w, host.status, host.code, "", nil)
 	case errors.As(err, &tier) && tier.Code != "":
+		// The tier answers only the §9.8 shape; anything else is a broken tier, not a refusal to relay.
 		var envelope errorEnvelope
 		if json.Unmarshal(tier.Body, &envelope) == nil && envelope.Error.Code != "" && envelope.Error.Message != "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -70,15 +71,8 @@ func report(w http.ResponseWriter, err error) {
 			_, _ = w.Write(tier.Body)
 			return
 		}
-		// Older tier handlers send a flat error and may attach fields such as current.
-		var fields map[string]json.RawMessage
-		_ = json.Unmarshal(tier.Body, &fields)
-		delete(fields, "error")
-		var details json.RawMessage
-		if len(fields) > 0 {
-			details, _ = json.Marshal(fields)
-		}
-		replyError(w, tier.Status, tier.Code, "", details)
+		slog.Warn("compute_tier_error_malformed", "status", tier.Status)
+		replyError(w, 502, "host_unavailable", "The tier returned a malformed error", nil)
 	default:
 		slog.Warn("compute_host_request_failed", "error", err)
 		replyError(w, 502, "host_unavailable", "The host could not complete the request", nil)
@@ -235,6 +229,9 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 			event, data = "tail_truncated", map[string]any{"firstOffset": e["firstOffset"]}
 		case "exec_exit":
 			event, data = "exit", map[string]any{"code": e["code"], "timedOut": e["timedOut"], "ms": e["ms"], "truncated": e["truncated"]}
+		default:
+			slog.Warn("compute_exec_event_unknown", "event", e["event"])
+			return false
 		}
 		raw, err := json.Marshal(data)
 		if err != nil {
@@ -436,10 +433,13 @@ func (h *Host) cas(ctx context.Context, r record, recovering bool) (out hostwire
 		var reply *tierError
 		if errors.As(err, &reply) && reply.Status == 412 && reply.Code == "stale" {
 			var stale struct {
-				Current string
-				Error   struct{ Details struct{ Current string } }
+				Error struct {
+					Details struct {
+						Current string `json:"current"`
+					} `json:"details"`
+				} `json:"error"`
 			}
-			if json.Unmarshal(reply.Body, &stale) == nil && (stale.Current == p.Commit || stale.Error.Details.Current == p.Commit) {
+			if json.Unmarshal(reply.Body, &stale) == nil && stale.Error.Details.Current == p.Commit {
 				return hostwire.CheckpointReply{Version: p.Commit, Tree: p.Tree, Diff: json.RawMessage("[]"), Changed: true}, nil
 			}
 		}

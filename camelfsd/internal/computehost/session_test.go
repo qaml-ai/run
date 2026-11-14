@@ -43,9 +43,12 @@ func TestComputeErrorEnvelopes(t *testing.T) {
 		t.Fatalf("tail details: %s", body.Details)
 	}
 	w = httptest.NewRecorder()
-	report(w, &tierError{Status: 412, Code: "stale", Body: []byte(`{"error":"stale","current":"head"}`)})
+	report(w, &tierError{Status: 412, Code: "stale", Body: []byte(`{"error":{"code":"stale","message":"stale","details":{"current":"head"}}}`)})
 	body = check(w, 412, "stale")
 	if string(body.Details) != `{"current":"head"}` {
 		t.Fatalf("CAS details: %s", body.Details)
 	}
+	w = httptest.NewRecorder()
+	report(w, &tierError{Status: 412, Code: "stale", Body: []byte(`{"error":"stale","current":"head"}`)})
+	check(w, 502, "host_unavailable") // a flat tier error is malformed, never relayed
 }
