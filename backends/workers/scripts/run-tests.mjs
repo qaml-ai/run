@@ -45,12 +45,13 @@ if (!suite) {
   process.exit(2);
 }
 let concurrency, shard;
-const options = [];
+const options = [], selected = [];
 for (const argument of rest) {
   const count = /^--concurrency=(\d+)$/.exec(argument);
   const part = /^--test-shard=(\d+)\/(\d+)$/.exec(argument);
   if (count) concurrency = Number(count[1]);
   else if (part) shard = { index: Number(part[1]), total: Number(part[2]) };
+  else if (/^test\/[^/]+\.ts$/.test(argument)) selected.push(argument);
   else options.push(argument);
 }
 if (shard && !(shard.index >= 1 && shard.index <= shard.total)) {
@@ -61,7 +62,13 @@ concurrency ??= Math.max(
   suite.least,
   Math.min(8, Math.floor(availableParallelism() / suite.cpus), suite.memory ? Math.floor(totalmem() / suite.memory) : Infinity),
 );
-let files = readdirSync(join(root, "test")).filter(file => file.endsWith(suite.suffix)).sort().map(file => `test/${file}`);
+const available = readdirSync(join(root, "test")).sort().map(file => `test/${file}`);
+const integrationFile = file => file.endsWith(".integration.ts") || /^test\/voice-calls(?:-elevenlabs)?\.test\.ts$/.test(file);
+let files = available.filter(file => name === "integration" ? integrationFile(file) : file.endsWith(suite.suffix) && !integrationFile(file));
+if (selected.length) {
+  for (const file of selected) if (!files.includes(file)) throw new Error(`Unknown ${name} test: ${file}`);
+  files = selected;
+}
 if (shard) {
   // Heaviest first, each to the lightest shard so far (ties to the lowest): every shard computes the same split.
   // With no weights this deals the files round robin in name order, so each shard gets a mix of slow and quick.
