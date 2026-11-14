@@ -91,11 +91,11 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   registerRepo(row: RepoRow, sourceId?: string) { return this.repos.register(row, sourceId); }
   repoRow(id: string) { return this.repos.row(id); }
   listRepos(input: {after?: string; limit?: number} = {}) { return this.repos.list(input); }
-  markRepoDeleted(id: string) { return this.repos.deleted(id); }
   markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
-  repoUsage(id: string, bytes: number, files: number, lineage?: boolean) { return this.repos.usage(id,bytes,files); }
+  repoUsage(id: string, bytes: number, files: number) { return this.repos.usage(id,bytes,files); }
   reposUsed(exclude?: string) { return this.repos.used(exclude); }
-  // Consume any alarm persisted by the old accounting implementation (ledger L90).
+  // The Volume-era TenantStorage left one pending alarm on the pilot (L90 sweep, 2026-11-14). This no-op consumes it
+  // when it fires: no table or state is read, and nothing re-arms it. Remove once no tenant reports a pending alarm.
   async alarm() {}
   /** Called after account deletion has stopped and purged every owned agent. */
   async purgeAccountData() {

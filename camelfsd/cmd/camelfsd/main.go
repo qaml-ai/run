@@ -86,6 +86,7 @@ func host(args []string) error {
 	depth := f.Int("prefetch-depth", 64, "prefetch lookahead")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	virtualSize := f.Int64("virtual-size", 1<<30, "blank image size")
+	baselineDiskMax := f.Int64("baseline-disk-max", 0, "maximum queued baseline image bytes (default twice the workspace virtual size)")
 	maxFiles := f.Int("max-files", 200000, "checkpoint file cap")
 	maxBytes := f.Int64("max-bytes", 8<<30, "checkpoint byte cap")
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
@@ -137,7 +138,7 @@ func host(args []string) error {
 	if e = image.ProbeDeviceMapper(ctx); e != nil {
 		return e
 	}
-	m, e := image.New(image.Config{RecoverSessions: compute.enabled, StreamIdle: *streamIdle, ApplyMax: *applyMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
+	m, e := image.New(image.Config{RecoverSessions: compute.enabled, StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, Origin: origin, CowMax: *cowMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, NBDListen: *listen, HostID: hostID, ImportAllow: allow}, s, c, r)
 	if e != nil {
 		return e
 	}

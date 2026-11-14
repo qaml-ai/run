@@ -23,15 +23,24 @@ type guestRequester interface {
 }
 
 type httpError struct {
-	status int
-	code   string
+	status  int
+	code    string
+	message string // optional: why, for a caller to act on (never request content)
 }
 
-func (e *httpError) Error() string { return e.code }
+func (e *httpError) Error() string {
+	if e.message != "" {
+		return e.code + ": " + e.message
+	}
+	return e.code
+}
 
-var invalidRequest = &httpError{400, "invalid_request"}
+var invalidRequest = &httpError{400, "invalid_request", ""}
 
-func conflict(code string) error { return &httpError{409, code} }
+// invalid is a 400 invalid_request that says which rule the request broke.
+func invalid(reason string) error { return &httpError{400, "invalid_request", reason} }
+
+func conflict(code string) error { return &httpError{409, code, ""} }
 
 func jsonReply(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -61,7 +70,7 @@ func report(w http.ResponseWriter, err error) {
 	var tier *tierError
 	switch {
 	case errors.As(err, &host):
-		replyError(w, host.status, host.code, "", nil)
+		replyError(w, host.status, host.code, host.message, nil)
 	case errors.As(err, &tier) && tier.Code != "":
 		// The tier answers only the §9.8 shape; anything else is a broken tier, not a refusal to relay.
 		var envelope errorEnvelope
@@ -90,7 +99,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, body any, optional bool)
 		if optional && err == io.EOF {
 			return nil
 		}
-		return invalidRequest
+		return invalid("request body: " + err.Error())
 	}
 	var extra any
 	if d.Decode(&extra) != io.EOF {
@@ -188,6 +197,18 @@ func (h *Host) shellRoute(w http.ResponseWriter, r *http.Request) {
 func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 	var q hostwire.ExecRequest
 	op := "exec"
+	// One line per exec request (start or tail): ids, timing and outcome only, never the command, env or output.
+	begin := time.Now()
+	var exitCode, timedOut any
+	var execErr error
+	defer func() {
+		slog.Info("compute_exec", "vm", r.PathValue("id"), "exec", q.ExecID, "op", op, "ms", ms(time.Since(begin)),
+			"exitCode", exitCode, "timedOut", timedOut, "error", execErr)
+	}()
+	fail := func(err error) {
+		execErr = err
+		report(w, err)
+	}
 	var offset int64
 	tail := r.Method == http.MethodGet
 	if tail {
@@ -195,25 +216,40 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		if raw := r.URL.Query().Get("offset"); raw != "" {
 			n, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil || n < 0 {
-				report(w, invalidRequest)
+				fail(invalidRequest)
 				return
 			}
 			offset = n
 		}
 	} else if err := decode(w, r, &q); err != nil {
-		report(w, err)
+		fail(err)
 		return
 	}
-	_, vm, err := h.lookup(r.PathValue("id"))
-	if err != nil {
-		report(w, err)
+	if q.StdinBlob != nil && (q.Stdin != nil || !q.StdinBlob.Valid()) {
+		fail(invalidRequest)
 		return
+	}
+	s, vm, err := h.lookup(r.PathValue("id"))
+	if err != nil {
+		fail(err)
+		return
+	}
+	var token string
+	if q.StdinBlob != nil {
+		var release func()
+		token, release, err = h.execInput(r.Context(), s, *q.StdinBlob)
+		if err != nil {
+			fail(err)
+			return
+		}
+		defer release()
 	}
 	input := struct {
 		hostwire.ExecRequest
-		Op     string `json:"op"`
-		Offset int64  `json:"offset"`
-	}{q, op, offset}
+		Op         string `json:"op"`
+		Offset     int64  `json:"offset"`
+		StdinToken string `json:"stdinToken,omitempty"`
+	}{q, op, offset, token}
 	events := make(chan vmhost.Reply, 64)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -227,7 +263,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if err != nil {
-		report(w, err)
+		fail(err)
 		return
 	}
 	if reply["ok"] != true {
@@ -241,7 +277,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		case "":
 			status, code = 502, "guest_error"
 		}
-		report(w, &httpError{status, code})
+		fail(&httpError{status, code, ""})
 		return
 	}
 	handle := func(e vmhost.Reply) bool {
@@ -253,6 +289,7 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		case "tail_truncated":
 			event, data = "tail_truncated", map[string]any{"firstOffset": e["firstOffset"]}
 		case "exec_exit":
+			exitCode, timedOut = e["code"], e["timedOut"]
 			event, data = "exit", map[string]any{"code": e["code"], "timedOut": e["timedOut"], "ms": e["ms"], "truncated": e["truncated"]}
 		default:
 			slog.Warn("compute_exec_event_unknown", "event", e["event"])
@@ -289,6 +326,9 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ctx.Done():
+			if exitCode == nil {
+				execErr = context.Cause(ctx)
+			}
 			return
 		case <-done:
 			for {
@@ -348,6 +388,27 @@ func (h *Host) checkpointRoute(w http.ResponseWriter, r *http.Request) {
 	jsonReply(w, 200, result)
 }
 
+// checkpointMeta is the host's whole validation of a session checkpoint body (POST /v1/vms/{id}/checkpoint, as the
+// runtime sends it through the tier): trailers decode as image.Trailers, which refuses unknown keys; job trailers are
+// refused on a session VM. testdata/runtime-checkpoint.json is the runtime's body (bash.ts checkpointBody).
+func checkpointMeta(q hostwire.CheckpointRequest) (image.CheckpointRequest, error) {
+	trailers := image.Trailers{Kind: "auto"}
+	if len(q.Trailers) != 0 && string(q.Trailers) != "null" {
+		if err := json.Unmarshal(q.Trailers, &trailers); err != nil {
+			return image.CheckpointRequest{}, invalid("trailers: " + err.Error())
+		}
+	}
+	if trailers.Kind == "job" || trailers.Job != "" || trailers.ExitCode != nil {
+		return image.CheckpointRequest{}, invalid("trailers: a session checkpoint takes no job kind, job or exitCode")
+	}
+	message := q.Message
+	meta := image.CheckpointRequest{Message: &message, Trailers: &trailers, Time: q.Time}
+	if err := meta.Validate(); err != nil {
+		return image.CheckpointRequest{}, invalid(err.Error())
+	}
+	return meta, nil
+}
+
 func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q hostwire.CheckpointRequest) (out hostwire.CheckpointReply, err error) {
 	h.mu.Lock()
 	r := s.row
@@ -360,19 +421,11 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	if r.Pending != nil {
 		return h.recoverCheckpoint(ctx, s, vm, r)
 	}
-	trailers := image.Trailers{Kind: "auto"}
-	if len(q.Trailers) != 0 && string(q.Trailers) != "null" {
-		if err := json.Unmarshal(q.Trailers, &trailers); err != nil {
-			return out, invalidRequest
-		}
+	meta, err := checkpointMeta(q)
+	if err != nil {
+		return out, err
 	}
-	if trailers.Kind == "job" || trailers.Job != "" || trailers.ExitCode != nil {
-		return out, invalidRequest
-	}
-	meta := image.CheckpointRequest{Message: &q.Message, Trailers: &trailers, Time: q.Time}
-	if err := meta.Validate(); err != nil {
-		return out, invalidRequest
-	}
+	baseline := h.Mounts.NeedsBaseline(id)
 	type result struct {
 		point image.Checkpoint
 		err   error
@@ -381,7 +434,7 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		point, err := h.Mounts.SessionCheckpoint(streamCtx, id, meta, func(ctx context.Context, point image.Checkpoint) error {
+		point, err := h.Mounts.SessionCheckpoint(streamCtx, id, baseline, meta, func(ctx context.Context, point image.Checkpoint) error {
 			h.mu.Lock()
 			current := s.row
 			current.Pending = &checkpointIntent{point.Commit, r.Spec.Version, point.Tree, point.Root}
@@ -400,8 +453,8 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 		})
 		resultCh <- result{point, err}
 	}()
-	guest, guestErr := guestRequest(ctx, vm, map[string]any{"op": "camelfs_checkpoint", "jobId": id, "timeoutMs": 120000})
-	if guestErr != nil || guest["changed"] == false {
+	guest, guestErr := guestRequest(ctx, vm, map[string]any{"op": "camelfs_checkpoint", "jobId": id, "timeoutMs": 120000, "baselineIfUnchanged": baseline})
+	if guestErr != nil || guest["changed"] == false && guest["baselineCaptured"] != true {
 		cancel()
 	}
 	stream := <-resultCh
@@ -415,6 +468,9 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	}
 	commit = stream.point.CommitMs
 	if guestErr == nil && guest["changed"] == false {
+		if e := guest["baselineError"]; e != nil {
+			slog.Warn("compute_baseline_failed", "vm", id, "tree", r.Spec.Tree, "error", e)
+		}
 		return hostwire.CheckpointReply{Version: r.Spec.Version, Tree: r.Spec.Tree, Diff: json.RawMessage("[]")}, nil
 	}
 	if r.Pending == nil {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { testDatabase } from "./billing-database.ts";
 import { pendingDeliveries } from "../src/webhooks.ts";
 import { AgentWebhooks, stageWebhook } from "../src/run-webhooks.ts";
-import { webhookEvent } from "../src/webhook-policy.ts";
+import { usageEvent, webhookEvent } from "../src/webhook-policy.ts";
 
 test("one delivery scan preserves due ordering, email selection and backlog", async () => {
   const { db } = await testDatabase();
@@ -28,8 +28,11 @@ test("one delivery scan preserves due ordering, email selection and backlog", as
 
 test("a batch committed before a lost DO acknowledgement replays once per event", async () => {
   const { db, url } = await testDatabase();
-  await db.query(`insert into webhook_endpoints(id,tenant,url,events,secret,created_at)
-    values ('endpoint','tenant','https://example.com',array['run.started','run.completed'],'{}',1)`);
+  await db.query(`insert into usage_webhooks(tenant,url,secret,created_at)
+    values ('tenant','https://example.com/legacy','{}',1)`);
+  await db.query(`insert into webhook_endpoints(id,tenant,url,events,secret,created_at) values
+    ('endpoint','tenant','https://example.com',array['run.started','run.completed','usage.recorded'],'{}',1),
+    ('usage','tenant','https://example.com/usage',array['usage.recorded'],'{}',1)`);
   const data = new Map<string, unknown>();
   let loseAcknowledgement = true;
   const storage = {
@@ -44,13 +47,21 @@ test("a batch committed before a lost DO acknowledgement replays once per event"
   } as unknown as DurableObjectStorage;
   await stageWebhook(storage, webhookEvent('run.started', 'tenant', { requestId: 'r' }, 'start:r'));
   await stageWebhook(storage, webhookEvent('run.completed', 'tenant', { requestId: 'r' }, 'end:r'));
+  const event = usageEvent('tenant', 'agent', { provider: 'openrouter', model: 'openai/gpt-4o-mini', usage: { input: 10, output: 2 } });
+  assert.ok(event?.legacy);
+  await stageWebhook(storage, event);
+  const legacyRows = () => db.query('select id from usage_webhook_outbox').then(result => result.rows);
   const env = { HYPERDRIVE: { connectionString: url }, API_TOKEN: 'test-only' };
   await new AgentWebhooks(storage, env).flush();
-  assert.equal(Number((await db.query('select count(*) from webhook_deliveries')).rows[0].count), 2);
-  assert.equal([...data.keys()].filter(key => key.startsWith('webhook-pending:')).length, 2);
+  assert.equal(Number((await db.query('select count(*) from webhook_deliveries')).rows[0].count), 4);
+  assert.deepEqual(await legacyRows(), [{ id: event.legacy.id }]);
+  assert.equal([...data.keys()].filter(key => key.startsWith('webhook-pending:')).length, 3);
   loseAcknowledgement = false;
   await new AgentWebhooks(storage, env).flush();
-  assert.equal(Number((await db.query('select count(*) from webhook_deliveries')).rows[0].count), 2);
   assert.equal([...data.keys()].filter(key => key.startsWith('webhook-pending:')).length, 0);
-  assert.equal([...data.keys()].filter(key => key.startsWith('webhook-sent:')).length, 2);
+  assert.equal([...data.keys()].filter(key => key.startsWith('webhook-sent:')).length, 3);
+  assert.equal(Number((await db.query('select count(*) from webhook_deliveries')).rows[0].count), 4);
+  const deliveries = await db.query("select endpoint from webhook_deliveries where body->>'id' = $1 order by endpoint", [event.id]);
+  assert.deepEqual(deliveries.rows, [{ endpoint: 'endpoint' }, { endpoint: 'usage' }]);
+  assert.deepEqual(await legacyRows(), [{ id: event.legacy.id }]);
 });

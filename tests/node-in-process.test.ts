@@ -3,16 +3,17 @@ import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../src/node-config.ts";
-import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { createNode, nodeDeps } from "../src/node.ts";
 import { Ownership } from "../src/ownership.ts";
 import type { Db } from "../src/db.ts";
 import { REAL_NETWORK, type Network } from "../src/node-context.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
+import { agentStarted, ownNodes } from "./node-fixture.ts";
 import { fakeModel, lastUser, toolCall, toolResults, until } from "./runtime-server.ts";
 import { inlineSandboxes } from "./inline-sandbox.ts";
 
@@ -33,15 +34,14 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   });
   const sandboxes = inlineSandboxes();
   const root = await mkdtemp(join(tmpdir(), "agent-in-process-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
   const { db, url: databaseUrl } = await testDatabase();
   hook.enable();
-  const nodes: RuntimeNode[] = [];
   const counted = countingDb();
   const recorded = recordingNetwork();
-  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
-  for (const name of ["a", "b"]) await onFreePort(async port => {
+  const running = [];
+  for (const name of ["a", "b"]) running.push(await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
@@ -51,10 +51,11 @@ test("two nodes run in one process, each serving its own agents and forwarding t
     // Node b's database is not a pg.Pool: anything with Db's methods will do. Its network is its own too.
     const deps = await nodeDeps(config);
     const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db), network: recorded.network, codeSandbox: sandboxes } : deps);
-    try { assert.equal((await node.start()).port, port); } catch (error) { await node.close().catch(() => {}); throw error; }
     nodes.push(node);
-  });
-  const [a, b] = nodes.map(node => node.node);
+    assert.equal((await node.start()).port, port);
+    return node;
+  }));
+  const [a, b] = running.map(node => node.node);
   assert.notEqual(a, b);
   const call = async (base: string, path: string, body?: unknown) => {
     const response = await fetch(base + path, {
@@ -74,6 +75,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   for (const [index, base] of [a, b].entries()) {
     const created = await call(base, "/v1/agents", { name: `agent-${index}` });
     assert.equal(created.status, 201, JSON.stringify(created.json));
+    await agentStarted(running[index], created.json.id);
     agents.push(created.json.id);
     const record = await prompt(base, created.json.id, `hello ${index}`);
     assert.equal(record.outcome.error, undefined, JSON.stringify(record));
@@ -97,7 +99,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   assert.match(ran.outcome.result.reply, /^ran: Script completed[\s\S]*42[\s\S]*<console_output>\nhi\n<\/console_output>/);
 
   // Both leave: the database shows neither, and neither leaves an interval running.
-  for (const node of nodes.splice(0)) await node.close();
+  while (nodes.length) await nodes.shift()!.close();
   assert.deepEqual((await db.query("select node from runtime_nodes")).rows, []);
   // Destroy hooks are delivered a little later than the clearInterval that causes them.
   await until(() => intervals.size === 0, "the nodes' intervals to stop", 2_000).catch(() => {
@@ -138,13 +140,12 @@ function recordingNetwork() {
 
 for (const state of ["stop", "current", "waiting", "superseded", "unknown"] as const) test(`memory retirement uses ${state} and keeps HTTP alive until the first external signal`, { timeout: 60_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-memory-retire-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
-  const { db, url } = await testDatabase();
-  const nodes: RuntimeNode[] = [];
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const { nodes } = ownNodes(t, root);
+  const { db, url } = await testDatabase();
   let fallback = false;
   let stops = 0;
-  t.after(async () => { release.resolve(); for (const node of nodes) await node.close().catch(() => {}); });
   const logs: any[] = [];
   const log = console.log;
   t.mock.method(console, "log", (line: string) => { try { logs.push(JSON.parse(line)); } catch {} log(line); });
@@ -199,17 +200,16 @@ for (const state of ["stop", "current", "waiting", "superseded", "unknown"] as c
 
 test("SIGTERM during a memory drain hands the running turn to a peer, which goes on with it", { timeout: 30_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-memory-signal-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const { nodes } = ownNodes(t, root);
   const { db, url } = await testDatabase();
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
-  const release = Promise.withResolvers<void>();
   const model = await fakeModel(t, (_body, index) => index === 0
     ? { ...toolCall("codemode", { code: "return 42" }), wait: release.promise }
     : { role: "assistant", content: "finished on the peer" });
   let high = false;
   t.mock.method(process.memoryUsage, "rss", () => high ? 2 : 0);
-  const nodes: RuntimeNode[] = [];
-  t.after(async () => { release.resolve(); for (const node of nodes) await node.close().catch(() => {}); });
   for (const name of ["peer", "high"]) await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
@@ -226,6 +226,7 @@ test("SIGTERM during a memory drain hands the running turn to a peer, which goes
   const [peer, retiring] = nodes;
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   const created = await (await fetch(`${retiring.node}/v1/agents`, { method: "POST", headers, body: JSON.stringify({ name: "memory-signal" }) })).json() as any;
+  await agentStarted(retiring, created.id);
   const accepted = await (await fetch(`${retiring.node}/v1/agents/${created.id}/prompt`, { method: "POST", headers, body: JSON.stringify({ text: "go" }) })).json() as any;
   await until(() => model.bodies.length === 1, "the first model step to start");
   high = true;
@@ -245,10 +246,8 @@ test("SIGTERM during a memory drain hands the running turn to a peer, which goes
 
 for (const fails of [false, true]) test(`memory fallback exits ${fails ? 1 : 0} after the drain ${fails ? "fails" : "finishes"}`, { timeout: 30_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-memory-fallback-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   const { url } = await testDatabase();
-  const nodes: RuntimeNode[] = [];
-  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
   const retired = Promise.withResolvers<number>();
   for (const name of ["peer", "high"]) await onFreePort(async port => {
     const config = nodeConfig({
@@ -268,17 +267,20 @@ for (const fails of [false, true]) test(`memory fallback exits ${fails ? 1 : 0} 
     await node.start();
   });
   assert.equal(await retired.promise, fails ? 1 : 0);
+  if (fails) {
+    await assert.rejects(nodes[1].close(), { message: "Drain finished with errors" });
+    nodes.pop();
+  }
 });
 
 
 test("SIGTERM during a memory claim releases the flag without undraining", { timeout: 30_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-memory-bail-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
-  const { db, url } = await testDatabase();
-  const nodes: RuntimeNode[] = [];
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const { nodes } = ownNodes(t, root);
+  const { db, url } = await testDatabase();
   let signal: Promise<void> | undefined;
-  t.after(async () => { release.resolve(); for (const node of nodes) await node.close().catch(() => {}); });
   const retire = Ownership.prototype.retireForMemory;
   const drain = Ownership.prototype.drain;
   const undrain = t.mock.method(Ownership.prototype, "undrain");

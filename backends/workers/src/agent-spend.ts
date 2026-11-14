@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { HttpError } from "./errors.ts";
 import { AGENT_SPEND_SQL, agentSpendMessage, dollars, spendInput, type SpendLimit } from "./agent-spend-policy.ts";
 import { transaction, withSql, type PostgresEnv, type Sql } from "./postgres.ts";
@@ -37,8 +38,8 @@ async function setCounter(sql: Sql, agent: string, value: unknown, now: number):
 
 /** An explicit assignment, including the current value, starts the counter again. Omission never calls this. */
 export function setAgentSpendLimit(sql: Sql, agent: string, value: number | { usd: number } | null, now?: number): Promise<void>;
-export function setAgentSpendLimit(env: PostgresEnv, tenant: string, agent: string, value: unknown, now?: number): Promise<SpendLimit | null>;
-export async function setAgentSpendLimit(target: Sql | PostgresEnv, tenantOrAgent: string, agentOrValue: string | number | { usd: number } | null, valueOrNow?: unknown, now = Date.now()): Promise<SpendLimit | null | void> {
+export function setAgentSpendLimit(env: PostgresEnv, tenant: string, agent: string, value: unknown, now?: number, invocation?: AgentInvocation): Promise<SpendLimit | null>;
+export async function setAgentSpendLimit(target: Sql | PostgresEnv, tenantOrAgent: string, agentOrValue: string | number | { usd: number } | null, valueOrNow?: unknown, now = Date.now(), invocation?: AgentInvocation): Promise<SpendLimit | null | void> {
   if (!("HYPERDRIVE" in target)) {
     await setCounter(target, tenantOrAgent, agentOrValue, valueOrNow === undefined ? Date.now() : Number(valueOrNow));
     return;
@@ -47,7 +48,7 @@ export async function setAgentSpendLimit(target: Sql | PostgresEnv, tenantOrAgen
   return transaction(env, async sql => {
     await owned(sql, tenant, agent, true);
     return setCounter(sql, agent, valueOrNow, now);
-  });
+  }, {}, invocation);
 }
 
 /** The unchanged source counter, used only by receipts without provider attempt metering. */
@@ -90,10 +91,10 @@ export async function agentSpend(sql: Sql, tenant: string, agent: string, option
 }
 
 /** Read at admission and between requests. Never add the same run's usage to these already metered totals. */
-export async function readAgentSpendLimit(env: PostgresEnv, tenant: string, agent: string, options: { includeRevoked?: boolean } = {}): Promise<SpendLimit | null> {
+export async function readAgentSpendLimit(env: PostgresEnv, tenant: string, agent: string, options: { includeRevoked?: boolean } = {}, invocation?: AgentInvocation): Promise<SpendLimit | null> {
   // Directory revokes first to block new callers. Its DO still needs the
   // same owned counter while reopening the harness to abort and settle.
-  return withSql(env, sql => agentSpend(sql, tenant, agent, options));
+  return withSql(env, sql => agentSpend(sql, tenant, agent, options), invocation);
 }
 
 export async function runSpend(sql: Sql, tenant: string, agent: string, requestId: string): Promise<number> {

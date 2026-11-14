@@ -37,6 +37,11 @@
   },
   {
     "file": "tests/usage-webhooks.test.ts",
+    "test": "replaying a committed usage batch leaves one legacy row and one delivery per endpoint",
+    "included": true
+  },
+  {
+    "file": "tests/usage-webhooks.test.ts",
     "test": "each model response's usage is POSTed, signed, to the tenant's webhook: retried after a failure, and kept across a restart",
     "included": false,
     "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"

@@ -2,7 +2,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InboxDoc, LiveDoc } from "@earendil-works/pi-durable";
 import { answers } from "./batch-runs.ts";
 import { batchable, joins } from "../../../shared/queue-mode.ts";
-import { releaseTurn } from "./control.ts";
 import { reqKey, type RequestRecord, type Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -179,7 +178,6 @@ export class BatchQueue {
     });
     if (!done) return false;
     const conf = await this.runtime.config();
-    await releaseTurn(this.runtime.env, conf.tenantId, conf.id, id);
     await this.runtime.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
     await this.runtime.emit({ type: "response", id, outcome: done.outcome });
     return true;

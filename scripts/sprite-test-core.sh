@@ -304,7 +304,7 @@ setup() (
 )
 
 # Docker, set up once per sprite. A sprite has no systemd, so dockerd is a sprite-env service (it starts at boot and
-# restarts on a crash), with overlay2 on the sprite's own /var/lib/docker volume and the classic image store, the default
+# restarts on a crash), with overlay2 on the sprite's local disk (docker_root below) and the classic image store, the default
 # bridge kept, and the socket in this user's group (no sudo). A sprite's root has no CAP_SYS_PTRACE and its kernel no
 # xt_socket; measured 2026-11-06 (kernel 6.12.115-fly, Docker 29.1.3), with plain, bridge and `--network container:<id>`
 # containers and `docker exec` as root and as uid 1000:
@@ -319,11 +319,28 @@ setup() (
 # (probe readiness over TCP), and starting a bridge container whose image starts as non-root (`USER`, `-u`). The
 # daemon's configuration and the wrapper are the marker: a sprite whose /etc/docker/daemon.json or wrapper differs (none
 # yet, or older ones) is set up again.
+# Docker's data-root is the sprite's local disk (/dev/vdb, mounted at /tmp), not /var/lib/docker: that is a network block
+# device (nbd0) whose write latency grows with use. Measured 2026-11-14 over the rt-pool sprites: a 4 KiB O_DSYNC write
+# took 525 ms on nbd0 against 3.9 ms on vdb on the same sprite (rt-pool-4), a warm `docker run --rm <image> true` took
+# 22 to 27 s there against under 1 s on a fresh sprite, and the mean write latency per sprite (26 to 270 ms) tracked its
+# computer tests' cold start (r = 0.79), whose tail failed them. The local disk is 20 GB and may be wiped: the data-root
+# is only a cache (images rebuild, a run's containers are its own), recreated when missing. Each run first removes what
+# runs leak (containers, workerd's snapshot images, dangling images, unused volumes) and then needs docker_min_free_kb
+# free on that disk, after a full prune if need be: a full disk fails the run here, not halfway through a test.
+docker_root=/tmp/sprite-docker; docker_min_free_kb=$(( 6 * 1024 * 1024 ))
+docker_free_kb() { df -Pk "$(dirname "$docker_root")" | awk 'NR == 2 { print $4 }'; }
+docker_prune() {
+  ids=$(docker ps -aq); [ -z "$ids" ] || timeout -k 2 60 docker rm -f $ids >/dev/null 2>&1 || true
+  snaps=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep '^workerd-container-snap-' || true)
+  [ -z "$snaps" ] || printf '%s\n' "$snaps" | xargs -r -n 50 timeout -k 2 120 docker rmi -f >/dev/null 2>&1 || true
+  timeout -k 2 120 docker image prune -f >/dev/null 2>&1 || true
+  timeout -k 2 120 docker volume prune -f >/dev/null 2>&1 || true
+}
 docker_up() {
   # An older camel-bots sprite-test marked its setup with a file ~/.docker, where the docker CLI keeps its config directory.
   [ ! -f ~/.docker ] || rm -f ~/.docker
   dir=/usr/local/lib/sprite-docker; runc=$dir/runc-1.1.15
-  want=$(printf '{\n  "group": "%s",\n  "features": { "containerd-snapshotter": false },\n  "storage-driver": "overlay2",\n  "runtimes": { "runc-1.1": { "path": "%s" } },\n  "default-runtime": "runc-1.1",\n  "live-restore": true,\n  "log-driver": "local",\n  "log-opts": { "max-size": "10m", "max-file": "3" }\n}' "$(id -gn)" "$dir/runc")
+  want=$(printf '{\n  "group": "%s",\n  "features": { "containerd-snapshotter": false },\n  "storage-driver": "overlay2",\n  "data-root": "%s",\n  "runtimes": { "runc-1.1": { "path": "%s" } },\n  "default-runtime": "runc-1.1",\n  "live-restore": true,\n  "log-driver": "local",\n  "log-opts": { "max-size": "10m", "max-file": "3" }\n}' "$(id -gn)" "$docker_root" "$dir/runc")
   wrapper=$(cat <<'WRAPPER'
 #!/bin/sh
 # Docker's runtime on a sprite (scripts/sprite-test-core.sh): runc 1.1.15, whose `start` returns once the
@@ -373,11 +390,25 @@ WRAPPER
       || $api services create docker --cmd /usr/bin/sudo --args /usr/bin/dockerd --no-stream >/dev/null 2>&1
     $api services start docker >/dev/null 2>&1
   fi
+  # A wiped local disk takes the data-root with it: start the daemon again so it recreates it.
+  if [ ! -d "$docker_root/overlay2" ] && timeout -k 2 10 docker info >/dev/null 2>&1; then
+    echo "== $docker_root is gone (the local disk was wiped); restarting Docker to recreate it"
+    $api services stop docker >/dev/null 2>&1; sudo pkill -x dockerd 2>/dev/null; sleep 1; $api services start docker >/dev/null 2>&1
+  fi
   for i in $(seq 60); do timeout -k 2 10 docker info >/dev/null 2>&1 && break; [ "$i" != 10 ] || $api services start docker >/dev/null 2>&1; sleep 1; done
   timeout -k 2 10 docker info >/dev/null 2>&1 \
     || { echo '== Docker is not running (sprite-env services list; /.sprite/logs/services/docker.log)'; return 1; }
-  # The lease owns the sprite: any container still here is an earlier run's.
-  ids=$(docker ps -aq); [ -z "$ids" ] || timeout -k 2 60 docker rm -f $ids >/dev/null 2>&1 || true
+  [ "$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" = "$docker_root" ] \
+    || { echo "== Docker's data-root is not $docker_root (sprite-env services list; /.sprite/logs/services/docker.log)"; return 1; }
+  # The lease owns the sprite: any container still here is an earlier run's, and what runs leak goes with it.
+  docker_prune
+  if [ "$(docker_free_kb)" -lt "$docker_min_free_kb" ]; then
+    echo "== $(( $(docker_free_kb) / 1024 )) MiB free on $(dirname "$docker_root"); pruning every image and the build cache"
+    timeout -k 2 600 docker system prune -af --volumes >/dev/null 2>&1 || true
+    timeout -k 2 300 docker builder prune -af >/dev/null 2>&1 || true
+  fi
+  [ "$(docker_free_kb)" -ge "$docker_min_free_kb" ] \
+    || { echo "== only $(( $(docker_free_kb) / 1024 )) MiB free on $(dirname "$docker_root") after a full prune (need $(( docker_min_free_kb / 1024 )) MiB): clear it before running here"; return 1; }
 }
 
 # One fresh Postgres per run, as CI runs it (.github/actions/test-postgres): postgres:16-alpine, a tmpfs data directory

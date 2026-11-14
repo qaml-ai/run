@@ -124,7 +124,6 @@ test("a tracked turn retains its elapsed-time deadline after a hard restart", { 
   // The deadline (began + 4 s) has passed by the time the Worker is back, so it fires at once. One recomputed at
   // restart would fire no earlier than restarted + 4 s: the restart's own duration does not enter this bound.
   assert.ok(result.endedAt < restarted + 4000, `the restored deadline fired ${result.endedAt - restarted} ms after the restart, as a fresh deadline would`);
-  assert.equal(Number((await f.db.query("select count(*) n from credit_holds")).rows[0].n), 0);
 });
 
 test("a deleted agent keeps retrying a committed receipt without charging twice", { timeout: 60000 }, async t => {

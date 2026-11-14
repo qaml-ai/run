@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
+import { PROMPT_ADMISSION_TIME } from "./prompt-admission-time.ts";
 
 test("an audio prompt consumes one run admission and a rejected prompt never calls transcription", { timeout: 90_000 }, async t => {
   let transcriptions = 0;
@@ -17,6 +18,7 @@ test("an audio prompt consumes one run admission and a rejected prompt never cal
   await once(provider, "listening");
   t.after(() => new Promise<void>(resolve => provider.close(() => resolve())));
   const f = await startFixture({
+    now: () => PROMPT_ADMISSION_TIME,
     entrypoint: fileURLToPath(new URL("./prompt-admission-entry.ts", import.meta.url)),
     vars: { PLATFORM_OPENAI_KEY: "synthetic-only-key", MEDIA_BASE_URL: `http://127.0.0.1:${(provider.address() as any).port}` },
   });

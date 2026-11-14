@@ -35,7 +35,6 @@ test("a machine past its TTL ends by itself: its row ends at the next pass, and 
   assert.equal(await f.spent(), cost(240_000), "the last minute of a machine that is gone can't be read");
   assert.ok((await f.row()).ended_at);
   assert.deepEqual(f.state.removed, [], "nothing to delete");
-  assert.deepEqual(await f.holds(), []);
   const user = await f.endUsers.get("payg", "u", ["work"]);
   assert.equal(user.balance, micros(1) - cost(240_000));
   await f.start("payg", "a", "again");
@@ -137,7 +136,7 @@ test("Boat's refusals are read by code, a stored one's retry time from where Boa
   f.done();
 });
 
-test("out_of_capacity is tried again briefly and logged each time; if it lasts, a clear error, nothing charged, the hold back, and the next start works", async () => {
+test("out_of_capacity is tried again briefly and logged each time; if it lasts, a clear error, nothing charged, and the next start works", async () => {
   const f = await fixture({ payer: USER });
   await fund(f);
   await f.connect();
@@ -153,7 +152,6 @@ test("out_of_capacity is tried again briefly and logged each time; if it lasts, 
   await assert.rejects(f.start("payg", "a", "lasting"), (error: unknown) => error instanceof HttpError && error.status === 503 && error.code === "COMPUTER_UNAVAILABLE" && error.details?.reason === "out_of_capacity" && /no machines free right now. Nothing was created or charged/.test(error.message));
   assert.ok((await f.row()).ended_at);
   assert.equal(Number((await f.row()).charged_micros), 0);
-  assert.deepEqual(await f.holds(), []);
   assert.equal(f.logged.filter(line => line.type === "computer_unavailable" && line.code === "out_of_capacity").length, 5);
   await f.start("payg", "a", "next");
   assert.equal((await f.row()).ended_at, null);

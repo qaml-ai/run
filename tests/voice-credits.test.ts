@@ -3,26 +3,20 @@ import assert from "node:assert/strict";
 import { HttpError } from "../src/http.ts";
 import type { VoiceCredit } from "../src/voice-sessions.ts";
 import { EndUserCredits } from "../src/end-user-credits.ts";
-import { REALTIME_LIMITS } from "../src/voice/realtime/brain.ts";
 import { discordGrant, speak, until, voiceCluster } from "./voice-fakes.ts";
 
-/** End users' credit as end-user-credits.ts keeps it, reduced to a balance (USD) per subject and the holds on it. */
 function fakeCredit(balances: Record<string, number>) {
-  const log: string[] = [];
+  const log: number[] = [];
+  const keys = new Set<string>();
   const credit: VoiceCredit = {
-    async refusal(_tenant, endUser) {
-      return (balances[endUser] ?? 0) > 0 ? undefined : { reason: "balance", message: `${endUser} is out of credit` };
+    async refusal(_tenant, endUser, bucket) {
+      return (balances[endUser] ?? 0) > 0 ? undefined : { endUser, bucket, reason: "balance", message: `${endUser} is out of credit` };
     },
-    // As EndUserCredits.hold does for a small hold: what is left, if that is less; past it is written off, never owed.
-    async hold(_tenant, endUser, bucket, usd, call, metadata) {
-      const held = Math.min(usd, balances[endUser] ?? 0);
-      if (!(held > 0)) throw new HttpError(402, `${endUser} has no credit left`, "END_USER_CREDIT", { endUser, bucket, reason: "balance" });
-      balances[endUser] -= held;
-      log.push(`hold ${endUser} ${bucket} ${usd.toFixed(4)} ${call} ${JSON.stringify(metadata)}`);
-      return {
-        settle: async actual => { balances[endUser] += held - Math.min(actual, held); log.push(`settle ${actual.toFixed(4)}`); },
-        release: async () => { balances[endUser] += held; log.push("release"); },
-      };
+    async debit(_tenant, endUser, _bucket, usd, key) {
+      if (keys.has(key)) return;
+      keys.add(key);
+      balances[endUser] -= usd;
+      log.push(usd);
     },
   };
   return { credit, log, balances };
@@ -39,8 +33,8 @@ test("a session for an end user with no credit is refused; one without a subject
   await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000055" }) });
 });
 
-test("a realtime session starts with any credit left, even less than one response's hold, and is refused with none", async t => {
-  const { credit } = fakeCredit({ short: REALTIME_LIMITS.holdUsd / 2, none: 0 });
+test("a realtime session starts with any credit left, even a tiny balance, and is refused with none", async t => {
+  const { credit } = fakeCredit({ short: 0.000001, none: 0 });
   const { node } = await voiceCluster(t, { credit });
   const a = await node("http://a");
   await assert.rejects(a.voice.create("alice", { discord: discordGrant(), subject: "none", bucket: "bot:7" }),
@@ -50,7 +44,6 @@ test("a realtime session starts with any credit left, even less than one respons
 
 /** A response's usage that costs $0.04 on gpt-realtime-2.1 (625 output audio tokens at $64 a million). */
 const FOUR_CENTS = { outputAudio: 625 };
-const HOLD = REALTIME_LIMITS.holdUsd;
 
 /** A live session for `subject`, its call's connection, and the model's: each `turn()` is someone speaking, and the model answering with `usage`. */
 async function liveSession(cluster: Awaited<ReturnType<typeof voiceCluster>>, input: Record<string, unknown>) {
@@ -71,52 +64,38 @@ async function liveSession(cluster: Awaited<ReturnType<typeof voiceCluster>>, in
   return { a, created, connection, model, turn };
 }
 
-test("each response holds of the subject's credit before it is asked for, and settles at what it cost; running out ends the session (budget, end_user)", async t => {
-  // Enough for two responses: each holds $0.05 and costs $0.04.
-  const { credit, log, balances } = fakeCredit({ ada: 0.1 });
+test("a Discord response debits its full cost from a tiny balance and the next is refused", async t => {
+  const { credit, log, balances } = fakeCredit({ ada: 0.000001 });
   const cluster = await voiceCluster(t, { credit });
-  const { a, created, model, turn } = await liveSession(cluster, { subject: "ada", bucket: "bot:7" });
+  const { a, created, model, turn, connection } = await liveSession(cluster, { subject: "ada", bucket: "bot:7" });
   await turn();
-  await turn();
-  await until(() => log.length === 4, "two holds settled");
-  assert.deepEqual(log, [
-    `hold ada bot:7 ${HOLD.toFixed(4)} voice_realtime {"session":"${created.id}"}`, "settle 0.0400",
-    `hold ada bot:7 ${HOLD.toFixed(4)} voice_realtime {"session":"${created.id}"}`, "settle 0.0400",
-  ]);
-  assert.ok(Math.abs(balances.ada - 0.02) < 1e-9);
-  // The third holds the $0.02 left, and costs more: past that is not the subject's to pay.
-  await turn();
-  await until(() => log.length === 6, "the last hold settled");
-  assert.equal(balances.ada, 0);
-  // The fourth cannot be held: its response is cancelled, unheard, and the session ends.
-  speak(cluster.fake.open()[0], "400000000000000004", 0.6);
+  await until(() => log.length === 1, "response posted");
+  assert.deepEqual(log, [0.04]);
+  assert.equal(balances.ada, 0.000001 - 0.04);
+  speak(connection, "400000000000000004", 0.6);
   await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "the end");
-  assert.ok(model.of("cancel").length >= 1, "the refused response was cancelled");
-  const session = await a.voice.get("alice", created.id);
-  assert.deepEqual([session.endReason, session.limit, session.endUserReason], ["budget", "end_user", "balance"]);
+  assert.equal(model.responses, 1, "the next response was never requested");
   const [ended] = await cluster.events("voice.session.ended");
   assert.deepEqual([ended.data.reason, ended.data.limit, ended.data.endUserReason, ended.data.bucket], ["budget", "end_user", "balance", "bot:7"]);
 });
 
-test("a response that costs nothing (cancelled before it made anything) gives its hold back", async t => {
+test("a zero-usage response has no debit", async t => {
   const { credit, log, balances } = fakeCredit({ ada: 1 });
   const cluster = await voiceCluster(t, { credit });
   const { turn } = await liveSession(cluster, { subject: "ada" });
   await turn({});
-  await until(() => log.length === 2, "the hold and its release");
-  assert.match(log[0], /^hold ada default /);
-  assert.equal(log[1], "release");
+  assert.deepEqual(log, []);
   assert.equal(balances.ada, 1);
 });
 
-test("with the runtime's end-user credits: a call's responses are held, posted to the subject's ledger, and end the session when it runs out", async t => {
+test("with the runtime's end-user credits: a call's responses are posted to the subject's ledger, and end the session when it runs out", async t => {
   // voiceCluster's database, read once it exists: the credit service is made on it before any session.
   let credits: EndUserCredits | undefined;
-  const credit: VoiceCredit = { refusal: (...args) => credits!.refusal(...args), hold: (...args) => credits!.hold(...args) };
+  const credit: VoiceCredit = { refusal: (...args) => credits!.refusal(...args), debit: (...args) => credits!.debit(...args) };
   const cluster = await voiceCluster(t, { credit });
   credits = new EndUserCredits(cluster.db);
   await credits.setSettings("alice", { enabled: true, allowances: { "*": 0 } });
-  // $0.10, in micro-USD: two responses' holds and their cost.
+  // $0.10, in micro-USD: enough for two responses and part of a third.
   await credits.post("alice", "ada", { kind: "grant", amount: 100_000, key: "payment-1" });
   await assert.rejects(cluster.node("http://x").then(x => x.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000066" }), subject: "nobody" })),
     (error: HttpError) => error.status === 402 && error.code === "END_USER_CREDIT");
@@ -125,15 +104,13 @@ test("with the runtime's end-user credits: a call's responses are held, posted t
   const usage = await until(async () => (await credits!.ledger("alice", "ada")).entries.find(entry => entry.kind === "usage"), "the response posted");
   assert.equal(usage.raw, 40_000, "what it cost");
   assert.equal(usage.bucket, "bot:7");
-  await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "no hold left");
   await turn();
-  // $0.02 left, less than a response holds: a new call starts on it, as this one's next answer does.
+  // $0.02 left, less than a response costs: a new call starts on it, as this one's next answer does.
   const last = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000068" }), subject: "ada", bucket: "bot:7" });
   await a.voice.end("alice", last.id);
   await turn();
-  await until(async () => (await credits!.get("alice", "ada")).balance === 0, "spent to nothing, never past it");
-  assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 0, "no hold left");
-  assert.equal((await cluster.db.query("select sum(written_off)::int as lost from end_user_days where bucket = 'bot:7'")).rows[0].lost, 20_000, "what it cost past that is written off");
+  await until(async () => (await credits!.get("alice", "ada")).balance === -20_000, "the last response settles in full");
+  assert.equal((await cluster.db.query("select sum(written_off)::int as lost from end_user_days where bucket = 'bot:7'")).rows[0].lost, 0, "the full cost was debited");
   speak(cluster.fake.open()[0], "400000000000000004", 0.6);
   await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "the end");
   const session = await a.voice.get("alice", created.id);
@@ -146,14 +123,14 @@ test("with the runtime's end-user credits: a call's responses are held, posted t
 
 test("voice uses the shared bot allowance and ends on budget after another bot spends it", async t => {
   let credits: EndUserCredits;
-  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), hold: (...args) => credits.hold(...args) };
+  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), debit: (...args) => credits.debit(...args) };
   const cluster = await voiceCluster(t, { credit });
   credits = new EndUserCredits(cluster.db);
   await credits.setSettings("alice", { enabled: true, sharedAllowances: { "bot:*": 100_000 } });
   const { a, created, turn } = await liveSession(cluster, { subject: "ada", bucket: "bot:voice" });
   await turn();
   await until(async () => (await credits.get("alice", "ada")).today.pools[0].allowanceSpent === 40_000, "voice settled to the pool");
-  await credits.charge("alice", "ada", "bot:text", 60_000, "other-bot");
+  await credits.debit("alice", "ada", "bot:text", (60_000) / 1_000_000, "other-bot");
   speak(cluster.fake.open()[0], "400000000000000004", 0.6);
   await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "shared pool exhaustion ends voice");
   const session = await a.voice.get("alice", created.id);

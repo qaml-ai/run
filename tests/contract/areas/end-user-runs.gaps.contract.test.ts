@@ -45,13 +45,12 @@ test("a run's own bucket is what its start is checked against, and the runs afte
   assert.deepEqual([refused.status, refused.json.code, refused.json.bucket], [402, "END_USER_CREDIT", "default"], refused.text);
 });
 
-test("concurrent replies for one end user share their credit: their holds never add up to more than it", async t => {
+test("concurrent replies for one end user share their credit: all admitted replies settle in full", async t => {
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
   const r = await runtime(t, () => ({ content: "ok", wait: barrier, usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { ...AT_COST, AGENT_MODEL: "openai/gpt-4.1" });
   await settings(r, {});
-  // A gpt-4.1 call holds its input and 2,048 tokens of output at $8 a million: under $0.02 to start. $0.04 holds two and a bit.
-  await grant(r, "shared", 40_000, "pay");
+  await grant(r, "shared", 1, "pay");
   const agents: string[] = [];
   for (let index = 0; index < 4; index++) {
     const made = await r.call("/v1/agents", { body: { subject: "shared" } });
@@ -60,19 +59,9 @@ test("concurrent replies for one end user share their credit: their holds never 
   }
   const accepted = await Promise.all(agents.map(agent => r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go" } })));
   assert.ok(accepted.every(answer => answer.status === 202), accepted.map(answer => answer.text).join("\n"));
-  // Each call that could hold is waiting at the provider before any finishes; the rest were refused before theirs.
-  await until(async () => r.model.bodies.length >= 2, "calls to reach the provider");
-  await sleep(500);
-  const reached = r.model.bodies.length;
-  const held = (await r.call("/v1/end-users/shared")).json.held;
-  assert.ok(held <= 40_000, `${held} held of 40000`);
+  await until(() => r.model.bodies.length === 4, "all admitted calls to reach the provider");
   release();
-  const runs = await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
-  // Refused at its model call, or as its run started, when the others' holds already took what there was: either way
-  // before the provider was asked, and coded alike (end_user_credit, with why), whatever the words.
-  const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit" && run.outcome.result.reason === "balance" && run.outcome.result.endUser === "shared");
-  assert.ok(runs.every(run => run.outcome.result), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
-  assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome))}`);
+  await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
   const person = (await r.call("/v1/end-users/shared")).json;
-  assert.deepEqual([person.balance, person.held], [40_000 - reached * 10_000, 0]);
+  assert.deepEqual([person.balance, person.held], [-39_999, 0]);
 });

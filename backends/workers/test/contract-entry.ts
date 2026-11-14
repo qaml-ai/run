@@ -1,12 +1,12 @@
 /** Local-only fixture adapter. It is never referenced by a deployment config. */
 import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
+import { AgentInvocation } from "../src/agent-invocation.ts";
 import { ARM_AGENT, DUE_HUMAN_INPUTS, testAgentRuntimes } from "../src/agent-internals.ts";
 import type { Env } from "../src/agent.ts";
 import { stageMissedEndings } from "../src/agent-endings.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
-export { CamelfsStub } from "./camelfs-stub.ts";
 
 const resizeFailureKey = "contract-fixture/image-resize-failures";
 const pendingQueues = new Set<Promise<void>>();
@@ -119,7 +119,7 @@ export class CamelAgent extends RuntimeAgent {
     if (new URL(request.url).pathname === "/__test/shared-prompt" && request.method === "POST") {
       const { member, ...params } = await request.json() as Record<string, unknown>;
       try {
-        const record = await testAgentRuntimes.get(this)!.submit({ id: crypto.randomUUID(), method: "prompt", params }, undefined, undefined, undefined, String(member));
+        const record = await AgentInvocation.run(scope => testAgentRuntimes.get(this)!.submit(scope, { id: crypto.randomUUID(), method: "prompt", params }, undefined, undefined, undefined, String(member)));
         return Response.json({ id: record.id, state: record.state }, { status: 202 });
       } catch (error) {
         return Response.json({ error: String((error as Error).message) }, { status: (error as { status?: number }).status ?? 500 });

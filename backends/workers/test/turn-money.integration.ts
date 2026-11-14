@@ -35,7 +35,6 @@ test('every model call records subject and workspace usage; a poor subject canno
   assert.equal(Number((await f.db.query('select responses from workspace_usage where workspace=$1', [workspace.id])).rows[0].responses), 1);
   const after = await credits.get('camelrun-proto-local', 'customer', ['support']);
   assert.ok(after.balance < 1_000_000 && after.balance >= 0);
-  assert.equal(Number((await f.db.query('select count(*) n from end_user_holds')).rows[0].n), 0);
 
   const broke = await call('/v1/agents', { model: 'test/echo', subject: 'empty-customer', bucket: 'support' });
   const refused = await call(`/v1/agents/${broke.id}/requests`, { id: 'poor-turn', method: 'prompt', params: { text: 'must not call provider' } }, 402);

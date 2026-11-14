@@ -1,4 +1,3 @@
-import { serveFakeCamelfsd } from './fake-camelfsd.ts';
 import { fileURLToPath } from 'node:url';
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -28,6 +27,25 @@ async function dockerUnavailable() {
 const unavailable = await dockerUnavailable();
 const requireDocker = process.env.WORKERS_REQUIRE_DOCKER === "1";
 const run = promisify(execFile);
+
+// A computer's first operation boots its container. The runtime bounds a start (an image start: two tries of up to
+// 30 s) and then answers 503 COMPUTER_STARTING, which docs/reference/errors.md tells a client to meet by calling again
+// in a few seconds. The tests do what a client must, within a deadline, and wait longer per request than the
+// runtime's bound so a start is never cut off from the client side. Sprites keep /var/lib/docker on a network block
+// device whose write latency grows with use (mean 26 to 270 ms per write across the pool, 2026-11-14); there a cold
+// start's p99 was 44 s and its tail passed the old 60 s client budget.
+const COMPUTER_REQUEST_MS = 150_000, COMPUTER_START_DEADLINE_MS = 300_000;
+async function untilStarted(send: () => Promise<Response>): Promise<Response> {
+  const deadline = Date.now() + COMPUTER_START_DEADLINE_MS;
+  for (;;) {
+    const response = await send();
+    if (response.status !== 503 || Date.now() > deadline) return response;
+    const body = await response.clone().json().catch(() => null) as { code?: string } | null;
+    if (body?.code !== "COMPUTER_STARTING") return response;
+    await response.body?.cancel();
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+}
 
 // workerd puts every local container behind an egress sidecar, Cloudflare's proxy-everything (the image Wrangler pins),
 // which steers the container's traffic with iptables TPROXY rules. One of them, `-m socket -j DIVERT`, needs the
@@ -162,7 +180,7 @@ test(
         request: object,
         expectedStatus = 200,
       ) => {
-        const response = await fetch(
+        const response = await untilStarted(() => fetch(
           `${server.url}/experimental/agents/${id}/computer`,
           {
             method: "POST",
@@ -171,9 +189,9 @@ test(
               "content-type": "application/json",
             },
             body: JSON.stringify({ provider, ...request }),
-            signal: AbortSignal.timeout(60000),
+            signal: AbortSignal.timeout(COMPUTER_REQUEST_MS),
           },
-        );
+        ));
         assert.equal(
           response.status,
           expectedStatus,
@@ -345,10 +363,10 @@ test(
           assert.ok(first.snapshot.image, "the handle records its image");
           assert.equal((await fork("integration:m1")).snapshot.id, first.snapshot.id, "one snapshot serves every child of a call");
           const childCall = async (child: string, request: object) => {
-            const response = await fetch(`${server.url}/experimental/agents/${child}/computer`, {
+            const response = await untilStarted(() => fetch(`${server.url}/experimental/agents/${child}/computer`, {
               method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-              body: JSON.stringify({ provider, ...request }), signal: AbortSignal.timeout(60000),
-            });
+              body: JSON.stringify({ provider, ...request }), signal: AbortSignal.timeout(COMPUTER_REQUEST_MS),
+            }));
             assert.equal(response.status, 200, `${await response.clone().text()}\n${server.logs()}`);
             return (await response.json()) as Record<string, any>;
           };
@@ -498,12 +516,12 @@ test("computer egress: git clone and push through the runtime's credential gatew
   });
   t.after(() => { if (process.env.EGRESS_DEBUG) console.log(fixture.worker.logs().slice(-20000)); });
   const api = async (path: string, init: { method?: string; body?: unknown; key?: string } = {}, expected = [200, 201, 202]) => {
-    const response = await fetch(fixture.url + path, {
+    const response = await untilStarted(() => fetch(fixture.url + path, {
       method: init.method ?? (init.body === undefined ? "GET" : "POST"),
       headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json", ...(init.key ? { "idempotency-key": init.key } : {}) },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       signal: AbortSignal.timeout(200_000),
-    });
+    }));
     const value = await response.json() as any;
     assert.ok(expected.includes(response.status), `${path}: ${response.status} ${JSON.stringify(value)}\n${fixture.worker.logs().slice(-4000)}`);
     return value;
@@ -788,7 +806,7 @@ test("computer egress with a GitHub App: a git push gets a token the runtime min
 });
 
 test('computer.idle "sleep": a machine that idles out saves its disk, and the next operation resumes it', {
-  timeout: 300_000, skip: requireDocker ? false : unavailable,
+  timeout: 600_000, skip: requireDocker ? false : unavailable,
 }, async (t) => {
   assert.equal(unavailable, undefined, unavailable);
   const egressImage = await egressImageWithoutSocketMatch(t);
@@ -803,12 +821,12 @@ test('computer.idle "sleep": a machine that idles out saves its disk, and the ne
     for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
   });
   const api = async (path: string, body?: unknown) => {
-    const response = await fetch(fixture.url + path, {
+    const response = await untilStarted(() => fetch(fixture.url + path, {
       method: body === undefined ? "GET" : "POST",
       headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(120_000),
-    });
+      signal: AbortSignal.timeout(COMPUTER_REQUEST_MS),
+    }));
     const value = await response.json() as any;
     assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}\n${fixture.worker.logs().slice(-4000)}`);
     return value;
@@ -819,10 +837,10 @@ test('computer.idle "sleep": a machine that idles out saves its disk, and the ne
   const computer = (request: object) => api(`/experimental/agents/${agent.id}/computer`, { provider: "container", ...request });
   const child = await api('/v1/agents', { definition: definition.id });
   await fixture.db.query('insert into computer_shares(tenant,agent,owner) values($1,$2,$3)', ['camelrun-proto-local', child.id, agent.id]);
-  const readChild = (operation: object = { op: 'read', path: 'kept.txt' }) => fetch(fixture.url + `/experimental/agents/${child.id}/computer`, {
+  const readChild = (operation: object = { op: 'read', path: 'kept.txt' }) => untilStarted(() => fetch(fixture.url + `/experimental/agents/${child.id}/computer`, {
     method: 'POST', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ provider: 'container', ...operation }),
-  });
+    body: JSON.stringify({ provider: 'container', ...operation }), signal: AbortSignal.timeout(COMPUTER_REQUEST_MS),
+  }));
   const firstUse = await readChild({ op: 'write', path: 'kept.txt', content: 'still here' });
   assert.equal(firstUse.status, 200, await firstUse.text());
   // The DO's alarm puts it to sleep at the idle point; wait past it.
@@ -879,9 +897,7 @@ test("workflows: children edit branches of a repo with their file tools, commit(
   });
   model.listen(0, "127.0.0.1"); await once(model, "listening");
   t.after(() => { model.closeAllConnections(); return new Promise<void>(resolve => model.close(() => resolve())); });
-  const camelfs = await serveFakeCamelfsd('workflow-test-token');
-  t.after(() => camelfs.close());
-  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", camelfsStub: true, entrypoint: fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)), vars: { TEST_CAMELFS_URL:camelfs.url, CAMELFS_API_TOKEN:'workflow-test-token', TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", entrypoint: fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)), vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
     AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "repo-fixture/repo-model", strong: "repo-fixture/repo-model", max: "repo-fixture/repo-model" }) } });
   t.after(async () => {
     const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));

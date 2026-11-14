@@ -289,7 +289,7 @@ test(
     await f.worker.stop(true);
     await f.worker.start();
     // Only the financial authority is inspected after restart. No agent HTTP call
-    // may be needed to project Pi completion or settle the reservation.
+    // may be needed to project Pi completion or post the debit.
     let receipts = 0;
     for (let i = 0; i < 200; i++) {
       receipts = Number(
@@ -299,12 +299,6 @@ test(
       await delay(50);
     }
     assert.equal(receipts, 1);
-    assert.equal(
-      Number(
-        (await f.db.query("SELECT count(*) n FROM credit_holds")).rows[0].n,
-      ),
-      0,
-    );
     const ledger = await f.db.query(
       "select sum(amount)::bigint total from credit_ledger where tenant=$1",
       ["camelrun-proto-local"],

@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { readAttachment } from "./repos/attachments.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { AUDIO_LIMITS } from "../../../src/limits.ts";
@@ -18,9 +19,8 @@ import {
 import { database, transaction, withSql } from "./postgres.ts";
 import {
   EndUserCredits,
-  MICROS,
   creditError,
-  lastCallMin,
+  utcDay,
 } from "./end-user-credits.ts";
 import {
   readAgentSpendLimit,
@@ -48,9 +48,10 @@ export type AttachmentAudioScope = {
 };
 type Env = MediaBindings & KeyEnv;
 type Scope = AttachmentAudioScope & { callId: string; startedAt: number };
-type CreditReservation = { id: string; endUser: string; bucket: string };
-type CreditService = Pick<EndUserCredits, "reserve" | "settleHold" | "release">;
-type Receipt = { scope: Scope; usage: UsageRecord; hold?: CreditReservation };
+// Old receipts keep their original debit key after a deployment.
+type LegacyCreditReceipt = { id: string; endUser: string; bucket: string };
+type CreditService = Pick<EndUserCredits, "refusal" | "debit">;
+type Receipt = { scope: Scope; usage: UsageRecord; debitEndUser?: string; hold?: LegacyCreditReceipt };
 type Cached = {
   fingerprint: string;
   state: "pending" | "complete";
@@ -71,6 +72,7 @@ async function recordAudio(
   env: Env,
   services: KeyServices,
   { scope, usage }: Receipt,
+  invocation?: AgentInvocation,
 ) {
   await transaction(env, async (sql) => {
     if (
@@ -92,9 +94,9 @@ async function recordAudio(
         ...(scope.actor ? { actor: scope.actor } : {}),
         ...(scope.keyScope ? { keyScope: scope.keyScope } : {}),
       });
-  });
+  }, {}, invocation);
   await services.accounts.usageCommitted(scope.tenant);
-  await publishPending(env);
+  await publishPending(env, invocation);
 }
 
 /** A known transcript and its charge survive a failed Postgres acknowledgement. */
@@ -103,31 +105,23 @@ export async function flushAttachmentTranscriptions(
   storage: DurableObjectStorage,
   record?: Host["record"],
   credits?: CreditService,
+  invocation?: AgentInvocation,
 ) {
   const receipts = await storage.list<Receipt>({
     prefix: "transcription-billing:",
   });
   if (!receipts.size) return;
-  const services = record ? undefined : await keyServices(env);
+  const services = record ? undefined : await keyServices(env, invocation);
   for (const [key, receipt] of receipts) {
     if (record) await record(receipt);
-    else await recordAudio(env, services!, receipt);
-    if (receipt.hold) {
-      const credit = credits ?? new EndUserCredits(database(env));
-      const { id, endUser, bucket } = receipt.hold;
-      await credit.settleHold(
-        receipt.scope.tenant,
-        endUser,
-        bucket,
-        id,
-        Math.round(receipt.usage.usage.cost.total * MICROS),
-        `transcription:${id}`,
-        {
-          call: "transcription",
-          agent: receipt.scope.agent,
-          requestId: receipt.scope.requestId,
-        },
-      );
+    else await recordAudio(env, services!, receipt, invocation);
+    const { scope, usage, hold } = receipt;
+    const endUser = hold?.endUser ?? receipt.debitEndUser;
+    if (endUser) {
+      const credit = credits ?? new EndUserCredits(database(env, invocation));
+      await credit.debit(scope.tenant, endUser, hold?.bucket ?? scope.bucket ?? "default",
+        usage.usage.cost.total, `transcription:${hold?.id ?? scope.callId}`,
+        { call: "transcription", agent: scope.agent, requestId: scope.requestId, usageDay: utcDay(scope.startedAt) });
     }
     await storage.delete(key);
   }
@@ -140,6 +134,7 @@ export async function transcribeAttachments(
   scope: AttachmentAudioScope,
   files: AttachedFile[],
   host: Host = {},
+  invocation?: AgentInvocation,
 ): Promise<AttachedFile[]> {
   const plain = files.map(({ transcribe: _transcribe, ...file }) => file);
   const chosen = files.flatMap((file, index) =>
@@ -148,11 +143,11 @@ export async function transcribeAttachments(
       : [],
   );
   if (!chosen.length) return plain;
-  await flushAttachmentTranscriptions(env, storage, host.record, host.credits);
+  await flushAttachmentTranscriptions(env, storage, host.record, host.credits, invocation);
   const services =
     host.transcriber && host.record && host.admit && host.budget
       ? undefined
-      : await keyServices(env);
+      : await keyServices(env, invocation);
   const media =
     host.transcriber && host.admit ? undefined : await import("./media-api.ts");
   const transcriber =
@@ -170,6 +165,7 @@ export async function transcribeAttachments(
           provider,
           services,
           mediaAzure(env)?.transcriptionDeployment,
+          invocation,
         ),
       price: () =>
         ({
@@ -181,9 +177,7 @@ export async function transcribeAttachments(
     });
   const read =
     host.read ??
-    (async (file) => {
-      return readAttachment(env as RepoEnv, scope.tenant, file);
-    });
+    ((file) => readAttachment(env as RepoEnv, scope.tenant, file));
   const failed = (index: number, error: unknown) => {
     if (files[index].transcribe || errorStatus(error, 500) === 402) throw error;
     plain[index] = {
@@ -283,13 +277,13 @@ export async function transcribeAttachments(
     : Math.min(
         scope.budget ?? Infinity,
         remainingAgentSpend(
-          await readAgentSpendLimit(env, scope.tenant, scope.agent),
+          await readAgentSpendLimit(env, scope.tenant, scope.agent, {}, invocation),
         ),
         scope.spendLimit === undefined
           ? Infinity
           : scope.spendLimit -
               (await withSql(env, (sql) =>
-                runSpend(sql, scope.tenant, scope.agent, scope.requestId),
+                runSpend(sql, scope.tenant, scope.agent, scope.requestId), invocation,
               )),
       );
   const estimate = audio.reduce(
@@ -304,101 +298,67 @@ export async function transcribeAttachments(
     );
   const credits =
     host.credits ??
-    (scope.identity?.subject ? new EndUserCredits(database(env)) : undefined);
-  const holds = new Map<number, CreditReservation>();
-  try {
-    // Reserve every file before sending any. The deterministic IDs survive a
-    // restart; a completed receipt owns its reservation until settleHold succeeds.
-    if (credits && scope.identity?.subject)
-      for (const [position, item] of audio.entries()) {
-        const hash = Array.from(
-          new Uint8Array(
-            await crypto.subtle.digest(
-              "SHA-256",
-              new TextEncoder().encode(
-                JSON.stringify([
-                  scope.tenant,
-                  scope.agent,
-                  scope.requestId,
-                  item.index,
-                ]),
-              ),
-            ),
-          ),
-          (byte) => byte.toString(16).padStart(2, "0"),
-        ).join("");
-        const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
-        const bucket = scope.bucket ?? "default",
-          endUser = scope.identity.subject;
-        const want = Math.ceil(transcriber.cost(item.header.seconds) * MICROS);
-        const reserved = await credits.reserve(scope.tenant, endUser, bucket, {
-          id,
-          want,
-          min: position === audio.length - 1 ? lastCallMin(want) : want,
-        });
-        if (reserved?.refused) throw creditError(reserved.refused);
-        if (reserved?.hold) holds.set(item.index, { id, endUser, bucket });
+    (scope.identity?.subject ? new EndUserCredits(database(env, invocation)) : undefined);
+  for (const item of audio) {
+    const { index, cacheKey, fingerprint, header } = item;
+    const call = {
+      ...scope,
+      callId: `${scope.requestId}:attachment:${index}`,
+      startedAt: Date.now(),
+    };
+    try {
+      if (host.admit) await host.admit();
+      else {
+        await admitAuxiliaryUsage(env, scope, false, undefined, invocation);
       }
-    for (const item of audio) {
-      const { index, cacheKey, fingerprint, header } = item;
-      const call = {
-        ...scope,
-        callId: `${scope.requestId}:attachment:${index}`,
-        startedAt: Date.now(),
-      };
+      if (credits && scope.identity?.subject) {
+        const refused = await credits.refusal(scope.tenant, scope.identity.subject, scope.bucket ?? "default", { now: call.startedAt });
+        if (refused) throw creditError(refused);
+      }
+      const bytes = await read(files[index]);
+      await storage.put(cacheKey, { fingerprint, state: "pending" });
+      let made;
       try {
-        if (host.admit) await host.admit();
-        else {
-          await admitAuxiliaryUsage(env, scope);
-        }
-        const bytes = await read(files[index]);
-        await storage.put(cacheKey, { fingerprint, state: "pending" });
-        let made;
-        try {
-          made = await transcriber.transcribe(
-            scope,
-            { bytes, header },
-            {},
-            AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000),
-          );
-        } catch (error) {
-          const saved = {
-            status: errorStatus(error, 500),
-            message: error instanceof Error ? error.message : String(error),
-            code: (error as { code?: string }).code ?? "TRANSCRIPTION_FAILED",
-          };
-          await storage.put(cacheKey, {
-            fingerprint,
-            state: "complete",
-            ...(files[index].transcribe || saved.status === 402
-              ? { error: saved }
-              : { untranscribed: saved.message.slice(0, 300) }),
-          });
-          throw error;
-        }
-        await storage.transaction(async (tx) => {
-          await tx.put(cacheKey, {
-            fingerprint,
-            state: "complete",
-            transcript: made.transcript,
-          });
-          await tx.put(`transcription-billing:${call.callId}`, {
-            scope: call,
-            usage: made.usage,
-            ...(holds.has(index) ? { hold: holds.get(index) } : {}),
-          });
-        });
-        holds.delete(index);
-        plain[index] = { ...plain[index], transcript: made.transcript };
-        // Leave a receipt in place if settling fails. A retry reuses its transcript.
-        await flushAttachmentTranscriptions(env, storage, host.record, credits);
+        made = await transcriber.transcribe(
+          scope,
+          { bytes, header },
+          {},
+          AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000),
+        );
       } catch (error) {
-        if (plain[index].transcript) throw error;
-        failed(index, error);
+        const saved = {
+          status: errorStatus(error, 500),
+          message: error instanceof Error ? error.message : String(error),
+          code: (error as { code?: string }).code ?? "TRANSCRIPTION_FAILED",
+        };
+        await storage.put(cacheKey, {
+          fingerprint,
+          state: "complete",
+          ...(files[index].transcribe || saved.status === 402
+            ? { error: saved }
+            : { untranscribed: saved.message.slice(0, 300) }),
+        });
+        throw error;
       }
+      await storage.transaction(async (tx) => {
+        await tx.put(cacheKey, {
+          fingerprint,
+          state: "complete",
+          transcript: made.transcript,
+        });
+        await tx.put(`transcription-billing:${call.callId}`, {
+          scope: call,
+          usage: made.usage,
+          debitEndUser: call.identity?.subject,
+        });
+      });
+      plain[index] = { ...plain[index], transcript: made.transcript };
+      // Leave a receipt in place if settling fails. A retry reuses its transcript.
+      await flushAttachmentTranscriptions(env, storage, host.record, credits, invocation);
+    } catch (error) {
+      if (plain[index].transcript) throw error;
+      failed(index, error);
     }
-  } finally {
-    for (const hold of holds.values()) await credits!.release(hold.id);
   }
   return plain;
 }

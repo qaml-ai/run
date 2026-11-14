@@ -3,25 +3,24 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../src/node-config.ts";
-import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { createNode, nodeDeps } from "../src/node.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
+import { agentStarted, ownNodes } from "./node-fixture.ts";
 import { fakeModel, until } from "./runtime-server.ts";
 import { discordGrant, fakeOpenAIRealtime, fakeTransport, realtimeAnswer, speak } from "./voice-fakes.ts";
 
 test("/v1/voice/sessions: create, read, list, update and end a session over HTTP", async t => {
+  const openai = await fakeOpenAIRealtime(t);
   const root = await mkdtemp(join(tmpdir(), "agent-voice-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "fixture-key" } } } }));
   const { url: databaseUrl } = await testDatabase();
   const fake = fakeTransport();
-  const openai = await fakeOpenAIRealtime(t);
-  let node: RuntimeNode | undefined;
-  t.after(async () => { await node?.close().catch(() => {}); });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
@@ -30,8 +29,8 @@ test("/v1/voice/sessions: create, read, list, update and end a session over HTTP
       AGENT_VOICE_SESSIONS_PER_TENANT: "1", AGENT_OPENAI_REALTIME_URL: openai.url,
     });
     const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const call = async (method: string, path: string, body?: unknown) => {
@@ -87,14 +86,12 @@ test("/v1/voice/sessions: create, read, list, update and end a session over HTTP
 });
 
 test("a tenant's maxVoiceSessions in the tenants file overrides AGENT_VOICE_SESSIONS_PER_TENANT", async t => {
+  const openai = await fakeOpenAIRealtime(t);
   const root = await mkdtemp(join(tmpdir(), "agent-voice-limit-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "fixture-key" }, maxVoiceSessions: 2 } } }));
   const { url: databaseUrl } = await testDatabase();
   const fake = fakeTransport();
-  const openai = await fakeOpenAIRealtime(t);
-  let node: RuntimeNode | undefined;
-  t.after(async () => { await node?.close().catch(() => {}); });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
@@ -103,8 +100,8 @@ test("a tenant's maxVoiceSessions in the tenants file overrides AGENT_VOICE_SESS
       AGENT_VOICE_SESSIONS_PER_TENANT: "1", AGENT_OPENAI_REALTIME_URL: openai.url,
     });
     const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const create = async (guildId: string) => {
@@ -126,15 +123,13 @@ test("a tenant's maxVoiceSessions in the tenants file overrides AGENT_VOICE_SESS
 /** Two nodes over one database and one fake Discord transport, OpenAI's Realtime API at `realtimeUrl`. */
 async function twoNodes(t: { after(fn: () => unknown): void }, realtimeUrl: string, extra: Record<string, string> = {}) {
   const root = await mkdtemp(join(tmpdir(), "agent-voice-nodes-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const owned = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key" } } } }));
   const { url: databaseUrl } = await testDatabase();
   const fake = fakeTransport();
-  const nodes: RuntimeNode[] = [];
-  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
   const secretsKey = randomBytes(32).toString("hex");
-  const bases: string[] = [];
-  for (let index = 0; index < 2; index++) bases.push(await onFreePort(async port => {
+  const nodes = [];
+  for (let index = 0; index < 2; index++) nodes.push(await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
@@ -142,9 +137,9 @@ async function twoNodes(t: { after(fn: () => unknown): void }, realtimeUrl: stri
       AGENT_OPENAI_REALTIME_URL: realtimeUrl, ...extra,
     });
     const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    nodes.push(made);
-    return `http://127.0.0.1:${port}`;
+    owned.nodes.push(made);
+    await made.start();
+    return made;
   }));
   const call = async (base: string, method: string, path: string, body?: unknown) => {
     const response = await fetch(base + path, {
@@ -153,7 +148,7 @@ async function twoNodes(t: { after(fn: () => unknown): void }, realtimeUrl: stri
     });
     return { status: response.status, json: await response.json() as any };
   };
-  return { fake, bases, call };
+  return { fake, bases: nodes.map(node => node.node), call, nodes };
 }
 
 test("a call over HTTP: the realtime brain answers on OpenAI with the tenant's key, on the node holding the call; DELETE …/speak from any node reaches it", async t => {
@@ -198,10 +193,11 @@ test("ask_agent across nodes: the agent's run (on another node) streams back, an
       send({ type: "response.done", response: { id: "resp_1", status: "completed", usage: {} } });
     },
   });
-  const { fake, bases, call } = await twoNodes(t, openai.url, { AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url, AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" });
+  const { fake, bases, call, nodes } = await twoNodes(t, openai.url, { AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url, AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" });
   // The agent lives on node b; the call on node a.
   const agent = await call(bases[1], "POST", "/v1/agents", { name: "voice-agent" });
   assert.equal(agent.status, 201, JSON.stringify(agent.json));
+  await agentStarted(nodes[1], agent.json.id);
   const created = await call(bases[0], "POST", "/v1/voice/sessions", { discord: discordGrant(), deliver: { agent: agent.json.id, webhooks: false }, silenceMs: 200 });
   assert.equal(created.status, 201, JSON.stringify(created.json));
   const connection = await until(() => fake.open()[0], "the connection");
@@ -219,15 +215,13 @@ test("ask_agent across nodes: the agent's run (on another node) streams back, an
 });
 
 test("a session on the platform's OpenAI key talks to the platform's Azure deployment; the tenant's own key stays on OpenAI", async t => {
+  const openai = await fakeOpenAIRealtime(t);
+  const azure = await fakeOpenAIRealtime(t);
   const root = await mkdtemp(join(tmpdir(), "agent-voice-azure-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { nodes } = ownNodes(t, root);
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } }, platformKeys: { openai: "platform-openai-key" } }));
   const { url: databaseUrl } = await testDatabase();
   const fake = fakeTransport();
-  const openai = await fakeOpenAIRealtime(t);
-  const azure = await fakeOpenAIRealtime(t);
-  let node: RuntimeNode | undefined;
-  t.after(async () => { await node?.close().catch(() => {}); });
   const base = await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
@@ -237,8 +231,8 @@ test("a session on the platform's OpenAI key talks to the platform's Azure deplo
       AGENT_AZURE_OPENAI_ENDPOINT: new URL(azure.url).origin, AGENT_AZURE_OPENAI_API_KEY: "azure-test-key", AGENT_AZURE_REALTIME_DEPLOYMENT: "realtime-eastus2", AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT: "transcribe-eastus2",
     });
     const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
-    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
-    node = made;
+    nodes.push(made);
+    await made.start();
     return `http://127.0.0.1:${port}`;
   });
   const call = async (method: string, path: string, body?: unknown) => {

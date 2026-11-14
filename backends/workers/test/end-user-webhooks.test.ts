@@ -28,9 +28,9 @@ async function fixture(settings: Record<string, unknown>) {
 const events = async (db: Db) => (await db.query("select body from webhook_deliveries order by created_at, id")).rows.map(row => ({ type: row.body.type, ...row.body.data }));
 
 const spend = async (credits: EndUserCredits, bucket: string, raw: number) => {
-  const reserved = await credits.reserve("t", "u", bucket, { id: randomUUID(), want: raw, min: 1 });
-  if (reserved?.hold) await credits.settleHold("t", "u", bucket, reserved.hold.id, raw, `call:${randomUUID()}`);
-  return reserved;
+  const refused = await credits.refusal("t", "u", bucket);
+  if (!refused) await credits.debit("t", "u", bucket, raw / USD, `call:${randomUUID()}`, {});
+  return { refused };
 };
 
 test("balance.low fires as the balance falls below the threshold, once until a grant lifts it back", async () => {
@@ -89,8 +89,8 @@ test("credit.exhausted says why: a bucket's allowance used up (once a day), the 
   assert.deepEqual(allowance.map(event => [event.bucket, event.allowance]), [["bot:1", 100_000]], "the bucket's allowance ran out once, though spending went on from the balance");
 
   await spend(credits, "bot:1", 300_000);
-  const refusedAfter = await credits.reserve("t", "u", "bot:1", { id: randomUUID(), want: 10_000, min: 10_000 });
-  assert.equal(refusedAfter?.refused?.reason, "balance");
+  const refusedAfter = await credits.refusal("t", "u", "bot:1");
+  assert.equal(refusedAfter?.reason, "balance");
   const balance = (await events(db)).filter(event => event.reason === "balance");
   assert.equal(balance.length, 1, "once, though a call was refused after");
   assert.ok(balance[0].balance <= 0);
@@ -99,7 +99,7 @@ test("credit.exhausted says why: a bucket's allowance used up (once a day), the 
   await credits.update("t", "u", { dailyLimit: 500_000 });
   await spend(credits, "other", 300_000);
   assert.equal((await events(db)).filter(event => event.reason === "daily_limit").length, 1, "the day's paid spend reached the limit");
-  assert.equal((await credits.reserve("t", "u", "other", { id: randomUUID(), want: 10_000, min: 10_000 }))?.refused?.reason, "daily_limit");
+  assert.equal((await credits.refusal("t", "u", "other"))?.reason, "daily_limit");
   assert.equal((await events(db)).filter(event => event.reason === "daily_limit").length, 1, "and the refusal after does not say it again");
   await spend(credits, "default", 1);
   await credits.post("t", "u", { kind: "adjustment", amount: -2 * USD, key: "take" });

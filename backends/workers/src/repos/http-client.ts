@@ -1,6 +1,5 @@
 import { tierRequest, TierError, type TierEnv } from "../camelfs/tier.ts";
 import type { TierClaims, TierFence, TierHolder } from "../camelfs/claims.ts";
-import type { RepoClient } from "./client.ts";
 import { RepoError, check, ownership, refName, type Ref, type Entry, type Version } from "./repo-policy.ts";
 import type { RepoRow } from "./tenant-repos.ts";
 import type { CommitInfo, DiffChange } from "./storage.ts";
@@ -8,15 +7,15 @@ import type { MoveResult, RepoQuota, RepoWrite, WriteResult } from "./write-inpu
 
 type Request = Parameters<typeof tierRequest>[1];
 type WireRef = Omit<Ref, "holder"> & { holder?: TierHolder };
-type Cas = Omit<Parameters<RepoClient["cas"]>[0], "fence"> & { fence?: TierFence | { holder: string; epoch: number }; quota?: RepoQuota };
+type Cas = { ref: string; expect: string; commit: string; root?: string; fence?: TierFence; quota?: RepoQuota };
 type Metadata = Pick<RepoWrite, "author" | "time" | "message" | "trailers" | "quota">;
 
-export const needsK5 = () => new RepoError("repo jobs on the tier arrive with K5", 501, "needs_k5");
-const forkNamespace = "fork/";
+// Workflow forks use fork/<effect>; repo forks reserve fork/repo_<id>/.
+const forkNamespace = "fork/repo_";
 const path = (name: string) => encodeURIComponent(name);
 const missing = (e: unknown, code: string) => e instanceof RepoError && e.status === 404 && e.code === code;
 
-export class HttpRepoClient implements RepoClient {
+export class HttpRepoClient {
   private readonly env: TierEnv;
   private readonly tenant: string;
   private readonly row: RepoRow;
@@ -96,7 +95,7 @@ export class HttpRepoClient implements RepoClient {
     return { version: ref.version, tree: ref.tree, root: ref.root, ref: ref.name };
   }
 
-  async createRef(input: Parameters<RepoClient["createRef"]>[0]) {
+  async createRef(input: { name: string; from: string | { version: string }; owner?: string; expiresAt?: number }) {
     const name = this.tierRefName(input.name);
     const version = typeof input.from === "string" ? (await this.resolve(input.from)).version : input.from.version;
     return this.local(await this.call<WireRef>("POST", "/refs", "w", {
@@ -129,15 +128,11 @@ export class HttpRepoClient implements RepoClient {
     return { deleted, held };
   }
 
-  async cas(input: Cas) {
-    if (input.fence && typeof input.fence.holder === "string") throw needsK5();
-    if (!input.expect) throw new RepoError("CAS requires expect", 400, "invalid_request");
-    const fence = input.fence as TierFence | undefined;
-    const result = await this.call<MoveResult>("POST", this.refPath(input.ref) + "/cas", "w", {
-      refs: [this.tierRefName(input.ref)], fence,
-      body: { commit: input.commit.version, expect: input.expect, root: input.root ?? undefined, quota: input.quota },
+  cas(input: Cas) {
+    return this.call<MoveResult>("POST", this.refPath(input.ref) + "/cas", "w", {
+      refs: [this.tierRefName(input.ref)], fence: input.fence,
+      body: { commit: input.commit, expect: input.expect, root: input.root ?? undefined, quota: input.quota },
     });
-    return { ...result, previous: input.expect, watchers: [] as string[] };
   }
 
   async commit(id: string): Promise<(Version & { paths: string[] | null }) | null> {
@@ -151,18 +146,17 @@ export class HttpRepoClient implements RepoClient {
     await this.call("PUT", "", "w", { body: { tenant: this.tenant, kind: "workspace", defaultBranch: "main" } });
   }
 
-  async init(input: Parameters<RepoClient["init"]>[0]) {
+  async init(seed: string) {
     await this.prepareLineage();
-    if (input.seed && !await this.ref("main")) {
-      try { await this.createRef({ name: "main", from: { version: input.seed.version.version }, who: this.sub, why: "create" }); }
+    if (!await this.ref("main")) {
+      try { await this.createRef({ name: "main", from: { version: seed } }); }
       catch (e) { if (!(e instanceof RepoError && e.code === "ref_exists")) throw e; }
     }
     return this.info();
   }
 
   async write(input: RepoWrite): Promise<WriteResult> {
-    const { ref, idempotencyKey, legacy, ...body } = input;
-    if (legacy?.fence) throw needsK5();
+    const { ref, idempotencyKey, ...body } = input;
     const result = await this.call<MoveResult & {
       parents: string[]; time: number; changed: (Omit<DiffChange, "newMode"> & { mode: Entry["mode"] })[];
     }>("POST", this.refPath(ref) + "/write", "w", { refs: [this.tierRefName(ref)], body, key: idempotencyKey });
@@ -170,7 +164,7 @@ export class HttpRepoClient implements RepoClient {
       path: change.path, blob: change.newBlob!, size: change.newSize!, mode: change.mode,
     }]));
     const previous = result.parents[0] ?? null;
-    return { ...result, changed, previous, watchers: [], moved: result.version !== previous };
+    return { ...result, changed, previous, moved: result.version !== previous };
   }
 
   merge(ref: string, input: Metadata & { theirs: string; mode: "merge" | "ff-only" | "squash" }) {
@@ -181,23 +175,20 @@ export class HttpRepoClient implements RepoClient {
     return this.call<MoveResult>("POST", this.refPath(ref) + "/restore", "w", { refs: [this.tierRefName(ref)], body: input });
   }
 
-  acquire({ ref, holder, ttlMs }: { ref: string; holder: string | TierHolder; ttlMs: number }) {
-    if (typeof holder === "string") throw needsK5();
+  acquire({ ref, holder, ttlMs }: { ref: string; holder: TierHolder; ttlMs: number }) {
     return this.call<{ epoch: number; deadline: number }>("POST", this.refPath(ref) + "/lease", "w", {
       refs: [this.tierRefName(ref)], sub: "runtime:repo-leases", body: { holder, ttlMs },
     });
   }
 
-  async renew({ ref, holder, epoch }: { ref: string; holder: string | TierHolder; epoch: number }, ttlMs: number) {
-    if (typeof holder === "string") throw needsK5();
+  async renew({ ref, holder, epoch }: { ref: string; holder: TierHolder; epoch: number }, ttlMs: number) {
     const result = await this.call<{ deadline: number }>("POST", this.refPath(ref) + "/lease/renew", "w", {
       refs: [this.tierRefName(ref)], sub: "runtime:repo-leases", fence: { holder, epoch }, body: { ttlMs },
     });
     return { ...result, epoch };
   }
 
-  async release({ ref, holder, epoch }: { ref: string; holder: string | TierHolder; epoch: number }) {
-    if (typeof holder === "string") throw needsK5();
+  async release({ ref, holder, epoch }: { ref: string; holder: TierHolder; epoch: number }) {
     await this.call("DELETE", this.refPath(ref) + "/lease", "w", {
       refs: [this.tierRefName(ref)], sub: "runtime:repo-leases", fence: { holder, epoch },
     });
@@ -228,7 +219,4 @@ export class HttpRepoClient implements RepoClient {
   async deleteLineage(key: string) {
     await this.call("DELETE", "", "w", { sub: "runtime:repo-delete", key });
   }
-
-  async blobSize(): Promise<never> { throw new Error("camelFS accounts for blob sizes"); }
-  async unseenBytes(): Promise<never> { throw new Error("camelFS accounts for lineage usage"); }
 }

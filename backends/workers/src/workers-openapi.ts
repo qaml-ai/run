@@ -1,3 +1,4 @@
+import { workersVoicePaths } from "./voice/calls/openapi.ts";
 import { isVolumePath, VOLUMES_GONE } from "./files.ts";
 
 const methods = ["get", "head", "post", "put", "patch", "delete", "options"];
@@ -21,7 +22,8 @@ const gone = {
 };
 
 export function workersOpenApi<T extends { paths: Record<string, unknown> }>(source: T) {
-  const paths = Object.fromEntries(Object.entries(source.paths).filter(([path]) => !isVolumePath(path)));
+  const paths = Object.fromEntries(Object.entries(source.paths).filter(([path]) => !isVolumePath(path) && !path.startsWith("/v1/voice/")));
+  Object.assign(paths, workersVoicePaths());
   const operations = Object.fromEntries(methods.map(method => [method, gone]));
   paths["/v1/volumes"] = operations;
   paths["/v1/volumes/{path}"] = {

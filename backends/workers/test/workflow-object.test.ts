@@ -185,7 +185,7 @@ test("a crash between steps: a new object over the same storage picks up where t
   assert.equal(at(second).result, "re: bA");
 });
 
-test("every Wrangler config migrates WorkflowObject and WorkflowResults before repos, deletes retired classes, and adds CamelfsUsagePoller", () => {
+test("every Wrangler config migrates WorkflowObject and WorkflowResults before repos, adds CamelfsUsagePoller, and deletes retired classes", () => {
   const configs = ["wrangler.jsonc", "wrangler.test.jsonc", "wrangler.pilot.jsonc", "wrangler.computers.test.jsonc"];
   for (const name of configs) {
     const config = new Function(`return (${readFileSync(new URL(`../${name}`, import.meta.url), "utf8")});`)() as {
@@ -197,9 +197,10 @@ test("every Wrangler config migrates WorkflowObject and WorkflowResults before r
     const tags = config.migrations.map(migration => migration.tag);
     assert.equal(new Set(tags).size, tags.length, `${name}: unique tags`);
     assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "VOLUMES" || binding.class_name === "Volume"), name);
+    assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "REPOS" || binding.class_name === "RepoDO"), name);
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
-    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), ["workflow-results", "repos", "delete-volumes", "camelfs-usage", ...(name === "wrangler.jsonc" ? [] : ["delete-job-hosts"])], name);
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), ["workflow-results", "repos", "delete-volumes", "camelfs-usage", ...(name === "wrangler.jsonc" ? [] : ["delete-job-hosts"]), "delete-repo-do", "voice-calls", ...(name === "wrangler.pilot.jsonc" ? ["camelfs-smoke"] : [])], name);
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
     assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
       { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },
@@ -208,9 +209,18 @@ test("every Wrangler config migrates WorkflowObject and WorkflowResults before r
       { tag: "delete-volumes", deleted_classes: ["Volume"] },
       { tag: "camelfs-usage", new_sqlite_classes: ["CamelfsUsagePoller"] },
       ...(name === "wrangler.jsonc" ? [] : [{ tag: "delete-job-hosts", deleted_classes: ["JobHost", "JobHostRegistry", "HostJob"] }]),
+      { tag: "delete-repo-do", deleted_classes: ["RepoDO"] },
+      { tag: "voice-calls", new_sqlite_classes: ["VoiceCall"] },
+      // delete-repo-do already ran on the pilot, so classes added later follow it. The smoke is pilot-only.
+      ...(name === "wrangler.pilot.jsonc" ? [{ tag: "camelfs-smoke", new_sqlite_classes: ["CamelfsSmoke"] }] : []),
     ], name);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);
-    const deleted = new Set(config.migrations.flatMap(migration => migration.deleted_classes ?? []));
+    const deleted = new Set<string>();
+    for (const migration of config.migrations) {
+      // A deleted class name is never re-created by a later migration.
+      for (const created of migration.new_sqlite_classes ?? []) assert.ok(!deleted.has(created), `${name}: ${migration.tag} re-creates ${created}`);
+      for (const removed of migration.deleted_classes ?? []) deleted.add(removed);
+    }
     // Every class bound locally still exists.
     for (const binding of config.durable_objects.bindings.filter(binding => !binding.script_name))
       assert.ok(!deleted.has(binding.class_name) && config.migrations.some(migration => migration.new_sqlite_classes?.includes(binding.class_name)), `${name}: ${binding.class_name}`);

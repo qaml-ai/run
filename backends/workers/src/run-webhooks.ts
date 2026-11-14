@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { pendingInputMirrors, upsertInputMirrors } from "./input-mirror.ts";
 import { outcomeEnding, type Outcome } from "../../../shared/client-protocol.ts";
@@ -74,7 +75,7 @@ export class AgentWebhooks {
   constructor(storage: DurableObjectStorage, env: WebhookEnv) { this.storage = storage; this.env = env; }
   settled(): Promise<void> { return this.pending; }
   flush(): Promise<void> {
-    const next = this.pending.then(async () => {
+    const next = this.pending.then(() => AgentInvocation.run(async invocation => {
       const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
       const mirrors = await pendingInputMirrors(this.storage);
       if (!entries.size && !mirrors.size) return;
@@ -82,7 +83,7 @@ export class AgentWebhooks {
         await transaction(this.env, async sql => {
           await upsertInputMirrors(sql, [...mirrors.values()]);
           await enqueueEvents(sql, [...entries.values()]);
-        });
+        }, {}, invocation);
         await this.storage.transaction(async tx => {
           for (const [key, row] of mirrors) {
             const current = await tx.get<typeof row>(key);
@@ -98,8 +99,8 @@ export class AgentWebhooks {
         // Leave every intent durable if either database or acknowledgement failed.
         return;
       }
-      await publishPending(this.env);
-    });
+      await publishPending(this.env, invocation);
+    }));
     this.pending = next.catch(() => {});
     return this.pending;
   }

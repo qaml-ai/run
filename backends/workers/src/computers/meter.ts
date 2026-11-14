@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import type { InstanceType } from "./provider.ts";
 import type { ComputerSetup } from "./egress.ts";
 
@@ -73,7 +74,7 @@ export interface MeterStore {
 }
 export interface MeterBilling {
   /** Refuse (throw) when the payer may not start platform compute: an agent spend limit, or spent prepaid credit. */
-  admit(payer: ComputerPayer): Promise<void>;
+  admit(payer: ComputerPayer, invocation?: AgentInvocation): Promise<void>;
   /** Record and charge a finished session, once per `id`. */
   charge(charge: ComputerCharge): Promise<void>;
 }

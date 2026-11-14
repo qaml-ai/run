@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 )
@@ -50,6 +51,8 @@ func commitPaths(changes []change, base string) (*commitDir, []commitPath) {
 }
 
 func (d *commitDir) read(ctx context.Context, r *objects.Repository, timing *commitTiming) error {
+	start := time.Now()
+	defer func() { timing.read += time.Since(start) }()
 	for level := []*commitDir{d}; len(level) > 0; {
 		var ids []string
 		for _, dir := range level {

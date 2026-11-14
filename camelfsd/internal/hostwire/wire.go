@@ -22,7 +22,8 @@ type Register struct {
 }
 
 type Registered struct {
-	BootEpoch int64 `json:"bootEpoch"`
+	BootEpoch int64    `json:"bootEpoch"`
+	Images    []string `json:"images"`
 }
 
 // Heartbeat is sent one at a time. The host applies a reply only if its

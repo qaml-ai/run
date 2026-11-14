@@ -25,7 +25,7 @@ small backend fixture interface.
 | `billing.test.ts` | 10 | Credit admission, catalog/actual/BYOK charging, active time, ledger paging, disabled Stripe |
 | `computers-api.test.ts` | 7 | Both native providers, eager creation, delegated/subagent computer inheritance |
 | `credential-exchange.test.ts` | 1 | Signed credential exchange, scope isolation and request authorization |
-| `credit-holds.test.ts` | 1 | Public admission and credit reconciliation |
+| `model-credit.test.ts` | 1 | Public admission and credit reconciliation |
 | `custom-providers.test.ts` | 5 | Provider CRUD, request formats, scoped selection and SDK behavior |
 | `end-user-balance-events.test.ts` | 1 | Public balance events |
 | `end-user-credits.test.ts` | 1 | Settings, users and ledger authorization |

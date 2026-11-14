@@ -17,14 +17,14 @@ test("usage sums posting hours and UTC days across buckets, calls and agents", a
   const credits = new EndUserCredits(db);
   await credits.setSettings("a", { enabled: true, allowances: { "bot:*": 100 }, markupBps: 2_500 });
   await credits.post("a", "p", { kind: "grant", amount: 1_000, key: "grant" });
-  await credits.charge("a", "p", "bot:1", 200, "first", { call: "response", agent: "one" }, START + 1);
-  await credits.charge("a", "p", "bot:1", 100, "second", { call: "response", agent: "one" }, START + 2);
-  await credits.charge("a", "p", "bot:1", 20, "call", { call: "compaction", agent: "one" }, START + 3);
-  await credits.charge("a", "p", "bot:1", 20, "agent", { call: "response", agent: "two" }, START + 4);
-  await credits.charge("a", "p", "bot:2", 30, "bucket", {}, START + 5);
-  await credits.charge("a", "p", "bot:1", 40, "hour", { call: "response", agent: "one" }, START + HOUR);
-  await credits.charge("a", "p", "builder", 2_000, "writeoff", { call: "image" }, START + DAY);
-  await credits.charge("a", "p", "builder", 10, "end", {}, START + 2 * DAY);
+  await credits.debit("a", "p", "bot:1", (200) / 1_000_000, "first", { call: "response", agent: "one" }, { now: START + 1 });
+  await credits.debit("a", "p", "bot:1", (100) / 1_000_000, "second", { call: "response", agent: "one" }, { now: START + 2 });
+  await credits.debit("a", "p", "bot:1", (20) / 1_000_000, "call", { call: "compaction", agent: "one" }, { now: START + 3 });
+  await credits.debit("a", "p", "bot:1", (20) / 1_000_000, "agent", { call: "response", agent: "two" }, { now: START + 4 });
+  await credits.debit("a", "p", "bot:2", (30) / 1_000_000, "bucket", {}, { now: START + 5 });
+  await credits.debit("a", "p", "bot:1", (40) / 1_000_000, "hour", { call: "response", agent: "one" }, { now: START + HOUR });
+  await credits.debit("a", "p", "builder", (2_000) / 1_000_000, "overdraw", { call: "image" }, { now: START + DAY });
+  await credits.debit("a", "p", "builder", (10) / 1_000_000, "end", {}, { now: START + 2 * DAY });
   // Every non-usage kind, even one carrying call metadata, is excluded.
   await db.query(`insert into end_user_ledger (tenant, end_user, kind, amount, raw, idempotency_key, balance_after, created_at)
     select 'a', 'p', kind, 1, 999, kind, 0, $1 from unnest('{grant,refund,adjustment,spend,expiry}'::text[]) kind`, [START]);
@@ -36,7 +36,7 @@ test("usage sums posting hours and UTC days across buckets, calls and agents", a
     { at: START, bucket: "bot:1", call: "response", agent: "two", calls: 1, raw: 20, allowance: 0, paid: 25, writtenOff: 0 },
     { at: START, bucket: "bot:2", call: null, agent: null, calls: 1, raw: 30, allowance: 30, paid: 0, writtenOff: 0 },
     { at: START + HOUR, bucket: "bot:1", call: "response", agent: "one", calls: 1, raw: 40, allowance: 0, paid: 50, writtenOff: 0 },
-    { at: START + DAY, bucket: "builder", call: "image", agent: null, calls: 1, raw: 2_000, allowance: 0, paid: 650, writtenOff: 1_480 },
+    { at: START + DAY, bucket: "builder", call: "image", agent: null, calls: 1, raw: 2_000, allowance: 0, paid: 2_500, writtenOff: 0 },
   ]);
   const daily = await credits.usage("a", "p", { ...query, step: "day" });
   assert.equal(daily.rows.length, 5);

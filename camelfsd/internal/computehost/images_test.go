@@ -11,12 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"golang.org/x/sys/unix"
 )
 
 type imageStore struct {
@@ -159,5 +162,120 @@ func TestOpenFailsOnImageCacheScanError(t *testing.T) {
 	h, err := Open(t.Context(), Config{Data: t.TempDir()})
 	if h != nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Open = %v, %v, want missing images directory error", h, err)
+	}
+}
+
+func TestRegistrationPrewarmsMissingSparseImage(t *testing.T) {
+	zstd, err := exec.LookPath("zstd")
+	if err != nil {
+		t.Skip("zstd is required")
+	}
+	data := make([]byte, (4<<20)+19)
+	copy(data[64<<10:], "non-zero payload")
+	sha := fmt.Sprintf("%x", sha256.Sum256(data))
+	cmd := exec.Command(zstd, "-q", "-c")
+	cmd.Stdin = bytes.NewReader(data)
+	zip, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := json.Marshal(map[string]any{"sha256": sha, "bytes": len(data),
+		"zstdSha256": fmt.Sprintf("%x", sha256.Sum256(zip)), "zstdBytes": len(zip)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "images")
+	if err := os.Mkdir(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cachedData := []byte("cached")
+	cached := fmt.Sprintf("%x", sha256.Sum256(cachedData))
+	if err := os.WriteFile(filepath.Join(cache, cached+".ext4"), cachedData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	started, release := make(chan struct{}), make(chan struct{})
+	var downloads, other atomic.Int32
+	h, err := Open(ctx, Config{Data: dir, Shape: hostwire.Shape{DiskMiB: 8},
+		Post: func(_ context.Context, path string, req, out any) error {
+			if path != "/register" || !slices.Equal(req.(hostwire.Register).Images, []string{cached}) {
+				t.Errorf("unexpected registration: %s %+v", path, req)
+			}
+			*out.(*hostwire.Registered) = hostwire.Registered{BootEpoch: 1, Images: []string{cached, sha}}
+			return nil
+		},
+		Images: imageStore{open: func(ctx context.Context, key string) (io.ReadCloser, error) {
+			if !strings.HasPrefix(key, "guest/"+sha+".") {
+				other.Add(1)
+				return nil, os.ErrNotExist
+			}
+			if strings.HasSuffix(key, ".json") {
+				return io.NopCloser(bytes.NewReader(manifest)), nil
+			}
+			if downloads.Add(1) == 1 {
+				close(started)
+			}
+			select {
+			case <-release:
+				return io.NopCloser(bytes.NewReader(zip)), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if err := h.register(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("registration did not start the download")
+	}
+	if err := h.register(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := h.images.ensure(ctx, sha, 8)
+		result <- err
+	}()
+	for {
+		h.images.mu.Lock()
+		flight := h.images.inflight[sha]
+		joined := flight != nil && flight.waiters == 2
+		h.images.mu.Unlock()
+		if joined {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("boot did not join prewarming")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	h.work.Wait()
+	if downloads.Load() != 1 || other.Load() != 0 {
+		t.Fatalf("downloads=%d unexpected=%d", downloads.Load(), other.Load())
+	}
+	path := filepath.Join(cache, sha+".ext4")
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("installed image differs from source, size=%d: %v", len(got), err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Size != int64(len(data)) || st.Blocks*512 >= st.Size {
+		t.Fatalf("image size=%d, allocated=%d", st.Size, st.Blocks*512)
 	}
 }

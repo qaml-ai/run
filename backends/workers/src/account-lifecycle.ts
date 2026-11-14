@@ -44,8 +44,6 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       const tenant = prefix.split("/")[1];
       await removePrefix(env, prefix);
       if (prefix.startsWith("chunks/")) {
-        // Legacy files belong to the deleted account as well (ledger L90).
-        await removePrefix(env, `files/${encodeURIComponent(tenant)}/`);
         await removePrefix(env, `images/${encodeURIComponent(tenant)}/`);
       }
     } },
@@ -77,11 +75,7 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
         try {
           await deleteRepo(env as RepoEnv, tenant, repo.id);
         } catch (error) {
-          const code = repoErrorFrom(error)?.code;
-          if (code === "no_repo") continue;
-          if (code !== "uninitialized") throw error;
-          // A create interrupted after index registration has no repo contents to delete.
-          await env.TENANTS.getByName(tenant).markRepoDeleted(repo.id);
+          if (repoErrorFrom(error)?.code !== "no_repo") throw error;
         }
       }
     },

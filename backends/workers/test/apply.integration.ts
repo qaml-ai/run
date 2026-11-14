@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
-import { serveFakeCamelfsd } from './fake-camelfsd.ts';
 import { fileURLToPath } from 'node:url';
 import { startFixture } from './fixture.ts';
 
 async function fixture(t: TestContext, vars: Record<string, string> = {}) {
   const token = 'local-apply-integration-token-at-least-32-characters';
-  const daemon=await serveFakeCamelfsd('apply-repos');
-  t.after(()=>daemon.close());
-  const f = await startFixture({ camelfsStub:true,entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),token, tenant: 'apply-test', tenants: [{ id: 'apply-test', token, billing: 'prepaid' }], vars:{...vars,TEST_CAMELFS_URL:daemon.url,CAMELFS_API_TOKEN:'apply-repos'} });
+  const f = await startFixture({ entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url)),token, tenant: 'apply-test', tenants: [{ id: 'apply-test', token, billing: 'prepaid' }], vars });
   t.after(() => f.stop());
   const apply = async (body: unknown) => {
     const response = await fetch(`${f.url}/v1/apply`, { method: 'POST', headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });

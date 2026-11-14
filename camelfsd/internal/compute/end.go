@@ -88,6 +88,10 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 	// MONEY: a host-reported end is never later than the tier's own clock.
 	at = min(at, now.UnixMilli())
 	values[":at"], values[":code"] = n(at), s(string(end.Code))
+	if end.Reason != "" {
+		expr += ", #reason = :endReason"
+		values[":endReason"] = s(end.Reason)
+	}
 	if stop != nil {
 		expr += ", #stopRequestedAt = :stop, #stopCheckpoint = :checkpoint, #stopReason = :reason"
 		values[":stop"], values[":checkpoint"], values[":reason"] = n(stop.at), b(stop.checkpoint), s(string(stop.reason))
@@ -143,6 +147,13 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 	}
 	if err := c.writeWithUsage(ctx, event, v.UsageSeq, append(writes, staged)...); err != nil {
 		return VM{}, err
+	}
+	if end.Code == StartFailed {
+		refErr := ""
+		if end.refErr != nil {
+			refErr = end.refErr.Error()
+		}
+		c.log("vm_start_failed", map[string]any{"vm": v.ID, "pool": v.Pool, "host": v.Host, "reason": end.Reason, "refErr": refErr})
 	}
 	ended, err := c.Get(ctx, v.ID)
 	if err == nil {

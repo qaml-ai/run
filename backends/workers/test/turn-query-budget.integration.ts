@@ -13,14 +13,14 @@ import test from "node:test";
 import { startFixture } from "./fixture.ts";
 
 const CEILINGS = {
-  // Limit ticks read the admission snapshot, and balance reads no longer flush durable usage receipts (nothing on
-  // Workers writes an unaccounted one): a few statements of run-to-run slack.
-  // Measured 73 / 73 / 67 / 73 / 72 (was 87 / 82 / 93 / 82 / 82).
-  simple: 80,
-  // Measured 96 / 96 / 96 / 96 / 106 (was 128 / 123 / 123 / 123 / 123).
-  tool: 112,
-  // A 3 s model call; measured 88 / 81 / 83 / 88 / 81 (was 97 / 96 / 96 / 103 / 97).
-  slow: 94,
+  // The tenant row is read once per invocation or turn step, the balance once per provider call: a few statements of
+  // run-to-run slack.
+  // Measured 57 / 57 / 57 / 63 / 57 (was 67 / 73 / 67 / 67 / 67).
+  simple: 66,
+  // Measured 84 / 89 / 84 / 79 / 79 (was 102 / 101 / 113 / 96 / 106).
+  tool: 95,
+  // A 3 s model call; measured 73 / 73 / 72 / 78 / 73 (was 82 / 87 / 87 / 83 / 88).
+  slow: 84,
 } as const;
 
 test("a turn's Postgres statements stay under the budget", { timeout: 180_000 }, async t => {
@@ -40,9 +40,10 @@ test("a turn's Postgres statements stay under the budget", { timeout: 180_000 },
     return value;
   };
   const { id: agent } = await call("/v1/agents", { model: "test/echo" });
-  type Phases = Record<string, { queries: number; statements: Record<string, { queries: number }> }>;
+  type Phases = Record<string, { queries: number; connections: number; statements: Record<string, { queries: number }> }>;
   const profile = async () => (await call(`/experimental/agents/${agent}/__test/alarm-state`)).profile as { epoch: string; phases: Phases };
-  const total = (phases: Phases) => Object.values(phases).reduce((sum, phase) => sum + phase.queries, 0);
+  const total = (phases: Phases, field: "queries" | "connections" = "queries") =>
+    Object.values(phases).reduce((sum, phase) => sum + phase[field], 0);
   /** The profile once post-turn work has landed: no new statement for 1.5 s. */
   const settled = async () => {
     let last = await profile();
@@ -70,17 +71,23 @@ test("a turn's Postgres statements stay under the budget", { timeout: 180_000 },
         const delta = queries - (before.phases[phase]?.statements[category]?.queries ?? 0);
         if (delta) statements[`${phase} ${category}`] = delta;
       }
-    return { count: total(after.phases) - total(before.phases), statements };
+    return { count: total(after.phases) - total(before.phases), connects: total(after.phases, "connections") - total(before.phases, "connections"), statements };
   };
 
   const counts: Record<string, number> = {};
+  const connections: Record<string, number> = {};
   const breakdowns: Record<string, Record<string, number>> = {};
   for (const [name, text] of [["simple", "hello"], ["tool", "tool:write:alpha"], ["slow", "slow:3000:hello slowly"]] as const) {
-    const { count, statements } = await turn(name, text);
+    const { count, connects, statements } = await turn(name, text);
     counts[name] = count;
+    connections[name] = connects;
     breakdowns[name] = statements;
   }
   t.diagnostic(`statements per turn: ${JSON.stringify(counts)}`);
+  t.diagnostic(`connects per turn: ${JSON.stringify(connections)}`);
+  for (const [name, statements] of Object.entries(breakdowns))
+    t.diagnostic(`${name} billing reads: ${JSON.stringify(Object.fromEntries(Object.entries(statements)
+      .filter(([category]) => / select:[^ ]*\b(?:tenants|credit_accounts)\b/.test(category))))}`);
   for (const name of Object.keys(CEILINGS) as (keyof typeof CEILINGS)[])
     assert.ok(counts[name] <= CEILINGS[name],
       `${name} turn ran ${counts[name]} statements, over its budget of ${CEILINGS[name]}:\n${JSON.stringify(Object.entries(breakdowns[name]).sort((a, b) => b[1] - a[1]), null, 1)}`);

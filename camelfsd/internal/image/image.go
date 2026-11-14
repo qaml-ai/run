@@ -15,6 +15,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -48,19 +49,25 @@ type Config struct {
 	VirtualSize             int64
 	MaxFiles                int
 	MaxBytes, MaxPathsBytes int64
+	BaselineDiskMax         int64
 }
 type Manager struct {
 	pins            map[string]map[string]bool
 	PrehydrateBytes atomic.Int64
 	Config
-	Store    store.Store
-	Cache    *cache.Cache
-	Refs     refs.Repository
-	deviceMu sync.Mutex // Serializes free NBD selection and attachment.
-	mu       sync.Mutex
-	mounts   map[string]*Mount
-	stop     chan struct{}
-	sweepMu  sync.Mutex
+	Store          store.Store
+	Cache          *cache.Cache
+	Refs           refs.Repository
+	deviceMu       sync.Mutex // Serializes free NBD selection and attachment.
+	mu             sync.Mutex
+	mounts         map[string]*Mount
+	stop           chan struct{}
+	sweepMu        sync.Mutex
+	baselineSlot   chan struct{}
+	baselineWork   sync.WaitGroup
+	baselineCtx    context.Context
+	baselineCancel context.CancelFunc
+	baselineBytes  int64 // Reserved logical bytes, guarded by mu.
 }
 type Request struct {
 	// TEMPORARY: removed with jobhost phase 2
@@ -104,6 +111,7 @@ type Mount struct {
 	preparedSnapshot                           string
 	preparedRanges                             []chunk.Range
 	pendingRanges                              []chunk.Range
+	needsBaseline                              bool
 }
 
 // Hydration defaults on for JSON callers. Only an absent JSON fence enables
@@ -183,18 +191,28 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if e := blank(c); e != nil {
 		return nil, e
 	}
+	if c.BaselineDiskMax < 0 {
+		return nil, apierr.Invalid("invalid baseline disk cap")
+	}
+	if c.BaselineDiskMax == 0 {
+		c.BaselineDiskMax = 2 * min(c.VirtualSize, math.MaxInt64/2)
+	}
 	if c.CowMax < 0 || c.CowMax%512 != 0 {
 		return nil, apierr.Invalid("invalid cow-max")
 	}
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
-	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{})}
+	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
+	if err := m.recoverBaselines(); err != nil {
+		return nil, err
+	}
 	if c.RecoverSessions {
 		if err := m.recoverSessions(entries); err != nil {
 			return nil, err
 		}
 	}
+	m.baselineCtx, m.baselineCancel = context.WithCancel(context.Background())
 	go m.maintain()
 	return m, nil
 }
@@ -367,6 +385,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e != nil {
 		return nil, e
 	}
+	v.needsBaseline = q.Session && r.Tree != v.Tree
 	if v.Fence == nil {
 		if v.DM != "" {
 			_, e = run(ctx, "blockdev", "--setro", v.Image)
@@ -636,6 +655,11 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 		v.releaseOrigin()
 		v.releaseOrigin = nil
 	}
+	if v.Session {
+		if e := m.recoverBaseline(v, false); e != nil {
+			return false, e
+		}
+	}
 	if e := os.RemoveAll(filepath.Dir(v.Dest)); e != nil {
 		return false, e
 	}
@@ -653,6 +677,7 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 func (m *Manager) Close() {
 	defer m.Cache.Close()
 	close(m.stop)
+	m.StopBaselines()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {
@@ -672,6 +697,7 @@ func (m *Manager) Close() {
 			log.Printf("op=cleanup jobId=%s error=%v", id, e)
 		}
 	}
+	m.baselineWork.Wait()
 }
 
 func (m *Manager) lookup(id string) *Mount { m.mu.Lock(); defer m.mu.Unlock(); return m.mounts[id] }

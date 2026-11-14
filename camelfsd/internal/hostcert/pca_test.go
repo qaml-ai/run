@@ -8,7 +8,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/url"
@@ -40,6 +43,22 @@ func (f *fakePCA) DescribeCertificateAuthority(_ context.Context, in *acmpca.Des
 }
 
 func (f *fakePCA) IssueCertificate(_ context.Context, in *acmpca.IssueCertificateInput, _ ...func(*acmpca.Options)) (*acmpca.IssueCertificateOutput, error) {
+	// AWS Private CA's rule, which a real tier hit (MalformedCSRException): an empty subject needs a critical SAN.
+	block, _ := pem.Decode(in.Csr)
+	if block == nil {
+		return nil, &types.MalformedCSRException{Message: aws.String("not a PEM CSR")}
+	}
+	req, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, &types.MalformedCSRException{Message: aws.String(err.Error())}
+	}
+	if bytes.Equal(req.RawSubject, []byte{0x30, 0x00}) {
+		for _, ext := range req.Extensions {
+			if ext.Id.Equal(sanOID) && !ext.Critical {
+				return nil, &types.MalformedCSRException{Message: aws.String("CSR must mark the SAN extension critical when it has an empty subject")}
+			}
+		}
+	}
 	f.issued = in
 	f.polls = 0
 	return &acmpca.IssueCertificateOutput{CertificateArn: aws.String(testCAARN + "/certificate/test")}, nil
@@ -74,7 +93,7 @@ func TestUnitPCAIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{URIs: []*url.URL{san}}, key)
+	der, err := NewCSR(key, uri)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,5 +147,61 @@ func TestUnitPCAIssue(t *testing.T) {
 	fake.leaf = encode(leaf, root)
 	if _, _, _, err := pca.Issue(t.Context(), der, uri, Lifetime, true); err == nil || !strings.Contains(err.Error(), "EKU") {
 		t.Fatalf("CA leaf with wrong EKU: %v", err)
+	}
+}
+
+// The rule Private CA enforces, in CheckCSR and in the fake: an empty subject needs a critical SAN. NewCSR (the one
+// builder the tier and hosts use) gives a subject, so its requests pass both; Go's default empty-subject CSR fails both.
+func TestUnitCSRSubjectRule(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, uri := range []string{TierURI, "spiffe://camelfs/host/i-06fa9b78a2a9d188b"} {
+		der, err := NewCSR(key, uri)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := x509.ParseCertificateRequest(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Subject.CommonName != uri || len(req.URIs) != 1 || req.URIs[0].String() != uri || bytes.Equal(req.RawSubject, emptySubject) {
+			t.Fatalf("NewCSR(%s): subject %q, URIs %v", uri, req.Subject.CommonName, req.URIs)
+		}
+		if err := CheckCSR(der, uri); err != nil {
+			t.Fatalf("CheckCSR(NewCSR(%s)): %v", uri, err)
+		}
+		fake := &fakePCA{}
+		if _, err := fake.IssueCertificate(t.Context(), &acmpca.IssueCertificateInput{Csr: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})}); err != nil {
+			t.Fatalf("fake PCA refused NewCSR(%s): %v", uri, err)
+		}
+	}
+	san, _ := url.Parse(TierURI)
+	bare, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{URIs: []*url.URL{san}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckCSR(bare, TierURI); err == nil || !strings.Contains(err.Error(), "critical") {
+		t.Fatalf("CheckCSR accepted an empty subject with a non-critical SAN: %v", err)
+	}
+	var malformed *types.MalformedCSRException
+	fake := &fakePCA{}
+	if _, err := fake.IssueCertificate(t.Context(), &acmpca.IssueCertificateInput{Csr: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: bare})}); !errors.As(err, &malformed) {
+		t.Fatalf("fake PCA accepted an empty subject with a non-critical SAN: %v", err)
+	}
+	// An empty subject with a critical SAN is what Private CA accepts; CheckCSR agrees.
+	value, err := asn1.Marshal([]asn1.RawValue{{Class: asn1.ClassContextSpecific, Tag: 6, Bytes: []byte(TierURI)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	critical, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		ExtraExtensions: []pkix.Extension{{Id: sanOID, Critical: true, Value: value}},
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckCSR(critical, TierURI); err != nil {
+		t.Fatalf("CheckCSR refused an empty subject with a critical SAN: %v", err)
 	}
 }

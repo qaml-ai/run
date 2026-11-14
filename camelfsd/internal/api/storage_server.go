@@ -16,7 +16,8 @@ import (
 )
 
 type StorageServer struct {
-	compute     http.Handler
+	compute     *http.ServeMux
+	vmAPI       *vmAPI
 	refs        *refstore.Store
 	marksTable  string
 	lineages    *lineageStore
@@ -63,14 +64,29 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		stats := s.repo().DB.DB.Stats()
 		jsonReply(w, http.StatusOK, map[string]int{"cacheConnections": stats.OpenConnections, "cacheInUse": stats.InUse})
-	case s.compute != nil && (r.URL.Path == "/v1/usage" || r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/")):
-		if r = s.authorize(w, r); r != nil {
-			s.compute.ServeHTTP(w, r)
+	case r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/"):
+		route := "/v1/vms"
+		if s.compute != nil {
+			_, pattern := s.compute.Handler(r)
+			route = vmLogRoute(pattern)
 		}
+		loggedAccess(w, r, route, "", s.serveCompute)
+	case s.compute != nil && r.URL.Path == "/v1/usage":
+		loggedAccess(w, r, "/v1/usage", "", s.serveCompute)
 	case strings.HasPrefix(r.URL.Path, "/v1/lineages/"):
 		s.loggedStorage(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (s *StorageServer) serveCompute(w http.ResponseWriter, r *http.Request) {
+	if s.compute == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r = s.authorize(w, r); r != nil {
+		s.compute.ServeHTTP(w, r)
 	}
 }
 
@@ -94,6 +110,11 @@ func authorizeToken(w http.ResponseWriter, r *http.Request, keys *auth.Keys) *ht
 	claims, err := keys.Verify(token, time.Now())
 	if err != nil {
 		authFail(w, http.StatusUnauthorized, "unauthorized", err.Error())
+		return nil
+	}
+	// The lineage-less usage token (auth.UsageSubject) is good for the usage ledger and nothing else.
+	if claims.Lineage == "" && !(r.Method == http.MethodGet && r.URL.Path == "/v1/usage") {
+		authFail(w, http.StatusForbidden, "forbidden", "a usage token reads only GET /v1/usage")
 		return nil
 	}
 	log.Printf("op=token sub=%q lin=%q acc=%q kid=%q", claims.Subject, claims.Lineage, claims.Access, claims.KeyID)

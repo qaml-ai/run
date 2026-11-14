@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Run through the repo's leased scripts/sprite-test, one validation job per sprite.
+# Report SIGSEGVs with a triage of each new Node core (scripts/segv-triage.py); nothing is retried.
 set -euo pipefail
 mode=${1:?Expected unit, integration [I/N], compat, python, contract or checks}
 cd "$(dirname "$0")/.."
+workers=$PWD
 repo=$(cd ../.. && pwd)
 artifact="$HOME/runs/workers-agents-$mode-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$artifact"
@@ -12,17 +14,59 @@ mkdir -p "$HOME/cores"; ulimit -c unlimited 2>/dev/null || true
 # Keep the two newest cores only: each can be gigabytes.
 { ls -t "$HOME"/cores/core.* 2>/dev/null || true; } | tail -n +3 | xargs -r rm -f
 sudo -n sysctl -q -w kernel.core_pattern="$HOME/cores/core.%e.%p.%t" 2>/dev/null || true
-dmesg_from=$(dmesg 2>/dev/null | wc -l || echo 0)
+dmesg_from=$(dmesg 2>/dev/null | wc -l) || dmesg_from=0
+run_start=$(date +%s)
+declare -A core_triage=()
+
+collect_cores() {
+  local core mtime line node
+  new_cores=()
+  for core in "$HOME"/cores/core.node.*; do
+    [[ -f $core ]] || continue
+    mtime=$(stat -c %Y -- "$core") || return 1
+    if (( mtime >= run_start )); then
+      new_cores+=("$core")
+    fi
+  done
+  command -v gdb >/dev/null || return 0
+  node=$(command -v node) || return 1
+  for core in "${new_cores[@]}"; do
+    [[ ! -v 'core_triage[$core]' ]] || continue
+    if line=$(LC_ALL=C gdb -q -batch -nx -iex 'set auto-load off' -c "$core" \
+        -x "$workers/scripts/segv-triage.py" "$node" 2>&1) &&
+        line=$(awk '/^SEGV_TRIAGE / { print }' <<< "$line") &&
+        [[ $line == "SEGV_TRIAGE ${core##*/} class="* && $line != *$'\n'* ]]; then
+      core_triage[$core]=$line
+    else
+      core_triage[$core]="SEGV_TRIAGE ${core##*/} class=unknown si_code=0 si_pid=0 core_pid=0 frame0=? startup=no"
+    fi
+  done
+}
+
 segv_report() {
+  local core
   grep -rqs "signal: 'SIGSEGV'" "$artifact" || return 0
+  collect_cores || true
   {
     echo "== SIGSEGV on $(hostname) ($(nproc) cpus, uptime $(cut -d' ' -f1 /proc/uptime)s): node $(node -v)"
     grep -rh -B8 "signal: 'SIGSEGV'" "$artifact" | grep -E "^not ok|location:" || true
     echo "== kernel since the run started"; dmesg 2>/dev/null | tail -n +"$((dmesg_from + 1))" | tail -50 || true
     echo "== memory"; free -m; echo "== load $(cat /proc/loadavg)"
     echo "== cores"; ls -la "$HOME/cores" 2>/dev/null | tail -5
+    if ! command -v gdb >/dev/null; then
+      echo "SEGV_TRIAGE skipped: gdb is unavailable"
+    else
+      for core in "${new_cores[@]}"; do
+        printf '%s\n' "${core_triage[$core]:-}"
+      done
+    fi
   } | tee "$artifact/sigsegv.txt"
 }
+
+run_suite() {
+  "$@" 2>&1 | tee "$artifact/$mode.tap"
+}
+
 finish() {
   code=$?
   trap - EXIT
@@ -56,8 +100,8 @@ if [[ $mode == python || $mode == contract ]]; then
   export PATH="$HOME/.workers-python/bin:$PATH"
 fi
 case "$mode" in
-  unit) npm test 2>&1 | tee "$artifact/unit.tap" ;;
-  integration) npm run test:integration ${2:+-- --test-shard=$2} 2>&1 | tee "$artifact/integration.tap" ;;
+  unit) run_suite npm test ;;
+  integration) run_suite npm run test:integration ${2:+-- --test-shard="$2"} ;;
   compat) npm run test:compat 2>&1 | tee "$artifact/compatibility-run.log" ;;
   python) npm run test:python 2>&1 | tee "$artifact/python-compat.log" ;;
   contract)

@@ -34,7 +34,9 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "VOICE_CALLS", "class_name": "VoiceCall" },
       { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
+      { "name": "CAMELFS_SMOKE", "class_name": "CamelfsSmoke" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -43,7 +45,6 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
@@ -115,7 +116,10 @@
     {
       "tag": "delete-job-hosts",
       "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
-    }
+    },
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
+    { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] },
+    { "tag": "camelfs-smoke", "new_sqlite_classes": ["CamelfsSmoke"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
   // stopped by its code through ctx.container. Under the durable_object policy
@@ -133,8 +137,6 @@
       }
     }
   ],
-  // The camelFS v0 host (EC2 m8id) through the camel-fs-proto tunnel to its import proxy on 127.0.0.1:8790 (VPC service camel-fs-proto).
-  "vpc_services": [{ "binding": "CAMELFS", "service_id": "01a1d207-1c73-78f3-bba9-42db316bf4f2" }],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
@@ -188,6 +190,10 @@
     "AGENT_ACCOUNT_EMAIL_FROM": "camelrun@staging.camelai.dev",
     "SCHEDULE_EMAIL_FROM": "camelrun@staging.camelai.dev",
     "ADMIN_TENANTS": "pilot-admin",
+    "CAMELFS_URL": "https://fs.camelai.dev",
+    "CAMELFS_COMPUTE": "1",
+    "CAMELFS_POOLS": "{\"default\":\"test\"}",
+    "GUEST_IMAGE_SHA256": "b349e90c1ff2e860408ca4ebfe7236292ab167983c95fbcdd253ea8893f04083",
     "AGENT_OPEN_SIGNUP": "false",
     "AGENT_MAX_AGENTS": "2100",
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",

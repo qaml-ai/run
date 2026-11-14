@@ -1,3 +1,4 @@
+import { AgentInvocation } from "./agent-invocation.ts";
 import { recordScheduleRun, scheduleRunSource } from '../../../src/core/schedule-runs.ts';
 import { withSql } from './postgres.ts';
 import { failure } from './observability.ts';
@@ -10,10 +11,11 @@ export async function stageScheduleOutcome(tx: DurableObjectTransaction, tenant:
  await tx.put(`schedule-outcome:${record.id}`, {source,agent,record:{id:record.id,state:record.state,endedAt:record.endedAt,outcome:{error:record.outcome?.error,result:{error:result?.error,stopped:result?.stopped,usage:result?.usage}}}});
 }
 /** Durable outbox: SQL outages cannot block a run or lose its terminal outcome. */
-export async function flushScheduleOutcomes(runtime: AgentRuntime) {
+export async function flushScheduleOutcomes(runtime: AgentRuntime, invocation?: AgentInvocation): Promise<void> {
+ if (!invocation) return AgentInvocation.run(scope => flushScheduleOutcomes(runtime, scope));
  for(const [key,pending] of await runtime.ctx.storage.list<any>({prefix:'schedule-outcome:',limit:100})) {
   try {
-   await withSql(runtime.env,sql=>recordScheduleRun(sql,pending.source,pending.agent,pending.record));
+   await withSql(runtime.env,sql=>recordScheduleRun(sql,pending.source,pending.agent,pending.record), invocation);
    await runtime.ctx.storage.delete(key);
   } catch(error) { failure(runtime.env,'schedule_outcome_failed',error); break; }
  }

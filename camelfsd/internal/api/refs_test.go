@@ -16,8 +16,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go/middleware"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
+	"github.com/qaml-ai/run/camelfsd/internal/compute"
 	"github.com/qaml-ai/run/camelfsd/internal/ddb/ddbtest"
+	"github.com/qaml-ai/run/camelfsd/internal/delivery"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
@@ -273,7 +277,9 @@ func TestRefsRoutes(t *testing.T) {
 	}
 	call("DELETE", "/refs/main?expect="+left, nil, "", 409, "held")
 	call("DELETE", "/refs/main", nil, "", 409, "held")
-	cas("main", merge, merge, "", 409, "fenced")
+	if got := details(cas("main", merge, merge, "", 409, "fenced")); !reflect.DeepEqual(got, map[string]any{"holder": "host:1:mount", "epoch": taken["epoch"]}) {
+		t.Fatal(got)
+	}
 	if got := details(call("DELETE", "", nil, "", 409, "held")); !reflect.DeepEqual(got["held"], []any{"main"}) {
 		t.Fatal(got)
 	}
@@ -288,7 +294,9 @@ func TestRefsRoutes(t *testing.T) {
 	call("DELETE", "/refs/main/lease", map[string]any{"fence": bodyFence}, "", 400, "invalid_request")
 	renew := call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 2000}, "", 200, "")
 	now = time.UnixMilli(int64(renew["deadline"].(float64)))
-	call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 1000}, "", 409, "fenced")
+	if got := details(call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 1000}, "", 409, "fenced")); !reflect.DeepEqual(got, map[string]any{"holder": nil, "epoch": nil}) {
+		t.Fatal(got)
+	}
 	call("DELETE", "/refs/main/lease", nil, "", 409, "fenced")
 	claims = runtime
 	next := call("POST", "/refs/main/lease", lease, "", 200, "")
@@ -303,7 +311,71 @@ func TestRefsRoutes(t *testing.T) {
 	if got := details(call("DELETE", "/refs/main?expect="+left, nil, "", 412, "stale")); got["current"] != merge {
 		t.Fatal(got)
 	}
+	_, vms := ddbtest.VMTable(t)
+	_, hosts := hostTable(t, "pool", "host")
+	_, deliveries := hostTable(t, "shard", "id")
+	// Force DynamoDB Local to return one index row per page.
+	indexQueries := 0
+	options := client.Options()
+	options.APIOptions = append(options.APIOptions, func(stack *middleware.Stack) error {
+		return stack.Initialize.Add(middleware.InitializeMiddlewareFunc("lineagePageSize", func(
+			ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler,
+		) (middleware.InitializeOutput, middleware.Metadata, error) {
+			if q, ok := in.Parameters.(*dynamodb.QueryInput); ok && aws.ToString(q.IndexName) == "lineage" {
+				q.Limit = aws.Int32(1)
+				indexQueries++
+			}
+			return next.HandleInitialize(ctx, in)
+		}), middleware.Before)
+	})
+	controller := &compute.Controller{DB: dynamodb.New(options), Tables: compute.Tables{VMs: vms, VMLineageIndex: "lineage", Hosts: hosts, Deliveries: deliveries},
+		Now: func() time.Time { return now }, RuntimeURL: "https://runtime.example/ended"}
+	s.EnableCompute(&compute.Loop{C: controller}, nil, []string{"test"}, nil, 10*time.Second)
+	createVM := func(id, lineage, ref string) {
+		t.Helper()
+		if _, err := controller.Create(t.Context(), compute.CreateRequest{
+			ID: id, Lineage: lineage, Ref: ref, Pool: "test", Deadline: now.Add(time.Minute),
+			Session: &compute.Session{IdleStopS: 10},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertVM := func(id string, phase compute.Phase, reason string) {
+		t.Helper()
+		vm, err := controller.Get(t.Context(), id)
+		if err != nil || vm.Phase != phase || vm.Reason != reason || phase == compute.Ended && vm.Code != compute.StartFailed {
+			t.Fatalf("vm: %+v, err: %v", vm, err)
+		}
+	}
+	createVM("deleted-ref", lineage, "main")
+	createVM("deleted-lineage", lineage, "keep-until-lineage-delete")
+	createVM("other-ref", lineage, "other-ref")
+	createVM("placed-ref", lineage, "main")
+	const pool = "test"
+	hostEpoch, err := controller.Register(t.Context(), compute.HostInfo{Pool: pool, Host: "host", BootID: "boot",
+		Slots: 8, Shape: compute.Shape{VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeVM := func(id string) {
+		t.Helper()
+		if vm, err := controller.Place(t.Context(), id); err != nil || vm.Phase != compute.Placed {
+			t.Fatalf("place %s: %+v, %v", id, vm, err)
+		}
+	}
+	placeVM("placed-ref")
 	call("DELETE", "/refs/main?expect="+merge, nil, "", 204, "")
+	assertVM("deleted-ref", compute.Ended, "ref_deleted")
+	assertVM("placed-ref", compute.Ended, "ref_deleted")
+	if indexQueries < 4 {
+		t.Fatalf("ref delete queried only %d index pages for four VMs", indexQueries)
+	}
+	waiters, err := controller.Waiting(t.Context(), pool)
+	if err != nil || len(waiters) != 2 {
+		t.Fatalf("waiters after ref delete: %+v, %v", waiters, err)
+	}
+	assertVM("deleted-lineage", compute.Requested, "")
+	assertVM("other-ref", compute.Requested, "")
 	reborn := call("POST", "/refs", ref("main", base, nil), "", 201, "")
 	if reborn["leaseEpoch"] != next["epoch"] {
 		t.Fatal(reborn)
@@ -335,8 +407,76 @@ func TestRefsRoutes(t *testing.T) {
 	}
 	claims = runtime
 	now = now.Add(time.Second)
+	createVM("placed-lineage", lineage, "main")
+	placeVM("placed-lineage")
+	// Start VMs without a ref lease so the lineage delete can proceed.
+	for id, vmLineage := range map[string]string{"running": lineage, "booting": lineage, "other": "t:other"} {
+		createVM(id, vmLineage, "main")
+		placeVM(id)
+		if _, err := controller.MarkBooting(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+		if id != "booting" {
+			if _, err := controller.Started(t.Context(), id, "host", hostEpoch, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	getVM := func(id string) compute.VM {
+		t.Helper()
+		vm, err := controller.Get(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return vm
+	}
+	ended, other := getVM("deleted-ref"), getVM("other")
+	push := &deleteStopRecorder{orders: map[string]bool{}}
+	controller.Pusher = push
+	createVM("cleanup-fails", lineage, "main")
+	// A duplicate outbox ID makes this VM's end transaction fail atomically.
+	work, err := delivery.Stage(deliveries, delivery.Delivery{ID: "vm.ended:cleanup-fails", URL: "https://runtime.example/ended", Body: []byte("{}")}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.TransactWriteItems(t.Context(), &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{work},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var failures []any
+	controller.Log = func(event string, fields map[string]any) {
+		if event == "vm_delete_cleanup_failed" {
+			failures = append(failures, fields["vm"])
+		}
+	}
+	now = now.Add(time.Second)
 	call("DELETE", "", nil, "delete-lineage", 204, "")
 	call("DELETE", "", nil, "delete-lineage", 204, "")
+	assertVM("deleted-lineage", compute.Ended, "lineage_deleted")
+	assertVM("other-ref", compute.Ended, "lineage_deleted")
+	assertVM("placed-lineage", compute.Ended, "lineage_deleted")
+	assertVM("cleanup-fails", compute.Requested, "")
+	waiters, err = controller.Waiting(t.Context(), pool)
+	if err != nil || len(waiters) != 1 || waiters[0].VM != "cleanup-fails" {
+		t.Fatalf("waiters after lineage delete: %+v, %v", waiters, err)
+	}
+	if !reflect.DeepEqual(failures, []any{"cleanup-fails"}) {
+		t.Fatalf("cleanup failures: %v", failures)
+	}
+	for _, id := range []string{"running", "booting"} {
+		vm := getVM(id)
+		if vm.Phase != compute.Stopping || vm.StopRequestedAt == nil || *vm.StopRequestedAt != now.UnixMilli() ||
+			vm.StopCheckpoint || vm.StopReason != compute.Stopped {
+			t.Fatalf("stop after lineage delete: %+v", vm)
+		}
+	}
+	if !reflect.DeepEqual(push.orders, map[string]bool{"running": false, "booting": false}) {
+		t.Fatalf("host stop orders: %v", push.orders)
+	}
+	if !reflect.DeepEqual(getVM("deleted-ref"), ended) || !reflect.DeepEqual(getVM("other"), other) {
+		t.Fatal("lineage delete changed an ended VM or a VM on another lineage")
+	}
 	call("GET", "", nil, "", 410, "lineage_deleted")
 	call("GET", "/refs", nil, "", 410, "lineage_deleted")
 	call("GET", "/commits/"+base, nil, "", 410, "lineage_deleted")
@@ -346,12 +486,36 @@ func TestRefsRoutes(t *testing.T) {
 	}
 }
 
+type deleteStopRecorder struct {
+	orders map[string]bool
+}
+
+func (*deleteStopRecorder) Boot(context.Context, compute.Host, hostwire.BootSpec) error {
+	return nil
+}
+
+func (p *deleteStopRecorder) Stop(_ context.Context, _ compute.Host, id string, checkpoint bool) error {
+	p.orders[id] = checkpoint
+	return nil
+}
+
 type beforeRefUpdate struct {
 	*dynamodb.Client
-	before func()
+	before       func()
+	refTable     string
+	refReads     int
+	transactions int
+}
+
+func (c *beforeRefUpdate) GetItem(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	if aws.ToString(input.TableName) == c.refTable {
+		c.refReads++
+	}
+	return c.Client.GetItem(ctx, input, opts...)
 }
 
 func (c *beforeRefUpdate) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	c.transactions++
 	if c.before != nil {
 		before := c.before
 		c.before = nil
@@ -383,7 +547,7 @@ func TestRefMutationRoutes(t *testing.T) {
 	s := NewStorageServer(repo, "test", nil)
 	s.ConfigureRefs(client, refTable, lineages, nil, marks)
 	normal := s.refs
-	raced := &beforeRefUpdate{Client: client}
+	raced := &beforeRefUpdate{Client: client, refTable: refTable}
 	s.refs = refstore.New(raced, refTable, nil, commitParents{repo})
 	s.refs.GuardLineages(lineages)
 	const l = "test:mutations"
@@ -505,6 +669,46 @@ func TestRefMutationRoutes(t *testing.T) {
 		t.Fatalf("uncommitted upload must count: %+v %v", usage, err)
 	}
 
+	create("quota-edge", baseID)
+
+	// Each new upload tips the post-upload total to the requested boundary.
+	for _, tc := range []struct {
+		name    string
+		margin  int64
+		status  int
+		code    string
+		enqueue bool
+	}{
+		{"below-mark", 11, 201, "", false},
+		{"at-mark", 10, 201, "", true},
+		{"above-mark", 9, 201, "", true},
+		{"below-limit", 1, 201, "", true},
+		{"at-limit", 0, 201, "", true},
+		{"above-limit", -1, 507, "storage_limit", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := client.DeleteItem(t.Context(), &dynamodb.DeleteItemInput{TableName: aws.String(marks), Key: lineageKey(l)}); err != nil {
+				t.Fatal(err)
+			}
+			usage, err := s.refs.ReadUsage(t.Context(), l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const limit = 100
+			text := tc.name
+			wantBytes := usage.MarkedBytes + usage.WrittenSince + int64(len(text))
+			reply := write("quota-edge", []map[string]any{{"path": "boundary", "text": text}},
+				map[string]any{"quota": map[string]int64{"limitBytes": limit, "otherBytes": limit - tc.margin - wantBytes}}, tc.status, tc.code)
+			if tc.status == 201 {
+				check(reply["bytes"], float64(wantBytes))
+			}
+			mark, err := client.GetItem(t.Context(), &dynamodb.GetItemInput{TableName: aws.String(marks), Key: lineageKey(l), ConsistentRead: aws.Bool(true)})
+			if err != nil || (mark.Item["lineage"] != nil) != tc.enqueue {
+				t.Fatalf("mark = %v, err = %v, want enqueue = %v", mark, err, tc.enqueue)
+			}
+		})
+	}
+
 	// Change the head after CAS validation, before the DynamoDB condition runs.
 	create("race", baseID)
 	create("other", baseID)
@@ -519,7 +723,10 @@ func TestRefMutationRoutes(t *testing.T) {
 		}
 	}
 	moveDuringCAS(unrelated)
+	raced.refReads, raced.transactions = 0, 0
 	retried := write("race", []map[string]any{{"path": "edit", "text": "win", "expectBlob": "none"}}, nil, 201, "")
+	check(raced.refReads, 3)     // Initial head, transaction conflict reread, retry head.
+	check(raced.transactions, 2) // One doomed transaction, then the retry's.
 	check(retried["parents"], []any{version(unrelated)})
 	check(retried["files"], float64(2))
 	conflicting := write("race", []map[string]any{{"path": "x", "text": "rival"}}, nil, 201, "")
@@ -532,6 +739,23 @@ func TestRefMutationRoutes(t *testing.T) {
 	check(details["path"], "x")
 	check(details["blob"], conflicting["changed"].([]any)[0].(map[string]any)["newBlob"])
 	check(version(get("race")), version(conflicting))
+
+	create("explicit-race", baseID)
+	raced.before = func() {
+		_, err := normal.Cas(t.Context(), l, "explicit-race", refstore.Move{
+			Kind: "move", Version: version(unrelated), Tree: unrelated["tree"].(string),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	raced.refReads, raced.transactions = 0, 0
+	details = write("explicit-race", []map[string]any{{"path": "edit", "text": "lose"}},
+		map[string]any{"expect": baseID}, 412, "stale")
+	check(raced.refReads, 2)     // Initial head and transaction conflict reread.
+	check(raced.transactions, 1) // The doomed transaction only; expect forbids a retry.
+	check(details["current"], version(unrelated))
+	check(version(get("explicit-race")), version(unrelated))
 
 	mergeRef := func(name, theirs, mode string, status int, code string) map[string]any {
 		t.Helper()

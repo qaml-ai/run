@@ -43,7 +43,7 @@ interface CapacityStub {
   close(workflow: string): Promise<void>;
 }
 
-export interface WorkflowEnv extends SecurityEnv, Pick<RepoEnv, "REPOS"> {
+export interface WorkflowEnv extends SecurityEnv, Pick<RepoEnv, "CAMELFS_URL"> {
   CODEMODE_SANDBOX: DurableObjectNamespace;
   WORKFLOWS: DurableObjectNamespace<WorkflowObject>;
   /** The owners' result caches (workflow-results.ts); absent where not deployed: then nothing is reused. */
@@ -187,7 +187,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
     };
     const self = this;
-    this.forks = new BranchJanitor({ storage: ctx.storage, deleteOwned: id => env.REPOS.getByName(`${self.runner.identity().tenant!}:${id}`).deleteOwned(`workflow:${name!}`) });
+    this.forks = new BranchJanitor({ storage: ctx.storage, deleteOwned: async id => (await repoContext(env as unknown as RepoEnv, self.runner.identity().tenant!, id, `workflow:${name!}`)).repo.deleteOwned(`workflow:${name!}`) });
     this.agents = new WorkflowAgents({
       storage: ctx.storage,
       get workflow() { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant!, ...(identity.bucket ? { bucket: identity.bucket } : {}) }; },
@@ -269,7 +269,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
           const fork = await childBranch(env as unknown as RepoEnv, tenant, this.ctx.storage, { workflow: name, ...effect }, repoAt(source), hit.fork.version);
           return { key, hit: { ...hit, value: { ...(hit.value as object), fork } } };
         } catch (error) {
-          if ((repoErrorFrom(error)?.status ?? (error as { status?: number }).status) !== 404) throw error;
+          const repoError = repoErrorFrom(error);
+          if (repoError?.code !== 'unknown_commit' && (repoError?.status ?? (error as { status?: number }).status) !== 404) throw error;
           console.error(JSON.stringify({ type: 'workflow_cache_fork_missing', workflow: name, key: effect.key }));
           return { key };
         }
