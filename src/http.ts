@@ -91,7 +91,10 @@ export async function readText(body: AsyncIterable<Uint8Array> | null, limit: nu
 
 /** Parse a JSON body; an empty body is `empty` when given, and invalid otherwise. */
 export async function readJson(body: AsyncIterable<Uint8Array> | null, limit: number, empty?: object) {
-  const text = await readText(body, limit);
+  return parseJson(await readText(body, limit), empty);
+}
+
+export function parseJson(text: string, empty?: object) {
   if (!text && empty) return empty;
   try { return JSON.parse(text); }
   catch { throw new HttpError(400, "Invalid JSON"); }

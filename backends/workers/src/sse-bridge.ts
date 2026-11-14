@@ -89,5 +89,5 @@ export async function bridgeEvents(request: Request, open: (request: Request) =>
   quiet();
   request.signal?.addEventListener("abort", gone, { once: true });
   if (request.signal?.aborted) gone();
-  return new Response(body, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" } });
+  return new Response(body, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" } });
 }

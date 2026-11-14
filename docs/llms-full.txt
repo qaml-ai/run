@@ -2991,7 +2991,7 @@ chunk as it arrives. A browser that goes away cancels the read upstream.
 
 The cost: every open chat holds a request on your server for as long as it is open. Serverless
 functions cut a request at their time limit (on Vercel, the function's maximum duration); the chat
-then reconnects from where it was, and after two streams that deliver nothing it switches to long
+then reconnects from where it was, and after a stream that delivers nothing for 8 s it switches to long
 polls of at most 25 seconds, which fit any limit. Direct reads keep that load off your servers, so
 they stay the default: use the proxy when policy requires a single origin.
 
