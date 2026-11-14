@@ -159,7 +159,7 @@ test("a parse's deadline is its caller's: a request's is inspectMs + 2 s, the st
   let answerAfterMs = 0;
   await fakeLauncher(t, (kind, socket) => {
     socket.resume();
-    const send = frames(socket, message => {
+    const send = frames(socket, (message: any) => {
       if (message.type === "request") setTimeout(() => send({ type: "response", id: message.id, result: { media: { kind: "image", mimeType: "image/png", width: 1, height: 1 } } }), answerAfterMs);
     });
     return true;
