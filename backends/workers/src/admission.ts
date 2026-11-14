@@ -42,7 +42,7 @@ export async function createAdmission(env: AdmissionEnv, tenant: string, counted
   return (await service(env)).limits.agentCreate(tenant, counted);
 }
 
-/** Resolve policy before taking the directory lock; its counter uses the same transaction. */
+/** Resolve policy before taking the directory lock. The counter commits on the limiter's database. */
 export async function prepareCreateAdmission(env: AdmissionEnv, tenant: string) {
   return (await service(env)).limits.prepareAgentCreate(tenant);
 }
