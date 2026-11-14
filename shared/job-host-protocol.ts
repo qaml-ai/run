@@ -1,5 +1,5 @@
-// The wire between a job host (jobhost/agent.ts) and the runtime (backends/workers/src/jobs/hosts.ts), and between the
-// host and the guest agent in a VM (jobhost/guest.ts). docs/design/job-hosts-plan.md.
+// Legacy job-host WebSocket protocol used by the Workers runtime (backends/workers/src/jobs/hosts.ts).
+// See docs/design/job-hosts-plan.md for the original design.
 //
 // Host <-> runtime: one WebSocket per host, the host dialing out. Every message is a JSON document; one bigger than a
 // frame (a job's files, a result's outputs) is sent as frames of at most FRAME_CHARS characters, `{ t: "part", n, i, of,

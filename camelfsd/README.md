@@ -35,16 +35,14 @@ whole images. Privileged loop/reflink tests skip when unsupported.
 An absolute directory in --store substitutes the local store. S3 uses the SDK
 credential chain. No runtime TCP listener starts without --api-token-file.
 --api-token-file accepts either a raw token (outer whitespace trimmed) or an
-env-format file containing CAMELFS_API_TOKEN=<hex>, such as jobhost's
-/etc/camel/camelfs-api.env (root-owned, mode 0600). Blank tokens are refused;
-env values must be hex. Other env lines and comments are ignored when that key
-is present.
+env-format file containing CAMELFS_API_TOKEN=<hex> (root-owned, mode 0600).
+The token must be nonempty and the env value must be hex. Other env lines and
+comments are ignored when that key is present.
 The runtime listener serves /v1 plus exactly POST /v0/trees and
 PUT /v0/blobs/:sha256?lineage=... using the Unix socket handlers. Both import
-routes require the same bearer as /v1. Other /v0 paths return 404 on TCP;
-host operations stay on the mode-0600 Unix socket. This replaces jobhost's
-phase-1 import proxy on 127.0.0.1:8790: stop the proxy before enabling the
-daemon listener, leaving the pilot VPC service address unchanged. Protect the loopback listener behind the runtime's private tunnel.
+routes require the same bearer as /v1. Other /v0 paths return 404 on TCP.
+Host operations stay on the mode-0600 Unix socket. Protect the loopback listener
+behind the runtime's private tunnel.
 Never log the bearer. Every /v1 request, including a 401, logs one access line:
 op=<METHOD>:/v1/<route> lineage=<l> status=<code> ms=<n>. Routes are templates;
 object ids, file paths, query values and bodies are omitted. Lineages are
@@ -249,6 +247,8 @@ unavailable (503). Conflict lists are in error.details.conflicts.
 
 ## Host API and guest streams
 
+Compute hosts run `camelfsd host --compute` ([design §1](../docs/design/camel-fs-compute.md#1-one-host-process)).
+
 Examples use S=/run/camelfsd/api.sock.
 
 ```sh
@@ -288,12 +288,7 @@ metadata, sends ready, validates the stream, then sends ack before uploading.
 The guest thaws on ack, nack, EOF or deadline. After ack the daemon writes
 blobs, trees, the commit and the image root; records lineage_objects and
 tree_roots; and returns {tree,root,commit,timings}. Flat timing fields remain
-for one release. Today's order, for jobs: jobhost sends `checkpointed{tree}` to
-the guest as soon as the daemon answers (`jobhost/agent.ts`), and the runtime
-(`HostJob` → `RepoDO`) performs the CAS after the result arrives
-(`backends/workers/src/jobs/hosts.ts`, `finishJobRepo`); that is safe only
-because a job's VM is destroyed right after. Option C's order (camel-fs-files.md
-§9.7), required for computers and `bash` VMs: the host calls the tier's `cas`
+for one release. With compute enabled, the host calls the tier's `cas`
 in-VPC first and sends `checkpointed{tree}` (or `{error}`) only after the ref
 moved. Publication failure leaves tree_roots unchanged.
 

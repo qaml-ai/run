@@ -389,13 +389,6 @@ jobs:
         working-directory: .
         env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
         run: CAMELFSD_BIN="$RUNNER_TEMP/camelfsd" node --experimental-strip-types --disable-warning=ExperimentalWarning tests/camelfs-refs-tier.ts
-      - name: Node and Go guest compatibility
-        working-directory: .
-        run: |
-          (cd camelfsd && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags guest -o "$RUNNER_TEMP/camelfsd-guest" ./cmd/camelfsd)
-          tests=(tests/jobhost.test.ts tests/jobhost-camelfs*.test.ts tests/jobhost-host.test.ts)
-          env -u CAMEL_GUEST_BIN node --experimental-strip-types --disable-warning=ExperimentalWarning --test "${tests[@]}"
-          CAMEL_GUEST_BIN="$RUNNER_TEMP/camelfsd-guest" node --experimental-strip-types --disable-warning=ExperimentalWarning --test "${tests[@]}"
   guest-image:
     needs: changes
     if: needs.changes.outputs.guest_image == 'true'

@@ -4,6 +4,7 @@
 > one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
 > child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2
 > and §6. What this document says about jobs is the record of the replaced design.
+> Compute hosts run `camelfsd host --compute` ([§1](camel-fs-compute.md#1-one-host-process)).
 
 Phase 2 of [Durable multi-agent workflows](swarm-workflows.md) ("Our own job hosts"; phases table). It turns that
 section and the 2026-11-11 Firecracker spike into PR slices. **Nothing here creates AWS resources.** Every slice that

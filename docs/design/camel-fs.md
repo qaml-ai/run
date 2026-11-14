@@ -4,6 +4,7 @@
 > one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
 > child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2
 > and §6. What this document says about jobs is the record of the replaced design.
+> Compute hosts run `camelfsd host --compute` ([§1](camel-fs-compute.md#1-one-host-process)).
 
 Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions; merged in #874; §6 records the v0 defaults he approved (questions 8, 9, 10, 12). Docs
 only; nothing here creates AWS resources (Miguel applies every AWS change himself). It supersedes the file half of

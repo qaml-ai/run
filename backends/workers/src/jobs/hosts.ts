@@ -3,7 +3,7 @@
 //   enrolls first (POST /v1/internal/job-hosts/enroll): it proves who it is with an attestation (shared/job-host-attest.ts:
 //   AWS sts:GetCallerIdentity in production, a test secret in tests), and gets a short-lived credential bound to the host
 //   id the attestation proves. A host can be revoked: its credentials go, its socket closes, it takes no job;
-// - JobHost: one per host. The host's agent (jobhost/agent.ts) dials out to it over a WebSocket; its first message is
+// - JobHost: one per host. The legacy host agent dials out to it over a WebSocket; its first message is
 //   its credential, checked against the registry, and the socket closes when the credential expires. It sends the host
 //   only that host's jobs and takes their results;
 // - HostJob: one per job id, as ContainerComputer is for a container job: it admits the payer, takes a computer slot,
