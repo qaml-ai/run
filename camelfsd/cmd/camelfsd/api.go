@@ -18,6 +18,7 @@ import (
 
 	"github.com/qaml-ai/run/camelfsd/internal/api"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
+	"github.com/qaml-ai/run/camelfsd/internal/ddb"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -29,6 +30,9 @@ func apiRole(args []string) error {
 	data := f.String("data", "", "local cache directory")
 	url := f.String("store", "", "s3://bucket/prefix or local directory")
 	region := f.String("region", "us-west-2", "AWS region")
+	refsTable := f.String("refs-table", "", "DynamoDB refs table")
+	lineagesTable := f.String("lineages-table", "", "DynamoDB lineages table")
+	endpoint := f.String("ddb-endpoint", "", "DynamoDB Local endpoint")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	jwksFile := f.String("jwks-file", "", "runtime JWKS file (alternative to CAMELFS_JWKS)")
 	issuer := f.String("token-issuer", "", "runtime issuer URL")
@@ -38,6 +42,9 @@ func apiRole(args []string) error {
 	}
 	if f.NArg() != 0 || *listen == "" || !filepath.IsAbs(*data) || *url == "" || *fetchDepth < 1 {
 		return fmt.Errorf("invalid api flags")
+	}
+	if (*refsTable == "") != (*lineagesTable == "") || (*endpoint != "" && *refsTable == "") {
+		return fmt.Errorf("refs-table and lineages-table must be configured together")
 	}
 	var inline *string
 	if value, ok := os.LookupEnv("CAMELFS_JWKS"); ok {
@@ -74,7 +81,15 @@ func apiRole(args []string) error {
 		return err
 	}
 	repo := &objects.Repository{DB: db, Store: st, TempDir: tmp}
-	server := &http.Server{Handler: api.NewStorageServer(repo, version, keys), ReadHeaderTimeout: 5 * time.Second}
+	handler := api.NewStorageServer(repo, version, keys)
+	if *refsTable != "" {
+		client, err := ddb.Open(ctx, ddb.Config{Region: *region, Endpoint: *endpoint})
+		if err != nil {
+			return err
+		}
+		handler.ConfigureRefs(client, *refsTable, *lineagesTable, nil)
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err

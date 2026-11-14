@@ -8,11 +8,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 )
 
 type StorageServer struct {
+	refs        *refstore.Store
+	lineages    *lineageStore
 	repo        func() *objects.Repository
 	version     string
 	authorize   func(http.ResponseWriter, *http.Request) *http.Request
@@ -28,6 +33,16 @@ func NewStorageServer(repo *objects.Repository, version string, keys *auth.Keys)
 			return authorizeToken(w, r, keys)
 		},
 	}
+}
+
+// ConfigureRefs enables the tier's DynamoDB-backed lineage and ref routes.
+func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineagesTable string, now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+	s.lineages = &lineageStore{client: client, table: aws.String(lineagesTable), now: now}
+	s.refs = refstore.New(client, refsTable, now, commitParents{s.repo()})
+	s.refs.GuardLineages(lineagesTable)
 }
 
 func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {

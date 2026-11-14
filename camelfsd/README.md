@@ -438,3 +438,23 @@ public key `x`. To rotate file-backed keys, add the new key, send SIGHUP,
 then remove the old key after its tokens expire and send SIGHUP again. A
 failed reload keeps the previous keys. Restart env-backed nodes to rotate
 their keys.
+
+### Lineages and refs
+
+Configure both `--refs-table` (partition key `lineage`, sort key `name`) and
+`--lineages-table` (partition key `lineage`) on `camelfsd api` to enable the
+lineage and ref routes. Both use `--region`. For DynamoDB Local, also set
+`--ddb-endpoint` to its URL. The host role has no ref routes.
+
+A ref glob matches the whole name. `*` matches zero or more characters in a
+single path segment. `**` also matches slashes. Listing and owner cleanup
+include only refs covered by the token. Use `**` for lineage-wide owner cleanup.
+URL-encode the ref name as one path parameter, especially when a ref name ends
+in a route suffix such as `/lease`. A fence token must name one exact ref.
+
+Lineage deletion freezes ref mutations across API instances while it checks for
+held leases. A held lineage is reopened and returns `409 held`. A retry can
+resume an interrupted sweep. The final conditional write records `deletedAt`.
+Subsequent requests return `410 lineage_deleted`. An exact replay of a successful
+keyed lineage deletion returns its original `204` while the idempotency entry
+is available.

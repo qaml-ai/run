@@ -245,16 +245,13 @@ func TestAcquireRace(t *testing.T) {
 	if fence.Holder == "" {
 		t.Fatal("no lease winner")
 	}
-	same, err := s.Acquire(ctx, lineage, "main", fence.Holder, 2000)
-	must(t, err)
-	if same.Epoch != fence.Epoch || same.Deadline != now.UnixMilli()+2000 {
-		t.Fatalf("same-holder acquisition = %+v", same)
-	}
-	*now = time.UnixMilli(same.Deadline)
+	_, err := s.Acquire(ctx, lineage, "main", fence.Holder, 2000)
+	wantError(t, err, "held", 409)
+	*now = now.Add(time.Second)
 	next, err := s.Acquire(ctx, lineage, "main", "takeover", 1000)
 	must(t, err)
 	if next.Epoch != fence.Epoch+1 {
-		t.Fatalf("takeover = %+v after %+v", next, same)
+		t.Fatalf("takeover = %+v after %+v", next, fence)
 	}
 	_, err = s.Cas(ctx, lineage, "main", Move{Kind: "commit", Version: id(2), Tree: id(9), Parents: []string{base}, Fence: &fence})
 	wantError(t, err, "fenced", 409)
@@ -291,7 +288,7 @@ func TestExpiryAndCleanup(t *testing.T) {
 	_, err := s.Get(ctx, lineage, "job/expired")
 	wantError(t, err, "no_ref", 404)
 	wantError(t, s.Watch(ctx, lineage, "job/expired", "agent:a"), "no_ref", 404)
-	must(t, s.Unwatch(ctx, lineage, "job/expired", "agent:old"))
+	wantError(t, s.Unwatch(ctx, lineage, "job/expired", "agent:old"), "no_ref", 404)
 	wantError(t, s.Delete(ctx, lineage, "job/held", nil), "held", 409)
 	wantError(t, s.Create(ctx, lineage, "job/held", target, nil, nil), "exists", 409)
 
