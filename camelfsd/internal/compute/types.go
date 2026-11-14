@@ -25,7 +25,8 @@ type Controller struct {
 	CommitTree func(ctx context.Context, lineage, version string) (string, error)
 	Log        func(event string, fields map[string]any)
 	HostFresh  time.Duration
-	clock      clockObservation
+	// clock is shared by every Controller copy that uses the same instrumented client (EnableClockCheck).
+	clock *clockObservation
 
 	// afterWrite is used by tests to lose a successful write's response.
 	afterWrite func() error

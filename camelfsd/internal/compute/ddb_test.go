@@ -58,7 +58,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) fresh() *Controller {
-	return &Controller{DB: f.DB, Tables: f.Tables, Now: f.Now, RuntimeURL: f.RuntimeURL}
+	return &Controller{DB: f.DB, Tables: f.Tables, Now: f.Now, RuntimeURL: f.RuntimeURL, clock: f.clock}
 }
 
 func must[T any](t *testing.T) func(T, error) T {

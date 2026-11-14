@@ -26,21 +26,25 @@ type clockObservation struct {
 // MONEY: Observe the Date header on each DynamoDB response, including SDK retries.
 // Call before serving requests. Use the wall clock, independent of the lifecycle test clock.
 func (c *Controller) EnableClockCheck() {
+	c.clock = &clockObservation{}
+	clock := c.clock
 	opts := c.DB.Options()
 	opts.APIOptions = append(opts.APIOptions, func(stack *middleware.Stack) error {
-		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("ComputeClock", c.observeClock), middleware.Before)
+		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("ComputeClock", func(ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler) (middleware.DeserializeOutput, middleware.Metadata, error) {
+			return clock.observe(ctx, in, next)
+		}), middleware.Before)
 	})
 	c.DB = dynamodb.New(opts)
 }
 
-func (c *Controller) observeClock(ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler) (middleware.DeserializeOutput, middleware.Metadata, error) {
+func (o *clockObservation) observe(ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler) (middleware.DeserializeOutput, middleware.Metadata, error) {
 	out, meta, err := next.HandleDeserialize(ctx, in)
 	if response, ok := out.RawResponse.(*smithyhttp.Response); ok {
 		if date, err := http.ParseTime(response.Header.Get("Date")); err == nil {
-			c.clock.Lock()
+			o.Lock()
 			now := time.Now()
-			c.clock.at, c.clock.skew = now, now.Sub(date)
-			c.clock.Unlock()
+			o.at, o.skew = now, now.Sub(date)
+			o.Unlock()
 		}
 	}
 	return out, meta, err
@@ -48,6 +52,12 @@ func (c *Controller) observeClock(ctx context.Context, in middleware.Deserialize
 
 // MONEY: Fail closed before minting a usage ULID. Date has one-second granularity.
 func (c *Controller) requireClock(ctx context.Context, id string) error {
+	// MONEY: no instrumented client means no observation: fail closed.
+	if c.clock == nil {
+		clockSkewRefusals.Add(1)
+		c.log("clock_skew_refused", map[string]any{"reason": "clock check not enabled"})
+		return ErrClockSkew
+	}
 	c.clock.Lock()
 	stale := time.Since(c.clock.at) >= time.Minute
 	c.clock.Unlock()
