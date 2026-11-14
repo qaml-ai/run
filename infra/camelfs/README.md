@@ -4,7 +4,7 @@ Option C of the camelFS design (Miguel, 2026-11-13; `docs/design/camel-fs.md` §
 camelFS as **one AWS service in `us-west-2`**. A stateless Go tier, `camelfsd api` (the §9 storage plane plus a
 refs package, and the compute control plane of `camel-fs-compute.md` §3), behind a load balancer; **refs, leases
 and fences as DynamoDB conditional writes**; **trees and commits in DynamoDB** (L74); **blobs and chunks in S3**;
-the VM hosts run `camelfsd --role host` and reach the tier in-VPC. This directory is that service as OpenTofu in `terraform/`, applied only through the guarded `apply.sh`.
+the VM hosts run `camelfsd host` and reach the tier in-VPC. This directory is that service as OpenTofu in `terraform/`, applied only through the guarded `apply.sh`.
 Account `904534089871`, `us-west-2`. **Nothing here has been applied.**
 
 It is its own root module with its own state: key **`agent-runtime/camelfs/terraform.tfstate`** in the existing

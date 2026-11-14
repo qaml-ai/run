@@ -5,9 +5,9 @@ and remove concepts like the Volumes entirely. We'll figure out how to migrate."
 camelRun's file model with camelFS ([camel-fs.md](camel-fs.md)) as the **only** concept. Volumes are gone. There is
 no back-compat, and migration is out of scope except for one note at the end.
 
-**Decided (Miguel, 2026-11-13 ~17:00): option C.** camel-fs is one AWS service, `camelfsd --role api`, a stateless
+**Decided (Miguel, 2026-11-13 ~17:00): option C.** camel-fs is one AWS service, `camelfsd api`, a stateless
 Go tier in us-west-2 holding refs, leases and fences as DynamoDB conditional writes and the objects in DynamoDB and
-S3. Hosts run `camelfsd --role host`, and the runtime holds no ref. `RepoDO`, the tunnel and the shared bearer go.
+S3. Hosts run `camelfsd host`, and the runtime holds no ref. `RepoDO`, the tunnel and the shared bearer go.
 §6 has the state split and §9 the contract; the sections in between say "the tier" where they said "the repo
 object".
 
@@ -205,7 +205,7 @@ regional storage tier). The state is now:
 | pending deliveries (`notify`; compute's `vm.*` hints) | DynamoDB `deliveries` | `shard`, `id` |
 | usage events (`usage.vm`, `usage.storage`), pulled by the runtime (§9.13) | DynamoDB `usage`, TTL 35 days | `shard`, `ulid` |
 | blobs, chunks, roots, packs, search shards | S3, one bucket per environment, keys prefixed by lineage (§9) | `<lineage>/<kind>/<id>` |
-| the NVMe cache of chunks, images, trees and shards | each host's `camelfsd --role host` | content hash |
+| the NVMe cache of chunks, images, trees and shards | each host's `camelfsd host` | content hash |
 | each agent's cache of tree contents | the agent's own Durable Object, by tree id | tree id |
 | the per-tenant repo list; the token signing keys (`RuntimeSigner`, Postgres `signing_keys`) | the runtime | tenant |
 
@@ -242,8 +242,8 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   other table, so a host moves a ref only through the tier's fence check. Hosts write results under their
   existing bucket `PutObject`; #1003 removed #967's deny on results.
 
-Nothing in the runtime holds a ref. `camelfsd --role api` is a stateless Go tier behind an ALB in us-west-2: the §9
-plane plus a `refs` package, any node serving any request. Hosts run `camelfsd --role host` (the block layer and the
+Nothing in the runtime holds a ref. `camelfsd api` is a stateless Go tier behind an ALB in us-west-2: the §9
+plane plus a `refs` package, any node serving any request. Hosts run `camelfsd host` (the block layer and the
 cache, no refs) and reach the tier in-VPC. The `CAMELFS` tunnel, the shared bearer (ledger L30) and `RepoDO` are
 deleted. The reasons, from the study:
 
@@ -416,7 +416,7 @@ the model requires two refs to move together.
 
 **Build order** (from the study; each step a PR stack onto `camelfs/files-model`):
 
-1. `camelfsd --role api` behind an ALB (HTTP/2 off, after the 10-24 stalls) with runtime-signed tokens (§9.10), `CAMELFS`
+1. `camelfsd api` behind an ALB (HTTP/2 off, after the 10-24 stalls) with runtime-signed tokens (§9.10), `CAMELFS`
    switched to HTTPS, the tunnel and the shared bearer deleted (L30).
 2. Miguel creates the DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`; on demand, PITR) and the IAM
    roles (api, host). Tokens reuse the runtime's `RuntimeSigner` keys; the tier gets their JWKS as a file (§9.10).
@@ -428,6 +428,14 @@ the model requires two refs to move together.
 5. Hosts do the CAS in-VPC, notify arrives as webhooks into outbox rows, the public `/v1/repos` moves onto the tier,
    and `RepoDO` is deleted.
 6. Node on the same API.
+
+**What runs today** (verified against the code, 2026-11-14). The binary's subcommands are
+`camelfsd host | api | guest | init | cleanup` (plus `client` and `version`; `cmd/camelfsd/main.go`). `camelfsd
+api` serves §9's storage plane with the §9.10 token check over a host-local `storage.db`. The `refstore` (C2),
+`compute` and `ddb` (K4b–K4c1) and `delivery` packages exist under `camelfsd/internal/`, tested in CI against
+DynamoDB Local, **but `cmd/camelfsd` does not link them yet**. Refs, leases and fences still live in `RepoDO`, and
+the CAS is still the runtime's, until C3 (wf-repos' R2) swaps the runtime's `RepoClient` onto the tier. The
+`--compute` and `--listen-compute` flags of camel-fs-compute.md are K2's, not yet in `camelfsd host`.
 
 **Measured first:** the Worker → us-west-2 round trip (far and `wnam`) and DynamoDB's conditional-write p50/p99 from
 the tier's seat. Step 1 does not wait for them.
@@ -459,7 +467,7 @@ and console, plus the schema, docs and ~5,300 lines of tests that follow them. W
 bar, not a date: Miguel wants fast iteration, and the three lanes of §9 build in parallel; v0's ledger continues
 throughout):
 
-1. **The service and the API** (option C, build steps 1–5 of §6): `camelfsd --role api` with the `refs` package
+1. **The service and the API** (option C, build steps 1–5 of §6): `camelfsd api` with the `refs` package
    on DynamoDB (refs, leases, fences, quota, watchers), tokens and the notify webhook; `/v1/repos/*` including files, `files:batch`,
    `commit`, `history`, `diff`, `restore`, `branches`, `merge`; tokens; the Pi file tools over repos for agents
    without a VM (every write a commit); `checkpoint(message)`, `restore`, `history`, `diff` as tools; the edge cache
@@ -525,8 +533,8 @@ path)` before any lookup by hash). camel-bots' move off project snapshots is mig
 
 This section is the build contract for the lanes working in parallel: the service (`proto-block`: the tier and its
 `refs` package), the runtime's files API and tools (`wf-repos`), and jobs and hosts (`wf-delegation`). Under option C
-(§6) it is the exact HTTP API of `camelfsd --role api`, a stateless Go tier behind an ALB in us-west-2. The
-callers are the runtime (Workers and Node, over HTTPS), the hosts (`camelfsd --role host` and `jobhost`, in-VPC) and,
+(§6) it is the exact HTTP API of `camelfsd api`, a stateless Go tier behind an ALB in us-west-2. The
+callers are the runtime (Workers and Node, over HTTPS), the hosts (`camelfsd host` and `jobhost`, in-VPC) and,
 from build step 5, customers on the public `/v1/repos`. Until step 1 lands, the same routes are served by the m8id's
 daemon behind the `CAMELFS` tunnel with the shared bearer (L30). Everything else about a host's daemon (mount, fork,
 release, the cache, the lazy origin, hydration) is unchanged and stays on the host's Unix socket.

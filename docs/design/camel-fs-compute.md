@@ -32,7 +32,7 @@ Node.
 **After the merge**, one Go binary has three roles:
 
 - **`camelfsd host`** owns the block device, Firecracker, the slots and the guest channel in one process.
-  - Compute is a module behind `--compute`. Without the flag it is exactly today's storage-only host: no
+  - Compute is a module behind `--compute` (K2; the flag does not exist yet). Without the flag it is exactly today's storage-only host: no
     Firecracker, no netns pool, no slots, no `/v1/vms` routes. With it, the host advertises its shape (vCPUs,
     memory, slots, pool, features) and runs VMs.
   - The module is the Go port of `vm.ts`/`firecracker.ts` (launcher, jailer, the `VmLauncher` seam kept as an
@@ -221,7 +221,7 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
 
 ## 5. Order, and the ledger rows this touches
 
-Option C's storage sequence is C1 (`--role api` + tokens), C2 (the refs package), C3 (the runtime's `RepoClient`
+Option C's storage sequence is C1 (`camelfsd api` + tokens), C2 (the refs package), C3 (the runtime's `RepoClient`
 swap) and C4 (hosts do the CAS in-VPC, notify, `RepoDO` deleted). Compute slots in as follows, each a PR stack onto
 `camelfs/files-model`:
 
