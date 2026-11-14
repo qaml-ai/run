@@ -1030,8 +1030,10 @@ on `expiresAt` at 35 days. TTL deletes 0–48 h late, so an event stays readable
   (≈ 20 s) back; tier clock skew is milliseconds. That is what lets the watermark below be safe.
 - **Clock assumption:** the watermark assumes the skew between tier tasks' clocks is well under 15 s (Fargate
   NTP keeps it at milliseconds). A task whose clock drifts past that could write below a watermark another task's
-  reader has passed. The tier checks its clock against DynamoDB's response time and refuses usage writes beyond
-  that bound, loudly (ledger L98).
+  reader has passed. The tier checks its clock against the `Date` header of DynamoDB's responses (second granularity) and refuses a
+  usage write when they differ by more than ≈ 5 s, with an alarm on the refusal (ledger L98; decided by the lead,
+  2026-11-14, ships with K4d). Refusing is safe: `billedTo` does not advance, and the intervals are re-derived from
+  the `vms` row once the clock is fixed, so billing is only delayed, never lost or doubled.
 
 **The route.** `GET /v1/usage?after=<cursor>&limit=1000` →
 `{ "events": [ … ], "cursor": "<opaque>", "watermark": "<ulid-time>" }`.
