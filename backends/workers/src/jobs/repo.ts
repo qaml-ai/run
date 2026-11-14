@@ -28,17 +28,10 @@ export async function releaseJobRepo(env: unknown, id: string, saved: RepoDispat
 export async function finishJobRepo(ctx: RepoContext, spec: JobSpec, saved: RepoDispatch, result: JobResult, measure: Measure) {
   if (result.ok && spec.commit && result.camelfs?.commit) {
     try {
-      const version = await measure("advanceMs", async () => {
-        const { commit, root } = result.camelfs!;
-        const metadata = await ctx.storage.getCommit(ctx.lineage, commit!);
-        // The host's checkpoint API has fixed trailers. Publish the same checkpoint with its operation recorded.
-        const tagged = metadata.trailers["Camel-Op"] === "job" ? commit! : (await ctx.storage.commit(ctx.lineage, {
-          parents: metadata.parents, baseTree: metadata.tree, changes: [], author: metadata.author, message: metadata.message,
-          time: metadata.time, trailers: { ...metadata.trailers, "Camel-Op": "job" },
-        })).commit;
-        const advanced = await advanceRef(ctx, { ref: `job/${spec.id}`, expect: saved.expect, commit: tagged, root, fence: saved.fence, who: `job:${spec.id}`, why: "job checkpoint" });
-        return advanced.version;
-      });
+      // The host's checkpoint commit is the job's result as it is (host authority): never re-committed here. It is
+      // marked by the daemon's own trailers (Camel-Checkpoint: job, Camel-Job); Camel-Op on it is the daemon's to add.
+      const advanced = await measure("advanceMs", () => advanceRef(ctx, { ref: `job/${spec.id}`, expect: saved.expect, commit: result.camelfs!.commit!, root: result.camelfs!.root, fence: saved.fence, who: `job:${spec.id}`, why: "job checkpoint" }));
+      const version = advanced.version;
       result.camelfs.ref = `job/${spec.id}`;
       result.camelfs.version = result.camelfs.commit = version;
     } catch (error) { result.camelfs.checkpointError = (`cas: ${error instanceof Error ? error.message : String(error)}`).slice(0, 300); }

@@ -70,12 +70,10 @@ test('repo job resolves, branches, leases, advances with root and releases', asy
   const result = output(c.commit, c.tree);
   await finishJobRepo(ctx, spec, saved, result, measure);
   assert.equal(result.camelfs.ref, 'job/attempt');
-  assert.equal(result.camelfs.version, result.camelfs.commit);
-  assert.notEqual(result.camelfs.version, c.commit);
-  const metadata = await ctx.storage.getCommit(ctx.lineage, result.camelfs.version);
-  assert.deepEqual(metadata.parents, [saved.expect]);
-  assert.equal(metadata.tree, c.tree);
-  assert.equal(metadata.trailers['Camel-Op'], 'job');
+  // Host authority: the ref moves to the host's own checkpoint commit, never a re-made one.
+  assert.equal(result.camelfs.version, c.commit);
+  assert.equal(result.camelfs.commit, c.commit);
+  assert.equal((await ctx.repo.ref('job/attempt'))?.version, c.commit);
   assert.equal((await ctx.repo.ref('job/attempt'))?.root, 'a'.repeat(64));
   await releaseJobRepo(f.env, spec.id, saved);
   assert.equal((await ctx.repo.ref('job/attempt'))?.holder, null);
