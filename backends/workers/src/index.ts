@@ -46,6 +46,7 @@ import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
 import { publicAdminSite } from "./admin-site.ts";
 import { handleServiceRequest } from "./service-api.ts";
+import { handleElevenLabsInbound } from "./voice/calls/elevenlabs-inbound.ts";
 import { handleVoiceCalls } from "./voice-calls-api.ts";
 import { handleMediaRequest } from "./media-api.ts";
 import { handleComputerRequest } from "./computers/api.ts";
@@ -300,6 +301,8 @@ const worker = {
       // Channels' webhooks come before any authentication: each delivery proves itself.
       const delivery = await channelWebhook(request, env, ctx);
       if (delivery) return delivery;
+      const voiceProvider = await handleElevenLabsInbound(request, env);
+      if (voiceProvider) return voiceProvider;
       const publicResponse = await publicRoutes(request, env);
       if (publicResponse) return publicResponse;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);

@@ -8,7 +8,9 @@ const operation = (description: string, schema: z.ZodType, status = 200, body?: 
   ...(body ? { requestBody: { content: content(body) } } : {}),
 });
 const id = { name: "id", in: "path", required: true, schema: { type: "string" } };
+const jsonObject = z.object({});
 const sessions = "/v1/voice/sessions";
+const inbound = "/v1/voice/providers/elevenlabs";
 
 export function workersVoicePaths() {
   return {
@@ -33,6 +35,18 @@ export function workersVoicePaths() {
     },
     [sessions + "/{id}/transcript"]: {
       parameters: [id], post: operation("The accepted utterance's sequence number", z.object({ seq: z.number() }), 202, VoiceTranscriptInput),
+    },
+    [inbound + "/post-call"]: {
+      post: { ...operation("Webhook acknowledged", jsonObject), security: [], parameters: [
+        { name: "ElevenLabs-Signature", in: "header", required: true, schema: { type: "string" } },
+      ] },
+    },
+    [inbound + "/tools/{name}"]: {
+      post: { ...operation("Tool result", z.union([z.object({ ok: z.literal(true) }), z.object({ reply: z.string() }), z.object({ error: z.string() })]), 200,
+        z.object({ conversation_id: z.string(), request: z.string().optional() })), security: [], parameters: [
+        { name: "name", in: "path", required: true, schema: { type: "string", enum: ["ask_agent", "stay_silent"] } },
+        { name: "X-Voice-Tool-Secret", in: "header", required: true, schema: { type: "string" } },
+      ] },
     },
   };
 }

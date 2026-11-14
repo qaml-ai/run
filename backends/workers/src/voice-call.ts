@@ -14,9 +14,11 @@ import { type VoiceCall as Call, type VoiceCallInput, type VoiceCallUpdate, type
 import { ASK_AGENT, ASK_FAILED, EMPTY_REPLY, EMPTY_REQUEST, lateFailure, lateReply, LATE_FAILURE, LATE_REPLY, PENDING, realtimeInstructions, STAY_SILENT } from "./voice/calls/prompts.ts";
 import { streamVoiceReply } from "./voice/calls/ask.ts";
 import { DEFAULT_BUCKET } from "./end-user-credits.ts";
-import { REALTIME_VOICE_FOR } from "../../../src/voice/realtime/provider.ts";
+import { NO_USAGE, REALTIME_VOICE_FOR } from "../../../src/voice/realtime/provider.ts";
 import { admitVoiceUsage, recordVoiceUsage, voiceCredits, voicePrice, type VoiceCredits, type VoiceCharge } from "./voice/calls/money.ts";
 
+import { equalVoiceSecret, elevenLabsProvider, type PostCall } from "./voice/calls/elevenlabs-inbound.ts";
+import { terminationReasonToEnd } from "./voice/calls/elevenlabs.ts";
 
 type Ending = { reason: string; detail?: string; limit?: "end_user"; endUserReason?: string; bucket?: string };
 type ToolAnswer = { ok: true } | { reply: string } | { error: string };
@@ -27,6 +29,7 @@ type Row = {
 };
 const PENDING_MS = 45_000;
 const LATE_MS = 300_000;
+const GRACE_MS = 900_000;
 const NOTE_MS = 2_000;
 
 export class VoiceCall extends DurableObject<Env> {
@@ -81,8 +84,8 @@ export class VoiceCall extends DurableObject<Env> {
     const path = new URL(request.url).pathname;
     try {
       if (path === "/create") return await this.serial(async () => {
-        const { id, tenant, options } = await request.json<{ id: string; tenant: string; options: VoiceCallInput }>();
-        return this.create(id, tenant, options);
+        const { id, tenant, options, origin } = await request.json<{ id: string; tenant: string; options: VoiceCallInput; origin: string }>();
+        return this.create(id, tenant, options, origin);
       });
       return await this.serial(async () => {
         const row = await this.row(request.headers.get("X-Voice-Tenant") ?? "");
@@ -105,7 +108,7 @@ export class VoiceCall extends DurableObject<Env> {
     }
   }
 
-  private async create(id: string, tenant: string, input: VoiceCallInput) {
+  private async create(id: string, tenant: string, input: VoiceCallInput, origin: string) {
     if (await this.ctx.storage.get("call")) throw new HttpError(409, "Voice call already exists");
     const { sdp, ...options } = input;
     const { agent, provider, subject } = options;
@@ -113,17 +116,25 @@ export class VoiceCall extends DurableObject<Env> {
     const exists = await withSql(this.env, sql => sql.query("select 1 from agents where tenant=$1 and id=$2 and not revoked", [tenant, agent]));
     if (!exists.rowCount) throw new HttpError(404, "Unknown agent", "AGENT_NOT_FOUND");
     const openai = this.openai();
-    if (provider !== "openai") throw new HttpError(400, "elevenlabs calls are not available on this runtime", "REALTIME_UNAVAILABLE");
-    const model = options.model ?? openai.defaultModel;
-    if (!openai.models.includes(model)) throw new HttpError(400, `Unknown OpenAI realtime model: ${model}`, "REALTIME_MODEL");
+    const eleven = provider === "elevenlabs" ? await elevenLabsProvider(this.env, origin) : undefined;
+    const model = options.model ?? (eleven ?? openai).defaultModel;
+    const validModel = eleven ? /^[a-zA-Z0-9._-]{1,100}$/.test(model) : openai.models.includes(model);
+    if (!validModel) throw new HttpError(400, eleven ? "Invalid ElevenLabs realtime model" : `Unknown OpenAI realtime model: ${model}`, "REALTIME_MODEL");
+    if (eleven && options.voice !== undefined && !/^[a-zA-Z0-9_-]{1,100}$/.test(options.voice))
+      throw new HttpError(400, "Invalid ElevenLabs voice ID", "REALTIME_VOICE");
     const requested = options.voice ?? "alloy";
-    const voice = [requested, REALTIME_VOICE_FOR[requested]].find(value => openai.voices.includes(value)) ?? openai.voices[0];
-    if (!voicePrice(this.env, `openai/${model}`)) throw new HttpError(400, `No realtime price for openai/${model}`, "REALTIME_UNPRICED");
+    const voice = eleven ? eleven.voiceFor[requested] ?? requested :
+      [requested, REALTIME_VOICE_FOR[requested]].find(value => openai.voices.includes(value)) ?? openai.voices[0];
+    if (!voicePrice(this.env, `${provider}/${model}`))
+      throw new HttpError(400, eleven ? `Realtime model elevenlabs/${model} has no price configured` : `No realtime price for openai/${model}`, "REALTIME_UNPRICED");
     identityInput(options);
     if (options.bucket !== undefined) options.bucket = bucketInput(options.bucket);
     const key = await mediaKey(this.env, tenant, options.keyScope, provider, services);
-    if (!key?.apiKey) throw new HttpError(400, "No OpenAI key for voice calls: add one under Models & keys (PUT /v1/providers/openai/key)", "REALTIME_UNAVAILABLE");
-    const maxMinutes = options.maxMinutes ?? VOICE_LIMITS.maxMinutes.default;
+    if (eleven && key && !key.platform)
+      throw new HttpError(400, "ElevenLabs calls run on the platform's ElevenLabs key; your own key is not used for them yet", "REALTIME_UNAVAILABLE");
+    if (!key?.apiKey) throw new HttpError(400, eleven ? "No platform ElevenLabs key for voice calls" :
+      "No OpenAI key for voice calls: add one under Models & keys (PUT /v1/providers/openai/key)", "REALTIME_UNAVAILABLE");
+    const maxMinutes = eleven ? Math.min(options.maxMinutes ?? 30, 30) : options.maxMinutes ?? VOICE_LIMITS.maxMinutes.default;
     const now = Date.now();
     const call: Call = { id, agent, provider, model, voice, subject, maxMinutes, state: "connecting",
       startedAt: null, endedAt: null, expiresAt: now + maxMinutes * 60_000, reason: null,
@@ -144,6 +155,17 @@ export class VoiceCall extends DurableObject<Env> {
       throw error;
     });
     try {
+      if (eleven) {
+        const { agentId } = await eleven.provision({
+          apiKey: key.apiKey, model, voiceId: voice, language: options.language,
+          instructions: realtimeInstructions(options.instructions, { agent: true, group: true }),
+        });
+        const connect = await eleven.signedUrl({ apiKey: key.apiKey, agentId });
+        row.providerAgent = agentId;
+        row.providerCall = connect.conversationId;
+        await this.started(row);
+        return voiceJson({ ...call, connect }, 201, { "Idempotency-Secret": "once" });
+      }
       const connect = await openai.create({
         sdp: sdp!, model, voice, instructions: realtimeInstructions(options.instructions, { agent: true, group: true }),
         language: options.language, tools: [ASK_AGENT, STAY_SILENT], apiKey: key.apiKey,
@@ -154,7 +176,8 @@ export class VoiceCall extends DurableObject<Env> {
       return voiceJson({ ...call, connect: { sdpAnswer: connect.sdpAnswer } }, 201);
     } catch (error) {
       const detail = redactDetail(error instanceof Error ? error.message : String(error), 300, [key.apiKey]);
-      await this.end(row, { reason: "error", detail }, true);
+      if (eleven) await this.finish(row, { reason: "error", detail });
+      else await this.end(row, { reason: "error", detail }, true);
       throw new HttpError(502, detail, "REALTIME_FAILED");
     }
   }
@@ -233,14 +256,94 @@ export class VoiceCall extends DurableObject<Env> {
     await this.arm(row);
   }
 
+  async elevenTool(tool: string, request: string, secret: string) {
+    const answer = Promise.withResolvers<ToolAnswer>();
+    const awaiting = await this.serial(async () => {
+      const row = await this.row();
+      if (row.call.state !== "live" || !row.providerAgent || (tool !== "ask_agent" && tool !== "stay_silent")) return false;
+      const agent = await (await elevenLabsProvider(this.env)).agentFor(row.providerAgent);
+      if (!agent || !equalVoiceSecret(Buffer.from(secret), Buffer.from(agent.toolSecret))) return false;
+      if (tool === "stay_silent") answer.resolve({ ok: true });
+      else await this.ask(row, request, undefined, answer);
+      return true;
+    });
+    if (awaiting) return answer.promise;
+  }
+
+  postCall(event: PostCall) {
+    return this.serial(async () => {
+      const row = await this.row();
+      const { data } = event;
+      if (row.call.state === "ended" || row.providerAgent !== data.agent_id || row.providerCall !== data.conversation_id) return;
+      if (event.type === "call_initiation_failure") {
+        await this.finish(row, { reason: "error", detail: typeof data.failure_reason === "string" ? redactDetail(data.failure_reason, 300) : undefined });
+        return;
+      }
+      const reported = data.metadata?.call_duration_secs;
+      const duration = typeof reported === "number" && Number.isFinite(reported) ? Math.max(0, reported) : undefined;
+      const details = duration === undefined ? await this.conversation(row) : undefined;
+      const seconds = duration ?? details?.durationSeconds ?? this.elapsed(row, Date.now());
+      const termination = typeof data.metadata?.termination_reason === "string" ? data.metadata.termination_reason : details?.terminationReason ?? "";
+      if (!row.call.turns && Array.isArray(data.transcript)) {
+        for (const entry of data.transcript) {
+          if (entry?.role !== "user" || typeof entry.message !== "string") continue;
+          row.call.turns++;
+          await this.utterance(row, entry.message, "unlabeled", { text: entry.message, reported: "provider", secondsIntoCall: entry.time_in_call_secs });
+        }
+      }
+      await this.settleEleven(row, seconds, row.ending ?? { reason: terminationReasonToEnd(termination) });
+    });
+  }
+
+  private elapsed(row: Row, end: number) {
+    return Math.max(0, ((row.call.endedAt ?? end) - (row.call.startedAt ?? row.call.expiresAt)) / 1000);
+  }
+
+  private async conversation(row: Row) {
+    if (!row.providerCall) return;
+    try {
+      const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "elevenlabs", undefined, undefined, false);
+      if (key?.platform) return await (await elevenLabsProvider(this.env)).conversation(key.apiKey, row.providerCall);
+    } catch {
+      // Use elapsed duration when the provider's conversation cannot be read.
+    }
+  }
+
+  private async settleEleven(row: Row, seconds: number, by: Ending, deadline = false) {
+    const at = Date.now();
+    const chargeKey = "eleven-charge";
+    let settlement = await this.ctx.storage.get<{ charge: VoiceCharge; by: Ending }>(chargeKey);
+    if (!settlement) {
+      settlement = { by, charge: { key: `voice_elevenlabs:${row.call.id}`, startedAt: row.call.startedAt ?? at, at,
+        usage: NO_USAGE, audioSeconds: deadline ? seconds : Math.ceil(seconds), duration: seconds, deadline } };
+      await this.ctx.storage.put(chargeKey, settlement);
+      await this.arm(row);
+    }
+    await this.commitEleven(row, settlement);
+  }
+
+  private async commitEleven(row: Row, settlement: { charge: VoiceCharge; by: Ending }) {
+    const cost = await recordVoiceUsage(this.env, this.credits, row, settlement.charge);
+    row.call.audioSeconds = settlement.charge.audioSeconds;
+    row.call.costUsd = Math.round(cost * 1_000_000) / 1_000_000;
+    await this.finish(row, settlement.by);
+    await this.ctx.storage.delete("eleven-charge");
+    await this.arm(row);
+  }
+
   private async end(row: Row, by: Ending, providerClosed = false) {
     if (row.call.state === "ended") return row.call;
     if (row.call.state !== "ending") {
       row.call.state = "ending";
       row.ending = by;
+      if (row.call.provider === "elevenlabs") {
+        row.call.reason = by.reason;
+        row.call.endedAt = by.reason === "max_duration" ? row.call.expiresAt : Date.now();
+      }
       await this.save(row);
       await this.index(row);
     }
+    if (row.call.provider === "elevenlabs") return row.call;
     if (row.providerCall) {
       try {
         const key = await mediaKey(this.env, row.tenant, row.options.keyScope, "openai", undefined, undefined, false);
@@ -359,12 +462,12 @@ export class VoiceCall extends DurableObject<Env> {
   }
 
   private async arm(row: Row) {
-    const { state, expiresAt } = row.call;
+    const { state, expiresAt, endedAt } = row.call;
     const next = [row.noteAt ?? Infinity];
     if (state === "live" || state === "connecting") next.push(expiresAt);
-    if (state === "ending") next.push(Date.now() + 1000);
+    if (state === "ending") next.push(row.call.provider === "elevenlabs" ? (endedAt ?? expiresAt) + GRACE_MS : Date.now() + 1000);
     for (const ask of (await this.ctx.storage.list<Ask>({ prefix: "ask:" })).values()) next.push(ask.started + (ask.pending ? LATE_MS : PENDING_MS));
-    if ((await this.ctx.storage.list({ prefix: "charge:", limit: 1 })).size) next.push(Date.now() + 1000);
+    if ((await this.ctx.storage.list({ prefix: "charge:", limit: 1 })).size || await this.ctx.storage.get("eleven-charge")) next.push(Date.now() + 1000);
     const at = Math.min(...next);
     if (Number.isFinite(at)) await this.ctx.storage.setAlarm(at);
     else await this.ctx.storage.deleteAlarm();
@@ -406,6 +509,15 @@ export class VoiceCall extends DurableObject<Env> {
     if (row.call.state === "live" && row.call.expiresAt <= now) await this.end(row, { reason: "max_duration" }, true);
     if (row.call.state === "connecting" && row.call.expiresAt <= now)
       await this.finish(row, { reason: "error", detail: "The call did not connect" });
+    const settlement = await this.ctx.storage.get<{ charge: VoiceCharge; by: Ending }>("eleven-charge");
+    if (settlement) {
+      if (row.call.state !== "ended") await this.commitEleven(row, settlement);
+      else await this.ctx.storage.delete("eleven-charge");
+    } else if (row.call.state === "ending" && row.call.provider === "elevenlabs" && (row.call.endedAt ?? row.call.expiresAt) + GRACE_MS <= now) {
+      const details = await this.conversation(row);
+      await this.settleEleven(row, details?.durationSeconds ?? this.elapsed(row, row.call.expiresAt),
+      { ...(row.ending ?? { reason: "max_duration" }), detail: "settled at the deadline: no post-call report" }, true);
+    }
     if (row.call.state === "ending" && row.call.provider === "openai") await this.end(row, row.ending ?? { reason: "error" }, true);
     await this.arm(row);
   }

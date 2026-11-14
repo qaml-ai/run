@@ -36,7 +36,7 @@ export async function handleVoiceCalls(request: Request, env: Env, auth: AuthCon
       const options = parse(VoiceCallInput, raw);
       const id = "vc_" + crypto.randomUUID().replaceAll("-", "").slice(0, 24);
       const response = await env.VOICE_CALLS.getByName(id).fetch(new Request("https://voice/create", {
-        method: "POST", body: JSON.stringify({ id, tenant, options }),
+        method: "POST", body: JSON.stringify({ id, tenant, options, origin: url.origin }),
       }));
       return response;
     }
