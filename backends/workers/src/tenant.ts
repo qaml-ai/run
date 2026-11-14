@@ -91,12 +91,22 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   registerRepo(row: RepoRow, sourceId?: string) { return this.repos.register(row, sourceId); }
   repoRow(id: string) { return this.repos.row(id); }
   listRepos(input: {after?: string; limit?: number} = {}) { return this.repos.list(input); }
-  markRepoDeleted(id: string) { return this.repos.deleted(id); }
   markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
-  repoUsage(id: string, bytes: number, files: number, lineage?: boolean) { return this.repos.usage(id,bytes,files); }
+  repoUsage(id: string, bytes: number, files: number) { return this.repos.usage(id,bytes,files); }
   reposUsed(exclude?: string) { return this.repos.used(exclude); }
   // Consume any alarm persisted by the old accounting implementation (ledger L90).
   async alarm() {}
+  /** TEMPORARY(L90): the Volume-era TenantStorage tables. drop=false only counts. */
+  async legacyVolumeTables(drop: boolean): Promise<{ tables: { name: string; rows: number }[]; alarm: number | null }> {
+    const names = ["storage_objects", "storage_total", "storage_listing"];
+    const sql = this.ctx.storage.sql;
+    const present = sql.exec<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN (${names.map(() => "?").join(",")})`, ...names,
+    ).toArray().map(row => row.name);
+    const tables = present.map(name => ({ name, rows: Number(sql.exec<{ n: number }>(`SELECT count(*) AS n FROM "${name}"`).one().n) }));
+    if (drop) this.ctx.storage.transactionSync(() => { for (const name of present) sql.exec(`DROP TABLE "${name}"`); });
+    return { tables, alarm: await this.ctx.storage.getAlarm() };
+  }
   /** Called after account deletion has stopped and purged every owned agent. */
   async purgeAccountData() {
     await this.ctx.storage.deleteAlarm();

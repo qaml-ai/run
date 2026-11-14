@@ -83,7 +83,7 @@ export class WorkflowCommits implements EffectExecutor {
         return { ok: true, value: { committed: true, version: merged.version, changed: true, files: changes.map(change => change.path) } };
       } catch (error) {
         const found = repoErrorFrom(error);
-        if (found?.code === 'conflicts') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };
+        if (found?.code === 'conflict') return { ok: true, value: { committed: false, conflicts: found.detail?.conflicts } };
         throw error;
       }
     } catch (error) {

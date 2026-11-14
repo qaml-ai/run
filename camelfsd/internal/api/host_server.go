@@ -23,6 +23,49 @@ type HostServer struct {
 	grace      time.Duration
 	routes     *http.ServeMux
 	findHost   func(context.Context, []string, string) (compute.Host, error)
+	cas        HostCASFunc
+}
+
+// HostCASFunc moves a ref for a host checkpoint (StorageServer.HostCAS): lineage, ref, commit, expect, root,
+// the holder string and the lease epoch. It returns the reply body, or a storage error.
+type HostCASFunc func(ctx context.Context, lineage, name, commit, expect, root, holder string, epoch int64) (map[string]any, error)
+
+// EnableCAS serves POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas, the ref move after a session
+// checkpoint. Without it the route answers 404 like any unknown host route.
+func (s *HostServer) EnableCAS(cas HostCASFunc) {
+	s.cas = cas
+	s.routes.HandleFunc("POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas", s.authenticated(s.hostCAS))
+}
+
+func (s *HostServer) hostCAS(w http.ResponseWriter, r *http.Request, hostID string) error {
+	var q struct {
+		Commit string          `json:"commit"`
+		Expect string          `json:"expect"`
+		Root   string          `json:"root"`
+		Holder hostwire.Holder `json:"holder"`
+		Epoch  int64           `json:"epoch"`
+	}
+	if err := readHostRequest(w, r, &q); err != nil {
+		return err
+	}
+	if _, err := hostwire.ParseHolder(q.Holder.String()); err != nil || q.Holder.Host != hostID {
+		return errHostForbidden
+	}
+	host, err := s.findHost(r.Context(), s.pools, hostID)
+	if errors.Is(err, compute.ErrHost) || (err == nil && (host.Restarting || host.Lost)) {
+		return errHostForbidden
+	}
+	if err != nil {
+		return err
+	}
+	holder := hostwire.Holder{Host: hostID, Boot: host.BootEpoch, Mount: q.Holder.Mount}
+	reply, err := s.cas(r.Context(), r.PathValue("lineage"), r.PathValue("name"), q.Commit, q.Expect, q.Root, holder.String(), q.Epoch)
+	if err != nil {
+		storageFail(w, err)
+		return nil
+	}
+	jsonReply(w, http.StatusOK, reply)
+	return nil
 }
 
 func NewHostServer(c *compute.Controller, pools, images []string, grace time.Duration) *HostServer {
@@ -174,19 +217,6 @@ func (s *HostServer) currentHost(ctx context.Context, id string, epoch int64) (c
 		err = compute.ErrHost
 	}
 	return h, err
-}
-
-// checkHolder binds the body of a host CAS to the authenticated host and its current boot.
-// C4 must call it before performing a host CAS.
-func (s *HostServer) checkHolder(ctx context.Context, hostID string, holder hostwire.Holder) error {
-	if _, err := hostwire.ParseHolder(holder.String()); err != nil || holder.Host != hostID {
-		return errHostForbidden
-	}
-	_, err := s.currentHost(ctx, hostID, holder.Boot)
-	if errors.Is(err, compute.ErrHost) {
-		return errHostForbidden
-	}
-	return err
 }
 
 func (s *HostServer) started(w http.ResponseWriter, r *http.Request, id string) error {

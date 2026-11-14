@@ -19,6 +19,7 @@
     "src/**/*.ts",
     "worker-configuration.d.ts",
     "codemode/**/*.ts",
-    "scripts/pilot-operator-worker.ts"
+    "scripts/pilot-operator-worker.ts",
+    "scripts/pilot-l90-worker.ts"
   ]
 }

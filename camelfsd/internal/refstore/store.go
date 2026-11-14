@@ -85,6 +85,14 @@ func failure(code string, status int) *Error {
 	return &Error{Code: code, Status: status}
 }
 
+func fenced(r Ref, now int64) *Error {
+	var holder, epoch any
+	if r.held(now) {
+		holder, epoch = *r.Holder, r.LeaseEpoch
+	}
+	return &Error{Code: "fenced", Status: 409, Details: map[string]any{"holder": holder, "epoch": epoch}}
+}
+
 func stale(r Ref, now int64) *Error {
 	var version any
 	if r.live(now) {

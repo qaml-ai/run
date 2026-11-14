@@ -17,6 +17,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 )
 
 type commitParents struct{ repo *objects.Repository }
@@ -319,7 +320,6 @@ func loadRefCommit(ctx context.Context, repo *objects.Repository, id string) (re
 }
 
 func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name string, fence *auth.Fence, repo *objects.Repository) error {
-	ctx := r.Context()
 	var body struct {
 		Commit, Expect, Root string
 		Quota                *quotaRequest
@@ -327,15 +327,30 @@ func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name s
 	if err := decodeStorage(r, &body); err != nil {
 		return err
 	}
-	if !root.Hex(body.Expect, 40) || (body.Root != "" && !root.Hex(body.Root, 64)) {
-		return invalid("expect must be a Git id and root, when supplied, must be a SHA-256")
+	var move *refstore.Fence
+	if fence != nil {
+		move = &refstore.Fence{Holder: fence.Holder, Epoch: fence.Epoch}
 	}
-	if err := body.Quota.validate(); err != nil {
-		return err
-	}
-	commit, err := loadRefCommit(ctx, repo, body.Commit)
+	reply, err := s.casRef(r.Context(), l, name, body.Commit, body.Expect, body.Root, body.Quota, move, repo)
 	if err != nil {
 		return err
+	}
+	jsonReply(w, 200, reply)
+	return nil
+}
+
+// casRef is the one fast-forward ref move behind both the runtime's cas route and a compute host's checkpoint
+// CAS (HostCAS): expect → commit, recording root, fenced by the ref lease when fence is set.
+func (s *StorageServer) casRef(ctx context.Context, l, name, commitID, expect, rootID string, quota *quotaRequest, fence *refstore.Fence, repo *objects.Repository) (map[string]any, error) {
+	if !root.Hex(expect, 40) || (rootID != "" && !root.Hex(rootID, 64)) {
+		return nil, invalid("expect must be a Git id and root, when supplied, must be a SHA-256")
+	}
+	if err := quota.validate(); err != nil {
+		return nil, err
+	}
+	commit, err := loadRefCommit(ctx, repo, commitID)
+	if err != nil {
+		return nil, err
 	}
 	// cas moves the ref to a commit the lineage already has, so it is always a fast-forward check (rule 2):
 	// the commit must reach expect. bad_parent (rule 1) belongs to the moves the tier builds itself (write,
@@ -345,32 +360,52 @@ func (s *StorageServer) refCAS(w http.ResponseWriter, r *http.Request, l, name s
 		// refstore's rule 1 refuses it as bad_parent, after the stale and fence checks.
 		kind = "commit"
 	}
-	var diff []diffChange
+	diff := []diffChange{}
 	var files, bytes int64
-	move := refstore.Move{Kind: kind, Version: body.Commit, Tree: commit.tree, Root: body.Root, Parents: commit.parents,
-		Expect: &body.Expect, RequireExisting: true,
+	move := refstore.Move{Kind: kind, Version: commitID, Tree: commit.tree, Root: rootID, Parents: commit.parents,
+		Expect: &expect, RequireExisting: true, Fence: fence,
 		Prepare: func(previous refstore.Ref) error {
-			var err error
-			diff, err = treeDiff(ctx, repo, previous.Tree, commit.tree, "")
+			changes, err := treeDiff(ctx, repo, previous.Tree, commit.tree, "")
 			if err != nil {
 				return err
+			}
+			if changes != nil {
+				diff = changes
 			}
 			files, err = repo.TreeFileCount(ctx, commit.tree)
 			if err != nil {
 				return err
 			}
-			bytes, err = s.checkQuota(ctx, l, body.Quota)
+			bytes, err = s.checkQuota(ctx, l, quota)
 			return err
 		}}
-	if fence != nil {
-		move.Fence = &refstore.Fence{Holder: fence.Holder, Epoch: fence.Epoch}
-	}
 	if _, err := s.refs.Cas(ctx, l, name, move); err != nil {
-		return err
+		return nil, err
 	}
-	jsonReply(w, 200, map[string]any{"version": body.Commit, "tree": commit.tree, "parents": commit.parents,
-		"diff": diff, "bytes": bytes, "files": files})
-	return nil
+	return map[string]any{"version": commitID, "tree": commit.tree, "parents": commit.parents,
+		"diff": diff, "bytes": bytes, "files": files}, nil
+}
+
+// HostCAS moves a ref for a compute host's checkpoint. The caller (the tier's host server) has bound holder to
+// the authenticated host and its current boot; the ref lease (holder, epoch) fences the move, exactly like a
+// runtime cas with a fenced token. Errors are storage errors (§9.8) for the host to relay.
+func (s *StorageServer) HostCAS(ctx context.Context, l, name, commitID, expect, rootID, holder string, epoch int64) (map[string]any, error) {
+	if s.refs == nil {
+		return nil, &storageError{503, "unavailable", nil}
+	}
+	if !store.Lineage(l) || !refstore.ValidName(name) || holder == "" || epoch <= 0 {
+		return nil, invalid("lineage, ref, holder and epoch are required")
+	}
+	if s.lineages != nil {
+		item, err := s.lineages.get(ctx, l)
+		if err != nil {
+			return nil, ddbUnavailable(err)
+		}
+		if item.DeletedAt != nil {
+			return nil, lineageDeleted()
+		}
+	}
+	return s.casRef(ctx, l, name, commitID, expect, rootID, nil, &refstore.Fence{Holder: holder, Epoch: epoch}, s.repo().ForLineage(l))
 }
 
 func (s *StorageServer) leaseRoute(w http.ResponseWriter, r *http.Request, l, name, action string, claim *auth.Fence) error {

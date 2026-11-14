@@ -274,7 +274,9 @@ func TestRefsRoutes(t *testing.T) {
 	}
 	call("DELETE", "/refs/main?expect="+left, nil, "", 409, "held")
 	call("DELETE", "/refs/main", nil, "", 409, "held")
-	cas("main", merge, merge, "", 409, "fenced")
+	if got := details(cas("main", merge, merge, "", 409, "fenced")); !reflect.DeepEqual(got, map[string]any{"holder": "host:1:mount", "epoch": taken["epoch"]}) {
+		t.Fatal(got)
+	}
 	if got := details(call("DELETE", "", nil, "", 409, "held")); !reflect.DeepEqual(got["held"], []any{"main"}) {
 		t.Fatal(got)
 	}
@@ -289,7 +291,9 @@ func TestRefsRoutes(t *testing.T) {
 	call("DELETE", "/refs/main/lease", map[string]any{"fence": bodyFence}, "", 400, "invalid_request")
 	renew := call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 2000}, "", 200, "")
 	now = time.UnixMilli(int64(renew["deadline"].(float64)))
-	call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 1000}, "", 409, "fenced")
+	if got := details(call("POST", "/refs/main/lease/renew", map[string]int{"ttlMs": 1000}, "", 409, "fenced")); !reflect.DeepEqual(got, map[string]any{"holder": nil, "epoch": nil}) {
+		t.Fatal(got)
+	}
 	call("DELETE", "/refs/main/lease", nil, "", 409, "fenced")
 	claims = runtime
 	next := call("POST", "/refs/main/lease", lease, "", 200, "")

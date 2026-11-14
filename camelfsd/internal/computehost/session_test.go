@@ -31,10 +31,16 @@ func TestComputeErrorEnvelopes(t *testing.T) {
 		h.Handler().ServeHTTP(w, httptest.NewRequest(route.method, route.path, nil))
 		check(w, 404, "vm_unknown")
 	}
-	for _, q := range []httpError{{404, "exec_unknown"}, {409, "shell_busy"}, {409, "exec_conflict"}} {
+	for _, q := range []httpError{{404, "exec_unknown", ""}, {409, "shell_busy", ""}, {409, "exec_conflict", ""}} {
 		w := httptest.NewRecorder()
 		report(w, &q)
 		check(w, q.status, q.code)
+	}
+	// A 400 says which rule the request broke, so a caller (the runtime) can fix its request.
+	w0 := httptest.NewRecorder()
+	report(w0, invalid("invalid trailer kind"))
+	if body := check(w0, 400, "invalid_request"); body.Message != "invalid trailer kind" {
+		t.Fatalf("invalid_request message: %q", body.Message)
 	}
 	w := httptest.NewRecorder()
 	replyTruncatedTail(w, 42)

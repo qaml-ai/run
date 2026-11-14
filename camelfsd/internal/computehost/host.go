@@ -496,9 +496,13 @@ func (h *Host) boot(s *session, q hostwire.BootSpec) {
 	h.mu.Lock()
 	started := s.row.StartedAt
 	h.mu.Unlock()
-	if err := h.callback(ctx, "/vms/"+url.PathEscape(q.ID)+"/started", hostwire.Started{BootEpoch: q.Lease.Holder.Boot, At: *started}); err != nil {
+	if err := h.reportStarted(ctx, q.ID, q.Lease.Holder.Boot, *started); err != nil {
 		slog.Warn("compute_started_callback_failed", "vm", q.ID, "error", err)
 	}
+}
+
+func (h *Host) reportStarted(ctx context.Context, id string, bootEpoch, at int64) error {
+	return h.callback(ctx, "/vms/"+url.PathEscape(id)+"/started", hostwire.Started{BootEpoch: bootEpoch, At: at})
 }
 
 func (h *Host) markStop(s *session, checkpoint bool, code string) error {
@@ -615,7 +619,7 @@ func (h *Host) lookup(id string) (*session, *vmhost.VM, error) {
 	defer h.mu.Unlock()
 	s := h.vms[id]
 	if s == nil || s.row.Ended != nil {
-		return nil, nil, &httpError{404, "vm_unknown"}
+		return nil, nil, &httpError{404, "vm_unknown", ""}
 	}
 	if s.vm == nil || s.row.StartedAt == nil || s.row.Stop != nil || s.row.Spec.Lease.Holder.Boot != h.epoch {
 		return nil, nil, conflict("vm_not_running")
