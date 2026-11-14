@@ -23,6 +23,18 @@ def has_startup_frame(frame):
     return False
 
 
+def corrupt_return(frame):
+    # A return to a non-canonical address (overwritten stack, e.g. text over a return address) faults at the ret.
+    # Node's SIGSEGV handler re-raises it while the signal is blocked, so si_code reads SI_TKILL from the process
+    # itself: the code says nothing; the instruction and the return address do.
+    pc = int(frame.read_register("pc"))
+    if gdb.selected_inferior().read_memory(pc, 1).tobytes() != b"\xc3":
+        return False
+    sp = int(frame.read_register("sp"))
+    target = int.from_bytes(gdb.selected_inferior().read_memory(sp, 8), sys.byteorder)
+    return not (target < (1 << 47) or target >= ((1 << 64) - (1 << 47)))
+
+
 core = frame0 = "?"
 si_code = si_pid = core_pid = 0
 startup = False
@@ -43,10 +55,10 @@ try:
     # A signal the process sent itself from code (raise, kill, pthread_kill, tgkill, abort) stops in that call.
     reraised = any(name in frame0 for name in ("raise", "kill", "abort"))
     startup = has_startup_frame(frame)
-    if si_code > 0 or reraised:
+    if corrupt_return(frame):
+        classification = "stack-corrupt"
+    elif si_code > 0 or reraised:
         classification = "fault"
-    elif si_code == -6 and core_pid > 0 and si_pid == core_pid and startup:
-        classification = "platform-startup"
 except Exception:
     pass
 

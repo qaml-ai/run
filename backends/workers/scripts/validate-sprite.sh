@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run through the repo's leased scripts/sprite-test, one validation job per sprite.
-# Report SIGSEGVs. Retry unit or integration files once for SIGSEGV-only failures backed by startup cores.
+# Report SIGSEGVs with a triage of each new Node core (scripts/segv-triage.py); nothing is retried.
 set -euo pipefail
 mode=${1:?Expected unit, integration [I/N], compat, python, contract or checks}
 cd "$(dirname "$0")/.."
@@ -64,89 +64,7 @@ segv_report() {
 }
 
 run_suite() {
-  local tap="$artifact/$mode.tap" status core failures kind file reason="" message
-  local -a statuses failed_files=() segv_files=() core_names=() flags
-  if "$@" 2>&1 | tee "$tap"; then
-    return 0
-  else
-    statuses=("${PIPESTATUS[@]}")
-  fi
-  status=${statuses[0]}
-  (( status != 0 )) || status=${statuses[1]}
-  grep -Fq "signal: 'SIGSEGV'" "$tap" || return "$status"
-
-  # Only top-level records count. Read the signal from the file's own YAML diagnostics.
-  failures=$(awk '
-    function report() {
-      if (failed) print (segv && closed ? "segv " : "failed ") file
-      failed = yaml = segv = closed = 0
-    }
-    /^[^[:space:]]/ { report() }
-    /^not ok [0-9]+ - / {
-      failed = 1
-      file = substr($0, index($0, " - ") + 3)
-    }
-    failed && !closed && /^  ---[[:space:]]*$/ { yaml = 1 }
-    yaml && /^  signal: '\''SIGSEGV'\''[[:space:]]*$/ { segv = 1 }
-    yaml && /^  \.\.\.[[:space:]]*$/ { yaml = 0; closed = 1 }
-    END { report() }
-  ' "$tap") || {
-    echo "SEGV_RETRY skipped: could not read suite TAP"
-    return "$status"
-  }
-  while IFS=' ' read -r kind file; do
-    case $kind in
-      failed) failed_files+=("$file") ;;
-      segv) failed_files+=("$file"); segv_files+=("$file") ;;
-    esac
-  done <<< "$failures"
-
-  if (( statuses[1] != 0 )); then
-    reason="could not capture suite TAP"
-  elif (( ${#segv_files[@]} == 0 || ${#segv_files[@]} != ${#failed_files[@]} )); then
-    reason="failures were not all SIGSEGV test files"
-  else
-    for file in "${segv_files[@]}"; do
-      if [[ $file != test/*.ts || ! -f $file ]]; then
-        reason="failure was not a test file: $file"
-        break
-      fi
-    done
-    if [[ -z $reason ]]; then
-      if ! command -v gdb >/dev/null; then
-        reason="gdb is unavailable"
-      elif ! collect_cores; then
-        reason="could not inspect new Node cores"
-      elif (( ${#new_cores[@]} < ${#segv_files[@]} )); then
-        reason="fewer new Node cores than SIGSEGV test files"
-      else
-        for core in "${new_cores[@]}"; do
-          if [[ ${core_triage[$core]} != "SEGV_TRIAGE ${core##*/} class=platform-startup "* ]]; then
-            reason="${core##*/} did not classify as platform-startup"
-            break
-          fi
-          core_names+=("${core##*/}")
-        done
-      fi
-    fi
-  fi
-  if [[ -n $reason ]]; then
-    echo "SEGV_RETRY skipped: $reason"
-    return "$status"
-  fi
-
-  if [[ $mode == unit ]]; then
-    flags=(--import ./test/sdk-deps.mjs --experimental-strip-types --test)
-  else
-    flags=(--import ./test/compat-register.mjs --experimental-strip-types --test --test-concurrency=1)
-  fi
-  message="${segv_files[*]} (platform-startup SI_TKILL; cores: ${core_names[*]})"
-  if node "${flags[@]}" "${segv_files[@]}" 2>&1 | tee "$artifact/$mode-segv-retry.tap"; then
-    echo "SEGV_RETRY passed: $message" | tee "$artifact/segv-retry.txt" || true
-    return 0
-  fi
-  echo "SEGV_RETRY failed: $message" | tee "$artifact/segv-retry.txt" || true
-  return "$status"
+  "$@" 2>&1 | tee "$artifact/$mode.tap"
 }
 
 finish() {
