@@ -57,7 +57,7 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
     const tenant = c.var.principal.tenant;
     if (input && typeof input === "object" && "agent" in input && !("discord" in input)) {
       const call = await callService().create(tenant, parseBody(schema.VoiceCallInput, input));
-      if ("signedUrl" in call.connect) c.set("voiceSignedUrl", true);
+      if ("signedUrl" in call.connect) c.header("Idempotency-Secret", "once");
       return json(c, 201, call);
     }
     const sessions = service();

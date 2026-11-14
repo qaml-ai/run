@@ -90,18 +90,23 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance
     node = made;
     return `http://127.0.0.1:${port}`;
   });
-  const http = async (method: string, path: string, input?: unknown, headers?: Record<string, string>) => {
-    const response = await fetch(base + path, {
+  const request = (method: string, path: string, input?: unknown, headers?: Record<string, string>) =>
+    fetch(base + path, {
       method, body: input === undefined ? undefined : typeof input === "string" ? input : JSON.stringify(input),
       headers: { "Content-Type": "application/json", ...(headers ?? { Authorization: `Bearer ${token}` }) },
     });
+  const http = async (...args: Parameters<typeof request>) => {
+    const response = await request(...args);
     return { status: response.status, json: await response.json() as any };
   };
   const agent = await http("POST", "/v1/agents", { name: "voice-agent" });
   assert.equal(agent.status, 201, JSON.stringify(agent.json));
-  const create = (patch: Record<string, unknown> = {}) => http("POST", path, {
-    agent: agent.json.id, provider: "elevenlabs", subject: "user-1", ...patch,
-  });
+  const create = async (patch: Record<string, unknown> = {}, key?: string) => {
+    const response = await request("POST", path, {
+      agent: agent.json.id, provider: "elevenlabs", subject: "user-1", ...patch,
+    }, key ? { Authorization: `Bearer ${token}`, "Idempotency-Key": key } : undefined);
+    return { status: response.status, json: await response.json() as any, headers: response.headers };
+  };
   const live = async (patch?: Record<string, unknown>) => {
     const result = await create(patch);
     assert.equal(result.status, 201, JSON.stringify(result.json));
@@ -126,7 +131,12 @@ async function fixture(t: TestContext, options: { tenantKey?: boolean; allowance
 
 test("provisions webhook tools once per persona and holds the full capped amount before provider requests", async t => {
   const f = await fixture(t);
-  const call = await f.live({ maxMinutes: 45, instructions: "Talk like Ana." });
+  const input = { maxMinutes: 45, instructions: "Talk like Ana." };
+  const { status, json: call, headers } = await f.create(input, "create-call");
+  assert.equal(status, 201);
+  assert.equal(headers.get("Idempotency-Secret"), null);
+  const retry = await f.create(input, "create-call");
+  assert.deepEqual([retry.status, retry.json.code], [409, "IDEMPOTENCY_CONFLICT"]);
   assert.deepEqual(call.connect, {
     conversationId: "conv_1", signedUrl: "wss://fake/convai?agent_id=agent_1&conversation_signature=sig&conversation_id=conv_1",
   });
@@ -163,7 +173,9 @@ test("provisions webhook tools once per persona and holds the full capped amount
   assert.equal(agent.conversation_config.conversation.max_duration_seconds, 1800);
   assert.deepEqual(agent.platform_settings.overrides.conversation_config_override, { tts: { voice_id: true }, agent: { language: true } });
   assert.equal(agent.platform_settings.workspace_overrides.webhooks.post_call_webhook_id, "wh_1");
-  await f.live({ instructions: "Talk like Ana." });
+  const unkeyed = await f.create({ instructions: "Talk like Ana." });
+  assert.equal(unkeyed.status, 201);
+  assert.equal(unkeyed.headers.get("Idempotency-Secret"), null);
   assert.deepEqual([f.eleven.webhooks.length, f.eleven.tools.length, f.eleven.agents.length], [1, 2, 1]);
   await f.live({ instructions: "Talk like Bea." });
   assert.deepEqual([f.eleven.webhooks.length, f.eleven.tools.length, f.eleven.agents.length], [1, 4, 2]);

@@ -165,7 +165,7 @@ export interface ApiContext {
 }
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
-type Env = { Variables: { principal: Caller; voiceSignedUrl?: boolean } };
+type Env = { Variables: { principal: Caller } };
 /**
  * What an OAuth access token (an MCP client the tenant connected, src/oauth.ts) may call: its agents (but not their
  * tokens), definitions, pending inputs, and reads of the account (models, providers, usage, balance). Nothing that makes
@@ -404,7 +404,7 @@ export function api(context: ApiContext) {
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
-    secret: (path, c) => c.get("voiceSignedUrl") === true || /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:triggers|triggers\/[^/]+\/rotate|browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
+    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:triggers|triggers\/[^/]+\/rotate|browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
   const shared = () => new SharedAgents(clients.db);
