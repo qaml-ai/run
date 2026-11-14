@@ -93,10 +93,10 @@ export class AgentRunLimits {
     this.current = current;
     this.billing = billing;
   }
-  async check(now = Date.now(), billing = true) {
+  async check(now = Date.now(), billing: boolean | "metered" = true) {
     const { config, run, agentId, authoritative, childCost: readChildCost } = await this.current();
     if (!run.state || run.state === "completed") return;
-    const snapshot = billing ? undefined : run.limitsSnapshot;
+    const snapshot = billing === false ? run.limitsSnapshot : undefined;
     const { spend, most } = snapshot ?? await authoritative?.() ?? {};
     const childCost = await readChildCost?.() ?? 0;
     const usage = (await this.storage.get<Usage>(`run-usage:${run.id}`)) ?? {
@@ -108,7 +108,7 @@ export class AgentRunLimits {
     const stopped =
       runLimit(config, run, { ...usage, costUsd: usage.costUsd + childCost }, now, most) ??
       (agentId ? agentSpendRefusal(agentId, spend ?? null, pending) : undefined) ??
-      (billing ? await this.billing?.() : undefined);
+      (billing === true ? await this.billing?.() : undefined);
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;
   }
@@ -124,7 +124,8 @@ export class AgentRunLimits {
       hooks: [
         hook(GenerationTask, {
           beforeRequest: async () => {
-            const stopped = await this.check();
+            // The metered stream checks tenant and end-user credit immediately before each provider call.
+            const stopped = await this.check(Date.now(), "metered");
             if (stopped) throw new Error(stopped.error);
             return undefined;
           },

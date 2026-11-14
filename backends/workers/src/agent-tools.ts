@@ -134,7 +134,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
         await this.emit({ type: "event", requestId: run.id, event: { type: "model_stream_stalled", ...stall } });
       },
       beforeRequest: async () => {
-        const stopped = await this.limits.check();
+        const stopped = await this.limits.check(Date.now(), "metered");
         if (stopped) throw new Error(stopped.error);
         await assertContextRange(
           contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
