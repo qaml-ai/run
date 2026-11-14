@@ -230,8 +230,10 @@ of these are in account `904534089871`, `us-west-2`, with state at `agent-runtim
   - `camelfs-prod-usage` (`shard` + `ulid`), the one table with DynamoDB TTL (on `expiresAt`, 35 days), for §9.13;
     created and applied (fs-infra, #985).
 - **Tier:** ECS Fargate (Graviton) service `camelfs-prod-api` behind two ALBs, both with HTTP/2 off: public
-  `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts'
-  security groups only) for the hosts' in-VPC calls. Hosts listen for the tier on `--listen-compute` port 8792.
+  `fs.camelai.dev` (Cloudflare ranges only) for the runtime, and internal `fs-internal.camelai.dev` (the hosts' security groups only) for the hosts' in-VPC calls.
+  §9.12 moves the hosts' mTLS onto an internal NLB in TCP passthrough to `--listen-hosts` (8794), with enrollment
+  on the ALB's plain-TLS 8443 to `--listen-enroll` (8793); fs-infra's change. Hosts listen for the tier on
+  `--listen-compute` port 8792.
 - **Keys** (Secrets Manager):
   - `camelfs/prod/token-verify-keys`: the runtime's Ed25519 JWKS, injected as `CAMELFS_JWKS`.
   - `camelfs/prod/service-signing-key` and `camelfs/prod/service-verify-keys`: the tier → host token family's keys,
@@ -722,21 +724,42 @@ Over the host's Unix socket (unchanged transport):
   writes blobs, trees, the commit (whose `parents[0]` is the mounted or last-checkpointed version) and the root,
   and returns. The CAS is the next call, below.
 
-**Who does what** (wf-delegation, wf-durable):
+**Who does what** (decided 2026-11-14: the host's CAS is its own host route, C4; wf-durable, proto-block):
 
-- **Before dispatch**, `HostJob` creates the branch `job/<id>` at the version the job mounts (§9.9 `POST refs`,
-  `owner: job:<id>`; for inline `files` that version is the scratch commit of §4) and takes the lease
-  (`POST …/lease`). It mints a token scoped to that lineage and ref with the fence (§9.10), and puts
-  `{ fence, token }` into `WireJob.camelfs`. `HostJob` renews the lease from its alarm every TTL/3 for the job's
-  lifetime (10-minute cap). A renewal that finds the lease taken over fails the job's CAS later, never silently.
-- **Jobs** checkpoint once, at the end. `jobhost` then calls the tier's `cas` in-VPC with the fence token
-  (`expect` = the mounted version, `root` included), sends `checkpointed { tree }` to the guest, and puts the outcome
-  in the result: `{ version, tree, diff, cas: "ok" }` or `{ cas: "<code>" }`. The tier is the host's authority for
-  the move, and `HostJob` reads the outcome from the result rather than performing the CAS. A failed CAS becomes the
-  job's `checkpointError` (`"cas: <code>"`), and the rest of the job's output stands.
-- **Computers and `bash` VMs** (per-turn checkpoints in a long-lived VM) need the synchronous form: checkpoint →
-  `cas` (in-VPC, ≈ 2 ms to the tier + ≈ 5 ms in DynamoDB) → `checkpointed { tree }` or `checkpointed { error }`,
-  so the guest's index commits only after the ref moved. The runtime is not on this path.
+- **Before boot**, the caller creates the branch (`job/<id>` at the version the job mounts, §9.9 `POST refs`,
+  `owner: job:<id>`; for inline `files` that version is the scratch commit of §4). The **tier** takes the ref lease
+  just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`.
+  - `booting` is written with the lease fields under a host-epoch condition.
+  - The boot spec carries `Lease { Holder { Host, Boot, Mount }, Epoch, Deadline }` to the host over hostwire, and
+    a resend carries the current values.
+  - The tier's control loop renews the lease when less than 400 s of its 600 remain.
+  - The tier releases the lease after `ended`, through a release item staged in the End transaction.
+- **The host's CAS: `POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas`**, registered **only** on the
+  tier's `--listen-hosts` mux (§9.12). It is not on the API listener and is not folded into `ended`, because
+  computer and `bash` VMs checkpoint many times without ending.
+  - **Identity:** from the verified TLS handshake only. `{host}` must equal the client certificate's
+    `spiffe://camelfs/host/<id>`, else `403 forbidden`.
+  - **Body:** `{ "commit", "expect", "holder": "<host>:<bootEpoch>:<mount>", "epoch", "root"? }`.
+  - **Checks, in order:**
+    1. `hostwire.ParseHolder`;
+    2. `checkHolder(certHostID, holder)`: holder.host is the certificate's host and holder.boot is the host's
+       registered `bootEpoch`, else `403 forbidden`;
+    3. refstore's fenced CAS with `Fence{ holder, epoch }`. Rule 1 applies: the checkpoint's commit has
+       `parents[0] = expect`.
+  - **Errors** are §9.8's (`stale`, `fenced`, `bad_parent`, `unknown_commit`).
+  - **The reply** is §9.9's `cas` reply, `200 { version, tree, parents, diff, bytes, files }`, so the host can put
+    the diff in its result.
+  - **No token** of any kind is used on this listener.
+- **Jobs** checkpoint once, at the end. The host CASes `job/<id>` (`expect` = the mounted version, `root`
+  included), then sends `checkpointed { tree }` to the guest, then reports `ended`. **`ended`'s `version` is the
+  commit the host already CASed. The tier never CASes on a host's behalf.** A failed CAS becomes the job's
+  `checkpointError` (`"cas: <code>"`), and the rest of the job's output stands.
+- **Computers and `bash` VMs** (per-turn checkpoints in a long-lived VM): checkpoint → the host's CAS (in-VPC,
+  ≈ 2 ms to the tier + ≈ 5 ms in DynamoDB) → `checkpointed { tree }` or `checkpointed { error }`, so the guest's
+  index commits only after the ref moved. The runtime is not on this path.
+- **Until C4 and K2c**, today's TypeScript jobhost and the runtime keep the pre-C order of
+  `camelfsd/README.md`: `checkpointed` first, then `HostJob` → `RepoDO` CASes after the result. That order is safe
+  only for jobs.
 
 The CAS carries the checkpoint's `root`, so a later job at that version mounts warm without the daemon rebuilding
 the image; the ref item carries `root?` (§6).
@@ -900,12 +923,19 @@ claims: { "iss": "<runtime URL>", "aud": "camelrun:camelfs", "sub": "agent:ag_12
   valid token whose `lin`, `acc` or `refs` does not cover the request). The tier logs `sub`, `lin`, `acc` and
   `kid`, never the token.
 
-**The fence lives only inside the signed token.**
+**For runtime callers, a fence lives only inside the signed token.**
 - A token with `fence` writes exactly the one ref in its `refs`. Its `cas`, lease renew and release are conditioned
-  on that holder and epoch. A fence in a request body is never trusted, and the routes take none.
-- `HostJob` mints the host's token when it takes the lease, and mints a fresh one with each renewal (every TTL/3,
-  inside the 15-minute cap). The new token is pushed to the host with the renewal, and the host uses the latest.
-  The fence, not `exp`, is what stops a late host.
+  on that holder and epoch. No route on the API listener takes a fence in a request body.
+- **Hosts use no token** (decided 2026-11-14). Their CAS is the host route of §9.7, on `--listen-hosts`.
+  - There the fence arrives in the body (approved by the lead, 2026-11-14). It is accepted only when all three
+    conditions hold:
+    1. the holder's host is the verified client certificate's host id (`checkHolder`, §9.12);
+    2. the holder's boot is that host's live `bootEpoch` (`checkHolder`);
+    3. refstore's fenced CAS finds the ref's current lease holder and epoch **equal** to the body's: the lease the
+       tier actually issued (`fenced` otherwise).
+  - So a host can use only leases issued to it, on its current boot. A host is already trusted with every VM it
+    runs.
+  - The earlier design, in which `HostJob` minted a fence-scoped token per lease and per renewal, is superseded.
 
 **Who gets which token:**
 - An agent's tool calls: `acc: w` on its workspace's `main`, `r` elsewhere.
@@ -972,23 +1002,55 @@ proves only "this came through Cloudflare", and anyone can proxy their own zone 
 - Rotating the AOP certificate: upload the new one to Cloudflare, add its CA to the trust store if it changed,
   then remove the old.
 
-**2. Tier ↔ host, both directions: mutual TLS with a private CA.**
-- **Host → tier.** Hosts call `fs-internal.camelai.dev` (the internal ALB). Its listener runs mTLS in verify
-  mode against the private CA.
-  - A host certificate carries the host id as a URI SAN, `spiffe://camelfs/host/<hostId>`. **That certificate is
-    the host's identity.** It replaces the attested identity for every host → tier call.
-  - The ALB strips any client-supplied `X-Amzn-Mtls-Clientcert-*` headers and sets its own from the verified leaf.
-    The tier reads the host id from them, and only the ALBs' security groups reach the tasks.
-  - A call from host A about host B's VM is refused: the host id in the path must equal the certificate's.
-  - **A host's `cas` and lease calls** are accepted only when the lease holder's `host` equals the certificate's
-    host id **and** its `boot` equals that host's current `bootEpoch` (`hosts` item), else `403 forbidden`. The
-    holder string is `<host>:<bootEpoch>:<vm id>`, and the tier takes the ref lease just before it writes
-    `booting` (camel-fs-compute.md §2). A rebooted host's old leases are refused on sight (L16).
-- **Tier → host** (port 8792, `--listen-compute`).
-  - The tier presents its own client certificate (URI SAN `spiffe://camelfs/tier`).
-  - The host serves a certificate with its own id, which the tier checks against the host it meant to call
-    (verification by SAN, not by IP hostname).
-  - The host accepts only a peer whose certificate chains to the private CA and names the tier.
+**2. Tier ↔ host, both directions: mutual TLS with a private CA, terminated in `camelfsd` itself.**
+- **Host → tier: `--listen-hosts`** on `camelfsd api` (required with compute; `0.0.0.0:8794` in deployment), behind an **internal NLB in TCP
+  passthrough** (`fs-internal.camelai.dev`).
+  - The TLS handshake is the tier's own Go listener, not a load balancer's: `RequireAndVerifyClientCert` against
+    `--hosts-ca-pem`. Its server certificate is the same certificate the tier presents as a client to hosts.
+  - **Where that certificate comes from:**
+    - In production (K4c3) the tier issues its own certificate from the Private CA at start (`--hosts-ca`, the CA's
+      ARN), renews it every 8 h, and refreshes the CA bundle hourly.
+        - `--tier-cert`/`--tier-key`/`--hosts-ca-pem` are the dev and test override. All three reload together on
+      SIGHUP (`host_tls.go`).
+  - Expired, not-yet-valid and foreign-CA certificates fail the handshake.
+  - **No certificate header is trusted anywhere.** AWS does not guarantee that an ALB strips client-supplied
+    `X-Amzn-Mtls-*` headers, so nothing reads them, and no ALB terminates host TLS.
+  - Only the host routes live on this listener: `/v1/hosts/{host}/register`, `…/heartbeat`,
+    `…/vms/{id}/started`, `…/vms/{id}/ended` and the host's ref CAS (C4, `POST /v1/hosts/{host}/lineages/{lineage}/refs/{name}/cas`, §9.7). None of them are on the storage listener (`--listen`, 8790), and none are unauthenticated. The NLB health check
+    is `/v0/health` on 8790 (fs-infra #1020), never a route on 8794. K4c3 adds `POST /v1/hosts/{host}/renew` here
+    for certificate renewal.
+- **The host's identity is its certificate.**
+    - The tier takes the leaf of the verified chain (`r.TLS.VerifiedChains[0][0]`, `host_identity.go`). It must have the client-auth EKU
+    and exactly one URI SAN, `spiffe://camelfs/host/<hostId>`, matching hostwire's host-id pattern.
+  - That id must equal the path's `{host}`, else `403 forbidden`. A call from host A about host B's VM is therefore
+    refused.
+  - It replaces the attested identity for every host → tier call after enrollment.
+- **The host's CAS is its own call** (C4, proto-block), not folded into `ended`. Session and `bash` checkpoints CAS
+  mid-run, synchronously, long before any `ended`.
+  - Its body carries `{ holder, epoch, commit, expect, root? }`.
+  - The tier first checks the holder against the certificate (below), then runs refstore's fenced CAS with
+    `Fence{ holder, epoch }`.
+  - For a job, `ended`'s `version` is the commit the host already CASed. The tier never CASes on a host's behalf.
+- **Lease-bound host calls** (the CAS above, and any lease operation a host makes) are accepted only when the
+  lease holder's `host` equals the certificate's host id **and** its `boot` equals that host's current
+  `bootEpoch` (`hosts` item), else `403 forbidden`.
+  - This is how a host's fence is trusted: the holder in the body is accepted only after it is bound to the
+    verified certificate and the live boot epoch. The fence-scoped token of §9.10 is not used on this path.
+  - The holder string is `<host>:<bootEpoch>:<vm id>`, and the tier takes the ref lease just before it writes
+    `booting` (camel-fs-compute.md §2).
+  - A rebooted host's old leases are refused on sight (L16).
+- **Enrollment: `--listen-enroll`** (default `0.0.0.0:8793`) behind the ALB's plain-TLS listener on 8443, serving
+  `POST /v1/hosts/enroll` only.
+  - It trusts **only** the STS attestation (`shared/job-host-attest.ts`): no client certificate exists yet, and no
+    header is read.
+    - It issues the host's first certificate (K4c3). Renewal then runs over `--listen-hosts` as
+    `POST /v1/hosts/{host}/renew`.
+- **Tier → host** (port 8792, `--listen-compute` on the host, K2c).
+  - The tier presents the same certificate: an `EndEntityCertificate/V1` with both server and client EKUs and the
+    URI SAN `spiffe://camelfs/tier`.
+  - The host serves a certificate with its own id, which the tier checks against the host it meant to call. The
+    check is by SAN, not by IP hostname.
+  - The host accepts only a peer whose certificate chains to its CA bundle and whose SAN is the tier's.
 - **This replaces the `camelfs-host+jwt` family** of §9.10 (#971): one mechanism and no service signing key.
 - **The per-call `{ host, vm }` scoping goes too.** The tier is the only caller the host accepts, and it is
   trusted with every VM on the host anyway. A token scoped to one VM would bound nothing a compromised tier could
@@ -998,7 +1060,7 @@ proves only "this came through Cloudflare", and anyone can proxy their own zone 
 (recommended).** Either option needs something that decides *which host id* a certificate may carry, because IAM
 cannot constrain a certificate's subject. That something is the tier's enrollment call.
 - **Enrollment.** A new host presents its STS attestation (`shared/job-host-attest.ts`: a signed
-  `GetCallerIdentity`) once at boot. It does so on a separate internal listener without client certificates,
+  `GetCallerIdentity`) once at boot. It does so on `--listen-enroll`, behind the ALB's plain-TLS 8443, without client certificates,
   which serves only `POST /v1/hosts/enroll`.
 - **Issuance.** The tier checks the attestation's instance against the pool and issues a 24-hour certificate for
   that host id. Renewal every 8 h is the same call over the host's current mTLS certificate.
