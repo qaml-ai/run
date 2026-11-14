@@ -38,8 +38,9 @@ func TestRuntimeCheckpointBodyContract(t *testing.T) {
 		if err := json.Unmarshal([]byte(body), &bad); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := checkpointMeta(bad); !errors.Is(err, invalidRequest) {
-			t.Fatalf("%s: got %v, want invalid_request", name, err)
+		var refused *httpError
+		if _, err := checkpointMeta(bad); !errors.As(err, &refused) || refused.status != 400 || refused.code != "invalid_request" || refused.message == "" {
+			t.Fatalf("%s: got %v, want a 400 invalid_request with its reason", name, err)
 		}
 	}
 }

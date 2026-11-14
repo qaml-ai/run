@@ -7,12 +7,10 @@
 import { Buffer } from "node:buffer";
 import type { Env } from "../agent-types.ts";
 import { TOOL_READ_BYTES } from "../repos/agent-store.ts";
-import { HttpRepoClient } from "../repos/http-client.ts";
 import { repoContext, type RepoEnv } from "../repos/registry.ts";
 import { check, normalizeRepoPath, RepoError } from "../repos/repo-policy.ts";
 import type { BashSessions } from "./bash.ts";
 import type { BashResult } from "./bash-stream.ts";
-import { tierConfigured } from "./tier.ts";
 import { vmFilesGuest } from "./vm-files-guest.ts";
 import type { GrepInput, GrepResult, StoragePlane } from "../repos/storage.ts";
 
@@ -34,9 +32,8 @@ export type VmFilesScope = { tenant: string; agent: string; repo: string; ref: s
 type VmFilesEnv = Env & { bashSessions: Pick<BashSessions, "runningFiles"> };
 
 export async function vmFiles(env: VmFilesEnv, scope: VmFilesScope): Promise<VmFiles | undefined> {
-  if (!tierConfigured(env)) return;
   const { lineage, repo } = await repoContext(env as RepoEnv, scope.tenant, scope.repo, `agent:${scope.agent}`);
-  if (repo instanceof HttpRepoClient) return env.bashSessions.runningFiles(lineage, repo.tierRefName(scope.ref), scope.agent);
+  return env.bashSessions.runningFiles(lineage, repo.tierRefName(scope.ref), scope.agent);
 }
 
 type StdinBlob = Awaited<ReturnType<StoragePlane["putBlob"]>>;

@@ -77,11 +77,7 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
         try {
           await deleteRepo(env as RepoEnv, tenant, repo.id);
         } catch (error) {
-          const code = repoErrorFrom(error)?.code;
-          if (code === "no_repo") continue;
-          if (code !== "uninitialized") throw error;
-          // A create interrupted after index registration has no repo contents to delete.
-          await env.TENANTS.getByName(tenant).markRepoDeleted(repo.id);
+          if (repoErrorFrom(error)?.code !== "no_repo") throw error;
         }
       }
     },
