@@ -566,7 +566,10 @@ async function refsContract(send: (request: Request) => Promise<Response>, origi
   assert.equal(lease.version, tip.commit);
   assert.equal(lease.tree, tip.tree);
   assert.deepEqual(await call("POST", "/refs/main/lease", 200, { body: leaseBody, key: "lease" }), lease);
-  await call("POST", "/refs/main/lease", 409, { body: { ...leaseBody, holder: { ...holder, host: "other" } }, code: "held" });
+  // The same holder re-acquiring keeps its epoch; another holder is refused.
+  const again = await call("POST", "/refs/main/lease", 200, { body: leaseBody });
+  assert.equal(again.epoch, lease.epoch);
+  await call("POST", "/refs/main/lease", 409, { body: { holder: { ...holder, host: "other-host" }, ttlMs: 60000 }, code: "held" });
   const held = await call("GET", "/refs/main", 200);
   assert.deepEqual(held.holder, holder);
   await call("POST", "/refs/main/cas", 409, { body: { commit: tip.commit, expect: tip.commit }, code: "fenced" });
