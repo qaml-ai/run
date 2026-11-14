@@ -1,6 +1,7 @@
 // Post-flip compute smoke for the camel-fs bash tool (one agent, two VM boots, billing checked). Not part of the suite.
 //
-//   CAMELRUN_URL=https://<pilot> CAMELRUN_API_KEY=<tenant key> node --experimental-strip-types scripts/smoke-compute.ts
+//   CAMELRUN_URL=https://<pilot> SMOKE_KEY_FILE=<file holding the key> node --experimental-strip-types scripts/smoke-compute.ts
+//   (CAMELRUN_API_KEY=<key> instead of SMOKE_KEY_FILE also works)
 //   (SMOKE_MODEL=<model id> to pick the agent's model; SMOKE_KEEP=1 keeps the test agent for inspection)
 //
 // It only creates, prompts, reads and finally deletes its own test agent; every other call is a read
@@ -10,34 +11,42 @@
 //   1. bash run 1: `echo hi`, the VM's boot_id, and a nonce written to /workspace/smoke.txt.
 //   2. Idle ≥ 10 s so the VM stops with a checkpoint; then the file API (no VM running, so the branch) has the nonce.
 //   3. bash run 2: a new boot_id (the VM rebooted from the branch head) and the file still holds the nonce.
-//   4. After the second VM stops, its usage is pulled and settled: the agent's usage has compute cost for the
+//   3b. With the second VM held awake by a `sleep 60` run, a 20 MiB PUT through the file API takes the VM path
+//      (VmFiles → putBlob → stdinBlob, L110): its version is the bytes' sha256, and the VM hashes the same bytes.
+//   4. After the second VM stops, the 20 MiB file is on the branch; its usage is pulled and settled: the agent's usage has compute cost for the
 //      host pool, and the account ledger's hourly usage entry gained compute seconds and cost to match.
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 const base = (process.env.CAMELRUN_URL ?? "").replace(/\/$/, "");
-const key = process.env.CAMELRUN_API_KEY ?? "";
+// The key is read inside this process (SMOKE_KEY_FILE) or taken from CAMELRUN_API_KEY; it is never printed.
+const key = (process.env.SMOKE_KEY_FILE ? readFileSync(process.env.SMOKE_KEY_FILE, "utf8") : process.env.CAMELRUN_API_KEY ?? "").trim();
 if (!base || !key) {
-  console.error("CAMELRUN_URL and CAMELRUN_API_KEY are required");
+  console.error("CAMELRUN_URL and one of SMOKE_KEY_FILE or CAMELRUN_API_KEY are required");
   process.exit(2);
 }
 const IDLE_WAIT_MS = 25_000; // idle stop after ~10 s with no exec, plus the stop's checkpoint
 const SETTLE_TIMEOUT_MS = 5 * 60_000; // usage is pulled every ~20 s and settled after
 const RUN_TIMEOUT_MS = 5 * 60_000;
+const BIG_BYTES = 20 * 2 ** 20; // over the old ~12–16 MiB inline-stdin cap (L110)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const log = (step: string, detail: unknown = "") => console.log(`[${new Date().toISOString()}] ${step}`, typeof detail === "string" ? detail : JSON.stringify(detail));
 
-async function call(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) {
+async function call(path: string, init: { method?: string; body?: unknown; raw?: Uint8Array; headers?: Record<string, string> } = {}) {
+  const hasBody = init.body !== undefined || init.raw !== undefined;
   const response = await fetch(base + path, {
-    method: init.method ?? (init.body === undefined ? "GET" : "POST"),
+    method: init.method ?? (hasBody ? "POST" : "GET"),
     headers: { authorization: `Bearer ${key}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers },
-    ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    ...(init.raw !== undefined ? { body: init.raw as unknown as BodyInit } : init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
   });
-  const text = await response.text();
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const text = bytes.length > 1 << 20 ? "" : new TextDecoder().decode(bytes);
   let json: any;
   try { json = text ? JSON.parse(text) : undefined; } catch { json = undefined; }
-  return { status: response.status, text, json };
+  return { status: response.status, text, json, bytes, headers: response.headers };
 }
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 async function until<T>(what: string, timeoutMs: number, probe: () => Promise<T | undefined | false>): Promise<T> {
   const deadline = Date.now() + timeoutMs;
@@ -49,11 +58,15 @@ async function until<T>(what: string, timeoutMs: number, probe: () => Promise<T 
   }
 }
 
-async function prompt(agent: string, text: string) {
+async function send(agent: string, text: string): Promise<string> {
   const accepted = await call(`/v1/agents/${agent}/prompt`, { body: { text, idempotencyKey: randomUUID() } });
   assert.equal(accepted.status, 202, `prompt: ${accepted.status} ${accepted.text}`);
+  return accepted.json.id;
+}
+async function prompt(agent: string, text: string) { return finished(agent, await send(agent, text)); }
+async function finished(agent: string, id: string) {
   const record = await until("the run to end", RUN_TIMEOUT_MS, async () => {
-    const r = await call(`/v1/agents/${agent}/requests/${accepted.json.id}?wait=25`);
+    const r = await call(`/v1/agents/${agent}/requests/${id}?wait=25`);
     assert.equal(r.status, 200, `request status: ${r.status} ${r.text}`);
     return r.json.state === "completed" && r.json;
   });
@@ -130,8 +143,33 @@ try {
   assert.notEqual(boot2, boot1, "run 2 ran on a new VM (the first one slept)");
   assert.equal(field(second, "READ"), nonce, "the file persisted on the branch across the reboot");
 
-  log("waiting for both VMs' usage to be pulled and settled");
+  // L110: a > 16 MiB write through the file API while the VM runs goes VmFiles → putBlob → stdinBlob → the guest.
+  // A run holds the VM awake (sleep), the write lands, and the same command then hashes the file inside the VM.
+  const big = randomBytes(BIG_BYTES), bigSha = sha256(big);
+  const holding = await send(agent, bashOnly(`sleep 60; echo BIGSHA=$(sha256sum /workspace/big.bin | cut -d' ' -f1)`));
+  const running = await until("the VM to be running (a file read answered by the VM)", 120_000, async () => {
+    const r = await call(`/v1/agents/${agent}/files/smoke.txt`);
+    // The VM path versions a file by its sha256; the branch path does not.
+    return r.status === 200 && r.headers.get("x-file-version") === sha256(r.bytes) && r;
+  });
+  log("VM running; file reads come from it", running.headers.get("x-file-version"));
+  const started = Date.now();
+  const put = await call(`/v1/agents/${agent}/files/big.bin`, { method: "PUT", raw: big, headers: { "content-type": "application/octet-stream" } });
+  assert.equal(put.status, 201, `big write: ${put.status} ${put.text}`);
+  assert.equal(put.json?.size, BIG_BYTES, "big write size");
+  assert.equal(put.json?.version, bigSha, "the big write took the VM path (its version is the bytes' sha256)");
+  log(`big write: ${BIG_BYTES} bytes through VmFiles in ${Date.now() - started} ms`, put.json);
+  const third = await finished(agent, holding);
+  log("run 3", third);
+  assert.equal(field(third, "BIGSHA"), bigSha, "the running VM holds the big file, byte for byte");
+
+  log("waiting for the VM to stop, then for its usage to be pulled and settled");
   await sleep(IDLE_WAIT_MS);
+  const onBranch = await until("the big file on the branch", 60_000, async () => {
+    const r = await call(`/v1/agents/${agent}/files/big.bin`);
+    return r.status === 200 && r.bytes.length === BIG_BYTES && sha256(r.bytes) === bigSha && r;
+  });
+  log("big file on the branch after the stop's checkpoint", { bytes: onBranch.bytes.length, version: onBranch.headers.get("x-file-version") });
   const usage = await until("compute usage on the agent", SETTLE_TIMEOUT_MS, async () => {
     const u = await agentCompute(agent);
     return u.cost > 0 && u;
@@ -145,7 +183,7 @@ try {
     });
     delta = { seconds: ledgerAfter.seconds - ledgerBefore.seconds, micros: ledgerAfter.micros - ledgerBefore.micros };
     log("ledger delta", delta);
-    // Two VMs, each awake at least its ~10 s idle window: at least 20 billed seconds between them.
+    // Two VMs, each awake at least its ~10 s idle window (the second also ~60 s of sleep): at least 20 billed seconds.
     assert.ok(delta.seconds >= 20, `expected ≥ 20 compute seconds on the ledger, got ${delta.seconds}`);
     assert.ok(delta.micros > 0, "the ledger charged compute");
   } else log("ledger", "account is not prepaid: no hourly usage entries to check; the agent's usage is the charge");
