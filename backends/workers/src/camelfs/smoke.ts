@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { tierConfigured, TierError, tierRequest, type TierEnv } from "./tier.ts";
 import { StorageError } from "../repos/storage.ts";
@@ -5,6 +6,9 @@ import { repoStorage } from "./repo-storage.ts";
 
 const SMOKE_SUB = "runtime:camelfs-smoke";
 const SMOKE_REF = "main";
+const LOCATION_HINTS = ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me"] as const satisfies readonly DurableObjectLocationHint[];
+const NO_STORE = { "cache-control": "no-store" };
+type SmokeEnv = TierEnv & { ADMIN_TENANTS?: string; CAMELFS_SMOKE?: DurableObjectNamespace<CamelfsSmoke> };
 const ROUTES = ["putBlob", "commit", "write", "readBatch", "getCommit"] as const;
 const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
 
@@ -102,7 +106,41 @@ export async function camelfsSmoke(env: TierEnv, iterations = 1, minSeconds = 0,
   };
 }
 
-export async function handleCamelfsSmoke(request: Request, env: TierEnv & { ADMIN_TENANTS?: string }, auth: { tenantId: string; scopes: string[] }) {
+async function smokeReply(env: TierEnv, iterations: number, minSeconds: number, tenant: string,
+  location: { colo: string | null; loc?: string; rayColo?: string }) {
+  try {
+    const result = await camelfsSmoke(env, iterations, minSeconds, tenant);
+    return Response.json({ ...result, ...location }, { status: result.ok ? 200 : 502, headers: NO_STORE });
+  } catch (e) {
+    if (!(e instanceof TierError)) throw e;
+    const { status, code } = e;
+    return Response.json({ error: { status, code, op: "createLineage" }, ...location }, { status, headers: NO_STORE });
+  }
+}
+
+export class CamelfsSmoke extends DurableObject<TierEnv> {
+  async run(iterations: number, minSeconds: number, tenant: string): Promise<Response> {
+    let colo: string | undefined, loc: string | undefined, rayColo: string | undefined;
+    try {
+      const trace = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
+        cache: "no-store", redirect: "error", signal: AbortSignal.timeout(10_000),
+      });
+      if (trace.ok) {
+        const body = await trace.text();
+        colo = /^colo=([A-Z]{3})$/m.exec(body)?.[1];
+        loc = /^loc=([A-Z]{2})$/m.exec(body)?.[1];
+        rayColo = /^[0-9a-f]+-([A-Z]{3})$/i.exec(trace.headers.get("cf-ray") ?? "")?.[1];
+      }
+    } catch {
+      // A hinted run needs location evidence. Fail before creating a lineage.
+    }
+    if (!colo || !loc || !rayColo)
+      return Response.json({ error: { status: 502, code: "trace_unavailable", op: "trace" } }, { status: 502, headers: NO_STORE });
+    return smokeReply(this.env, iterations, minSeconds, tenant, { colo, loc, rayColo });
+  }
+}
+
+export async function handleCamelfsSmoke(request: Request, env: SmokeEnv, auth: { tenantId: string; scopes: string[] }) {
   if (!tierConfigured(env) || request.method !== "POST") return new Response(null, { status: 404 });
   const admins = (env.ADMIN_TENANTS ?? "").split(",").map(value => value.trim());
   if (!admins.includes(auth.tenantId) || !auth.scopes.includes("*"))
@@ -115,14 +153,15 @@ export async function handleCamelfsSmoke(request: Request, env: TierEnv & { ADMI
     return Response.json({ error: "iterations must be 1..600", code: "INVALID_REQUEST" }, { status: 400 });
   if (!Number.isSafeInteger(minSeconds) || minSeconds < 0 || minSeconds > 600)
     return Response.json({ error: "minSeconds must be 0..600", code: "INVALID_REQUEST" }, { status: 400 });
+  const requestedHint = params.get("hint");
+  if (requestedHint !== null) {
+    const locationHint = LOCATION_HINTS.find(hint => hint === requestedHint);
+    if (!locationHint)
+      return Response.json({ error: `hint must be one of ${LOCATION_HINTS.join(", ")}`, code: "INVALID_REQUEST" }, { status: 400 });
+    if (!env.CAMELFS_SMOKE)
+      return Response.json({ error: "Hinted smoke is unavailable", code: "UNAVAILABLE" }, { status: 503, headers: NO_STORE });
+    return env.CAMELFS_SMOKE.getByName(randomUUID(), { locationHint }).run(iterations, minSeconds, auth.tenantId);
+  }
   const colo = typeof request.cf?.colo === "string" ? request.cf.colo : null;
-  try {
-    const result = await camelfsSmoke(env, iterations, minSeconds, auth.tenantId);
-    return Response.json({ ...result, colo }, { status: result.ok ? 200 : 502, headers: { "cache-control": "no-store" } });
-  }
-  catch (e) {
-    if (!(e instanceof TierError)) throw e;
-    const { status, code } = e;
-    return Response.json({ error: { status, code, op: "createLineage" }, colo }, { status, headers: { "cache-control": "no-store" } });
-  }
+  return smokeReply(env, iterations, minSeconds, auth.tenantId, { colo });
 }

@@ -10,7 +10,7 @@ import { TenantRepos } from "../src/repos/tenant-repos.ts";
 
 const hooks = registerHooks({ resolve(specifier, context, next) {
   if (specifier === 'cloudflare:workers')
-    return { url: 'data:text/javascript,export class DurableObject {} export const waitUntil=p=>p;', shortCircuit: true };
+    return { url: 'data:text/javascript,export class DurableObject { constructor(ctx,env) { this.env=env; } } export const waitUntil=p=>p;', shortCircuit: true };
   if (specifier.endsWith("/security-services.ts"))
     return { url: "data:text/javascript,export const keyServices=async env=>({accounts:env.accounts});", shortCircuit: true };
   return next(specifier, context);
@@ -18,7 +18,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
 const { runtimeSigner, runtimeJwks } = await import("../src/tool-identity.ts");
 const { HttpRepoClient } = await import("../src/repos/http-client.ts");
 const { createRepo, deleteRepo } = await import("../src/repos/registry.ts");
-const { handleCamelfsSmoke } = await import("../src/camelfs/smoke.ts");
+const { CamelfsSmoke, handleCamelfsSmoke } = await import("../src/camelfs/smoke.ts");
 const { prepareMounts } = await import("../src/repos/mounts.ts");
 const { repoTransportFailure } = await import("../src/repos/routes.ts");
 const { TierError } = await import("../src/camelfs/tier.ts");
@@ -55,8 +55,14 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
 
   const calls: { path: string; method: string; claims: ReturnType<typeof decodeJwt>; token: string; body?: unknown }[] = [];
   const fetchReal = globalThis.fetch;
-  let failSmokeWrite = false;
+  let failSmokeWrite = false, failTrace = false, traceCalls = 0;
   globalThis.fetch = async (url, init) => {
+    if (String(url) === "https://www.cloudflare.com/cdn-cgi/trace") {
+      traceCalls++;
+      assert.equal(init?.cache, "no-store");
+      if (failTrace) return new Response(null, { status: 503 });
+      return new Response("ip=192.0.2.1\ncolo=FRA\nloc=DE\n", { headers: { "cf-ray": "0123456789abcdef-AMS" } });
+    }
     const authorization = new Headers(init?.headers).get("authorization")!;
     assert.match(authorization, /^Bearer ey/);
     const jwt = authorization.slice(7);
@@ -126,6 +132,47 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const failedPath = "/v1/lineages/" + encodeURIComponent(failedSmoke.lineage);
   assert.deepEqual(calls.slice(beforeFailure).map(c => c.method + " " + (c.path.slice(failedPath.length) || "/")),
     ["PUT /", "POST /commits", "POST /refs", ...round.slice(0, 3), "DELETE /refs/main", "DELETE /"]);
+
+  failSmokeWrite = false;
+  const placements: [string, string][] = [];
+  const hintedEnv = { ...env, CAMELFS_SMOKE: {
+    getByName(name: string, { locationHint }: { locationHint: string }) {
+      placements.push([name, locationHint]);
+      return new CamelfsSmoke({} as DurableObjectState, env);
+    },
+  } } as unknown as Parameters<typeof handleCamelfsSmoke>[1];
+  const hintedRequest = (hint: string) => Object.assign(
+    new Request(`https://runtime/v1/internal/camelfs/smoke?hint=${hint}`, { method: "POST" }),
+    { cf: { colo: "SIN" } },
+  );
+  for (const invalidHint of ["", "bogus", "WEUR", "apac-ne"]) {
+    assert.equal((await handleCamelfsSmoke(hintedRequest(invalidHint), hintedEnv, auth)).status, 400);
+  }
+  assert.deepEqual(placements, []);
+  assert.equal(traceCalls, 0);
+  assert.equal((await handleCamelfsSmoke(hintedRequest("weur"), env, auth)).status, 503);
+
+  const hinted = await handleCamelfsSmoke(hintedRequest("weur"), hintedEnv, auth);
+  const far = await hinted.json();
+  assert.equal(hinted.status, 200);
+  assert.deepEqual(Object.keys(far).sort(), [...Object.keys(smoke), "loc", "rayColo"].sort());
+  assert.equal(far.colo, "FRA");
+  assert.equal(far.loc, "DE");
+  assert.equal(far.rayColo, "AMS");
+  assert.equal(far.tierRegion, "us-west-2");
+  assert.equal(far.completed, 1);
+  assert.deepEqual(far.cleanup, { deleted: true });
+  assert.ok(Object.values(far.routes).every(route => (route as { count: number }).count === 1));
+
+  failTrace = true;
+  const beforeTraceFailure = calls.length;
+  const traceFailure = await handleCamelfsSmoke(hintedRequest("weur"), hintedEnv, auth);
+  assert.equal(traceFailure.status, 502);
+  assert.equal((await traceFailure.json()).error.code, "trace_unavailable");
+  assert.equal(calls.length, beforeTraceFailure);
+  assert.equal(traceCalls, 2);
+  assert.deepEqual(placements.map(([, hint]) => hint), ["weur", "weur"]);
+  assert.notEqual(placements[0][0], placements[1][0]);
 
   const { repoStorage } = await import("../src/camelfs/repo-storage.ts");
   const row = { id: "repo_r3", name: "r3", key: null, createdAt: 1, deletedAt: null, lineage: "t:repo_r3", files: 0, bytes: 0 };

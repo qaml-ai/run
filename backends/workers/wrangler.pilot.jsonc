@@ -35,6 +35,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
+      { "name": "CAMELFS_SMOKE", "class_name": "CamelfsSmoke" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -115,7 +116,8 @@
       "tag": "delete-job-hosts",
       "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
     },
-    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] }
+    { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
+    { "tag": "camelfs-smoke", "new_sqlite_classes": ["CamelfsSmoke"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
   // stopped by its code through ctx.container. Under the durable_object policy
