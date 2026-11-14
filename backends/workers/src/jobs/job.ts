@@ -10,13 +10,9 @@ export const JOB_LIMITS = Object.freeze({
   outputs: 32,
   outputBytes: 8 * 1024 * 1024,
   outputTotalBytes: 8 * 1024 * 1024,
-  /** Files given inline cross RPC too; a larger tree comes from a volume snapshot. */
+  /** Files given inline cross RPC. Use a repo for larger trees. */
   inlineFiles: 10_000,
   inlineBytes: 8 * 1024 * 1024,
-  /** A volume snapshot synced into the job. Each file is read whole to check its digest. */
-  syncFiles: 100_000,
-  syncFileBytes: 64 * 1024 * 1024,
-  syncBytes: 4 * 1024 * 1024 * 1024,
   pids: { min: 16, max: 65_536 },
   /** After the deadline, time to collect outputs and stop before the slot and the backstop alarm expire. */
   graceMs: 120_000,
@@ -30,10 +26,8 @@ export const jobLifetimeMs = (timeoutSeconds: number) => timeoutSeconds * 1000 +
 export const JOB_INSTANCES: readonly InstanceType[] = INSTANCE_TYPES.filter(type => type !== "lite");
 
 export type JobLimits = { cpus?: number; memoryMiB?: number; diskMiB?: number; pids?: number };
-// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-/** What a job's files come from: given inline (path to bytes), or a volume snapshot (its whole tree). */
+/** A job's inline files, keyed by path. */
 export type JobFiles = Record<string, Uint8Array>;
-export type JobVolumeSource = { tenant: string; volume: string; snapshot: string };
 export type JobSpec = {
   /** The job's id: unique per job. It names the job's container object (`job:<id>`) and its computer slot. */
   id: string;
@@ -41,9 +35,8 @@ export type JobSpec = {
   image?: string;
   snapshot?: ComputerSnapshot;
   files?: JobFiles;
-  volume?: JobVolumeSource;
   repo?: { tenant: string; repo: string; ref?: string; version?: string; owner: string };
-  /** Checkpoint /repo when the command ends (camelFS hosts only); needs `volume` or `repo`. */
+  /** Checkpoint /repo when the command ends (camelFS hosts only); needs `repo`. */
   commit?: boolean;
   /** A shell command (`bash -lc`), run in /repo. */
   command: string;
@@ -109,8 +102,7 @@ const encoder = new TextEncoder();
 export const JOB_ID = /^[A-Za-z0-9_-]{1,100}$/;
 
 /**
- * A relative path inside /repo or /out: no empty, `.` or `..` segment, no NUL, at most 4096 bytes. A leading `/` (a
- * volume's paths have one) is dropped.
+ * A relative path inside /repo or /out: no empty, `.` or `..` segment, no NUL, at most 4096 bytes. A leading `/` is dropped.
  */
 export function jobPath(value: unknown, what = "path"): string {
   if (typeof value !== "string") throw bad(`A job ${what} is a string`);
@@ -158,7 +150,7 @@ const positive = (value: unknown, name: string, max: number, integer = false) =>
 export function jobSpec(value: unknown, options: { beyondContainers?: boolean } = {}): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
   const v = value as Partial<JobSpec> | null;
   if (!v || typeof v !== "object") throw bad("A job is an object");
-  const known = ["id", "image", "snapshot", "files", "volume", "repo", "commit", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
+  const known = ["id", "image", "snapshot", "files", "repo", "commit", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance", "secretEnv"];
   const extra = Object.keys(v).find(key => !known.includes(key));
   if (extra) throw bad(`Unknown job field: ${extra}`);
   if (typeof v.id !== "string" || !JOB_ID.test(v.id)) throw bad("A job id is 1-100 letters, digits, _ or -");
@@ -172,7 +164,6 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
   const { min, max } = JOB_LIMITS.timeoutSeconds;
   if (!Number.isInteger(v.timeoutSeconds) || v.timeoutSeconds! < min || v.timeoutSeconds! > max)
     throw bad(`timeoutSeconds must be a whole number from ${min} to ${max}`);
-  if (v.files !== undefined && v.volume !== undefined) throw bad("Give files or volume, not both");
   let files: JobFiles | undefined;
   if (v.files !== undefined) {
     if (!v.files || typeof v.files !== "object" || Array.isArray(v.files)) throw bad("files maps paths to bytes");
@@ -187,20 +178,13 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
       if (clean in files) throw bad(`Duplicate job file path: ${clean}`);
       files[clean] = bytes;
     }
-    if (total > JOB_LIMITS.inlineBytes) throw bad(`Inline files are at most ${JOB_LIMITS.inlineBytes} bytes together; sync a volume snapshot instead`);
-  }
-  let volume: JobVolumeSource | undefined;
-  if (v.volume !== undefined) {
-    const s = v.volume as Partial<JobVolumeSource> | null;
-    if (!s || typeof s.tenant !== "string" || !s.tenant || typeof s.volume !== "string" || !s.volume || typeof s.snapshot !== "string" || !s.snapshot)
-      throw bad("A job volume source names a tenant, a volume and a snapshot");
-    volume = { tenant: s.tenant, volume: s.volume, snapshot: s.snapshot };
+    if (total > JOB_LIMITS.inlineBytes) throw bad(`Inline files are at most ${JOB_LIMITS.inlineBytes} bytes together; use a repo instead`);
   }
   let repo: JobSpec["repo"];
   if (v.repo !== undefined) {
     const r = v.repo;
     if (!r || typeof r !== "object" || typeof r.tenant !== "string" || !r.tenant || typeof r.repo !== "string" || !r.repo.trim()) throw bad("repo needs tenant and a non-empty repo");
-    if (v.volume !== undefined || v.files !== undefined) throw bad("repo excludes volume and files");
+    if (v.files !== undefined) throw bad("repo excludes inline files");
     let target;
     try { target = repoAt({ repo: r.repo, ...(r.ref !== undefined ? { ref: r.ref } : {}), ...(r.version !== undefined ? { version: r.version } : {}) }); }
     catch (error) { throw bad((error as Error).message); }
@@ -208,7 +192,7 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
     repo = { ...target, tenant: r.tenant, owner: r.owner };
   }
   if (v.commit !== undefined && typeof v.commit !== "boolean") throw bad("commit is true or false");
-  if (v.commit && !volume && !repo) throw bad("A job commits only a volume's tree: commit needs volume");
+  if (v.commit && !repo) throw bad("Job checkpoints require a repo source");
   if (v.outputs !== undefined && (!Array.isArray(v.outputs) || v.outputs.length > JOB_LIMITS.outputs)) throw bad(`outputs is a list of at most ${JOB_LIMITS.outputs} paths under /out`);
   const outputs = [...new Set((v.outputs ?? []).map(path => jobPath(path, "output path")))];
   const l = v.limits as JobLimits | undefined;
@@ -226,12 +210,11 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
   }
   if (v.internet !== undefined && typeof v.internet !== "boolean") throw bad("internet is true or false");
   if (v.saveSnapshot !== undefined && (typeof v.saveSnapshot !== "string" || !SNAPSHOT_NAME.test(v.saveSnapshot))) throw bad("Invalid saveSnapshot name");
-  // Every job has a payer: it is metered, holds a computer slot, and reads volumes of the payer's tenant only.
+  // Every job has a payer: it is metered, holds a computer slot, and reads repos of the payer's tenant only.
   if (!v.payer || typeof v.payer.tenant !== "string" || !v.payer.tenant || typeof v.payer.agent !== "string" || !v.payer.agent) throw bad("A job needs a payer: { tenant, agent }");
   // A workflow payer is a workflow's id (wf_…): its tenant pays, recorded under the workflow.
   if (v.payer.kind !== undefined && (v.payer.kind !== "workflow" || !/^wf_[A-Za-z0-9_-]{1,80}$/.test(v.payer.agent))) throw bad('A job\'s payer kind is "workflow", with the workflow\'s id as its agent');
   const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent, ...(v.payer.kind ? { kind: v.payer.kind } : {}) };
-  if (volume && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
   if (repo && repo.tenant !== payer.tenant) throw bad("A job reads repos of its payer's tenant only");
   let secretEnv: Record<string, string> | undefined;
   if (v.secretEnv !== undefined) {
@@ -246,7 +229,7 @@ export function jobSpec(value: unknown, options: { beyondContainers?: boolean } 
   if (given !== undefined && given !== instance) throw bad(`instance is derived from limits (${instance}), not set`);
   return {
     id: v.id, image: v.image ?? "workspace", command: v.command, timeoutSeconds: v.timeoutSeconds!, outputs,
-    ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {}, ...repo ? { repo } : {},
+    ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...repo ? { repo } : {},
     ...Object.keys(limits).length ? { limits } : {}, ...v.internet ? { internet: true } : {},
     ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer, ...secretEnv ? { secretEnv } : {},
     ...(v.commit ? { commit: true } : {}), instance,

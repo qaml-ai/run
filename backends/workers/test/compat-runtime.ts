@@ -114,6 +114,7 @@ export async function compatibilityRuntime(
     call,
     prompt,
     model,
+    camelfsCalls: camelfs?.calls ?? server.camelfsCalls,
     get logs() { return server.worker.logs().split("\n"); },
     child: {
       kill: () => {

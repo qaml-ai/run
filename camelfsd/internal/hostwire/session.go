@@ -33,8 +33,9 @@ type ExecChunk struct {
 // ExecExit is the JSON data in an exit SSE event.
 // GET /v1/vms/{id}/exec/{execId}?offset=N returns the retained tail from N.
 // Retention: last 8 execs per VM × 1 MiB each, plus exit records of the last 64
-// (truncated: true when the tail is gone). Older than retained → 410 tail_truncated
-// { firstOffset }; unknown → 404 exec_unknown.
+// (truncated: true when the tail is gone). Older than retained → 410 tail_truncated with
+// details { firstOffset }; unknown → 404 exec_unknown. Every host error body is the §9.8 shape
+// { error: { code, message, details? } }, relayed by the tier unchanged.
 type ExecExit struct {
 	Code      int   `json:"code"`
 	TimedOut  bool  `json:"timedOut"`

@@ -1,8 +1,6 @@
 import { HttpError } from "./errors.ts";
 import type { SecurityEnv } from "./security-services.ts";
 import { FileError } from "./file-errors.ts";
-import { withSql } from "./postgres.ts";
-import type { Volume } from "./volume.ts";
 import {
   boundedBytes,
   imageInputs,
@@ -12,8 +10,6 @@ import {
 } from "./images.ts";
 export interface FileBindings extends ImageBindings, SecurityEnv {
   TENANTS: DurableObjectNamespace<import("./tenant.ts").TenantAdmission>;
-  // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-  VOLUMES: DurableObjectNamespace<Volume>;
   REPOS: DurableObjectNamespace<import("./repos/repo-do.ts").RepoDO>;
   HYPERDRIVE: {
     connectionString: string;
@@ -33,32 +29,6 @@ async function input(request: Request, limit = 64 * 1024) {
   } catch {
     throw new FileError("Expected a JSON object");
   }
-}
-// TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-const stub = (env: FileBindings, tenant: string, id: string) =>
-  env.VOLUMES.getByName(`${tenant}:${id}`);
-export async function volume(
-  env: FileBindings,
-  tenant: string,
-  id: string,
-) {
-  const row = await withSql(
-    env,
-    async (sql) =>
-      (
-        await sql.query<{
-          name: string;
-          created_at: number;
-        }>(
-          "SELECT name,created_at FROM volumes WHERE id=$1 AND tenant=$2 AND deleted_at IS NULL",
-          [id, tenant],
-        )
-      ).rows[0],
-  );
-  if (!row) throw new FileError("Unknown volume", 404);
-  const v = stub(env, tenant, id);
-  await v.initialize(tenant, id, row.name, row.created_at);
-  return v;
 }
 const fileFailure = (error: unknown) => {
   const message =
