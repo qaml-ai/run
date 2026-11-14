@@ -6,9 +6,20 @@ Requires=camel-kvm-prep.service
 
 [Service]
 Environment=AWS_REGION=us-west-2 CAMELFSD_VIRTUAL_SIZE=68719476736 CAMELFS_API_PORT=8790
+Environment=TIER_CA=/etc/camel/tier-ca.pem LISTEN_COMPUTE=0.0.0.0:8792 POOL=test SLOTS=1 JOB_VCPUS=2 JOB_MEMORY_MIB=2048 CAMELFSD_DISK_MIB=8192
 EnvironmentFile=/etc/camel/kvm-host.conf
-ExecStartPre=/bin/sh -ec 'if [ -z "$${CAMELFSD_COMPUTE_FLAGS:-}" ]; then exec /usr/local/bin/camelfsd cleanup --data /nvme/camelfs; fi'
-ExecStart=/usr/local/bin/camelfsd host --socket /run/camelfsd/api.sock --data /nvme/camelfs --store ${CAMELFSD_STORE} --region ${AWS_REGION} --virtual-size ${CAMELFSD_VIRTUAL_SIZE} --listen-api 127.0.0.1:${CAMELFS_API_PORT} --api-token-file /etc/camel/camelfs-api.env $CAMELFSD_COMPUTE_FLAGS
+ExecStartPre=/bin/sh -ec 'if [ -z "$${TIER_ENROLL_URL:-}$${TIER_HOSTS_ENDPOINT:-}" ]; then \
+    if [ -n "$${CAMELFSD_COMPUTE_FLAGS:-}" ]; then echo "Replace CAMELFSD_COMPUTE_FLAGS with the tier settings in kvm-host.conf.example" >&2; exit 1; fi; \
+    exec /usr/local/bin/camelfsd cleanup --data /nvme/camelfs; fi'
+ExecStart=/bin/sh -ec 'set -- /usr/local/bin/camelfsd host --socket /run/camelfsd/api.sock --data /nvme/camelfs \
+    --store "$$CAMELFSD_STORE" --region "$$AWS_REGION" --virtual-size "$$CAMELFSD_VIRTUAL_SIZE" \
+    --listen-api "127.0.0.1:$$CAMELFS_API_PORT" --api-token-file /etc/camel/camelfs-api.env; \
+    if [ -n "$${TIER_ENROLL_URL:-}$${TIER_HOSTS_ENDPOINT:-}" ]; then \
+        set -- "$$@" --compute --tier-enroll-url "$${TIER_ENROLL_URL:?}" --tier-hosts-endpoint "$${TIER_HOSTS_ENDPOINT:?}" \
+            --tier-ca "$${TIER_CA:-/etc/camel/tier-ca.pem}" --pool "$$POOL" --images-store "$${CAMELFSD_IMAGES_STORE:?}" \
+            --listen-compute "$${LISTEN_COMPUTE:-0.0.0.0:8792}" --slots "$$SLOTS" --vcpus "$$JOB_VCPUS" \
+            --memory-mib "$$JOB_MEMORY_MIB" --disk-mib "$$CAMELFSD_DISK_MIB"; \
+    fi; exec "$$@"'
 Restart=on-failure
 RestartSec=5
 
