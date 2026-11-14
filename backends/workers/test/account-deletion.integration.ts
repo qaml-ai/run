@@ -38,7 +38,8 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
   const { id } = await created.json() as { id: string };
   const ids = [id];
   let next = 0;
-  await Promise.all(Array.from({ length: 10 }, async () => {
+  // Limit concurrent creates because first agent starts are CPU-heavy in the single-threaded workerd fixture.
+  await Promise.all(Array.from({ length: 4 }, async () => {
     while (next++ < AGENTS - 1) {
       const response = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
       if (response.status !== 201) assert.fail(`create ${response.status}: ${await response.text()}\n${createLogs()}`);
