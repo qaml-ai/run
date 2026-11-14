@@ -288,8 +288,14 @@ metadata, sends ready, validates the stream, then sends ack before uploading.
 The guest thaws on ack, nack, EOF or deadline. After ack the daemon writes
 blobs, trees, the commit and the image root; records lineage_objects and
 tree_roots; and returns {tree,root,commit,timings}. Flat timing fields remain
-for one release. jobhost/RepoDO must perform CAS before telling the guest to
-commit its pending index. Publication failure leaves tree_roots unchanged.
+for one release. Today's order, for jobs: jobhost sends `checkpointed{tree}` to
+the guest as soon as the daemon answers (`jobhost/agent.ts`), and the runtime
+(`HostJob` → `RepoDO`) performs the CAS after the result arrives
+(`backends/workers/src/jobs/hosts.ts`, `finishJobRepo`); that is safe only
+because a job's VM is destroyed right after. Option C's order (camel-fs-files.md
+§9.7), required for computers and `bash` VMs: the host calls the tier's `cas`
+in-VPC first and sends `checkpointed{tree}` (or `{error}`) only after the ref
+moved. Publication failure leaves tree_roots unchanged.
 
 Stream defaults: --stream-idle 30s, --apply-max 30m, checkpoint timeoutMs
 120000 (maximum 600000), --max-files 200000, --max-bytes 8589934592,
@@ -409,6 +415,25 @@ camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfsd \
   --store s3://bucket/prefix --region us-west-2 \
   --jwks-file /etc/camelfsd/jwks.json --token-issuer https://runtime.example
 ```
+
+When compute is enabled, set `--listen-hosts 0.0.0.0:8794` for host
+registration, heartbeats, and VM lifecycle callbacks. Route these calls
+through an internal NLB with a TCP listener on 443 and a TCP target group
+on 8794. Use a **TCP health check**. The host listener has no unauthenticated
+HTTP route, and the NLB passes TLS through to camelfsd. The public storage
+ALB continues to target port 8790. Tier pushes go directly to the host's
+compute listener on port 8792.
+
+The tier verifies host client certificates against `--hosts-ca-pem`.
+The verified leaf must carry the clientAuth EKU and exactly one URI SAN
+of the form `spiffe://camelfs/host/<id>` matching the request path.
+The tier certificate and key (`--tier-cert` and `--tier-key`) serve both the
+host listener and outbound pushes. The certificate requires serverAuth and
+clientAuth EKUs, the `spiffe://camelfs/tier` URI for pushes, and a DNS SAN
+matching the private host-channel endpoint for clients that verify its name.
+After rotating the files, send SIGHUP to load the CA bundle and tier key
+pair together for new connections. A failed reload keeps the previous
+credentials.
 
 Each API node keeps its own SQLite caches, including its idempotency response
 cache. Nodes can share the same object store, which is the durable source of

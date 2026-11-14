@@ -11,7 +11,7 @@ trap 'docker rm -f "$container" >/dev/null' EXIT
 for ((attempt = 0; attempt < 60; attempt++)); do
     # An unsigned GET gets an HTTP error once DynamoDB is ready to serve.
     if curl -s --max-time 1 -o /dev/null "$endpoint"; then
-        CAMELFS_DDB_LOCAL="$endpoint" go test -count=1 ./internal/refstore/... ./internal/ddb/... ./internal/delivery/... ./internal/compute/...
+        CAMELFS_DDB_LOCAL="$endpoint" go test -count=1 ./internal/refstore/... ./internal/ddb/... ./internal/delivery/... ./internal/compute/... ./internal/api/... ./internal/hostwire/...
         exit
     fi
     sleep 1

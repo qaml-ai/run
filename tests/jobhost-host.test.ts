@@ -222,6 +222,8 @@ test("the isolation suite reports each property, and fails one that leaks", asyn
           if (command.startsWith("ip -4")) return out(`${ip}\n`, 0);
           if (leak?.test(command)) return out("200", 0);
           if (command.includes("registry.npmjs.org/'") && command.startsWith("curl -sS -o /dev/null -m 15")) return out("200", 0);
+          // Plain HTTP reaches the proxy, which answers 403 to anything but CONNECT (curl exits 0 on it).
+          if (command.includes("-w '%{http_code}' http://registry.npmjs.org/")) return out("403", 0);
           if (command.includes("seq 300")) return out("bash: fork: Resource temporarily unavailable", 0);
           if (command.includes("fallocate")) return out("", 0);
           return out("", 7);
@@ -229,11 +231,17 @@ test("the isolation suite reports each property, and fails one that leaks", asyn
       } satisfies Vm;
     },
   });
-  const clean = await isolationSuite(launcher());
+  const resolve = async () => "203.0.113.80";
+  const clean = await isolationSuite(launcher(), { resolve });
   assert.ok(clean.length >= 14);
   assert.deepEqual(clean.filter(check => !check.ok), []);
-  const leaky = await isolationSuite(launcher(/169\.254\.169\.254/));
+  const leaky = await isolationSuite(launcher(/169\.254\.169\.254/), { resolve });
   assert.deepEqual(leaky.filter(check => !check.ok).map(check => check.name).sort(), ["IMDS is unreachable directly", "IMDS is unreachable through the proxy"]);
+  // Port 80 getting through, by the proxy or directly to an address, fails the port-80 check.
+  for (const leak of [/-w '%\{http_code\}' http:\/\/registry/, /--noproxy '\*' -H 'Host: registry\.npmjs\.org' http:\/\/\d/]) {
+    const leaked = await isolationSuite(launcher(leak), { resolve });
+    assert.deepEqual(leaked.filter(check => !check.ok).map(check => check.name), ["port 80 is refused even to an allowlisted host"], String(leak));
+  }
 });
 
 test("the image's scripts parse, and its pins are well-formed", async () => {
