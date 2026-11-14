@@ -162,7 +162,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     if (input.name !== undefined && typeof input.name !== "string") throw new ApiError(400, "name must be text");
     const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId, entry.tenantId);
     const config = { ...withoutOnExpire(entry.config), ...settings, name: input.name as string | undefined ?? (entry.config.name ? `${entry.config.name} (fork)`.slice(0, 120) : undefined), mounts: workspace.mounts, initialMessages, idleTtlSeconds: null, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
-    configuration({...config,mounts:config.mounts.filter(m=>!("volumeId"in m))}, env.MODEL);
+    configuration(config, env.MODEL);
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ sourceId: entry.id, atMessage: at, config }))));
     const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 1000 : 86400_000;
     claim = await claimFork(env, entry.tenantId, { sourceId: entry.id, targetId, key, fingerprint, atMessage: at, copyPrivate: workspace.copyPrivate, config, model: snapshot.model, origin: new URL(request.url).origin, expiresAt: Date.now() + ttl });
@@ -176,19 +176,14 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     const fail = env.TEST_MODE === "1" ? request.headers.get("x-camel-test-fork-failure") : null;
     if (fail === "claimed") throw new ApiError(503, "Injected fork interruption before creation");
     if (claim.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, captured, fail === "copied" ? 1 : undefined);
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    const legacy=(claim.config.mounts??[]).filter(m=>m.volumeId);
-    const internalMounts=legacy.length?[...await (await import('./repos/mounts.ts')).prepareMounts(env as import('./repos/registry.ts').RepoEnv,entry.tenantId,targetId,(claim.config.mounts??[]).filter(m=>!m.volumeId)),...legacy]:undefined;
-    const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint },false,internalMounts));
+    const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint },false));
     const workspaces = new Workspaces(database(env));
     const inherited = await workspaces.current(entry.tenantId, "agent", entry.id);
     await workspaces.assign(entry.tenantId, "agent", created.id, inherited?.workspace ?? null, true, true);
     if (fail === "copied") throw new ApiError(503, "Injected fork interruption after repo creation");
     if (fail === "created") throw new ApiError(503, "Injected fork interruption after creation");
     if (claim.model) {
-      // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-      const legacyPinnedVolumes=await (await import('./legacy-prompt-attachments.ts')).inheritLegacyHistoryPins(env,entry.tenantId,claim.sourceId,created.id,claim.config.initialMessages??[]);
-      await payload(await call(env, created.id, "/context/import", { model: claim.model, ...(legacyPinnedVolumes.length?{legacyPinnedVolumes}:{}) }));
+      await payload(await call(env, created.id, "/context/import", { model: claim.model }));
     }
     const forkedFrom = { agentId: claim.sourceId, atMessage: claim.atMessage };
     const updated = await withSql(env, sql => sql.query("update agents set header=(jsonb_set(header::jsonb,'{forkedFrom}',$3::jsonb)-'pendingFork')::json where tenant=$1 and id=$2 and not revoked returning header", [entry.tenantId, created.id, JSON.stringify(forkedFrom)]));

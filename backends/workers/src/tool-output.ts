@@ -3,7 +3,7 @@ import { hasFileArgument } from './tool-file-schema.ts';
 import { Buffer } from 'node:buffer';
 import { hook, ToolTask, type Extension, type HookApi, type ToolExecutionResult } from '@earendil-works/pi-durable';
 import { FILE_LIMITS } from '../../../src/limits.ts';
-import { handleAgentFileRequest, type FileBindings, type AgentMount as Mount } from './files.ts';
+import { handleAgentFileRequest, type FileBindings, type Mount as Mount } from './files.ts';
 import { scratchMount } from './media/files-policy.ts';
 import { toolOutputPolicy } from './tool-output-policy.ts';
 import type { ToolCallSite } from './tool-call-context.ts';
@@ -25,7 +25,7 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
       if (call.parent) return { ...result, output: materialized };
       const own = agentRepoId(current.tenant, current.agent);
       const mount = current.fileTools !== false || current.codeMode !== false
-        ? scratchMount(current.mounts.map(value => ({ ...value, workspace: 'repo'in value ? value.repo === own : value.volumeId===`agent:${current.agent}` }))) : undefined;
+        ? scratchMount(current.mounts.map(value => ({ ...value, workspace: value.repo === own }))) : undefined;
       const save = async (id: string, text: string, extension = 'txt') => {
         if (!mount) return;
         const prefix = current.call.messageIndex === undefined ? '' : `${current.call.messageIndex}-`;

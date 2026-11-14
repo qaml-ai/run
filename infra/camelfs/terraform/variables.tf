@@ -76,6 +76,35 @@ variable "service_task_definition_arn" {
   }
 }
 
+variable "api_features" {
+  description = "Which later flag sets the api command carries, matching what the daemon on the deployed image accepts (Go's flag package exits on an unknown flag): \"refs\" adds --refs-table (C2); \"compute\" adds --listen-enroll, --listen-hosts and --hosts-ca (K4c). Empty: the C1 command alone (--listen --data --store --region --token-issuer; CAMELFS_JWKS from the environment). Flip a feature on when its PR is merged and deployed, in the same apply as the deploy that carries it."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for feature in var.api_features : contains(["refs", "compute"], feature)])
+    error_message = "api_features is a subset of [\"refs\", \"compute\"]."
+  }
+}
+
+variable "pools" {
+  description = "The host pools the compute plane places VMs on (camelfsd api --pools; K4c): the job-hosts pools."
+  type        = list(string)
+  default     = ["build", "test"]
+}
+
+variable "enroll_roles" {
+  description = "Per pool, the instance role a host of that pool attests with at enrollment (camelfsd api --enroll-roles pool=arn,…; K4c): the job-hosts roles by their fixed names (infra/job-hosts/terraform/iam.tf), which need not exist yet. The tier takes a host's pool from the role it attests with, never from what the host says."
+  type        = map(string)
+  default = {
+    build = "arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod"
+    test  = "arn:aws:iam::904534089871:role/camelrun-job-hosts-test-prod"
+  }
+  validation {
+    condition     = alltrue([for arn in values(var.enroll_roles) : can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", arn))])
+    error_message = "enroll_roles values are IAM role ARNs."
+  }
+}
+
 variable "api_extra_args" {
   description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)
@@ -161,9 +190,15 @@ variable "aop_ca_version" {
 }
 
 variable "enroll_listener_port" {
-  description = "The internal balancer's plain-TLS listener for host enrollment (no client certificate; serves only POST /v1/hosts/enroll). Hosts need egress to it (job-hosts allows 443 only today)."
+  description = "The internal ALB's plain-TLS listener for host enrollment (no client certificate; serves only POST /v1/hosts/enroll). Hosts need egress to it and to hosts_port (job-hosts allows 443 only today)."
   type        = number
   default     = 8443
+}
+
+variable "hosts_port" {
+  description = "The container port the tier serves host routes (/v1/hosts/*) on, terminating the hosts' mutual TLS itself (camelfsd api --listen-hosts); reached only through the hosts' internal NLB in TCP passthrough (mtls.tf)."
+  type        = number
+  default     = 8794
 }
 
 variable "enroll_port" {

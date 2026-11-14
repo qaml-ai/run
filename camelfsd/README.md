@@ -416,6 +416,25 @@ camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfsd \
   --jwks-file /etc/camelfsd/jwks.json --token-issuer https://runtime.example
 ```
 
+When compute is enabled, set `--listen-hosts 0.0.0.0:8794` for host
+registration, heartbeats, and VM lifecycle callbacks. Route these calls
+through an internal NLB with a TCP listener on 443 and a TCP target group
+on 8794. Use a **TCP health check**. The host listener has no unauthenticated
+HTTP route, and the NLB passes TLS through to camelfsd. The public storage
+ALB continues to target port 8790. Tier pushes go directly to the host's
+compute listener on port 8792.
+
+The tier verifies host client certificates against `--hosts-ca-pem`.
+The verified leaf must carry the clientAuth EKU and exactly one URI SAN
+of the form `spiffe://camelfs/host/<id>` matching the request path.
+The tier certificate and key (`--tier-cert` and `--tier-key`) serve both the
+host listener and outbound pushes. The certificate requires serverAuth and
+clientAuth EKUs, the `spiffe://camelfs/tier` URI for pushes, and a DNS SAN
+matching the private host-channel endpoint for clients that verify its name.
+After rotating the files, send SIGHUP to load the CA bundle and tier key
+pair together for new connections. A failed reload keeps the previous
+credentials.
+
 Each API node keeps its own SQLite caches, including its idempotency response
 cache. Nodes can share the same object store, which is the durable source of
 storage objects. `--fetch-depth` bounds concurrent store operations.

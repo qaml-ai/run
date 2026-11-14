@@ -178,7 +178,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
       previous?.replaceConfiguration ? replacementParams : await configurationPatch(this.env, conf.tenantId, current.config, params),
       current.key ?? current.id,
       origin ?? conf.runtimeOrigin,
-      undefined, false, params.mounts===undefined ? current.config.mounts : undefined,
+      undefined, false,
     );
     if ("failed" in updated)
       throw Object.assign(new Error(updated.error), {

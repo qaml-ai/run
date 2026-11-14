@@ -1,3 +1,4 @@
+import { DoRepoClient } from "./client.ts";
 import { repoProvision, planRepo, plannedRow } from './provision.ts';
 import { agentRepoId } from "./identity.ts";
 export { agentRepoId } from "./identity.ts";
@@ -8,9 +9,6 @@ import { withSql } from "../postgres.ts";
 import { agentRepo, deleteRepo, type RepoEnv } from "./registry.ts";
 import { refName, repoErrorFrom } from "./repo-policy.ts";
 export type Mount = { repo: string; ref?: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean; instructions?: string };
-export type LegacyVolumeMount = import("../files.ts").LegacyVolumeMount;
-// TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-export type AgentMount = Mount | LegacyVolumeMount;
 export async function prepareMounts(
   env: RepoEnv,
   tenant: string,
@@ -33,7 +31,6 @@ export async function prepareMounts(
   for (const m of asked) {
     if (!m || typeof m !== "object" || Array.isArray(m))
       throw new FileError("Invalid mount");
-    if ("volumeId" in m) throw new FileError("Volumes are replaced by repos: mount { repo }");
     if ("workspace" in m) {
       if (
         typeof m.workspace !== "boolean" ||
@@ -106,26 +103,30 @@ export async function prepareMounts(
       ...(m.notify ? { notify: true } : {}),
     });
   }
-  for (const mount of mounts) if (mount.notify && !repoProvision.getStore()) await env.REPOS.getByName(`${tenant}:${mount.repo}`).watch(mount.ref ?? "main", agent);
+  for (const mount of mounts) if (mount.notify && !repoProvision.getStore()) await new DoRepoClient(env, tenant, mount.repo).watch(mount.ref ?? "main", agent);
   return mounts;
 }
 
 export async function unwatchMount(env:Pick<RepoEnv,'REPOS'>,tenant:string,agent:string,mount:Mount) {
-  try { await env.REPOS.getByName(`${tenant}:${mount.repo}`).unwatch(mount.ref??'main',agent); }
+  try { await new DoRepoClient(env, tenant, mount.repo).unwatch(mount.ref??'main',agent); }
   catch(error) {
     const status=repoErrorFrom(error)?.status;
     if(status!==404&&status!==410)throw error;
   }
 }
 
-export async function releaseAgentFiles(env: RepoEnv, tenant: string, agent: string, mounts: AgentMount[]) {
+export async function releaseAgentFiles(env: RepoEnv, tenant: string, agent: string, mounts: Mount[]) {
   for (const mount of mounts) if ("repo" in mount && mount.notify)
     await unwatchMount(env,tenant,agent,mount);
-  // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-  const legacy=mounts.filter((m):m is LegacyVolumeMount=>'volumeId'in m);
-  // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-  if(legacy.length)await (await import('../file-mounts.ts')).releaseAgentFiles(env,tenant,agent,legacy);
   const own = agentRepoId(tenant, agent);
   const row = await env.TENANTS.getByName(tenant).repoRow(own);
   if (row && row.deletedAt === null) await deleteRepo(env, tenant, own);
+}
+
+export function refuseVolumeMounts(agent: string, mounts: unknown) {
+  const legacy = Array.isArray(mounts) ? mounts.filter(m => m && typeof m === 'object' && 'volumeId' in m) : [];
+  if (!legacy.length) return;
+  console.error(JSON.stringify({ type: 'legacy_volume_mount_refused', agent, volumes: legacy.length }));
+  const m = legacy[0];
+  throw Object.assign(new Error(`Mount of volume ${m.volumeId} at ${m.path} is retired: volumes were replaced by repos. Remount it to a repo with PUT /v1/agents/${agent}/mounts with the full mounts array and remount: true.`), { status: 409 });
 }
