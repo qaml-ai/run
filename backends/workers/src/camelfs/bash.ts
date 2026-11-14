@@ -175,6 +175,40 @@ export class BashSessions {
     this.sql.exec("UPDATE agent_vms SET state='stopped' WHERE vm_id=?", vmId);
   }
 
+  /**
+   * Agent deletion: stop every VM this agent still has, without a checkpoint (its branch is going away), and wait until
+   * the tier says each has ended. Only then has the tier released the VM's ref lease, which the deletion's file release
+   * needs: a ref still leased by a running VM refuses deletion (409). Throws if a VM has not ended within `timeoutMs`,
+   * so the deletion stays pending and the next DELETE finishes it.
+   */
+  async stopAll(timeoutMs = 60_000) {
+    if (!bashEnabled(this.env)) return;
+    const vms = this.sql.exec<Vm>("SELECT * FROM agent_vms WHERE state<>'stopped'").toArray();
+    const until = Date.now() + timeoutMs;
+    await Promise.all(vms.map(async vm => {
+      try {
+        await this.request(vm, "POST", "/stop", { checkpoint: false });
+      } catch (error) {
+        // Already gone, or already ended: nothing left to stop.
+        if (!(error instanceof TierError && (error.status === 404 || error.status === 409))) throw error;
+      }
+      for (let delay = 100; ; delay = Math.min(2_000, delay * 2)) {
+        let status: Status;
+        try {
+          status = await this.request<Status>(vm, "GET", "", undefined, Math.max(1, until - Date.now()));
+        } catch (error) {
+          if (error instanceof TierError && error.status === 404) break;
+          throw error;
+        }
+        if (status.phase === "ended") break;
+        if (Date.now() >= until) throw new Error(`Bash VM ${vm.vm_id} did not stop within ${Math.round(timeoutMs / 1000)} seconds`);
+        await sleep(Math.min(delay, Math.max(0, until - Date.now())));
+      }
+      this.stop(vm.vm_id);
+      console.log(JSON.stringify({ type: "bash_vm_stopped_for_delete", vm: vm.vm_id }));
+    }));
+  }
+
   ended(id: string, vmId: string) {
     this.storage.transactionSync(() => {
       if (!this.sql.exec("INSERT OR IGNORE INTO agent_vm_deliveries VALUES(?) RETURNING id", id).toArray().length) return;
