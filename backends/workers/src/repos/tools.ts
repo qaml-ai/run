@@ -8,7 +8,7 @@ import { declaredType, sniffContentType } from "../file-policy.ts";
 import { editArguments } from "../edit-arguments.ts";
 import type { FileVersions } from "../file-versions.ts";
 import type { RepoEnv } from "./registry.ts";
-import { agentRepoId, type Mount } from "./mounts.ts";
+import { agentRepoId, workspaceMount, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
 import { commitChanges, setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
@@ -25,7 +25,6 @@ function actualRepoTools(
   seen?: FileVersions,
   identity: Record<string,string> = {},
 ) {
-  const workspace = (mounts: Mount[]) => { const own = mounts.find(m => m.repo === agentRepoId(tenant, agentId)); if (!own) throw new FileError("This agent has no workspace mounted"); return own; };
   const target = async (raw: string, write = false) => {
     const mounts = await getMounts();
     if (!mounts.length)
@@ -359,7 +358,7 @@ function actualRepoTools(
         },
       }),
     ),
-    ...versionTools(target, async () => workspace(await getMounts()).path, output, agentId, identity),
+    ...versionTools(target, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity),
   ];
 }
 function versionTools(

@@ -69,11 +69,12 @@ export async function tierRequest<T>(env: TierEnv, request: TierRequest): Promis
   const response = await tierFetch(env, request);
   const op = `${request.method} ${request.path}`;
   if (response.status === 204) return undefined as T;
-  let value: { error?: { code?: string; message?: string; details?: unknown } } | null;
+  let value: { error?: string | { code?: string; message?: string; details?: unknown } } | null;
   try { value = await response.json() as typeof value; }
   catch { throw new TierError(response.ok ? 502 : response.status, "invalid_response", "Invalid camelFS response", undefined, op); }
   if (response.ok) return value as T;
   const error = value?.error;
+  if (typeof error === "string") throw new TierError(response.status, error, error, undefined, op);
   const code = typeof error?.code === "string" ? error.code : "invalid_response";
   const message = typeof error?.message === "string" ? error.message : "Invalid camelFS response";
   throw new TierError(response.status, code, message, error?.details, op);

@@ -129,3 +129,9 @@ export function refuseVolumeMounts(agent: string, mounts: unknown) {
   const m = legacy[0];
   throw Object.assign(new Error(`Mount of volume ${m.volumeId} at ${m.path} is retired: volumes were replaced by repos. Remount it to a repo with PUT /v1/agents/${agent}/mounts with the full mounts array and remount: true.`), { status: 409 });
 }
+
+export function workspaceMount(tenant: string, agent: string, mounts: Mount[]) {
+  const own = mounts.find(mount => mount.repo === agentRepoId(tenant, agent));
+  if (!own) throw new FileError("This agent has no workspace mounted");
+  return own;
+}

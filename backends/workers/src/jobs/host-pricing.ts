@@ -113,7 +113,7 @@ export function hostRoles(value: string | undefined): { pool: HostPool; arn: str
  * A job's VM on a host: its limits where it gives them, else its instance type's resources (what the same job gets in a
  * Cloudflare container), in whole vCPUs.
  */
-export function hostShape(spec: JobSpec & { instance: keyof typeof INSTANCE_RESOURCES }): HostShape {
+export function hostShape(spec: Pick<JobSpec, "limits"> & { instance: keyof typeof INSTANCE_RESOURCES }): HostShape {
   const resources = INSTANCE_RESOURCES[spec.instance];
   return {
     vcpus: Math.max(1, Math.ceil(spec.limits?.cpus ?? resources.vcpu)),

@@ -1,3 +1,4 @@
+import { BashSessions } from "./camelfs/bash.ts";
 import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
@@ -261,6 +262,12 @@ export class AgentRuntime extends AgentContext {
   workspaceToolNames: string[] = [];
   /** The file tools as made, before wordedFileTools fits their descriptions to the configuration. */
   workspaceFileTools: ToolRegistration[] = [];
+
+  private sessions?: BashSessions;
+  get bashSessions() {
+    return this.sessions ??= new BashSessions(this.ctx.storage, this.env, work => this.ctx.waitUntil(work), at => this.arm(at),
+      (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
+  }
 
   fileVersions = new DurableFileVersions(this.ctx.storage);
 

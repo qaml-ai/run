@@ -15,7 +15,7 @@ type Scope = { tenant: string; agent: string; mounts: Mount[]; fileTools?: boole
 export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, callId: string) => Promise<Scope>): Extension {
   return { name: 'camel.tool-output', hooks: [hook(ToolTask, {
     async afterTool(call, result, api) {
-      if (call.name === 'codemode') return;
+      if (call.name === 'codemode' || call.name === 'bash') return; // Bash bounds both streams before building its result.
       const current = await scope(api, call.id);
       const prefix = call.name.split('__')[0];
       if (current.fileArguments?.[prefix] === false && hasFileArgument(call.arguments) && result.diagnostics?.some(value => value.code === 'invalid_arguments')) {

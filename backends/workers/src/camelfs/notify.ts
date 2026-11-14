@@ -19,6 +19,12 @@ export type RefMove = {
 
 class InvalidDelivery extends Error {}
 
+registerNotifyHandler("vm.ended", async (env, { id, body }) => {
+  const match = typeof body.vm === "string" && body.vm.length <= 96 && /^vm-([A-Za-z0-9_-]{1,80})-([a-f0-9]{1,16})-([a-z0-9]+)$/.exec(body.vm);
+  if (!match) throw new InvalidDelivery();
+  await env.AGENTS.getByName(match[1]).vmEnded(id, body.vm as string);
+});
+
 registerNotifyHandler("ref.moved", async (env, { id, body }) => {
   const { lineage, ref, from, to, tree, by, at, watchers } = body;
   if (typeof lineage !== "string" || typeof ref !== "string" || (from !== null && typeof from !== "string") ||
