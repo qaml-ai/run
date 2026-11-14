@@ -23,7 +23,6 @@ type sessionPeer struct {
 func sessionPeerFor(t *testing.T, g *guest) *sessionPeer {
 	t.Helper()
 	host, guest := net.Pipe()
-	host.SetDeadline(time.Now().Add(15 * time.Second))
 	p := &sessionPeer{t, host, json.NewDecoder(host), make(chan error, 1)}
 	go func() {
 		defer guest.Close()
@@ -33,8 +32,13 @@ func sessionPeerFor(t *testing.T, g *guest) *sessionPeer {
 	return p
 }
 
+// peerStepTimeout bounds one exchange, not the whole test: a test may make dozens of exec round trips
+// (TestExecRetention runs execExits+1 bash processes), which can exceed any fixed total on a loaded runner.
+const peerStepTimeout = 15 * time.Second
+
 func (p *sessionPeer) send(m message) {
 	p.t.Helper()
+	p.conn.SetWriteDeadline(time.Now().Add(peerStepTimeout))
 	if err := json.NewEncoder(p.conn).Encode(m); err != nil {
 		p.t.Fatal(err)
 	}
@@ -43,6 +47,7 @@ func (p *sessionPeer) send(m message) {
 func (p *sessionPeer) read() message {
 	p.t.Helper()
 	var m message
+	p.conn.SetReadDeadline(time.Now().Add(peerStepTimeout))
 	if err := p.dec.Decode(&m); err != nil {
 		p.t.Fatal(err)
 	}
@@ -138,6 +143,47 @@ func TestSessionReconnectAndReplay(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(g.repo, "count")); err != nil || string(data) != "x\n" {
 		t.Fatal(string(data), err)
+	}
+}
+
+func TestShellKeyReplaysAcrossReconnectAndExit(t *testing.T) {
+	g := fixture(t)
+	t.Cleanup(g.sessions.close)
+	p := sessionPeerFor(t, g)
+	open := func(key string) string {
+		t.Helper()
+		reply := p.req(message{"op": "shell_open", "shellKey": key})
+		id, _ := reply["shellId"].(string)
+		if id == "" || reply["ok"] != true {
+			t.Fatal(reply)
+		}
+		return id
+	}
+	id := open("key-1")
+	p.conn.Close()
+	if err := <-p.done; err != nil {
+		t.Fatal(err)
+	}
+	p = sessionPeerFor(t, g)
+	if replay := open("key-1"); replay != id {
+		t.Fatalf("replay opened %s, want %s", replay, id)
+	}
+	if r := p.req(message{"op": "sessions"}); len(r["shells"].([]any)) != 1 {
+		t.Fatal(r)
+	}
+	if other := open("key-2"); other == id {
+		t.Fatalf("different keys share shell %s", id)
+	}
+	accepted(t, p.req(message{"op": "exec", "execId": "exit", "shell": id, "command": "exit"}))
+	p.end("exit", 0)
+	if replay := open("key-1"); replay != id {
+		t.Fatalf("exited shell replay opened %s, want %s", replay, id)
+	}
+	if r := p.req(message{"op": "exec", "execId": "after-exit", "shell": id, "command": "true"}); r["code"] != "shell_unknown" {
+		t.Fatal(r)
+	}
+	if r := p.req(message{"op": "sessions"}); len(r["shells"].([]any)) != 1 {
+		t.Fatal(r)
 	}
 }
 

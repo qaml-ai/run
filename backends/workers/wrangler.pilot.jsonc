@@ -35,6 +35,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "VOICE_CALLS", "class_name": "VoiceCall" },
+      { "name": "CAMELFS_USAGE", "class_name": "CamelfsUsagePoller" },
       {
         "name": "AGENTS",
         "class_name": "CamelAgent"
@@ -43,27 +44,10 @@
         "name": "TENANTS",
         "class_name": "TenantAdmission"
       },
-      {
-        // TEMPORARY(job-surface): deleted with the Volume DO after claude/delete-job-surface lands
-        "name": "VOLUMES",
-        "class_name": "Volume"
-      },
       { "name": "REPOS", "class_name": "RepoDO" },
       {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
-      },
-      {
-        "name": "JOB_HOSTS",
-        "class_name": "JobHost"
-      },
-      {
-        "name": "HOST_JOBS",
-        "class_name": "HostJob"
-      },
-      {
-        "name": "JOB_HOST_REGISTRY",
-        "class_name": "JobHostRegistry"
       },
       {
         "name": "WORKFLOWS",
@@ -126,6 +110,13 @@
       ]
     },
     { "tag": "repos", "new_sqlite_classes": ["RepoDO"] },
+    // Pilot Volume data is test data and is not migrated.
+    { "tag": "delete-volumes", "deleted_classes": ["Volume"] },
+    { "tag": "camelfs-usage", "new_sqlite_classes": ["CamelfsUsagePoller"] },
+    {
+      "tag": "delete-job-hosts",
+      "deleted_classes": ["JobHost", "JobHostRegistry", "HostJob"]
+    },
     { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] }
   ],
   // Agent computers: one container per ContainerComputer DO, started and
@@ -189,13 +180,6 @@
       "* * * * *"
     ]
   },
-  "ratelimits": [
-    {
-      "name": "JOB_HOST_ENROLL_LIMITER",
-      "namespace_id": "1001",
-      "simple": { "limit": 10, "period": 60 }
-    }
-  ],
   "vars": {
     "AGENT_WORKFLOW_TENANTS": "pilot-camel-code",
     "PILOT_DB_PROFILE": "1",
@@ -212,12 +196,6 @@
     "TENANT_MAX_ACTIVE": "2100",
     "COMPUTER_IMAGE": "workspace",
     "COMPUTER_INSTANCE": "standard-1",
-    // Enroll EC2 job hosts through AWS instance attestation.
-    "JOB_HOST_ATTESTORS": "aws",
-    // Admit the pilot's EC2 role to the test host pool.
-    "JOB_HOST_ROLE_ARNS": "test=arn:aws:iam::904534089871:role/camel-fs-proto",
-    // Send jobs too large for containers to our hosts.
-    "JOB_PROVIDER": "auto",
     "AGENT_FREE_HOURLY_SPEND_USD": "100"
   },
   "account_id": "85bbd288051330fb51ee1c86031a299b",

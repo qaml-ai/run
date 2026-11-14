@@ -1,5 +1,10 @@
 # Durable multi-agent workflows: a general harness
 
+> **Superseded in part (Miguel, 2026-11-14): there are no jobs.** Agents compute through one `bash` tool backed by
+> one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
+> child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2
+> and §6. What this document says about jobs is the record of the replaced design.
+
 Status: proposal (2026-11-11), not built. Goal: make camelRun a general multi-agent harness: many agents on one
 big task, orchestrated by code that lives for hours to weeks, with budgets, human gates, agent types and
 ephemeral compute that serve any domain: research, data analysis, writing, operations, and code. Code work is one

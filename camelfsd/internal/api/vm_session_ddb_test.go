@@ -45,6 +45,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	checkpointEntered, checkpointAllowed := make(chan struct{}), make(chan struct{})
 	stops := make(chan bool, 1)
 	var mu sync.Mutex
+	var shellRequests []map[string]string
 	executions := map[string]string{}
 	busy := false
 	var checkpoints atomic.Int32
@@ -54,10 +55,24 @@ func TestDDBVMSessionProxy(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case vmPath + "/shells":
+			var q map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+				t.Errorf("shell request: %v", err)
+				w.WriteHeader(400)
+				return
+			}
+			mu.Lock()
+			shellRequests = append(shellRequests, q)
+			mu.Unlock()
 			jsonReply(w, 201, hostwire.ShellCreated{ShellID: "sh"})
 		case vmPath + "/exec":
 			var q hostwire.ExecRequest
-			if err := json.NewDecoder(r.Body).Decode(&q); err != nil || q.Shell != "sh" {
+			err := json.NewDecoder(r.Body).Decode(&q)
+			wantShell := "sh"
+			if q.ExecID == "one-off" {
+				wantShell = ""
+			}
+			if err != nil || q.Shell != wantShell {
 				t.Errorf("exec request: %+v, %v", q, err)
 				w.WriteHeader(400)
 				return
@@ -106,7 +121,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 			if r.URL.RawQuery != "offset=2" {
 				t.Errorf("tail query: %q", r.URL.RawQuery)
 			}
-			jsonReply(w, 410, map[string]any{"error": "tail_truncated", "firstOffset": 3})
+			jsonReply(w, 410, map[string]any{"error": map[string]any{"code": "tail_truncated", "message": "tail truncated", "details": map[string]any{"firstOffset": 3}}})
 		case vmPath + "/exec/missing":
 			authFail(w, 404, "exec_unknown", "unknown")
 		case vmPath + "/checkpoint":
@@ -200,8 +215,24 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	check(c.Started(ctx, "vm", "a", epoch, now()))
 	call(request("POST", "/shells", "", "w", "agent:a"), 403, "forbidden")
 	call(post("/shells", ""), 201, `"shell":"sh"`)
+	shellKey := strings.Repeat("a", 91) + "Z9._-"
+	keyed := post("/shells", "")
+	keyed.Header.Set("Idempotency-Key", shellKey)
+	call(keyed, 201, `"shell":"sh"`)
+	for _, key := range []string{"", "bad/key", shellKey + "a"} {
+		bad := post("/shells", "")
+		bad.Header.Set("Idempotency-Key", key)
+		call(bad, 400, "invalid_request")
+	}
+	mu.Lock()
+	gotShellRequests := shellRequests
+	mu.Unlock()
+	if len(gotShellRequests) != 2 || gotShellRequests[0] == nil || len(gotShellRequests[0]) != 0 ||
+		len(gotShellRequests[1]) != 1 || gotShellRequests[1]["shellKey"] != shellKey {
+		t.Fatalf("host shell requests: %v, want {} and shellKey %q", gotShellRequests, shellKey)
+	}
 	call(post("/exec", `{"command":"true","shell":"sh","timeoutS":1}`), 400, "execId")
-	call(post("/exec", `{"execId":"e","command":"true","timeoutS":1}`), 400, "shell")
+	call(post("/exec", `{"execId":"one-off","command":"true","timeoutS":1}`), 200, strings.Join(sessionFrames, ""))
 	call(post("/exec", execBody("e", "true")), 200, strings.Join(sessionFrames, ""))
 
 	clock.Add(5_000)
@@ -277,8 +308,8 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	mu.Lock()
 	runs := len(executions)
 	mu.Unlock()
-	if runs != 2 {
-		t.Fatalf("host ran %d distinct commands, want 2", runs)
+	if runs != 3 { // the one-off exec, the session exec "e", and the disconnected exec
+		t.Fatalf("host ran %d distinct commands, want 3", runs)
 	}
 
 	clock.Add(1_000)

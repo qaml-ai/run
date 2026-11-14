@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { RefMove } from "./camelfs/notify.ts";
 import { DurableObject } from "cloudflare:workers";
 import { guardAlarms } from "./alarm-guard.ts";
 import type { Placement } from "../../../shared/owner.ts";
@@ -112,4 +113,7 @@ export class CamelAgent extends DurableObject<Env> {
     return this.#runtime.webSocketError(socket);
   }
 
+  /** A camel-fs notify delivery for a watched repo (an idempotent outbox row). */
+  vmEnded(delivery: string, vm: string) { return this.#runtime.vmEnded(delivery, vm); }
+  stageRepoMove(move: RefMove) { return this.#runtime.stageRepoMove(move); }
 }

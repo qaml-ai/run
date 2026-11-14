@@ -156,3 +156,19 @@ func rangesFromExtents(es []extent, size int64, parent map[string]string) []chun
 	}
 	return out
 }
+
+// A session disk can share extents with unpublished checkpoint snapshots or
+// with an older tree. Shared extents alone cannot prove equality to its base.
+func sessionRanges(f *os.File, size int64, parent map[string]string) ([]chunk.Range, error) {
+	if os.Getenv("CAMELFSD_TEST_NO_REFLINK") == "1" {
+		return []chunk.Range{{Offset: 0, Length: size}}, nil
+	}
+	es, err := extents(f)
+	if err != nil {
+		return nil, err
+	}
+	for i := range es {
+		es[i].Flags &^= 0x2000
+	}
+	return rangesFromExtents(es, size, parent), nil
+}

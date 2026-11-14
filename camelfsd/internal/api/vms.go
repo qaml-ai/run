@@ -76,8 +76,7 @@ func (v *vmAPI) handle(fn func(http.ResponseWriter, *http.Request, auth.Claims) 
 		case errors.Is(err, compute.ErrTooManyExecs):
 			err = &storageError{429, "too_many_execs", nil}
 		case errors.Is(err, compute.ErrLeaseExpired):
-			jsonReply(w, 409, map[string]string{"error": "lease_expired"})
-			return
+			err = &storageError{409, "lease_expired", nil}
 		}
 		storageFail(w, err)
 	}
@@ -309,8 +308,7 @@ func (v *vmAPI) deadline(w http.ResponseWriter, r *http.Request, claims auth.Cla
 		return err
 	}
 	if vm.Phase == compute.Ended {
-		jsonReply(w, 409, map[string]string{"error": "ended"})
-		return nil
+		return &storageError{409, "ended", nil}
 	}
 	jsonReply(w, 200, map[string]int64{"deadline": vm.LeaseDeadline})
 	return nil

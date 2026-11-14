@@ -1,5 +1,10 @@
 # Workflow steps: snapshot the guest, replay only as a fallback
 
+> **Superseded in part (Miguel, 2026-11-14): there are no jobs.** Agents compute through one `bash` tool backed by
+> one VM per agent per branch; `job()`, `job_run` and the `computer` tool family are gone, and parallel work runs as
+> child agents, each with its own `bash` VM. The current design is [camel-fs-compute.md](camel-fs-compute.md) §2
+> and §6. What this document says about jobs is the record of the replaced design.
+
 Follow-up to open question 1 of [swarm-workflows.md](swarm-workflows.md) and the replay measurement in #791. In that
 design every workflow step starts a fresh QuickJS VM and replays the script from the top, answering journaled effects
 from a table. One step costs O(effects so far), so a workflow whose events arrive one at a time costs O(n²) in all.

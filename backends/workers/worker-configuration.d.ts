@@ -15,7 +15,6 @@ interface __BaseEnv_Env {
 	TEST_MODE: "1";
 	AGENTS: DurableObjectNamespace<import("./src/index").CamelAgent>;
 	TENANTS: DurableObjectNamespace<import("./src/index").TenantAdmission>;
-	VOLUMES: DurableObjectNamespace<import("./src/index").Volume>;
 	WORKFLOW_CAPACITY: DurableObjectNamespace<import("./src/index").WorkflowCapacity>;
 	WORKFLOWS: DurableObjectNamespace<import("./src/index").WorkflowObject>;
 	CODEMODE_SANDBOX: DurableObjectNamespace /* CodemodeSandbox from camelrun-proto-workers-codemode */;

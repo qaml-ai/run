@@ -1,3 +1,8 @@
+import { vmFiles, type VmFilesScope } from "./camelfs/vm-files.ts";
+import type { VmFilesProvider } from "./repos/vm-route.ts";
+import { BashSessions } from "./camelfs/bash.ts";
+import { workspaceRefKey } from "./repos/tree-cache.ts";
+import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import { ChildRows } from "./children-table.ts";
 import { SharedAgents } from "../../../src/shared-agents.ts";
@@ -56,6 +61,7 @@ import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, hist
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
+import { RepoTreeCache } from "./repos/tree-cache.ts";
 import { DbProfile } from "./db-profile.ts";
 
 class AgentContext {
@@ -76,6 +82,8 @@ export class AgentRuntime extends AgentContext {
     super(ctx, env, host);
     if (env.TEST_MODE === "1") testAgentRuntimes.set(host, this);
   }
+
+  readonly repoTrees = new RepoTreeCache(this.ctx.storage);
 
   readonly sharedAgents = new SharedAgents(database(this.env));
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
@@ -261,6 +269,20 @@ export class AgentRuntime extends AgentContext {
   /** The file tools as made, before wordedFileTools fits their descriptions to the configuration. */
   workspaceFileTools: ToolRegistration[] = [];
 
+  private sessions?: BashSessions;
+  get bashSessions() {
+    return this.sessions ??= new BashSessions(this.ctx.storage, this.env, work => this.ctx.waitUntil(work), at => this.arm(at),
+      (callId, requestId, checkpointError) => this.emit({ type: "event", requestId, event: { type: "bash_checkpoint_failed", callId, checkpointError } }));
+  }
+
+  readonly vmFiles: VmFilesProvider = (scope: VmFilesScope) => {
+    const runtime = this;
+    return vmFiles({
+      ...this.env,
+      get bashSessions() { return runtime.bashSessions; },
+    }, scope);
+  };
+
   fileVersions = new DurableFileVersions(this.ctx.storage);
 
   // Pi can reopen its Harness after a storage failure without replacing this
@@ -421,6 +443,15 @@ export class AgentRuntime extends AgentContext {
   resumeKeptQueue() {
     return resumeKeptQueueImpl.call(this);
   }
+
+  /** A notify delivery for a repo this agent watches: an idempotent outbox row, drained by the alarm. */
+  async stageRepoMove(move: RefMove) {
+    // Lifecycle dispatches queued jobs when its alarm fires.
+    await stageRepoMove(this.ctx.storage, move, () => this.arm());
+    // A foreign move updates reachability only; it never derives a tree (R4).
+    this.repoTrees.notify(workspaceRefKey(move.lineage, move.ref), move.from, { version: move.to, tree: move.tree });
+  }
+  vmEnded(delivery: string, vm: string) { return this.bashSessions.ended(delivery, vm); }
 
   removeMember(member: string) {
     return removeMemberImpl.call(this, member);

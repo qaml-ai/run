@@ -15,6 +15,9 @@
 import { INSTANCE_RESOURCES } from "../computers/meter.ts";
 import type { JobSpec } from "./job.ts";
 
+// MONEY: host jobs and pulled VM usage use the same billing provider.
+export const HOSTS_PROVIDER = "camelrun-hosts";
+
 export type HostPool = "build" | "test";
 export const HOST_POOLS: readonly HostPool[] = ["build", "test"];
 
@@ -69,7 +72,7 @@ export function hostSecondRate(pool: HostPool, shape: HostShape, env: HostPriceE
  * The meter's name for a host job's VM (usage rows' model): its pool and shape, e.g. `test-2vcpu-4096mib`. The meter
  * keeps it with the open session, so a charge made after a restart prices the same shape.
  */
-export function hostInstance(pool: HostPool, shape: HostShape) {
+export function hostInstance(pool: HostPool, shape: Pick<HostShape, "vcpus" | "memoryMiB">) {
   return `${pool}-${shape.vcpus}vcpu-${shape.memoryMiB}mib`;
 }
 export function parseHostInstance(instance: string): { pool: HostPool; shape: HostShape } | undefined {
@@ -110,7 +113,7 @@ export function hostRoles(value: string | undefined): { pool: HostPool; arn: str
  * A job's VM on a host: its limits where it gives them, else its instance type's resources (what the same job gets in a
  * Cloudflare container), in whole vCPUs.
  */
-export function hostShape(spec: JobSpec & { instance: keyof typeof INSTANCE_RESOURCES }): HostShape {
+export function hostShape(spec: Pick<JobSpec, "limits"> & { instance: keyof typeof INSTANCE_RESOURCES }): HostShape {
   const resources = INSTANCE_RESOURCES[spec.instance];
   return {
     vcpus: Math.max(1, Math.ceil(spec.limits?.cpus ?? resources.vcpu)),

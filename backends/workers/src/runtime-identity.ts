@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createLocalJWKSet, errors, jwtVerify, type JWK } from "jose";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { Db } from "./postgres.ts";
+import type { TierClaims } from "./camelfs/claims.ts";
 import { HttpError } from "./errors.ts";
 
 /**
@@ -113,6 +114,16 @@ export class RuntimeSigner {
 
   /** The published keys, for /.well-known/jwks.json. */
   async jwks() { return { keys: (await this.load()).published }; }
+
+  /** A tier request uses the published runtime key and the configured public issuer. */
+  async camelfsToken(claims: TierClaims): Promise<string> {
+    const { signing } = await this.load();
+    if (!signing) throw new Error("This runtime cannot sign camelFS requests");
+    const iat = Math.floor(Date.now() / 1000);
+    return signJwt({ alg: ALGORITHM, kid: signing.kid, typ: "camelfs+jwt" }, {
+      ...claims, refs: claims.refs ?? [], iss: this.issuer, aud: "camelrun:camelfs", iat, exp: iat + 300, jti: randomUUID(),
+    }, signing.key);
+  }
 
   /** A file URL's token (file-arguments.ts), valid until `expiresAt` (ms), signed with the same key as identity tokens. */
   async fileToken(grant: FileGrant, expiresAt: number): Promise<string> {

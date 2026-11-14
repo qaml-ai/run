@@ -1,8 +1,7 @@
 # The object store: blobs, chunks, roots, tree-size sidecars, packs and search shards, and (until L74 closes) trees
 # and commits, keyed <lineage>/<kind>/<hash> exactly as camelfsd writes them today (camelfsd/README.md, "Durability
-# and lineage scope"); plus two prefixes outside any lineage: <guest_image_prefix>guest/<sha256>… (the
-# content-addressed guest image, K1, put by CI) and results/<lineage>/<vm> (VM results, up to tens of MiB, K4, put
-# by the HOST that ran the VM, read by the tier, expired after results_expiry_days by prefix).
+# and lineage scope"); plus one prefix outside any lineage: <guest_image_prefix>guest/<sha256>… (the
+# content-addressed guest image, K1, put by CI). No results/ prefix: VM results are not stored (L102, 2026-11-14).
 #
 # A NEW bucket, not the prototype's camel-fs-proto-904534089871-usw2. The prototype bucket was made by hand,
 # unencrypted beyond SSE-S3, unversioned, holds measurement runs under arbitrary prefixes, and is written by the
@@ -103,23 +102,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "objects" {
     }
     abort_incomplete_multipart_upload {
       days_after_initiation = 2
-    }
-  }
-
-  # VM results (results/<lineage>/<vm>, K4; wf-durable, 2026-11-14): a prefix of their own, so expiry is a prefix
-  # rule and no writer has to tag. The runtime has read them within the job's lifetime; after results_expiry_days
-  # they go.
-  rule {
-    id     = "results"
-    status = "Enabled"
-    filter {
-      prefix = "results/"
-    }
-    expiration {
-      days = var.results_expiry_days
-    }
-    noncurrent_version_expiration {
-      noncurrent_days = 1
     }
   }
 

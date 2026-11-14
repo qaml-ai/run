@@ -185,34 +185,39 @@ test("a crash between steps: a new object over the same storage picks up where t
   assert.equal(at(second).result, "re: bA");
 });
 
-test("every Wrangler config adds WorkflowObject and WorkflowResults with their own new_sqlite_classes migrations, after the existing ones", () => {
+test("every Wrangler config migrates WorkflowObject and WorkflowResults before repos, deletes retired classes, and adds CamelfsUsagePoller", () => {
   const configs = ["wrangler.jsonc", "wrangler.test.jsonc", "wrangler.pilot.jsonc", "wrangler.computers.test.jsonc"];
   for (const name of configs) {
     const config = new Function(`return (${readFileSync(new URL(`../${name}`, import.meta.url), "utf8")});`)() as {
       durable_objects: { bindings: { name: string; class_name: string; script_name?: string }[] };
-      migrations: { tag: string; new_sqlite_classes?: string[] }[];
+      migrations: { tag: string; new_sqlite_classes?: string[]; deleted_classes?: string[] }[];
     };
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowObject"), [{ name: "WORKFLOWS", class_name: "WorkflowObject" }], name);
+    assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "CamelfsUsagePoller"), [{ name: "CAMELFS_USAGE", class_name: "CamelfsUsagePoller" }], name);
     const tags = config.migrations.map(migration => migration.tag);
     assert.equal(new Set(tags).size, tags.length, `${name}: unique tags`);
-    // After the existing ones: last, or followed only by the job hosts' (test configs, docs/design/job-hosts-plan.md).
+    assert.ok(!config.durable_objects.bindings.some(binding => binding.name === "VOLUMES" || binding.class_name === "Volume"), name);
     const index = tags.indexOf("workflow-object");
     assert.deepEqual(config.migrations[index], { tag: "workflow-object", new_sqlite_classes: ["WorkflowObject"] }, name);
-    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts" && tag !== "workflow-results" && tag !== "repos" && tag !== "voice-calls"), [], `${name}: nothing but the job hosts', the result cache's and the repos' after it`);
-    // The result cache (workflow-results.ts): bound, with only the pilot's job hosts and then the repos (repos/repo-do.ts) after its migration.
+    assert.deepEqual(tags.slice(index + 1).filter(tag => tag !== "job-hosts"), ["workflow-results", "repos", "delete-volumes", "camelfs-usage", ...(name === "wrangler.jsonc" ? [] : ["delete-job-hosts"]), "voice-calls"], name);
     assert.deepEqual(config.durable_objects.bindings.filter(binding => binding.class_name === "WorkflowResults"), [{ name: "WORKFLOW_RESULTS", class_name: "WorkflowResults" }], name);
     assert.deepEqual(config.migrations.slice(tags.indexOf("workflow-results")), [
       { tag: "workflow-results", new_sqlite_classes: ["WorkflowResults"] },
       ...(name === "wrangler.pilot.jsonc" ? [{ tag: "job-hosts", new_sqlite_classes: ["JobHost", "HostJob", "JobHostRegistry"] }] : []),
       { tag: "repos", new_sqlite_classes: ["RepoDO"] },
+      { tag: "delete-volumes", deleted_classes: ["Volume"] },
+      { tag: "camelfs-usage", new_sqlite_classes: ["CamelfsUsagePoller"] },
+      ...(name === "wrangler.jsonc" ? [] : [{ tag: "delete-job-hosts", deleted_classes: ["JobHost", "JobHostRegistry", "HostJob"] }]),
       { tag: "voice-calls", new_sqlite_classes: ["VoiceCall"] },
     ], name);
     assert.equal(config.migrations.filter(migration => migration.new_sqlite_classes?.includes("WorkflowObject")).length, 1, name);
-    // Every class bound locally has a migration that creates it.
+    const deleted = new Set(config.migrations.flatMap(migration => migration.deleted_classes ?? []));
+    // Every class bound locally still exists.
     for (const binding of config.durable_objects.bindings.filter(binding => !binding.script_name))
-      assert.ok(config.migrations.some(migration => migration.new_sqlite_classes?.includes(binding.class_name)), `${name}: ${binding.class_name}`);
+      assert.ok(!deleted.has(binding.class_name) && config.migrations.some(migration => migration.new_sqlite_classes?.includes(binding.class_name)), `${name}: ${binding.class_name}`);
   }
   assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"), /export \{ WorkflowObject \} from "\.\/workflow-object\.ts";/);
+  assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"), /export \{ CamelfsUsagePoller \} from "\.\/camelfs\/usage-poller\.ts";/);
   assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"), /export \{ WorkflowResults \} from "\.\/workflow-results\.ts";/);
 });
 

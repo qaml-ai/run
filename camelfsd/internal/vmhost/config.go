@@ -17,18 +17,24 @@ type Shape struct {
 type Boot struct {
 	Internet bool
 	Repo     string
+	Image    string // Verified per-VM image; empty uses the launcher default.
+	Session  bool
 }
 
 type configFiles struct {
 	kernel, initrd, disk, repo, vsock string
 }
 
-func firecrackerConfig(files configFiles, address Address, shape Shape, build, kvm, internet bool) map[string]any {
+func firecrackerConfig(files configFiles, address Address, shape Shape, build, kvm, internet bool, session ...bool) map[string]any {
 	args := "console=ttyS0 panic=1 initcall_blacklist=i8042_init quiet"
 	args += " reboot=k root=/dev/vda rw init=/sbin/camel-init " + GuestNetArgs(address, internet)
 	drives := []map[string]any{drive("root", files.disk, true)}
 	if files.repo != "" {
-		args += " camel.repo=/dev/vdb"
+		if len(session) > 0 && session[0] {
+			args += " camel.workspace=/dev/vdb"
+		} else {
+			args += " camel.repo=/dev/vdb"
+		}
 		drives = append(drives, drive("repo", files.repo, false))
 	}
 	source := map[string]any{"kernel_image_path": files.kernel, "boot_args": args}

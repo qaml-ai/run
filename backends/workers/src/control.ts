@@ -320,7 +320,7 @@ export class Directory {
     });
     if(!applying()) for(const mount of priorMounts??[]) {
       if(mount.repo&&mount.notify&&!entry.config.mounts?.some(next=>next.repo===mount.repo&&(next.ref??'main')===(mount.ref??'main')&&next.notify))
-        await (await import('./repos/mounts.ts')).unwatchMount(this.env,this.tenantId,id,mount as import('./repos/mounts.ts').Mount);
+        await (await import('./repos/mounts.ts')).unwatchMount(this.env as import('./repos/registry.ts').RepoEnv,this.tenantId,id,mount as import('./repos/mounts.ts').Mount);
     }
     if (!entry.initialized && !applying()) {
       const initialized = await this.initialize(entry, runtimeOrigin);

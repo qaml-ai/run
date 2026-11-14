@@ -121,8 +121,8 @@ func apiRole(args []string) error {
 				return fmt.Errorf("listen-enroll: %w", err)
 			}
 			defer enrollListener.Close()
-			enroll = &http.Server{Handler: computeAPI.enrollServer, ReadHeaderTimeout: 5 * time.Second,
-				ReadTimeout: 10 * time.Second}
+			enroll = &http.Server{Handler: computeAPI.enrollServer, TLSConfig: computeAPI.credentials.EnrollServerConfig(),
+				ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second}
 		}
 	}
 
@@ -138,7 +138,7 @@ func apiRole(args []string) error {
 	}
 	if enroll != nil {
 		defer enroll.Close()
-		go func() { stopped <- enroll.Serve(enrollListener) }()
+		go func() { stopped <- enroll.ServeTLS(enrollListener, "", "") }()
 		log.Printf("op=api-enroll listen=%s", enrollListener.Addr())
 	}
 	for {

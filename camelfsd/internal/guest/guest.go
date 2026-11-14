@@ -33,19 +33,20 @@ type request struct {
 		Data   string
 		Append bool
 	}
-	JobID                string
-	TimeoutMs            float64
-	Tree                 string
-	Error                json.RawMessage
-	Command              string
-	TimeoutSeconds       float64
-	Pids                 float64
-	Env                  map[string]string
-	Outputs              []string
-	ExecID, Shell, Stdin string
-	TimeoutS             float64
-	Offset               int64
-	LegacyCheckpoint     bool
+	JobID                     string
+	TimeoutMs                 float64
+	Tree                      string
+	Error                     json.RawMessage
+	Command                   string
+	TimeoutSeconds            float64
+	Pids                      float64
+	Env                       map[string]string
+	Outputs                   []string
+	ExecID, Shell, Stdin, Cwd string
+	ShellKey                  string
+	TimeoutS                  float64
+	Offset                    int64
+	LegacyCheckpoint          bool
 }
 
 type guest struct {
@@ -56,9 +57,11 @@ type guest struct {
 	reaper          *reaper
 	index           *index
 	pending         []operation
+	pendingEntries  map[string]entry
 	freeze          func() (func() error, error)
 	sessions        sessionState
 	vm              bool
+	session         bool
 }
 
 func ServeStdio(ctx context.Context, root string) error {

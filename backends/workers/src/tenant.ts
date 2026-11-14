@@ -88,12 +88,13 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
       return true;
     });
   }
-  registerRepo(row: RepoRow) { return this.repos.register(row); }
+  registerRepo(row: RepoRow, sourceId?: string) { return this.repos.register(row, sourceId); }
   repoRow(id: string) { return this.repos.row(id); }
   listRepos(input: {after?: string; limit?: number} = {}) { return this.repos.list(input); }
   markRepoDeleted(id: string) { return this.repos.deleted(id); }
-  repoUsage(id: string, bytes: number, files: number) { return this.repos.usage(id,bytes,files); }
-  reposUsed() { return this.repos.used(); }
+  markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
+  repoUsage(id: string, bytes: number, files: number, lineage?: boolean) { return this.repos.usage(id,bytes,files); }
+  reposUsed(exclude?: string) { return this.repos.used(exclude); }
   // Consume any alarm persisted by the old accounting implementation (ledger L90).
   async alarm() {}
   /** Called after account deletion has stopped and purged every owned agent. */

@@ -15,7 +15,7 @@ Postgres or use customer credentials. All dates below are UTC.
 | Custom domain | `run-pilot.camelai.dev` | `camelai.dev` zone `3180d911f20372a279a4ea408aebc765` |
 | Agent objects | `AGENTS` / `CamelAgent` | Durable journal, runs, schedules, human input, hibernatable sockets |
 | Tenant objects | `TENANTS` / `TenantAdmission` | Admission and counters |
-| Volume objects | `VOLUMES` / `Volume` | Ordered file metadata |
+| Repo objects | `REPOS` / `RepoDO` | Repo metadata, refs and writes over camelFS |
 | Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | One container per agent through `ctx.container` (`durable_object` scheduling policy, `standard-1`); image `workspace` from `computers/Dockerfile` |
 | Code-mode binding | `CODEMODE_SANDBOX` | External `CodemodeSandbox` class on `camelrun-pilot-codemode` |
 | Sandbox objects | `SANDBOX` / `CodemodeSandbox` | Local binding in the sandbox Worker |

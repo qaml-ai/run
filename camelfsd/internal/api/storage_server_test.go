@@ -51,6 +51,7 @@ func TestAPIRole(t *testing.T) {
 		code                      string
 	}{
 		{"GET", "/v0/health", "", "", 200, ""},
+		{"GET", "/v1/health", "", "", 200, ""},
 		{"GET", "/v0/stats", "", "", 401, "unauthorized"},
 		{"GET", "/v0/stats", token("elsewhere", "r"), "", 200, ""},
 		{"GET", "/v0/stats", write, "", 200, ""},
@@ -87,7 +88,7 @@ func TestAPIRole(t *testing.T) {
 				t.Errorf("%s: %s; want error code %s and a message", tc.path, w.Body.String(), tc.code)
 			}
 		}
-		if tc.path == "/v0/health" && strings.TrimSpace(w.Body.String()) != `{"version":"test-version"}` {
+		if (tc.path == "/v0/health" || tc.path == "/v1/health") && strings.TrimSpace(w.Body.String()) != `{"version":"test-version"}` {
 			t.Errorf("health = %s", w.Body.String())
 		}
 	}

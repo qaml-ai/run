@@ -39,7 +39,7 @@ func runGuest(args []string) error {
 		if os.Getenv("CAMEL_VSOCK_UDS") != "" || *root != "/" {
 			return guest.ServeStdio(ctx, *root)
 		}
-		return guest.ServeVM(ctx, os.Getenv("CAMEL_VSOCK_CONNECT") == "1", nil)
+		return guest.ServeVM(ctx, os.Getenv("CAMEL_VSOCK_CONNECT") == "1", nil, false)
 	default:
 		return fmt.Errorf("usage: camelfsd guest|init")
 	}
