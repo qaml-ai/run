@@ -105,6 +105,16 @@ variable "enroll_roles" {
   }
 }
 
+variable "guest_images" {
+  description = "The guest image SHA-256s the tier allows hosts to boot (camelfsd api --guest-images; K4c/K2c2), newest first. Each is a manifest published to <bucket>/guest/ by publish-guest-image.sh; a host that offers an image not in this list is refused. Empty with \"compute\" on refuses every boot, so set it with the flip."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for sha in var.guest_images : can(regex("^[0-9a-f]{64}$", sha))])
+    error_message = "guest_images are 64-hex SHA-256 digests."
+  }
+}
+
 variable "api_extra_args" {
   description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)

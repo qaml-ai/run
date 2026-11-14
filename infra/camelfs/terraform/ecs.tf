@@ -66,6 +66,7 @@ locals {
       "--enroll-audience", "camelfs:enroll",
       "--enroll-roles", join(",", [for pool in sort(keys(var.enroll_roles)) : "${pool}=${var.enroll_roles[pool]}"]),
       "--runtime-notify-url", "${var.token_issuer}/v1/internal/camelfs/notify",
+      "--guest-images", join(",", var.guest_images),
     ] : [],
     var.api_extra_args,
   )
