@@ -27,29 +27,33 @@ locals {
   api_image       = "${aws_ecr_repository.camelfsd.repository_url}:${var.api_image_tag}"
   api_data_dir    = "/var/lib/camelfs"
 
-  # The daemon's CLI (proto-block, 2026-11-13): `camelfsd api --listen --data --store --region --token-issuer
-  # --refs-table`; --objects-table and --lineages-table come with L74, the K4 tables with K4 (api_extra_args until
-  # then, or here once the flags exist). --listen-enroll (§9.12): the enrollment-only port behind the plain-TLS
-  # listener. --listen-hosts: the host routes, mutual TLS terminated by the tier, behind the NLB in TCP passthrough;
-  # --hosts-ca-pem / --tier-cert / --tier-key are files under --data that K4c3 writes at boot from the Private CA
-  # (--hosts-ca names it). The runtime's verify JWKS is not a
+  # The daemon's CLI, as merged on files-model. C1 (deployed first): `camelfsd api --listen --data --store --region
+  # --token-issuer` with the runtime's JWKS from CAMELFS_JWKS. C2 adds --refs-table (api_features "refs");
+  # --objects-table / --lineages-table come with L74 (api_extra_args until the flags exist). K4c adds
+  # --listen-enroll (the enrollment-only port behind the plain-TLS listener), --listen-hosts (host routes, mutual
+  # TLS terminated by the tier, behind the NLB in TCP passthrough) and --hosts-ca (the Private CA the tier issues
+  # host certificates and its own from; the key stays in memory, no file flags in production: wf-durable,
+  # 2026-11-14) (api_features "compute"). Go's flag package exits on an unknown flag, so a feature is switched on in
+  # the same apply as the deploy that carries it. The runtime's verify JWKS is not a
   # flag: ECS injects it as CAMELFS_JWKS (the daemon also takes --jwks-file), so no key material is in the task
   # definition and the task role reads no secret. The tier's own client certificate comes from the CA at boot.
-  api_command = concat([
-    "api",
-    "--listen", "0.0.0.0:${var.api_port}",
-    "--listen-enroll", "0.0.0.0:${var.enroll_port}",
-    "--listen-hosts", "0.0.0.0:${var.hosts_port}",
-    "--hosts-ca", aws_acmpca_certificate_authority.hosts.arn,
-    "--hosts-ca-pem", "${local.api_data_dir}/hosts-ca.pem",
-    "--tier-cert", "${local.api_data_dir}/tier.pem",
-    "--tier-key", "${local.api_data_dir}/tier.key",
-    "--data", local.api_data_dir,
-    "--store", "s3://${aws_s3_bucket.objects.bucket}",
-    "--region", var.region,
-    "--token-issuer", var.token_issuer,
-    "--refs-table", local.table_names["refs"],
-  ], var.api_extra_args)
+  api_command = concat(
+    [
+      "api",
+      "--listen", "0.0.0.0:${var.api_port}",
+      "--data", local.api_data_dir,
+      "--store", "s3://${aws_s3_bucket.objects.bucket}",
+      "--region", var.region,
+      "--token-issuer", var.token_issuer,
+    ],
+    contains(var.api_features, "refs") ? ["--refs-table", local.table_names["refs"]] : [],
+    contains(var.api_features, "compute") ? [
+      "--listen-enroll", "0.0.0.0:${var.enroll_port}",
+      "--listen-hosts", "0.0.0.0:${var.hosts_port}",
+      "--hosts-ca", aws_acmpca_certificate_authority.hosts.arn,
+    ] : [],
+    var.api_extra_args,
+  )
 
   api_environment = {
     AWS_REGION = var.region

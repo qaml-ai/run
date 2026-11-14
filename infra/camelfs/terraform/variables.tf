@@ -76,6 +76,16 @@ variable "service_task_definition_arn" {
   }
 }
 
+variable "api_features" {
+  description = "Which later flag sets the api command carries, matching what the daemon on the deployed image accepts (Go's flag package exits on an unknown flag): \"refs\" adds --refs-table (C2); \"compute\" adds --listen-enroll, --listen-hosts and --hosts-ca (K4c). Empty: the C1 command alone (--listen --data --store --region --token-issuer; CAMELFS_JWKS from the environment). Flip a feature on when its PR is merged and deployed, in the same apply as the deploy that carries it."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for feature in var.api_features : contains(["refs", "compute"], feature)])
+    error_message = "api_features is a subset of [\"refs\", \"compute\"]."
+  }
+}
+
 variable "api_extra_args" {
   description = "Flags appended to the api task's command after the ones this module composes (`camelfsd api --listen --data --store --region --token-issuer --refs-table`; ecs.tf). For the daemon's later flags (--objects-table, --lineages-table once L74 lands) and tuning."
   type        = list(string)

@@ -51,16 +51,20 @@ created now so the tier's role covers them; nothing writes them until K4 lands.
 
 ### The api task's command
 
-The daemon's CLI (proto-block, 2026-11-13), composed by `ecs.tf`:
-`camelfsd api --listen 0.0.0.0:8790 --listen-enroll 0.0.0.0:8793 --listen-hosts 0.0.0.0:8794 --hosts-ca <Private CA ARN> --hosts-ca-pem /var/lib/camelfs/hosts-ca.pem --tier-cert /var/lib/camelfs/tier.pem --tier-key /var/lib/camelfs/tier.key --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer> --refs-table camelfs-prod-refs`,
-plus `api_extra_args` (`--objects-table` / `--lineages-table` once L74 lands, the K4 table flags; the tables
-exist already). `--listen-enroll` is the enrollment-only port behind the plain-TLS listener; `--listen-hosts` the
-host routes behind the NLB, mutual TLS terminated by the tier with the files K4c3 writes under `--data` at boot
-(the CA's PEM, and the tier's own certificate and key issued from `--hosts-ca`). Keys are not flags: ECS
-injects `token-verify-keys` as `CAMELFS_JWKS` (the daemon also takes `--jwks-file`; exactly one of the two) at
-task start, so no key material is in the task definition and the task role reads no secret. `token_issuer` is the runtime's
-`AGENT_PUBLIC_URL` (the JWT `iss` the tier checks); it must equal `infra/job-hosts`' `runtime_public_url`. The
-daemon writes only under `--data` (`storage.db`, `tmp/`); the image carries `git` for `git merge-file`.
+Composed by `ecs.tf` from what the daemon on the deployed image accepts (Go's flag package exits on an unknown
+flag, so a flag set is switched on in the same apply as the deploy that carries it):
+`camelfsd api --listen 0.0.0.0:8790 --data /var/lib/camelfs --store s3://camelfs-prod-904534089871 --region us-west-2 --token-issuer <token_issuer>`
+is C1's command and the default; `api_features=["refs"]` adds `--refs-table camelfs-prod-refs` (C2);
+`api_features=["refs","compute"]` adds `--listen-enroll 0.0.0.0:8793 --listen-hosts 0.0.0.0:8794 --hosts-ca <Private CA ARN>` (K4c: the enrollment-only port behind the plain-TLS listener, the host routes behind the NLB with mutual
+TLS terminated by the tier, the CA it issues host certificates and its own from; the tier's key stays in memory, so
+no file flags in production); `api_extra_args` appends anything else (`--objects-table` / `--lineages-table` with
+L74, `--token-max-ttl`). Keys are not flags: ECS injects `token-verify-keys` as `CAMELFS_JWKS` (the daemon also takes
+`--jwks-file`; exactly one of the two) at task start, so no key material is in the task definition and the task role
+reads no secret. `token_issuer` is the runtime's `AGENT_PUBLIC_URL` (the JWT `iss` the tier checks); it must equal
+`infra/job-hosts`' `runtime_public_url`. The daemon writes only under `--data` (`storage.db`, `tmp/`); the image
+carries `git` for `git merge-file`. The enrollment and hosts target groups exist whatever `api_features` says
+(their health checks probe `/v0/health` on 8790); until "compute" is on, nothing listens behind them, and no host
+is wired.
 
 ## Decisions, with reasons
 
@@ -280,6 +284,11 @@ to expect by name.
    PLAN_ONLY=1 infra/camelfs/apply.sh api_min_count=2        # the autoscaling target and the running-tasks alarm
    infra/camelfs/apply.sh api_min_count=2
    ```
+
+   When C2 / K4c are merged and deployed, switch their flags on in the same step:
+   `infra/camelfs/deploy.sh && infra/camelfs/apply.sh api_features='["refs","compute"]'` (the apply replaces
+   Terraform's revision; the service keeps running deploy.sh's until the next `deploy.sh`, which copies the
+   family's latest revision — so run deploy.sh once more after the apply, or apply first and deploy after).
 
    Every later release is `infra/camelfs/deploy.sh` alone (build, push, register, roll, wait for COMPLETED, then
    save the revision as `service_task_definition_arn` in `prod.tfvars`). Until that first deploy the service runs

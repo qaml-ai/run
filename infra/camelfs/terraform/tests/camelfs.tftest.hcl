@@ -388,9 +388,25 @@ run "service_with_an_image" {
   assert {
     condition = (
       jsondecode(aws_ecs_task_definition.api.container_definitions)[0].image == "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelfs-prod:0123456789ab"
-      && jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--listen-enroll", "0.0.0.0:8793", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--hosts-ca-pem", "/var/lib/camelfs/hosts-ca.pem", "--tier-cert", "/var/lib/camelfs/tier.pem", "--tier-key", "/var/lib/camelfs/tier.key", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs"]
+      && jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev"]
     )
-    error_message = "The task runs the named image as `camelfsd api` with the daemon's flags (proto-block, 2026-11-13)."
+    error_message = "By default the task runs the named image as `camelfsd api` with exactly C1's flags (the daemon exits on an unknown flag)."
+  }
+}
+
+run "service_with_every_feature" {
+  command = plan
+  variables {
+    certificate_issued = true
+    api_image_tag      = "0123456789ab"
+    api_min_count      = 2
+    api_features       = ["refs", "compute"]
+    api_extra_args     = ["--token-max-ttl", "1h"]
+  }
+
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.api.container_definitions)[0].command == ["api", "--listen", "0.0.0.0:8790", "--data", "/var/lib/camelfs", "--store", "s3://camelfs-prod-904534089871", "--region", "us-west-2", "--token-issuer", "https://run-pilot.camelai.dev", "--refs-table", "camelfs-prod-refs", "--listen-enroll", "0.0.0.0:8793", "--listen-hosts", "0.0.0.0:8794", "--hosts-ca", "arn:aws:acm-pca:us-west-2:904534089871:certificate-authority/11111111-2222-3333-4444-555555555555", "--token-max-ttl", "1h"]
+    error_message = "With refs and compute on, the command carries C2's and K4c's flags (no file flags: the tier keeps its key in memory) and then api_extra_args."
   }
   assert {
     condition = (
