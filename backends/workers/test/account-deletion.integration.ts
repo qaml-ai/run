@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { unzip } from "../../../tests/unzip.ts";
@@ -20,6 +21,7 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
     TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: "account-repos",
     AGENT_TENANTS_JSON: JSON.stringify({ tenants: { ops: { tokenSha256: createHash("sha256").update(operator).digest("hex"), apiKeys: {} } } }),
     AGENT_BILLING_ADMINS: "ops",
+    AGENT_CREATE_DIAGNOSTICS: "1",
     AGENT_MAX_AGENTS: "2100", AGENT_MAX_AGENTS_PER_TENANT: "2100",
   } });
   t.after(() => r.stop());
@@ -29,16 +31,48 @@ test(`queued account deletion resumes after interruption with ${AGENTS} agents a
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const created = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
-  assert.equal(created.status, 201);
-  const { id } = await created.json() as { id: string };
-  const ids = [id];
-  let next = 0;
-  await Promise.all(Array.from({ length: 10 }, async () => {
-    while (next++ < AGENTS - 1) {
-      const response = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
-      assert.equal(response.status, 201);
-      ids.push((await response.json() as { id: string }).id);
+  const createLogs = () => r.worker.logs().split("\n")
+    .filter(line => /agent_create_(?:db|rpc)_failed|agent_http_failed|agent_start_(?:slow|stuck)|http_failed/.test(line))
+    .join("\n");
+  const createAgent = async (index: number) => {
+    const key = `account-deletion-${index}`;
+    const timeoutMs = 60_000;
+    const signal = AbortSignal.timeout(timeoutMs);
+    // Keep the one-day lifetime that unkeyed creates default to.
+    const body = JSON.stringify({ model: "test/echo", spendLimit: { usd: 3 }, ttlSeconds: 86_400 });
+    let lastPending = "";
+    try {
+      for (;;) {
+        const response = await fetch(r.url + "/v1/agents", {
+          method: "POST",
+          headers: { authorization: `Bearer ${r.token}`, "content-type": "application/json", "Idempotency-Key": key },
+          body,
+          signal,
+        });
+        if (response.status === 201) return (await response.json() as { id: string }).id;
+        const failure = await response.text();
+        let code: unknown;
+        if (response.status === 503) {
+          try { code = JSON.parse(failure)?.code; } catch { /* Report the response body below. */ }
+        }
+        if (code !== "CONFIGURATION_PENDING") {
+          assert.fail(`create ${key} returned ${response.status}: ${failure}\n${createLogs()}`);
+        }
+        lastPending = ` Last response: 503 ${failure}`;
+        // The directory row was saved. Replay this keyed create to apply its configuration.
+        await delay(250, undefined, { signal });
+      }
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      assert.fail(`create ${key} did not return 201 within ${timeoutMs} ms.${lastPending}\n${createLogs()}`);
+    }
+  };
+  const ids = [await createAgent(0)];
+  let next = 1;
+  // Limit concurrent creates because first agent starts are CPU-heavy in the single-threaded workerd fixture.
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (next < AGENTS) {
+      ids.push(await createAgent(next++));
     }
   }));
   assert.equal(ids.length, AGENTS);

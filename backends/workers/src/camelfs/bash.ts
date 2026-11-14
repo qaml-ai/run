@@ -1,3 +1,4 @@
+import { AgentInvocation } from "../agent-invocation.ts";
 import { createHash } from "node:crypto";
 import { defineTool } from "@earendil-works/pi-durable";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
@@ -15,6 +16,8 @@ import type { TierClaims } from "./claims.ts";
 import { TierError, tierConfigured, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
+import { repoStorage } from "./repo-storage.ts";
+import { guestFiles, VM_FILES_STDOUT_BYTES, type VmFiles } from "./vm-files.ts";
 
 export const BASH_WORKDIR = '/workspace';
 export type BashEnv = HostPriceEnv & { CAMELFS_COMPUTE?: string; CAMELFS_POOLS?: string; GUEST_IMAGE_SHA256?: string; COMPUTER_INSTANCE?: string };
@@ -41,13 +44,14 @@ const RENEW_MS = 180_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const isTier = (error: unknown, status: number, code: string) => error instanceof TierError && error.status === status && error.code === code;
+const vmStopped = (error: unknown) => isTier(error, 409, "not_running") || isTier(error, 409, "ended") || isTier(error, 409, "lease_expired");
 const computeBusy = "compute is busy, retry shortly";
 
 type Branch = { branch: string; lineage: string; ref: string };
 type Vm = Branch & { vm_id: string; shell: string | null; state: "creating" | "running" | "stopped"; deadline: number; created_at: number };
 type Boot = ReturnType<typeof bootSpec> & { id: string; lineage: string; ref: string; deadline: number };
 type Intent = { vm: Vm; first: boolean; body: { execId: string; command: string; shell: string; cwd?: string; timeoutS: number } };
-type Checkpoint = { vm: Vm; callId: string; requestId: string; message: string; time: number; started?: boolean };
+type Checkpoint = { vm: Vm; callId: string; requestId?: string; message: string; time: number; started?: boolean };
 type SessionResult = BashResult & { checkpointWarning?: string };
 type Receipt = { intent?: Intent; result?: SessionResult; checkpoint?: Checkpoint };
 type Args = { command: string; cwd?: string; timeoutSeconds?: number };
@@ -73,13 +77,14 @@ function bootSpec(env: Env, conf: Config) {
 }
 
 export class BashSessions {
+  private readonly savedHeads = new Map<string, Head>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private get sql() { return this.storage.sql; }
 
   private readonly storage: DurableObjectStorage;
   private readonly env: Env;
   private readonly defer: (work: Promise<unknown>) => void;
-  private readonly arm: (at?: number) => Promise<void>;
+  private readonly arm: (at: number, invocation: AgentInvocation) => Promise<void>;
   private readonly checkpointFailed: (callId: string, requestId: string, error: string) => Promise<void>;
   private readonly admit: ReturnType<typeof meterBilling>["admit"];
   private renewing = false;
@@ -88,7 +93,7 @@ export class BashSessions {
     storage: DurableObjectStorage,
     env: Env,
     defer: (work: Promise<unknown>) => void,
-    arm: (at?: number) => Promise<void>,
+    arm: (at: number, invocation: AgentInvocation) => Promise<void>,
     checkpointFailed: (callId: string, requestId: string, error: string) => Promise<void>,
     admit = meterBilling(env, HOSTS_PROVIDER).admit,
   ) {
@@ -122,11 +127,37 @@ export class BashSessions {
     finally { if (this.locks.get(branch) === settled) this.locks.delete(branch); }
   }
 
+  // File-tool ops (VmFiles) do not queue behind bash: each is its own one-off exec, so they run concurrently with a bash
+  // command and serialize only against a checkpoint in flight, so that a checkpoint sees a consistent tree. A checkpoint
+  // waits for the file ops already running; a file op waits for the checkpoint already running.
+  private readonly checkpointLocks = new Map<string, Promise<unknown>>();
+  private readonly fileOps = new Map<string, Set<Promise<unknown>>>();
+  private async checkpointLocked<T>(branch: string, action: () => Promise<T>): Promise<T> {
+    const next = (this.checkpointLocks.get(branch) ?? Promise.resolve())
+      .then(() => Promise.allSettled([...this.fileOps.get(branch) ?? []]))
+      .then(action);
+    const settled = next.catch(() => {});
+    this.checkpointLocks.set(branch, settled);
+    try { return await next; }
+    finally { if (this.checkpointLocks.get(branch) === settled) this.checkpointLocks.delete(branch); }
+  }
+  private async fileOp<T>(branch: string, action: () => Promise<T>): Promise<T> {
+    await this.checkpointLocks.get(branch);
+    const ops = this.fileOps.get(branch) ?? new Set<Promise<unknown>>();
+    this.fileOps.set(branch, ops);
+    const running = action();
+    const settled = running.catch(() => {});
+    ops.add(settled);
+    try { return await running; }
+    finally { ops.delete(settled); if (!ops.size && this.fileOps.get(branch) === ops) this.fileOps.delete(branch); }
+  }
+
   private row(branch: string) {
     return this.sql.exec<Vm>("SELECT * FROM agent_vms WHERE branch=?", branch).toArray()[0];
   }
 
   private stop(vmId: string) {
+    this.savedHeads.delete(vmId);
     this.sql.exec("UPDATE agent_vms SET state='stopped' WHERE vm_id=?", vmId);
   }
 
@@ -152,9 +183,9 @@ export class BashSessions {
       key, branch, JSON.stringify(receipt), Number(!!receipt.checkpoint));
   }
 
-  private async credit(conf: Config) {
+  private async credit(conf: Config, invocation: AgentInvocation) {
     // MONEY: admission checks spend limits and available credit before create or renewal, without a hold.
-    try { await this.admit({ tenant: conf.tenantId, agent: conf.id }); }
+    try { await this.admit({ tenant: conf.tenantId, agent: conf.id }, invocation); }
     catch (error) {
       const { status, code } = (error ?? {}) as { status?: number; code?: string };
       if (status === 402 || (status === 429 && code === "FREE_HOURLY_LIMIT")) return false;
@@ -164,7 +195,7 @@ export class BashSessions {
     return true;
   }
 
-  private async ready(conf: Config, branch: Branch) {
+  private async ready(conf: Config, branch: Branch, invocation: AgentInvocation) {
     let vm = this.row(branch.branch);
     if (vm?.state === "running") return vm;
     const creating = vm?.state === "creating" ? vm : undefined;
@@ -177,7 +208,7 @@ export class BashSessions {
     } else {
       const spec = bootSpec(this.env, conf);
       // MONEY: no VM row or create request is issued on refusal. Persist the original priced boot spec for replay.
-      if (!await this.credit(conf)) throw new Error("no credit for compute");
+      if (!await this.credit(conf, invocation)) throw new Error("no credit for compute");
       const created_at = Date.now();
       const seq = (boot?.seq ?? 0) + 1;
       const n = seq.toString(36);
@@ -224,7 +255,7 @@ export class BashSessions {
       if (isTier(error, 409, "not_running")) this.stop(vm.vm_id);
       throw error;
     }
-    await this.arm(Date.now() + 1_000);
+    await this.arm(Date.now() + 1_000, invocation);
     const running = this.sql.exec<Vm>("UPDATE agent_vms SET state='running', shell=? WHERE vm_id=? AND state='creating' RETURNING *", shell, vm.vm_id).toArray()[0];
     if (!running) throw new Error("Bash VM stopped during startup");
     console.log(JSON.stringify({ type: "bash_vm_created", vm: vm.vm_id, runningMs: Date.now() - vm.created_at }));
@@ -233,16 +264,17 @@ export class BashSessions {
 
   completed(key: string) { return this.receipt(key)?.result; }
 
-  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args): Promise<SessionResult> {
+  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args, invocation?: AgentInvocation): Promise<SessionResult> {
+    if (!invocation) return AgentInvocation.run(scope => this.execute(conf, branch, key, callId, requestId, args, scope));
     return this.serial(branch.branch, async () => {
       const previous = this.receipt(key);
       if (previous?.result) return previous.result;
-      await this.checkpoints(branch.branch);
+      await this.checkpointLocked(branch.branch, () => this.checkpoints(branch.branch));
       let intent = previous?.intent;
       const replay = !!intent;
       for (let attempt = 0; ; attempt++) {
         if (!intent) {
-          const vm = await this.ready(conf, branch);
+          const vm = await this.ready(conf, branch, invocation);
           // An abandoned invocation can no longer be safely reissued after later commands may have evicted its guest receipt.
           this.sql.exec(`UPDATE agent_vm_calls SET receipt=? WHERE branch=? AND id<>? AND json_type(receipt,'$.intent')='object'`,
             JSON.stringify({ result: { stdout: "", stderr: "", exitCode: null, timedOut: false, truncated: true, error: "Bash result was interrupted and could not be recovered" } }), branch.branch, key);
@@ -259,6 +291,7 @@ export class BashSessions {
         const path = "/v1/vms/" + vm.vm_id + "/exec";
         let streamed: Awaited<ReturnType<typeof bashStream>>;
         try {
+          this.savedHeads.delete(vm.vm_id);
           streamed = await bashStream(this.env, { method: "POST", path, body, claims: claims(vm) }, body.execId, started + (body.timeoutS + 30) * 1000, () => {
             if (first) console.log(JSON.stringify({ type: "bash_vm_first_output", vm: vm.vm_id, firstOutputMs: Date.now() - vm.created_at }));
           });
@@ -274,7 +307,7 @@ export class BashSessions {
         const result: SessionResult = streamed.result;
         const checkpoint = { vm, callId, requestId, message: (`bash: ${body.command.split(/\r?\n/, 1)[0]}`).slice(0, 72), time: Date.now() };
         // The wake is durable before the receipt leaves a pending checkpoint.
-        await this.arm(Date.now() + 1_000);
+        await this.arm(Date.now() + 1_000, invocation);
         this.storage.transactionSync(() => {
           const warning = this.sql.exec<{ reason: string }>(
             "DELETE FROM agent_vm_checkpoint_warnings WHERE branch=? RETURNING reason", branch.branch,
@@ -286,25 +319,98 @@ export class BashSessions {
           this.sql.exec("INSERT OR IGNORE INTO agent_vm_shell_used VALUES(?)", vm.vm_id);
           this.save(key, branch.branch, { result, checkpoint });
         });
-        this.defer(sleep(0).then(() => this.serial(branch.branch, () => this.checkpoints(branch.branch))).catch(() => this.arm(Date.now() + 1_000)));
+        this.scheduleCheckpoint(branch.branch);
         console.log(JSON.stringify({ type: "bash_exec", vm: vm.vm_id, callId, ms: ms ?? Date.now() - started, exitCode: result.exitCode, truncated: result.truncated, bytes }));
         return result;
       }
     });
   }
 
+  runningFiles(lineage: string, ref: string): VmFiles | undefined {
+    const branch = JSON.stringify([lineage, ref]);
+    const vm = this.row(branch);
+    if (vm?.state !== "running") return;
+    const ensureRunning = () => {
+      const current = this.row(branch);
+      if (current?.state !== "running" || current.vm_id !== vm.vm_id) throw new HttpError(409, "the VM stopped; retry");
+    };
+    const onVm = <T>(work: () => Promise<T>) => this.fileOp(branch, async () => {
+      ensureRunning();
+      try {
+        const value = await work();
+        ensureRunning();
+        return value;
+      } catch (error) {
+        if (vmStopped(error))
+          this.stop(vm.vm_id);
+        ensureRunning();
+        throw error;
+      }
+    });
+    return guestFiles(
+      (execId, command, input, mutation) => onVm(async () => {
+        const timeoutS = 120;
+        const body = { execId, command, ...input, cwd: BASH_WORKDIR, timeoutS };
+        const checkpoint = { vm, callId: execId, message: "Save VM file changes", time: Date.now() };
+        const key = JSON.stringify(["vmfiles", vm.vm_id]);
+        if (mutation) {
+          await AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope));
+          this.savedHeads.delete(vm.vm_id);
+          // Record the pending save before dispatch. The mutation can succeed even if its response is lost.
+          this.save(key, branch, { checkpoint });
+        }
+        try {
+          const { result } = await bashStream(this.env, {
+            method: "POST", path: "/v1/vms/" + vm.vm_id + "/exec", body, claims: claims(vm),
+          }, execId, Date.now() + (timeoutS + 30) * 1000, () => {}, VM_FILES_STDOUT_BYTES);
+          return result;
+        } finally {
+          if (mutation) this.scheduleCheckpoint(branch);
+        }
+      }),
+      () => this.checkpointLocked(branch, async () => {
+        ensureRunning();
+        await this.checkpoints(branch);
+        ensureRunning();
+        const saved = this.savedHeads.get(vm.vm_id);
+        if (saved) return saved;
+        const reply = await this.request<Head & { changed: boolean }>(vm, "POST", "/checkpoint", {
+          message: "Save VM file changes", time: Date.now(),
+        });
+        if (reply.changed) this.recordHead(vm, reply);
+        return this.rememberHead(vm, reply);
+      }),
+      bytes => onVm(() => repoStorage(this.env, claims(vm).sub).putBlob(vm.lineage, bytes)),
+    );
+  }
+
+  private scheduleCheckpoint(branch: string) {
+    this.defer(sleep(0)
+      .then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))))
+      .catch(() => AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope))));
+  }
+
+  private rememberHead(vm: Vm, { version, tree }: Head) {
+    const head = { version, tree };
+    const current = this.row(vm.branch);
+    if (current?.state === "running" && current.vm_id === vm.vm_id) this.savedHeads.set(vm.vm_id, head);
+    return head;
+  }
+
   private async checkpoints(branch: string) {
     const rows = this.sql.exec<{ id: string; receipt: string }>("SELECT id,receipt FROM agent_vm_calls WHERE branch=? AND checkpoint=1 ORDER BY rowid", branch).toArray();
     for (const row of rows) {
-      const { result, checkpoint } = JSON.parse(row.receipt) as Required<Pick<Receipt, "result" | "checkpoint">>;
+      const { result, checkpoint } = JSON.parse(row.receipt) as { result?: SessionResult; checkpoint: Checkpoint };
       const { vm, callId, requestId, message, time } = checkpoint;
       const started = Date.now();
+      let failure = result?.checkpointError;
       let changed: boolean | undefined;
       try {
-        if (!result.checkpointError) {
+        if (!result?.checkpointError) {
           if (!checkpoint.started) this.save(row.id, branch, { result, checkpoint: { ...checkpoint, started: true } });
           const reply = await this.request<Head & { diff: unknown; changed: boolean }>(vm, "POST", "/checkpoint", { message, trailers: { "Camel-Tool-Call": callId }, time });
           changed = reply.changed;
+          this.rememberHead(vm, reply);
           if (changed) this.recordHead(vm, reply);
           else if (checkpoint.started) {
             const status = await this.request<Status>(vm, "GET");
@@ -313,18 +419,23 @@ export class BashSessions {
         }
       } catch (error) {
         const reason = (error instanceof TierError ? error.code : "checkpoint_failed").replace(/[\r\n]+/g, " ");
-        result.checkpointError = reason;
-        // Persist the warning and the failure together, before publishing the event.
+        this.savedHeads.delete(vm.vm_id);
+        if (vmStopped(error))
+          this.stop(vm.vm_id);
+        failure = reason;
+        if (result) result.checkpointError = reason;
+        // Persist the warning and the bash failure together, before publishing the event.
         this.storage.transactionSync(() => {
           this.sql.exec("INSERT OR REPLACE INTO agent_vm_checkpoint_warnings VALUES(?,?)", branch, reason);
-          this.save(row.id, branch, { result, checkpoint });
+          if (result) this.save(row.id, branch, { result, checkpoint });
         });
       }
-      if (result.checkpointError) {
+      if (requestId && result?.checkpointError) {
         await this.checkpointFailed(callId, requestId, result.checkpointError);
       }
-      this.save(row.id, branch, { result });
-      console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, changed, error: result.checkpointError }));
+      if (result) this.save(row.id, branch, { result });
+      else this.sql.exec("DELETE FROM agent_vm_calls WHERE id=?", row.id);
+      console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, changed, error: failure }));
     }
   }
 
@@ -340,17 +451,18 @@ export class BashSessions {
       FROM agent_vms v LEFT JOIN agent_vm_renewal r ON v.vm_id=r.vm_id WHERE v.state='running'`, LEASE_MS - RENEW_MS).one().at ?? Infinity;
   }
 
-  async wake(conf: Config) {
+  async wake(conf: Config, invocation?: AgentInvocation): Promise<void> {
+    if (!invocation) return AgentInvocation.run(scope => this.wake(conf, scope));
     if (!bashEnabled(this.env)) return;
     for (const { branch } of this.sql.exec<{ branch: string }>("SELECT DISTINCT branch FROM agent_vm_calls WHERE checkpoint=1").toArray())
-      this.defer(this.serial(branch, () => this.checkpoints(branch)));
+      this.defer(this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))));
     if (this.renewing) return;
     this.renewing = true;
-    try { await this.renew(conf); }
+    try { await this.renew(conf, invocation); }
     finally { this.renewing = false; }
   }
 
-  private async renew(conf: Config) {
+  private async renew(conf: Config, invocation: AgentInvocation) {
     // MONEY: renew independently of a running command or a checkpoint on this branch.
     const due = this.sql.exec<Vm & { refused: number; proposed: number | null }>(`SELECT v.*,coalesce(r.refused,0) AS refused,r.proposed
       FROM agent_vms v LEFT JOIN agent_vm_renewal r ON v.vm_id=r.vm_id
@@ -365,7 +477,7 @@ export class BashSessions {
           else retry(Date.now() + RENEW_MS);
           return;
         }
-        if (!await this.credit(conf)) {
+        if (!await this.credit(conf, invocation)) {
           retry(Math.max(Date.now() + 1, vm.proposed ?? vm.deadline), 1, null);
           return;
         }
@@ -380,7 +492,7 @@ export class BashSessions {
           this.sql.exec("DELETE FROM agent_vm_renewal WHERE vm_id=?", vm.vm_id);
         });
       } catch (error) {
-        if (isTier(error, 409, "lease_expired") || isTier(error, 409, "not_running") || isTier(error, 409, "ended")) this.stop(vm.vm_id);
+        if (vmStopped(error)) this.stop(vm.vm_id);
         else {
           this.sql.exec("UPDATE agent_vm_renewal SET next=? WHERE vm_id=?", Date.now() + RENEW_MS, vm.vm_id);
           this.sql.exec("INSERT OR IGNORE INTO agent_vm_renewal VALUES(?,?,?,?)", vm.vm_id, Date.now() + RENEW_MS, vm.refused, vm.proposed);
@@ -394,7 +506,7 @@ export class BashSessions {
 export function bashTool(runtime: AgentRuntime) {
   return defineTool({
     name: "bash",
-    description: `Runs a shell command on your machine, a Linux VM attached to your current branch, and returns its stdout, stderr and exit code. Files under ${BASH_WORKDIR} are saved to your branch after every command; everything else on the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps after about 10 seconds with no command running, and a sleep ends every process, including background \`&\` jobs and servers; a command that is still running keeps it awake. The first command after a sleep waits a few seconds while the machine starts. Output over 32 KiB per stream is cut in the middle, and the result says how many bytes were dropped.`,
+    description: `Runs a shell command on your machine, a Linux VM attached to your current branch, and returns its stdout, stderr and exit code. Files under ${BASH_WORKDIR} are saved to your branch after every command; everything else on the machine (installed packages, /tmp, the shell's environment) is lost when it sleeps. The machine sleeps after about 10 seconds with no command running, and a sleep ends every process, including background \`&\` jobs and servers; a command that is still running keeps it awake. The first command after a sleep usually starts within a second; the first command on a new or large repository can take up to half a minute while its files are copied in. Output over 32 KiB per stream is cut in the middle, and the result says how many bytes were dropped.`,
     parameters: obj({
       command: str({ description: "The command to run in bash, in a persistent shell: the working directory and environment carry over between calls until the machine sleeps." }),
       cwd: opt(str({ description: "Directory to run in; defaults to the shell's current directory." })),

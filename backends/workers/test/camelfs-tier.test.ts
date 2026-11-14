@@ -81,11 +81,16 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   assert.equal(full.completed, 1);
   assert.deepEqual(full.statuses, { putBlob: { ok: 1 }, commit: { ok: 1 }, readBatch: { ok: 1 }, getCommit: { ok: 1 } });
   assert.ok(Date.parse(full.window.endedAt) >= Date.parse(full.window.startedAt));
-  assert.deepEqual(calls.map(c => [c.method, c.claims.lin, c.claims.acc, c.claims.sub, c.claims.refs]), [
-    ["PUT", smoke.lineage, "w", "runtime:camelfs-smoke", []],
-    ["POST", smoke.lineage, "w", "runtime:camelfs-smoke", []],
-    ["POST", smoke.lineage, "r", "runtime:camelfs-smoke", []],
-    ["GET", smoke.lineage, "r", "runtime:camelfs-smoke", []],
+  assert.deepEqual((smoke as unknown as { cleanup: unknown }).cleanup, { deleted: true });
+  // The lineage is registered first (the tier 404s a blob PUT to an unregistered lineage) and deleted last.
+  const lineagePath = "/v1/lineages/" + encodeURIComponent(smoke.lineage);
+  assert.deepEqual(calls.map(c => [c.method, c.path === lineagePath ? "lineage" : c.path.slice(lineagePath.length + 1), c.claims.lin, c.claims.acc, c.claims.sub]), [
+    ["PUT", "lineage", smoke.lineage, "w", "runtime:camelfs-smoke"],
+    ["PUT", "blobs", smoke.lineage, "w", "runtime:camelfs-smoke"],
+    ["POST", "commits", smoke.lineage, "w", "runtime:camelfs-smoke"],
+    ["POST", "read", smoke.lineage, "r", "runtime:camelfs-smoke"],
+    ["GET", calls[4].path.slice(lineagePath.length + 1), smoke.lineage, "r", "runtime:camelfs-smoke"],
+    ["DELETE", "lineage", smoke.lineage, "w", "runtime:camelfs-smoke"],
   ]);
 
   const { repoStorage } = await import("../src/camelfs/repo-storage.ts");

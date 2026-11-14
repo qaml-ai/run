@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "../agent-invocation.ts";
 import { FileError } from '../file-errors.ts';
 import { sniffContentType } from '../file-policy.ts';
 import { repoContext, type RepoEnv } from './registry.ts';
@@ -8,8 +9,9 @@ import { agentRepoId } from './identity.ts';
 import { HttpRepoClient } from './http-client.ts';
 import { workspaceRefKey, type RepoTreeScope } from './tree-cache.ts';
 
+export const TOOL_READ_BYTES = 1024 * 1024;
 export const insideRepo = (path: string) => path.replace(/^\/+/, '');
-export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref = 'main', agent = '', identity: Record<string,string> = {}, scope?: RepoTreeScope) {
+export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref = 'main', agent = '', identity: Record<string,string> = {}, scope?: RepoTreeScope, invocation?: AgentInvocation) {
   const ctx = await repoContext(env, tenant, repo, agent ? `agent:${agent}` : undefined);
   const cache = scope?.cache;
   const workspaceRef = cache && repo === agentRepoId(tenant, agent)
@@ -41,7 +43,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
   };
   const commit = async (changes: WriteInput['changes'], pathExpect: WriteInput['pathExpect'] = {}, message = 'files changed', trailers: Record<string,string> = {}, op: CommitOp = 'turn', allowEmpty?: boolean, why = 'agent') => {
     try {
-      const write = () => commitChanges(ctx, { ref, op, allowEmpty, changes, pathExpect, message, author: `agent:${agent}`, who: `agent:${agent}`, why, trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } });
+      const write = () => commitChanges(ctx, { ref, op, allowEmpty, changes, pathExpect, message, author: `agent:${agent}`, who: `agent:${agent}`, why, trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } }, invocation);
       return await (workspaceRef ? cache!.write(workspaceRef, write) : write());
     }
     catch (error) { const repo = repoErrorFrom(error); if (repo?.code === 'stale_path' || (repo?.code === 'stale' && typeof repo.detail?.path === 'string')) throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
@@ -71,7 +73,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
       } while (after);
       return entries.filter(e => !pattern || globMatch(e.path.slice(prefix ? prefix.length + 1 : 0), pattern)).map(e => decorate(e, head.version));
     },
-    async read(path: string, _version?: string, maxBytes = 1024 * 1024) {
+    async read(path: string, _version?: string, maxBytes = TOOL_READ_BYTES) {
       const { p, entry, head } = await entryAt(path);
       if (entry.size > maxBytes) throw new FileError('Tool file exceeds 1 MiB', 413);
       const bytes = await ctx.storage.readBlob(ctx.lineage, entry.blob, head.tree, p);

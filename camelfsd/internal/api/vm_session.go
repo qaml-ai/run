@@ -95,11 +95,17 @@ func (v *vmAPI) exec(w http.ResponseWriter, r *http.Request, claims auth.Claims)
 	if !hostwire.MountID.MatchString(q.ExecID) {
 		return invalid("execId: required, must match %s", hostwire.MountID)
 	}
-	if q.Shell == "" {
-		return invalid("shell: required")
-	}
 	if q.TimeoutS < 1 || q.TimeoutS > 600 {
 		return invalid("timeoutS: must be between 1 and 600")
+	}
+
+	if q.StdinBlob != nil {
+		if q.Stdin != nil || !q.StdinBlob.Valid() {
+			return invalid("stdinBlob: expected blob, size and sha256, without stdin")
+		}
+		if err := require(r.Context(), v.storage.repo(), vm.Lineage, q.StdinBlob.Blob, "blob", false, "stdinBlob.blob"); err != nil {
+			return err
+		}
 	}
 
 	// Once admitted, the stream belongs to this exec even if the HTTP client leaves.
