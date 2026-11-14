@@ -246,7 +246,7 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 		return errors.New("compressed guest image SHA-256 mismatch")
 	}
 
-	cmd := exec.CommandContext(ctx, "zstd", "-q", "-d", "-c", "--", compressed.Name())
+	cmd := exec.CommandContext(ctx, zstdPath, "-q", "-d", "-c", "--", compressed.Name())
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -277,7 +277,22 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 	if err := image.Close(); err != nil {
 		return err
 	}
-	return os.Rename(image.Name(), path)
+	if err := os.Rename(image.Name(), path); err != nil {
+		return err
+	}
+	// Persist the rename: without it a power loss can drop the verified image and cost another download.
+	return syncDir(filepath.Dir(path))
+}
+
+// zstdPath is the decompressor host setup installs (Ubuntu's zstd package); it is not resolved through PATH.
+const zstdPath = "/usr/bin/zstd"
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
 }
 
 // copySparse coalesces short pipe reads into full blocks before testing for
