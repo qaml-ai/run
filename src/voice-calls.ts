@@ -346,6 +346,8 @@ export class VoiceCalls {
     const checkpoint = live.checkpoints.get(response);
     live.checkpoints.delete(response);
     const now = this.now();
+    // The start checkpoint reads the balance before this response posts. Even a refused response is billed in full.
+    const ending = await checkpoint?.catch(() => undefined);
     const costUsd = realtimeCost(`openai/${model}`, usage);
     const { bucket, subject, context, keyScope } = options;
     this.options.record(tenant, {
@@ -358,7 +360,7 @@ export class VoiceCalls {
       [id, Math.round(costUsd * 1_000_000), new Date(this.now())]);
     await Promise.all([update, costUsd > 0 ? live.credit?.debit(tenant, subject, bucket ?? DEFAULT_BUCKET, costUsd,
       `voice_realtime:${id}:${response}`, { call: "voice_realtime", session: id }, { now }) : undefined]);
-    return checkpoint?.catch(() => undefined);
+    return ending;
   }
 
   private async heard(id: string, live: Live, item: string, text: string, seconds: number) {

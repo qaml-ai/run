@@ -161,8 +161,15 @@ test("responses debit in full, replay once, and finish before a refused checkpoi
 for (const limit of ["end_user", "tenant"] as const) {
   test(`a client-held response posts in full before the next ${limit} checkpoint ends the call`, async t => {
     const credit = fakeCredit(0.000001);
-    let tenantSpent = false, tenantRefused = false;
-    const f = await fixture(t, limit === "end_user" ? { credit: credit.credit } : {
+    let endUserRefused = false, tenantSpent = false, tenantRefused = false;
+    const f = await fixture(t, limit === "end_user" ? { credit: {
+      ...credit.credit,
+      async refusal(...args) {
+        const refused = await credit.credit.refusal(...args);
+        if (refused) endUserRefused = true;
+        return refused;
+      },
+    } } : {
       credit: undefined,
       admit: async () => { if (tenantSpent) { tenantRefused = true; throw new HttpError(402, "Out of credit", "SPEND_LIMIT"); } },
     });
@@ -172,13 +179,22 @@ for (const limit of ["end_user", "tenant"] as const) {
     push({ type: "response.created", response: { id: "first" } }, { type: "response.done", response: { id: "first", usage } });
     await until(() => limit === "end_user" ? credit.balance() < 0 : f.usage.length === 1, "the first response posted");
     if (limit === "end_user") assert.equal(credit.balance(), 0.000001 - Number(f.usage[0].usage.cost.total));
+    assert.equal(endUserRefused || tenantRefused, false, "the first response passed its checkpoint");
     tenantSpent = true;
     push({ type: "response.created", response: { id: "next" } });
-    await until(() => limit === "end_user" ? credit.log.filter(entry => entry[0] === "refusal").length === 3 : tenantRefused, "the next checkpoint");
+    await until(() => limit === "end_user" ? endUserRefused : tenantRefused, "the next checkpoint refused");
     assert.deepEqual(f.openai.hangups, []);
-    push({ type: "response.done", response: { id: "next", status: "cancelled" } });
+    push({ type: "response.done", response: { id: "next", status: "completed", usage } });
     const event = await f.event("voice.session.ended", call.id);
+    assert.deepEqual(f.openai.hangups, ["call_1"]);
     assert.deepEqual([event.reason, event.limit], ["budget", limit]);
+    if (limit === "end_user") {
+      assert.equal(event.endUserReason, "balance");
+      assert.deepEqual(credit.log.filter(entry => entry[0] === "debit").map(entry => entry.slice(3, 5)), [
+        [f.usage[0].usage.cost.total, `voice_realtime:${call.id}:first`],
+        [f.usage[1].usage.cost.total, `voice_realtime:${call.id}:next`],
+      ]);
+    }
   });
 }
 
