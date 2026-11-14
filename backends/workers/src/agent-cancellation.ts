@@ -1,4 +1,4 @@
-import type { AgentInvocation } from "./agent-invocation.ts";
+import { AgentInvocation } from "./agent-invocation.ts";
 import { CANCELLABLE_METHODS } from "../../../shared/queue-mode.ts";
 import { type LiveState } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -156,21 +156,22 @@ export async function cancelRequestImpl(this: AgentRuntime, invocation: AgentInv
     return cancelled;
   }
 
-export function resumeCancellationImpl(this: AgentRuntime, invocation: AgentInvocation,
+export function resumeCancellationImpl(this: AgentRuntime, _invocation: AgentInvocation,
   record: RequestRecord) {
     if (this.cancellations.has(record.id)) return;
     this.cancellations.add(record.id);
     // A child tool may be waiting on its parent's admission queue. Acknowledge
     // the durable cancellation before draining tools or calling another object.
-    const work = (async () => {
-      await abortRequestWork.call(this, record);
-      if (record.method === "execute" && !record.accepted)
-        await this.cancelHostIntent(invocation, record);
-      else this.track(record.id);
-    })()
-      .catch(async () => {
+    const work = AgentInvocation.run(async invocation => {
+      try {
+        await abortRequestWork.call(this, record);
+        if (record.method === "execute" && !record.accepted)
+          await this.cancelHostIntent(invocation, record);
+        else this.track(record.id);
+      } catch {
         await this.arm(Date.now() + 1000, invocation);
-      })
+      }
+    })
       .finally(() => this.cancellations.delete(record.id));
     this.ctx.waitUntil(work);
   }
@@ -221,7 +222,7 @@ export async function cancelHostIntentImpl(this: AgentRuntime, invocation: Agent
     await this.ctx.storage.put(reqKey(record.id), completed);
     if (record.admitted) {
       const conf = await this.config();
-      await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
+      await releaseTurn(this.env, conf.tenantId, conf.id, record.id, invocation);
       await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
     }
     await this.emit({ type: "response", id: record.id, outcome: completed.outcome });
@@ -256,7 +257,7 @@ export async function startHostRequestImpl(this: AgentRuntime, invocation: Agent
     }
     if (!intent.accepted) {
       const conf = await this.config();
-      const { accounts } = await keyServices(this.env);
+      const { accounts } = await keyServices(this.env, invocation);
       const reads = invocation.tenant(accounts.billing, conf.tenantId);
       const limit = await accounts.runLimit(conf.tenantId, reads);
       if (limit) throw typeof limit === "string" ? Object.assign(new Error(limit), { status: 402, code: "SPEND_LIMIT" }) : limit;

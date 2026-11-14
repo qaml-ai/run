@@ -42,12 +42,13 @@ test("pre-read tenant policy and account skip SQL, with the same refusal as the 
 
 test("tenant reads join within an invocation and fresh balances bypass Billing's cache", async () => {
   const { billing, statements, fund } = fixture();
-  const invocation = new AgentInvocation();
-  assert.deepEqual(await Promise.all([
-    billing.mode("tenant", undefined, invocation.tenant(billing, "tenant")),
-    billing.mode("tenant", undefined, invocation.tenant(billing, "tenant")),
-  ]), ["prepaid", "prepaid"]);
-  await billing.mode("tenant", undefined, new AgentInvocation().tenant(billing, "tenant"));
+  await AgentInvocation.run(async invocation => {
+    assert.deepEqual(await Promise.all([
+      billing.mode("tenant", undefined, invocation.tenant(billing, "tenant")),
+      billing.mode("tenant", undefined, invocation.tenant(billing, "tenant")),
+    ]), ["prepaid", "prepaid"]);
+  });
+  await AgentInvocation.run(scope => billing.mode("tenant", undefined, scope.tenant(billing, "tenant")));
   assert.equal((await billing.account("tenant")).balance, 0);
   fund();
   assert.equal((await billing.readAccount("tenant")).balance, 1);

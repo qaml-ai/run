@@ -94,7 +94,8 @@ export class AgentRunLimits {
     this.current = current;
     this.billing = billing;
   }
-  async check(now = Date.now(), billing: boolean | "metered" = true, invocation = new AgentInvocation()) {
+  async check(now = Date.now(), billing: boolean | "metered" = true, invocation?: AgentInvocation): Promise<RuntimeLimit | undefined> {
+    if (!invocation) return AgentInvocation.run(scope => this.check(now, billing, scope));
     const { config, run, agentId, authoritative, childCost: readChildCost } = await this.current(invocation);
     if (!run.state || run.state === "completed") return;
     const snapshot = billing === false ? run.limitsSnapshot : undefined;
@@ -113,7 +114,8 @@ export class AgentRunLimits {
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;
   }
-  async deadline(invocation = new AgentInvocation()) {
+  async deadline(invocation?: AgentInvocation): Promise<number> {
+    if (!invocation) return AgentInvocation.run(scope => this.deadline(scope));
     const { config, run, authoritative } = await this.current(invocation);
     if (run.state !== "running" || run.began === undefined) return Infinity;
     const most = run.limitsSnapshot?.most ?? (await authoritative?.())?.most;
@@ -126,7 +128,7 @@ export class AgentRunLimits {
         hook(GenerationTask, {
           afterResponse: async (message, api, context) => {
             if (message.stopReason === "error" && !(message.usage as { billingAttemptId?: string }).billingAttemptId) return;
-            const { run } = await this.current(new AgentInvocation());
+            const { run } = await AgentInvocation.run(invocation => this.current(invocation));
             const key = `run-response:${run.id}:${api.taskId}:${message.timestamp}`;
             if (await this.storage.get(key)) return;
             await this.storage.transaction(async (tx) => {

@@ -8,10 +8,10 @@ import { senderInput } from './sender.ts';
 import { canonical } from '../../../shared/durable-json.ts';
 import type { AgentRuntime } from './agent-runtime.ts';
 
-export const decisionInputs = (agent: AgentRuntime) => new Inputs({ db: database(agent.env) });
+export const decisionInputs = (agent: AgentRuntime, invocation?: AgentInvocation) => new Inputs({ db: database(agent.env, invocation) });
 export async function deliverDecisions(agent: AgentRuntime, invocation: AgentInvocation, rows: InputRow[], admitted = false) {
   if (!rows.length) return [];
-  const conf = await agent.config(), store = decisionInputs(agent), requests = [];
+  const conf = await agent.config(), store = decisionInputs(agent, invocation), requests = [];
   for (const [id, pending] of await store.deliveries(conf.id)) {
     const submit = admitted ? agent.admit.bind(agent) : agent.submit.bind(agent);
     const result = await submit(invocation, { id, method: 'prompt', params: { text: decisionNotice(pending), allowDisconnected: true } }, {
@@ -23,7 +23,7 @@ export async function deliverDecisions(agent: AgentRuntime, invocation: AgentInv
   return requests;
 }
 export async function answerDecisions(agent: AgentRuntime, invocation: AgentInvocation, answers: { id: string; body: any }[], via: Responder['via']) {
-  const store = decisionInputs(agent), conf = await agent.config();
+  const store = decisionInputs(agent, invocation), conf = await agent.config();
   if (!answers.length || answers.length > 100 || new Set(answers.map(a => a.id)).size !== answers.length) throw new HttpError(400, 'Answer 1 to 100 different inputs');
   const checked: { input: InputRow; answer: Answer }[] = [];
   for (const entry of answers) {
@@ -43,7 +43,7 @@ export async function answerDecisions(agent: AgentRuntime, invocation: AgentInvo
   return { status: settled ? 202 : 200, inputs: rows.map(row => ({ ...inputView(row), question: row.message })), requests };
 }
 export async function expireDecisions(agent: AgentRuntime, invocation: AgentInvocation) {
-  const store = decisionInputs(agent), conf = await agent.config(), expired = [];
+  const store = decisionInputs(agent, invocation), conf = await agent.config(), expired = [];
   for (const row of await store.pending(conf.id)) if (row.blocking === false && row.expiresAt <= Date.now()) {
     const done = await store.settle(row.id, expiryAnswer(row), 'expired');
     if (done) expired.push(done);

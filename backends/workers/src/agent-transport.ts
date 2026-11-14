@@ -76,8 +76,10 @@ export async function emitImpl(this: AgentRuntime,
       if (cursor === undefined) return;
       // Outside this chain: the message is a prompt of the agent's own, which publishes events here.
       if (monitorOwes) {
-        const invocation = new AgentInvocation();
-        this.ctx.waitUntil(flushMonitors(this, invocation).then(() => this.arm(undefined, invocation)).catch(() => {}));
+        this.ctx.waitUntil(AgentInvocation.run(async invocation => {
+          await flushMonitors(this, invocation);
+          await this.arm(undefined, invocation);
+        }).catch(() => {}));
       }
       this.channels.observe(committed.owner, event as { type?: string; event?: { type?: string } }, committed.record && (event as { type?: string }).type === "response"
         ? { ...committed.record, outcome: (event as { outcome?: RequestRecord["outcome"] }).outcome ?? committed.record.outcome } : committed.record);

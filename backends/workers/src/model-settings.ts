@@ -57,8 +57,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
   const reasoning = new ReasoningDrop();
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {},
-    previous?: { context: TranscriptContext; toolChoice?: unknown }) => {
-    const invocation = new AgentInvocation();
+    previous?: { context: TranscriptContext; toolChoice?: unknown }) => AgentInvocation.run(async invocation => {
     const callKind = modelCallKind(context);
     await hooks.beforeRequest?.(invocation);
     const config = await hooks.settings?.() ?? {};
@@ -141,7 +140,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       },
     };
     return { model: credential?.baseUrl && !FETCH_APIS.includes(model.api) ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, selected, structured, transportError: () => transportError };
-  };
+  });
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
     void (async () => {

@@ -120,7 +120,7 @@ export class CamelAgent extends RuntimeAgent {
     if (new URL(request.url).pathname === "/__test/shared-prompt" && request.method === "POST") {
       const { member, ...params } = await request.json() as Record<string, unknown>;
       try {
-        const record = await testAgentRuntimes.get(this)!.submit(new AgentInvocation(), { id: crypto.randomUUID(), method: "prompt", params }, undefined, undefined, undefined, String(member));
+        const record = await AgentInvocation.run(scope => testAgentRuntimes.get(this)!.submit(scope, { id: crypto.randomUUID(), method: "prompt", params }, undefined, undefined, undefined, String(member)));
         return Response.json({ id: record.id, state: record.state }, { status: 202 });
       } catch (error) {
         return Response.json({ error: String((error as Error).message) }, { status: (error as { status?: number }).status ?? 500 });

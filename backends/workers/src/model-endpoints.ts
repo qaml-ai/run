@@ -12,7 +12,7 @@ export async function resolveModelCredentials(
   keyScope?: string,
   invocation?: AgentInvocation,
 ) {
-  const services = await keyServices(env);
+  const services = await keyServices(env, invocation);
   const endpoint = services.tenants.modelEndpoints(tenant)?.[provider];
   if (endpoint) return {
     apiKey: await signRuntimeIdentity(env, identity.issuer, endpoint.baseUrl, identity.claims),

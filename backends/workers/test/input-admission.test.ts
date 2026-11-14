@@ -55,7 +55,7 @@ function fixture() {
   }
   return { runtime, hold, read, values, calls, released, tracked, events, deadlines,
     fail: (run: typeof failure) => { failure = run; },
-    run: () => releaseInputPrompts(runtime as any, new AgentInvocation()),
+    run: () => AgentInvocation.run(scope => releaseInputPrompts(runtime as any, scope)),
   };
 }
 

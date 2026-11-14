@@ -26,7 +26,7 @@ export class ToolFiles {
   private left = TOOL_FILE_LIMITS.callBytes;
   private directory?: string;
   private names = new Set<string>();
-  constructor(private env: Env, private scope: Omit<Scope,'mounts'> & {mounts:Mount[]}, private invocation = new AgentInvocation()) {}
+  constructor(private env: Env, private scope: Omit<Scope,'mounts'> & {mounts:Mount[]}, private invocation?: AgentInvocation) {}
   private target(input: string) {
     if (this.scope.refuse) throw new Error(this.scope.refuse);
     const mounts = this.scope.mounts;
@@ -95,7 +95,8 @@ export class ToolFiles {
     const iterator = source instanceof Uint8Array ? (async function* () { yield source; })() : source[Symbol.asyncIterator]();
     const body = new ReadableStream<Uint8Array>({ async pull(controller) { const next = await iterator.next(); if (next.done) return controller.close(); size += next.value.byteLength; if (size > budget) { await iterator.return?.(); return controller.error(new Error(`it is larger than the ${budget} bytes the tool may still save`)); } controller.enqueue(next.value); }, async cancel() { await iterator.return?.(); } });
     const path = `${this.directory}/${unique}`;
-    const response = await handleAgentFileRequest(new Request('https://agent.invalid/files', { method: 'PUT', headers: { ...(contentType ? { 'Content-Type': contentType } : {}), 'x-camel-call': this.scope.call,...(this.scope.requestId?{'x-camel-run':this.scope.requestId}:{}) }, body }), this.env, this.scope.tenant, this.scope.agent, path, this.scope.mounts, "turn", undefined, undefined, this.invocation);
+    const write = (invocation: AgentInvocation) => handleAgentFileRequest(new Request('https://agent.invalid/files', { method: 'PUT', headers: { ...(contentType ? { 'Content-Type': contentType } : {}), 'x-camel-call': this.scope.call,...(this.scope.requestId?{'x-camel-run':this.scope.requestId}:{}) }, body }), this.env, this.scope.tenant, this.scope.agent, path, this.scope.mounts, "turn", undefined, undefined, invocation);
+    const response = await (this.invocation ? write(this.invocation) : AgentInvocation.run(write));
     const saved = await response.json() as any;
     if (!response.ok) throw new Error(saved.error ?? 'Tool output could not be saved');
     this.left -= saved.size; if (this.scope.budget) this.scope.budget.left -= saved.size;

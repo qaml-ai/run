@@ -2,7 +2,7 @@ import { bashEnabled } from "./camelfs/bash.ts";
 import { drainRepoMoves, repoMoveDeadline } from "./camelfs/notify.ts";
 import { deliverRepoMoves } from "./repos/notify.ts";
 import type { RepoEnv } from "./repos/registry.ts";
-import type { AgentInvocation } from "./agent-invocation.ts";
+import { AgentInvocation } from "./agent-invocation.ts";
 export { configImpl } from './agent-config.ts';
 import { ChildOutbox, deletedDeadline, settleDeleted } from "./ending-outbox.ts";
 import { goneStart, stageMissedEndings } from "./agent-endings.ts";
@@ -129,7 +129,7 @@ export async function armImpl(this: AgentRuntime, invocation: AgentInvocation,
       config?.expiresAt ?? Infinity,
       config
         ? ((await new ComputerService(this.env, config.tenantId).nextDeadline(
-            config.id,
+            config.id, invocation,
           )) ?? Infinity)
         : Infinity,
       ...[...schedules.values()].map((item) => item.monitor ? monitorDeadline(item) : item.retryAt ?? item.dueAt),
@@ -231,7 +231,7 @@ export async function restorePendingImpl(this: AgentRuntime, invocation: AgentIn
         .size ||
       (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 })).size
     )
-      this.ctx.waitUntil(this.flushBilling(invocation));
+      this.ctx.waitUntil(AgentInvocation.run(scope => this.flushBilling(scope)));
     // The Pi commit precedes stream emission. A crash in between leaves no outbox row.
     // Re-stage retained inputs, including settled ones, before flushing on every start.
     const mirrorConfig = await this.ctx.storage.get<Config>("configuration");

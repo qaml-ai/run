@@ -72,6 +72,7 @@ async function recordAudio(
   env: Env,
   services: KeyServices,
   { scope, usage }: Receipt,
+  invocation?: AgentInvocation,
 ) {
   await transaction(env, async (sql) => {
     if (
@@ -93,9 +94,9 @@ async function recordAudio(
         ...(scope.actor ? { actor: scope.actor } : {}),
         ...(scope.keyScope ? { keyScope: scope.keyScope } : {}),
       });
-  });
+  }, {}, invocation);
   await services.accounts.usageCommitted(scope.tenant);
-  await publishPending(env);
+  await publishPending(env, invocation);
 }
 
 /** A known transcript and its charge survive a failed Postgres acknowledgement. */
@@ -104,17 +105,18 @@ export async function flushAttachmentTranscriptions(
   storage: DurableObjectStorage,
   record?: Host["record"],
   credits?: CreditService,
+  invocation?: AgentInvocation,
 ) {
   const receipts = await storage.list<Receipt>({
     prefix: "transcription-billing:",
   });
   if (!receipts.size) return;
-  const services = record ? undefined : await keyServices(env);
+  const services = record ? undefined : await keyServices(env, invocation);
   for (const [key, receipt] of receipts) {
     if (record) await record(receipt);
-    else await recordAudio(env, services!, receipt);
+    else await recordAudio(env, services!, receipt, invocation);
     if (receipt.hold) {
-      const credit = credits ?? new EndUserCredits(database(env));
+      const credit = credits ?? new EndUserCredits(database(env, invocation));
       const { id, endUser, bucket } = receipt.hold;
       await credit.settleHold(
         receipt.scope.tenant,
@@ -150,11 +152,11 @@ export async function transcribeAttachments(
       : [],
   );
   if (!chosen.length) return plain;
-  await flushAttachmentTranscriptions(env, storage, host.record, host.credits);
+  await flushAttachmentTranscriptions(env, storage, host.record, host.credits, invocation);
   const services =
     host.transcriber && host.record && host.admit && host.budget
       ? undefined
-      : await keyServices(env);
+      : await keyServices(env, invocation);
   const media =
     host.transcriber && host.admit ? undefined : await import("./media-api.ts");
   const transcriber =
@@ -286,13 +288,13 @@ export async function transcribeAttachments(
     : Math.min(
         scope.budget ?? Infinity,
         remainingAgentSpend(
-          await readAgentSpendLimit(env, scope.tenant, scope.agent),
+          await readAgentSpendLimit(env, scope.tenant, scope.agent, {}, invocation),
         ),
         scope.spendLimit === undefined
           ? Infinity
           : scope.spendLimit -
               (await withSql(env, (sql) =>
-                runSpend(sql, scope.tenant, scope.agent, scope.requestId),
+                runSpend(sql, scope.tenant, scope.agent, scope.requestId), invocation,
               )),
       );
   const estimate = audio.reduce(
@@ -307,7 +309,7 @@ export async function transcribeAttachments(
     );
   const credits =
     host.credits ??
-    (scope.identity?.subject ? new EndUserCredits(database(env)) : undefined);
+    (scope.identity?.subject ? new EndUserCredits(database(env, invocation)) : undefined);
   const holds = new Map<number, CreditReservation>();
   try {
     // Reserve every file before sending any. The deterministic IDs survive a
@@ -352,7 +354,7 @@ export async function transcribeAttachments(
       try {
         if (host.admit) await host.admit();
         else {
-          await admitAuxiliaryUsage(env, scope);
+          await admitAuxiliaryUsage(env, scope, false, undefined, invocation);
         }
         const bytes = await read(files[index]);
         await storage.put(cacheKey, { fingerprint, state: "pending" });
@@ -394,7 +396,7 @@ export async function transcribeAttachments(
         holds.delete(index);
         plain[index] = { ...plain[index], transcript: made.transcript };
         // Leave a receipt in place if settling fails. A retry reuses its transcript.
-        await flushAttachmentTranscriptions(env, storage, host.record, credits);
+        await flushAttachmentTranscriptions(env, storage, host.record, credits, invocation);
       } catch (error) {
         if (plain[index].transcript) throw error;
         failed(index, error);

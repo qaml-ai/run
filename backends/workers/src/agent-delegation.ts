@@ -53,7 +53,7 @@ export async function receiveEndingImpl(this: AgentRuntime,
     this.invalidateMaintenance();
     const receipt = await this.delegation.receiveEnding(ending);
     // The ending may owe a notification, or free a slot a start waits on: plan the next wake.
-    this.ctx.waitUntil(this.arm(undefined, invocation).catch(() => {}));
+    this.ctx.waitUntil(this.arm().catch(() => {}));
     return receipt;
   }
 
@@ -237,7 +237,7 @@ export function createDelegation(this: AgentRuntime): Delegation {
     },
     emit: (event) => this.emit(event),
     waitUntil: (promise) => this.ctx.waitUntil(promise),
-    notify: (child) => this.notifications.deliver(child, new AgentInvocation()),
+    notify: (child) => AgentInvocation.run(invocation => this.notifications.deliver(child, invocation)),
     sendMessage: (id, request, notice) =>
       this.env.AGENTS.getByName(id).receiveAgentMessage(request, notice),
     reportProgress: (owner, report) => this.outbox.report(owner, report),

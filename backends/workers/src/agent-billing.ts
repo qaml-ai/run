@@ -32,22 +32,22 @@ export function createLimits(this: AgentRuntime): AgentRunLimits {
       agentId: conf.id,
       childCost: () => this.delegation.cost(run.id),
       authoritative: async () => ({
-        spend: await this.agentSpend(conf),
+        spend: await this.agentSpend(conf, undefined, invocation),
         most: await tenantRunCaps(this.env, conf.tenantId, invocation),
       }),
     };
   }, async invocation => {
     const conf = await this.config(), run = await this.currentRun();
-    const { accounts } = await keyServices(this.env);
+    const { accounts } = await keyServices(this.env, invocation);
     const refusal = await accounts.runLimit(conf.tenantId, invocation.tenant(accounts.billing, conf.tenantId));
     if (typeof refusal === "string") return { error: refusal, code: "spend_limit", stopped: "spend_limit", limit: "tenant" };
-    return billingRunStop(refusal ?? await this.endUserLimit(conf, "params" in run ? run.params?.bucket as string | undefined : undefined, "params" in run ? run.params?.endUser as string | undefined : undefined));
+    return billingRunStop(refusal ?? await this.endUserLimit(conf, "params" in run ? run.params?.bucket as string | undefined : undefined, "params" in run ? run.params?.endUser as string | undefined : undefined, invocation));
   });
 }
 
 export async function agentSpendImpl(this: AgentRuntime,
-  conf: Config, requestId?: string) {
-    const spend = await readAgentSpendLimit(this.env, conf.tenantId, conf.id, { includeRevoked: this.shuttingDown });
+  conf: Config, requestId?: string, invocation?: AgentInvocation) {
+    const spend = await readAgentSpendLimit(this.env, conf.tenantId, conf.id, { includeRevoked: this.shuttingDown }, invocation);
     if (!spend) return null;
     const { total, forRequest } = await this.delegation.spendSince(spend.setAt, requestId);
     return { ...spend, spent: spend.spent + total, childCostAtAdmission: forRequest };
@@ -60,7 +60,7 @@ export async function admitRequestImpl(this: AgentRuntime,
   bucket?: string, endUser?: string): Promise<RunLimitsSnapshot> {
     let acquired = false;
     try {
-      const { accounts } = await keyServices(this.env);
+      const { accounts } = await keyServices(this.env, invocation);
       const tenant = conf.tenantId;
       const policy = invocation.tenant(accounts.billing, tenant);
       let balance: Promise<Account> | undefined;
@@ -68,7 +68,7 @@ export async function admitRequestImpl(this: AgentRuntime,
       // A monitor's check takes none of the tenant's runs per minute.
       const rate = checkRequest(id) ? undefined : await runAdmission(this.env, tenant, true, { accounts, reads: policy });
       if (rate) this.runRates.set(id, rate);
-      const spend = await this.agentSpend(conf, id);
+      const spend = await this.agentSpend(conf, id, invocation);
       const refusal = agentSpendRefusal(conf.id, spend);
       if (refusal)
         throw Object.assign(new Error(refusal.error), {
@@ -98,7 +98,7 @@ export async function admitRequestImpl(this: AgentRuntime,
           status: 429,
           code: "BUSY_AGENT_LIMIT",
         });
-      await dbPhase("hold", () => reserveTurn(this.env, conf.tenantId, conf.id, id));
+      await dbPhase("hold", () => reserveTurn(this.env, conf.tenantId, conf.id, id, undefined, undefined, invocation));
       if (!spend) return { spend: null, childCostAtAdmission: 0, most };
       const { childCostAtAdmission, ...counter } = spend;
       return { spend: counter, childCostAtAdmission, most };
@@ -115,9 +115,9 @@ export async function admitRequestImpl(this: AgentRuntime,
 
 export async function endUserLimitImpl(this: AgentRuntime,
   conf: Config,
-  bucket?: string, endUser?: string) {
+  bucket?: string, endUser?: string, invocation?: AgentInvocation) {
     if (!(endUser ?? conf.config.subject) || conf.resolvedModel?.api === "openai-codex-responses") return;
-    const { accounts } = await keyServices(this.env);
+    const { accounts } = await keyServices(this.env, invocation);
     const refusal = await new EndUserCredits(accounts.db).refusal(
       conf.tenantId, (endUser ?? conf.config.subject)!,
       bucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
@@ -163,12 +163,12 @@ export function usageViewImpl(this: AgentRuntime,
   }
 
 export async function usageForRequestImpl(this: AgentRuntime,
-  id: string) {
+  id: string, invocation?: AgentInvocation) {
     const pi = await this.harness.pi(),
       root = await pi.root(BACKGROUND_CONTEXT);
     const conf = await this.config();
     const [auxiliary, subagentCostUsd] = await Promise.all([
-      auxiliaryRunCosts(this.env, conf.tenantId, conf.id, id),
+      auxiliaryRunCosts(this.env, conf.tenantId, conf.id, id, invocation),
       this.delegation.cost(id),
     ]);
     const children = new Map((await this.delegation.children()).filter(child => child.parentRequestId === id).map(child => [child.callId ?? child.toolCallId, child.id]));
@@ -254,8 +254,8 @@ export async function flushBillingImpl(this: AgentRuntime,
 
 async function flushBillingPass(this: AgentRuntime, propagate: boolean, invocation: AgentInvocation) {
     try {
-      await flushAttachmentTranscriptions(this.env, this.ctx.storage);
-      await flushAgentMediaUsage(this.env, this.ctx.storage);
+      await flushAttachmentTranscriptions(this.env, this.ctx.storage, undefined, undefined, invocation);
+      await flushAgentMediaUsage(this.env, this.ctx.storage, undefined, invocation);
     } catch (error) {
       await this.arm(Date.now() + 1000, invocation);
       if (propagate) throw error;
@@ -264,7 +264,7 @@ async function flushBillingPass(this: AgentRuntime, propagate: boolean, invocati
       prefix: "model-billing:",
     })) {
       try {
-        await this.dbProfile.run("settle", () => applyModelReceipt(this.env, receipt));
+        await this.dbProfile.run("settle", () => applyModelReceipt(this.env, receipt, invocation));
         await this.ctx.storage.delete(key);
       } catch (error) {
         await this.arm(Date.now() + 1000, invocation);

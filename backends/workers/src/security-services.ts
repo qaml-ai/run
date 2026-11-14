@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import type { BillingReads } from "./billing.ts";
 import { Accounts } from "./accounts.ts";
 import { chargesPlatform } from "../../../src/core/key-source.ts";
@@ -49,8 +50,8 @@ export async function createTenants(env: Pick<SecurityEnv, "AGENT_TENANTS_JSON" 
   return tenants;
 }
 /** Request-scoped services keep connections and cached credentials out of global isolate state. */
-export async function keyServices(env: SecurityEnv) {
-  const tenants = await createTenants(env), db = database(env);
+export async function keyServices(env: SecurityEnv, invocation?: AgentInvocation) {
+  const tenants = await createTenants(env), db = database(env, invocation);
   const positive = (name: "AGENT_MAX_AGENTS" | "AGENT_MAX_AGENTS_PER_TENANT", fallback: number) => {
     const value = Number(env[name] ?? fallback);
     if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
