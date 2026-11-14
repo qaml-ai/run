@@ -146,7 +146,7 @@ function relayLateReply(event: WebhookEvent) {
 | `bucket` | The subject's credit bucket |
 | `context` | Your claims in the `usage.recorded` context |
 | `keyScope` | The key scope used to look up the provider key |
-| `maxMinutes` | Time before the call expires. OpenAI defaults to 240 minutes, up to 720. For ElevenLabs, the minimum request is 5 minutes and the default and cap are 30. The answer's `maxMinutes` gives the selected bucket (5, 10, 15 or 30 minutes), which also caps the ElevenLabs agent's duration |
+| `maxMinutes` | Time before the call expires. OpenAI defaults to 240 minutes, up to 720. ElevenLabs defaults to 30 and caps at 30: its agent always ends a conversation at 30 minutes, and a smaller `maxMinutes` only sets when camelRun ends its own record of the call |
 | `metadata` | Up to 4 KB of JSON, returned with the call and included in its webhooks |
 | `speakers` | A map of speaker IDs to display names. Update it with `voice.update`. For OpenAI, send the speaker notes over the data channel |
 | `sdp` | The WebRTC offer SDP, required for OpenAI, up to 64 KB |
@@ -165,10 +165,10 @@ When a request is refused, check the HTTP status and error code.
 ### Billing
 
 - OpenAI bills per-response tokens at `REALTIME_PRICES`, with a $0.05 hold per response when end-user credits are on.
-- For ElevenLabs, camelRun tries the duration buckets at or below `maxMinutes`, largest first, and holds the full cost
-  of the first bucket the subject's credit covers. If the credit covers less than 5 minutes, the call is refused with
-  402 `END_USER_CREDIT`. With end-user credits off, camelRun rounds `maxMinutes` down to the nearest bucket.
-  camelRun settles from the post-call report or at the deadline 15 minutes after the call ends if the report is missing.
+- ElevenLabs bills by the minute, after the call: nothing is held up front. A call starts when the payer has something
+  left (the subject with end-user credits on, else the account), and its minutes are charged from the post-call report
+  (or, when ElevenLabs sends none within 15 minutes of the end, from the conversation's duration as ElevenLabs reports
+  it, else the elapsed time). The charge may take a balance below zero; the next call is then refused.
 - `ask_agent` is billed like any agent run under the call's subject and bucket.
 
 ### Limitations
