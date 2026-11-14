@@ -1,6 +1,7 @@
 import { LegacyToolFiles, serveLegacyToolFile } from "./legacy-tool-files.ts";
 import { agentStore, insideRepo } from "./repos/agent-store.ts";
-import { repoContext, versionEntries, type RepoEnv } from "./repos/registry.ts";
+import { repoContext, type RepoEnv } from "./repos/registry.ts";
+import { versionEntries } from "./repos/reads.ts";
 import { readAttachment } from "./repos/attachments.ts";
 import { Buffer } from 'node:buffer';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
@@ -48,7 +49,7 @@ class RepoToolFiles {
     return { ...target, entry, name: nameOf(target.path), size: entry.size, contentType: entry.contentType };
   }
   private async bytes(file: Awaited<ReturnType<RepoToolFiles['open']>>) {
-    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo), v=await ctx.stub.resolve(file.entry.version);
+    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo), v=await ctx.repo.resolve(file.entry.version);
     return Buffer.from(await ctx.storage.readBlob(ctx.lineage,file.entry.blob,v.tree,insideRepo(file.path)));
   }
   async read(path: string) {
@@ -68,7 +69,7 @@ class RepoToolFiles {
       if (!entries.length) throw new Error(`${target.shown} does not exist`);
       if (entries.length > TOOL_FILE_LIMITS.directoryFiles || entries.reduce((sum, file) => sum + file.size, 0) > TOOL_FILE_LIMITS.directoryBytes)
         throw new Error(`a directory sent to a tool has at most ${TOOL_FILE_LIMITS.directoryFiles} files and ${TOOL_FILE_LIMITS.directoryBytes} bytes`);
-      const head=await v.ctx.stub.resolve(entries[0].version);
+      const head=await v.ctx.repo.resolve(entries[0].version);
       return {uri:await this.signed({repo:target.mount.repo,path:insideRepo(target.path),agentPath:target.shown,kind:'archive',version:head.version},`${nameOf(target.shown)}.tar.gz`)};
     }
     const file = await this.open(path);
@@ -104,7 +105,7 @@ class RepoToolFiles {
   async bodyFile(input: unknown) {
     if (!isFileArgument(input)) throw new Error('A binary request body needs {$file: path}');
     const file = await this.open(input.$file);
-    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo), v=await ctx.stub.resolve(file.entry.version);
+    const ctx=await repoContext(this.env as RepoEnv,this.scope.tenant,file.mount.repo), v=await ctx.repo.resolve(file.entry.version);
     const response=await ctx.storage.openBlob(ctx.lineage,file.entry.blob,v.tree,insideRepo(file.path));
     return {...file,stream:response.body!};
   }
@@ -122,8 +123,8 @@ export async function serveToolFile(request: Request, env: Env): Promise<Respons
   const grant = await (await runtimeSigner(env, url.origin)).verifyFileToken(match[1]);
   // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
   if('volume' in grant)return serveLegacyToolFile(request,env);
-  const ctx=await repoContext(env as RepoEnv,grant.tenant,grant.repo), v=await ctx.stub.resolve(grant.version);
-  const entries=(await versionEntries(ctx,v.version,v.tree)).filter(e=>!grant.path||e.path===grant.path||e.path.startsWith(grant.path+'/'));
+  const ctx=await repoContext(env as RepoEnv,grant.tenant,grant.repo), v=await ctx.repo.resolve(grant.version);
+  const entries=(await versionEntries(ctx,v.tree)).filter(e=>!grant.path||e.path===grant.path||e.path.startsWith(grant.path+'/'));
   if(grant.kind==='archive') {
     const archive=tar(entries.map(file=>({name:relative(file.path,grant.path),size:file.size,mtime:0,async *stream(){yield await ctx.storage.readBlob(ctx.lineage,file.blob,v.tree,file.path);}})));
     const body=new ReadableStream<Uint8Array>({async pull(c){const n=await archive.next();if(n.done)c.close();else c.enqueue(new Uint8Array(n.value));},async cancel(){await archive.return(undefined);}}).pipeThrough(new CompressionStream('gzip'));
