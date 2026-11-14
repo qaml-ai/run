@@ -100,6 +100,6 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   /** A camel-fs notify delivery for a watched repo (an idempotent outbox row). */
-  vmEnded(delivery: string, vm: string) { this.#runtime.bashSessions.ended(delivery, vm); }
+  vmEnded(delivery: string, vm: string) { return this.#runtime.vmEnded(delivery, vm); }
   stageRepoMove(move: RefMove) { return this.#runtime.stageRepoMove(move); }
 }

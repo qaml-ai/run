@@ -432,6 +432,7 @@ export class AgentRuntime extends AgentContext {
 
   /** A notify delivery for a repo this agent watches: an idempotent outbox row, drained by the alarm. */
   stageRepoMove(move: RefMove) { return stageRepoMove(this.ctx.storage, move); }
+  vmEnded(delivery: string, vm: string) { return this.bashSessions.ended(delivery, vm); }
 
   removeMember(member: string) {
     return removeMemberImpl.call(this, member);
