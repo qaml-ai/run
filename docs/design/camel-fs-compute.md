@@ -61,28 +61,35 @@ That is L15's v1 fix, and compute makes it a prerequisite rather than a wish (§
 suite, attested enrollment (`shared/job-host-attest.ts`), and the guest vsock protocol for checkpoint and apply
 (`camelfs-wire.ts` ported, byte-compatible).
 
-## 2. The compute API: a VM on a ref
+## 2. The compute API: a VM on a ref (sessions only)
 
-One resource, the **VM**, always attached to a ref. It serves both shapes: `job()` (one-shot: boot, run, checkpoint
-if asked, destroy) and the `bash` VM / computer (a session: boot, many `exec`s and checkpoints, idle stop).
-Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md §9.10).
+**Decided (Miguel, 2026-11-14): one `bash` tool, one VM per agent per branch, no jobs.** Agents get one `bash` tool,
+backed by a VM that starts on the agent's first call and lives on that agent's branch (§6). The job interface goes:
+there is no `job()` in workflows and no `job_run` agent tool. Parallel compute comes from child agents, each with
+its own `bash` VM on its own branch. QuickJS code mode stays for small scripts that need no VM.
+
+So the VM has one shape, a **session**: it boots, runs many `exec`s, checkpoints, and stops when idle. Every route
+is on the camel-fs service and carries a `camelfs+jwt` token (camel-fs-files.md §9.10).
 
 | route | semantics |
 |---|---|
-| `POST /v1/vms` `{ id, lineage, ref, version?, mode: "job" \| "session", image, shape: { vcpus, memoryMiB, diskGiB }, pool, job?: { command, timeoutS, env, outputs, commit }, session?: { idleStopS }, network, usage: { payer }, deadline }` | idempotent by `id` (the runtime's job id or computer id). It takes the lease on `ref` (§9.9; `job/<id>` branches are created by the caller first; the tier takes it just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/repo` or `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase. `deadline` is the credit lease of §4 |
+| `POST /v1/vms` `{ id, lineage, ref, version?, image, shape: { vcpus, memoryMiB, diskGiB }, pool, idleStopS, network, usage: { payer }, deadline }` | idempotent by `id` (the runtime's id for this agent's VM on this branch). It takes the lease on `ref` (§9.9; the tier takes it just before it writes `booting`, with the holder `<host>:<bootEpoch>:<vm id>`), places the VM (the tier, §3), mounts `version` (default: the ref's head) as `/workspace`, and boots. → `202 { id, phase }`. A second call with the same `id` returns the same VM at any phase. `deadline` is the credit lease of §4 |
 | `POST /v1/vms/{id}/deadline` `{ deadline }` | extends the credit lease (runtime tokens only). Monotonic: a deadline earlier than the current one is refused, never applied. **A lapsed lease is final**: a call made at or after the current deadline (`now ≥ deadline`) answers `409 lease_expired` and never revives it (§4) |
-| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, exit?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended`. Ended codes: `exit`, `stopped`, `timeout`, `host_lost`, `start_failed`, `lease_expired` (§4) (admission is the runtime's, before `POST /v1/vms`, so it is never an ended code) |
-| `GET /v1/vms/{id}/result` | the full result body (`acc: r` on the VM's lineage): `{ exit, timedOut, stdout, stderr, outputs, version?, checkpointError?, timings }`, up to ≈ 33 MiB (the guest's 8 + 8 + 8 MiB stream and output limits, plus base64). **The host writes it** (reversing #972, approved by the lead 2026-11-14): it PUTs the full result JSON to `results/<lineage>/<vm id>`, then reports in-VPC `ended { code, exit, timedOut, version?, checkpointError?, resultKey, resultSha256, resultBytes }`. The tier checks that `resultKey` is exactly `results/<the VM's lineage>/<the VM's id>`, HEADs the object and checks its size, then records the sha in the same `TransactWriteItems` that commits `ended`, the host's `free`/`vms`, the `vm.ended` delivery and the final `usage.vm`. This route streams the object and verifies `resultSha256` as it goes, with a loud `500` on a mismatch, never a silent body. A 7-day prefix lifecycle rule on `results/` expires them (no tags; fs-infra #1003), and a read after expiry is a loud `404`. The key is prefix-first so one rule covers every result; the tier's exact-key check keeps each result scoped to its VM's lineage. The `vms` row and `vm.ended` never carry the body (DynamoDB's 400 KB item limit, L93) |
-| `POST /v1/vms/{id}/exec` `{ command, shell?, timeoutS, env?, stdin? }` | runs a command. Output streams as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`); a client that drops the stream can re-read the tail with `GET …/exec/{execId}`. `shell` names a persistent shell from `POST /v1/vms/{id}/shells` (cwd, env and shell state survive between calls: the `bash` tool's semantics). A `job`-mode VM runs its `job.command` once by itself and refuses `exec` |
-| `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the in-VPC `cas` on the VM's ref under its lease (§9.7, §9.9). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved. This is the per-turn checkpoint of the `bash` VM |
-| `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. A `session` stops by itself after `idleStopS` with no `exec`, with a checkpoint first; memory-snapshot sleep (§1.5) is a later addition behind the same call |
-| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, exit, timedOut, resultKey, resultSha256, resultBytes, version?, checkpointError? }` (on the notify webhook with `type: "vm.ended"`, camel-fs-files.md §9.11) (the body is read with `GET …/result`), `usage.vm` (§4). Delivered at least once as signed webhooks into outbox rows (camel-fs-files.md §9.11's pipeline) |
+| `GET /v1/vms/{id}` | `{ id, phase, host, ref, version, lease: { epoch, deadline }, startedAt?, endedAt?, lastCheckpoint?: { version, tree, at } }`. Phases: `requested → placed → booting → running → stopping → ended`. Ended codes: `stopped` (a requested stop), `idle` (the idle stop), `host_lost`, `start_failed`, `lease_expired` (§4). Admission is the runtime's, before `POST /v1/vms`, so it is never an ended code |
+| `POST /v1/vms/{id}/shells` → `{ shell }` | a persistent shell: cwd, environment and shell state survive between `exec`s, which are the `bash` tool's semantics |
+| `POST /v1/vms/{id}/exec` `{ command, shell, cwd?, timeoutS, env?, stdin? }` | runs one command in the shell. Output streams live as `text/event-stream` (`stdout`, `stderr`, then `exit { code, timedOut, ms }`). The host keeps a bounded tail per exec (the last 1 MiB of stdout and stderr, plus the exit) in memory until the next `exec` on that shell or the VM stops. A client whose stream dropped re-reads it with `GET …/exec/{execId}`. Nothing is written to S3 or a table for an exec |
+| `POST /v1/vms/{id}/checkpoint` `{ message, trailers, time }` | the camel-fs.md §1.3 checkpoint plus the host's in-VPC `cas` on the VM's ref under its lease (camel-fs-files.md §9.7). → `{ version, tree, diff }`. Synchronous: the guest's index commits only after the ref moved |
+| `POST /v1/vms/{id}/stop` `{ checkpoint: true \| false }` | durable: records `stopRequested` before acting, so it reaches the host after any restart of anything (wf-durable's F1). Idempotent. The VM also stops by itself after `idleStopS` with no `exec`, with a checkpoint first. Memory-snapshot sleep (§1.5) is a later addition behind the same call |
+| events (§3, §4) | `vm.started`, `vm.checkpointed { version, tree }`, `vm.ended { code, version?, checkpointError? }` (on the notify webhook with `type: "vm.ended"`, camel-fs-files.md §9.11), `usage.vm` (§4) |
 
-**Mapping:**
-- `job({ at, commit })` is `POST /v1/vms` in `job` mode, followed by `vm.ended`.
-- The `bash` tool is `POST /v1/vms` in `session` mode on the agent's workspace ref (once, on demand), then `exec`
-  per tool call with one persistent shell, `checkpoint` per turn that wrote, and the idle stop.
-- A computer is a `session` with a longer idle stop. Its sleep becomes snapshot and restore later.
+**What the session-only shape removes from this API:**
+- job mode (`mode`, `job: { command, timeoutS, env, outputs, commit }`);
+- the job's own timeout and the `exit` and `timeout` ended codes;
+- `GET /v1/vms/{id}/result`, the host's result PUT, and the `results/<lineage>/<vm id>` objects with their
+  lifecycle rule (L93's result half and L102 go with them);
+- `resultKey`, `resultSha256` and `resultBytes` on `ended` and `vm.ended`.
+
+The deadline lease, the usage stream (§4), the host CAS route, mTLS and the guest image policy are unchanged.
 
 **Guest images** (the policy, decided 2026-11-14; K1 built the image):
 - **The allowed set lives only in the tier's config:** a list of guest-image sha256s, each published
@@ -99,7 +106,7 @@ Every route is on the camel-fs service and carries a `camelfs+jwt` token (camel-
      else `500` (a corrupt manifest, never the caller's fault);
   3. the disk is at least the image's bytes, else `400 invalid_request` naming both sizes;
   4. `deadline` is in `(now, now + 24 h]`, else `400 invalid_request`;
-  5. `mode`, `job` and `session` are coherent (a `job` mode has `job`, a `session` mode has `session`), else
+  5. `idleStopS` is within its bounds (§6), else
      `400 invalid_request`.
 
   The host's own disk guard (L100, #979) stays as the last line.
@@ -114,12 +121,12 @@ deserves its own access letter (`x`) is a C2-era detail; the default is `w`.
 **Decided (Miguel, 2026-11-13 ~17:20): option (ii).** VM control lives in the camel-fs service, durable in
 DynamoDB. That covers placement, dispatch, durable job and VM state, host authority ("is it still running"), stop,
 and the metering events. The runtime keeps billing, from the usage events it pulls from camel-fs (§4), and agent
-semantics. `HostJob` becomes a thin client of the compute API.
+semantics. Under §6 the agent's own object is the compute API's only runtime client (no `HostJob`).
 
 **Owners:**
 - **wf-durable** owns the Go compute control (K4). Its approved durable-jobs design is the input: phases written
   before acting, host authority, outbox delivery, no load-bearing memory.
-- **wf-durable** also owns the runtime side of K5: the small `HostJob` row, admission (balance > 0, no holds), settlement,
+- **wf-durable** also owns the runtime side of K5: the agent's VM row (§6), admission (balance > 0, no holds), settlement,
   and the durable landing of camel-fs results as outbox rows. Its earlier PR (2)/(3) work folds into that,
   smaller.
 - **proto-block** owns the host-agent merge (§1) and K1–K3.
@@ -150,9 +157,8 @@ receive work over the VPC.
 
 **The runtime keeps:**
 - **admission**: the balance check before `POST /v1/vms` (balance > 0, in Postgres; no hold or reservation, §4);
-- **the agent and workflow meaning of a job**: `HostJob` shrinks to a small durable row (admitted → requested →
-  ended) that calls `POST /v1/vms` with the job id and lands `vm.ended` from its outbox through the same `jobEnded`
-  path;
+- **the agent's meaning of its VM** (§6, superseding the job row described here first): the agent's object keeps
+  one row per branch, calls `POST /v1/vms`, and lands `vm.ended` from its outbox;
 - **settlement** from the `usage.vm` events it pulls (§4), and extending each VM's credit deadline.
 
 `JobHost`, `JobHostRegistry`, the host WebSocket, `shared/job-host-protocol.ts` and the runtime's enrollment route
@@ -243,10 +249,10 @@ swap) and C4 (hosts do the CAS in-VPC, notify, `RepoDO` deleted). Compute slots 
 | K2b | **proto-block**: the egress proxy in Go | K2a, C3 | |
 | K2c | **proto-block**: the hostwire host side (#1016), and **only hostwire**: there is no Go port of today's runtime WebSocket, and the TypeScript `jobhost` keeps serving the pilot until K5 cuts over. It covers mTLS terminated in the Go server verifying `spiffe://camelfs/tier` (camel-fs-files.md §9.12), results to `results/<lineage>/<vm id>`, a persistent `vms` table with re-adoption on restart (L15's state half, L16), and the deletion of the `camelfs-host+jwt` code and of L101's host image pin. Tested end to end against K4c's tier | K2b, K4c | |
 | K2d | **proto-block**: ublk with user recovery (L15's restart-is-a-stall half), measured on the host before it is committed to | K2c | |
-| K3 | **proto-block**: periodic checkpoints for long jobs on the §1.3 cadence, and the synchronous checkpoint for sessions | K2c, C4 (the in-VPC `cas`) | L45 |
+| K3 | **proto-block**: the synchronous checkpoint for sessions (per `bash` call that changed the tree, §6) | K2c, C4 (the in-VPC `cas`) | L45 obsolete |
 | K4 | **wf-durable**: the compute API (§2) and control in Go on the tier: `hosts`/`vms` on DynamoDB, phases, placement, host channel in-VPC, reconcile, host-lost sweep, `vm.*` hints; K4b the `usage` table and the deadline lease; K4d `GET /v1/usage` | C1, C2 | — |
-| K5 | **wf-durable**: the runtime side: the small `HostJob` row, admission (balance > 0, no holds), the leased usage poller and settlement from pulled `usage.*` events, deadline extension, durable landing of `vm.*` events as outbox rows; `JobHost`, the registry and the WebSocket deleted | K4, C3 | — |
-| K6 | `bash` VM sessions in the runtime (owner named when K5 lands): `exec` with the persistent shell, per-turn checkpoint, idle stop; memory-snapshot sleep after | K5 | — |
+| K5 | **wf-durable**: the runtime side: the agent's VM row (§6), admission (balance > 0, no holds), the leased usage poller and settlement from pulled `usage.*` events, deadline extension, durable landing of `vm.*` events as outbox rows; `JobHost`, the registry and the WebSocket deleted | K4, C3 | — |
+| K6 | the `bash` tool in the runtime (§6): one VM per agent per branch, `exec` with the persistent shell, a checkpoint per call that changed the tree, file tools routed into a live VM, idle stop; the job and computer deletions; memory-snapshot sleep after | K5 | owner named when K5 lands |
 
 **Order** (the lead, 2026-11-14, option B): K2a now, then C3 (when wf-repos' R2 lands), then K2b → K2c → K2d.
 K4 starts after C2. Storage stays independent of all of K: a deployment without
@@ -261,7 +267,87 @@ K4 starts after C2. Storage stays independent of all of K: a deployment without
 | L32 placement is not feature- or lineage-aware | open | fixed by K4 (warm-aware placement in the tier) |
 | L15 a daemon restart ends every cold-mounted job | open (v1 half) | **required** by K2c (state, re-adoption) and K2d (ublk recovery): one process owns VMs and devices, so restarts must re-adopt (persistent state, VMs in their own scopes, ublk recovery) |
 | L16 crash fencing waits out the 5-minute lease | open | fixed by K2c + C2: the host's boot epoch is in its lease holder, and the tier fences a restarted host's old leases on sight |
-| L45 one checkpoint at job end | open | fixed by K3 |
+| L45 one checkpoint at job end | open | obsolete under §6: no jobs; sessions checkpoint per call |
 
 L72 and L81 (wf-durable): L72's control-flow half is fixed for the pilot by PR (1) and for good by K4–K5, where a
 VM's state lives in `vms`. L81 closes with K4, because placement and the slot are one transaction there.
+
+## 6. The `bash` tool, and what goes
+
+**Decided (Miguel, 2026-11-14): simplify the interfaces.** One `bash` tool replaces `job`, `job_run`, workflows'
+`job()` and the `computer` tool family. File tools keep working without a VM, and QuickJS code mode stays for small
+scripts.
+
+**The tool.** `bash { command, cwd?, timeoutSeconds? }` → `{ stdout, stderr, exitCode, timedOut, truncated }`.
+- **One VM per agent per branch,** created on the agent's first `bash` call (§2 `POST /v1/vms`) on the branch the
+  agent is working on: its workspace's `main`, or its own branch when it runs as a child. A second call on the
+  same branch reuses the VM and never mounts a second one.
+- **One persistent shell per VM:** cwd and environment carry across calls, like a terminal.
+- **Timeouts:** `timeoutSeconds` defaults to 120 and is capped at 600. A timed-out command is killed and reported
+  `timedOut: true`.
+- **Background work:** `cmd &` or `nohup` runs on in the VM between calls, and writes its output to files the agent
+  reads later. The idle stop does not wait for background processes.
+- **Output limits:** the model sees at most 32 KiB of each stream: the head and the tail, with a marker for what
+  was cut (`truncated: true`). The full stream passes through the runtime and is not stored.
+- **Checkpoints:** after every `bash` call that changed the tree, the runtime asks for a checkpoint (§2), so the
+  ref moves and the change is a version. The idle stop checkpoints first. The agent's
+  `checkpoint`/`restore`/`history`/`diff` tools are unchanged.
+- **File tools while a VM holds the branch:**
+  - The VM holds the branch's lease, so the API cannot write to it (camel-fs.md §1.2).
+  - The agent's file tools on that branch are routed into the VM: reads and writes execute in the guest, and the
+    next checkpoint makes them durable, so the agent never sees two versions of its files.
+  - When the VM stops, the file tools go back to the API on the ref.
+- **Idle stop and resume:**
+  - The VM stops after `idleStopS` with no `exec`: a default of 10 minutes, at most 1 hour.
+  - The next `bash` call creates it again on the ref's latest version. A warm host mounts it again; a cold one
+    hydrates it, ≈ 3.7 s for a 660 MB root.
+- **Money (§4):** admission at balance > 0 before `POST /v1/vms`. The deadline is renewed every ≈ 3 min while the
+  balance is > 0. Usage is pulled, and charges may go negative.
+
+**In the runtime, the agent's own object owns its VM.**
+- The agent's Durable Object keeps one small row per branch: `{ vmId, ref, deadline }`.
+- It renews the deadline from its alarm while the agent is active, and drops the row on `vm.ended`.
+- There is no `HostJob`, `JobHost` or `JobHostRegistry`. Placement and host authority are the tier's (§3).
+
+**Workflows: steps are agent turns or child agents, with no `job()`.**
+- A workflow that fanned out jobs now starts child agents. Each child works on its own branch
+  (`fork/<effect>`) with its own `bash` VM, and the workflow merges the branches with the existing merge and
+  fast-forward effects (camel-fs-files.md §4).
+- A step that ran one command runs it through a child agent's `bash`, or in QuickJS when it needs no VM.
+
+**What replaces `computer` and `ContainerComputer`:** the `bash` tool on our hosts.
+- Cloudflare Containers are no longer an agent compute substrate.
+- A deployment without `--compute` has file tools and QuickJS but no `bash`.
+
+**Deleted** (after K5 cuts over; nothing on the Node backend changes, and camel-bots on Node is unaffected):
+
+| where | what |
+|---|---|
+| runtime: jobs | `backends/workers/src/jobs/` whole: `hosts.ts` (`JobHost`, `HostJob`, `JobHostRegistry`, enrollment, scaler routes), `job.ts`, `driver.ts`, `container-job.ts`, `camelfs.ts`, `camel-sync.ts`, `host-sync-store.ts`, `host-pricing.ts`, `repo.ts`; `agent-jobs.ts` (`job_run`); `workflow-jobs.ts` and `job()` in the workflow runner and its builtins; `shared/job-host-protocol.ts` |
+| runtime: computers | `backends/workers/src/computers/` whole (the `computer` tool, `ContainerComputer`, the container provider, native and child forks, the egress gateway, `ComputerMeter` and its billing); `SHARED_COMPUTER_CONTROL`; the `COMPUTER_CONTAINERS` binding and its container image |
+| runtime: surface | `job_run` and `computer` in tool selection, definitions, the API contract, OpenAPI, the SDKs' job and computer handles, the guides' job and computer sections |
+| host | the TypeScript `jobhost` (already planned, K5); the job half of the guest (`run` and `collect` ops) |
+| camel-fs | job mode, `GET /v1/vms/{id}/result`, `results/` and its lifecycle rule, the result fields on `ended` and `vm.ended` (§2) |
+
+Roughly 2,600 lines of jobs (with `agent-jobs.ts` and `workflow-jobs.ts`) and 3,100 lines of computers go from the
+Workers runtime, before tests.
+
+**Ledger rows this makes obsolete** (they flip when the deletion lands):
+- L25, L43, L44, L68 and L69: the per-job import, dispatch and placement legs.
+- L70: the job result leg.
+- L45: periodic checkpoints for long jobs; sessions checkpoint per call.
+- L72 and L81: `JobHost`/`HostJob` durability.
+- L93's result half, and L102: there are no results objects.
+- L100's API half stays: disk ≥ image applies to sessions too.
+
+**Open for Miguel:**
+1. **The cost of fan-out.** A workflow that ran N jobs (compute only) now runs N child agents, each paying model
+   turns. A workflow that wants many cheap parallel commands has no primitive for it. A child agent can still loop
+   `bash` itself, but in series.
+2. **No custom images per job.** Sessions boot only images on the tier's allowed list (§2, guest images), so
+   anything that relied on a per-job image needs a new allowed image.
+3. **File tools on a branch with a live VM go into the VM.** They are as fast as the VM and stop working if the VM
+   is wedged, until it is stopped. This is the design's one new coupling.
+4. **Self-host without compute has no `bash`.** The old Cloudflare-container provider covered that case.
+5. **Public API break:** `job()`, `job_run`, the `computer` tool and their SDK handles go with no back-compat (the
+   closed-alpha rule). Evals that use `job()` (`evals/workflows`) need rewriting over child agents.
