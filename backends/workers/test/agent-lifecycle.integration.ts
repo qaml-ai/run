@@ -159,9 +159,13 @@ test("fork retries resume the claimed history and file versions after interrupti
     method: "POST", headers: { "content-type": "application/json", "x-camel-test-fork-failure": "created", "x-camel-test-fork-short-ttl": "1" },
     body: JSON.stringify({ key: "expired-copy" }),
   });
+  // The test TTL (5 s) must outlive the claim's own path, which reaches the volume's read-set
+  // expiry check after claimFork; a 1 s TTL lapsed there on a loaded runner (400, not 503).
+  // The claim's expiry was fixed before the response, so 5.1 s after it the claim has expired.
+  const expiringAnswered = Date.now();
   assert.equal(expiring.status, 503, await expiring.text());
   await write("a.txt", "after expired claim");
-  await new Promise(resolve => setTimeout(resolve, 1100));
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, expiringAnswered + 5100 - Date.now())));
   for (let retry = 0; retry < 2; retry++) {
     const expired = await call(`/v1/agents/${source.id}/fork`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "expired-copy" }),

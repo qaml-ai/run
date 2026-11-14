@@ -165,7 +165,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     const config = { ...withoutOnExpire(entry.config), ...settings, name: input.name as string | undefined ?? (entry.config.name ? `${entry.config.name} (fork)`.slice(0, 120) : undefined), mounts: workspace.mounts, initialMessages, idleTtlSeconds: null, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
     configuration(config, env.MODEL);
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ sourceId: entry.id, atMessage: at, config }))));
-    const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 1000 : 86400_000;
+    const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 5000 : 86400_000;
     claim = await claimFork(env, entry.tenantId, { sourceId: entry.id, targetId, key, fingerprint, atMessage: at, copyPrivate: workspace.copyPrivate, config, model: snapshot.model, origin: new URL(request.url).origin, expiresAt: Date.now() + ttl });
   }
   try {
