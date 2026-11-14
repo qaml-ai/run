@@ -1,3 +1,4 @@
+import { stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 import { DurableObject } from "cloudflare:workers";
 import { guardAlarms } from "./alarm-guard.ts";
 import type { Placement } from "../../../shared/owner.ts";
@@ -18,6 +19,8 @@ export class CamelAgent extends DurableObject<Env> {
     // After the runtime's lifecycle installed its alarm handler on this instance (field initializers run first).
     guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
   }
+
+  stageRepoMove(move: RefMove) { return stageRepoMove(this.ctx.storage, move); }
 
   removeMember(member: string) { return this.#runtime.removeMember(member); }
 

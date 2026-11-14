@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createCipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
 import { createMigratedDatabase } from "./migrated-database.ts";
@@ -78,6 +78,7 @@ export async function startFixture(
     /** Bind camelFS to the test-only CamelfsStub named entrypoint (default: on, served by an in-process fake
      * camelfsd unless `vars.TEST_CAMELFS_URL` names one). Every agent's workspace is a repo, so agents need it. */
     camelfsStub?: boolean;
+    camelfsTier?: boolean;
     scheduled?: boolean;
     signal?: AbortSignal;
     /** No AGENT_PUBLIC_URL, as a local `wrangler dev` or a self-host without one: origins come from requests. */
@@ -189,8 +190,22 @@ export async function startFixture(
       dockerfile?: string;
     }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
-  const camelfs = options.camelfsStub ?? true;
+  const camelfs = !options.camelfsTier && (options.camelfsStub ?? true);
   let camelfsVars: Record<string, string> = {};
+  if (options.camelfsTier) {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const kid = "fixture-camelfs", issuer = options.vars?.AGENT_PUBLIC_URL || `http://127.0.0.1:${port}`;
+    const jwk = { ...publicKey.export({ format: "jwk" }), kid, alg: "EdDSA", use: "sig" };
+    const key = Buffer.from(options.vars?.AGENT_SECRETS_KEY ?? "0".repeat(64), "hex");
+    const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", key, iv);
+    cipher.setAAD(Buffer.from("runtime-signing:" + kid));
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(privateKey.export({ format: "jwk" }))), cipher.final()]);
+    await db.query("INSERT INTO signing_keys(kid,public_jwk,private_sealed,created_at) VALUES ($1,$2,$3,$4)",
+      [kid, jwk, { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }, Date.now()]);
+    const daemon = await serveFakeCamelfsd(randomBytes(24).toString("hex"), { issuer, jwks: { keys: [jwk] } });
+    cleanups.push(() => daemon.close());
+    camelfsVars = { CAMELFS_URL: daemon.url };
+  }
   if (camelfs && !options.vars?.TEST_CAMELFS_URL) {
     const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken);
     cleanups.push(() => daemon.close());

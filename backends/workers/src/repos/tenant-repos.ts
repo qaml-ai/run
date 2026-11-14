@@ -33,11 +33,11 @@ export class TenantRepos {
     const rows = this.storage.sql.exec<RepoRow>('SELECT * FROM repos WHERE deletedAt IS NULL AND (createdAt>? OR (createdAt=? AND id>?)) ORDER BY createdAt,id LIMIT ?', cursor?.createdAt ?? -1, cursor?.createdAt ?? -1, cursor?.id ?? '', limit + 1).toArray();
     return { repos: rows.slice(0, limit), next: rows.length > limit ? rows[limit - 1].id : null };
   }
-  deleted(id: string) { this.storage.sql.exec('UPDATE repos SET deletedAt=COALESCE(deletedAt,?) WHERE id=?', Date.now(), id); }
-  usage(id: string, bytes: number, files: number) { check(Number.isSafeInteger(bytes) && bytes >= 0 && Number.isSafeInteger(files) && files >= 0); this.storage.sql.exec('UPDATE repos SET bytes=?,files=? WHERE id=?', bytes, files, id); }
-  used() {
+  deleted(id: string, lineage = false) { this.storage.sql.exec('UPDATE repos SET deletedAt=COALESCE(deletedAt,?) WHERE ' + (lineage ? 'lineage=(SELECT lineage FROM repos WHERE id=?)' : 'id=?'), Date.now(), id); }
+  usage(id: string, bytes: number, files: number, lineage = false) { check(Number.isSafeInteger(bytes) && bytes >= 0 && Number.isSafeInteger(files) && files >= 0); this.storage.sql.exec('UPDATE repos SET bytes=?,files=? WHERE ' + (lineage ? 'lineage=(SELECT lineage FROM repos WHERE id=?)' : 'id=?'), bytes, files, id); }
+  used(exclude = "") {
     return this.storage.sql.exec<{
       bytes: number;
-    }>('SELECT COALESCE(SUM(bytes),0) bytes FROM repos WHERE deletedAt IS NULL').one().bytes;
+    }>('SELECT COALESCE(SUM(bytes),0) bytes FROM (SELECT MAX(bytes) bytes FROM repos WHERE deletedAt IS NULL AND lineage<>? GROUP BY lineage)', exclude).one().bytes;
   }
 }

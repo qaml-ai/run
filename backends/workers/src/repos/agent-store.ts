@@ -6,7 +6,7 @@ import { commitChanges, type CommitOp, type WriteInput } from './write.ts';
 import { repoErrorFrom, type Entry } from './repo-policy.ts';
 export const insideRepo = (path: string) => path.replace(/^\/+/, '');
 export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref = 'main', agent = '', identity: Record<string,string> = {}) {
-  const ctx = await repoContext(env, tenant, repo);
+  const ctx = await repoContext(env, tenant, repo, agent ? `agent:${agent}` : undefined);
   const decorate = (entry: {path: string; blob: string; size: number}, version: string) => ({ ...entry, path: '/' + entry.path, version, contentType: sniffContentType(new Uint8Array(), entry.path) });
   const entryAt = async (path: string, version?: string) => {
     const p = insideRepo(path);
@@ -23,7 +23,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
   };
   const commit = async (changes: WriteInput['changes'], pathExpect: WriteInput['pathExpect'] = {}, message = 'files changed', trailers: Record<string,string> = {}, op: CommitOp = 'turn') => {
     try { return await commitChanges(ctx, { ref, op, changes, pathExpect, message, author: `agent:${agent}`, who: `agent:${agent}`, why: 'agent', trailers: { 'Camel-Agent': agent, 'Camel-Checkpoint': 'automatic', ...identity, ...trailers } }); }
-    catch (error) { if (repoErrorFrom(error)?.code === 'stale_path') throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
+    catch (error) { const repo = repoErrorFrom(error); if (repo?.code === 'stale_path' || (repo?.code === 'stale' && typeof repo.detail?.path === 'string')) throw new FileError('File changed since you last read it; read it again, then retry against its current content', 412); throw error; }
   };
   return { ctx, ref, stat, commit,
     async list(path = '/', _version?: string, pattern?: string, includeFile = false) {

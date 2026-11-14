@@ -1,3 +1,4 @@
+import { tierConfigured } from "../camelfs/tier.ts";
 import { Buffer } from 'node:buffer';
 import { tar } from '../../../../src/tar.ts';
 import { sniffContentType, declaredType, downloadHeaders } from '../file-policy.ts';
@@ -156,12 +157,15 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   const number = (k: string) => s.has(k) ? Number(s.get(k)) : undefined;
   if (path === '/v1/repos') {
     if (method === 'POST') {
-      const r = await createRepo(env, tenant, await readJson(request));
+      const r = await createRepo(env, tenant, { ...await readJson(request), author: `api:${tenant}` });
       return json(r.info, r.existing ? 200 : 201);
     }
     if (method === 'GET') {
       const p = await env.TENANTS.getByName(tenant).listRepos({ after: s.get('after') ?? undefined, limit: number('limit') });
-      return json({ ...p, repos: p.repos.map(({ id, name, key, createdAt, bytes, files }) => ({ id, name, key, createdAt, bytes, files })) });
+      return json({ ...p, repos: p.repos.map(({ id, name, key, createdAt, lineage, bytes, files }) => ({
+        id, name, key, createdAt,
+        ...(tierConfigured(env) && lineage !== `${tenant}:${id}` ? { sharesStorageWith: lineage.slice(tenant.length + 1) } : { bytes, files }),
+      })) });
     }
   }
   const match = /^\/v1\/repos\/([^/]+)(?:\/(.*))?$/.exec(path);

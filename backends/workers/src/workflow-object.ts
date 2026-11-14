@@ -1,3 +1,4 @@
+import { drainRepoMoves, repoMoveDeadline, stageRepoMove, type RefMove } from "./camelfs/notify.ts";
 // One workflow (docs/design/swarm-workflows.md, Part 1): a Durable Object whose SQLite holds the runner's journal,
 // snapshot, ledger and events, and whose one alarm multiplexes the step-rate window, the capacity renew and the
 // sweep. Its steps run in the code mode sandbox Worker (exchange protocol 3).
@@ -230,7 +231,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         // One alarm for the runner, the owner's endings and the forks' cleanup retry, whichever is due first: an ending
         // whose delivery failed, or a fork delete that failed, is retried even once the workflow has ended.
         alarm: { set: async at => {
-          const next = alarmAt(at, await this.endings.outbox.deadline(), await this.forks.retryAt());
+          const next = alarmAt(at, await this.endings.outbox.deadline(), await this.forks.retryAt(), await repoMoveDeadline(this.ctx.storage));
           await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
         } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
@@ -425,6 +426,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     this.told(undefined);
   }
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
+  stageRepoMove(move: RefMove) { return stageRepoMove(this.ctx.storage, move); }
+
   async wake() { await this.failWithoutOrigin(); await this.runner.wake(); await this.ended(); this.told(undefined); }
 
   override async alarm() { await this.alarmed(); }
@@ -443,6 +446,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         // The runner isolates its own concerns; one that failed (a cancel left for later, a renew) is reported here too,
         // so the alarm's failure floor applies rather than a second's re-arm.
         ["runner", async () => { if ((await this.runner.alarm()).failed) throw new Error("a runner concern failed and was left for later (see its alarm_failed or cancel events)"); }],
+        ["repo moves", () => drainRepoMoves(this.ctx.storage, () => this.runner.wake())],
         ["forks", () => this.ended()],
         ["endings", () => this.endings.outbox.flush()],
       ],
@@ -450,7 +454,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         let runner: number | null = null;
         try { runner = this.runner.nextAlarm(); }
         catch (error) { console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern: "runner next", error: String(error) })); }
-        return alarmAt(runner, await this.endings.outbox.deadline(), await this.forks.retryAt());
+        return alarmAt(runner, await this.endings.outbox.deadline(), await this.forks.retryAt(), await repoMoveDeadline(this.ctx.storage));
       },
       arm: at => this.armBy(at),
       log: (concern, error) => console.error(JSON.stringify({ type: "workflow_alarm_failed", workflow, concern, error: String(error) })),
