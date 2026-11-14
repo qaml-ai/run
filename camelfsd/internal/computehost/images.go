@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"math"
 	"os"
@@ -37,25 +38,53 @@ type imageDownload struct {
 	err     error
 }
 
-func (i *images) scan() {
+func (i *images) scan() error {
+	files, err := os.ReadDir(i.dir)
+	if err != nil {
+		return err
+	}
 	verified := make(map[string]int64)
-	files, _ := os.ReadDir(i.dir)
 	for _, file := range files {
-		sha, ok := strings.CutSuffix(file.Name(), ".ext4")
+		name := file.Name()
+		path := filepath.Join(i.dir, name)
+		switch {
+		case file.IsDir() && strings.HasPrefix(name, ".download-"):
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			slog.Info("compute_image_cache_removed", "path", path, "reason", "incomplete_download")
+			continue
+		case file.Type().IsRegular() && strings.HasPrefix(name, ".tmp-"):
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			slog.Info("compute_image_cache_removed", "path", path, "reason", "temporary_file")
+			continue
+		}
+		sha, ok := strings.CutSuffix(name, ".ext4")
 		if !ok || !root.Hex(sha, 64) || !file.Type().IsRegular() {
 			continue
 		}
-		f, err := os.Open(filepath.Join(i.dir, file.Name()))
+		f, err := os.Open(path)
 		if err != nil {
+			return err
+		}
+		hash := sha256.New()
+		size, err := io.Copy(hash, f)
+		if err := errors.Join(err, f.Close()); err != nil {
+			return fmt.Errorf("verify cached image %s: %w", path, err)
+		}
+		if fmt.Sprintf("%x", hash.Sum(nil)) == sha {
+			verified[sha] = size
 			continue
 		}
-		info, statErr := f.Stat()
-		if statErr == nil && checkHash(f, io.Discard, sha) == nil {
-			verified[sha] = info.Size()
+		if err := os.Remove(path); err != nil {
+			return err
 		}
-		f.Close()
+		slog.Info("compute_image_cache_removed", "path", path, "reason", "sha256_mismatch")
 	}
 	i.verified.Store(&verified)
+	return nil
 }
 
 func (i *images) list() []string {
@@ -244,15 +273,4 @@ func (i *images) download(ctx context.Context, path, sha string, maxBytes int64)
 		return err
 	}
 	return os.Rename(image.Name(), path)
-}
-
-func checkHash(src io.Reader, dst io.Writer, expected string) error {
-	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(hash, dst), src); err != nil {
-		return err
-	}
-	if fmt.Sprintf("%x", hash.Sum(nil)) != expected {
-		return errors.New("SHA-256 mismatch")
-	}
-	return nil
 }

@@ -93,7 +93,9 @@ func (h *Host) load() error {
 		endedAcked INTEGER NOT NULL DEFAULT 0, record BLOB NOT NULL)`); err != nil {
 		return err
 	}
-	h.images.scan()
+	if err := h.images.scan(); err != nil {
+		return fmt.Errorf("scan guest image cache: %w", err)
+	}
 	raw, err := os.ReadFile(filepath.Join(h.Data, "boot.json"))
 	if err == nil {
 		var boot bootState

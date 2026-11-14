@@ -23,6 +23,9 @@ import (
 
 func TestHeartbeatEpochAndEndedRetry(t *testing.T) {
 	cfg := Config{Data: t.TempDir(), BootID: "boot-a", HostID: "host", Slots: 1}
+	if err := os.Mkdir(filepath.Join(cfg.Data, "images"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	var registers, ends int
 	var nextEpoch int64 = 17
 	var replyEpoch int64 = 16

@@ -71,7 +71,9 @@ func TestImageDownloadsShareOnlyTheSameSHA(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(images.dir, cached+".ext4"), cacheData, 0600); err != nil {
 		t.Fatal(err)
 	}
-	images.scan()
+	if err := images.scan(); err != nil {
+		t.Fatal(err)
+	}
 	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
 	defer stop()
 	first, cancelFirst := context.WithCancel(ctx)
@@ -117,5 +119,45 @@ func TestImageDownloadsShareOnlyTheSameSHA(t *testing.T) {
 	}
 	if downloads.Load() != 1 {
 		t.Fatalf("downloads=%d", downloads.Load())
+	}
+}
+
+func TestImageScanClearsCrashLeftovers(t *testing.T) {
+	i := images{dir: t.TempDir()}
+	content := []byte("verified image")
+	valid := fmt.Sprintf("%x.ext4", sha256.Sum256(content))
+	corrupt := strings.Repeat("0", 64) + ".ext4"
+	temporary := ".tmp-123"
+	download := ".download-123"
+	if err := os.Mkdir(filepath.Join(i.dir, download), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{valid, corrupt, temporary, filepath.Join(download, "guest.zst"), "blank.img"} {
+		if err := os.WriteFile(filepath.Join(i.dir, name), content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := i.scan(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{corrupt, temporary, download} {
+		if _, err := os.Stat(filepath.Join(i.dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s remains: %v", name, err)
+		}
+	}
+	for _, name := range []string{valid, "blank.img"} {
+		if _, err := os.Stat(filepath.Join(i.dir, name)); err != nil {
+			t.Error(err)
+		}
+	}
+	if got := i.list(); len(got) != 1 || got[0]+".ext4" != valid {
+		t.Errorf("verified images: %v", got)
+	}
+}
+
+func TestOpenFailsOnImageCacheScanError(t *testing.T) {
+	h, err := Open(t.Context(), Config{Data: t.TempDir()})
+	if h != nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Open = %v, %v, want missing images directory error", h, err)
 	}
 }
