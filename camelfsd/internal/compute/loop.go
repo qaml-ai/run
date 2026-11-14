@@ -30,7 +30,7 @@ func (l *Loop) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	for ctx.Err() == nil {
 		if err := l.Pass(ctx); err != nil {
-			return err
+			l.C.log("compute_pass_failed", map[string]any{"error": err.Error()})
 		}
 		select {
 		case <-ctx.Done():
@@ -58,7 +58,7 @@ func (l *Loop) Pass(ctx context.Context) error {
 }
 
 func (l *Loop) passPool(ctx context.Context, pool string, now time.Time) error {
-	result := l.placeWaiters(ctx, pool, now)
+	result := errors.Join(l.C.pendingReleases(ctx, pool), l.placeWaiters(ctx, pool, now))
 	hosts, err := l.C.Hosts(ctx, pool)
 	if err != nil {
 		return errors.Join(result, err)
@@ -109,10 +109,16 @@ func (l *Loop) placeWaiters(ctx context.Context, pool string, now time.Time) err
 			_, err = l.C.stop(ctx, v, now, v.LeaseDeadline, LeaseExpired, true)
 		case !placementBlocked:
 			event = "vm_placed"
-			_, err = l.C.place(ctx, v, now.UnixMilli())
+			v, err = l.C.place(ctx, v, now.UnixMilli())
 			if errors.Is(err, ErrNoHost) || errors.Is(err, ErrCondition) {
 				placementBlocked = true
 				continue
+			}
+			if err == nil && v.Phase == Placed {
+				v, err = l.C.markBooting(ctx, v)
+				if err == nil {
+					l.C.pushBoot(ctx, v)
+				}
 			}
 		default:
 			continue
@@ -136,7 +142,7 @@ func (l *Loop) loseHost(ctx context.Context, h Host, now time.Time) error {
 	}
 	// The empty-set condition also lets a later pass finish draining after a
 	// crash between the last end and this write.
-	if result != nil || h.lost {
+	if result != nil || h.Lost {
 		return result
 	}
 	_, err := l.C.update(ctx, change(l.C.Tables.Hosts, hostKey(h.Pool, h.Host),
@@ -157,7 +163,16 @@ func (l *Loop) sweepVMs(ctx context.Context, h Host, now time.Time) error {
 			result = errors.Join(result, err)
 			continue
 		}
-		if !v.onHost(h) || v.Phase == Ended || v.Phase == Stopping {
+		if !v.onHost(h) || v.Phase == Ended {
+			continue
+		}
+		if v.Phase == Booting || v.Phase == Running || v.Phase == Stopping {
+			renewErr := l.C.renewRef(ctx, v, now)
+			if !errors.Is(renewErr, ErrCondition) {
+				result = errors.Join(result, renewErr)
+			}
+		}
+		if v.Phase == Stopping {
 			continue
 		}
 		boot := l.BootTimeout
@@ -168,6 +183,11 @@ func (l *Loop) sweepVMs(ctx context.Context, h Host, now time.Time) error {
 		case v.Phase == Booting && v.StartedAt == nil && v.BootingAt != nil && *v.BootingAt < now.Add(-boot).UnixMilli():
 			_, err = l.C.endWithHostSnapshot(ctx, v, EndRequest{At: now, Code: StartFailed}, now, nil, &h)
 			result = errors.Join(result, l.record("vm_boot_timed_out", id, err))
+			if err == nil && l.C.Pusher != nil {
+				if pushErr := l.C.Pusher.Stop(ctx, h, id, false); pushErr != nil {
+					l.C.log("host_stop_push_failed", map[string]any{"vm": id, "host": h.Host, "error": pushErr.Error()})
+				}
+			}
 		case v.LeaseDeadline <= now.UnixMilli():
 			_, err = l.C.stop(ctx, v, now, v.LeaseDeadline, LeaseExpired, true)
 			result = errors.Join(result, l.record("vm_lease_expired", id, err))

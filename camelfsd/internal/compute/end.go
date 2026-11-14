@@ -17,6 +17,8 @@ type endedEvent struct {
 	Code            EndCode `json:"code"`
 	Exit            int     `json:"exit"`
 	TimedOut        bool    `json:"timedOut"`
+	ResultSha256    string  `json:"resultSha256"`
+	ResultBytes     int64   `json:"resultBytes"`
 	ResultRef       string  `json:"resultRef"`
 	Version         string  `json:"version,omitempty"`
 	CheckpointError string  `json:"checkpointError,omitempty"`
@@ -27,9 +29,28 @@ func (c *Controller) End(ctx context.Context, id string, end EndRequest) (VM, er
 	if err != nil || v.Phase == Ended {
 		return v, err
 	}
-	ended, err := c.end(ctx, v, end, c.now(), nil)
+	return c.finish(ctx, v, end, nil)
+}
+
+func (c *Controller) EndFromHost(ctx context.Context, id string, h Host, end EndRequest) (VM, error) {
+	v, err := c.Get(ctx, id)
+	if err != nil {
+		return v, err
+	}
+	if !v.onHost(h) || h.Lost || h.Restarting {
+		return v, ErrHost
+	}
+	if v.Phase == Ended {
+		return v, nil
+	}
+	// Fence the host's epoch in the capacity update in the same transaction.
+	return c.finish(ctx, v, end, &h)
+}
+
+func (c *Controller) finish(ctx context.Context, v VM, end EndRequest, host *Host) (VM, error) {
+	ended, err := c.endWithHostSnapshot(ctx, v, end, c.now(), nil, host)
 	if errors.Is(err, ErrCondition) {
-		if current, readErr := c.Get(ctx, id); readErr == nil && current.Phase == Ended {
+		if current, readErr := c.Get(ctx, v.ID); readErr == nil && current.Phase == Ended {
 			return current, nil
 		}
 	}
@@ -44,10 +65,10 @@ func (c *Controller) end(ctx context.Context, v VM, end EndRequest, now time.Tim
 func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndRequest, now time.Time, stop *stopIntent, snapshot *Host) (VM, error) {
 	cond := "#phase = :phase AND #leaseDeadline = :lease"
 	expr := "SET #phase = :ended, #endedAt = :at, #code = :code, #exit = :exit, #timedOut = :timedOut, " +
-		"#resultRef = :resultRef, #endVersion = :version, #checkpointError = :checkpointError"
+		"#resultRef = :resultRef, #resultSha256 = :resultSha256, #resultBytes = :resultBytes, #endVersion = :version, #checkpointError = :checkpointError"
 	values := attrs{":phase": s(string(v.Phase)), ":ended": s(string(Ended)), ":lease": n(v.LeaseDeadline),
 		":exit": n(int64(end.Exit)), ":timedOut": b(end.TimedOut), ":resultRef": s(end.ResultRef),
-		":version": s(end.EndVersion), ":checkpointError": s(end.CheckpointError)}
+		":resultSha256": s(end.ResultSha256), ":resultBytes": n(end.ResultBytes), ":version": s(end.EndVersion), ":checkpointError": s(end.CheckpointError)}
 	at := end.At.UnixMilli()
 	switch end.Code {
 	case HostLost:
@@ -99,8 +120,12 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 		hostCond := "contains(#vms, :id)"
 		hostValues := attrs{":id": s(v.ID), ":one": n(1), ":vm": ss(v.ID), ":mem": n(int64(v.Shape.MemoryMiB))}
 		if snapshot != nil {
-			hostCond += " AND #bootEpoch = :epoch AND #lastSeenAt = :seen"
-			hostValues[":epoch"], hostValues[":seen"] = n(snapshot.BootEpoch), n(snapshot.LastSeenAt)
+			hostCond += " AND #bootEpoch = :epoch AND attribute_not_exists(#restarting) AND attribute_not_exists(#lost)"
+			hostValues[":epoch"] = n(snapshot.BootEpoch)
+			if end.Code == HostLost || end.Code == StartFailed && end.ResultRef == "" {
+				hostCond += " AND #lastSeenAt = :seen"
+				hostValues[":seen"] = n(snapshot.LastSeenAt)
+			}
 		}
 		host := change(c.Tables.Hosts, hostKey(v.Pool, v.Host), hostCond,
 			"SET #free = #free + :one, #freeMiB = #freeMiB + :mem DELETE #vms :vm", hostValues)
@@ -109,7 +134,7 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 
 	id := "vm.ended:" + v.ID
 	body, err := json.Marshal(endedEvent{ID: id, Type: "vm.ended", VM: v.ID, Code: end.Code,
-		Exit: end.Exit, TimedOut: end.TimedOut, ResultRef: end.ResultRef, Version: end.EndVersion,
+		Exit: end.Exit, TimedOut: end.TimedOut, ResultRef: end.ResultRef, ResultSha256: end.ResultSha256, ResultBytes: end.ResultBytes, Version: end.EndVersion,
 		CheckpointError: end.CheckpointError})
 	if err != nil {
 		return VM{}, err
@@ -118,8 +143,19 @@ func (c *Controller) endWithHostSnapshot(ctx context.Context, v VM, end EndReque
 	if err != nil {
 		return VM{}, err
 	}
+	if v.RefLeaseHolder != "" {
+		writes = append(writes, c.releaseWork(v))
+	}
 	if err := c.writeWithUsage(ctx, event, v.UsageSeq, append(writes, staged)...); err != nil {
 		return VM{}, err
 	}
-	return c.Get(ctx, v.ID)
+	ended, err := c.Get(ctx, v.ID)
+	if err == nil {
+		if releaseErr := c.releaseRef(ctx, ended); releaseErr != nil {
+			c.log("ref_lease_release_failed", map[string]any{"vm": v.ID, "error": releaseErr.Error()})
+		} else if c.Refs != nil && ended.RefLeaseHolder != "" {
+			ended.RefLeaseReleased = true
+		}
+	}
+	return ended, err
 }
