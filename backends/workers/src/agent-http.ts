@@ -306,6 +306,8 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           const conf = await this.ctx.storage.get<Config>("configuration");
           await this.markCancelledRequests();
           await this.abortExecutions(invocation);
+          // Its bash VMs end before its files are released: a VM's ref lease would refuse the ref deletion.
+          if (conf) await this.bashSessions.stopAll();
           if (conf)
             await this.serializeComputer(() =>
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
