@@ -249,8 +249,12 @@ run "roles_and_policies" {
     error_message = "The host policy writes the objects table only and explicitly denies the six other tables."
   }
   assert {
-    condition     = [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "NoResults" && statement.Effect == "Deny"] == [["arn:aws:s3:::camelfs-prod-904534089871/*/results/*"]]
-    error_message = "A host never writes a VM result: the tier does."
+    condition = (
+      !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Sid == "NoResults"])
+      && !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : contains(flatten([statement.Action]), "s3:PutObjectTagging")])
+      && anytrue([for rule in aws_s3_bucket_lifecycle_configuration.objects.rule : rule.id == "results" && try(tolist(rule.filter)[0].prefix, "") == "results/" && try(tolist(rule.expiration)[0].days, 0) == 7])
+    )
+    error_message = "Hosts put their VM results under results/ (no deny); nothing tags; results expire by prefix after 7 days."
   }
   assert {
     condition = (

@@ -199,7 +199,7 @@ variable "guest_image_prefix" {
 }
 
 variable "results_expiry_days" {
-  description = "VM results the tier writes to S3 (<lineage>/results/<vm>, tagged kind=result; K4) are deleted after this many days."
+  description = "VM results hosts write to S3 (results/<lineage>/<vm>; K4) are deleted after this many days (a prefix lifecycle rule)."
   type        = number
   default     = 7
 }
