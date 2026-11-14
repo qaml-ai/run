@@ -1000,8 +1000,7 @@ Camel-Signature: t=1763046000,v1=<hex hmac-sha256(notifyKey, t + "." + body)>
 { "id": "dlv_…", "type": "ref.moved", "lineage", "ref", "from": "<version>", "to": "<version>", "tree",
   "by": "agent:ag_123", "at": 1763046000, "watchers": ["agent:ag_7", "workflow:wf_2"] }
 
-{ "id": "dlv_…", "type": "vm.ended", "vm": "<vm id>", "lineage", "code", "exit", "timedOut", "resultKey",
-  "resultSha256", "resultBytes", "version"?, "checkpointError"?, "at" }
+{ "id": "dlv_…", "type": "vm.ended", "vm": "<vm id>", "lineage", "code", "version"?, "checkpointError"?, "at" }
 ```
 
 - **Every body carries `type`, and it is required** (wf-repos and wf-durable, for the K5 receiver).

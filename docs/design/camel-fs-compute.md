@@ -135,7 +135,7 @@ semantics. Under §6 the agent's own object is the compute API's only runtime cl
 - `hosts` (key `pool` + `host`): boot epoch, shape, `free` slots, the string set `vms` of the VMs placed on it,
   `lastSeenAt`, features. Heartbeats write it in-VPC, and every placement and every end update `free` and `vms`
   in the same transaction as the VM's row. A reconcile is then one strongly consistent `GetItem`, with no index.
-- `vms` (key `id`): the §2 phase row, host, lease epoch, `stopRequested`, `resultRef`, `payer`, `deadline`,
+- `vms` (key `id`): the §2 phase row, host, lease epoch, `stopRequested`, `payer`, `deadline`,
   `billedTo`, `usageSeq`.
 - `deliveries` (key `shard` + `id`, camel-fs-files.md §9.11) already exists for notify, and carries the `vm.*`
   hints.
