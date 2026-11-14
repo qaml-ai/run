@@ -328,7 +328,7 @@ export function fakeCamelfsd(token: string) {
   }
   return { fetch, blobs, trees, commits, calls, checkpoint };
 }
-export async function serveFakeCamelfsd(token: string) {
+export async function serveFakeCamelfsd(token: string, { unref = false } = {}) {
   const fake = fakeCamelfsd(token);
   const server = createServer(async (req, res) => {
     try {
@@ -338,7 +338,9 @@ export async function serveFakeCamelfsd(token: string) {
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer()));
     } catch { res.writeHead(500); res.end(); }
   });
+  if (unref) server.on("connection", socket => socket.unref());
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  if (unref) server.unref();
   const address = server.address(); if (!address || typeof address === "string") throw new Error("missing server address");
   return { url: `http://127.0.0.1:${address.port}`, checkpoint: fake.checkpoint, close: () => new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve())) };
 }

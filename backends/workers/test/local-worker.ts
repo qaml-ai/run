@@ -14,6 +14,12 @@ const token = "local-integration-only-token-with-at-least-32-characters";
 const startupTimeoutMs = 1200 * 250;
 type LocalWorkerOptions = { entrypoint?: string; startupTimeoutMs?: number };
 
+// spawn() creates sockets for piped stdio. ChildProcess types expose them
+// only as streams.
+function unrefPipe(pipe: NodeJS.ReadableStream | null) {
+  if (pipe && "unref" in pipe && typeof pipe.unref === "function") pipe.unref();
+}
+
 export async function unusedPort(): Promise<number> {
   const server = createServer();
   server.listen(0, "127.0.0.1");
@@ -59,8 +65,9 @@ export class LocalWorker {
     this.options = options;
   }
 
-  async start() {
+  async start(signal?: AbortSignal) {
     checkFixtureLifecycle();
+    signal?.throwIfAborted();
     this.stopPromise = undefined;
     const startup = this.startup = new AbortController();
     const timeout = this.options.startupTimeoutMs ?? startupTimeoutMs;
@@ -70,7 +77,7 @@ export class LocalWorker {
     )), timeout);
     this.ready = false;
     try {
-      await this.startWorker(startup);
+      await this.startWorker(startup, signal);
     } catch (error) {
       await this.stop(true);
       throw error;
@@ -80,8 +87,8 @@ export class LocalWorker {
     }
   }
 
-  private async startWorker(startup: AbortController) {
-    const { signal } = startup;
+  private async startWorker(startup: AbortController, callerSignal?: AbortSignal) {
+    const signal = callerSignal ? AbortSignal.any([startup.signal, callerSignal]) : startup.signal;
     this.inspectorPort = await unusedPort();
     signal.throwIfAborted();
     const env: NodeJS.ProcessEnv = {
@@ -119,10 +126,15 @@ export class LocalWorker {
       const direct = message as { type?: string; port?: number };
       if (direct.type === "workerd" && Number.isInteger(direct.port)) directPort = direct.port;
     });
+    child.unref();
+    child.channel?.unref();
+    unrefPipe(child.stdout);
+    unrefPipe(child.stderr);
     const listener = this.listener = createServer(socket => {
       if (!directPort) { socket.destroy(); return; }
       const upstream = createConnection(directPort, "127.0.0.1");
       for (const connection of [socket, upstream]) {
+        connection.unref();
         this.sockets.add(connection);
         connection.on("close", () => this.sockets.delete(connection));
         connection.on("error", () => { socket.destroy(); upstream.destroy(); });
@@ -157,7 +169,10 @@ export class LocalWorker {
       const aborted = () => finish(signal.reason);
       signal.addEventListener("abort", aborted, { once: true });
       listener.once("error", failed);
-      listener.listen(this.port, "127.0.0.1", () => finish());
+      listener.listen(this.port, "127.0.0.1", () => {
+        listener.unref();
+        finish();
+      });
     });
     for (;;) {
       signal.throwIfAborted();

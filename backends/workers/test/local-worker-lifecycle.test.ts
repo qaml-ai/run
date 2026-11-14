@@ -5,8 +5,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const workerModule = new URL("./local-worker.ts", import.meta.url).href;
+const fixtureModule = new URL("./fixture.ts", import.meta.url).href;
 const workerSource = `
   import { writeFileSync } from "node:fs";
   import { createServer } from "node:http";
@@ -20,11 +22,12 @@ const workerSource = `
   });
 `;
 
-for (const mode of ["test-startup-timeout", "test-body-timeout", "worker-startup-timeout", "stop-escalation"]) {
+for (const mode of ["test-startup-timeout", "test-body-timeout", "worker-startup-timeout", "stop-escalation", "sequential-import"]) {
   test(mode, { timeout: 15_000 }, async () => {
     const directory = await mkdtemp(join(tmpdir(), "local-worker-lifecycle-"));
     const entrypoint = join(directory, "worker.mjs");
     const pidFile = join(directory, "worker.pid");
+    const pidFiles = mode === "sequential-import" ? [`${pidFile}-1`, `${pidFile}-2`] : [pidFile];
     const fixture = join(directory, "fixture.mjs");
     let harnessPid: number | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -34,16 +37,35 @@ for (const mode of ["test-startup-timeout", "test-body-timeout", "worker-startup
         import assert from "node:assert/strict";
         import { readFileSync } from "node:fs";
         import test from "node:test";
-        import { LocalWorker, unusedPort } from ${JSON.stringify(workerModule)};
         const mode = ${JSON.stringify(mode)};
         const pidFile = ${JSON.stringify(pidFile)};
+        const entrypoint = ${JSON.stringify(entrypoint)};
         const assertGroupGone = () => {
           const pid = Number(readFileSync(pidFile, "utf8"));
           assert.throws(() => process.kill(-pid, 0), { code: "ESRCH" });
         };
-        test(mode, { timeout: mode.startsWith("test-") ? 1500 : 10000 }, async t => {
+        const keepTestAlive = t => {
+          // Node's test timeout is itself unref'ed. Model a test with pending
+          // work, then release that work when the timeout fires.
+          const pending = setInterval(() => {}, 1000);
+          t.after(() => clearInterval(pending));
+        };
+        if (mode === "sequential-import") {
+          for (const index of [1, 2]) {
+            test("fixture " + index, { timeout: 5000 }, async t => {
+              const { startFixture } = await import(${JSON.stringify(fixtureModule)});
+              assert.equal(typeof startFixture, "function");
+              const { LocalWorker, unusedPort } = await import(${JSON.stringify(workerModule)});
+              const worker = new LocalWorker(await unusedPort(), pidFile + "-" + index, mode, undefined, { entrypoint });
+              await worker.start();
+              t.after(() => worker.stop(true));
+            });
+          }
+        } else test(mode, { timeout: mode.startsWith("test-") ? 1500 : 10000 }, async t => {
+          keepTestAlive(t);
+          const { LocalWorker, unusedPort } = await import(${JSON.stringify(workerModule)});
           const worker = new LocalWorker(await unusedPort(), pidFile, mode, undefined, {
-            entrypoint: ${JSON.stringify(entrypoint)},
+            entrypoint,
             startupTimeoutMs: mode === "worker-startup-timeout" ? 1500 : 60000,
           });
           if (mode === "worker-startup-timeout") {
@@ -51,15 +73,14 @@ for (const mode of ["test-startup-timeout", "test-body-timeout", "worker-startup
             assertGroupGone();
             return;
           }
-          await worker.start();
+          await worker.start(t.signal);
           console.log("fixture ready");
           if (mode === "stop-escalation") {
             await worker.stop();
             assertGroupGone();
             return;
           }
-          // Register cleanup only after startup, like the integration fixtures.
-          t.after(() => worker.stop());
+          // Leave this worker running so the test exercises exit cleanup.
           await new Promise(() => {});
         });
       `);
@@ -84,15 +105,33 @@ for (const mode of ["test-startup-timeout", "test-body-timeout", "worker-startup
       if (mode.startsWith("test-")) assert.match(output, /testTimeoutFailure/, output);
       if (mode === "test-startup-timeout") assert.doesNotMatch(output, /fixture ready/);
       if (mode === "test-body-timeout") assert.match(output, /fixture ready/);
-      const pid = Number(await readFile(pidFile, "utf8"));
-      assert.ok(Number.isInteger(pid) && pid > 1);
-      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-      assert.throws(() => process.kill(-pid, 0), { code: "ESRCH" });
+      if (mode === "sequential-import") assert.match(output, /# pass 2\b/);
+      for (const file of pidFiles) {
+        const pid = Number(await readFile(file, "utf8"));
+        assert.ok(Number.isInteger(pid) && pid > 1);
+        const deadline = Date.now() + 1000;
+        for (;;) {
+          // An orphaned zombie has stopped running even if PID 1 has yet to reap it.
+          const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => "");
+          if (/^\d+ \(.*\) Z /.test(stat)) break;
+          try {
+            process.kill(-pid, 0);
+          } catch (error) {
+            assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
+            assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+            break;
+          }
+          assert.ok(Date.now() < deadline, `Worker process group ${pid} survived the test runner`);
+          await sleep(20);
+        }
+      }
     } finally {
       clearTimeout(timer);
       if (harnessPid) try { process.kill(-harnessPid, "SIGKILL"); } catch {}
-      const pid = Number(await readFile(pidFile, "utf8").catch(() => ""));
-      if (Number.isInteger(pid) && pid > 1) try { process.kill(-pid, "SIGKILL"); } catch {}
+      for (const file of pidFiles) {
+        const pid = Number(await readFile(file, "utf8").catch(() => ""));
+        if (Number.isInteger(pid) && pid > 1) try { process.kill(-pid, "SIGKILL"); } catch {}
+      }
       await rm(directory, { recursive: true, force: true });
     }
   });

@@ -1,5 +1,6 @@
 import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,13 +127,19 @@ export async function startFixture(
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   await admin.connect();
   await createMigratedDatabase(admin, base, schema);
-  cleanups.push(async () => { await admin.query(`drop database ${schema} with (force)`); });
+  // Keep migration and teardown alive while they use the maintenance connection.
+  // Between them an abandoned fixture must be able to exit.
+  const adminSocket = admin.connection.stream as Socket;
+  cleanups.push(async () => {
+    adminSocket.ref();
+    await admin.query(`drop database ${schema} with (force)`);
+  });
   // Hyperdrive validates a password even when isolated local Postgres uses trust auth.
   if (!parsed.password) parsed.password = "local-only-unused";
   parsed.pathname = `/${schema}`;
   parsed.search = "";
   const databaseUrl = parsed.toString(),
-    db = new pg.Pool({ connectionString: databaseUrl });
+    db = new pg.Pool({ connectionString: databaseUrl, allowExitOnIdle: true });
   cleanups.push(() => closePool(db));
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
@@ -174,7 +181,7 @@ export async function startFixture(
   const camelfs = options.camelfsStub ?? true;
   let camelfsVars: Record<string, string> = {};
   if (camelfs && !options.vars?.TEST_CAMELFS_URL) {
-    const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken);
+    const camelfsToken = `fixture-camelfs-${randomBytes(8).toString("hex")}`, daemon = await serveFakeCamelfsd(camelfsToken, { unref: true });
     cleanups.push(() => daemon.close());
     camelfsVars = { TEST_CAMELFS_URL: daemon.url, CAMELFS_API_TOKEN: camelfsToken };
   }
@@ -215,7 +222,8 @@ export async function startFixture(
     token,
   );
   startingWorker = worker;
-  await worker.start();
+  adminSocket.unref();
+  await worker.start(options.signal);
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   finishStartup();
   if ((config.vars.MAIL_TEST_URL || options.scheduled) && !stopped) {
@@ -237,7 +245,7 @@ export async function startFixture(
       await worker.stop(crash);
       Object.assign(config.vars, vars);
       await writeFile(configPath, JSON.stringify(config));
-      await worker.start();
+      await worker.start(options.signal);
     },
   };
   } catch (error) {

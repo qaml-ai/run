@@ -6,6 +6,7 @@ import { startFixture } from "./fixture.ts";
 
 async function fixture(t: TestContext) {
   const f = await startFixture({
+    signal: t.signal,
     entrypoint: fileURLToPath(new URL("./alarm-entry.ts", import.meta.url)),
     vars: { PILOT_DB_PROFILE: "1" },
   });
