@@ -233,12 +233,6 @@ variable "guest_image_prefix" {
   }
 }
 
-variable "results_expiry_days" {
-  description = "VM results hosts write to S3 (results/<lineage>/<vm>; K4) are deleted after this many days (a prefix lifecycle rule)."
-  type        = number
-  default     = 7
-}
-
 variable "github_subjects" {
   description = "OIDC subject prefixes of the repository whose GitHub Actions may publish the guest image (the runtime's infra/terraform uses the same immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub)."
   type        = list(string)
