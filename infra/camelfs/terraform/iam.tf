@@ -209,6 +209,14 @@ locals {
         Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
       },
+      # A host writes its VMs' results and never reads any (the tier does): results/ is write-only for hosts, whatever
+      # the shared bucket statement allows.
+      {
+        Sid      = "NoResultReads"
+        Effect   = "Deny"
+        Action   = ["s3:GetObject", "s3:GetObjectAttributes"]
+        Resource = ["${aws_s3_bucket.objects.arn}/results/*"]
+      },
       # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref, a lineage or a
       # control table directly (it asks the tier, which checks the fence), and never assumes another role.
       {
