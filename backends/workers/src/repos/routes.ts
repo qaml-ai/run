@@ -171,11 +171,11 @@ async function route(request: Request, env: RepoEnv, tenant: string, path: strin
   const match = /^\/v1\/repos\/([^/]+)(?:\/(.*))?$/.exec(path);
   if (!match)
     throw new RepoError('not_found', 404, 'not_found');
-  const id = decodeURIComponent(match[1]), tail = match[2] ?? '', ctx = await repoContext(env, tenant, id), ref = s.get('ref') ?? 'main', actor = apiWrite(tenant);
+  const id = decodeURIComponent(match[1]), tail = match[2] ?? '';
+  if (!tail && method === 'DELETE') return json(await deleteRepo(env, tenant, id));
+  const ctx = await repoContext(env, tenant, id), ref = s.get('ref') ?? 'main', actor = apiWrite(tenant);
   if (!tail && method === 'GET')
     return json(await ctx.repo.info());
-  if (!tail && method === 'DELETE')
-    return json(await deleteRepo(env, tenant, id));
   if (tail === 'refs' && method === 'GET')
     return json(await ctx.repo.refs());
   if (tail.startsWith('refs/')) {

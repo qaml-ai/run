@@ -53,7 +53,7 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
     }
   }
   const index = env.TENANTS.getByName(tenant);
-  const { row, existing } = await index.registerRepo({ id, name, key: input.key ?? null, lineage, createdAt: Date.now(), deletedAt: null, ...usage });
+  const { row, existing } = await index.registerRepo({ id, name, key: input.key ?? null, lineage, createdAt: Date.now(), deletedAt: null, ...usage }, tierConfigured(env) ? input.from?.repo : undefined);
   if (row.deletedAt !== null)
     throw new RepoError('deleted_key', 409, 'deleted_key');
   const { repo } = await repoContext(env, tenant, id, sub);
@@ -75,12 +75,24 @@ export async function createRepo(env: RepoEnv, tenant: string, input: {
 }
 export const agentRepo = (env: RepoEnv, tenant: string, agentId: string) => createRepo(env, tenant, { key: `agent:${agentId}`, name: `agent ${agentId}`, author: `agent:${agentId}` });
 export async function deleteRepo(env: RepoEnv, tenant: string, id: string) {
-  const ctx = await repoContext(env, tenant, id);
-  try {
-    if (ctx.repo instanceof HttpRepoClient) await ctx.repo.delete(`delete:${ctx.lineage}`);
-    else await ctx.repo.delete();
+  const index = env.TENANTS.getByName(tenant);
+  if (tierConfigured(env)) {
+    const row = await index.repoRow(id);
+    if (!row) throw new RepoError('no_repo', 404, 'no_repo');
+    const repo = new HttpRepoClient(env, tenant, row, `api:${tenant}`);
+    // A retry after a failed lineage delete resumes from the index tombstone.
+    if (row.deletedAt === null) await repo.delete();
+    if (await index.markTierRepoDeleted(id)) {
+      try { await repo.deleteLineage(`delete:${row.lineage}`); }
+      catch (e) {
+        const error = repoErrorFrom(e);
+        if (error?.status !== 410 || error.code !== 'lineage_deleted') throw e;
+      }
+    }
+  } else {
+    const ctx = await repoContext(env, tenant, id);
+    await ctx.repo.delete();
+    await index.markRepoDeleted(id);
   }
-  catch (e) { if (!(ctx.repo instanceof HttpRepoClient) || repoErrorFrom(e)?.code !== 'lineage_deleted') throw e; }
-  await env.TENANTS.getByName(tenant).markRepoDeleted(id, ctx.repo instanceof HttpRepoClient);
   return { deleted: true };
 }

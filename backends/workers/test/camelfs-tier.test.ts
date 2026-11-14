@@ -15,6 +15,7 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
 } });
 const { runtimeSigner, runtimeJwks } = await import("../src/tool-identity.ts");
 const { HttpRepoClient } = await import("../src/repos/http-client.ts");
+const { createRepo, deleteRepo } = await import("../src/repos/registry.ts");
 const { handleCamelfsSmoke } = await import("../src/camelfs/smoke.ts");
 hooks.deregister();
 
@@ -105,7 +106,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   await repo.cas({ ref: fence.ref, fence, expect: moved.version, commit: (await repo.commit(moved.version!))!, who: meta.author, why: "test" });
   assert.deepEqual(calls.at(-1)?.claims.fence, { holder: "host:1:mount", epoch: lease.epoch });
   assert.deepEqual(calls.at(-1)?.claims.refs, ["job/test"]);
-  await assert.rejects(repo.delete(), { code: "held", status: 409 });
+  await assert.rejects(repo.delete(), { code: "held", status: 409, detail: { held: ["job/test"] } });
   await repo.release(fence);
   await repo.watch("job/test", "workflow:x");
   await repo.unwatch("job/test", "workflow:x");
@@ -114,9 +115,10 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   await repo.restore("job/test", { ...meta, version: seed.commit });
   await repo.deleteRef("job/test");
   assert.deepEqual(await repo.deleteOwned("agent:unused"), { deleted: [], held: [] });
-  await repo.delete("delete");
-  await repo.delete("delete");
-  await assert.rejects(repo.delete("new-delete"), { code: "lineage_deleted", status: 410 });
+  await repo.delete();
+  await repo.deleteLineage("delete");
+  await repo.deleteLineage("delete");
+  await assert.rejects(repo.deleteLineage("new-delete"), { code: "lineage_deleted", status: 410 });
   await assert.rejects(repo.ref("main"), { code: "lineage_deleted", status: 410 });
   const another = { ...row, id: "repo_retry", lineage: "t:repo_retry" };
   const retry = new HttpRepoClient(env, "t", another, "agent:caller");
@@ -139,6 +141,62 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const retried = await retry.write({ ...meta, ref: "main", changes: [{ path: "probe", text: "two", expectBlob: "none" }] });
   assert.equal(retried.previous, concurrentVersion);
   assert.equal((await retry.ref("main"))?.version, retried.version);
+  await t.test("repo deletion and owner cleanup stay within each namespace", async () => {
+    const index = fixtureIndex(t);
+    const scoped = { ...env, TENANTS: { getByName: () => ({
+      registerRepo: index.register.bind(index),
+      repoRow: index.row.bind(index),
+      markTierRepoDeleted: index.markTierRepoDeleted.bind(index),
+    }) } } as unknown as Parameters<typeof createRepo>[0];
+    const source = (await createRepo(scoped, "t", { key: "source" })).info;
+    const from = { repo: source.id };
+    const first = (await createRepo(scoped, "t", { key: "first-fork", from })).info;
+    const last = (await createRepo(scoped, "t", { key: "last-fork", from })).info;
+    const [sourceRepo, firstFork, lastFork] = [source, first, last].map(
+      ({ id }) => new HttpRepoClient(env, "t", index.row(id)!, "api:t"),
+    );
+    for (const repo of [sourceRepo, firstFork, lastFork]) {
+      await repo.createRef({ name: "topic", from: "main", owner: "agent:shared", who: "api:t", why: "test" });
+    }
+    assert.deepEqual(await firstFork.deleteOwned("agent:shared"), { deleted: ["topic"], held: [] });
+    assert.equal(await firstFork.ref("topic"), null);
+    assert.ok(await sourceRepo.ref("topic"));
+    assert.ok(await lastFork.ref("topic"));
+    assert.deepEqual(await sourceRepo.deleteOwned("agent:shared"), { deleted: ["topic"], held: [] });
+    assert.ok(await lastFork.ref("topic"));
+
+    await firstFork.createRef({ name: "z-topic", from: "main", who: "api:t", why: "test" });
+    const forkLease = await firstFork.acquire({ ref: "main", holder, ttlMs: 60_000 });
+    await assert.rejects(deleteRepo(scoped, "t", first.id), { status: 409, code: "held", detail: { held: ["main"] } });
+    assert.equal(index.row(first.id)?.deletedAt, null);
+    assert.ok(await firstFork.ref("z-topic"));
+    await firstFork.release({ ref: "main", holder, epoch: forkLease.epoch });
+
+    await deleteRepo(scoped, "t", first.id);
+    assert.equal(await firstFork.ref("main"), null);
+    assert.equal(await firstFork.ref("z-topic"), null);
+    assert.ok(await sourceRepo.ref("main"));
+    assert.ok(await lastFork.ref("main"));
+    assert.equal(index.row(source.id)?.deletedAt, null);
+    assert.equal(index.row(last.id)?.deletedAt, null);
+
+    await deleteRepo(scoped, "t", source.id);
+    assert.equal(await sourceRepo.ref("main"), null);
+    assert.ok(await lastFork.ref("main"));
+    assert.equal(index.row(last.id)?.deletedAt, null);
+
+    await deleteRepo(scoped, "t", last.id);
+    await assert.rejects(lastFork.ref("main"), { status: 410, code: "lineage_deleted" });
+    assert.ok(index.row(last.id)?.deletedAt);
+    await deleteRepo(scoped, "t", last.id);
+
+    const recovery = (await createRepo(scoped, "t", { key: "recovery" })).info;
+    const recoveryRepo = new HttpRepoClient(env, "t", index.row(recovery.id)!, "api:t");
+    await recoveryRepo.delete();
+    assert.equal(index.markTierRepoDeleted(recovery.id), true);
+    await recoveryRepo.deleteLineage("external-delete");
+    await deleteRepo(scoped, "t", recovery.id);
+  });
   assert.equal(new Set(calls.map(c => c.token)).size, calls.length);
   for (const call of calls.filter(c => c.path.includes("repo_r3"))) {
     assert.equal(call.claims.lin, row.lineage);

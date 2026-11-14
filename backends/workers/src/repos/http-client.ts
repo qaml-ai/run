@@ -1,7 +1,7 @@
 import { tierRequest, TierError, type TierEnv } from "../camelfs/tier.ts";
 import type { TierClaims, TierFence, TierHolder } from "../camelfs/claims.ts";
 import type { RepoClient } from "./client.ts";
-import { RepoError, refName, type Ref, type Entry, type Version } from "./repo-policy.ts";
+import { RepoError, check, ownership, refName, type Ref, type Entry, type Version } from "./repo-policy.ts";
 import type { RepoRow } from "./tenant-repos.ts";
 import type { CommitInfo, DiffChange } from "./storage.ts";
 import type { MoveResult, RepoQuota, RepoWrite, WriteResult } from "./write-input.ts";
@@ -12,7 +12,7 @@ type Cas = Omit<Parameters<RepoClient["cas"]>[0], "fence"> & { fence?: TierFence
 type Metadata = Pick<RepoWrite, "author" | "time" | "message" | "trailers" | "quota">;
 
 export const needsK5 = () => new RepoError("repo jobs on the tier arrive with K5", 501, "needs_k5");
-const forkNamespace = /^fork\/repo_[a-f0-9]{24}(?:\/|$)/;
+const forkNamespace = "fork/";
 const path = (name: string) => encodeURIComponent(name);
 const missing = (e: unknown, code: string) => e instanceof RepoError && e.status === 404 && e.code === code;
 
@@ -34,7 +34,7 @@ export class HttpRepoClient implements RepoClient {
   private get prefix() { return this.row.lineage === `${this.tenant}:${this.row.id}` ? "" : `fork/${this.row.id}/`; }
   tierRefName(ref: string) {
     refName(ref);
-    if (!this.prefix && forkNamespace.test(ref)) throw new RepoError("Reserved fork ref", 400, "bad_ref");
+    if (!this.prefix && ref.startsWith(forkNamespace)) throw new RepoError("Reserved fork ref", 400, "bad_ref");
     return this.prefix + ref;
   }
   private refPath(ref: string) { return "/refs/" + path(this.tierRefName(ref)); }
@@ -73,7 +73,7 @@ export class HttpRepoClient implements RepoClient {
     let after: string | undefined;
     do {
       const page: { refs: WireRef[]; next?: string } = await this.call("GET", "/refs", "r", { query: { after, prefix: this.prefix || undefined } });
-      refs.push(...page.refs.filter(ref => this.prefix || !forkNamespace.test(ref.name)).map(ref => this.local(ref)));
+      refs.push(...page.refs.filter(ref => this.prefix ? ref.name.startsWith(this.prefix) : !ref.name.startsWith(forkNamespace)).map(ref => this.local(ref)));
       if (page.next && page.next === after) throw new RepoError("Non-advancing refs cursor", 502, "invalid_response");
       after = page.next;
     } while (after);
@@ -108,8 +108,25 @@ export class HttpRepoClient implements RepoClient {
     await this.call("DELETE", this.refPath(name), "w", { refs: [this.tierRefName(name)], query: { expect } });
   }
 
-  deleteOwned(owner: string) {
-    return this.call<{ deleted: string[]; held: string[] }>("DELETE", "/refs", "w", { query: { owner } });
+  private async deleteListedRef(ref: Ref) {
+    try { await this.deleteRef(ref.name, ref.version); return true; }
+    catch (e) { if (missing(e, "ref_not_found")) return false; throw e; }
+  }
+
+  async deleteOwned(owner: string) {
+    check(typeof owner === "string", "bad_owner");
+    ownership(owner);
+    const deleted: string[] = [], held: string[] = [];
+    for (const ref of await this.refs()) {
+      if (ref.owner !== owner) continue;
+      try {
+        if (await this.deleteListedRef(ref)) deleted.push(ref.name);
+      } catch (e) {
+        if (!(e instanceof RepoError && e.status === 409 && e.code === "held")) throw e;
+        held.push(ref.name);
+      }
+    }
+    return { deleted, held };
   }
 
   async cas(input: Cas) {
@@ -196,9 +213,20 @@ export class HttpRepoClient implements RepoClient {
   watch(ref: string, watcher: string) { return this.watcher("PUT", ref, watcher); }
   unwatch(ref: string, watcher: string) { return this.watcher("DELETE", ref, watcher); }
 
-  async delete(key?: string) {
-    await this.call("DELETE", "", "w", { sub: "runtime:repo-delete", key });
+  async delete() {
+    for (const ref of await this.refs()) {
+      try { await this.deleteListedRef(ref); }
+      catch (e) {
+        if (e instanceof RepoError && e.status === 409 && e.code === "held")
+          throw new RepoError(e.reason, e.status, e.code, { ...e.detail, held: [ref.name] });
+        throw e;
+      }
+    }
     return { deleted: true as const };
+  }
+
+  async deleteLineage(key: string) {
+    await this.call("DELETE", "", "w", { sub: "runtime:repo-delete", key });
   }
 
   async blobSize(): Promise<never> { throw new Error("camelFS accounts for blob sizes"); }
