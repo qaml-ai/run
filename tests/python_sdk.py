@@ -1248,6 +1248,32 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.to_thread(agents.voice.get, "vs_000000000000000000000000")
             self.assertEqual(refused.exception.status, 404)
 
+    async def test_client_held_voice_calls_reach_the_api(self):
+        agent = await self.make()
+        call_id = "vc_" + "0" * 24
+        with self.assertRaises(ValueError):
+            self.agents.voice.create()
+        # This fresh runtime has only an OpenRouter key and inherits no provider keys from the parent environment.
+        with self.assertRaises(AgentError) as refused:
+            await self.agents.voice.create(agent=agent.id, provider="openai", sdp="v=0", subject="user_1")
+        self.assertEqual((refused.exception.status, refused.exception.code), (400, "REALTIME_UNAVAILABLE"))
+        self.assertIn("No OpenAI key for voice calls", str(refused.exception))
+        with self.assertRaises(AgentError) as missing:
+            await self.agents.voice.end(call_id, reason="x")
+        self.assertEqual((missing.exception.status, missing.exception.code), (404, "VOICE_CALL_NOT_FOUND"))
+        # Only POST /end validates a supplied reason. DELETE would still return 404.
+        with self.assertRaises(AgentError) as invalid:
+            await self.agents.voice.end(call_id, reason="x" * 101)
+        self.assertEqual(invalid.exception.status, 400)
+        self.assertIn("reason", str(invalid.exception))
+        with sync.Agents(self.token, url=self.url) as agents:
+            with self.assertRaises(AgentError) as refused:
+                await asyncio.to_thread(agents.voice.create, agent=agent.id, provider="openai", sdp="v=0", subject="user_1")
+            self.assertEqual((refused.exception.status, refused.exception.code), (400, "REALTIME_UNAVAILABLE"))
+            with self.assertRaises(AgentError) as missing:
+                await asyncio.to_thread(agents.voice.transcript, call_id, "ana", "Hello", seconds=0, started_at=0, ended_at=0)
+            self.assertEqual((missing.exception.status, missing.exception.code), (404, "VOICE_CALL_NOT_FOUND"))
+
     async def test_audio_is_transcribed_in_messages_runs_and_on_its_own(self):
         put = await self.runtime.http.put(f"{self.url}/v1/providers/openai/key", headers={"Authorization": f"Bearer {self.token}"}, json={"apiKey": "py-openai-key", "verify": False})
         self.assertEqual(put.status_code, 200, put.text)
