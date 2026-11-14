@@ -319,8 +319,9 @@ scripts.
   - File operations run beside a running `bash` command. They serialize only against a checkpoint in flight: a
     checkpoint waits for the file operations already running, and a file operation waits for a checkpoint already
     running.
-  - A write that races a running command is accepted behaviour (the lead, 2026-11-14), not a limitation. When the VM is stopped, the branch is unheld, and file tools and API writes work on the ref
-  directly. There is never a second writer.
+  - A write that races a running command is accepted behaviour (the lead, 2026-11-14), not a limitation.
+  - When the VM is stopped, the branch is unheld, and file tools and API writes work on the ref directly. There is
+    never a second writer.
 - **Sprite-like VMs: they sleep after seconds of inactivity and wake on the next call** (Miguel, 2026-11-14).
   Two tiers:
   - **v1 (now): idle stop with checkpoint.**
