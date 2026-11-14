@@ -45,6 +45,7 @@ export interface AccountDeletionOptions {
   /** Write storage-usage deltas, so none for the tenant's deleted objects is written after its rows go. */
   flushStorageUsage?(): Promise<void>;
   removeComputers?(tenant: string): Promise<void>;
+  deleteComputerConnections(tenant: string): Promise<void>;
   /** Restrict maintenance claims when a bounded operator manages one tenant. */
   onlyTenant?: string;
   /** Durable host wake-up. Awaited after recording intent, before accepting the request. */
@@ -55,7 +56,7 @@ export interface AccountDeletionOptions {
 
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
 const TENANT_TABLES = [
-  "computer_operations", "computer_commands", "computer_leases", "managed_computers", "computer_snapshots", "computer_connections", "computer_blocks",
+  "computer_blocks",
   "schedule_runs", "schedule_deliveries", "workspace_usage", "usage_details", "usage_bucket_details", "workspace_assignments", "workspaces",
   "discord_setup_attempts", "discord_server_bindings",
   "console_sessions", "tenant_passwords", "account_email_links", "api_tokens", "oauth_grants", "provider_keys", "github_apps", "vault_secrets", "key_scope_providers", "model_providers", "definitions",
@@ -220,6 +221,7 @@ export class AccountDeletions {
     await this.options.storage.removeBlobs(`recordings/${tenant}/`);
     await this.options.flushStorageUsage?.();
     await this.deleteCustomers(tenant);
+    await this.options.deleteComputerConnections(tenant);
     await transaction(db, async sql => {
       for (const table of TENANT_TABLES) await sql.query(`delete from ${table} where tenant = $1`, [tenant]);
       await deleteJourneyAccount(sql, tenant);

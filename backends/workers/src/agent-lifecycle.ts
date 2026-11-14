@@ -300,9 +300,11 @@ export async function wakeImpl(this: AgentRuntime) {
       await this.resumeKeptQueue();
       await this.restoreCancellations();
     }
-    if (conf)
+    if (conf && await this.ctx.storage.get(COMPUTER_ATTACHED) !== false)
       await this.serializeComputer(() =>
-        new ComputerService(this.env, conf.tenantId).sweepAgent(conf.id),
+        new ComputerService(this.env, conf.tenantId, undefined, {
+          agent: conf.id, clearComputerAttached: () => this.clearComputerAttached(),
+        }).sweepAgent(conf.id),
       ).catch(() =>
         console.error(
           JSON.stringify({ type: "computer_cleanup_failed", agent: conf.id }),

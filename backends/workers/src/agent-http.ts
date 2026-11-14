@@ -300,7 +300,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
           await this.abortExecutions();
           if (conf)
             await this.serializeComputer(() =>
-              new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
+              new ComputerService(this.env, conf.tenantId, undefined, {
+                agent: conf.id, clearComputerAttached: () => this.clearComputerAttached(),
+              }).removeAgent(conf.id),
             );
           await this.delegation.destroy();
           await this.harness.session().abort();
@@ -351,7 +353,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
             connectionOnly: !!input.args.connectionOnly, setup: async () => computerSetup(this.env, conf),
             serialize: run => this.serializeComputer(run) }), 201);
         return await this.serializeComputer(async () => {
-          const service = new ComputerService(this.env, conf.tenantId);
+          const service = new ComputerService(this.env, conf.tenantId, undefined, {
+            agent: conf.id, clearComputerAttached: () => this.clearComputerAttached(),
+          });
           if (input.operation === "sweep") {
             await service.sweepAgent(conf.id);
             await this.arm();

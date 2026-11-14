@@ -21,6 +21,7 @@ import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
+import { sweepComputerAttachmentClears } from './computers/attachment-hint.ts';
 import { sweepComputers, sweepSnapshots } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
@@ -790,6 +791,7 @@ const worker = {
     catch(error) { failure(env,"trigger_scan_failed",error); }
     try {
       await withSql(env,sql=>pruneScheduleRuns(sql)).catch(error=>failure(env,"schedule_retention_failed",error));
+      await sweepComputerAttachmentClears(env).catch(error => failure(env, "computer_attachment_clear_sweep_failed", error));
       if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await inboxSql(env, sql => sweepInboxReceipts(sql)); await workerDreaming(env).scan(); return; }
       await maintenance(env);
       await moneyMaintenance(env);

@@ -13,7 +13,8 @@ function method(file: string, name: string, globals: Record<string, unknown> = {
     ts.isVariableStatement(node) && node.declarationList.declarations.some(d => d.name.getText(source) === name));
   assert.equal(selected.length, 1);
   const declaration = selected[0].getText(source).replace(/^export /, "");
-  const code = ts.transpileModule(ts.isMethodDeclaration(selected[0]) ? `function ${declaration}` : declaration, {
+  const methodDeclaration = declaration.replace(/^private /, "").replace(/^(async )?/, "$1function ");
+  const code = ts.transpileModule(ts.isMethodDeclaration(selected[0]) ? methodDeclaration : declaration, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   }).outputText;
   return runInNewContext(`${code}\n${name}`, globals);
@@ -108,7 +109,7 @@ test("arming skips only a known absent computer and preserves live lease deadlin
     const runtime = {
       invalidateMaintenance() {}, maintenanceGeneration: 0,
       ctx: { storage: {
-        get: async (name: string) => name === key ? attached : name === "configuration" ? { id: "agent", tenantId: "tenant" } : undefined,
+        get: async (name: string) => name === key ? attached : name === "configuration" ? { id: "agent", tenantId: "tenant" } : name === key ? attached : undefined,
         list: async () => new Map(),
       }, getWebSockets: () => [] },
       env: {}, records: async () => [], delegation: { children: async () => [] },
@@ -123,20 +124,20 @@ test("arming skips only a known absent computer and preserves live lease deadlin
   }
 });
 
-test("wake processes decisions only when their deadline is due", async () => {
+test("wake skips sweep only for a false attachment hint and processes only due decisions", async () => {
   const now = 100_000;
   const noop = async () => {};
-  for (const deadline of [undefined, now + 1, now, now - 1]) {
-    let expirations = 0;
+  for (const [attached, deadline] of [[undefined, undefined], [false, now + 1], [true, now], [false, now - 1]] as const) {
+    let expirations = 0, sweeps = 0;
     const wake = method("agent-lifecycle", "wakeImpl", {
-      Date: { now: () => now }, restageInputMirrors: noop, flushScheduleOutcomes: noop,
+      COMPUTER_ATTACHED: key, Date: { now: () => now }, restageInputMirrors: noop, flushScheduleOutcomes: noop,
       expireDecisions: async () => { expirations++; }, flushMonitors: noop, collectChecks: noop,
-      ComputerService: class { sweepAgent = noop; },
+      ComputerService: class { async sweepAgent() { sweeps++; } },
     });
     const runtime = {
       env: {}, ctx: { storage: {
         get: async (name: string) => name === "decision-input-deadline" ? deadline :
-          name === "configuration" ? { id: "agent", tenantId: "tenant" } : undefined,
+          name === "configuration" ? { id: "agent", tenantId: "tenant" } : name === key ? attached : undefined,
         list: async () => new Map(),
       }, getWebSockets: () => [], waitUntil() {} },
       admission: Promise.resolve(), configurationQueue: { kick() {} }, promptPreparations: { sweep: noop },
@@ -147,6 +148,7 @@ test("wake processes decisions only when their deadline is due", async () => {
       arm: noop,
     };
     await wake.call(runtime);
+    assert.equal(sweeps, attached === false ? 0 : 1);
     assert.equal(expirations, deadline !== undefined && deadline <= now ? 1 : 0);
   }
 });
@@ -176,4 +178,88 @@ test("startup recovers decisions only for configured live agents", async () => {
     await restore.call(runtime);
     assert.equal(expirations, state === "live" ? 1 : 0);
   }
+});
+
+
+test("connection writers commit before clearing the affected agent", async () => {
+  for (const writer of ["create", "inherit", "fork", "detach local", "detach remote", "account delete"]) {
+    const calls: string[] = [];
+    const row = { id: "connection", agent: "target" };
+    const sql = { async query(query: string) {
+      if (/^(insert into|update|delete from) computer_connections/.test(query)) {
+        calls.push("write");
+        return { rows: writer === "account delete" ? [row, { agent: "removed:already" }] : [row], rowCount: 1 };
+      }
+      if (query.startsWith("insert into computer_attachment_clears")) calls.push("pending");
+      if (query.startsWith("delete from computer_attachment_clears")) calls.push("ack");
+      return { rows: [row], rowCount: 1 };
+    } };
+    const withSql = (_env: unknown, run: Function) => run(sql);
+    const writeComputerConnections = method("computers/attachment-hint", "writeComputerConnections", {
+      crypto, applyScope: { getStore: () => undefined },
+      transaction: async (_env: unknown, write: Function) => {
+        const result = await write(sql);
+        calls.push("commit");
+        return result;
+      },
+      clear: (env: unknown, agent: string, token: string, local: unknown) => clear(env, agent, token, local),
+    });
+    const clear = method("computers/attachment-hint", "clear", { withSql });
+    const clearComputerAttached = async () => { calls.push("local"); return true; };
+    const env = { AGENTS: { getByName(agent: string) {
+      assert.equal(agent, 'target');
+      return { async clearComputerAttached() { calls.push("rpc"); return true; } };
+    } } };
+    const globals = {
+      withSql, writeComputerConnections, id: () => "new-id", seal: async () => ({}),
+      connectionInput: () => ({ agent: "target" }), publicConnection: (row: unknown) => row,
+      computerOwner: async () => "parent", ComputerService: class { credentials() { return {}; } },
+      forkRows: { attachable: async () => ({ id: "seed" }) }, latest: async () => null,
+    };
+    // Create's duplicate check has no row. The other writers use the same mock connection.
+    const query = sql.query.bind(sql);
+    sql.query = async (text: string) => text.startsWith("select 1 from computer_connections")
+      ? { rows: [], rowCount: 0 } : query(text);
+    const attach = method("computers/service", "attachConnection", globals);
+    const methods = { ...globals, attachConnection: attach };
+    const runtime = { env, tenant: "tenant", stop: async () => {}, localAttachmentHint: writer === "detach local" ? { agent: "target", clearComputerAttached } : undefined };
+    if (writer === "inherit") await method("computers/service", "inheritComputer", methods)(env, "tenant", "parent", "target");
+    else if (writer === "fork") await method("computers/service", "forkInto", methods).call(runtime, "parent", { id: "seed" }, ["target"]);
+    else if (writer === "account delete") await method("computers/service", "deleteTenantComputerConnections", methods)(env, "tenant");
+    else if (writer.startsWith("detach")) await method("computers/service", "detach", methods).call(runtime, row);
+    else await method("computers/service", "create", methods).call(runtime, {});
+    assert.deepEqual(calls, ["write", "pending", "commit", writer === "detach local" ? "local" : "rpc", "ack"], writer);
+  }
+});
+
+test("a failed post-commit clear stays pending and maintenance retries it", async () => {
+  const calls: string[] = [];
+  const row = { agent: "target", token: crypto.randomUUID() };
+  const sql = { async query(query: string) {
+    if (query.includes("set due_at")) { calls.push("claim"); return { rows: [row] }; }
+    if (query.startsWith("insert")) calls.push("pending");
+    if (query.startsWith("delete")) calls.push("ack");
+    return { rows: [] };
+  } };
+  const withSql = (_env: unknown, run: Function) => run(sql);
+  const clear = method("computers/attachment-hint", "clear", { withSql });
+  const clearError = class extends Error {};
+  const write = method("computers/attachment-hint", "writeComputerConnections", {
+    clear, crypto, applyScope: { getStore: () => undefined }, ComputerHintClearError: clearError,
+    transaction: async (_env: unknown, run: Function) => {
+      const result = await run(sql);
+      calls.push("commit");
+      return result;
+    },
+  });
+  let unavailable = true;
+  const env = { AGENTS: { getByName: () => ({ async clearComputerAttached() {
+    calls.push("rpc");
+    if (unavailable) throw new Error("unavailable");
+  } }) } };
+  await assert.rejects(write(env, async () => ({ value: null, agents: [row.agent] })), clearError);
+  assert.deepEqual(calls, ["pending", "commit", "rpc"]);
+  unavailable = false;
+  await method("computers/attachment-hint", "sweepComputerAttachmentClears", { withSql, clear })(env);
+  assert.deepEqual(calls, ["pending", "commit", "rpc", "claim", "rpc", "ack"]);
 });
