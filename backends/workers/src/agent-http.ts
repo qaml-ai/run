@@ -82,7 +82,7 @@ export async function stateImpl(this: AgentRuntime, invocation: AgentInvocation)
         .map((record) => this.settle(record.id, 1, invocation)),
     );
     const activity = await this.activity();
-    const spend = await this.agentSpend(await this.config());
+    const spend = await this.agentSpend(await this.config(), undefined, invocation);
     const lastActive = Math.max(this.recentEvents.lastActivity() ?? 0, (await this.ctx.storage.get<number>("last-active")) ?? 0);
     // A turn that suspended from code left nothing running: the agent is idle at once, until anything happens again.
     const unloaded = (await this.ctx.storage.get<number>("unloaded-at")) ?? 0;
@@ -175,12 +175,13 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
             this.env,
             incoming.tenantId,
             incoming.config.keyScope,
+            invocation,
           );
           const model = this.models.resolve(
             incoming.config.model,
             incoming.config.runLimits?.contextTokens,
             providers,
-            (await keyServices(this.env)).tenants.modelEndpoints(incoming.tenantId),
+            (await keyServices(this.env, invocation)).tenants.modelEndpoints(incoming.tenantId),
             incoming.resolvedModel,
           );
           this.modelCompaction = fixed => modelCompactionSettings(model, incoming.config.maxOutputTokens, fixed);
@@ -198,6 +199,8 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
               incoming.tenantId,
               incoming.id,
               incoming.config.spendLimit ?? null,
+              undefined,
+              invocation,
             );
           await this.ctx.storage.put("configuration", incoming);
           const workspace = agentRepoId(incoming.tenantId, incoming.id);
@@ -271,7 +274,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           this.registry.install({ name: "camel.delegation", tools: messaging.delegation });
           this.registry.install({ name: "camel.files", tools: wordedFileTools(this.workspaceFileTools, incoming.config), sections: [] });
           this.availableTools = prioritizedTools(this.registry.snapshot().tools());
-          const enabled = await this.enabledTools(incoming.config);
+          const enabled = await this.enabledTools(incoming.config, invocation);
           await root.configure(
             {
               model: { provider: model.provider, modelId: model.id },
@@ -355,12 +358,12 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
             return json({ swept: true });
           }
           if (input.operation === "refresh") {
-            await this.refreshComputerTools();
+            await this.refreshComputerTools(invocation);
             return json({ refreshed: true });
           }
           if (input.operation === "remove") {
             const removed = await service.remove(conf.id);
-            await this.refreshComputerTools();
+            await this.refreshComputerTools(invocation);
             return json(removed);
           }
           if (input.operation === "confirm-cleanup")
@@ -412,7 +415,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
         if (!namespace) return json({ error: "Optional computer is not configured" }, 501);
         const input = (await body(request)) as { batch: string; into: string[] };
         const conf = await this.config(), parent = this.ctx.id.toString();
-        if (!(await this.hasNativeComputer())) return json({ error: NO_COMPUTER, code: "NO_COMPUTER" }, 409);
+        if (!(await this.hasNativeComputer(undefined, invocation))) return json({ error: NO_COMPUTER, code: "NO_COMPUTER" }, 409);
         const answer = await namespace.getByName(parent).forkSnapshot(input.batch, await computerSetup(this.env, conf));
         if (!answer.ok) return json(answer, 409);
         const at = Date.now();
@@ -549,7 +552,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
         }
         const sources = toolSourceViews(
           conf.config as never,
-          (await this.enabledTools(conf.config)).tools,
+          (await this.enabledTools(conf.config, invocation)).tools,
           this.attached.connected,
           this.sourceFailures,
           refresh === "true" || (await this.state(invocation)).running,
@@ -609,7 +612,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           root = await pi.root(BACKGROUND_CONTEXT);
         const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT),
           conf = await this.config();
-        const values: Array<ReturnType<typeof humanInputView> | ReturnType<typeof inputView>> = (await decisionInputs(this).list(conf.tenantId, { agent: conf.id, ...(url.searchParams.get("state") ? { state: url.searchParams.get("state")! } : {}) })).filter(row => row.blocking === false).map(row => ({ ...inputView(row), question: row.message }));
+        const values: Array<ReturnType<typeof humanInputView> | ReturnType<typeof inputView>> = (await decisionInputs(this, invocation).list(conf.tenantId, { agent: conf.id, ...(url.searchParams.get("state") ? { state: url.searchParams.get("state")! } : {}) })).filter(row => row.blocking === false).map(row => ({ ...inputView(row), question: row.message }));
         const state = url.searchParams.get("state") ?? "all";
         if (
           ![
@@ -654,7 +657,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           return this.fetch(invocation, new Request(url, { method, headers: { "Content-Type": "application/json" }, ...(data ? { body: JSON.stringify(data) } : {}) }));
         };
         const read = async (id: string) => {
-          const decision = await decisionInputs(this).get(id);
+          const decision = await decisionInputs(this, invocation).get(id);
           if (decision?.agent === conf.id && decision.tenant === conf.tenantId && decision.blocking === false) return { ...inputView(decision), fixedResponders: decision.stored.fixedResponders };
           const pi = await this.harness.pi(), doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
           const pending = doc?.requests[id];
@@ -766,8 +769,8 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
           await (async () => {
             const conf = await this.config();
             // No computer, no container: an agent without one is refused before anything starts.
-            if (!(await this.hasNativeComputer())) throw new HttpError(409, NO_COMPUTER, "NO_COMPUTER");
-            const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id));
+            if (!(await this.hasNativeComputer(undefined, invocation))) throw new HttpError(409, NO_COMPUTER, "NO_COMPUTER");
+            const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id), invocation);
             if (owner !== conf.id && ["sleep", "restore"].includes(input.op)) throw new BadRequest(SHARED_COMPUTER_CONTROL);
             return namespace.getByName(this.env.AGENTS.idFromName(owner).toString()).operate(input as never, await computerSetup(this.env, conf));
           })(),

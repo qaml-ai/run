@@ -263,7 +263,8 @@ export class BashSessions {
 
   completed(key: string) { return this.receipt(key)?.result; }
 
-  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args, invocation = new AgentInvocation()): Promise<SessionResult> {
+  async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args, invocation?: AgentInvocation): Promise<SessionResult> {
+    if (!invocation) return AgentInvocation.run(scope => this.execute(conf, branch, key, callId, requestId, args, scope));
     return this.serial(branch.branch, async () => {
       const previous = this.receipt(key);
       if (previous?.result) return previous.result;
@@ -352,7 +353,7 @@ export class BashSessions {
         const checkpoint = { vm, callId: execId, message: "Save VM file changes", time: Date.now() };
         const key = JSON.stringify(["vmfiles", vm.vm_id]);
         if (mutation) {
-          await this.arm(Date.now() + 1_000, new AgentInvocation());
+          await AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope));
           this.savedHeads.delete(vm.vm_id);
           // Record the pending save before dispatch. The mutation can succeed even if its response is lost.
           this.save(key, branch, { checkpoint });
@@ -382,7 +383,9 @@ export class BashSessions {
   }
 
   private scheduleCheckpoint(branch: string) {
-    this.defer(sleep(0).then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch)))).catch(() => this.arm(Date.now() + 1_000, new AgentInvocation())));
+    this.defer(sleep(0)
+      .then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))))
+      .catch(() => AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope))));
   }
 
   private rememberHead(vm: Vm, { version, tree }: Head) {
@@ -446,7 +449,8 @@ export class BashSessions {
       FROM agent_vms v LEFT JOIN agent_vm_renewal r ON v.vm_id=r.vm_id WHERE v.state='running'`, LEASE_MS - RENEW_MS).one().at ?? Infinity;
   }
 
-  async wake(conf: Config, invocation = new AgentInvocation()) {
+  async wake(conf: Config, invocation?: AgentInvocation): Promise<void> {
+    if (!invocation) return AgentInvocation.run(scope => this.wake(conf, scope));
     if (!bashEnabled(this.env)) return;
     for (const { branch } of this.sql.exec<{ branch: string }>("SELECT DISTINCT branch FROM agent_vm_calls WHERE checkpoint=1").toArray())
       this.defer(this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))));
@@ -519,7 +523,7 @@ export function bashTool(runtime: AgentRuntime) {
         if (!(repo instanceof HttpRepoClient)) throw new Error("Bash requires a camel-fs workspace");
         const ref = repo.tierRefName(mount.ref ?? "main");
         try {
-          result = await runtime.bashSessions.execute(conf, { branch: JSON.stringify([lineage, ref]), lineage, ref }, key, api.callId, run.id, args, new AgentInvocation());
+          result = await runtime.bashSessions.execute(conf, { branch: JSON.stringify([lineage, ref]), lineage, ref }, key, api.callId, run.id, args);
         } catch (error) {
           if (error instanceof TierError && error.status === 429) throw new HttpError(429, computeBusy);
           throw error;

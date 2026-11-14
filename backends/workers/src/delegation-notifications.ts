@@ -89,12 +89,14 @@ export class DelegationNotifications {
   private host: NotificationHost;
   private rows: ChildRows;
   constructor(host: NotificationHost) { this.host = host; this.rows = host.children ?? new ChildRows(host.storage); }
-  async deliver(child: DelegatedChild, invocation = new AgentInvocation()): Promise<void> {
+  async deliver(child: DelegatedChild, invocation?: AgentInvocation): Promise<void> {
+    if (!invocation) return AgentInvocation.run(scope => this.deliver(child, scope));
     const key = prefix + child.key;
     if (!await this.host.storage.get(key, { noCache: true })) await this.host.storage.put(key, outboxEntry(child), { noCache: true });
     await this.send(key, invocation);
   }
-  async deliverMessage(request: NoticeRequest, notice: RuntimeNotice, invocation = new AgentInvocation()): Promise<unknown> {
+  async deliverMessage(request: NoticeRequest, notice: RuntimeNotice, invocation?: AgentInvocation): Promise<unknown> {
+    if (!invocation) return AgentInvocation.run(scope => this.deliverMessage(request, notice, scope));
     const key = prefix + request.id;
     if (!await this.host.storage.get(key, { noCache: true })) await this.host.storage.put(key, { request, notice } satisfies PendingNotice, { noCache: true });
     return this.send(key, invocation);
@@ -203,7 +205,8 @@ export class DelegationNotifications {
     }
   }
   /** An aborted parent still records queued child endings, without starting another turn. */
-  async abortPending(invocation = new AgentInvocation()) {
+  async abortPending(invocation?: AgentInvocation): Promise<void> {
+    if (!invocation) return AgentInvocation.run(scope => this.abortPending(scope));
     for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
       if (notice.delivered) continue;
       await this.active.get(key);
@@ -213,7 +216,8 @@ export class DelegationNotifications {
       await this.send(key, invocation);
     }
   }
-  async drain(invocation = new AgentInvocation()) {
+  async drain(invocation?: AgentInvocation): Promise<void> {
+    if (!invocation) return AgentInvocation.run(scope => this.drain(scope));
     for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
       if (!notice.delivered || (notice.batch?.length && !notice.carriedDiscarded)) await this.send(key, invocation);
       else if (notice.batchedInto && !notice.discarded) await this.discardCarried(key, notice);

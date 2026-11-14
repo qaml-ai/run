@@ -40,9 +40,10 @@ test("a turn's Postgres statements stay under the budget", { timeout: 180_000 },
     return value;
   };
   const { id: agent } = await call("/v1/agents", { model: "test/echo" });
-  type Phases = Record<string, { queries: number; statements: Record<string, { queries: number }> }>;
+  type Phases = Record<string, { queries: number; connections: number; statements: Record<string, { queries: number }> }>;
   const profile = async () => (await call(`/experimental/agents/${agent}/__test/alarm-state`)).profile as { epoch: string; phases: Phases };
-  const total = (phases: Phases) => Object.values(phases).reduce((sum, phase) => sum + phase.queries, 0);
+  const total = (phases: Phases, field: "queries" | "connections" = "queries") =>
+    Object.values(phases).reduce((sum, phase) => sum + phase[field], 0);
   /** The profile once post-turn work has landed: no new statement for 1.5 s. */
   const settled = async () => {
     let last = await profile();
@@ -70,17 +71,20 @@ test("a turn's Postgres statements stay under the budget", { timeout: 180_000 },
         const delta = queries - (before.phases[phase]?.statements[category]?.queries ?? 0);
         if (delta) statements[`${phase} ${category}`] = delta;
       }
-    return { count: total(after.phases) - total(before.phases), statements };
+    return { count: total(after.phases) - total(before.phases), connects: total(after.phases, "connections") - total(before.phases, "connections"), statements };
   };
 
   const counts: Record<string, number> = {};
+  const connections: Record<string, number> = {};
   const breakdowns: Record<string, Record<string, number>> = {};
   for (const [name, text] of [["simple", "hello"], ["tool", "tool:write:alpha"], ["slow", "slow:3000:hello slowly"]] as const) {
-    const { count, statements } = await turn(name, text);
+    const { count, connects, statements } = await turn(name, text);
     counts[name] = count;
+    connections[name] = connects;
     breakdowns[name] = statements;
   }
   t.diagnostic(`statements per turn: ${JSON.stringify(counts)}`);
+  t.diagnostic(`connects per turn: ${JSON.stringify(connections)}`);
   for (const [name, statements] of Object.entries(breakdowns))
     t.diagnostic(`${name} billing reads: ${JSON.stringify(Object.fromEntries(Object.entries(statements)
       .filter(([category]) => / select:[^ ]*\b(?:tenants|credit_accounts)\b/.test(category))))}`);

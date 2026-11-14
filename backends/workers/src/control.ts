@@ -476,14 +476,14 @@ async function verifyAgent(sql: Sql, tenantId: string, agentId: string) {
 }
 export async function reserveTurn(
   env: KeyEnv, tenantId: string, agentId: string, requestId: string,
-  reserveMicros = 0, min = lastCallMin(reserveMicros),
+  reserveMicros = 0, min = lastCallMin(reserveMicros), invocation?: AgentInvocation,
 ): Promise<{ held: number }> {
   if (!Number.isSafeInteger(reserveMicros) || reserveMicros < 0) throw new ApiError(400, "Invalid reservation");
   const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
-  await withSql(env, sql => verifyAgent(sql, tenantId, agentId));
-  const { accounts: { billing } } = await keyServices(env);
+  await withSql(env, sql => verifyAgent(sql, tenantId, agentId), invocation);
+  const { accounts: { billing } } = await keyServices(env, invocation);
   if (!reserveMicros || await billing.mode(tenantId) === "none") return { held: 0 };
-  const hold = await new CreditHolds(database(env), billing).reserve(tenantId, id, reserveMicros, min);
+  const hold = await new CreditHolds(database(env, invocation), billing).reserve(tenantId, id, reserveMicros, min);
   if (!hold) throw new ApiError(402, "Insufficient credit or hourly allowance", "INSUFFICIENT_CREDIT");
   return { held: hold.held };
 }
@@ -536,7 +536,7 @@ export async function settleTurn(
       `turn:${receipt.tenantId}:${receipt.agentId}:${receipt.requestId}`,
     ),
     key = `workers:receipt:${id}`;
-  const { accounts: { billing } } = await keyServices(env);
+  const { accounts: { billing } } = await keyServices(env, invocation);
   const prepaid = await billing.mode(receipt.tenantId, undefined, invocation?.tenant(billing, receipt.tenantId)) === "prepaid";
   const result = await transaction(env, async (sql) => {
     // Admin tenants can run on their own keys without a prepaid account row.
@@ -600,10 +600,10 @@ export async function settleTurn(
       ),
     ]);
     return { duplicate: false };
-  });
+  }, {}, invocation);
   if (faultAfterCommit && env.TEST_MODE === "1")
     throw new Error("injected lost PG acknowledgement");
-  if (env.WEBHOOKS) await publishPending(env as WebhookEnv);
+  if (env.WEBHOOKS) await publishPending(env as WebhookEnv, invocation);
   env.METRICS?.writeDataPoint({
     blobs: [receipt.tenantId, receipt.agentId, receipt.model ?? "local/fake"],
     doubles: [receipt.costMicros],
@@ -616,13 +616,14 @@ export async function releaseTurn(
   tenantId: string,
   agentId: string,
   requestId: string,
+  invocation?: AgentInvocation,
 ): Promise<void> {
   const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
   await withSql(env, (sql) =>
     sql.query("delete from credit_holds where id=$1 and tenant=$2", [
       id,
       tenantId,
-    ]),
+    ]), invocation,
   );
 }
 

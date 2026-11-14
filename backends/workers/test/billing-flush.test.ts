@@ -39,7 +39,7 @@ function fixture(settleTurn: () => Promise<void>) {
     testStorage: { get: async () => undefined },
     arm: async (at: number) => { retries.push(at); },
   };
-  const flush = (propagate?: boolean) => exports.flushBillingImpl.call(runtime, new AgentInvocation(), propagate);
+  const flush = (propagate?: boolean) => AgentInvocation.run(scope => exports.flushBillingImpl.call(runtime, scope, propagate));
   return { flush, runtime, lists, releases, retries };
 }
 

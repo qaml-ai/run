@@ -414,7 +414,7 @@ export async function onHumanImpl(this: AgentRuntime,
         record.state = "completed";
         record.status = "input_required";
         record.endedAt = Date.now();
-        const usage = await this.usageForRequest(record.piId ?? id);
+        const usage = await this.usageForRequest(record.piId ?? id, invocation);
         // What the model said beside the call that asks, as the Node runtime reports it.
         const said = usage.last && usage.last.stopReason !== "error"
           ? usage.last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
@@ -484,9 +484,8 @@ export async function settleImpl(this: AgentRuntime,
   id: string,
   waitMs: number,
   invocation?: AgentInvocation): Promise<RequestRecord> {
-    // A background tracker may wait for the whole turn. Scope its policy reads
-    // to settlement, once there is a receipt to flush.
-    const flush = (propagate = false) => this.flushBilling(invocation ??= new AgentInvocation(), propagate);
+    if (!invocation) return AgentInvocation.run(scope => this.settle(id, waitMs, scope));
+    const flush = (propagate = false) => this.flushBilling(invocation, propagate);
     if (waitMs === 0 && await this.testStorage.get("test:fail-next-waiter")) {
       await this.testStorage.delete("test:fail-next-waiter");
       throw new Error("Injected result waiter interruption");
@@ -596,7 +595,7 @@ export async function settleImpl(this: AgentRuntime,
         return current;
       }
       if (await this.ctx.storage.get(`cancelled-request:${id}`)) await this.delegation.settleStopped(id);
-      const usage = await this.usageForRequest(record.piId ?? id);
+      const usage = await this.usageForRequest(record.piId ?? id, invocation);
       const stored = await this.ctx.storage.get<Config>("configuration");
       const requestedOutput = record.params?.output;
       const outputValue = await this.ctx.storage.get(`output:${id}`);
@@ -709,7 +708,7 @@ export async function settleImpl(this: AgentRuntime,
       // Receipt and terminal state commit together. A lost PG acknowledgement
       // only replays this immutable receipt; money remains one PG transaction.
       // A batch's follow-up is its first input's turn, counted once there.
-      if (changed && stored && !batchedInto) await recordAgentActivity(this.env, stored.tenantId, stored.id, terminal);
+      if (changed && stored && !batchedInto) await recordAgentActivity(this.env, stored.tenantId, stored.id, terminal, invocation);
       await flush();
       if (changed && batchedInto) await this.flushTerminalEvents();
       if (changed && !batchedInto) {
@@ -837,7 +836,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
           const limitsSnapshot = system ? undefined : await this.admitRequest(invocation, conf, resumeId, old.params?.bucket as string | undefined, old.params?.endUser as string | undefined);
           resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
             limitsSnapshot, outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined,
-            usageBaseline: this.usageView(await this.usageForRequest(piId)) };
+            usageBaseline: this.usageView(await this.usageForRequest(piId, invocation)) };
           await this.ctx.storage.put(reqKey(resumeId), resumed);
           await this.emit({ type: "event", requestId: resumeId, event: { type: "agent_start" } });
           // Where the resumed run's messages start in history, as Node's host says for every run (a prompt's comes with
@@ -882,7 +881,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       for (const resume of created) {
         await this.ctx.storage.delete(reqKey(resume.id));
         await this.ctx.storage.delete(`resume-for:${resume.piId}`);
-        await releaseTurn(this.env, conf!.tenantId, conf!.id, resume.id);
+        await releaseTurn(this.env, conf!.tenantId, conf!.id, resume.id, invocation);
         await this.env.TENANTS.getByName(conf!.tenantId).release(`${conf!.id}:${resume.id}`);
       }
       throw error;

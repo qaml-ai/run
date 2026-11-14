@@ -38,7 +38,7 @@ import type { AgentRuntime } from "./agent-runtime.ts";
 export function createConfigurationQueue(this: AgentRuntime): ConfigurationQueue<RequestRecord> {
   return new ConfigurationQueue<RequestRecord>(this.ctx.storage, {
     busy: async order => (await this.harness.session().busy()) || (await this.records()).some(record => record.method !== 'configure' && record.state !== 'completed' && (record.configurationWait === undefined || record.configurationWait < order)),
-    released: order => this.releaseConfigurationWaiters(new AgentInvocation(), order),
+    released: order => AgentInvocation.run(invocation => this.releaseConfigurationWaiters(invocation, order)),
     apply: record => this.applyConfigurationRequest({ id: record.id, method: record.method, params: record.params }, record.configurationOrigin),
     failed: async (record, error) => {
       const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
@@ -63,7 +63,7 @@ export async function releaseConfigurationWaitersImpl(this: AgentRuntime,
         const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
         await this.ctx.storage.put(reqKey(record.id), completed);
         const conf = await this.config();
-        await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
+        await releaseTurn(this.env, conf.tenantId, conf.id, record.id, invocation);
         await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
         await this.emit({ type: 'response', id: record.id, outcome: completed.outcome });
       }
@@ -82,7 +82,7 @@ export async function configureRequestImpl(this: AgentRuntime,
 export async function acceptConfigurationRequestImpl(this: AgentRuntime,
   input: unknown,
   replacement: boolean,
-  origin?: string) {
+  origin?: string, invocation?: AgentInvocation) {
     const request = object(input, ['id', 'method', 'params']);
     if (!request.params || typeof request.params !== 'object' || Array.isArray(request.params)) throw new BadRequest('Expected configuration object');
     const id = boundedText(request.id, 'id', 80);
@@ -100,10 +100,10 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
       throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, withoutOnExpire(conf.config), params);
     storedConfiguration(patched, conf.config.model ?? this.env.MODEL, "patch");
-    await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel });
+    await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel }, invocation);
     if (replacement && (params.model !== undefined || params.keyScope !== undefined)) {
       try {
-        const error = await configurationModelError(this.env, conf.tenantId, patched);
+        const error = await configurationModelError(this.env, conf.tenantId, patched, invocation);
         if (error) throw new BadRequest(error);
       } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
     }
@@ -113,14 +113,14 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
       // Like the source runtime, a new allowance takes effect before queued work.
       // Replaying the request must not reset its already consumed counter.
       if (Object.hasOwn(request.params, 'spendLimit'))
-        await setAgentSpendLimit(this.env, conf.tenantId, conf.id, (request.params as Record<string, unknown>).spendLimit);
+        await setAgentSpendLimit(this.env, conf.tenantId, conf.id, (request.params as Record<string, unknown>).spendLimit, undefined, invocation);
     }
     return this.configurationQueue.enqueue({ id, method: 'configure', params: given }, replacement, origin);
   }
 
 export async function applyConfigurationRequestImpl(this: AgentRuntime,
   input: unknown,
-  origin?: string) {
+  origin?: string, invocation?: AgentInvocation) {
     const request = object(input, ["id", "method", "params"]);
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new BadRequest("Invalid request id");
@@ -146,7 +146,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
     const replacementParams = replacement ? replacementConfiguration(withoutOnExpire(conf.config), replacementInput) : params;
     const patched = storedConfiguration((replacement ? replacementParams : { ...withoutOnExpire(conf.config), ...params }) as import("./api-contract.ts").AgentConfiguration, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
-      ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
+      ? await configurationModelError(this.env, conf.tenantId, patched, invocation) : undefined;
     const fingerprint = canonical(request);
     const previous = await this.ctx.storage.transaction(async (tx) => {
       const old = await tx.get<RequestRecord>(reqKey(id));
@@ -295,7 +295,7 @@ export async function admitImpl(this: AgentRuntime,
         throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
       if (typeof actor === "string" && actor.startsWith("member:")) {
         const conf = await this.config();
-        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor));
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor), invocation);
       }
       await this.requireApplication(allowDisconnected);
       // A monitor's check does not keep an idle agent alive.
@@ -409,7 +409,7 @@ export async function admitImpl(this: AgentRuntime,
     const prior = await this.ctx.storage.get<RequestRecord>(reqKey(id));
     const lineage = await this.delegation.lineage(current.id, { id, metadata: params.metadata, delegation });
     const shared = prior && Object.hasOwn(prior, "sharedAgent") ? prior.sharedAgent
-      : await this.sharedAgents.get(lineage?.root ?? current.id, current.tenantId) ?? null;
+      : await this.sharedAgents(invocation).get(lineage?.root ?? current.id, current.tenantId) ?? null;
     if (notice) {
       // An agent's message, and a child's ending sent at once (delegate.notify "asap"), join the running turn.
       params.whileRunning =
@@ -505,12 +505,12 @@ export async function admitImpl(this: AgentRuntime,
     const actor = params.actor ?? (params.from as { id?: string } | undefined)?.id;
     const checkMember = async () => {
       if (!notice && typeof actor === "string" && actor.startsWith("member:"))
-        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, lineage?.root ?? conf.id, actor));
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, lineage?.root ?? conf.id, actor), invocation);
     };
     await checkMember();
     if (params.endUser !== undefined) {
       if (request.method !== "prompt") throw new BadRequest("endUser is for a prompt");
-      const { accounts } = await keyServices(this.env);
+      const { accounts } = await keyServices(this.env, invocation);
       const internal = /^(child_|msg_|delegate_|spawn_)/.test(id) && (notice !== undefined || !!await this.delegation.lineage(conf.id, { id, metadata: params.metadata, delegation }));
       if (!internal) await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
     }
@@ -520,14 +520,14 @@ export async function admitImpl(this: AgentRuntime,
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(invocation, true);
     if (notice) await this.delegation.landNotice(id, notice.costUsd, Array.isArray(notice.metadata.batch) ? notice.metadata.batch as { requestId: string; costUsd: number }[] : []);
-    const spend = await this.agentSpend(conf);
+    const spend = await this.agentSpend(conf, undefined, invocation);
     const refusal = agentSpendRefusal(conf.id, spend);
     if (refusal && !notice)
       throw Object.assign(new Error(refusal.error), {
         status: 402,
         code: "SPEND_LIMIT",
       });
-    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket, params.endUser as string | undefined);
+    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket, params.endUser as string | undefined, invocation);
     if (endUserRefusal && !notice) throw endUserRefusal;
     const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
@@ -560,7 +560,7 @@ export async function admitImpl(this: AgentRuntime,
     const audioBudget = params.files === undefined ? Infinity : Math.min(
       spend ? Math.max(0, spend.usd - spend.spent) : Infinity,
       audioRunLimit === undefined ? Infinity : Math.max(0,
-        audioRunLimit - await withSql(this.env, sql => runSpend(sql, conf.tenantId, conf.id, id)) - await this.delegation.cost(id)),
+        audioRunLimit - await withSql(this.env, sql => runSpend(sql, conf.tenantId, conf.id, id), invocation) - await this.delegation.cost(id)),
     );
     files =
       params.files === undefined
@@ -649,7 +649,7 @@ export async function admitImpl(this: AgentRuntime,
       await this.ctx.storage.put(reqKey(id), record);
       if (preparing) {
         await this.promptPreparations.finish(id);
-        await releaseTurn(this.env, conf.tenantId, conf.id, id);
+        await releaseTurn(this.env, conf.tenantId, conf.id, id, invocation);
         await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
       }
       await this.emit({ type: "response", id, outcome: record.outcome });
@@ -710,7 +710,7 @@ export async function admitImpl(this: AgentRuntime,
       await this.ctx.storage.put(reqKey(id), record);
       await this.emit({ type: "response", id, outcome: record.outcome });
       if (record.admitted) {
-        await releaseTurn(this.env, conf.tenantId, conf.id, id);
+        await releaseTurn(this.env, conf.tenantId, conf.id, id, invocation);
         await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
       }
       return record;
@@ -724,7 +724,7 @@ export async function admitImpl(this: AgentRuntime,
     await this.ctx.storage.put(reqKey(id), record);
     await this.observe();
     // Attachment changes take effect on the next turn, including inherited ones.
-    await this.refreshComputerTools();
+    await this.refreshComputerTools(invocation);
     // No successful acceptance response until Pi has durably recorded the input.
     if (request.method === "continue")
       await this.harness.continue({ operationId: id });

@@ -31,7 +31,7 @@ export async function releaseInputPrompts(runtime: AgentRuntime, invocation: Age
         // Release before completing: an interrupted release remains a held request and is safe to repeat.
         if (current.admitted) {
           const conf = await runtime.config();
-          await releaseTurn(runtime.env, conf.tenantId, conf.id, record.id);
+          await releaseTurn(runtime.env, conf.tenantId, conf.id, record.id, invocation);
           await runtime.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
         }
         const outcome = { error: error instanceof Error ? error.message : String(error) };

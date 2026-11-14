@@ -86,7 +86,9 @@ export class AgentRuntime extends AgentContext {
 
   readonly repoTrees = new RepoTreeCache(this.ctx.storage);
 
-  readonly sharedAgents = new SharedAgents(database(this.env));
+  sharedAgents(invocation?: AgentInvocation) {
+    return new SharedAgents(database(this.env, invocation));
+  }
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
 
   async databaseProfile(_invocation: AgentInvocation, reset = false) {
@@ -201,8 +203,8 @@ export class AgentRuntime extends AgentContext {
     return currentRunImpl.call(this, api);
   }
 
-  agentSpend(conf: Config, requestId?: string) {
-    return agentSpendImpl.call(this, conf, requestId);
+  agentSpend(conf: Config, requestId?: string, invocation?: AgentInvocation) {
+    return agentSpendImpl.call(this, conf, requestId, invocation);
   }
 
   imageTools() {
@@ -226,8 +228,8 @@ export class AgentRuntime extends AgentContext {
     return requestResponseImpl.call(this, record);
   }
 
-  endUserLimit(conf: Config, bucket?: string, endUser?: string) {
-    return endUserLimitImpl.call(this, conf, bucket, endUser);
+  endUserLimit(conf: Config, bucket?: string, endUser?: string, invocation?: AgentInvocation) {
+    return endUserLimitImpl.call(this, conf, bucket, endUser, invocation);
   }
 
   sourceIdentity(api?: ToolExecutionApi) {
@@ -251,20 +253,20 @@ export class AgentRuntime extends AgentContext {
     this.computerSerial = next.catch(() => {});
     return next;
   }
-  computerNames() {
-    return computerNamesImpl.call(this);
+  computerNames(invocation?: AgentInvocation) {
+    return computerNamesImpl.call(this, invocation);
   }
 
-  hasNativeComputer(config?: AgentConfiguration) {
-    return hasNativeComputerImpl.call(this, config);
+  hasNativeComputer(config?: AgentConfiguration, invocation?: AgentInvocation) {
+    return hasNativeComputerImpl.call(this, config, invocation);
   }
 
-  refreshComputerTools() {
-    return refreshComputerToolsImpl.call(this);
+  refreshComputerTools(invocation?: AgentInvocation) {
+    return refreshComputerToolsImpl.call(this, invocation);
   }
 
-  enabledTools(config: AgentConfiguration) {
-    return enabledToolsImpl.call(this, config);
+  enabledTools(config: AgentConfiguration, invocation?: AgentInvocation) {
+    return enabledToolsImpl.call(this, config, invocation);
   }
 
   workspaceToolNames: string[] = [];
@@ -405,7 +407,7 @@ export class AgentRuntime extends AgentContext {
   }
 
   onHuman(doc: { requests: Record<string, HumanInput> }) {
-    return onHumanImpl.call(this, new AgentInvocation(), doc);
+    return AgentInvocation.run(invocation => onHumanImpl.call(this, invocation, doc));
   }
 
   track(id: string) {
@@ -434,7 +436,7 @@ export class AgentRuntime extends AgentContext {
 
   /** A settled input, including cancellation or expiry, releases prompts waiting behind it. */
   kickInputPrompts() {
-    const work = this.admission.then(() => releaseInputPrompts(this, new AgentInvocation()));
+    const work = this.admission.then(() => AgentInvocation.run(invocation => releaseInputPrompts(this, invocation)));
     this.admission = work.catch(() => {});
     this.ctx.waitUntil(work);
   }
@@ -506,11 +508,11 @@ export class AgentRuntime extends AgentContext {
   }
 
   acceptConfigurationRequest(input: unknown, replacement: boolean, origin?: string) {
-    return acceptConfigurationRequestImpl.call(this, input, replacement, origin);
+    return AgentInvocation.run(invocation => acceptConfigurationRequestImpl.call(this, input, replacement, origin, invocation));
   }
 
   applyConfigurationRequest(input: unknown, origin?: string) {
-    return applyConfigurationRequestImpl.call(this, input, origin);
+    return AgentInvocation.run(invocation => applyConfigurationRequestImpl.call(this, input, origin, invocation));
   }
 
   requireApplication(allowDisconnected: unknown) {
@@ -569,8 +571,8 @@ export class AgentRuntime extends AgentContext {
     return usageViewImpl.call(this, usage);
   }
 
-  usageForRequest(id: string) {
-    return usageForRequestImpl.call(this, id);
+  usageForRequest(id: string, invocation?: AgentInvocation) {
+    return usageForRequestImpl.call(this, id, invocation);
   }
 
   flushBilling(invocation: AgentInvocation, propagate = false) {
@@ -585,7 +587,8 @@ export class AgentRuntime extends AgentContext {
     return createScheduleImpl.call(this, raw);
   }
 
-  arm(retry?: number, invocation = new AgentInvocation()) {
+  arm(retry?: number, invocation?: AgentInvocation) {
+    if (!invocation) return AgentInvocation.run(scope => armImpl.call(this, scope, retry));
     return armImpl.call(this, invocation, retry);
   }
 

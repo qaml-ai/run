@@ -42,7 +42,7 @@ const testConfig = (env: MediaBindings) => env.TEST_MODE === '1' ? JSON.parse(en
 
 /** Credentials resolve at call time; they never enter agent history or public responses. */
 export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string, invocation?: AgentInvocation) {
-  const { accounts, keyScopes } = services ?? await keyServices(env);
+  const { accounts, keyScopes } = services ?? await keyServices(env, invocation);
   // Match src/node.ts's standalone media resolution: an address-only scope is
   // a gateway that needs no key, while an absent entry falls back to the account.
   const entry = scope ? await keyScopes.entry(tenant, scope, provider) : undefined;

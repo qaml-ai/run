@@ -355,7 +355,7 @@ export class ModelAttempts {
     });
     this.accounts.invalidateModelUsage(tenant);
     // A committed debit must still wake automatic top-up, but its delivery cannot undo settlement.
-    void this.accounts.billing.autoTopup?.balanceChanged([tenant]).catch(() => {
+    await this.accounts.billing.autoTopup?.balanceChanged([tenant]).catch(() => {
       console.error(JSON.stringify({ type: "model_attempt_topup_notify_failed", attempt: id, tenant }));
     });
   }

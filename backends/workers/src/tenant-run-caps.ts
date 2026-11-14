@@ -4,7 +4,7 @@ import { RUN_LIMITS, ADMIN_RUN_LIMITS } from './run-caps-policy.ts';
 
 type CapsEnv = KeyEnv & Partial<Record<'AGENT_MAX_RUN_RESPONSES' | 'AGENT_MAX_RUN_SECONDS' | 'AGENT_ADMIN_MAX_RUN_RESPONSES' | 'AGENT_ADMIN_MAX_RUN_SECONDS', string>>;
 export async function tenantRunCaps(env: CapsEnv, tenant: string, invocation?: AgentInvocation) {
-  const { accounts, tenants } = await keyServices(env);
+  const { accounts, tenants } = await keyServices(env, invocation);
   const own = await accounts.billing.runLimits(tenant, invocation?.tenant(accounts.billing, tenant)), admin = tenants.has(tenant);
   const prefix = admin ? 'AGENT_ADMIN_MAX_RUN_' : 'AGENT_MAX_RUN_';
   const defaults = admin ? ADMIN_RUN_LIMITS : RUN_LIMITS;

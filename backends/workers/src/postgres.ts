@@ -1,3 +1,4 @@
+import type { AgentInvocation } from "./agent-invocation.ts";
 import { applyScope } from "../../../shared/apply-scope.ts";
 import pg, { Client } from "pg";
 import { transaction as policyTransaction } from "./postgres-policy.ts";
@@ -28,13 +29,19 @@ export type Db = Sql & {
 };
 export type PostgresEnv = { HYPERDRIVE: { connectionString: string }; AGENT_CREATE_DIAGNOSTICS?: string };
 
-/** One short-lived client per operation; never pin an origin connection to a DO. */
+/** Lease an invocation client, or open a short-lived client for this operation. */
 export async function withSql<T>(
   env: PostgresEnv,
   run: (sql: Sql) => Promise<T>,
+  invocation?: AgentInvocation,
 ): Promise<T> {
   const scoped = applyScope.getStore();
   if (scoped) return run(scoped.sql);
+  if (invocation) {
+    const client = await invocation.postgres(() => openClient(env, true)).connect();
+    try { return await run(client); }
+    finally { await client.close(); }
+  }
   const client = new Client({
     connectionString: env.HYPERDRIVE.connectionString,
     connectionTimeoutMillis: 5_000,
@@ -49,28 +56,32 @@ export async function withSql<T>(
   }
 }
 
-/** Adapter for unchanged relational services. connect() is only held by transaction(). */
-export function database(env: PostgresEnv): Db {
+async function openClient(env: PostgresEnv, pooled: boolean) {
+  const client = new Client({
+    connectionString: env.HYPERDRIVE.connectionString,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 10_000,
+    ...(pooled ? { application_name: new URL(env.HYPERDRIVE.connectionString).searchParams.get("application_name") ?? "camelrun-proto-workers" } : {}),
+  });
+  if (pooled) client.on("error", () => {});
+  try {
+    await profileConnect(() => traceDatabaseFailure(env.AGENT_CREATE_DIAGNOSTICS === "1", "connect", () => client.connect()));
+  } catch (error) {
+    await client.end().catch(() => {});
+    throw error;
+  }
+  return Object.assign(profileSql(client, env.AGENT_CREATE_DIAGNOSTICS === "1"), {
+    close: () => client.end(),
+    release: () => { void client.end(); },
+  });
+}
+
+/** Adapter for relational services. Transactions hold one checkout until commit or rollback. */
+export function database(env: PostgresEnv, invocation?: AgentInvocation): Db {
   return {
-    query: (text, values) => withSql(env, (sql) => sql.query(text, values)),
+    query: (text, values) => withSql(env, (sql) => sql.query(text, values), invocation),
     async connect() {
-      const client = new Client({
-        connectionString: env.HYPERDRIVE.connectionString,
-        connectionTimeoutMillis: 5_000,
-        query_timeout: 10_000,
-      });
-      try {
-        await profileConnect(() => traceDatabaseFailure(env.AGENT_CREATE_DIAGNOSTICS === "1", "connect", () => client.connect()));
-      } catch (error) {
-        await client.end().catch(() => {});
-        throw error;
-      }
-      return Object.assign(profileSql(client, env.AGENT_CREATE_DIAGNOSTICS === "1"), {
-        close: () => client.end(),
-        release: () => {
-          void client.end();
-        },
-      }) as DbClient;
+      return invocation ? invocation.postgres(() => openClient(env, true)).connect() : openClient(env, false);
     },
     async end() {},
     totalCount: 0,
@@ -84,8 +95,9 @@ export async function transaction<T>(
   target: Db | PostgresEnv,
   run: (sql: Sql) => Promise<T>,
   options: { rerun?: boolean } = {},
+  invocation?: AgentInvocation,
 ): Promise<T> {
   const scoped = applyScope.getStore();
   if (scoped) return run(scoped.sql);
-  return policyTransaction("HYPERDRIVE" in target ? database(target) : target, run, options);
+  return policyTransaction("HYPERDRIVE" in target ? database(target, invocation) : target, run, options);
 }

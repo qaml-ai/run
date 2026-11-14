@@ -65,7 +65,7 @@ export async function profileConnect<T>(action: () => Promise<T>): Promise<T> {
 
 /** One invocation is one pg query round trip, including BEGIN/COMMIT/ROLLBACK.
  * Hold time is measured from BEGIN acknowledgement through COMMIT/ROLLBACK
- * acknowledgement; connect/pool wait is recorded separately. */
+ * acknowledgement. profileConnect counts physical connection attempts separately from statements. */
 export function profileSql<T extends { query: (...args: any[]) => Promise<any> }>(client: T, traceFailures = false): T {
   let transaction: { profile: DbProfile; phase: DbPhase; started: number } | undefined;
   const query = client.query.bind(client);

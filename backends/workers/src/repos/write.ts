@@ -46,13 +46,13 @@ export async function reportUsage(ctx: RepoContext, info?: { bytes: number; file
 }
 export async function tierQuota(ctx: RepoContext, invocation?: AgentInvocation): Promise<RepoQuota | undefined> {
   const [limitBytes, otherBytes] = await Promise.all([
-    keyServices(ctx.env).then(({ accounts }) => accounts.billing.storageLimit(ctx.tenant, invocation?.tenant(accounts.billing, ctx.tenant))),
+    keyServices(ctx.env, invocation).then(({ accounts }) => accounts.billing.storageLimit(ctx.tenant, invocation?.tenant(accounts.billing, ctx.tenant))),
     ctx.env.TENANTS.getByName(ctx.tenant).reposUsed(ctx.lineage),
   ]);
   return limitBytes === undefined ? undefined : { limitBytes, otherBytes };
 }
 export async function quota(ctx: RepoContext, bytes: number, invocation?: AgentInvocation) {
-  const { accounts } = await keyServices(ctx.env);
+  const { accounts } = await keyServices(ctx.env, invocation);
   const reads = invocation?.tenant(accounts.billing, ctx.tenant);
   const limit = await accounts.billing.storageLimit(ctx.tenant, reads);
   if (limit !== undefined && await ctx.env.TENANTS.getByName(ctx.tenant).reposUsed() + bytes > limit)

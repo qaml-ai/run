@@ -290,8 +290,8 @@ export class RateLimits {
   }
 
   /** Count a run (prompt, continue, execute) started for `tenant`: where it stands in its window after this one. */
-  run(tenant: string, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">) {
-    return this.perTenant(tenant, "runs", "runs", "runs started", true, policy);
+  run(tenant: string, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">, sql?: Sql) {
+    return this.perTenant(tenant, "runs", "runs", "runs started", true, policy, sql);
   }
 
   /**
@@ -321,9 +321,9 @@ export class RateLimits {
     return { max, source: "default", free, ...(free && (!paid || paid > max) ? { paid } : {}) };
   }
 
-  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">): Promise<RateLimitState | undefined> {
+  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean, policy?: Pick<RateLimitOptions, "override" | "tier" | "exempt" | "free">, sql: Sql = this.options.db): Promise<RateLimitState | undefined> {
     const applies = await this.tenantLimit(tenant, limit, policy);
-    return this.tenantState(tenant, limit, name, what, counted, this.options.db, applies);
+    return this.tenantState(tenant, limit, name, what, counted, sql, applies);
   }
 
   private async tenantState(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean, sql: Sql, applies: Awaited<ReturnType<RateLimits["tenantLimit"]>>): Promise<RateLimitState | undefined> {

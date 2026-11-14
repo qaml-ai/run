@@ -31,33 +31,35 @@ export type ModelBillingContext = {
  * failed") though the call had been made and its receipt kept; Node retries for its lease TTL.
  */
 export const MODEL_ATTEMPT_RETRY_MS = 30_000;
-export async function modelAttempts(env: KeyEnv) {
-  const { accounts } = await keyServices(env);
+export async function modelAttempts(env: KeyEnv, invocation?: AgentInvocation) {
+  const { accounts } = await keyServices(env, invocation);
   return new ModelAttempts(accounts.db, accounts, fetch, MODEL_ATTEMPT_RETRY_MS, undefined, new EndUserCredits(accounts.db));
 }
-export async function applyModelReceipt(env: KeyEnv, receipt: ModelReceipt) {
-  return (await modelAttempts(env)).event(receipt.tenant, receipt.agent, receipt.platform, receipt.catalogPriced ?? receipt.platform, receipt.event);
+export async function applyModelReceipt(env: KeyEnv, receipt: ModelReceipt, invocation?: AgentInvocation) {
+  return (await modelAttempts(env, invocation)).event(receipt.tenant, receipt.agent, receipt.platform, receipt.catalogPriced ?? receipt.platform, receipt.event);
 }
 
 /** Every provider call, including Pi's native compaction, uses the source accounting stream. */
 export function meterProvider<P extends Provider<any>>(
   provider: P, env: KeyEnv, context: () => Promise<ModelBillingContext>,
-  commit: (receipt: ModelReceipt) => Promise<void>,
+  commit: (receipt: ModelReceipt, invocation: AgentInvocation) => Promise<void>,
   stopped?: (context: ModelBillingContext, stop: BillingRunStop) => Promise<void>,
   profile: <T>(action: () => T) => T = action => action(),
 ): P {
   const wrap = (stream: P['stream']) => ((model: Model<any>, transcript: any, options: any = {}) => {
     const output = createAssistantMessageEventStream();
-    void profile(async () => {
+    void profile(() => AgentInvocation.run(async invocation => {
       const identity = await context();
-      const service = await modelAttempts(env);
-      const invocation: AgentInvocation = options[MODEL_INVOCATION] ?? new AgentInvocation();
+      const service = await modelAttempts(env, invocation);
+      // The watchdog can return before provider accounting finishes. Own those
+      // connections here, while sharing the tenant policy read from preflight.
+      const policy: AgentInvocation = options[MODEL_INVOCATION] ?? invocation;
       const billing = service.accounts.billing;
       let balance: Promise<Account> | undefined;
-      const reads = { ...invocation.tenant(billing, identity.tenant), account: () => balance ??= billing.readAccount(identity.tenant) };
+      const reads = { ...policy.tenant(billing, identity.tenant), account: () => balance ??= billing.readAccount(identity.tenant) };
       const credentials = Object.hasOwn(options, PREPARED_MODEL_CREDENTIALS)
         ? options[PREPARED_MODEL_CREDENTIALS]
-        : await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope, reads);
+        : await providerCredentials(await keyServices(env, invocation), identity.tenant, model.provider, identity.keyScope, reads);
       // withSettings has already prepared provider-specific request auth. Its
       // sentinels keep anonymous endpoints valid and bearer keys out of Pi's
       // API-key/OAuth heuristics; accounting still fingerprints the real key.
@@ -92,7 +94,7 @@ export function meterProvider<P extends Provider<any>>(
       const hook: ModelAttemptHook = event => {
         const next = pending.then(async () => {
           if (event.type === 'finish') {
-            await commit({ tenant: identity.tenant, agent: identity.agent, platform, catalogPriced, event });
+            await commit({ tenant: identity.tenant, agent: identity.agent, platform, catalogPriced, event }, invocation);
             if (platform && catalogPriced) logUntrustedModelUsage(identity.tenant, identity.agent, model, event.usage, estimate, event.chars, event.completed);
             return true;
           }
@@ -125,7 +127,7 @@ export function meterProvider<P extends Provider<any>>(
         if (event.type === 'done' || event.type === 'error') await refusal;
         output.push(event);
       }
-    }).catch(error => {
+    })).catch(error => {
       output.push({ type: 'error', reason: 'error', error: { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
         content: [], timestamp: Date.now(), stopReason: 'error', errorMessage: error instanceof Error ? error.message : 'Accounting failed',
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });

@@ -15,9 +15,8 @@ type Scope = { tenant: string; agent: string; mounts: Mount[]; fileTools?: boole
 /** Cap only model-facing results; nested scripts keep Pi's bounded structured values. */
 export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, callId: string) => Promise<Scope>): Extension {
   return { name: 'camel.tool-output', hooks: [hook(ToolTask, {
-    async afterTool(call, result, api) {
+    afterTool: (call, result, api) => AgentInvocation.run(async invocation => {
       if (call.name === 'codemode' || call.name === 'bash') return; // Bash bounds both streams before building its result.
-      const invocation = new AgentInvocation();
       const current = await scope(api, call.id);
       const prefix = call.name.split('__')[0];
       if (current.fileArguments?.[prefix] === false && hasFileArgument(call.arguments) && result.diagnostics?.some(value => value.code === 'invalid_arguments')) {
@@ -44,6 +43,6 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
       const output = await policy.capped(call.id, materialized);
       const details = await policy.cappedDetails(call.id, call.name, result.details);
       return { ...result, output, ...(details === undefined ? {} : { details: details as ToolExecutionResult["details"] }) };
-    },
+    }),
   })] };
 }

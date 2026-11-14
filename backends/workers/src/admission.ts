@@ -50,7 +50,7 @@ export async function prepareCreateAdmission(env: AdmissionEnv, tenant: string) 
 /** A replay of an already admitted request neither consumes nor rechecks its budget. */
 export async function runAdmission(env: AdmissionEnv, tenant: string, counted = true, billing?: { accounts: Accounts; reads: BillingReads }): Promise<RateLimitState | undefined> {
   if (!counted) return undefined;
-  return (await service(env)).limits.run(tenant, billing && rateBilling(billing.accounts, billing.reads));
+  return (await service(env)).limits.run(tenant, billing && rateBilling(billing.accounts, billing.reads), billing?.accounts.db);
 }
 
 export const admissionHeaders = rateLimitHeaders;
