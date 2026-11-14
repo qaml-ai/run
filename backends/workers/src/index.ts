@@ -46,6 +46,7 @@ import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
 import { publicAdminSite } from "./admin-site.ts";
 import { handleServiceRequest } from "./service-api.ts";
+import { handleVoiceCalls } from "./voice-calls-api.ts";
 import { handleMediaRequest } from "./media-api.ts";
 import { handleComputerRequest } from "./computers/api.ts";
 import { websocketAuthorization } from "./live-transport.ts";
@@ -98,6 +99,7 @@ import {
   agentSpendView,
 } from "./agent-spend.ts";
 export { CamelAgent };
+export { VoiceCall } from "./voice-call.ts";
 export { TenantAdmission } from "./tenant.ts";
 export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { WorkflowResults } from "./workflow-results.ts";
@@ -456,6 +458,8 @@ const worker = {
             return json(await inboxSql(env, sql => readInbox(sql, auth.tenantId, query)));
           } catch (error) { if (error instanceof InboxQueryError) throw new ApiError(400, error.message); throw error; }
         }
+        const voice = await handleVoiceCalls(request, env, auth);
+        if (voice) return voice;
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
         const files = await handleFileRequest(request, env, auth);

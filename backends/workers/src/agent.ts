@@ -1,3 +1,4 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { DurableObject } from "cloudflare:workers";
 import { guardAlarms } from "./alarm-guard.ts";
 import type { Placement } from "../../../shared/owner.ts";
@@ -17,6 +18,19 @@ export class CamelAgent extends DurableObject<Env> {
     super(ctx, env);
     // After the runtime's lifecycle installed its alarm handler on this instance (field initializers run first).
     guardAlarms(this as never, ctx, "CamelAgent", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
+  }
+
+  /** Binding-only journal write. Pi's write operation appends without admitting a model turn. */
+  async note(tenant: string, id: string, content: string) {
+    const conf = await this.#runtime.config();
+    if (conf.tenantId !== tenant) throw new Error("Agent not found");
+    const root = await (await this.#runtime.harness.pi()).root(BACKGROUND_CONTEXT);
+    const write = await root.submit({
+      type: "write", requestId: id,
+      entry: { kind: "camel.import", data: { requestId: id, metadata: { via: "voice" } },
+        model: [{ role: "user", content, timestamp: Date.now() }] },
+    }, BACKGROUND_CONTEXT);
+    this.ctx.waitUntil(write.wait(BACKGROUND_CONTEXT).then(() => this.#runtime.historyIndex.changed()));
   }
 
   removeMember(member: string) { return this.#runtime.removeMember(member); }

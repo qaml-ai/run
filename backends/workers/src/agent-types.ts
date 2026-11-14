@@ -1,3 +1,4 @@
+import type { VoiceCall } from "./voice-call.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { ComputerBindings } from "./computers/tool.ts";
@@ -83,6 +84,8 @@ export interface Env
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
   AGENTS: DurableObjectNamespace<CamelAgent>;
+  VOICE_CALLS: DurableObjectNamespace<VoiceCall>;
+  AGENT_VOICE_SESSIONS_PER_TENANT?: string;
   AI: Ai;
   MODEL: string;
   API_TOKEN: string;

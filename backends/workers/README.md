@@ -246,3 +246,9 @@ Test workerd processes, temporary directories and computer containers are
 stopped by test cleanup. No Cloudflare resource, paid model call or snapshot is
 created by this experiment. The earlier prototype's approximately $5 spend is
 unchanged.
+
+### Client-held voice calls
+
+The `VoiceCall` Durable Object owns each call and its alarms. OpenAI audio goes directly between the client and OpenAI. The object holds the outbound sideband WebSocket while the call is live. Workers have no node-retirement cut. If the sideband closes, the object ends the call through the provider.
+
+ElevenLabs uses a workspace webhook to settle the completed call. If that report is absent, the object reads the provider conversation and settles at the post-call deadline.
