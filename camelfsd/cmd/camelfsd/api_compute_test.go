@@ -55,3 +55,16 @@ func TestUnitNotifyKeySources(t *testing.T) {
 		})
 	}
 }
+
+func TestUnitPoolIdleStop(t *testing.T) {
+	pools := []string{"build", "test"}
+	got, err := parseIdleStop("build=5,test=86400", pools)
+	if err != nil || got["build"] != 5 || got["test"] != 86400 {
+		t.Fatal(got, err)
+	}
+	for _, bad := range []string{"missing=10", "test=4", "test=86401", "build=x", "test=6,test=7"} {
+		if _, err := parseIdleStop(bad, pools); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+}

@@ -1,0 +1,80 @@
+package compute
+
+import (
+	"context"
+	"errors"
+	"expvar"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/smithy-go/middleware"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
+)
+
+var ErrClockSkew = errors.New("DynamoDB clock check failed")
+
+var clockSkewRefusals = expvar.NewInt("camelfsd_clock_skew_refused")
+
+type clockObservation struct {
+	sync.Mutex
+	at, lastWarning time.Time
+	skew            time.Duration
+}
+
+// MONEY: Observe the Date header on each DynamoDB response, including SDK retries.
+// Call before serving requests. Use the wall clock, independent of the lifecycle test clock.
+func (c *Controller) EnableClockCheck() {
+	opts := c.DB.Options()
+	opts.APIOptions = append(opts.APIOptions, func(stack *middleware.Stack) error {
+		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("ComputeClock", c.observeClock), middleware.Before)
+	})
+	c.DB = dynamodb.New(opts)
+}
+
+func (c *Controller) observeClock(ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler) (middleware.DeserializeOutput, middleware.Metadata, error) {
+	out, meta, err := next.HandleDeserialize(ctx, in)
+	if response, ok := out.RawResponse.(*smithyhttp.Response); ok {
+		if date, err := http.ParseTime(response.Header.Get("Date")); err == nil {
+			c.clock.Lock()
+			now := time.Now()
+			c.clock.at, c.clock.skew = now, now.Sub(date)
+			c.clock.Unlock()
+		}
+	}
+	return out, meta, err
+}
+
+// MONEY: Fail closed before minting a usage ULID. Date has one-second granularity.
+func (c *Controller) requireClock(ctx context.Context, id string) error {
+	c.clock.Lock()
+	stale := time.Since(c.clock.at) >= time.Minute
+	c.clock.Unlock()
+	if stale {
+		// A Get already made by the caller normally refreshed this observation.
+		if _, err := c.Get(ctx, id); err != nil && !errors.Is(err, ErrNotFound) {
+			c.log("clock_probe_failed", map[string]any{"error": err.Error()})
+		}
+	}
+	c.clock.Lock()
+	now := time.Now()
+	skew := c.clock.skew
+	stale = now.Sub(c.clock.at) >= time.Minute
+	bad := stale || skew > 6*time.Second || skew < -6*time.Second
+	warn := bad && now.Sub(c.clock.lastWarning) >= time.Minute
+	if warn {
+		c.clock.lastWarning = now
+	}
+	c.clock.Unlock()
+	if !bad {
+		return nil
+	}
+	clockSkewRefusals.Add(1)
+	fields := map[string]any{"skewMs": skew.Milliseconds(), "stale": stale}
+	c.log("clock_skew_refused", fields)
+	if warn {
+		c.log("clock_skew", fields)
+	}
+	return ErrClockSkew
+}

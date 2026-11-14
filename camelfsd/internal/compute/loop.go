@@ -195,11 +195,11 @@ func (l *Loop) sweepVMs(ctx context.Context, h Host, now time.Time) error {
 		case v.LeaseDeadline <= now.UnixMilli():
 			_, err = l.C.stop(ctx, v, now, v.LeaseDeadline, LeaseExpired, true)
 			result = errors.Join(result, l.record("vm_lease_expired", id, err))
-		case v.Mode == JobMode && v.Phase == Running && v.DeadlineAt != nil && *v.DeadlineAt <= now.UnixMilli():
-			// MONEY: like a lease stop, a timeout stop bills to the deadline it enforces (startedAt + timeoutS + grace),
-			// never to whenever this sweep happened to run.
-			_, err = l.C.stop(ctx, v, now, *v.DeadlineAt, Timeout, false)
-			result = errors.Join(result, l.record("vm_timed_out", id, err))
+		case v.Phase == Running && v.Session != nil && v.LastActivityAt != nil && len(v.execs) == 0 &&
+			now.UnixMilli()-*v.LastActivityAt > v.Session.IdleStopS*1000:
+			// MONEY: Idle teardown is billed only through the durable stop request.
+			_, err = l.C.stop(ctx, v, now, now.UnixMilli(), Idle, true)
+			result = errors.Join(result, l.record("vm_idle", id, err))
 		}
 	}
 	return result
