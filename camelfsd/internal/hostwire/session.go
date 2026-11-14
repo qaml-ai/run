@@ -2,6 +2,14 @@ package hostwire
 
 import "encoding/json"
 
+// ShellRequest is the body of POST /v1/vms/{id}/shells.
+// The same shellKey on the same VM returns the same shellId and never opens
+// a second shell. The key is recorded in the guest before the shell starts.
+// Without a key, the request opens a new shell.
+type ShellRequest struct {
+	ShellKey string `json:"shellKey,omitempty"`
+}
+
 // ShellCreated is the response to POST /v1/vms/{id}/shells.
 // A persistent bash in the guest (cwd/env/functions survive); shells die with the
 // VM and survive a daemon restart. ONE exec at a time per shell: a second → 409 shell_busy.
