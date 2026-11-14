@@ -134,7 +134,7 @@ try {
   log(`idle ${IDLE_WAIT_MS / 1000} s for the VM to stop with a checkpoint`);
   await sleep(IDLE_WAIT_MS);
   const saved = await until("the file on the branch", 60_000, async () => {
-    const r = await call(`/v1/agents/${agent}/files/smoke.txt`);
+    const r = await call(`/v1/agents/${agent}/files/workspace/smoke.txt`);
     return r.status === 200 && r.text.trim() === nonce && r;
   });
   log("file on branch", saved.text.trim());
@@ -151,13 +151,13 @@ try {
   const big = randomBytes(BIG_BYTES), bigSha = sha256(big);
   const holding = await send(agent, bashOnly(`sleep 60; echo BIGSHA=$(sha256sum /workspace/big.bin | cut -d' ' -f1)`));
   const running = await until("the VM to be running (a file read answered by the VM)", 120_000, async () => {
-    const r = await call(`/v1/agents/${agent}/files/smoke.txt`);
+    const r = await call(`/v1/agents/${agent}/files/workspace/smoke.txt`);
     // The VM path versions a file by its sha256; the branch path does not.
     return r.status === 200 && r.headers.get("x-file-version") === sha256(r.bytes) && r;
   });
   log("VM running; file reads come from it", running.headers.get("x-file-version"));
   const started = Date.now();
-  const put = await call(`/v1/agents/${agent}/files/big.bin`, { method: "PUT", raw: big, headers: { "content-type": "application/octet-stream" } });
+  const put = await call(`/v1/agents/${agent}/files/workspace/big.bin`, { method: "PUT", raw: big, headers: { "content-type": "application/octet-stream" } });
   assert.equal(put.status, 201, `big write: ${put.status} ${put.text}`);
   assert.equal(put.json?.size, BIG_BYTES, "big write size");
   assert.equal(put.json?.version, bigSha, "the big write took the VM path (its version is the bytes' sha256)");
@@ -169,7 +169,7 @@ try {
   log("waiting for the VM to stop, then for its usage to be pulled and settled");
   await sleep(IDLE_WAIT_MS);
   const onBranch = await until("the big file on the branch", 60_000, async () => {
-    const r = await call(`/v1/agents/${agent}/files/big.bin`);
+    const r = await call(`/v1/agents/${agent}/files/workspace/big.bin`);
     return r.status === 200 && r.bytes.length === BIG_BYTES && sha256(r.bytes) === bigSha && r;
   });
   log("big file on the branch after the stop's checkpoint", { bytes: onBranch.bytes.length, version: onBranch.headers.get("x-file-version") });
