@@ -167,6 +167,9 @@ func (m *Manager) checkpointWithPublish(ctx context.Context, v *Mount, tree stri
 	if e != nil {
 		return out, e
 	}
+	if r.Tree != "" && (out.ChangedChunks != 0 || out.ParentRoot != out.Root) {
+		m.shareTreeRoot(ctx, v.Lineage, tree, out.Root)
+	}
 	if publish != nil {
 		if e = publish(ctx, out); e != nil {
 			return out, e

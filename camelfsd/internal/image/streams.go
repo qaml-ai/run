@@ -107,9 +107,11 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 	var old, next []objects.Entry
 	if apply {
 		var e error
-		old, e = m.entries(ctx, v.Lineage, from)
-		if e != nil {
-			return e
+		if from != v.Tree {
+			old, e = m.entries(ctx, v.Lineage, from)
+			if e != nil {
+				return e
+			}
 		}
 		next, e = m.entries(ctx, v.Lineage, v.Tree)
 		if e != nil {
@@ -121,12 +123,14 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, from string, appl
 		prev[f.Path] = f
 	}
 	var ops []wire.Op
-	for _, f := range next {
-		p, ok := prev[f.Path]
-		if !ok || p.SHA1 != f.SHA1 || p.Mode != f.Mode {
-			ops = append(ops, wire.Op{Path: f.Path, Op: "put", Mode: f.Mode, Size: f.Size})
+	if from != v.Tree {
+		for _, f := range next {
+			p, ok := prev[f.Path]
+			if !ok || p.SHA1 != f.SHA1 || p.Mode != f.Mode {
+				ops = append(ops, wire.Op{Path: f.Path, Op: "put", Mode: f.Mode, Size: f.Size})
+			}
+			delete(prev, f.Path)
 		}
-		delete(prev, f.Path)
 	}
 	for p := range prev {
 		ops = append(ops, wire.Op{Path: p, Op: "del"})

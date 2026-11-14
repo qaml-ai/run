@@ -647,7 +647,7 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 		v.releaseOrigin = nil
 	}
 	if v.Session {
-		if e := m.recoverBaseline(v); e != nil {
+		if e := m.recoverBaseline(v, false); e != nil {
 			return false, e
 		}
 	}

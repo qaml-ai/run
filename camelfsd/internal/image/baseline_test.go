@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/testguest"
 	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 )
@@ -105,6 +107,29 @@ func TestSessionBaseline(t *testing.T) {
 			}
 			if got, err := os.ReadFile(filepath.Join(dir, "restored")); err != nil || !bytes.Equal(got, content) {
 				t.Fatalf("warm image contents %q: %v", got, err)
+			}
+			otherData := t.TempDir()
+			db, err := refs.Open(filepath.Join(otherData, "refs.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			shared := m.Store.(*store.Uploaded).Store
+			other, err := New(Config{Data: otherData, VirtualSize: m.VirtualSize}, shared, cache.New(filepath.Join(otherData, "cache"), shared, 64), db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer other.Close()
+			cold := baselineMount(t, other, tree.Tree, "other")
+			if cold.Warm || cold.State != "hydrated" || cold.Apply != nil || cold.Root != id {
+				t.Fatalf("expected exact shared root materialization: %+v", cold)
+			}
+			out, err = exec.Command("debugfs", "-R", "dump /hello "+filepath.Join(dir, "shared"), cold.Image).CombinedOutput()
+			if err != nil {
+				t.Fatalf("debugfs: %v %s", err, out)
+			}
+			if got, err := os.ReadFile(filepath.Join(dir, "shared")); err != nil || !bytes.Equal(got, content) {
+				t.Fatalf("shared image contents %q: %v", got, err)
 			}
 			var commits int
 			if err := m.objects().DB.DB.QueryRow("SELECT count(*) FROM lineage_objects WHERE kind='commit'").Scan(&commits); err != nil || commits != 0 {

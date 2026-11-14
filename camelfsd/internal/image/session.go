@@ -59,7 +59,7 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 		if err != nil {
 			return err
 		}
-		if err := m.recoverBaseline(&v); err != nil {
+		if err := m.recoverBaseline(&v, true); err != nil {
 			return err
 		}
 		v.baselineCtx, v.baselineCancel = context.WithCancel(context.Background())

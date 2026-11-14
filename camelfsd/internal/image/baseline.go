@@ -191,10 +191,11 @@ func (m *Manager) publishBaseline(ctx context.Context, v *Mount, snap string, po
 	}
 	v.Root, v.Parent.Root, v.Promoted, v.needsBaseline = point.Root, point.Root, true, false
 	err = m.save(v)
+	m.shareTreeRoot(ctx, v.Lineage, v.Tree, point.Root)
 	return errors.Join(os.Remove(intent), err)
 }
 
-func (m *Manager) recoverBaseline(v *Mount) error {
+func (m *Manager) recoverBaseline(v *Mount, share bool) error {
 	dir := filepath.Dir(v.Dest)
 	intent := filepath.Join(dir, baselineIntent)
 	raw, err := os.ReadFile(intent)
@@ -213,6 +214,11 @@ func (m *Manager) recoverBaseline(v *Mount) error {
 				v.Lineage, record.Tree, record.Root, m.Now().UnixNano(), v.Lineage, record.Tree, record.Root)
 			if err != nil {
 				return err
+			}
+			if share {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				m.shareTreeRoot(ctx, v.Lineage, record.Tree, record.Root)
+				cancel()
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
