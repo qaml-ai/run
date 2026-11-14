@@ -30,6 +30,9 @@
         "class_name": "Volume"
       },
       { "name": "REPOS", "class_name": "RepoDO" },
+      { "name": "JOB_HOSTS", "class_name": "JobHost" },
+      { "name": "HOST_JOBS", "class_name": "HostJob" },
+      { "name": "JOB_HOST_REGISTRY", "class_name": "JobHostRegistry" },
       {
         "name": "WORKFLOW_CAPACITY",
         "class_name": "WorkflowCapacity"
@@ -80,6 +83,7 @@
         "WorkflowObject"
       ]
     },
+    { "tag": "job-hosts", "new_sqlite_classes": ["JobHost", "HostJob", "JobHostRegistry"] },
     {
       "tag": "workflow-results",
       "new_sqlite_classes": [

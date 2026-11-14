@@ -49,7 +49,8 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-# Used by ECS itself: pull the image, write logs, and read the one secret it injects (CAMELFS_JWKS).
+# Used by ECS itself: pull the image, write logs, and read the two secrets it injects (CAMELFS_JWKS,
+# CAMELFS_NOTIFY_KEY).
 resource "aws_iam_role" "api_execution" {
   name               = "${var.name}-${var.env}-api-execution"
   description        = "camelFS api ECS task execution (image pull, logs, the JWKS injection)"
@@ -70,7 +71,7 @@ resource "aws_iam_role_policy" "api_execution_jwks" {
       Sid      = "InjectKeys"
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.token_verify_keys.arn]
+      Resource = [aws_secretsmanager_secret.token_verify_keys.arn, aws_secretsmanager_secret.notify_key.arn]
     }]
   })
 }
@@ -121,25 +122,24 @@ locals {
         Resource = values(local.table_arns)
       },
       # Registration authority for the hosts' CA (mtls.tf): issue a host's or its own end-entity certificate from a
-      # CSR, and fetch it. IssueCertificate is restricted to the two end-entity templates (never a CA template,
-      # never passthrough of arbitrary extensions); validity is capped by the CA's short-lived mode (7 days). Which
-      # host id a certificate may carry is the tier's enrollment check: IAM cannot constrain a subject.
+      # CSR, and fetch it. IssueCertificate is restricted to the one end-entity template with server + client EKU
+      # (hosts serve --listen-compute and call the tier; the tier serves --listen-hosts and calls hosts; never a CA
+      # template, never passthrough of arbitrary extensions); validity is capped by the CA's short-lived mode (7
+      # days). Which host id a certificate may carry is the tier's enrollment check: IAM cannot constrain a subject.
       {
         Sid      = "IssueHostCertificates"
         Effect   = "Allow"
         Action   = ["acm-pca:IssueCertificate"]
         Resource = [aws_acmpca_certificate_authority.hosts.arn]
         Condition = {
-          StringEquals = { "acm-pca:TemplateArn" = [
-            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1",
-            "arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityClientAuthCertificate/V1",
-          ] }
+          StringEquals = { "acm-pca:TemplateArn" = ["arn:${data.aws_partition.current.partition}:acm-pca:::template/EndEntityCertificate/V1"] }
         }
       },
+      # DescribeCertificateAuthority: the tier reads the CA's key algorithm to pick the signing algorithm (K4c3).
       {
         Sid      = "FetchIssuedCertificates"
         Effect   = "Allow"
-        Action   = ["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate"]
+        Action   = ["acm-pca:GetCertificate", "acm-pca:GetCertificateAuthorityCertificate", "acm-pca:DescribeCertificateAuthority"]
         Resource = [aws_acmpca_certificate_authority.hosts.arn]
       },
       {

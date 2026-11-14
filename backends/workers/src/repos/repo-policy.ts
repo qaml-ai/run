@@ -8,8 +8,8 @@ export class RepoError extends Error {
   readonly code: string;
   readonly reason: string;
   readonly detail?: Record<string, unknown>;
-  constructor(message: string, status: number, code: string, detail?: Record<string, unknown>) {
-    super(`repo:${status}:${code}:${JSON.stringify(detail ?? {})}`);
+  constructor(message: string, status: number, code: string, detail?: Record<string, unknown>, cause?: unknown) {
+    super(`repo:${status}:${code}:${JSON.stringify(detail ?? {})}`, { cause });
     this.name = "RepoError";
     this.reason = message;
     this.status = status;

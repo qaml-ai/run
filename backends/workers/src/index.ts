@@ -61,7 +61,7 @@ import {
   resumeWebhookDeliveries,
   type DeliveryMessage,
 } from "./webhooks.ts";
-import { handleRepoRequest } from "./repos/routes.ts";
+import { handleRepoRequest, repoTransportFailure } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
@@ -199,6 +199,8 @@ function shareInput<T>(schema: { safeParse(value: unknown): { success: true; dat
 }
 
 function httpFailure(error: unknown, env: Env): Response {
+  const transport = repoTransportFailure(error);
+  if (transport) return transport;
   const limited = admissionError(error);
   if (limited) return limited;
   // The shared core's errors (src/core/http-error.ts: decision questions, channels) answer as this backend's own do.

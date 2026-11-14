@@ -130,7 +130,10 @@ export async function runCamelfsRefsCases(t: TestContext, target: Target) {
     const first = await c.acquire(2000);
     assert.equal(first.version, base.commit);
     assert.equal(first.tree, base.tree);
-    await c.fail("POST", "/refs/main/lease", 409, "held", { holder, ttlMs: 2000 });
+    // The same holder re-acquiring while it holds is idempotent (same epoch, new deadline); another holder is held.
+    const again = await c.request<Lease>("POST", "/refs/main/lease", 200, { holder, ttlMs: 2000 });
+    assert.equal(again.epoch, first.epoch); assert.ok(again.deadline >= first.deadline);
+    await c.fail("POST", "/refs/main/lease", 409, "held", { holder: { ...holder, mount: holder.mount + "-other" }, ttlMs: 2000 });
     const renewed = await c.request<{ deadline: number }>("POST", "/refs/main/lease/renew", 200, { ttlMs: 2200 }, c.fenced(first.epoch));
     assert.ok(renewed.deadline > first.deadline);
     await c.until(renewed.deadline);

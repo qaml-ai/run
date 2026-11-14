@@ -1,3 +1,4 @@
+import { StorageError } from '../src/repos/storage.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { agentCacheSalt, WorkflowAgents, workflowRun, type EffectUsage, type LandedOutcome, type WorkflowChildren } from '../src/workflow-agents.ts';
@@ -227,6 +228,10 @@ test('a create that fails with a 5xx or no status is tried again with the same k
   await assert.rejects(w.agents.start(effect('b')), /reset/);
   await w.agents.recover();
   assert.equal(w.submitted.length, 2);
+  w.failCreate(new StorageError(0,'transport_error'));
+  await assert.rejects(w.agents.start(effect('storage')), StorageError);
+  assert.equal((await w.agents.rows.withStatus('queued')).length,1);
+  await w.agents.recover();
   w.failCreate(Object.assign(new Error('Unknown definition'), { status: 400 }));
   await w.agents.start(effect('c'));
   assert.deepEqual(w.landed.at(-1)!.outcome, { ok: false, error: 'Unknown definition' });

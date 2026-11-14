@@ -58,6 +58,7 @@ export type RequestRecord = {
   fingerprint: string;
   billing?: { tenantId: string; agentId: string; model?: string };
   agentSpendAt?: number | null;
+  limitsSnapshot?: import("./run-limits.ts").RunLimitsSnapshot;
   state: "queued" | "running" | "completed";
   startedAt: number;
   endedAt?: number;

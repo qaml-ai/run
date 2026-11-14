@@ -72,7 +72,7 @@ test("pause, resume and abort", { timeout: 60_000 }, async () => {
   await assert.rejects(gone.runner.resume(), /aborted workflow cannot be resumed/);
 });
 
-test("abort and start again: finished agent() results with the same arguments come from the owner's cache at no cost; new and opted-out ones run; a failing cache is a miss", { timeout: 60_000 }, async () => {
+test("abort and start again: finished agent() results with the same arguments come from the owner's cache at no cost; new and opted-out ones run; storage failures retry", { timeout: 60_000 }, async () => {
   const script = (files: string[], summary: string) => `
     const reviews = await parallel(${JSON.stringify(files)}, file => agent("review " + file, { key: "review:" + file }));
     const summary = await agent(${JSON.stringify(summary)} + reviews.length);
@@ -115,7 +115,7 @@ test("abort and start again: finished agent() results with the same arguments co
   assert.equal(at(changed).counts.cached, undefined);
   results.version = 0;
 
-  // nocache: true runs again; a lookup that throws is a miss and the effect runs.
+  // nocache runs again. A storage failure leaves the effect pending.
   const fresh = harness({ results });
   fresh.init({ code: `const a = await agent("review a", { key: "review:a", nocache: true }); return a.answer;` });
   await fresh.wake();
@@ -125,10 +125,12 @@ test("abort and start again: finished agent() results with the same arguments co
   results.failLookup = "the cache is down";
   const down = harness({ results });
   down.init({ code: script(["a"], "summarize ") });
+  await assert.rejects(down.wake(), /the cache is down/);
+  assert.equal(down.world.queue.length, 0);
+  results.failLookup = undefined;
   await down.wake();
   await down.run();
   assert.equal(at(down).status, "completed");
-  assert.equal(at(down).counts.cached, undefined, "every effect ran");
 });
 
 test("a failed outcome never reaches the cache; only ok results are offered", { timeout: 60_000 }, async () => {

@@ -87,8 +87,8 @@ func apiRole(args []string) error {
 	}
 	defer listener.Close()
 
-	var hosts *http.Server
-	var hostListener net.Listener
+	var hosts, enroll *http.Server
+	var hostListener, enrollListener net.Listener
 	if computeAPI != nil {
 		hostListener, err = net.Listen("tcp", computeFlags.listenHosts)
 		if err != nil {
@@ -97,17 +97,31 @@ func apiRole(args []string) error {
 		defer hostListener.Close()
 		hosts = &http.Server{Handler: computeAPI.hostServer, TLSConfig: computeAPI.credentials.ServerConfig(),
 			ReadHeaderTimeout: 5 * time.Second}
+		if computeAPI.enrollServer != nil {
+			enrollListener, err = net.Listen("tcp", computeFlags.listenEnroll)
+			if err != nil {
+				return fmt.Errorf("listen-enroll: %w", err)
+			}
+			defer enrollListener.Close()
+			enroll = &http.Server{Handler: computeAPI.enrollServer, ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout: 10 * time.Second}
+		}
 	}
 
 	defer computeAPI.start(ctx)()
 	defer storage.Close()
-	stopped := make(chan error, 2)
+	stopped := make(chan error, 3)
 	go func() { stopped <- storage.Serve(listener) }()
 	log.Printf("op=api listen=%s", listener.Addr())
 	if hosts != nil {
 		defer hosts.Close()
 		go func() { stopped <- hosts.ServeTLS(hostListener, "", "") }()
 		log.Printf("op=api-hosts listen=%s", hostListener.Addr())
+	}
+	if enroll != nil {
+		defer enroll.Close()
+		go func() { stopped <- enroll.Serve(enrollListener) }()
+		log.Printf("op=api-enroll listen=%s", enrollListener.Addr())
 	}
 	for {
 		select {
@@ -123,12 +137,21 @@ func apiRole(args []string) error {
 		case <-ctx.Done():
 			shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if hosts == nil {
-				return storage.Shutdown(shutdown)
+			servers := []*http.Server{storage}
+			for _, server := range []*http.Server{hosts, enroll} {
+				if server != nil {
+					servers = append(servers, server)
+				}
 			}
-			hostDone := make(chan error, 1)
-			go func() { hostDone <- hosts.Shutdown(shutdown) }()
-			return errors.Join(storage.Shutdown(shutdown), <-hostDone)
+			done := make(chan error, len(servers))
+			for _, server := range servers {
+				go func() { done <- server.Shutdown(shutdown) }()
+			}
+			var result error
+			for range servers {
+				result = errors.Join(result, <-done)
+			}
+			return result
 		}
 	}
 }

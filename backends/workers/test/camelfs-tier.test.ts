@@ -9,6 +9,8 @@ import { handleCamelfsNotify, stageRepoMove, drainRepoMoves, type NotifyEnv, typ
 import { TenantRepos } from "../src/repos/tenant-repos.ts";
 
 const hooks = registerHooks({ resolve(specifier, context, next) {
+  if (specifier === 'cloudflare:workers')
+    return { url: 'data:text/javascript,export class DurableObject {} export const waitUntil=p=>p;', shortCircuit: true };
   if (specifier.endsWith("/security-services.ts"))
     return { url: "data:text/javascript,export const keyServices=async env=>({accounts:env.accounts});", shortCircuit: true };
   return next(specifier, context);
@@ -17,6 +19,9 @@ const { runtimeSigner, runtimeJwks } = await import("../src/tool-identity.ts");
 const { HttpRepoClient } = await import("../src/repos/http-client.ts");
 const { createRepo, deleteRepo } = await import("../src/repos/registry.ts");
 const { handleCamelfsSmoke } = await import("../src/camelfs/smoke.ts");
+const { prepareMounts } = await import("../src/repos/mounts.ts");
+const { repoTransportFailure } = await import("../src/repos/routes.ts");
+const { TierError } = await import("../src/camelfs/tier.ts");
 hooks.deregister();
 
 test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke against the strict tier", async t => {
@@ -141,6 +146,29 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
   const retried = await retry.write({ ...meta, ref: "main", changes: [{ path: "probe", text: "two", expectBlob: "none" }] });
   assert.equal(retried.previous, concurrentVersion);
   assert.equal((await retry.ref("main"))?.version, retried.version);
+  await t.test("mount validation reports an unreachable tier as a transport error", async t => {
+    const scoped = { ...env, TENANTS: { getByName: () => ({ repoRow: async () => row }) } } as unknown as Parameters<typeof prepareMounts>[0];
+    const cause = new TypeError("connection refused");
+    t.mock.method(globalThis, "fetch", async () => { throw cause; });
+    const prepared = prepareMounts(scoped, "t", "caller", [
+      { repo: row.id, path: "/workspace", mode: "ro", notify: true },
+    ]);
+    const error: unknown = await prepared.then(() => assert.fail("mount should fail"), error => error);
+    assert.ok(error instanceof Error && error.cause instanceof TierError);
+    assert.equal(error.cause.cause, cause);
+    const failure = repoTransportFailure(error);
+    assert.ok(failure);
+    assert.equal(failure.status, 502);
+    assert.deepEqual(await failure.json(), { error: "camel-fs tier unreachable", code: "transport_error", stage: "fetch" });
+  });
+  await t.test("tier fetch rejects redirects without forwarding tokens", async t => {
+    const fetch = t.mock.method(globalThis, "fetch", async (_url: URL, init: RequestInit) => {
+      assert.equal(init.redirect, "manual");
+      return Response.redirect("https://other.example", 307);
+    });
+    await assert.rejects(retry.ref("main"), { status: 502, code: "transport_error", reason: "camel-fs tier returned a redirect" });
+    assert.equal(fetch.mock.callCount(), 1);
+  });
   await t.test("repo deletion and owner cleanup stay within each namespace", async () => {
     const index = fixtureIndex(t);
     const scoped = { ...env, TENANTS: { getByName: () => ({
