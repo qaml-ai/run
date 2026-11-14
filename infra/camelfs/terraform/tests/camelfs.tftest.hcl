@@ -269,12 +269,11 @@ run "roles_and_policies" {
   }
   assert {
     condition = (
-      !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Sid == "NoResults"])
-      && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "NoResultReads" && statement.Effect == "Deny"] == [["arn:aws:s3:::camelfs-prod-904534089871/results/*"]]
-      && !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : contains(flatten([statement.Action]), "s3:PutObjectTagging")])
-      && anytrue([for rule in aws_s3_bucket_lifecycle_configuration.objects.rule : rule.id == "results" && try(tolist(rule.filter)[0].prefix, "") == "results/" && try(tolist(rule.expiration)[0].days, 0) == 7])
+      !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.api.policy).Statement, jsondecode(aws_iam_policy.host.policy).Statement) : contains(flatten([statement.Action]), "s3:PutObjectTagging") || can(regex("results", jsonencode(statement.Resource)))])
+      && !anytrue([for rule in aws_s3_bucket_lifecycle_configuration.objects.rule : rule.id == "results"])
+      && toset([for rule in aws_s3_bucket_lifecycle_configuration.objects.rule : rule.id]) == toset(["noncurrent-versions", "inventory"])
     )
-    error_message = "Hosts put their VM results under results/ and read none (write-only for hosts); nothing tags; results expire by prefix after 7 days."
+    error_message = "No results/ anywhere (L102): no lifecycle rule, no statement naming it, nothing tags; the lifecycle rules are noncurrent-versions and inventory."
   }
   assert {
     condition = (
