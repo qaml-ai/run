@@ -21,8 +21,6 @@ type lineageItem struct {
 	Kind          string `json:"kind"`
 	DefaultBranch string `json:"defaultBranch"`
 	CreatedAt     int64  `json:"createdAt"`
-	MarkedBytes   int64  `json:"-"`
-	WrittenSince  int64  `json:"-"`
 	DeletedAt     *int64 `json:"-"`
 	Deletion      string `json:"-"`
 	Clearing      bool   `json:"-"`
@@ -62,8 +60,7 @@ func (s *lineageStore) get(ctx context.Context, l string) (lineageItem, error) {
 		return n
 	}
 	body := lineageItem{Lineage: str("lineage"), Tenant: str("tenant"), Kind: str("kind"), DefaultBranch: str("defaultBranch"),
-		CreatedAt: number("createdAt"), MarkedBytes: number("markedBytes"), WrittenSince: number("writtenSince"),
-		Deletion: str("deletion")}
+		CreatedAt: number("createdAt"), Deletion: str("deletion")}
 	if item["deletedAt"] != nil {
 		n := number("deletedAt")
 		body.DeletedAt = &n

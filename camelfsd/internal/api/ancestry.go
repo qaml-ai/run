@@ -123,10 +123,23 @@ func serveAncestry(w http.ResponseWriter, r *http.Request, repo *objects.Reposit
 		jsonReply(w, 200, map[string]bool{"ancestor": ancestor})
 		return
 	}
-	nodes, e := walkAncestry(r.Context(), a, b, load)
-	if e != nil {
-		storageFail(w, e)
+	best, tree, err := mergeBase(r.Context(), repo, a, b)
+	if err != nil {
+		storageFail(w, err)
 		return
+	}
+	if best == "" {
+		jsonReply(w, 200, map[string]any{"base": nil, "tree": nil})
+		return
+	}
+	jsonReply(w, 200, map[string]string{"base": best, "tree": tree})
+}
+
+func mergeBase(ctx context.Context, repo *objects.Repository, a, b string) (string, string, error) {
+	load := func(ctx context.Context, id string) (map[string]any, error) { return ancestryCommit(ctx, repo, id) }
+	nodes, err := walkAncestry(ctx, a, b, load)
+	if err != nil {
+		return "", "", err
 	}
 	// Any parent of a common ancestor is dominated, as are all its ancestors.
 	// A single propagation pass visits each dominated edge at most once.
@@ -156,8 +169,7 @@ func serveAncestry(w http.ResponseWriter, r *http.Request, repo *objects.Reposit
 		}
 	}
 	if best == "" {
-		jsonReply(w, 200, map[string]any{"base": nil, "tree": nil})
-		return
+		return "", "", nil
 	}
-	jsonReply(w, 200, map[string]string{"base": best, "tree": nodes[best].tree})
+	return best, nodes[best].tree, nil
 }

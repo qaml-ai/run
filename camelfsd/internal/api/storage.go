@@ -189,6 +189,16 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 			storageFail(w, lineageDeleted())
 			return
 		}
+		if route == "blobs" && r.Method == "PUT" {
+			if item.Lineage == "" {
+				storageFail(w, lineageMissing())
+				return
+			}
+			if item.Deletion != "" {
+				storageFail(w, &storageError{503, "unavailable", nil})
+				return
+			}
+		}
 		if route == "" || route == "refs" || strings.HasPrefix(route, "refs/") {
 			idemRoute = r.Method + " " + route
 			var request refRequest
@@ -226,7 +236,7 @@ func (s *StorageServer) storage(w http.ResponseWriter, r *http.Request) {
 				if route == "" {
 					err = s.lineageRoute(w, r, l, item)
 				} else {
-					err = s.refRoute(w, r, l, request, item, repo)
+					err = s.refRoute(w, r, l, request, repo)
 				}
 				if err != nil {
 					s.refRouteError(w, r, l, err)
@@ -315,6 +325,10 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 		b, e := repo.Upload(ctx, l, expected, r.ContentLength, r.Body)
 		if e != nil {
 			fail(e)
+			return
+		}
+		if err := s.countUpload(ctx, l, b); err != nil {
+			s.refRouteError(w, r, l, err)
 			return
 		}
 		status := 201
@@ -568,9 +582,14 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			fail(e)
 			return
 		}
-		out, e := mergeTrees(ctx, repo, l, v)
+		batch := repo.BeginPublication()
+		batch.OnBlobUpload(func(ctx context.Context, blob objects.Blob) error { return s.countUpload(ctx, l, blob) })
+		out, e := stageMerge(ctx, batch, l, v, false)
+		if e == nil {
+			e = batch.Flush(ctx)
+		}
 		if e != nil {
-			fail(e)
+			s.refRouteError(w, r, l, e)
 			return
 		}
 		jsonReply(w, 200, out)

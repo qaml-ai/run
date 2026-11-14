@@ -32,6 +32,7 @@ func apiRole(args []string) error {
 	region := f.String("region", "us-west-2", "AWS region")
 	refsTable := f.String("refs-table", "", "DynamoDB refs table")
 	lineagesTable := f.String("lineages-table", "", "DynamoDB lineages table")
+	marksTable := f.String("marks-table", "marks", "DynamoDB pending mark work table keyed by lineage")
 	endpoint := f.String("ddb-endpoint", "", "DynamoDB Local endpoint")
 	fetchDepth := f.Int("fetch-depth", store.DefaultDepth, "maximum in-flight fetches and uploads")
 	jwksFile := f.String("jwks-file", "", "runtime JWKS file (alternative to CAMELFS_JWKS)")
@@ -87,7 +88,7 @@ func apiRole(args []string) error {
 		if err != nil {
 			return err
 		}
-		handler.ConfigureRefs(client, *refsTable, *lineagesTable, nil)
+		handler.ConfigureRefs(client, *refsTable, *lineagesTable, nil, *marksTable)
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)
