@@ -33,11 +33,21 @@ func TestKVMEgressIsolation(t *testing.T) {
 			t.Fatalf("%s via proxy: exit %d, status %q, want exit %d, status %q", url, code, out, exit, result)
 		}
 	}
+	// A refused CONNECT is the proxy's 403 and a failed curl; the exit code varies with when the proxy closes the
+	// connection after the 403 (7 or 56), so the refusal is asserted, not one curl code.
+	refused := func(t *testing.T, vm *VM, url string) {
+		t.Helper()
+		cmd := fmt.Sprintf("curl -sS -o /dev/null -m 10 --noproxy '' -x %s -w '%%{http_connect}' %s 2>/dev/null", proxyURL(vm), url)
+		code, out := kvmRun(t, vm.channel, cmd, 0)
+		if code == 0 || out != "403" {
+			t.Fatalf("%s via proxy: exit %d, status %q, want a refused CONNECT (403, non-zero exit)", url, code, out)
+		}
+	}
 	t.Run("allowlisted", func(t *testing.T) {
 		probe(t, online, "https://"+registry+"/", "http_code", 0, "200")
 	})
 	t.Run("off-allowlist", func(t *testing.T) {
-		probe(t, online, "https://example.com/", "http_connect", 56, "403")
+		refused(t, online, "https://example.com/")
 	})
 	t.Run("port-80", func(t *testing.T) {
 		probe(t, online, "http://"+registry+"/", "http_code", 0, "403")
@@ -54,9 +64,9 @@ func TestKVMEgressIsolation(t *testing.T) {
 		}
 	})
 	t.Run("offline", func(t *testing.T) {
-		probe(t, offline, "https://"+registry+"/", "http_connect", 56, "403")
+		refused(t, offline, "https://"+registry+"/")
 	})
 	t.Run("imds", func(t *testing.T) {
-		probe(t, online, "https://169.254.169.254/latest/meta-data/", "http_connect", 56, "403")
+		refused(t, online, "https://169.254.169.254/latest/meta-data/")
 	})
 }
