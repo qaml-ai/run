@@ -19,7 +19,7 @@ import { BARGE_IN_LIMITS, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/e
 import type { TurnModels } from "./voice/turns/inference.ts";
 import { assemble, Recorder, RECORDING_LIMITS, type RecordedPacket, type RecordingFile, type RecordingTracks } from "./voice/recorder.ts";
 import type { Storage } from "../shared/storage.ts";
-import { RealtimeBrain, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
+import { RealtimeBrain, spendRefusal, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
 import { Jukebox, AUDIO_LIMITS, type AudioSource } from "./voice/jukebox.ts";
 import { speechRequest, type SpeechService } from "./speech-api.ts";
 import type { Outbound } from "./outbound.ts";
@@ -437,6 +437,7 @@ export interface VoiceSessionsOptions {
   transports: Partial<Record<typeof VOICE_PROVIDERS[number], VoiceTransport>>;
   /** Refuses a tenant that may not start paid work now (spent credit, monthly cap); throws an HttpError. */
   admit(tenant: string): Promise<void>;
+  tenantCreditExhausted?(tenant: string): Promise<boolean>;
   /** Whether an agent is the tenant's (and not deleted), for `deliver.agent`. */
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   /** Speech to text for listening sessions, as `POST /v1/transcriptions` makes it; without it, brain listen is refused. */
@@ -537,6 +538,16 @@ type Held = {
   /** Audio the bot plays into the call (POST …/audio), once it has played any. */
   jukebox?: Jukebox;
 };
+/**
+ * The one admission for every voice path (calls, realtime and listening sessions, each response or metering
+ * checkpoint): the account's spend limit (402 SPEND_LIMIT), then its credit (Billing.creditLimit: 402 out of credit or
+ * disputed, 429 FREE_HOURLY_LIMIT past the free hourly allowance), all spend refusals that end a call as budget.
+ */
+export const voiceAdmission = (accounts: { runLimit(tenant: string): Promise<string | HttpError | undefined> }) => async (tenant: string) => {
+  const refused = await accounts.runLimit(tenant);
+  if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+};
+
 export class VoiceSessions {
   readonly db: Db;
   private readonly options: VoiceSessionsOptions;
@@ -1562,7 +1573,12 @@ export class VoiceSessions {
     try {
       try { await this.options.admit(origin.tenant); }
       catch (error) {
-        if ((error as HttpError).status !== 402) throw error;
+        if ((error as HttpError).status === 429 && !spendRefusal(error)) {
+          // A rate or concurrency refusal: this utterance goes untranscribed; the session goes on.
+          console.error(JSON.stringify({ type: "voice_utterance_dropped", session: origin.id, reason: "refused", seconds: cut.seconds }));
+          return;
+        }
+        if (!spendRefusal(error)) throw error;
         await this.endFor(origin, { reason: "budget", limit: "tenant" });
         return;
       }
@@ -1620,6 +1636,7 @@ export class VoiceSessions {
     const local = this.held.get(origin.id);
     if (row && transcript.text) local?.media?.notify?.({ type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, brain: "listen" });
     if (row && local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
+    if (usage.platform && await this.options.tenantCreditExhausted?.(origin.tenant)) await this.endFor(origin, { reason: "budget", limit: "tenant" });
     console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started }));
   }
 
@@ -1775,6 +1792,7 @@ export class VoiceSessions {
         },
       } : {}),
       admit: () => this.options.admit(held.tenant),
+      ...(credentials.platform && this.options.tenantCreditExhausted ? { tenantCreditExhausted: () => this.options.tenantCreditExhausted!(held.tenant) } : {}),
       hold: async usd => {
         const { subject, bucket } = options();
         return subject !== undefined && this.options.credit ? this.options.credit.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_realtime", { session: held.id }) : undefined;

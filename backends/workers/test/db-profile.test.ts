@@ -8,7 +8,7 @@ test("concurrent profiles retain phase attribution and never expose SQL or param
     const sql = profileSql({ async query(_text: string, _values?: unknown[]) { await Promise.resolve(); return { rows: [] }; } });
     await profileConnect(async () => {});
     await sql.query("select secret from private_table", ["credential-do-not-record"]);
-    await dbPhase(i ? "renew" : "hold", () => sql.query("select credit_holds"));
+    await dbPhase(i ? "renew" : "hold", () => sql.query("select end_user_holds"));
     await sql.query("insert into usage values ($1)", ["private"]);
     await sql.query("select webhook_deliveries");
   })));
@@ -30,7 +30,7 @@ test("transactions include control round trips, hold time and failed queries", a
   await profile.run("settle", async () => {
     const sql = profileSql({ async query(text: string) { if (text === "fail") throw new Error("not recorded"); return { rows: [] }; } });
     await sql.query("begin");
-    await sql.query("select credit_holds");
+    await sql.query("select end_user_holds");
     await assert.rejects(sql.query("fail"));
     await sql.query("rollback");
   });

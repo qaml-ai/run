@@ -17,9 +17,8 @@ import {
   type PostgresEnv,
   type Sql,
 } from "./postgres.ts";
-import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
-import { EndUserCredits, lastCallMin, lockEndUser, settleUsage, utcDay } from "./end-user-credits.ts";
-import { CreditHolds } from "./credit-holds.ts";
+import { postLedger, accrueUsage } from "./billing-sql.ts";
+import { EndUserCredits, lockEndUser, settleUsage, utcDay } from "./end-user-credits.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
 import { resolveAgentKey } from "./agent-key.ts";
@@ -461,18 +460,9 @@ async function verifyAgent(sql: Sql, tenantId: string, agentId: string) {
   if (!row || row.revoked)
     throw new ApiError(403, "Agent unavailable", "AGENT_GONE");
 }
-export async function reserveTurn(
-  env: KeyEnv, tenantId: string, agentId: string, requestId: string,
-  reserveMicros = 0, min = lastCallMin(reserveMicros),
-): Promise<{ held: number }> {
-  if (!Number.isSafeInteger(reserveMicros) || reserveMicros < 0) throw new ApiError(400, "Invalid reservation");
-  const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
+/** Run admission already checked credit through Accounts.runLimit. Verify the agent is still active. */
+export async function verifyTurnAgent(env: PostgresEnv, tenantId: string, agentId: string) {
   await withSql(env, sql => verifyAgent(sql, tenantId, agentId));
-  const { accounts: { billing } } = await keyServices(env);
-  if (!reserveMicros || await billing.mode(tenantId) === "none") return { held: 0 };
-  const hold = await new CreditHolds(database(env), billing).reserve(tenantId, id, reserveMicros, min);
-  if (!hold) throw new ApiError(402, "Insufficient credit or hourly allowance", "INSUFFICIENT_CREDIT");
-  return { held: hold.held };
 }
 export type TurnReceipt = {
   tenantId: string;
@@ -543,8 +533,7 @@ export async function settleTurn(
         throw new ApiError(409, "Receipt changed", "IDEMPOTENCY_CONFLICT");
       return { duplicate: true };
     }
-    // A receipt may arrive after its hold expires or after a lost acknowledgement.
-    // src/ permits a running response's bounded overdraft; expiry never drops its charge.
+    // A receipt can arrive after the account spends its remaining credit or after a lost acknowledgement.
     const charged = receipt.modelMetered ? activeCharge(billing.pricing, receipt.activeMs ?? 0) : receipt.costMicros;
     if (charged > 0 && prepaid) await accrueUsage(sql, [{ tenant: receipt.tenantId, amount: charged,
       metadata: receipt.modelMetered ? { tokens: 0, activeMs: receipt.activeMs ?? 0 } : { responses: receipt.responses ?? 1, inputTokens: receipt.inputTokens ?? 0, outputTokens: receipt.outputTokens ?? 0 } }]);
@@ -569,10 +558,6 @@ export async function settleTurn(
         Date.now(),
       ],
     );
-    await sql.query("delete from credit_holds where id=$1 and tenant=$2", [
-      id,
-      receipt.tenantId,
-    ]);
     if (!receipt.modelMetered) await enqueueEvents(sql, [
       webhookEvent(
         "usage.recorded",
@@ -597,21 +582,6 @@ export async function settleTurn(
   });
   return result;
 }
-export async function releaseTurn(
-  env: PostgresEnv,
-  tenantId: string,
-  agentId: string,
-  requestId: string,
-): Promise<void> {
-  const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
-  await withSql(env, (sql) =>
-    sql.query("delete from credit_holds where id=$1 and tenant=$2", [
-      id,
-      tenantId,
-    ]),
-  );
-}
-
 /** Team accounts transfer existing credit in one transaction with ordered row locks. */
 export async function transfer(
   env: PostgresEnv,
@@ -642,14 +612,6 @@ export async function transfer(
         throw new ApiError(409, "Transfer changed", "IDEMPOTENCY_CONFLICT");
       return { transferred: amount, replayed: true };
     }
-    const held = Number(
-      (
-        await sql.query(
-          "select coalesce(sum(amount),0) held from credit_holds where tenant=$1 and expires_at > $2",
-          [from, Date.now()],
-        )
-      ).rows[0].held,
-    );
     const balance = Number(
       (
         await sql.query("select balance from credit_accounts where tenant=$1", [
@@ -657,10 +619,10 @@ export async function transfer(
         ])
       ).rows[0].balance,
     );
-    if (balance - held < amount)
+    if (balance < amount)
       throw new ApiError(
         402,
-        "Insufficient unreserved credit",
+        "Insufficient credit",
         "INSUFFICIENT_CREDIT",
       );
     await postLedger(sql, [
@@ -762,7 +724,7 @@ export async function controlRoutes(
       (
         await withSql(env, (sql) =>
           sql.query(
-            "select t.id,t.billing,t.limits,a.balance,a.purchased,(select coalesce(sum(amount),0) from credit_holds h where h.tenant=t.id) as held from tenants t join credit_accounts a on a.tenant=t.id where t.id=$1",
+            "select t.id,t.billing,t.limits,a.balance,a.purchased,0::bigint as held from tenants t join credit_accounts a on a.tenant=t.id where t.id=$1",
             [tenant],
           ),
         )
@@ -779,17 +741,7 @@ export async function controlRoutes(
         )
       ).rows,
     );
-  if (path === "/v1/credits/holds")
-    return json(
-      (
-        await withSql(env, (sql) =>
-          sql.query(
-            "select id,amount,expires_at from credit_holds where tenant=$1 order by created_at",
-            [tenant],
-          ),
-        )
-      ).rows,
-    );
+  if (path === "/v1/credits/holds") return json([]);
   if (path === "/v1/credits/transfer" && request.method === "POST") {
     if (auth.kind !== "operator")
       throw new ApiError(403, "Team account operator required", "FORBIDDEN");
@@ -977,7 +929,7 @@ export async function controlRoutes(
       (
         await withSql(env, (sql) =>
           sql.query(
-            "select (select count(*) from tenants) tenants,(select count(*) from agents where not revoked) agents,(select sum(balance) from credit_accounts) balance,(select count(*) from credit_holds) holds",
+            "select (select count(*) from tenants) tenants,(select count(*) from agents where not revoked) agents,(select sum(balance) from credit_accounts) balance,0::bigint holds",
           ),
         )
       ).rows[0],

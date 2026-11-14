@@ -15,7 +15,6 @@ import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
 import { body } from "./validation.ts";
 import { type HumanInput } from "./human.ts";
-import { releaseTurn } from "./control.ts";
 import { PromptAttachments } from "./prompt-attachments.ts";
 import { type StoredSchedule as Schedule } from "./schedules.ts";
 import { modelRuntime } from "./model.ts";
@@ -120,7 +119,6 @@ export class AgentRuntime extends AgentContext {
   promptAttachments = new PromptAttachments(this.ctx.storage, this.env);
 
   promptPreparations = new PromptPreparations(this.ctx.storage, async receipt => {
-    await releaseTurn(this.env, receipt.tenant, receipt.agent, receipt.requestId);
     await this.env.TENANTS.getByName(receipt.tenant).release(`${receipt.agent}:${receipt.requestId}`);
   });
 
