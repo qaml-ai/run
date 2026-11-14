@@ -68,7 +68,7 @@ test("PR guest images follow the guest's inputs and the build scripts, not workf
   for (const path of ["camelfsd/internal/guest/guest.go", "camelfsd/scripts/build-guest-image.sh", "camelfsd/scripts/build-guest-image-container.sh"]) {
     assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=true$/m, path);
   }
-  assert.match(changes({ event: "pull_request", paths: ["README.md", "jobhost/guest.ts"] }), /^guest_image=false$/m);
+  assert.match(changes({ event: "pull_request", paths: ["README.md", "src/server.ts"] }), /^guest_image=false$/m);
   // The base digest lives in build-guest-image-container.sh, so a workflow edit no longer republishes the image.
   for (const path of [".github/workflows/ci.yml", ".github/workflows/guest-image.yml"]) {
     assert.match(changes({ event: "pull_request", paths: ["README.md", path] }), /^guest_image=false$/m, path);

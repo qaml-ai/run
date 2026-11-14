@@ -35,16 +35,14 @@ whole images. Privileged loop/reflink tests skip when unsupported.
 An absolute directory in --store substitutes the local store. S3 uses the SDK
 credential chain. No runtime TCP listener starts without --api-token-file.
 --api-token-file accepts either a raw token (outer whitespace trimmed) or an
-env-format file containing CAMELFS_API_TOKEN=<hex>, such as jobhost's
-/etc/camel/camelfs-api.env (root-owned, mode 0600). Blank tokens are refused;
-env values must be hex. Other env lines and comments are ignored when that key
-is present.
+env-format file containing CAMELFS_API_TOKEN=<hex> (root-owned, mode 0600).
+The token must be nonempty and the env value must be hex. Other env lines and
+comments are ignored when that key is present.
 The runtime listener serves /v1 plus exactly POST /v0/trees and
 PUT /v0/blobs/:sha256?lineage=... using the Unix socket handlers. Both import
-routes require the same bearer as /v1. Other /v0 paths return 404 on TCP;
-host operations stay on the mode-0600 Unix socket. This replaces jobhost's
-phase-1 import proxy on 127.0.0.1:8790: stop the proxy before enabling the
-daemon listener, leaving the pilot VPC service address unchanged. Protect the loopback listener behind the runtime's private tunnel.
+routes require the same bearer as /v1. Other /v0 paths return 404 on TCP.
+Host operations stay on the mode-0600 Unix socket. Protect the loopback listener
+behind the runtime's private tunnel.
 Never log the bearer. Every /v1 request, including a 401, logs one access line:
 op=<METHOD>:/v1/<route> lineage=<l> status=<code> ms=<n>. Routes are templates;
 object ids, file paths, query values and bodies are omitted. Lineages are
@@ -248,6 +246,8 @@ not_in_tree (404 on reads), too_large (413), conflict (409), no_fence (409),
 unavailable (503). Conflict lists are in error.details.conflicts.
 
 ## Host API and guest streams
+
+Compute hosts run `camelfsd host --compute` ([design §1](../docs/design/camel-fs-compute.md#1-one-host-process)).
 
 Examples use S=/run/camelfsd/api.sock.
 
