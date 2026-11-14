@@ -133,7 +133,6 @@
       }
     }
   ],
-  // The camelFS v0 host (EC2 m8id) through the camel-fs-proto tunnel to its import proxy on 127.0.0.1:8790 (VPC service camel-fs-proto).
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
