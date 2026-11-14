@@ -249,7 +249,7 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       return effect("agent", args, opts);
     },
     // One command in a container of its own (jobs/): its files from a volume (\`at\`) or given inline, its named outputs
-    // kept in the workflow's volume. Answers { exitCode, timedOut, stdout, stderr, outputs, ... }, or null if it could
+    // kept in the workflow's repo. Answers { exitCode, timedOut, stdout, stderr, outputs, ... }, or null if it could
     // not run (its item says why).
     job(opts) {
       options(opts, "job");
@@ -259,14 +259,12 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("job", args, opts);
     },
-    // Land a child's edits (its fork: agent(..., { repo }).fork) on the volume it was forked from, all or nothing. Answers
-    // { committed: true, seq, files, removed }, or { committed: false, conflicts: [{ path, headVersion }] } when the base
-    // changed under any of the files: nothing is written then, and the script decides (a fixer, a rebase, a skip).
+    // Merge a child's branch onto its base ref.
     commit(fork, opts) {
       options(opts, "commit");
-      const volume = typeof fork === "string" ? fork : fork && typeof fork.volume === "string" ? fork.volume : undefined;
-      if (!volume) throw new TypeErrorCtor("commit(fork) needs a fork: what agent(..., { repo }) answered as .fork, or its volume id");
-      const args = { fork: volume };
+      fork = fork && fork.fork ? fork.fork : fork;
+      if (!fork || typeof fork.repo !== "string" || typeof fork.ref !== "string" || !fork.base) throw new TypeErrorCtor("commit(fork) needs a fork: what agent(..., { repo }) answered as .fork");
+      const args = { fork };
       if (opts) for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("commit", args, opts);
     },

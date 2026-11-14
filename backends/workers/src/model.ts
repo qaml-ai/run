@@ -76,16 +76,7 @@ export function modelRuntime(
 ) {
   const models = createModels();
   const decorate = (provider: Provider) => {
-    // TEMPORARY(volume-fork-mounts): removed by the workflows-on-branches PR
-    const authorizeFile = async (key: string) => {
-      const agent = await hooks.agentId?.();
-      if (!agent || !env.VOLUMES) return false;
-      const tenant = await getTenant();
-      if (!key.startsWith(`files/${encodeURIComponent(tenant)}/`)) return false;
-      const volume = decodeURIComponent(key.split("/")[2] ?? "");
-      return env.VOLUMES.getByName(`${tenant}:${volume}`).hasPin(`agent:${agent}`, key);
-    };
-    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant, authorizeFile), env as FileBindings & import("./repos/registry.ts").RepoEnv, getTenant, authorizeFile,hooks.authorizeRepoFile);
+    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant), env as FileBindings & import("./repos/registry.ts").RepoEnv, getTenant, undefined,hooks.authorizeRepoFile);
     return withSettings(hooks.wrapProvider ? hooks.wrapProvider(images) : images, hooks, env);
   };
   const contextModels = new Map<string, Model<Api>>();

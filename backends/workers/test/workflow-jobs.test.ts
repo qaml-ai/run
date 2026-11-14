@@ -10,6 +10,7 @@ import { applyScope } from "../../../shared/apply-scope.ts";
 import type { WorkflowJobsEnv } from "../src/workflow-jobs.ts";
 import type { StartedEffect, EffectOutcome } from "../src/workflow-runner.ts";
 import { JobSpecError, type JobResult, type JobSpec } from "../src/jobs/job.ts";
+import { fixture } from "./workflow-repo-fixture.ts";
 import { harness, FakeCapacity } from "./workflow-harness.ts";
 
 // The job and volume modules reach Durable Objects; a stand-in base class lets them load in Node.
@@ -18,9 +19,8 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 } });
 const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");
-const { byKind } = await import("../src/workflow-object.ts");
-const { forkChanges } = await import("../src/workflow-volumes.ts");
-const { ForkJanitor } = await import("../src/workflow-forks.ts");
+const { byKind, WorkflowObject } = await import("../src/workflow-object.ts");
+const { BranchJanitor } = await import("../src/workflow-forks.ts");
 hooks.deregister();
 const run = promisify(execFile);
 
@@ -31,7 +31,7 @@ test("job() and push() hold job slots under jobConcurrency, apart from agents; c
     code: `
       const built = await parallel(["a", "b", "c"], name => job({ key: "build:" + name, command: "make " + name, timeoutSeconds: 60 }));
       const reviewed = await agent("review", { key: "review" });
-      const landed = await commit("vol_fork", { key: "land" });
+      const landed = await commit({repo:"repo_1",ref:"fork/one",base:{ref:"main",version:"v"}}, { key: "land" });
       const pushed = await push({ key: "push", volume: "vol_base", repo: "acme/app", branch: "wf", app: "gha_1" });
       return { built: built.map(b => b.exitCode), reviewed: reviewed.answer, landed, pushed };`,
     concurrency: 4, jobConcurrency: 2,
@@ -103,7 +103,7 @@ function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, availab
   };
   const landed: [string, number, unknown, unknown?][] = [], specs: JobSpec[] = [], pending: Promise<unknown>[] = [], stopped: string[] = [];
   const driver = { provider: "cloudflare-containers" as const, run: async (spec: JobSpec) => { specs.push(spec); return result(spec); }, stop: async (id: string) => { stopped.push(id); return { stopped: true }; } };
-  const executor = new WorkflowJobs(env, {
+  const executor = new WorkflowJobs({ ...fixture({after: () => {}}).env, ...env }, {
     workflow: { id: "wf_1", tenant: "t1" }, storage: storage as never, payer: () => payer ?? undefined,
     land: async (key, attempt, outcome, usage) => { landed.push([key, attempt, outcome, usage]); },
     waitUntil: promise => { pending.push(promise); },
@@ -137,7 +137,8 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   assert.deepEqual(spec.payer, { tenant: "t1", agent: "agent_owner" }, "the agent that owns the workflow pays");
   assert.equal(spec.id, await jobId("wf_1", "c", 1));
   assert.match(spec.id, /^wf-[0-9a-f]{40}$/);
-  assert.deepEqual(Object.keys(spec.files!), ["a.txt"]);
+  // With camelFS configured, inline files are committed on the job's branch of the workflow repo.
+  assert.equal(spec.files, undefined); assert.equal(spec.repo?.ref, `job/${spec.id}`); assert.equal(spec.repo?.owner, "workflow:wf_1");
 
   // A failure lands its code; a run still held by an earlier start lands nothing (that run lands).
   j = jobs(spec => ({ ok: false, id: spec.id, code: "disk_low", message: "under 2 GiB free", timings }));
@@ -199,7 +200,7 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   assert.equal(j.landed.length, 0);
   release();
   await j.settled();
-  assert.deepEqual(j.landed.map(entry => [entry[0], (entry[2] as { error?: string }).error]), [["h", "commit() needs a fork's volume id"]]);
+  assert.deepEqual(j.landed.map(entry => [entry[0], (entry[2] as { error?: string }).error]), [["h", "commit() needs { fork: { repo, ref, base } }"]]);
 });
 
 test("WorkflowJobs: commit needs at and a boolean", async () => {
@@ -212,13 +213,13 @@ test("WorkflowJobs: commit needs at and a boolean", async () => {
   }
 });
 
-test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", async () => {
+test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", async t => {
   const checkpoint = { walkMs: 1, streamMs: 2, freezeMs: 3, files: 4, bytes: 5, skipped: 6,
     changedChunks: 7, uploadedChunks: 8, changedBytes: 9, reflinkMs: 10, fiemapMs: 11, hashMs: 12, uploadMs: 13 };
   const step = { warm: true, mountMs: 2, applyMs: 3, checkpointMs: 4, checkpoint };
   for (const fields of [{ commit: "c".repeat(40), tree: "b".repeat(40), root: "r" }, { checkpointError: "checkpoint failed" }]) {
     const written: string[] = [];
-    const env = { CAMELFS: { fetch: async () => { throw new Error("unexpected camelFS import"); } }, CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
+    const env = { ...fixture(t).env, VOLUMES: { getByName: () => ({
       initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
       write: async (path: string) => { written.push(path); return { path }; },
     }) } } as unknown as WorkflowJobsEnv;
@@ -247,17 +248,19 @@ test("WorkflowJobs: a checkpoint's ids, errors and timings reach the script", as
         assert.ok(Number.isInteger(outcome.value.timings.steps[name]) && outcome.value.timings.steps[name] >= 0, name);
       }
       assert.equal(outcome.value.exitCode, 1);
-      assert.equal(written.length, 2);
+      assert.match(String(outcome.value.repo), /^repo_/);
+      assert.match(String(outcome.value.version), /^[0-9a-f]{40}$/);
     });
   }
 });
 
-test("WorkflowJobs: commit without camelFS, or refused by the driver, lands as the script's error and is not retried", async () => {
+test("WorkflowJobs: commit without camelFS, or refused by the driver, lands as the script's error and is not retried", async t => {
   const without = jobs(() => assert.fail("no job runs"));
+  delete (without.executor as any).env.CAMELFS;
   await without.executor.start(effect("nofs", { command: "true", timeoutSeconds: 5, at: "vol_source", commit: true }));
   await without.settled();
   assert.deepEqual(without.landed[0]![2], { ok: false, error: "job() commit needs camelFS job hosts, which this deployment does not have" });
-  const env = { CAMELFS: { fetch: async () => { throw new Error("unexpected camelFS import"); } }, CAMELFS_API_TOKEN: "unit-test-only", VOLUMES: { getByName: () => ({
+  const env = { ...fixture(t).env, VOLUMES: { getByName: () => ({
     initialize: async () => {}, snapshot: async () => ({ id: "snapshot" }),
   }) } } as unknown as WorkflowJobsEnv;
   const sql = { query: async (text: string) => {
@@ -271,17 +274,6 @@ test("WorkflowJobs: commit without camelFS, or refused by the driver, lands as t
     assert.deepEqual(refused.landed[0]![2], { ok: false, error: "commit needs camelFS job hosts; Cloudflare containers cannot checkpoint a job's tree" });
     assert.equal([...refused.rows.keys()].filter(key => key.startsWith("workflow-job:")).length, 0, "its row is gone: no sweep runs it again");
   });
-});
-
-test("a fork's changes: written paths are those whose content differs from the base it was made from; removed ones", () => {
-  const file = (path: string, key: string, version = 1) => ({ path, key, version, size: 1, contentType: "text/plain", updatedAt: 0 });
-  const { written, removed, before } = forkChanges(
-    [file("/same", "k1"), file("/changed", "k2"), file("/gone", "k3", 4)],
-    [file("/same", "k1"), file("/changed", "k9", 7), file("/new", "k5", 8)],
-  );
-  assert.deepEqual(written.map(entry => entry.path), ["/changed", "/new"]);
-  assert.deepEqual(removed.map(entry => [entry.path, entry.version]), [["/gone", 4]]);
-  assert.equal(before.get("/changed")?.version, 1, "the base version the commit checks");
 });
 
 test("redact replaces a token wherever a command printed it", () => {
@@ -337,14 +329,14 @@ test("a workflow's forks are deleted once it ends; a failed delete is tried agai
   };
   let now = 1_000_000;
   const deleted: string[] = [], failing = new Set<string>();
-  const janitor = () => new ForkJanitor({ storage: storage as never, now: () => now, deleteFork: async id => {
+  const janitor = () => new BranchJanitor({ storage: storage as never, now: () => now, deleteOwned: async id => {
     if (failing.has(id)) throw new Error("storage unavailable");
-    deleted.push(id);
+    deleted.push(id); return { held: [] };
   } });
   let forks = janitor();
-  await forks.made("vol_a");
-  await forks.made("vol_b");
-  await forks.made("vol_c");
+  await storage.put("workflow-repo:" + "vol_a", true);
+  await storage.put("workflow-repo:" + "vol_b", true);
+  await storage.put("workflow-repo:" + "vol_c", true);
   // A commit still landing (its row in WorkflowJobs) keeps every fork: it is tried again later.
   rows.set("workflow-job:wf-1", { kind: "commit", key: "land", attempt: 1 });
   assert.equal(await forks.ended(), now + 60_000);
@@ -362,39 +354,17 @@ test("a workflow's forks are deleted once it ends; a failed delete is tried agai
   assert.equal(await forks.ended(), undefined);
   assert.deepEqual(deleted, ["vol_a", "vol_c", "vol_b"]);
   assert.equal(await forks.retryAt(), undefined);
-  assert.equal([...rows.keys()].filter(key => key.startsWith("workflow-fork")).length, 0);
+  assert.equal([...rows.keys()].filter(key => key.startsWith("workflow-repo")).length, 0);
   // Nothing left: ending again does nothing.
   assert.equal(await forks.ended(), undefined);
   assert.equal(deleted.length, 3);
 });
 
-test("at the end, a fork the result cache adopts is handed over, not deleted; the rest are deleted; one it cannot tell about waits", async () => {
-  const rows = new Map<string, unknown>();
-  const storage = {
-    get: async (key: string) => rows.get(key),
-    put: async (key: string, value: unknown) => { rows.set(key, value); },
-    delete: async (key: string) => rows.delete(key),
-    list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
-  };
-  const deleted: string[] = [];
-  let unsure = true;
-  const forks = new ForkJanitor({ storage: storage as never, now: () => 1_000, deleteFork: async id => { deleted.push(id); },
-    adopt: async id => { if (id === "vol_unsure" && unsure) throw new Error("the cache is down"); return id === "vol_kept"; } });
-  await forks.made("vol_kept");
-  await forks.made("vol_free");
-  await forks.made("vol_unsure");
-  assert.equal(await forks.ended(), 1_000 + 60_000, "tried again later");
-  assert.deepEqual(deleted, ["vol_free"]);
-  assert.deepEqual([...rows.keys()].filter(key => key.startsWith("workflow-fork:")), ["workflow-fork:vol_unsure"], "the cache's fork is forgotten here");
-  unsure = false;
-  assert.equal(await forks.ended(), undefined);
-  assert.deepEqual(deleted, ["vol_free", "vol_unsure"]);
-});
 test("a job, commit or push whose landing a crash lost is found by the alarm's sweep, with no capacity alarm to wake it", { timeout: 60_000 }, async () => {
   for (const kind of ["job", "commit", "push"] as const) {
     const h = harness();
     const call = kind === "job" ? `job({ key: "k", command: "true", timeoutSeconds: 5 })`
-      : kind === "commit" ? `commit("vol_fork", { key: "k" })` : `push({ key: "k", volume: "v", repo: "a/b", branch: "x", app: "gha_1" })`;
+      : kind === "commit" ? `commit({repo:"repo_1",ref:"fork/one",base:{ref:"main",version:"v"}}, { key: "k" })` : `push({ key: "k", volume: "v", repo: "a/b", branch: "x", app: "gha_1" })`;
     h.init({ code: `return await ${call};` });
     await h.wake();
     assert.deepEqual(h.world.queue.map(effect => effect.kind), [kind]);
@@ -409,4 +379,90 @@ test("a job, commit or push whose landing a crash lost is found by the alarm's s
     assert.equal(h.runner.get().status, "completed", kind);
     assert.deepEqual(h.runner.get().result, { landed: kind });
   }
+});
+
+test('keep writes outputs and both streams in one commit with stable paths', async t => {
+  const f = fixture(t);
+  const bytes = (s: string) => new TextEncoder().encode(s);
+  const j = jobs(spec => ({ok:true,id:spec.id,instance:'standard-1',exitCode:0,timedOut:false,
+    stdout:{bytes:bytes('stdout'),size:6,truncated:false},stderr:{bytes:bytes('stderr'),size:6,truncated:false},
+    outputs:{'report.txt':{bytes:bytes('report'),size:6,truncated:false}},missing:[],timings}),true,'agent_owner',f.env);
+  await j.executor.start(effect('keep',{command:'true',timeoutSeconds:5,outputs:['report.txt']}));
+  await j.settled();
+  const value = (j.landed[0][2] as any).value;
+  const repo = f.env.REPOS.getByName(`t1:${value.repo}`), refs = repo.refs();
+  const head = await repo.commit(value.version);
+  assert.equal(head.parents.length,1);
+  assert.equal((await repo.commit(head.parents[0])).parents.length,0,'one commit after repo creation');
+  const files = (await repo.list({version:value.version,limit:100})).entries;
+  const id = await jobId('wf_1','keep',1);
+  assert.deepEqual(files.map((f:any)=>f.path).sort(),[`jobs/${id}/out/report.txt`,`jobs/${id}/stderr.txt`,`jobs/${id}/stdout.txt`]);
+  assert.equal(refs.find((r:any)=>r.name==='main').version,value.version);
+  assert.equal(value.volume,undefined);
+});
+
+test('commit merges cleanly, reports conflicts, rejects snapshots and retries storage failures', async t => {
+  const f = fixture(t), ctx = await f.create();
+  const { childBranch, repoAt } = await import('../src/workflow-branches.ts');
+  const mem = { get:async()=>undefined,put:async()=>{} };
+  const fork = await childBranch(f.env,'t',mem as never,{workflow:'wf_1',key:'a',attempt:1},repoAt(ctx.repoId));
+  await f.write(ctx,{a:{bytes:new TextEncoder().encode('one')}},{ref:fork.ref});
+  const j = jobs(()=>{throw new Error('no job')},true,'agent_owner',f.env);
+  // The fixture tenant registry is shared; the repo belongs to t, matching the workflow's tenant here.
+  (j.executor as any).host.workflow.tenant='t';
+  await j.executor.start(effect('merge',{fork},'commit')); await j.settled();
+  assert.equal((j.landed[0][2] as any).value.committed,true);
+  await j.executor.start(effect('again',{fork},'commit')); await j.settled();
+  assert.equal((j.landed[1][2] as any).value.changed,false);
+  await j.executor.start(effect('snapshot',{fork,snapshot:'old'},'commit')); await j.settled();
+  assert.match((j.landed[2][2] as any).error,/no snapshot/);
+  const bare = {...fork,base:{version:fork.base.version}};
+  await j.executor.start(effect('bare',{fork:bare},'commit')); await j.settled();
+  assert.match((j.landed[3][2] as any).error,/no branch to merge into; start the agent from a ref/);
+  const conflicting = await childBranch(f.env,'t',mem as never,{workflow:'wf_1',key:'conflict',attempt:1},repoAt(ctx.repoId));
+  await f.write(ctx,{a:{bytes:new TextEncoder().encode('ours')}});
+  await f.write(ctx,{a:{bytes:new TextEncoder().encode('theirs')}},{ref:conflicting.ref});
+  await j.executor.start(effect('conflict',{fork:conflicting},'commit')); await j.settled();
+  const conflict = (j.landed[4][2] as any).value;
+  assert.equal(conflict.committed,false);
+  assert.equal(conflict.conflicts[0].path,'a');
+  assert.equal(conflict.conflicts[0].reason,'both_modified');
+  const fetch = f.env.CAMELFS.fetch;
+  f.env.CAMELFS.fetch = async () => { throw new Error('storage unavailable'); };
+  await j.executor.start(effect('retry',{fork:conflicting},'commit')); await j.settled();
+  assert.equal(j.landed.length,5,'storage failures do not land');
+  assert.ok([...j.rows.values()].some((row:any)=>row.key==='retry'&&row.kind==='commit'));
+  f.env.CAMELFS.fetch = fetch;
+  await j.executor.recover(); await j.settled();
+  assert.equal((j.landed[5][2] as any).value.committed,false);
+  assert.equal(j.rows.size,0);
+
+});
+
+test('result cache keys on trees and recreates branches; a missing version is a logged miss', async t => {
+  const f = fixture(t), ctx = await f.create(), old = await ctx.repo.resolve('main');
+  const rows = new Map<string, unknown>(), keys: string[] = [];
+  let cached: any;
+  const cache = { lookup: async (_kind: string,key: string) => { keys.push(key); return cached; } };
+  const storage = {get:async(k:string)=>rows.get(k),put:async(k:string,v:unknown)=>{rows.set(k,v);}};
+  const self = {ctx:{storage},results:()=>({tenant:'t',cache}),settings:()=>({})};
+  const results = (WorkflowObject.prototype as any).resultCache.call(self,f.env,'wf_new');
+  const args = JSON.stringify({at:{repo:ctx.repoId},command:'true'});
+  await results.lookup('job',args,{key:'j',attempt:1});
+  await f.write(ctx,{}, {allowEmpty:true});
+  await results.lookup('job',args,{key:'j',attempt:1});
+  assert.equal(keys[0],keys[1],'new versions with equal trees share keys');
+  const agent = JSON.stringify({prompt:'edit',repo:ctx.repoId,model:'test/model'});
+  cached = {value:{text:'cached'},source:'old:k:1',fork:{repo:ctx.repoId,version:old.version}};
+  const hit = await results.lookup('agent',agent,{key:'a',attempt:1});
+  assert.equal((await ctx.repo.resolve(hit.hit.value.fork.ref)).version,old.version);
+  assert.equal(rows.get(`workflow-repo:${ctx.repoId}`),true);
+  cached = {...cached,fork:{repo:ctx.repoId,version:'f'.repeat(40)}};
+  const lines: string[] = [], error = console.error;
+  console.error = line => lines.push(line);
+  try {
+    const miss = await results.lookup('agent',agent,{key:'missing',attempt:1});
+    assert.equal(miss.hit,undefined);
+    assert.equal(JSON.parse(lines[0]).type,'workflow_cache_fork_missing');
+  } finally { console.error = error; }
 });
