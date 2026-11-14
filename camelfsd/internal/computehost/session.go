@@ -372,6 +372,27 @@ func (h *Host) checkpointRoute(w http.ResponseWriter, r *http.Request) {
 	jsonReply(w, 200, result)
 }
 
+// checkpointMeta is the host's whole validation of a session checkpoint body (POST /v1/vms/{id}/checkpoint, as the
+// runtime sends it through the tier): trailers decode as image.Trailers, which refuses unknown keys; job trailers are
+// refused on a session VM. testdata/runtime-checkpoint.json is the runtime's body (bash.ts checkpointBody).
+func checkpointMeta(q hostwire.CheckpointRequest) (image.CheckpointRequest, error) {
+	trailers := image.Trailers{Kind: "auto"}
+	if len(q.Trailers) != 0 && string(q.Trailers) != "null" {
+		if err := json.Unmarshal(q.Trailers, &trailers); err != nil {
+			return image.CheckpointRequest{}, invalid("trailers: " + err.Error())
+		}
+	}
+	if trailers.Kind == "job" || trailers.Job != "" || trailers.ExitCode != nil {
+		return image.CheckpointRequest{}, invalid("trailers: a session checkpoint takes no job kind, job or exitCode")
+	}
+	message := q.Message
+	meta := image.CheckpointRequest{Message: &message, Trailers: &trailers, Time: q.Time}
+	if err := meta.Validate(); err != nil {
+		return image.CheckpointRequest{}, invalid(err.Error())
+	}
+	return meta, nil
+}
+
 func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q hostwire.CheckpointRequest) (out hostwire.CheckpointReply, err error) {
 	h.mu.Lock()
 	r := s.row
@@ -384,18 +405,9 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 	if r.Pending != nil {
 		return h.recoverCheckpoint(ctx, s, vm, r)
 	}
-	trailers := image.Trailers{Kind: "auto"}
-	if len(q.Trailers) != 0 && string(q.Trailers) != "null" {
-		if err := json.Unmarshal(q.Trailers, &trailers); err != nil {
-			return out, invalid("trailers: " + err.Error())
-		}
-	}
-	if trailers.Kind == "job" || trailers.Job != "" || trailers.ExitCode != nil {
-		return out, invalid("trailers: a session checkpoint takes no job kind, job or exitCode")
-	}
-	meta := image.CheckpointRequest{Message: &q.Message, Trailers: &trailers, Time: q.Time}
-	if err := meta.Validate(); err != nil {
-		return out, invalid(err.Error())
+	meta, err := checkpointMeta(q)
+	if err != nil {
+		return out, err
 	}
 	baseline := h.Mounts.NeedsBaseline(id)
 	type result struct {
