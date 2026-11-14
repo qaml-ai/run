@@ -93,7 +93,7 @@ resource "aws_cloudwatch_metric_alarm" "target_latency" {
   ok_actions          = local.alarm_topics
 }
 
-# --- The hosts' NLB and the enrollment listener: a target failing its health check for 3 minutes ---
+# --- The hosts' NLB (hosts and enrollment target groups): a target failing its health check for 3 minutes ---
 
 resource "aws_cloudwatch_metric_alarm" "hosts_nlb_unhealthy" {
   alarm_name          = "${var.name}-${var.env}-hosts-nlb-unhealthy-hosts"
@@ -114,9 +114,9 @@ resource "aws_cloudwatch_metric_alarm" "hosts_nlb_unhealthy" {
 resource "aws_cloudwatch_metric_alarm" "enroll_unhealthy" {
   alarm_name          = "${var.name}-${var.env}-enroll-unhealthy-hosts"
   alarm_description   = "A camelFS api task has failed its health check on the enrollment target group for 3 minutes"
-  namespace           = "AWS/ApplicationELB"
+  namespace           = "AWS/NetworkELB"
   metric_name         = "UnHealthyHostCount"
-  dimensions          = { LoadBalancer = aws_lb.api["internal"].arn_suffix, TargetGroup = aws_lb_target_group.enroll.arn_suffix }
+  dimensions          = { LoadBalancer = aws_lb.hosts.arn_suffix, TargetGroup = aws_lb_target_group.enroll.arn_suffix }
   statistic           = "Maximum"
   period              = 60
   evaluation_periods  = 3
