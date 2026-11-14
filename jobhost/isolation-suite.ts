@@ -28,7 +28,7 @@ const tcp = (host: string, port: number) => `timeout 4 bash -c 'exec 3<>/dev/tcp
 /** An HTTPS fetch through the job's proxy (the guest's init exports https_proxy when the job has internet). */
 const fetchVia = (url: string) => `curl -sS -o /dev/null -m 15 -w '%{http_code}' '${url}'`;
 
-export async function isolationSuite(launcher: VmLauncher, options: { allowed?: string; refused?: string } = {}): Promise<Check[]> {
+export async function isolationSuite(launcher: VmLauncher, options: { allowed?: string; refused?: string; resolve?: (host: string) => Promise<string> } = {}): Promise<Check[]> {
   const checks: Check[] = [];
   const check = async (name: string, run: () => Promise<{ ok: boolean; detail: string }>) => {
     try { checks.push({ name, ...await run() }); } catch (error) { checks.push({ name, ok: false, detail: error instanceof Error ? error.message : String(error) }); }
@@ -70,7 +70,7 @@ export async function isolationSuite(launcher: VmLauncher, options: { allowed?: 
       const proxied = await sh(online, `curl -sS -o /dev/null -m 10 -w '%{http_code}' http://registry.npmjs.org/`);
       // A literal address, resolved here on the host: the guest has no DNS, so a name fails at resolution (curl exit 6)
       // and proves nothing about the path. Only a refused (7) or timed-out (28) connect shows port 80 is closed.
-      const { address } = await lookup("registry.npmjs.org", { family: 4 });
+      const address = await (options.resolve ?? (async (host: string) => (await lookup(host, { family: 4 })).address))("registry.npmjs.org");
       const direct = await sh(online, `curl -sS -o /dev/null -m 10 --noproxy '*' -H 'Host: registry.npmjs.org' http://${address}/`);
       return { ok: proxied.stdout.trim() === "403" && (direct.exitCode === 7 || direct.exitCode === 28), detail: `proxied ${proxied.stdout.trim() || `exit ${proxied.exitCode}`}, direct to ${address} exit ${direct.exitCode}` };
     });
