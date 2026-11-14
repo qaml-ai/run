@@ -15,6 +15,7 @@ import type { TierClaims } from "./claims.ts";
 import { TierError, tierConfigured, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
+import { repoStorage } from "./repo-storage.ts";
 import { guestFiles, VM_FILES_STDOUT_BYTES, type VmFiles } from "./vm-files.ts";
 
 export const BASH_WORKDIR = '/workspace';
@@ -345,9 +346,9 @@ export class BashSessions {
       }
     });
     return guestFiles(
-      (execId, command, stdin, mutation) => onVm(async () => {
+      (execId, command, input, mutation) => onVm(async () => {
         const timeoutS = 120;
-        const body = { execId, command, stdin, cwd: BASH_WORKDIR, timeoutS };
+        const body = { execId, command, ...input, cwd: BASH_WORKDIR, timeoutS };
         const checkpoint = { vm, callId: execId, message: "Save VM file changes", time: Date.now() };
         const key = JSON.stringify(["vmfiles", vm.vm_id]);
         if (mutation) {
@@ -377,6 +378,7 @@ export class BashSessions {
         if (reply.changed) this.recordHead(vm, reply);
         return this.rememberHead(vm, reply);
       }),
+      bytes => onVm(() => repoStorage(this.env, claims(vm).sub).putBlob(vm.lineage, bytes)),
     );
   }
 

@@ -204,16 +204,31 @@ func (h *Host) execRoute(w http.ResponseWriter, r *http.Request) {
 		report(w, err)
 		return
 	}
-	_, vm, err := h.lookup(r.PathValue("id"))
+	if q.StdinBlob != nil && (q.Stdin != nil || !q.StdinBlob.Valid()) {
+		report(w, invalidRequest)
+		return
+	}
+	s, vm, err := h.lookup(r.PathValue("id"))
 	if err != nil {
 		report(w, err)
 		return
 	}
+	var token string
+	if q.StdinBlob != nil {
+		var release func()
+		token, release, err = h.execInput(r.Context(), s, *q.StdinBlob)
+		if err != nil {
+			report(w, err)
+			return
+		}
+		defer release()
+	}
 	input := struct {
 		hostwire.ExecRequest
-		Op     string `json:"op"`
-		Offset int64  `json:"offset"`
-	}{q, op, offset}
+		Op         string `json:"op"`
+		Offset     int64  `json:"offset"`
+		StdinToken string `json:"stdinToken,omitempty"`
+	}{q, op, offset, token}
 	events := make(chan vmhost.Reply, 64)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
