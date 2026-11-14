@@ -313,9 +313,10 @@ test("maps ElevenLabs termination reasons from observed provider text", () => {
     "Client disconnected: 1000",
     "client disconnected",
     "the conversation was ended by the user",
+    "end_call tool was called",
     "LLM request failed",
     "",
-  ].map(terminationReasonToEnd), ["max_duration", "client", "client", "client", "provider", "provider"]);
+  ].map(terminationReasonToEnd), ["max_duration", "client", "client", "client", "agent", "provider", "provider"]);
 });
 
 test("post-call duration falls back to the conversation lookup, then elapsed time", async t => {

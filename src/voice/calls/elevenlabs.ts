@@ -38,9 +38,11 @@ const VOICE_FOR: Readonly<Record<string, string>> = Object.freeze(Object.assign(
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 export const ELEVENLABS_BUCKETS_MINUTES = [5, 10, 15, 30] as const;
 
-export function terminationReasonToEnd(text: string): "max_duration" | "client" | "provider" {
+/** ElevenLabs' termination_reason is free text: the observed values, by pattern. end_call is the agent's own tool ending the call. */
+export function terminationReasonToEnd(text: string): "max_duration" | "client" | "agent" | "provider" {
   if (/max call duration/i.test(text)) return "max_duration";
-  if (/client disconnected|ended by the user|end_call/i.test(text)) return "client";
+  if (/end_call/i.test(text)) return "agent";
+  if (/client disconnected|ended by the user/i.test(text)) return "client";
   return "provider";
 }
 
