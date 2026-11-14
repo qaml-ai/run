@@ -108,7 +108,10 @@ test("HostAgent applies repo bytes, links, modes, deletes and persists indexed s
   assert.equal(r.result.exitCode, 0); assert.equal(base64Text(r.result.stdout.data), "newnew");
   assert.equal(typeof r.result.camelfs?.applyMs, "number"); assert.equal(r.reply?.applied, true);
   // The index stays in the guest: returning it can exceed the command channel's line cap.
-  assert.deepEqual(r.applied, { ok: true, applyMs: r.result.camelfs?.applyMs, files: 5, entries: 3 });
+  // The Go guest also flushes the workspace before replying (K2f) and reports how long that took; the Node guest does not.
+  const { syncMs, ...applied } = r.applied ?? {};
+  assert.ok(syncMs === undefined || typeof syncMs === "number", `syncMs ${syncMs}`);
+  assert.deepEqual(applied, { ok: true, applyMs: r.result.camelfs?.applyMs, files: 5, entries: 3 });
   assert.equal(await readFile(join(r.repo, "bin/tool"), "utf8"), "run");
   for (const path of ["bin/tool", "hello"]) assert.equal((await lstat(join(r.repo, path))).mode & 0o777, 0o755);
   assert.ok((await lstat(join(r.repo, "link"))).isSymbolicLink());
