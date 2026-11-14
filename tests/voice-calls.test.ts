@@ -198,6 +198,23 @@ for (const limit of ["end_user", "tenant"] as const) {
   });
 }
 
+test("a client-held call tolerates one failed credit checkpoint and ends with error after two in a row, charging each response", async t => {
+  const credit = fakeCredit(1);
+  let failing = false;
+  const f = await fixture(t, { credit: credit.credit, admit: async () => { if (failing) throw new Error("database unavailable"); } });
+  const call = await f.live();
+  const push = f.openai.script("call_1");
+  const usage = { output_token_details: { audio_tokens: 625 } };
+  failing = true;
+  push({ type: "response.created", response: { id: "a" } }, { type: "response.done", response: { id: "a", usage } });
+  await until(() => credit.log.filter(entry => entry[0] === "debit").length === 1, "the first response charged");
+  assert.deepEqual(f.openai.hangups, [], "one failed checkpoint is tolerated");
+  push({ type: "response.created", response: { id: "b" } }, { type: "response.done", response: { id: "b", usage } });
+  const ended = await f.event("voice.session.ended", call.id);
+  assert.equal(ended.reason, "error");
+  assert.deepEqual(credit.log.filter(entry => entry[0] === "debit").map(entry => entry[4]), [`voice_realtime:${call.id}:a`, `voice_realtime:${call.id}:b`]);
+});
+
 test("ask_agent includes only new transcripts and omits the payer without credit", async t => {
   const submit = fakeSubmit();
   const f = await fixture(t, { submitStreaming: submit.submit, credit: undefined });

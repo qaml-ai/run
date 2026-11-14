@@ -45,11 +45,13 @@ type Row = {
   turns: number; asks: number; audio_seconds: string; cost: number;
   started_at: Date | null; ended_at: Date | null; expires_at: Date;
 };
+/** Consecutive failed credit checkpoints (errors, not refusals) that end a call with reason error. */
+const CHECKPOINT_FAILURES = 2;
 type Ending = { reason: string; detail?: string; limit?: "end_user" | "tenant"; endUserReason?: string; bucket?: string };
 type ToolCall = Parameters<SidebandEvents["toolCall"]>[0];
 type Live = {
   sideband: Sideband; platform: boolean; credit?: VoiceCredit; abort: AbortController;
-  checkpoints: Map<string, Promise<Ending | undefined>>; posting: Promise<void>; done: Set<string>; tools: Set<string>; heard: Set<string>;
+  checkpoints: Map<string, Promise<Ending | undefined>>; checkpointFailures: number; posting: Promise<void>; done: Set<string>; tools: Set<string>; heard: Set<string>;
   lines: string[]; seq: number; usage: Set<Promise<void>>;
 };
 
@@ -179,7 +181,7 @@ export class VoiceCalls {
         await this.enqueue(rows[0], "voice.session.started", {}, sql);
         return rows[0];
       });
-      const live: Live = { sideband, platform: key.platform, credit, usage: new Set(), abort: new AbortController(), checkpoints: new Map(), posting: Promise.resolve(), done: new Set(), tools: new Set(), heard: new Set(), lines: [], seq: 0 };
+      const live: Live = { sideband, platform: key.platform, credit, usage: new Set(), abort: new AbortController(), checkpoints: new Map(), checkpointFailures: 0, posting: Promise.resolve(), done: new Set(), tools: new Set(), heard: new Set(), lines: [], seq: 0 };
       this.live.set(id, live);
       ready.resolve(live);
       this.options.kickWebhooks();
@@ -347,7 +349,13 @@ export class VoiceCalls {
     live.checkpoints.delete(response);
     const now = this.now();
     // The start checkpoint reads the balance before this response posts. Even a refused response is billed in full.
-    const ending = await checkpoint?.catch(() => undefined);
+    // A credit checkpoint that fails (not a refusal: an error reading it) is tolerated once; a second in a row ends the
+    // call, so an admission path that keeps failing cannot leave a call running unchecked. Its response is still charged.
+    const ending = await checkpoint?.then(found => { live.checkpointFailures = 0; return found; }, (error): Ending | undefined => {
+      live.checkpointFailures++;
+      console.error(JSON.stringify({ type: "voice_call_checkpoint_failed", session: id, failures: live.checkpointFailures, detail: detailOf(error) }));
+      return live.checkpointFailures >= CHECKPOINT_FAILURES ? { reason: "error", detail: "credit_checkpoint_failed" } : undefined;
+    });
     const costUsd = realtimeCost(`openai/${model}`, usage);
     const { bucket, subject, context, keyScope } = options;
     this.options.record(tenant, {

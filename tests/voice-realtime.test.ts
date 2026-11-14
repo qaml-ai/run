@@ -456,6 +456,20 @@ test("the money: any other 429 (a rate or concurrency limit) refuses only that r
   brain.close();
 });
 
+test("the money: a provider-started response's failed credit checkpoint is tolerated once; two in a row end the session", async () => {
+  const failed: string[] = [];
+  const { brain, connection, budget, logs } = testBrain({ ownsTurns: true, failed: detail => { failed.push(detail); }, admitError: new Error("database unavailable") });
+  await until(() => connection(), "the connection");
+  await connection().answer("r1", { ms: 40 });
+  await until(() => logs.some(log => log.type === "voice_realtime_checkpoint_failed"), "the first failure logged");
+  assert.deepEqual([failed, budget], [[], []], "one failure is tolerated");
+  await connection().answer("r2", { ms: 40 });
+  await until(() => failed.length === 1, "the second failure ends it");
+  assert.deepEqual(failed, ["realtime_credit_failed"]);
+  assert.deepEqual(budget, []);
+  brain.close();
+});
+
 test("two people at once: one turn ends while the other talks; one answer, to both, once both are done", async () => {
   const { brain, connection } = testBrain({ humans: 2 });
   brain.speechStart("1");

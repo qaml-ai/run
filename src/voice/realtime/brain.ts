@@ -49,6 +49,8 @@ const EMPTY_REQUEST = new Error("empty request");
  * A refusal that ends the call as `budget`: credit or a spend limit (402), or the free hourly allowance, decided by its
  * code and never by its status. Any other refusal (a rate or concurrency limit, a 429) refuses only one response or slice.
  */
+/** Consecutive failed credit checkpoints (errors, not refusals) that end a call. */
+const CHECKPOINT_FAILURES = 2;
 export const spendRefusal = (error: unknown) =>
   (error as HttpError | undefined)?.status === 402 || (error as HttpError | undefined)?.code === FREE_HOURLY_LIMIT;
 /** A rate or concurrency refusal (any other 429): it refuses one response or slice; the call goes on. */
@@ -252,6 +254,7 @@ export class RealtimeBrain {
   private closed = false;
   private posting?: Promise<void>;
   private budgetEnding?: HttpError;
+  private checkpointFailures = 0;
   private budgetReported = false;
   private meterCounter = 0;
   private meterStartedAt = 0;
@@ -1149,9 +1152,16 @@ export class RealtimeBrain {
     response.done = true;
     response.costUsd = costUsd;
     response.audio.end();
-    if (response.budgetCheck) void response.budgetCheck.catch(async error => {
+    if (response.budgetCheck) void response.budgetCheck.then(() => { this.checkpointFailures = 0; }, async error => {
       await this.posting;
-      if (!this.budget(error)) this.hooks.failed("realtime_credit_failed", safeError(error));
+      if (rateRefusal(error)) { this.hooks.log("voice_realtime_response_refused", { error: safeError(error) }); return; }
+      if (this.budget(error)) return;
+      // A checkpoint that fails (an error reading credit, not a refusal) is tolerated once; a second in a row ends it.
+      if (++this.checkpointFailures < CHECKPOINT_FAILURES) {
+        this.hooks.log("voice_realtime_checkpoint_failed", { error: safeError(error), failures: this.checkpointFailures });
+        return;
+      }
+      this.hooks.failed("realtime_credit_failed", safeError(error));
     });
     if (this.budgetEnding) {
       void this.posting?.then(() => { if (this.budgetEnding) this.budget(this.budgetEnding); });
