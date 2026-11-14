@@ -48,7 +48,7 @@ function fixture(t: TestContext) {
   const results = new Map<string, string>();
   const flags = {
     refusal: undefined as { status: number; code?: string } | undefined,
-    drop: false, leaseExpired: false, checkpointError: false,
+    drop: false, stall: false, leaseExpired: false, checkpointError: false,
     crash: "", crashAfter: "", runs: 0, pollerStarts: 0, tailStatus: 200, unchanged: false,
     stdout: "ok", startup: undefined as { phase: string; code?: string; reason?: string } | undefined,
     onPoll: () => {}, stopSticks: false,
@@ -111,6 +111,11 @@ function fixture(t: TestContext) {
     if (!results.has(key)) {
       flags.runs++;
       results.set(key, flags.stdout);
+    }
+    if (flags.stall) {
+      // A connection a load balancer dropped behind a proxy: the first bytes arrive, then nothing, and no end or error.
+      const first = new TextEncoder().encode(output(results.get(key)!));
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(first); } }), { headers: { "Content-Type": "text/event-stream" } });
     }
     return stream(output(results.get(key)!) + (flags.drop ? "" : exit));
   }
@@ -441,4 +446,20 @@ test("agent deletion stays pending while a VM has not ended", async t => {
   f.vms.get(f.row()!.vm_id)!.phase = "stopping";
   await assert.rejects(f.sessions.stopAll(50), /did not stop within/);
   assert.notEqual(f.row()!.state, "stopped");
+});
+
+test("a stream that goes silent without ending is resumed from the exec tail", async t => {
+  const f = fixture(t);
+  f.sessions.streamIdleMs = 50;
+  f.flags.stdout = "ok";
+  f.flags.stall = true;
+  const logs = t.mock.method(console, "log", () => {});
+  assert.deepEqual(await f.run("stalled"), { stdout: "ok", stderr: "!", exitCode: 0, timedOut: false, truncated: false });
+  // One resume, from where the stream stopped, after the idle watchdog took the silent stream for dead.
+  const tails = f.calls.filter(call => call.method === "GET" && call.path.includes("/exec/"));
+  assert.equal(tails.length, 1);
+  assert.match(tails[0].path, /offset=2/);
+  const resumes = logs.mock.calls.map(call => String(call.arguments[0])).filter(line => line.includes("bash_stream_resume")).map(line => JSON.parse(line));
+  assert.deepEqual(resumes.map(r => [r.offset, r.reason]), [[2, "idle"]]);
+  await f.flush();
 });

@@ -10,7 +10,7 @@ import { HttpError } from "../errors.ts";
 import { HOSTS_PROVIDER, hostPool, hostSecondRate, hostShape, type HostPriceEnv, type HostShape } from "../jobs/host-pricing.ts";
 import { workspaceMount, type Mount } from "../repos/mounts.ts";
 import { repoContext, type RepoEnv } from "../repos/registry.ts";
-import { bashStream, type BashResult } from "./bash-stream.ts";
+import { BASH_STREAM_IDLE_MS, bashStream, type BashResult } from "./bash-stream.ts";
 import type { TierClaims } from "./claims.ts";
 import { TierError, tierConfigured, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
@@ -92,6 +92,8 @@ function bootSpec(env: Env, conf: Config) {
 
 export class BashSessions {
   private readonly savedHeads = new Map<string, Head>();
+  /** A stream silent this long is resumed from the exec tail (bashStream). Tests shorten it. */
+  streamIdleMs = BASH_STREAM_IDLE_MS;
   private readonly locks = new Map<string, Promise<unknown>>();
   private get sql() { return this.storage.sql; }
 
@@ -360,7 +362,7 @@ export class BashSessions {
           this.savedHeads.delete(vm.vm_id);
           streamed = await bashStream(this.env, { method: "POST", path, body, claims: claims(vm) }, body.execId, started + (body.timeoutS + 30) * 1000, () => {
             if (first) console.log(JSON.stringify({ type: "bash_vm_first_output", vm: vm.vm_id, firstOutputMs: Date.now() - vm.created_at }));
-          });
+          }, undefined, this.streamIdleMs);
         } catch (error) {
           if (!isTier(error, 409, "not_running")) throw error;
           this.stop(vm.vm_id);
@@ -428,7 +430,7 @@ export class BashSessions {
         try {
           const { result } = await bashStream(this.env, {
             method: "POST", path: "/v1/vms/" + vm.vm_id + "/exec", body, claims: claims(vm),
-          }, execId, Date.now() + (timeoutS + 30) * 1000, () => {}, VM_FILES_STDOUT_BYTES);
+          }, execId, Date.now() + (timeoutS + 30) * 1000, () => {}, VM_FILES_STDOUT_BYTES, this.streamIdleMs);
           return result;
         } finally {
           if (mutation) this.scheduleCheckpoint(branch);

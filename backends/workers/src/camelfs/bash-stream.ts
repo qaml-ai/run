@@ -54,7 +54,14 @@ async function requireStream(response: Response, path: string) {
   throw new TierError(response.status, code ?? "invalid_response", "Bash stream unavailable", undefined, path);
 }
 
-export async function bashStream(env: TierEnv, request: Request, execId: string, until: number, onOutput: () => void, exactStdoutBytes?: number) {
+/**
+ * How long a stream may deliver nothing before it is taken for dead and resumed from the exec tail. The tier writes a
+ * keepalive comment every 20 s, so silence this long means the connection is gone even if no end or error reached
+ * this side: a load balancer that drops an idle connection behind a proxy can leave the reader waiting forever.
+ */
+export const BASH_STREAM_IDLE_MS = 45_000;
+
+export async function bashStream(env: TierEnv, request: Request, execId: string, until: number, onOutput: () => void, exactStdoutBytes?: number, idleMs = BASH_STREAM_IDLE_MS) {
   const stdoutKeep = exactStdoutBytes ?? BASH_OUTPUT_KEEP;
   const output = { stdout: new Output(stdoutKeep), stderr: new Output(BASH_OUTPUT_KEEP) };
   let offset = 0, missing = false, exit: Exit | undefined;
@@ -63,10 +70,18 @@ export async function bashStream(env: TierEnv, request: Request, execId: string,
     if (!reader) return;
     const decoder = new TextDecoder();
     let buffer = "";
+    // Cancelling the reader ends a pending read() with done, so a silent dead stream falls through to the resume.
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const watch = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => { stalled = true; void reader.cancel().catch(() => {}); }, Math.max(1, Math.min(idleMs, until - Date.now())));
+    };
     try {
+      watch();
       while (!exit) {
         const { value, done } = await reader.read();
         if (done) break;
+        watch();
         buffer += decoder.decode(value, { stream: true });
         for (let separator = /\r?\n\r?\n/.exec(buffer); separator && !exit; separator = /\r?\n\r?\n/.exec(buffer)) {
           const frame = buffer.slice(0, separator.index).split(/\r?\n/);
@@ -86,9 +101,15 @@ export async function bashStream(env: TierEnv, request: Request, execId: string,
         }
       }
     } finally {
+      clearTimeout(idle);
       void reader.cancel().catch(() => {});
     }
   }
+  let stalled = false;
+  const resumed = (from: number) => {
+    console.log(JSON.stringify({ type: "bash_stream_resume", execId, offset: from, reason: stalled ? "idle" : "ended" }));
+    stalled = false;
+  };
 
   const initial = await tierFetch(env, { ...request, timeoutMs: Math.max(1, until - Date.now()) });
   await requireStream(initial, request.path);
@@ -96,6 +117,7 @@ export async function bashStream(env: TierEnv, request: Request, execId: string,
   const path = request.path + "/" + execId;
   while (!exit && Date.now() < until) {
     const previous = offset;
+    resumed(offset);
     try {
       const tail = await tierFetch(env, {
         method: "GET", path, claims: request.claims, query: { offset },
