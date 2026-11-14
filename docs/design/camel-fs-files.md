@@ -745,7 +745,7 @@ Over the host's Unix socket (unchanged transport):
   computer and `bash` VMs checkpoint many times without ending.
   - **Identity:** from the verified TLS handshake only. `{host}` must equal the client certificate's
     `spiffe://camelfs/host/<id>`, else `403 forbidden`.
-  - **Body:** `{ "commit", "expect", "holder": "<host>:<bootEpoch>:<mount>", "epoch", "root"? }`.
+  - **Body:** `{ "commit", "expect", "holder": { "host", "boot", "mount" }, "epoch", "root"? }`.
   - **Checks, in order:**
     1. `hostwire.ParseHolder`;
     2. `checkHolder(certHostID, holder)`: holder.host is the certificate's host and holder.boot is the host's
