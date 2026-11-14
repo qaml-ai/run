@@ -12,7 +12,7 @@ import { jobAddress } from "./network.ts";
 import type { Vm, VmLauncher } from "./vm.ts";
 
 export type Check = { name: string; ok: boolean; detail: string };
-const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 4096 };
+const SHAPE = { vcpus: 1, memoryMiB: 1024, diskMiB: 8192 };
 
 type Ran = { exitCode: number | null; stdout: string; stderr: string };
 async function sh(vm: Vm, command: string, extra: Record<string, unknown> = {}): Promise<Ran> {
@@ -63,10 +63,12 @@ export async function isolationSuite(launcher: VmLauncher, options: { allowed?: 
     });
     await check("a host off the allowlist is refused", async () => refusedAll(await sh(online, fetchVia(refusedUrl))));
     // Plain HTTP goes to the proxy (init exports http_proxy too), which answers 403 to anything but CONNECT: curl exits 0
-    // on a 403, so the status is what shows the refusal. Without the proxy, port 80 must not connect at all.
+    // on a 403, so the status is what shows the refusal. Without the proxy, port 80 must not connect at all, even to an address.
     await check("port 80 is refused even to an allowlisted host", async () => {
       const proxied = await sh(online, `curl -sS -o /dev/null -m 10 -w '%{http_code}' http://registry.npmjs.org/`);
-      const direct = await sh(online, `curl -sS -o /dev/null -m 10 --noproxy '*' http://registry.npmjs.org/`);
+      // A literal address: the guest has no DNS, so a name would fail at resolution and prove nothing about the path.
+      // 1.1.1.1 answers on 80 from anywhere on the internet, so only a closed path keeps this from connecting.
+      const direct = await sh(online, tcp("1.1.1.1", 80));
       return { ok: proxied.stdout.trim() === "403" && direct.exitCode !== 0, detail: `proxied ${proxied.stdout.trim() || `exit ${proxied.exitCode}`}, direct exit ${direct.exitCode}` };
     });
     await check("a job without internet reaches nothing, not even the allowlist", async () =>
