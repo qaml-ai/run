@@ -62,7 +62,13 @@ export async function isolationSuite(launcher: VmLauncher, options: { allowed?: 
       return { ok: ran.exitCode === 0 && /^[23]\d\d$/.test(ran.stdout), detail: `exit ${ran.exitCode}, ${ran.stdout}` };
     });
     await check("a host off the allowlist is refused", async () => refusedAll(await sh(online, fetchVia(refusedUrl))));
-    await check("port 80 is refused even to an allowlisted host", async () => refusedAll(await sh(online, `curl -sS -o /dev/null -m 10 http://registry.npmjs.org/`)));
+    // Plain HTTP goes to the proxy (init exports http_proxy too), which answers 403 to anything but CONNECT: curl exits 0
+    // on a 403, so the status is what shows the refusal. Without the proxy, port 80 must not connect at all.
+    await check("port 80 is refused even to an allowlisted host", async () => {
+      const proxied = await sh(online, `curl -sS -o /dev/null -m 10 -w '%{http_code}' http://registry.npmjs.org/`);
+      const direct = await sh(online, `curl -sS -o /dev/null -m 10 --noproxy '*' http://registry.npmjs.org/`);
+      return { ok: proxied.stdout.trim() === "403" && direct.exitCode !== 0, detail: `proxied ${proxied.stdout.trim() || `exit ${proxied.exitCode}`}, direct exit ${direct.exitCode}` };
+    });
     await check("a job without internet reaches nothing, not even the allowlist", async () =>
       refusedAll(await sh(offline, `curl -sS -o /dev/null -m 10 -x http://${offlineIp.replace(/\.2$/, ".1")}:3128 ${allowedUrl}`)));
     await check("the pid cap holds", async () => {
