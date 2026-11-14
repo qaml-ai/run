@@ -46,10 +46,6 @@ func (v VM) BootSpec() (hostwire.BootSpec, error) {
 		Shape:    hostwire.Shape{VCPUs: v.Shape.VCPUs, MemoryMiB: v.Shape.MemoryMiB, DiskMiB: v.Shape.diskMiB()},
 		Internet: v.Internet, Deadline: v.LeaseDeadline,
 	}
-	if v.Job != nil {
-		q.Job = &hostwire.Job{Command: v.Job.Command, TimeoutS: v.Job.TimeoutS, Env: v.Job.Env,
-			Outputs: v.Job.Outputs, Commit: v.Job.Commit, Pids: v.Job.Pids}
-	}
 	if v.Session != nil {
 		q.Session = &hostwire.Session{IdleStopS: v.Session.IdleStopS}
 	}

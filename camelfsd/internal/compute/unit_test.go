@@ -66,11 +66,11 @@ func TestUnitRank(t *testing.T) {
 }
 
 func TestUnitCreateMatch(t *testing.T) {
-	req := CreateRequest{ID: "vm", Lineage: "lineage", Ref: "main", Mode: JobMode, Payer: "payer"}
-	v := VM{CreateRequest: req}
+	req := CreateRequest{ID: "vm", Lineage: "lineage", Ref: "main", Payer: "payer", Session: &Session{IdleStopS: DefaultIdleStopS}, Deadline: time.Now()}
+	v := readVM(vmItem(VM{CreateRequest: req, LeaseDeadline: req.Deadline.UnixMilli()}))
 	for _, mutate := range []func(*CreateRequest){
 		func(r *CreateRequest) { r.Lineage = "other" }, func(r *CreateRequest) { r.Ref = "other" },
-		func(r *CreateRequest) { r.Mode = SessionMode }, func(r *CreateRequest) { r.Payer = "other" },
+		func(r *CreateRequest) { r.Image = "other" }, func(r *CreateRequest) { r.Deadline = r.Deadline.Add(time.Second) }, func(r *CreateRequest) { r.Payer = "other" },
 	} {
 		copy := req
 		mutate(&copy)
@@ -78,8 +78,8 @@ func TestUnitCreateMatch(t *testing.T) {
 			t.Fatal("matched another request")
 		}
 	}
-	req.Deadline = time.Now()
-	req.Image = "other"
+	v.Version = "resolved"
+	v.LeaseDeadline++
 	if !matches(v, req) {
 		t.Fatal("failed to match replay")
 	}
