@@ -497,6 +497,10 @@ func TestApplyInterruptedAndReplayed(t *testing.T) {
 					return err
 				}
 				if interrupt && i == 1 {
+					// Let the writer commit the first put before the reader sees EOF.
+					if err := waitForApplyPath(filepath.Join(g.repo, files[0].name)); err != nil {
+						return err
+					}
 					if err := c.(*net.UnixConn).CloseWrite(); err != nil {
 						return err
 					}
@@ -641,18 +645,15 @@ func TestApplyReplayedTypeSwap(t *testing.T) {
 					return err
 				}
 			}
-			if err := wire.Send(c, wire.Op{End: true}); err != nil {
+			want := ""
+			if !withPuts && !replay {
+				// The guest can reject the delete and close before receiving End.
+				want = "workspace diverged"
+			}
+			if err := wire.Send(c, wire.Op{End: true}); err != nil && want == "" {
 				return err
 			}
-			var reply struct {
-				Applied bool
-				Error   string
-			}
-			if err := wire.JSON(c, &reply); err != nil {
-				return err
-			}
-			_ = reply // the guest's result is checked from g.apply's error
-			return nil
+			return readApplyTestReply(c, want)
 		})
 		_, err := g.apply(t.Context(), request{JobID: "j", Replay: replay, TimeoutMs: 5000})
 		if peerErr := <-peer; peerErr != nil {
