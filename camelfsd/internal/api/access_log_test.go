@@ -86,7 +86,7 @@ func TestRefMoveAccessLogPhases(t *testing.T) {
 		timing.head = 5 * time.Millisecond
 		timing.treeRead.read = 6 * time.Millisecond
 		timing.diff = 7 * time.Millisecond
-		timing.objects.Cache = 8 * time.Millisecond
+		timing.objects.UploadCache = 8 * time.Millisecond
 		timing.usage = 9 * time.Millisecond
 		timing.cas = 10 * time.Millisecond
 		w.WriteHeader(http.StatusCreated)

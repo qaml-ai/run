@@ -75,7 +75,7 @@ func (m *Manager) publishCheckpoint(ctx context.Context, v *Mount, tree string, 
 	if e = publish(ctx, out); e != nil {
 		return out, e
 	}
-	m.protect(v.JobID, r, out.Root)
+	m.protect(v.JobID, out.Root)
 	v.Parent = set
 	v.Root = out.Root
 	v.Tree = tree

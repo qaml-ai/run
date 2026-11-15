@@ -449,7 +449,7 @@ func PutChunks(ctx context.Context, s Store, b map[string][]byte) (int, error) {
 	return n, e
 }
 
-const DefaultDepth = 64
+const DefaultDepth = 128
 
 // One shared budget covers foreground reads, prefetch, hydration and uploads.
 type limited struct {

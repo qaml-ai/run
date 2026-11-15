@@ -87,7 +87,7 @@ type refTiming struct {
 func (t *refTiming) addFlush(flushed objects.FlushTiming) {
 	t.objects.Put += flushed.Put
 	t.objects.PutKeys += flushed.PutKeys
-	t.objects.Cache += flushed.Cache
+	t.objects.UploadCache += flushed.UploadCache
 }
 
 type refTimingKey struct{}

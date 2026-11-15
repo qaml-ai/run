@@ -221,7 +221,7 @@ func (m *Manager) publishBaseline(ctx context.Context, v *Mount, snap *baselineS
 	if err != nil {
 		return err
 	}
-	r, err := m.uploadSnapshot(ctx, v.Lineage, snap.base, base, f, snap.tree, []chunk.Range{{Length: base.VirtualSize}}, point)
+	_, err = m.uploadSnapshot(ctx, v.Lineage, snap.base, base, f, snap.tree, []chunk.Range{{Length: base.VirtualSize}}, point)
 	if err := errors.Join(err, f.Close()); err != nil {
 		return err
 	}
@@ -249,7 +249,7 @@ func (m *Manager) publishBaseline(ctx context.Context, v *Mount, snap *baselineS
 		return err
 	}
 	pin := snap.dir
-	m.protect(pin, r, point.Root)
+	m.protect(pin, point.Root)
 	defer m.unprotect(pin)
 	if err := os.Rename(snap.path(), m.image(point.Root)); err != nil {
 		os.Remove(intent)
@@ -259,7 +259,7 @@ func (m *Manager) publishBaseline(ctx context.Context, v *Mount, snap *baselineS
 		return err
 	}
 	if v.State != "released" && v.Tree == snap.tree && v.Root == snap.base {
-		m.protect(v.JobID, r, point.Root)
+		m.protect(v.JobID, point.Root)
 		v.Root, v.Parent.Root, v.Promoted, v.needsBaseline = point.Root, point.Root, true, false
 		err = m.save(v)
 	}

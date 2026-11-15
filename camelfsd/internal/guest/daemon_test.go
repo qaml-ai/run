@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
@@ -26,7 +25,7 @@ func TestDaemonStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	m, err := image.New(image.Config{Data: data, VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
+	m, err := image.New(image.Config{Data: data, VirtualSize: 16 << 20}, store.WithDepth(s, 64), db)
 	if err != nil {
 		t.Fatal(err)
 	}

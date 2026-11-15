@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -31,7 +30,7 @@ func unit3(t *testing.T) (*Manager, string) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	m, e := New(Config{Data: data, VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 64), db)
+	m, e := New(Config{Data: data, VirtualSize: 16 << 20}, store.WithDepth(s, 64), db)
 	if e != nil {
 		t.Fatal(e)
 	}

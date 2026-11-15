@@ -3,14 +3,15 @@ package image
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"time"
 )
@@ -34,18 +36,19 @@ type Config struct {
 type Manager struct {
 	pins map[string]map[string]bool
 	Config
-	Store          store.Store
-	Cache          *cache.Cache
-	Refs           refs.Repository
-	mu             sync.Mutex
-	mounts         map[string]*Mount
-	stop           chan struct{}
-	sweepMu        sync.Mutex
-	baselineSlot   chan struct{}
-	baselineWork   sync.WaitGroup
-	baselineCtx    context.Context
-	baselineCancel context.CancelFunc
-	baselineBytes  int64 // Reserved logical bytes, guarded by mu.
+	Store           store.Store
+	Refs            refs.Repository
+	mu              sync.Mutex
+	mounts          map[string]*Mount
+	stop            chan struct{}
+	sweepMu         sync.Mutex
+	baselineSlot    chan struct{}
+	baselineWork    sync.WaitGroup
+	materializeWork sync.WaitGroup
+	syncRoot        func(*os.File) error
+	baselineCtx     context.Context
+	baselineCancel  context.CancelFunc
+	baselineBytes   int64 // Reserved logical bytes, guarded by mu.
 }
 type Request struct {
 	JobID   string      `json:"jobId"`
@@ -67,9 +70,10 @@ type Mount struct {
 	Snapshot      int
 	Promoted      bool
 	needsBaseline bool
+	promotionDone <-chan struct{}
 }
 
-func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
+func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -124,7 +128,7 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
-	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
+	m := &Manager{Config: c, Store: s, syncRoot: (*os.File).Sync, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
 	if err := m.recoverBaselines(); err != nil {
 		return nil, err
 	}
@@ -214,13 +218,16 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	v.Image = v.Dest
 	defer func() {
 		if err != nil {
+			if v.promotionDone != nil {
+				<-v.promotionDone
+			}
 			_ = os.RemoveAll(dir)
 		}
 	}()
 	if e = store.Atomic(filepath.Join(dir, "session"), nil); e != nil {
 		return nil, e
 	}
-	m.protect(v.JobID, r, v.Root)
+	m.protect(v.JobID, v.Root)
 	defer func() {
 		if err != nil {
 			m.unprotect(v.JobID)
@@ -240,7 +247,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	} else {
 		// Complete hydration before handing the disk to Firecracker. A live VM's
 		// disk must not depend on an NBD connection owned by this process.
-		e = m.materialize(ctx, v.Lineage, r, v.Dest)
+		e = m.materialize(ctx, v, r)
 		v.State = "hydrated"
 	}
 	if e != nil {
@@ -256,36 +263,98 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	copy := *v
 	return &copy, nil
 }
-func (m *Manager) materialize(ctx context.Context, lineage string, r root.Root, p string) error {
-	f, e := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	if e != nil {
-		return e
+
+const pristineImage = "root.img"
+
+func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err error) {
+	job, id := v.JobID, v.Root
+	var bytesWritten atomic.Int64
+	var getMs float64
+	logResult := func(syncMs, promoteMs float64, err error) {
+		slog.Info("compute_materialize", "job", job, "root", id, "chunks", len(r.Chunks),
+			"bytes", bytesWritten.Load(), "getMs", getMs, "syncMs", syncMs, "promoteMs", promoteMs, "error", err)
 	}
-	defer f.Close()
-	if e = f.Truncate(r.VirtualSize); e != nil {
-		return e
+	defer func() {
+		if err != nil {
+			logResult(0, 0, err)
+		}
+	}()
+
+	path := filepath.Join(filepath.Dir(v.Dest), pristineImage)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, f.Close(), os.Remove(path))
+		}
+	}()
+	if err := f.Truncate(r.VirtualSize); err != nil {
+		return err
 	}
 	keys := make([]string, 0, len(r.Chunks))
 	for key := range r.Chunks {
 		keys = append(keys, key)
 	}
-	e = store.Parallel(store.Background(ctx), 64, keys, func(key string) error {
-		p, e := m.Cache.EnsureLineage(store.Background(ctx), lineage, r.Chunks[key])
-		if e != nil {
-			return e
+	source := store.ForLineage(m.Store, v.Lineage)
+	start := time.Now()
+	err = store.Parallel(ctx, store.Depth(m.Store), keys, func(key string) error {
+		hash := r.Chunks[key]
+		b, err := source.Get(ctx, "c/"+hash)
+		if err != nil {
+			return fmt.Errorf("fetch chunk %s: %w", hash, err)
 		}
-		b, e := os.ReadFile(p)
-		if e != nil {
-			return e
+		if int64(len(b)) != root.ChunkSize || root.Hash(b) != hash {
+			return fmt.Errorf("chunk %s: size or hash mismatch", hash)
 		}
 		off, _ := strconv.ParseInt(key, 10, 64)
-		_, e = f.WriteAt(b[:min(int64(len(b)), r.VirtualSize-off)], off)
-		return e
+		n, err := f.WriteAt(b[:min(root.ChunkSize, r.VirtualSize-off)], off)
+		bytesWritten.Add(int64(n))
+		return err
 	})
-	if e == nil {
-		e = f.Sync()
+	getMs = ms(start)
+	if err != nil {
+		return err
 	}
-	return e
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The VM writes only to this clone. Sync and publication belong to the pristine file.
+	if err := cloneImage(path, v.Dest, false); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	select {
+	case <-m.stop:
+		return context.Canceled
+	default:
+	}
+	done := make(chan struct{})
+	v.promotionDone = done
+	m.materializeWork.Add(1)
+	go func() {
+		defer m.materializeWork.Done()
+		defer close(done)
+		start := time.Now()
+		err := m.syncRoot(f)
+		syncMs := ms(start)
+		err = errors.Join(err, f.Close())
+		var promoteMs float64
+		if err == nil {
+			start := time.Now()
+			err = m.promote(path, id)
+			promoteMs = ms(start)
+		}
+		removeErr := os.Remove(path)
+		if !os.IsNotExist(removeErr) {
+			err = errors.Join(err, removeErr)
+		}
+		logResult(syncMs, promoteMs, err)
+	}()
+	return nil
 }
 func (m *Manager) promote(src, id string) error {
 	dst := m.image(id)
@@ -304,7 +373,12 @@ func (m *Manager) promote(src, id string) error {
 	if e := clone(src, tmp); e != nil {
 		return e
 	}
-	return os.Rename(tmp, dst)
+	// Publish the complete clone atomically without replacing a concurrent winner.
+	e = os.Link(tmp, dst)
+	if os.IsExist(e) {
+		return nil
+	}
+	return e
 }
 func run(ctx context.Context, name string, args ...string) (string, error) {
 	out, e := exec.CommandContext(ctx, name, args...).CombinedOutput()
@@ -330,6 +404,9 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	if e := m.recoverBaseline(v, false); e != nil {
 		return false, e
 	}
+	if v.promotionDone != nil {
+		<-v.promotionDone
+	}
 	if e := os.RemoveAll(filepath.Dir(v.Dest)); e != nil {
 		return false, e
 	}
@@ -345,9 +422,9 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 }
 
 func (m *Manager) Close() {
-	close(m.stop)
 	m.StopBaselines()
 	m.mu.Lock()
+	close(m.stop)
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {
 		ids = append(ids, id)
@@ -363,6 +440,7 @@ func (m *Manager) Close() {
 		}
 	}
 	m.baselineWork.Wait()
+	m.materializeWork.Wait()
 }
 
 func (m *Manager) lookup(id string) *Mount { m.mu.Lock(); defer m.mu.Unlock(); return m.mounts[id] }

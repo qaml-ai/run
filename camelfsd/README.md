@@ -49,7 +49,6 @@ in a .meta sidecar beside each blob. There are no l/ membership markers.
 Lineages are printable path segments of at most 128 bytes, without slash,
 backslash or dot segments; colons are allowed. Cross-lineage store deduplication
 is intentionally gone. Identical bytes are published separately in each lineage.
-The host chunk cache remains keyed by verified content hash for local reuse.
 Old global objects require re-import; this change does not fall back to the
 global namespace. On first startup with this layout, legacy lineage cache rows
 and idempotency responses are cleared; subsequent restarts preserve them.
@@ -250,15 +249,17 @@ Stream limits default to 30s idle, 30m apply, and 120000 ms per checkpoint
 `--max-paths-bytes` default to 200000, 8589934592, and 67108864 respectively.
 The host validates guest paths and modes before ack.
 
-The host's shared store budget defaults to 64 operations (`--fetch-depth`).
-The cache verifies fetched chunks and keeps a 256-entry open-file LRU.
+The host's shared store budget defaults to 128 operations (`--fetch-depth`).
+A cold mount verifies chunks and writes them directly into a pristine staging
+image. The VM boots from a reflink clone while the host syncs and promotes the
+pristine image for subsequent mounts. Startup discards unfinished staging images.
 The eviction sweep runs every minute. Above 80% disk usage it targets 60%,
 protecting live mounts, blank images, and snapshots.
 
-State lives in `images/`, `mounts/<jobId>/state.json`, `baselines/`, `cache/`,
+State lives in `images/`, `mounts/<jobId>/state.json`, `baselines/`,
 and `refs.db`. A data-directory lock excludes concurrent daemons. Startup
 recovers fenced session mounts and refuses unfenced mount state. Stop
-guests before running `camelfsd cleanup --data DIR` to clear old mount state.
+guests before running `camelfsd cleanup --data DIR` to clear old mount state and remove any legacy `cache/` directory.
 
 ## Host and API roles
 
