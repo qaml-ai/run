@@ -611,21 +611,28 @@ func TestApplyReplayedTypeSwap(t *testing.T) {
 	for _, p := range puts {
 		index = append(index, map[string]any{"path": p.path, "mode": "100644", "size": len(p.data), "sha1": tree})
 	}
-	apply := func() error {
+	apply := func(replay bool, dels ...string) error {
+		withPuts := len(dels) == 2 // the full apply; a single delete probes divergence and sends no puts
 		t.Helper()
 		peer := streamListener(t, g, 5201, func(c net.Conn) error {
 			for _, frame := range []any{
 				wire.Header{V: 1, Kind: "apply", JobID: "j", FromTree: strings.Repeat("d", 40), ToTree: tree},
 				message{"index": index},
 				message{"indexEnd": true, "count": len(index)},
-				wire.Op{Op: "del", Path: "a"},
-				wire.Op{Op: "del", Path: "b/x"},
 			} {
 				if err := wire.Send(c, frame); err != nil {
 					return err
 				}
 			}
+			for _, d := range dels {
+				if err := wire.Send(c, wire.Op{Op: "del", Path: d}); err != nil {
+					return err
+				}
+			}
 			for _, p := range puts {
+				if !withPuts {
+					break
+				}
 				if err := wire.Send(c, wire.Op{Op: "put", Path: p.path, Mode: "100644", Size: int64(len(p.data))}); err != nil {
 					return err
 				}
@@ -643,25 +650,29 @@ func TestApplyReplayedTypeSwap(t *testing.T) {
 			if err := wire.JSON(c, &reply); err != nil {
 				return err
 			}
-			if !reply.Applied {
-				return fmt.Errorf("apply was not acknowledged: %s", reply.Error)
-			}
+			_ = reply // the guest's result is checked from g.apply's error
 			return nil
 		})
-		_, err := g.apply(t.Context(), request{JobID: "j", TimeoutMs: 5000})
+		_, err := g.apply(t.Context(), request{JobID: "j", Replay: replay, TimeoutMs: 5000})
 		if peerErr := <-peer; peerErr != nil {
 			t.Fatal(peerErr)
 		}
 		return err
 	}
 	for _, name := range []string{"apply", "replay"} {
-		if err := apply(); err != nil {
+		if err := apply(name == "replay", "a", "b/x"); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		for _, p := range puts {
 			if data, err := os.ReadFile(filepath.Join(g.repo, p.path)); err != nil || string(data) != p.data {
 				t.Fatalf("%s %s: %q (%v)", name, p.path, data, err)
 			}
+		}
+	}
+	// The same deletes on a normal (non-replay) apply mean the workspace diverged from the tree: fail loudly.
+	for _, del := range []string{"a", "b/x"} {
+		if err := apply(false, del); err == nil || !strings.Contains(err.Error(), "workspace diverged") {
+			t.Fatalf("non-replay delete %s on a swapped path: %v", del, err)
 		}
 	}
 }

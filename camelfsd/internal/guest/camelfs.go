@@ -256,7 +256,7 @@ func (g *guest) apply(parent context.Context, req request) (result message, err 
 			}
 			break
 		}
-		if err = g.applyOp(ctx, c, op); err != nil {
+		if err = g.applyOp(ctx, c, op, req.Replay); err != nil {
 			return nil, err
 		}
 		files++
@@ -399,9 +399,9 @@ func walkRepo(repo string, visit func(string, string, fs.DirEntry) error) error 
 	})
 }
 
-func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
+func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation, replay bool) error {
 	if op.Op == "del" {
-		return g.applyDel(op.Path)
+		return g.applyDel(op.Path, replay)
 	}
 	path, err := g.target(op.Path)
 	if err != nil {
@@ -449,10 +449,11 @@ func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
 	}
 }
 
-// applyDel removes a file without creating its parents. A replayed apply (camelfsd restart, same VM) may find
-// the path already gone, a parent already replaced by a file, or the path already replaced by a directory that a
-// later op of the same apply created: each of those means this delete was already applied.
-func (g *guest) applyDel(rel string) error {
+// applyDel removes a file without creating its parents. A missing path is already deleted. A non-directory parent
+// or a directory at the path means the workspace does not match the apply's from-tree, which is an error, except on
+// a replay (a restarted daemon re-sending the same apply to the same VM): there a later op of this same apply has
+// already replaced the path (a directory became a file, or a file a directory), so the delete was already applied.
+func (g *guest) applyDel(rel string, replay bool) error {
 	if err := checkPath(rel); err != nil {
 		return err
 	}
@@ -461,20 +462,32 @@ func (g *guest) applyDel(rel string) error {
 	for _, part := range parts[:len(parts)-1] {
 		dir = filepath.Join(dir, part)
 		st, err := os.Lstat(dir)
-		if errors.Is(err, fs.ErrNotExist) || err == nil && !st.IsDir() {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		if !st.IsDir() {
+			if replay {
+				return nil
+			}
+			return fmt.Errorf("delete %s: parent %s is not a directory (workspace diverged from the tree)", rel, part)
+		}
 	}
 	path := filepath.Join(dir, parts[len(parts)-1])
 	st, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) || err == nil && st.IsDir() {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if st.IsDir() {
+		if replay {
+			return nil
+		}
+		return fmt.Errorf("delete %s: path is a directory (workspace diverged from the tree)", rel)
 	}
 	if err := unix.Unlink(path); err != nil && err != unix.ENOENT {
 		return err
