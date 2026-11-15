@@ -160,7 +160,7 @@ test("startup recovers decisions only for configured live agents", async () => {
   const now = 100_000;
   const noop = async () => {};
   for (const state of ["live", "unconfigured", "deleted", "expired"]) {
-    let expirations = 0;
+    let expirations = 0, webhookRestores = 0;
     const restore = method("agent-lifecycle", "restorePendingImpl", {
       Date: { now: () => now }, SLOW_START_STEP_MS: 2000,
       timed: (_runtime: unknown, _step: string, run: () => Promise<void>) => run(),
@@ -177,9 +177,13 @@ test("startup recovers decisions only for configured live agents", async () => {
       notifications: { drain: noop }, outbox: { flush: noop }, records: async () => [],
       flushTerminalEvents: noop, batchQueue: { kick() {} }, kickInputPrompts() {},
       arm: noop, invalidateMaintenance() {},
+      // AgentRuntime always constructs its AgentWebhooks (agent-runtime.ts), so the fake carries one too.
+      webhooks: { restore: async () => { webhookRestores++; } },
     };
     await restore.call(runtime);
     assert.equal(expirations, state === "live" ? 1 : 0);
+    // A gone agent's start owes its webhook publish (the publish-owed marker); a live one flushes through flushTerminalEvents.
+    assert.equal(webhookRestores, state === "deleted" || state === "expired" ? 1 : 0);
   }
 });
 

@@ -2,12 +2,13 @@ import { AgentInvocation } from "./agent-invocation.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { pendingInputMirrors, upsertInputMirrors } from "./input-mirror.ts";
 import { outcomeEnding, type Outcome } from "../../../shared/client-protocol.ts";
-import { transaction, type PostgresEnv } from "./postgres.ts";
+import { transaction, withSql, type PostgresEnv } from "./postgres.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhook-policy.ts";
-import { publishPending, type WebhookEnv } from "./webhooks.ts";
+import { enqueueEventsWithoutMirrors, publishPending, type WebhookEnv } from "./webhooks.ts";
 
 const PENDING = "webhook-pending:";
 const SENT = "webhook-sent:";
+const PUBLISH_OWED = "webhook:publish-owed";
 const RUN_METHODS = new Set(["prompt", "execute", "continue", "steer", "resume"]);
 type Run = {
   id: string; method: string; state: string; actor?: string; metadata?: unknown; params?: Record<string, unknown>; endUser?: string;
@@ -74,34 +75,61 @@ export class AgentWebhooks {
   private readonly env: WebhookEnv;
   constructor(storage: DurableObjectStorage, env: WebhookEnv) { this.storage = storage; this.env = env; }
   settled(): Promise<void> { return this.pending; }
+  async restore() {
+    if (await this.storage.get(PUBLISH_OWED)) await this.flush();
+  }
+
   flush(): Promise<void> {
-    const next = this.pending.then(() => AgentInvocation.run(async invocation => {
-      const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
-      const mirrors = await pendingInputMirrors(this.storage);
-      if (!entries.size && !mirrors.size) return;
-      try {
-        await transaction(this.env, async sql => {
-          await upsertInputMirrors(sql, [...mirrors.values()]);
-          await enqueueEvents(sql, [...entries.values()]);
-        }, {}, invocation);
-        await this.storage.transaction(async tx => {
-          for (const [key, row] of mirrors) {
-            const current = await tx.get<typeof row>(key);
-            if (current?.version === row.version) await tx.delete(key);
-          }
-          for (const [key, event] of entries) {
-            await tx.put(`${SENT}${event.id}`, true);
-            await tx.delete(key);
-          }
-        });
-      } catch {
-        // Replaying the entire batch is safe: the Postgres outbox dedupes IDs.
-        // Leave every intent durable if either database or acknowledgement failed.
-        return;
+    const next = this.pending.then(async () => {
+      // If no flush is queued behind this one, drain any remaining batches here.
+      let hasMore: boolean;
+      do {
+        hasMore = await AgentInvocation.run(invocation => this.flushBatch(invocation));
+      } while (hasMore && this.pending === next);
+    }).catch(() => {});
+    this.pending = next;
+    return next;
+  }
+
+  private async flushBatch(invocation: AgentInvocation): Promise<boolean> {
+    // Leave intents durable on write or acknowledgement failure; a replayed batch is deduped by the outbox ids.
+    const wrote = await this.writeBatch(invocation).catch(() => false);
+    if (wrote) {
+      if ((await this.storage.list({ prefix: PENDING, limit: 1 })).size ||
+          (await pendingInputMirrors(this.storage)).size) return true;
+    } else if (!await this.storage.get(PUBLISH_OWED)) {
+      return false;
+    }
+    await publishPending(this.env, invocation);
+    await this.storage.delete(PUBLISH_OWED);
+    return false;
+  }
+
+  private async writeBatch(invocation: AgentInvocation): Promise<boolean> {
+    const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
+    const mirrors = await pendingInputMirrors(this.storage);
+    if (!entries.size && !mirrors.size) return false;
+    const events = [...entries.values()];
+    if (mirrors.size) {
+      await transaction(this.env, async sql => {
+        await upsertInputMirrors(sql, [...mirrors.values()]);
+        await enqueueEvents(sql, events);
+      }, {}, invocation);
+    } else {
+      await withSql(this.env, sql => enqueueEventsWithoutMirrors(sql, events), invocation);
+    }
+    await this.storage.transaction(async tx => {
+      for (const [key, row] of mirrors) {
+        const current = await tx.get<typeof row>(key);
+        if (current?.version === row.version) await tx.delete(key);
       }
-      await publishPending(this.env, invocation);
-    }));
-    this.pending = next.catch(() => {});
-    return this.pending;
+      for (const [key, event] of entries) {
+        await tx.put(`${SENT}${event.id}`, true);
+        await tx.delete(key);
+      }
+      // A crash or a failed publish after acknowledgement must leave a wake-up behind.
+      await tx.put(PUBLISH_OWED, true);
+    });
+    return true;
   }
 }
