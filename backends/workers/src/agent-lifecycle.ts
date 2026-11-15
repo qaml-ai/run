@@ -208,6 +208,7 @@ export async function restorePendingImpl(this: AgentRuntime, invocation: AgentIn
       // that stages its ending, is staged now and delivered, as for a live agent (stageMissedEndings reads storage, not
       // the configuration a gone agent refuses).
       await timed(this, "goneStart", () => goneStart(this));
+      this.ctx.waitUntil(this.webhooks.restore());
       return;
     }
     this.configurationQueue.kick();

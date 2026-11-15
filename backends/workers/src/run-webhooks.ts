@@ -8,6 +8,7 @@ import { enqueueEventsWithoutMirrors, publishPending, type WebhookEnv } from "./
 
 const PENDING = "webhook-pending:";
 const SENT = "webhook-sent:";
+const PUBLISH_OWED = "webhook:publish-owed";
 const RUN_METHODS = new Set(["prompt", "execute", "continue", "steer", "resume"]);
 type Run = {
   id: string; method: string; state: string; actor?: string; metadata?: unknown; params?: Record<string, unknown>; endUser?: string;
@@ -70,22 +71,38 @@ export async function stageWebhook(tx: Pick<DurableObjectTransaction, "get" | "p
 
 export class AgentWebhooks {
   private pending: Promise<void> = Promise.resolve();
-  private needsPublish = false;
   private readonly storage: DurableObjectStorage;
   private readonly env: WebhookEnv;
   constructor(storage: DurableObjectStorage, env: WebhookEnv) { this.storage = storage; this.env = env; }
   settled(): Promise<void> { return this.pending; }
+  async restore() {
+    if (await this.storage.get(PUBLISH_OWED)) await this.flush();
+  }
+
   flush(): Promise<void> {
-    const next = this.pending.then(() => AgentInvocation.run(async invocation => {
-      // Leave intents durable on write or acknowledgement failure; a replayed batch is deduped by the outbox ids.
-      if (await this.writeBatch(invocation).catch(() => false)) this.needsPublish = true;
-      // A later queued flush inherits the wake-up, even if its own batch is empty.
-      if (this.pending !== next || !this.needsPublish) return;
-      this.needsPublish = false;
-      await publishPending(this.env, invocation);
-    })).catch(() => {});
+    const next = this.pending.then(async () => {
+      // If no flush is queued behind this one, drain any remaining batches here.
+      let hasMore: boolean;
+      do {
+        hasMore = await AgentInvocation.run(invocation => this.flushBatch(invocation));
+      } while (hasMore && this.pending === next);
+    }).catch(() => {});
     this.pending = next;
     return next;
+  }
+
+  private async flushBatch(invocation: AgentInvocation): Promise<boolean> {
+    // Leave intents durable on write or acknowledgement failure; a replayed batch is deduped by the outbox ids.
+    const wrote = await this.writeBatch(invocation).catch(() => false);
+    if (wrote) {
+      if ((await this.storage.list({ prefix: PENDING, limit: 1 })).size ||
+          (await pendingInputMirrors(this.storage)).size) return true;
+    } else if (!await this.storage.get(PUBLISH_OWED)) {
+      return false;
+    }
+    await publishPending(this.env, invocation);
+    await this.storage.delete(PUBLISH_OWED);
+    return false;
   }
 
   private async writeBatch(invocation: AgentInvocation): Promise<boolean> {
@@ -110,6 +127,8 @@ export class AgentWebhooks {
         await tx.put(`${SENT}${event.id}`, true);
         await tx.delete(key);
       }
+      // A crash or a failed publish after acknowledgement must leave a wake-up behind.
+      await tx.put(PUBLISH_OWED, true);
     });
     return true;
   }
