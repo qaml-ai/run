@@ -8,6 +8,7 @@
 #   sprite_keep="node_modules/ /sandbox/v8-exec/target/"                   # kept across syncs (rsync --exclude syntax)
 #   sprite_build_path=sandbox/v8-exec                                      # its tree hash is in the fingerprint: $build
 #   sprite_apt="gcc libc6-dev"                                             # packages, installed once per sprite
+#   sprite_skip="rt-pool-7"                                                # optional: sprites out of rotation
 #   sprite_pg_env="TEST_DATABASE_URL"                                      # exported, naming the run's Postgres
 #   sprite_sha_env=CONTRACT_REVISION                                       # optional: exported as the commit's sha
 #   sprite_prepare='...'                     # shell run in the checkout after npm ci, before the command; may use $build
@@ -21,7 +22,8 @@
 # per run with CI's flags (tmpfs, durability off, 1000 connections, as .github/actions/test-postgres), npm ci when
 # package-lock.json or Node changed, then the command, detached, followed with long polls. Options and settings: the
 # usage text below (scripts/sprite-test --help). Exit status: the command's (the worst shard's); 75 when not enough sprites
-# were free for SPRITE_WAIT_MINUTES; 69 when contact was lost (the job carries on); 137 when the job was killed or died;
+# were free for SPRITE_WAIT_MINUTES; 69 when contact was lost (the job carries on); 74 when the sprite's disk dropped
+# during the run (an environment failure, after a retry; the kernel log names it); 137 when the job was killed or died;
 # 2 for a usage or configuration error.
 #
 # Leases. A coordinator sprite (SPRITE_COORDINATOR, default rt-coordinator, shared by every pool: leases are kept by
@@ -97,7 +99,8 @@ scripts/sprite-test [options] [ref] [command...]: run tests at <ref> (default HE
   --check-core              the core's version and features, against what this repo requires
 Settings: SPRITE_SHARDS, SPRITE_NAME (pin sprites), SPRITE_POOL (default $sprite_pool), SPRITE_ORG, SPRITE_COORDINATOR,
 SPRITE_LEASE_STALE, SPRITE_WAIT_MINUTES (30), SPRITE_RUN_HOURS (2), SPRITE_LOST_MINUTES (10), SPRITE_RETRIES (1),
-SPRITE_MAX_LEASES (8: sprites one invocation may hold; --warm takes that many per pass).
+SPRITE_MAX_LEASES (8: sprites one invocation may hold; --warm takes that many per pass), SPRITE_SKIP (sprites out of
+rotation, default the repo's sprite_skip; SPRITE_NAME still pins any).
 Core: $sprite_core (version $SPRITE_CORE_VERSION).
 USAGE
 }
@@ -452,7 +455,34 @@ prepare() {
   # In a subshell, so a cd or a variable there does not leak into the command.
   ( repo_prepare ) || { echo "== the repo's prepare step failed"; return 1; }
 }
-prepare || { echo '== preparing the sprite failed'; finish 1; }
+# A sprite's disks are network block devices that now and then drop: the kernel logs I/O errors, remounts the
+# filesystem read-only, and the platform reconnects it a few seconds later (seen on a dozen rt-pool sprites, 2026-11-14).
+# A run that met one must say so instead of failing as if a test had. ~/.disk-events records the boot and the kernel
+# timestamp of the last such line a run has seen; lines after it are new. A sprite without the record (its first run
+# with this core) records the present and judges only what comes after.
+disk_events() { sudo -n dmesg 2>/dev/null | grep -E 'Remounting filesystem read-only|NBD_DISCONNECT|Buffer I/O error on dev|EXT4-fs error' || true; }
+disk_ts() { sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p' | tail -1; }
+disk_mark() { echo "$(cat /proc/sys/kernel/random/boot_id) $(disk_events | disk_ts)" > ~/.disk-events.new && mv ~/.disk-events.new ~/.disk-events; }
+disk_new() { # the kernel's disk-event lines since the record
+  local boot= ts=
+  [ -s ~/.disk-events ] || return 0
+  read -r boot ts < ~/.disk-events
+  if [ "$boot" != "$(cat /proc/sys/kernel/random/boot_id)" ]; then disk_events; return; fi
+  disk_events | awk -v ts="${ts:-0}" '{ t = $0; sub(/^\[ */, "", t); sub(/\].*/, "", t); if (t + 0 > ts + 0) print }'
+}
+disk_writable() { # every place a run writes; a read-only one fails the run as an environment failure
+  local d
+  for d in "$HOME" "$checkout" /tmp ${docker_root:+"$docker_root"}; do
+    [ -d "$d" ] || continue
+    ( : > "$d/.sprite-test-rw.$$" ) 2>/dev/null && rm -f "$d/.sprite-test-rw.$$" || { echo "== $d is read-only: this sprite's disk dropped ($(disk_events | tail -1))"; return 1; }
+  done
+}
+[ -s ~/.disk-events ] || disk_mark
+earlier=$(disk_new)
+[ -z "$earlier" ] || echo "== this sprite's disks dropped since its last run ($(wc -l <<<"$earlier") kernel lines; last: $(tail -1 <<<"$earlier"))"
+disk_writable || finish 74
+prepare || { disk_writable || finish 74; echo '== preparing the sprite failed'; finish 1; }
+disk_mark
 cd "$checkout"; echo "== $*"
 # timeout runs the command in a process group of its own, so a stop reaches it through the trap above.
 log_start=$(stat -c %s ~/runs/$id.log)
@@ -466,6 +496,13 @@ if [ "$code" = 0 ]; then
     END { print seen ? n : "-" }')
   [ "$ran" != 0 ] || { echo "== the command reported test summaries with 0 tests passed or failed: nothing ran, so this run fails"; code=1; }
 fi
+# A disk that dropped while the command ran makes its result meaningless: the run is an environment failure (74), which
+# the client runs once more, not a test result.
+during=$(disk_new)
+if [ -n "$during" ]; then
+  echo "== this sprite's disk dropped during the run ($(wc -l <<<"$during") kernel lines; last: $(tail -1 <<<"$during")): an environment failure, not a test result"
+  disk_mark; code=74
+fi
 finish $code
 EOF
 
@@ -475,6 +512,12 @@ coord() { limit 20 sprite exec -o "$org" -s "$coordinator" --no-stdin -- bash -c
 remote() { local name=$1 secs=$2; shift 2; limit "$secs" sprite exec -o "$org" -s "$name" --no-stdin -- bash -c "$REMOTE" remote "$sprite_dir" "$@"; }
 ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ProxyCommand=\"sprite proxy -o $org -s %h --ssh\""
 candidates=(${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "$sprite_prefix$i"; done)})
+# Sprites out of rotation (sprite_skip in the repo's configuration, or SPRITE_SKIP): never picked, unless named in
+# SPRITE_NAME, which pins exactly the sprites given.
+skip=" ${SPRITE_SKIP-${sprite_skip:-}} "
+if [[ -z ${SPRITE_NAME:-} && $skip != "  " ]]; then
+  kept=(); for name in "${candidates[@]}"; do [[ $skip == *" $name "* ]] || kept+=("$name"); done; candidates=("${kept[@]}")
+fi
 prefix=$sprite_prefix
 # Perishable (-p): a kept path does not stop rsync --delete from removing a directory the tree no longer has ("cannot
 # delete non-empty directory: backends/image-streaming", a node_modules kept inside a removed workspace).
@@ -788,11 +831,15 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
         echo "== lost contact with $name; the job carries on. Log ~/runs/$id.log, status ~/runs/$id.exit there"; echo 69 > "$tmp/code.$k"; return
       else sleep 5; fi
     done
-    [[ $status = dead ]] || break
+    [[ $status = dead || $status = 74 ]] || break
     # Sprites now and then restarts a sprite: its processes go, and so can the last writes before it. Claim it again,
-    # sync again (~/.synced may be gone with them) and run the job once more (SPRITE_RETRIES, default 1).
-    echo "== the job died without an exit status: the sprite restarted under it"
-    (( attempt <= ${SPRITE_RETRIES:-1} )) || { status=137; break; }
+    # sync again (~/.synced may be gone with them) and run the job once more (SPRITE_RETRIES, default 1). A disk that
+    # dropped under the job (74) is retried the same way; a second one stays 74.
+    if [[ $status = 74 ]]; then echo "== the sprite's disk dropped during the job: an environment failure"
+      (( attempt <= ${SPRITE_RETRIES:-1} )) || break
+    else echo "== the job died without an exit status: the sprite restarted under it"
+      (( attempt <= ${SPRITE_RETRIES:-1} )) || { status=137; break; }
+    fi
     rm -f "$tmp/started.$name"; out=$(claim "$name" "$lease"); verdict=; rest=; read -r verdict rest < <(grep -v '^== ' <<<"$out") || true
     [[ $verdict = ok ]] || { echo "== could not claim $name again ($rest)"; status=137; break; }
     synced[k]=$rest; echo "== running it again on $name (retry $attempt of ${SPRITE_RETRIES:-1})"
