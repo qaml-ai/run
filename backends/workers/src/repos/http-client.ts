@@ -1,6 +1,6 @@
 import { tierRequest, TierError, type TierEnv } from "../camelfs/tier.ts";
 import type { TierClaims, TierFence, TierHolder } from "../camelfs/claims.ts";
-import { RepoError, check, ownership, refName, type Ref, type Entry, type Version } from "./repo-policy.ts";
+import { RepoError, check, ownership, refName, repoErrorFrom, type Ref, type Entry, type Version } from "./repo-policy.ts";
 import type { RepoRow } from "./tenant-repos.ts";
 import type { CommitInfo, DiffChange } from "./storage.ts";
 import type { MoveResult, RepoQuota, RepoWrite, WriteResult } from "./write-input.ts";
@@ -218,5 +218,15 @@ export class HttpRepoClient {
 
   async deleteLineage(key: string) {
     await this.call("DELETE", "", "w", { sub: "runtime:repo-delete", key });
+  }
+}
+
+export async function deleteTierLineage(repo: HttpRepoClient, lineage: string) {
+  try { await repo.deleteLineage(`delete:${lineage}`); }
+  catch (e) {
+    const error = repoErrorFrom(e);
+    if ((error?.status === 410 && error.code === "lineage_deleted") ||
+        (error?.status === 404 && error.code === "not_found")) return;
+    throw e;
   }
 }

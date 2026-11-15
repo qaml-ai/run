@@ -1,4 +1,4 @@
-import { HttpRepoClient } from './http-client.ts';
+import { HttpRepoClient, deleteTierLineage } from './http-client.ts';
 import type { TierEnv } from '../camelfs/tier.ts';
 import { randomBytes, createHash } from 'node:crypto';
 import type { Env } from '../agent.ts';
@@ -81,13 +81,13 @@ export async function deleteRepo(env: RepoEnv, tenant: string, id: string) {
       if (error?.status !== 404 || error.code !== 'not_found') throw e;
     }
   }
-  if (await index.markTierRepoDeleted(id)) {
-    try { await repo.deleteLineage(`delete:${row.lineage}`); }
+  if (await index.markTierRepoDeleted(id, tenant)) {
+    try { await deleteTierLineage(repo, row.lineage); }
     catch (e) {
-      const error = repoErrorFrom(e);
-      if (!((error?.status === 410 && error.code === 'lineage_deleted') ||
-            (error?.status === 404 && error.code === 'not_found'))) throw e;
+      await index.lineageDeleteFailed(row.lineage);
+      throw e;
     }
+    await index.lineageDeleted(row.lineage);
   }
   return { deleted: true };
 }
