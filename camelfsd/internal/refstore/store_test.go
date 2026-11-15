@@ -379,9 +379,9 @@ func TestCasConditionFailure(t *testing.T) {
 		failures, writes int
 		staleCurrent     string
 	}{
-		{"retry succeeds", []string{base, base}, 1, 2, ""},
-		{"retry sees competing version", []string{base, other}, 1, 1, other},
-		{"second failure reports latest", []string{base, base, other}, 2, 2, other},
+		{"retry succeeds", []string{base, base, base}, 1, 2, ""},
+		{"retry sees competing version", []string{base, other, other}, 1, 1, other},
+		{"second failure reports latest", []string{base, base, base, other, other}, 2, 2, other},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &retryClient{versions: tc.versions, failures: tc.failures}

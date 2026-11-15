@@ -43,7 +43,7 @@ func New(client Client, table string, now func() time.Time, commits Commits) *St
 	return &Store{client: client, table: aws.String(table), now: now, commits: commits}
 }
 
-// GuardLineages prevents ref updates once a lineage deletion has begun.
+// GuardLineages guards ref creation and identifies the lineage table for stamp recovery.
 func (s *Store) GuardLineages(table string) {
 	s.guard = aws.String(table)
 }
@@ -185,14 +185,22 @@ func decode(item attributes) (Ref, error) {
 	return r, err
 }
 
-func (s *Store) read(ctx context.Context, lineage, name string) (Ref, error) {
+func (s *Store) readItem(ctx context.Context, lineage, name string) (attributes, error) {
 	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: s.table, Key: key(lineage, name), ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
+		return nil, err
+	}
+	return out.Item, nil
+}
+
+func (s *Store) read(ctx context.Context, lineage, name string) (Ref, error) {
+	item, err := s.readItem(ctx, lineage, name)
+	if err != nil {
 		return Ref{}, err
 	}
-	return decode(out.Item)
+	return decode(item)
 }
 
 func (s *Store) Get(ctx context.Context, lineage, name string) (Ref, error) {
@@ -214,21 +222,31 @@ const heldBy = "(#holder = :holder AND #leaseEpoch = :epoch AND #leaseDeadline >
 
 var attributeAlias = regexp.MustCompile(`#[a-zA-Z]+`)
 
-func (s *Store) update(ctx context.Context, lineage, name, condition, update string, values attributes, returns types.ReturnValue) (*dynamodb.UpdateItemOutput, error) {
-	return s.updateTimed(ctx, lineage, name, condition, update, values, returns, nil)
+type writeClass uint8
+
+const (
+	existingRef writeClass = iota
+	createRef
+)
+
+func (s *Store) update(ctx context.Context, class writeClass, lineage, name, condition, update string, values attributes, returns types.ReturnValue) (*dynamodb.UpdateItemOutput, error) {
+	return s.updateTimed(ctx, class, lineage, name, condition, update, values, returns, nil)
 }
 
-func (s *Store) updateTimed(ctx context.Context, lineage, name, condition, update string, values attributes, returns types.ReturnValue, observe func(time.Duration)) (*dynamodb.UpdateItemOutput, error) {
+func (s *Store) updateTimed(ctx context.Context, class writeClass, lineage, name, condition, update string, values attributes, returns types.ReturnValue, observe func(time.Duration)) (*dynamodb.UpdateItemOutput, error) {
+	if class == existingRef {
+		condition = "(" + condition + ") AND attribute_not_exists(#deleting)"
+	}
 	names := map[string]string{}
 	for _, alias := range attributeAlias.FindAllString(condition+" "+update, -1) {
 		names[alias] = alias[1:]
 	}
-	if s.guard != nil {
+	if class == createRef && s.guard != nil {
 		input := &dynamodb.TransactWriteItemsInput{
 			TransactItems: []types.TransactWriteItem{
 				{ConditionCheck: &types.ConditionCheck{
 					TableName: s.guard, Key: attributes{"lineage": str(lineage)},
-					ConditionExpression:      aws.String("attribute_exists(#lineage) AND attribute_not_exists(#deletion) AND attribute_not_exists(#deletedAt)"),
+					ConditionExpression:      aws.String(activeLineage),
 					ExpressionAttributeNames: map[string]string{"#lineage": "lineage", "#deletion": "deletion", "#deletedAt": "deletedAt"},
 				}},
 				{Update: &types.Update{
@@ -249,11 +267,55 @@ func (s *Store) updateTimed(ctx context.Context, lineage, name, condition, updat
 		}
 		return &dynamodb.UpdateItemOutput{}, err
 	}
-	return s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	input := &dynamodb.UpdateItemInput{
 		TableName: s.table, Key: key(lineage, name), ConditionExpression: aws.String(condition),
 		UpdateExpression: aws.String(update), ExpressionAttributeNames: names, ExpressionAttributeValues: values,
 		ReturnValues: returns,
-	})
+	}
+	if class == existingRef {
+		input.ReturnValuesOnConditionCheckFailure = types.ReturnValuesOnConditionCheckFailureAllOld
+	}
+	for attempt := 0; ; attempt++ {
+		start := time.Now()
+		out, err := s.client.UpdateItem(ctx, input)
+		if observe != nil {
+			observe(time.Since(start))
+		}
+		var failed *types.ConditionalCheckFailedException
+		if class != existingRef || !errors.As(err, &failed) {
+			return out, err
+		}
+		item, readErr := s.readItem(ctx, lineage, name)
+		if readErr != nil {
+			return nil, readErr
+		}
+		stamp, stamped := item["deleting"].(*types.AttributeValueMemberS)
+		if !stamped {
+			// Rollback may have removed the stamp since UpdateItem failed.
+			if failed.Item["deleting"] != nil {
+				return nil, failure("lineage_blocked", 409)
+			}
+			return out, err
+		}
+		if attempt != 0 || s.guard == nil {
+			return nil, failure("lineage_blocked", 409)
+		}
+		line, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+			TableName: s.guard, Key: attributes{"lineage": str(lineage)}, ConsistentRead: aws.Bool(true),
+		})
+		if err != nil {
+			return nil, err
+		}
+		deletion, _ := line.Item["deletion"].(*types.AttributeValueMemberS)
+		if line.Item["deletedAt"] != nil || (deletion != nil && deletion.Value == stamp.Value) {
+			return nil, failure("lineage_blocked", 409)
+		}
+		// A competing heal or a newer stamp may win the conditional removal.
+		// Retry once against the original write condition in either case.
+		if err := s.removeStamp(ctx, lineage, name, stamp.Value); err != nil {
+			return nil, err
+		}
+	}
 }
 
 func targetUpdate(t Target, owner *string, expiresAt *int64, now int64, create bool) (string, attributes) {
@@ -314,7 +376,7 @@ func (s *Store) CreateBy(ctx context.Context, lineage, name string, t Target, ow
 		update, values := targetUpdate(t, owner, expiresAt, now, true)
 		values[":subject"], values[":epoch"] = str(subject), num(r.LeaseEpoch)
 		update = strings.Replace(update, "SET ", "SET #createdBy = :subject, ", 1)
-		_, err = s.update(ctx, lineage, name, absent+" AND (#leaseEpoch = :epoch OR attribute_not_exists(#leaseEpoch))", update, values, types.ReturnValueNone)
+		_, err = s.update(ctx, createRef, lineage, name, absent+" AND (#leaseEpoch = :epoch OR attribute_not_exists(#leaseEpoch))", update, values, types.ReturnValueNone)
 		if ddb.IsConditionFailed(err) {
 			continue
 		}

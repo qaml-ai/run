@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -23,7 +24,7 @@ type lineageItem struct {
 	CreatedAt     int64  `json:"createdAt"`
 	DeletedAt     *int64 `json:"-"`
 	Deletion      string `json:"-"`
-	Clearing      bool   `json:"-"`
+	DeletionPhase string `json:"-"`
 }
 
 type lineageStore struct {
@@ -65,9 +66,7 @@ func (s *lineageStore) get(ctx context.Context, l string) (lineageItem, error) {
 		n := number("deletedAt")
 		body.DeletedAt = &n
 	}
-	if v, ok := item["clearing"].(*types.AttributeValueMemberBOOL); ok {
-		body.Clearing = v.Value
-	}
+	body.DeletionPhase = str("clearing")
 	return body, err
 }
 
@@ -109,6 +108,25 @@ func (s *lineageStore) change(ctx context.Context, l, condition, update string, 
 	return err
 }
 
+const (
+	lineageRollback = "rollback"
+	lineageClear    = "clear"
+)
+
+func (s *lineageStore) rollbackDelete(ctx context.Context, l, id string, refs *refstore.Store, held []string) error {
+	if err := refs.UnstampDeleting(ctx, l, id); err != nil {
+		return err
+	}
+	err := s.change(ctx, l, "#deletion = :id AND #clearing = :phase", "REMOVE #deletion, #clearing",
+		map[string]string{"#deletion": "deletion", "#clearing": "clearing"}, map[string]types.AttributeValue{
+			":id": &types.AttributeValueMemberS{Value: id}, ":phase": &types.AttributeValueMemberS{Value: lineageRollback},
+		})
+	if err != nil && !ddb.IsConditionFailed(err) {
+		return err
+	}
+	return &storageError{409, "held", map[string]any{"held": held}}
+}
+
 func (s *lineageStore) delete(ctx context.Context, l string, refs *refstore.Store) error {
 	for {
 		item, err := s.get(ctx, l)
@@ -136,31 +154,54 @@ func (s *lineageStore) delete(ctx context.Context, l string, refs *refstore.Stor
 		}
 		names := map[string]string{"#deletion": "deletion", "#clearing": "clearing"}
 		values := map[string]types.AttributeValue{":id": &types.AttributeValueMemberS{Value: item.Deletion}}
-		if !item.Clearing {
+		switch item.DeletionPhase {
+		case "":
 			held, err := refs.Held(ctx, l)
 			if err != nil {
 				return err
 			}
-			condition := "#deletion = :id AND attribute_not_exists(#clearing)"
-			update := "REMOVE #deletion"
 			if len(held) == 0 {
-				update = "SET #clearing = :yes"
-				values[":yes"] = &types.AttributeValueMemberBOOL{Value: true}
+				if err := refs.StampDeleting(ctx, l, item.Deletion); err != nil {
+					if ddb.IsConditionFailed(err) {
+						continue // A competing DELETE advanced the phase.
+					}
+					return err
+				}
+				held, err = refs.Held(ctx, l)
+				if err != nil {
+					return err
+				}
 			}
-			err = s.change(ctx, l, condition, update, names, values)
-			if ddb.IsConditionFailed(err) {
-				continue
+			// Claim the outcome before any unstamp or clear. Other DELETEs
+			// can resume this phase, even if a held lease has since expired.
+			phase := lineageClear
+			if len(held) > 0 {
+				phase = lineageRollback
 			}
+			err = s.change(ctx, l, "#deletion = :id AND "+refstore.PendingDeletion,
+				"SET #clearing = :phase", names, map[string]types.AttributeValue{
+					":id": values[":id"], ":phase": &types.AttributeValueMemberS{Value: phase},
+					":boolType": &types.AttributeValueMemberS{Value: "BOOL"},
+				})
+			if err != nil && !ddb.IsConditionFailed(err) {
+				return err
+			}
+			if err == nil && phase == lineageRollback {
+				return s.rollbackDelete(ctx, l, item.Deletion, refs, held)
+			}
+			continue
+		case lineageRollback:
+			held, err := refs.Held(ctx, l)
 			if err != nil {
 				return err
 			}
-			if len(held) > 0 {
-				return &storageError{409, "held", map[string]any{"held": held}}
+			return s.rollbackDelete(ctx, l, item.Deletion, refs, held)
+		case lineageClear:
+			if err := refs.ClearDeleting(ctx, l, item.Deletion); err != nil {
+				return err
 			}
-			continue
-		}
-		if err := refs.ClearDeleting(ctx, l); err != nil {
-			return err
+		default:
+			return fmt.Errorf("invalid lineage deletion phase %q", item.DeletionPhase)
 		}
 		names["#deletedAt"] = "deletedAt"
 		values[":now"] = &types.AttributeValueMemberN{Value: strconv.FormatInt(s.now().UnixMilli(), 10)}

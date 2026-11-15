@@ -501,10 +501,10 @@ func (p *deleteStopRecorder) Stop(_ context.Context, _ compute.Host, id string, 
 
 type beforeRefUpdate struct {
 	*dynamodb.Client
-	before       func()
-	refTable     string
-	refReads     int
-	transactions int
+	before   func()
+	refTable string
+	refReads int
+	updates  int
 }
 
 func (c *beforeRefUpdate) GetItem(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -514,14 +514,17 @@ func (c *beforeRefUpdate) GetItem(ctx context.Context, input *dynamodb.GetItemIn
 	return c.Client.GetItem(ctx, input, opts...)
 }
 
-func (c *beforeRefUpdate) TransactWriteItems(ctx context.Context, input *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
-	c.transactions++
+func (c *beforeRefUpdate) UpdateItem(ctx context.Context, input *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	if aws.ToString(input.TableName) != c.refTable {
+		return c.Client.UpdateItem(ctx, input, opts...)
+	}
+	c.updates++
 	if c.before != nil {
 		before := c.before
 		c.before = nil
 		before()
 	}
-	return c.Client.TransactWriteItems(ctx, input, opts...)
+	return c.Client.UpdateItem(ctx, input, opts...)
 }
 
 type longHistory struct{}
@@ -723,10 +726,10 @@ func TestRefMutationRoutes(t *testing.T) {
 		}
 	}
 	moveDuringCAS(unrelated)
-	raced.refReads, raced.transactions = 0, 0
+	raced.refReads, raced.updates = 0, 0
 	retried := write("race", []map[string]any{{"path": "edit", "text": "win", "expectBlob": "none"}}, nil, 201, "")
-	check(raced.refReads, 3)     // Initial head, transaction conflict reread, retry head.
-	check(raced.transactions, 2) // One doomed transaction, then the retry's.
+	check(raced.refReads, 4) // Initial head, stamp check, conflict reread, retry head.
+	check(raced.updates, 2)  // One failed update, then the retry.
 	check(retried["parents"], []any{version(unrelated)})
 	check(retried["files"], float64(2))
 	conflicting := write("race", []map[string]any{{"path": "x", "text": "rival"}}, nil, 201, "")
@@ -749,11 +752,11 @@ func TestRefMutationRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	raced.refReads, raced.transactions = 0, 0
+	raced.refReads, raced.updates = 0, 0
 	details = write("explicit-race", []map[string]any{{"path": "edit", "text": "lose"}},
 		map[string]any{"expect": baseID}, 412, "stale")
-	check(raced.refReads, 2)     // Initial head and transaction conflict reread.
-	check(raced.transactions, 1) // The doomed transaction only; expect forbids a retry.
+	check(raced.refReads, 3) // Initial head, stamp check, conflict reread.
+	check(raced.updates, 1)  // The failed update only; expect forbids a retry.
 	check(details["current"], version(unrelated))
 	check(version(get("explicit-race")), version(unrelated))
 
