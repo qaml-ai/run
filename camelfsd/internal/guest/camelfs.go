@@ -241,25 +241,9 @@ func (g *guest) apply(parent context.Context, req request) (result message, err 
 	if err = g.cleanTemps(ctx); err != nil {
 		return nil, err
 	}
-	files := 0
-	for {
-		if err = ctx.Err(); err != nil {
-			return nil, err
-		}
-		var op operation
-		if err = applyJSON(c, &op); err != nil {
-			return nil, err
-		}
-		if op.End {
-			if op.Error != "" {
-				return nil, errors.New(op.Error)
-			}
-			break
-		}
-		if err = g.applyOp(ctx, c, op); err != nil {
-			return nil, err
-		}
-		files++
+	files, err := g.applyStream(ctx, c, req.Replay)
+	if err != nil {
+		return nil, err
 	}
 	for i, e := range idx.Entries {
 		if err = ctx.Err(); err != nil {
@@ -399,107 +383,64 @@ func walkRepo(repo string, visit func(string, string, fs.DirEntry) error) error 
 	})
 }
 
-func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
-	path, err := g.target(op.Path)
+// applyDel removes a file without creating its parents. On a normal apply the workspace matches the apply's
+// from-tree, so a missing path, a missing or non-directory parent, or a directory at the path means it diverged: an
+// error. On a replay (a restarted daemon re-sending the same apply to the same VM, computehost Recover) an earlier
+// attempt or a later op of this same apply already did the work (deleted it, or replaced the path with a directory
+// or a parent with a file), so each of those is already applied.
+func (g *guest) applyDel(rel string, replay bool) error {
+	if err := checkPath(rel); err != nil {
+		return err
+	}
+	parts := strings.Split(rel, "/")
+	dir := g.repo
+	for _, part := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, part)
+		st, err := os.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			if replay {
+				return nil
+			}
+			return fmt.Errorf("delete %s: parent %s is missing (workspace diverged from the tree)", rel, part)
+		}
+		if err != nil {
+			return err
+		}
+		if !st.IsDir() {
+			if replay {
+				return nil
+			}
+			return fmt.Errorf("delete %s: parent %s is not a directory (workspace diverged from the tree)", rel, part)
+		}
+	}
+	path := filepath.Join(dir, parts[len(parts)-1])
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		if replay {
+			return nil
+		}
+		return fmt.Errorf("delete %s: path is missing (workspace diverged from the tree)", rel)
+	}
 	if err != nil {
 		return err
 	}
-	switch op.Op {
-	case "put":
-		mode, err := modeBits(op.Mode)
-		if err != nil {
-			return err
+	if st.IsDir() {
+		if replay {
+			return nil
 		}
-		if op.Mode == "120000" {
-			return errors.New("mode 120000 is invalid with put")
-		}
-		if !validSize(op.Size) {
-			return errors.New("invalid size")
-		}
-		return applyPut(ctx, r, path, mode, *op.Size)
-	case "del":
-		if err := unix.Unlink(path); err != nil {
-			return err
-		}
-		for dir := filepath.Dir(path); dir != g.repo; dir = filepath.Dir(dir) {
-			err := unix.Rmdir(dir)
-			if err == unix.ENOTEMPTY || err == unix.EEXIST {
-				break
-			}
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	case "link":
-		if op.Target == nil || len(*op.Target) > 4096 || strings.ContainsRune(*op.Target, 0) {
-			return errors.New("invalid link target")
-		}
-		if err := unix.Unlink(path); err != nil && err != unix.ENOENT {
-			return err
-		}
-		return os.Symlink(*op.Target, path)
-	case "mode":
-		mode, err := modeBits(op.Mode)
-		if err != nil {
-			return err
-		}
-		if op.Mode == "120000" {
-			return errors.New("mode cannot change a symlink")
-		}
-		st, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if st.Mode()&os.ModeSymlink != 0 {
-			return errors.New("mode cannot change a symlink")
-		}
-		return os.Chmod(path, mode)
-	default:
-		return errors.New("unknown apply op")
+		return fmt.Errorf("delete %s: path is a directory (workspace diverged from the tree)", rel)
 	}
-}
-
-func applyPut(ctx context.Context, r io.Reader, path string, mode os.FileMode, size int64) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".camelfs-tmp-")
-	if err != nil {
+	if err := unix.Unlink(path); err != nil && err != unix.ENOENT {
 		return err
 	}
-	defer f.Close()
-	defer os.Remove(f.Name())
-	for left := size; left > 0; {
-		if err := ctx.Err(); err != nil {
+	for dir := filepath.Dir(path); dir != g.repo; dir = filepath.Dir(dir) {
+		err := unix.Rmdir(dir)
+		if err == unix.ENOTEMPTY || err == unix.EEXIST {
+			break
+		}
+		if err != nil && err != unix.ENOENT {
 			return err
 		}
-		b, err := wire.Read(r, wire.FrameMax)
-		if err != nil {
-			if errors.Is(err, wire.ErrEmptyFrame) {
-				return errors.New("raw frame crosses declared size or exceeds rawMax")
-			}
-			return readError(err, "unexpected EOF in apply stream")
-		}
-		if len(b) > wire.DataMax || int64(len(b)) > left {
-			return errors.New("raw frame crosses declared size or exceeds rawMax")
-		}
-		if _, err = f.Write(b); err != nil {
-			return err
-		}
-		left -= int64(len(b))
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err = f.Sync(); err != nil {
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	if err = ctx.Err(); err != nil {
-		return err
-	}
-	if err = os.Rename(f.Name(), path); err != nil {
-		return err
-	}
-	return os.Chmod(path, mode)
+	return nil
 }

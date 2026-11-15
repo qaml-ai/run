@@ -338,9 +338,10 @@ func TestKVMComputeDaemonProcess(t *testing.T) {
 	depth := 4
 	if q.Store != "" {
 		var err error
-		local, err = store.Open(ctx, q.Store, "us-west-2", 64)
+		// The production host's depth (store.DefaultDepth, camelfsd host --fetch-depth's default).
+		local, err = store.Open(ctx, q.Store, "us-west-2", store.DefaultDepth)
 		must(err)
-		depth = 64
+		depth = store.DefaultDepth
 	}
 	virtual := q.VirtualSize
 	if virtual == 0 {

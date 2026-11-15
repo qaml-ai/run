@@ -110,71 +110,185 @@ func TestIndexPackedWithinFrameLimit(t *testing.T) {
 		t.Fatal(count, frames)
 	}
 }
-func TestApplyBatchByteBound(t *testing.T) {
-	ops := []wire.Op{{Size: 128 << 20}, {Size: 128 << 20}, {Size: 1}, {Size: 256 << 20}}
-	if n := applyBatchEnd(ops, 0, 64); n != 2 {
-		t.Fatal(n)
-	}
-	if n := applyBatchEnd(ops, 0, 1); n != 1 {
-		t.Fatal(n)
-	}
-	if n := applyBatchEnd(ops, 2, 64); n != 3 {
-		t.Fatal(n)
-	}
-}
 
-type slowApplyStore struct {
+type applyStoreStub struct {
 	store.Store
-	slow    string
-	unblock <-chan struct{}
+	open func(context.Context, string) (io.ReadCloser, error)
 }
 
-func (s slowApplyStore) Get(ctx context.Context, k string) ([]byte, error) {
-	if k == s.slow {
-		select {
-		case <-s.unblock:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+func (s applyStoreStub) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	return s.open(ctx, key)
+}
+
+func readApplyOp(t *testing.T, r io.Reader, want wire.Op, contents string) {
+	t.Helper()
+	var got wire.Op
+	if err := wire.JSON(r, &got); err != nil || got != want {
+		t.Fatalf("apply op = %+v (%v), want %+v", got, err, want)
+	}
+	if contents != "" {
+		data, err := wire.Read(r, wire.DataMax)
+		if err != nil || string(data) != contents {
+			t.Fatalf("apply data = %q (%v), want %q", data, err, contents)
 		}
 	}
-	return s.Store.Get(ctx, k)
 }
-func TestApplyStreamsBeforeBatchCompletes(t *testing.T) {
-	m, _ := unit3(t)
-	ctx := context.Background()
-	a, b := []byte("fast"), []byte("slow")
-	ha, hb := store.GitHash("blob", a), store.GitHash("blob", b)
-	m.Store.Put(ctx, "l/o/"+ha, a)
-	m.Store.Put(ctx, "l/o/"+hb, b)
+
+func awaitApplyFetch(t *testing.T, fetched <-chan string, want string) {
+	t.Helper()
+	select {
+	case got := <-fetched:
+		if got != want {
+			t.Fatalf("fetched %q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %q", want)
+	}
+}
+
+func TestApplySendsInOrderWhileFetchingAhead(t *testing.T) {
+	const slowKey = "slow"
+	contents := []string{slowKey, "fast", "next"}
+	entries := make(map[string]objects.Entry)
+	blobs := make(map[string]string)
+	var ops []wire.Op
+	for _, data := range contents {
+		sha := store.GitHash("blob", []byte(data))
+		blobs["o/"+sha] = data
+		entries[data] = objects.Entry{SHA1: sha, Size: int64(len(data))}
+		ops = append(ops, wire.Op{Path: data, Op: "put", Size: int64(len(data))})
+	}
+	ops = append(ops, wire.Op{Path: slowKey, Op: "del"})
+	fetched := make(chan string, len(contents))
 	unblock := make(chan struct{})
-	defer close(unblock)
-	m.Store = slowApplyStore{m.Store, "l/o/" + hb, unblock}
+	stub := applyStoreStub{open: func(ctx context.Context, key string) (io.ReadCloser, error) {
+		data := blobs[key]
+		if data == slowKey {
+			select {
+			case <-unblock:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		fetched <- data
+		return io.NopCloser(strings.NewReader(data)), nil
+	}}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	server, client := net.Pipe()
 	defer client.Close()
-	client.SetDeadline(time.Now().Add(time.Second))
+	client.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan error, 1)
 	go func() {
-		done <- m.sendApply(server, "l", "j", applyTrees{Files: 2, Bytes: 8}, []objects.Entry{{Path: "a", SHA1: ha, Size: 4}, {Path: "b", SHA1: hb, Size: 4}}, []wire.Op{{Path: "a", Op: "put", Size: 4}, {Path: "b", Op: "put", Size: 4}})
-		server.Close()
+		defer server.Close()
+		done <- sendApplyOps(ctx, server, store.WithDepth(stub, 2), entries, ops, applyInflightBytes)
 	}()
-	for i := 0; i < 3; i++ {
-		var v any
-		if e := wire.JSON(client, &v); e != nil {
-			t.Fatal(e)
+
+	// The third fetch starts before the first finishes, even with only two GET slots.
+	awaitApplyFetch(t, fetched, "fast")
+	awaitApplyFetch(t, fetched, "next")
+	close(unblock)
+	for i, data := range contents {
+		readApplyOp(t, client, ops[i], data)
+	}
+	readApplyOp(t, client, ops[3], "")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyReservesBytesUntilSent(t *testing.T) {
+	// The first two fill the budget. The third needs the entire budget.
+	const budget = 8
+	contents := []string{"aaaa", "bbbb", "cccccccc"}
+	entries := make(map[string]objects.Entry)
+	blobs := make(map[string]string)
+	var ops []wire.Op
+	for _, data := range contents {
+		sha := store.GitHash("blob", []byte(data))
+		blobs["o/"+sha] = data
+		entries[data] = objects.Entry{SHA1: sha, Size: int64(len(data))}
+		ops = append(ops, wire.Op{Path: data, Op: "put", Size: int64(len(data))})
+	}
+	fetched := make(chan string, len(contents))
+	stub := applyStoreStub{open: func(_ context.Context, key string) (io.ReadCloser, error) {
+		data := blobs[key]
+		fetched <- data
+		return io.NopCloser(strings.NewReader(data)), nil
+	}}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	server, client := net.Pipe()
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	done := make(chan error, 1)
+	go func() {
+		defer server.Close()
+		done <- sendApplyOps(ctx, server, stub, entries, ops, budget)
+	}()
+	started := map[string]bool{}
+	for range 2 {
+		select {
+		case data := <-fetched:
+			started[data] = true
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
 		}
 	}
-	var op wire.Op
-	if e := wire.JSON(client, &op); e != nil {
-		t.Fatal(e)
+	if !started[contents[0]] || !started[contents[1]] {
+		t.Fatalf("fetched over budget: %v", started)
 	}
-	if op.Path != "a" {
-		t.Fatal(op)
+	assertBlocked := func() {
+		t.Helper()
+		select {
+		case data := <-fetched:
+			t.Fatalf("fetched %q before there was room in the byte budget", data)
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
-	data, e := wire.Read(client, wire.DataMax)
-	if e != nil || !bytes.Equal(data, a) {
-		t.Fatal(e, string(data))
+	assertBlocked()
+	readApplyOp(t, client, ops[0], contents[0])
+	assertBlocked()
+	readApplyOp(t, client, ops[1], contents[1])
+	awaitApplyFetch(t, fetched, contents[2])
+	readApplyOp(t, client, ops[2], contents[2])
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
-	client.Close()
+}
+
+func TestApplyStreamEndsWithFetchError(t *testing.T) {
+	m, _ := unit3(t)
+	content := []byte("blob")
+	sha := root.Hash(content)
+	repo := m.objects("l")
+	if _, err := repo.Upload(t.Context(), "l", sha, int64(len(content)), bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := repo.Import(t.Context(), objects.Request{Lineage: "l", Files: map[string]objects.File{"file": {SHA256: sha}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := mount3(t, m, tree.Tree, "fetch-error")
+	m.Store = applyStoreStub{Store: m.Store, open: func(context.Context, string) (io.ReadCloser, error) {
+		return nil, fmt.Errorf("injected apply fetch error")
+	}}
+	c, err := net.Dial("unix", v.streams.paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	for range 3 {
+		var frame any
+		if err := wire.JSON(c, &frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readApplyOp(t, c, wire.Op{End: true, Error: "injected apply fetch error"}, "")
+	if _, err := wire.Read(c, wire.FrameMax); err != io.EOF {
+		t.Fatalf("apply stream did not close after fetch error: %v", err)
+	}
 }
 
 // A symlink in the apply stream is a link op with its target in JSON and no raw

@@ -35,6 +35,7 @@ type request struct {
 		Append bool
 	}
 	JobID                     string
+	Replay                    bool // camelfs_apply re-sent by a restarted daemon to the same VM (computehost Recover)
 	TimeoutMs                 float64
 	Tree                      string
 	Error                     json.RawMessage

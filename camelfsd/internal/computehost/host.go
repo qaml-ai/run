@@ -231,7 +231,8 @@ func (h *Host) Recover(ctx context.Context) error {
 				}
 			}
 			if err == nil && r.StartedAt == nil && r.Stop == nil {
-				_, err = guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": id, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
+				// The same apply, re-sent to the same live VM: the guest treats deletes a later op already superseded as done.
+				_, err = guestRequest(ctx, vm, map[string]any{"op": "camelfs_apply", "jobId": id, "replay": true, "timeoutMs": h.Mounts.ApplyMax.Milliseconds()})
 				if err == nil {
 					err = h.startAdopted(ctx, s, r, vm)
 				}
