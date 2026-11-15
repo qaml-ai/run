@@ -31,6 +31,17 @@ export async function unusedPort(): Promise<number> {
   return port;
 }
 
+// A test file whose tests failed prints, as it exits, the retained output of every Worker it started: a fixture that
+// became unreachable (a crashed or wedged workerd) is otherwise only "fetch failed" in the shard log.
+const started = new Set<LocalWorker>();
+process.on("exit", () => {
+  if (!process.exitCode) return;
+  for (const worker of started) {
+    const output = worker.logs().trimEnd();
+    process.stderr.write(`== Local Worker ${worker.url} output (its last ${worker.logLimit} characters), kept because this file failed:\n${output || "(none)"}\n== end of ${worker.url} output\n`);
+  }
+});
+
 export class LocalWorker {
   readonly url: string;
   private child?: ChildProcess;
@@ -57,6 +68,7 @@ export class LocalWorker {
     readyToken = token,
     options: LocalWorkerOptions = {},
   ) {
+    started.add(this);
     this.config = config;
     this.readyToken = readyToken;
     this.port = port;
