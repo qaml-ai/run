@@ -1,4 +1,4 @@
-# Retry invalid native compaction summaries
+### Retry invalid native compaction summaries
 
 Compaction retries an empty, whitespace-only, thinking-only, truncated or tool-call summary, and transient provider
 errors, up to three attempts per chunk. Retries use the agent's configured backoff and may be disabled by its retry
