@@ -590,3 +590,78 @@ func TestApplyInterruptedAndReplayed(t *testing.T) {
 		}
 	}
 }
+
+// A replayed apply (camelfsd restart, same VM) of a file<->directory swap succeeds: deletes of paths already
+// replaced by a later op of the same apply are already applied.
+func TestApplyReplayedTypeSwap(t *testing.T) {
+	g := fixture(t)
+	tree := strings.Repeat("c", 40)
+	// Before: file "a" and directory "b" holding "b/x". After: directory "a" holding "a/y", file "b".
+	if err := os.WriteFile(filepath.Join(g.repo, "a"), []byte("old a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(g.repo, "b"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(g.repo, "b", "x"), []byte("old x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	puts := []struct{ path, data string }{{"a/y", "new y"}, {"b", "new b"}}
+	index := []map[string]any{}
+	for _, p := range puts {
+		index = append(index, map[string]any{"path": p.path, "mode": "100644", "size": len(p.data), "sha1": tree})
+	}
+	apply := func() error {
+		t.Helper()
+		peer := streamListener(t, g, 5201, func(c net.Conn) error {
+			for _, frame := range []any{
+				wire.Header{V: 1, Kind: "apply", JobID: "j", FromTree: strings.Repeat("d", 40), ToTree: tree},
+				message{"index": index},
+				message{"indexEnd": true, "count": len(index)},
+				wire.Op{Op: "del", Path: "a"},
+				wire.Op{Op: "del", Path: "b/x"},
+			} {
+				if err := wire.Send(c, frame); err != nil {
+					return err
+				}
+			}
+			for _, p := range puts {
+				if err := wire.Send(c, wire.Op{Op: "put", Path: p.path, Mode: "100644", Size: int64(len(p.data))}); err != nil {
+					return err
+				}
+				if err := wire.Write(c, []byte(p.data)); err != nil {
+					return err
+				}
+			}
+			if err := wire.Send(c, wire.Op{End: true}); err != nil {
+				return err
+			}
+			var reply struct {
+				Applied bool
+				Error   string
+			}
+			if err := wire.JSON(c, &reply); err != nil {
+				return err
+			}
+			if !reply.Applied {
+				return fmt.Errorf("apply was not acknowledged: %s", reply.Error)
+			}
+			return nil
+		})
+		_, err := g.apply(t.Context(), request{JobID: "j", TimeoutMs: 5000})
+		if peerErr := <-peer; peerErr != nil {
+			t.Fatal(peerErr)
+		}
+		return err
+	}
+	for _, name := range []string{"apply", "replay"} {
+		if err := apply(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, p := range puts {
+			if data, err := os.ReadFile(filepath.Join(g.repo, p.path)); err != nil || string(data) != p.data {
+				t.Fatalf("%s %s: %q (%v)", name, p.path, data, err)
+			}
+		}
+	}
+}

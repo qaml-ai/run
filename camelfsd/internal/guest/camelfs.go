@@ -400,6 +400,9 @@ func walkRepo(repo string, visit func(string, string, fs.DirEntry) error) error 
 }
 
 func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
+	if op.Op == "del" {
+		return g.applyDel(op.Path)
+	}
 	path, err := g.target(op.Path)
 	if err != nil {
 		return err
@@ -417,20 +420,6 @@ func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
 			return errors.New("invalid size")
 		}
 		return applyPut(ctx, r, path, mode, *op.Size)
-	case "del":
-		if err := unix.Unlink(path); err != nil && err != unix.ENOENT {
-			return err
-		}
-		for dir := filepath.Dir(path); dir != g.repo; dir = filepath.Dir(dir) {
-			err := unix.Rmdir(dir)
-			if err == unix.ENOTEMPTY || err == unix.EEXIST {
-				break
-			}
-			if err != nil && err != unix.ENOENT {
-				return err
-			}
-		}
-		return nil
 	case "link":
 		if op.Target == nil || len(*op.Target) > 4096 || strings.ContainsRune(*op.Target, 0) {
 			return errors.New("invalid link target")
@@ -458,6 +447,48 @@ func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
 	default:
 		return errors.New("unknown apply op")
 	}
+}
+
+// applyDel removes a file without creating its parents. A replayed apply (camelfsd restart, same VM) may find
+// the path already gone, a parent already replaced by a file, or the path already replaced by a directory that a
+// later op of the same apply created: each of those means this delete was already applied.
+func (g *guest) applyDel(rel string) error {
+	if err := checkPath(rel); err != nil {
+		return err
+	}
+	parts := strings.Split(rel, "/")
+	dir := g.repo
+	for _, part := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, part)
+		st, err := os.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) || err == nil && !st.IsDir() {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	path := filepath.Join(dir, parts[len(parts)-1])
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) || err == nil && st.IsDir() {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := unix.Unlink(path); err != nil && err != unix.ENOENT {
+		return err
+	}
+	for dir := filepath.Dir(path); dir != g.repo; dir = filepath.Dir(dir) {
+		err := unix.Rmdir(dir)
+		if err == unix.ENOTEMPTY || err == unix.EEXIST {
+			break
+		}
+		if err != nil && err != unix.ENOENT {
+			return err
+		}
+	}
+	return nil
 }
 
 func applyPut(ctx context.Context, r io.Reader, path string, mode os.FileMode, size int64) error {
