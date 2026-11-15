@@ -408,3 +408,16 @@ func TestCasConditionFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestWithStampCheck(t *testing.T) {
+	for in, want := range map[string]string{
+		live:                               live + " AND attribute_not_exists(#deleting)",
+		"#version = :current AND " + live:  "#version = :current AND " + live + " AND attribute_not_exists(#deleting)",
+		"#a = :a OR #b = :b":               "(#a = :a OR #b = :b) AND attribute_not_exists(#deleting)",
+		"(#a = :a OR #b = :b) AND #c = :c": "(#a = :a OR #b = :b) AND #c = :c AND attribute_not_exists(#deleting)",
+	} {
+		if got := withStampCheck(in); got != want {
+			t.Errorf("withStampCheck(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

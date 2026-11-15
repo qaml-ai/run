@@ -235,7 +235,7 @@ func (s *Store) update(ctx context.Context, class writeClass, lineage, name, con
 
 func (s *Store) updateTimed(ctx context.Context, class writeClass, lineage, name, condition, update string, values attributes, returns types.ReturnValue, observe func(time.Duration)) (*dynamodb.UpdateItemOutput, error) {
 	if class == existingRef {
-		condition = "(" + condition + ") AND attribute_not_exists(#deleting)"
+		condition = withStampCheck(condition)
 	}
 	names := map[string]string{}
 	for _, alias := range attributeAlias.FindAllString(condition+" "+update, -1) {
@@ -324,6 +324,24 @@ func (s *Store) updateTimed(ctx context.Context, class writeClass, lineage, name
 			return nil, err
 		}
 	}
+}
+
+// withStampCheck adds the stamp fence to an existing-item condition. DynamoDB rejects redundant parentheses, so a
+// condition is wrapped only when it has a top-level OR (where the added AND would otherwise bind to one side).
+func withStampCheck(condition string) string {
+	depth := 0
+	for i := 0; i < len(condition); i++ {
+		switch condition[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 && strings.HasPrefix(condition[i:], " OR ") {
+			return "(" + condition + ") AND attribute_not_exists(#deleting)"
+		}
+	}
+	return condition + " AND attribute_not_exists(#deleting)"
 }
 
 func targetUpdate(t Target, owner *string, expiresAt *int64, now int64, create bool) (string, attributes) {
