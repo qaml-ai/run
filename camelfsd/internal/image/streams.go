@@ -7,12 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/qaml-ai/run/camelfsd/internal/apierr"
-	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
-	"github.com/qaml-ai/run/camelfsd/internal/objects"
-
-	"github.com/qaml-ai/run/camelfsd/internal/store"
-	"github.com/qaml-ai/run/camelfsd/internal/wire"
 	"io"
 	"net"
 	"os"
@@ -21,6 +15,12 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/qaml-ai/run/camelfsd/internal/apierr"
+	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"github.com/qaml-ai/run/camelfsd/internal/wire"
 )
 
 var ErrBadStream = errors.New("bad-stream")
@@ -277,60 +277,172 @@ func (m *Manager) sendApply(c net.Conn, lineage, job string, a applyTrees, entri
 		byPath[f.Path] = f
 	}
 
-	// Each batch has both a count and a byte bound. Completed fetches stream
-	// immediately, releasing their buffer without waiting for slower peers.
-	for start := 0; start < len(ops); {
-		end := applyBatchEnd(ops, start, store.Depth(m.Store))
-		var writeMu sync.Mutex
-		keys := make([]string, end-start)
-		byKey := map[string]wire.Op{}
-		for i, op := range ops[start:end] {
-			keys[i] = op.Path
-			byKey[op.Path] = op
-		}
-		e := store.Parallel(ctx, store.Depth(m.Store), keys, func(p string) error {
-			op := byKey[p]
-			var b []byte
-			if op.Op == "put" {
-				f := byPath[p]
-				if f.Size > applyByteLimit {
-					return fmt.Errorf("apply blob exceeds byte limit")
-				}
-				var e error
-				b, e = store.ForLineage(m.Store, lineage).Get(ctx, "o/"+f.SHA1)
-				if e != nil {
-					return e
-				}
-				if int64(len(b)) != f.Size || store.GitHash("blob", b) != f.SHA1 {
-					return fmt.Errorf("corrupt blob")
-				}
-			}
-			// Both production guests use a link operation, with the target in JSON.
-			if op.Op == "put" && op.Mode == "120000" {
-				op.Op, op.Mode, op.Size, op.Target = "link", "", 0, string(b)
-				b = nil
-			}
-			writeMu.Lock()
-			defer writeMu.Unlock()
-			if e := wire.Send(c, op); e != nil {
-				return e
-			}
-			for len(b) > 0 {
-				n := min(len(b), wire.DataMax)
-				if e := wire.Write(c, b[:n]); e != nil {
-					return e
-				}
-				b = b[n:]
-			}
-			return nil
-		})
-		if e != nil {
-			return e
-		}
-		start = end
+	if err := sendApplyOps(ctx, c, store.ForLineage(m.Store, lineage), byPath, ops, applyInflightBytes); err != nil {
+		return err
 	}
-
 	return wire.Send(c, wire.Op{End: true, Files: a.Files, Bytes: a.Bytes})
+}
+
+const applyByteLimit int64 = 256 << 20
+
+// Reserve before fetching and release after sending. Each apply stream holds
+// at most 256 MiB of blob data, including reads and writes in progress.
+const applyInflightBytes int64 = 256 << 20
+
+type applyFetch struct {
+	op   wire.Op
+	size int64
+	data chan []byte
+}
+
+func sendApplyOps(parent context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, budget int64) error {
+	ctx, cancel := context.WithCancelCause(parent)
+	depth := store.Depth(source)
+	slots := make(chan struct{}, depth)
+	queue := make(chan applyFetch, depth)
+	released := make(chan struct{}, 1)
+	var mu sync.Mutex
+	var reserved int64
+	var work sync.WaitGroup
+	defer func() {
+		cancel(nil)
+		work.Wait()
+	}()
+
+	work.Add(1)
+	go func() {
+		defer work.Done()
+		defer close(queue)
+		for _, op := range ops {
+			item := applyFetch{op: op}
+			if op.Op == "put" {
+				entry := byPath[op.Path]
+				if entry.Size > applyByteLimit || entry.Size > budget {
+					cancel(fmt.Errorf("apply blob exceeds byte limit"))
+					return
+				}
+				if entry.Size < 0 {
+					cancel(fmt.Errorf("corrupt blob"))
+					return
+				}
+				item.size = entry.Size
+				item.data = make(chan []byte, 1)
+				// Reserve in stream order so a later fetch can never starve the head.
+				for {
+					mu.Lock()
+					if item.size <= budget-reserved {
+						reserved += item.size
+						mu.Unlock()
+						break
+					}
+					mu.Unlock()
+					select {
+					case <-released:
+					case <-ctx.Done():
+						return
+					}
+				}
+				select {
+				case slots <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				work.Add(1)
+				go func() {
+					defer work.Done()
+					defer func() { <-slots }()
+					data, err := fetchApplyBlob(ctx, source, entry)
+					if err != nil {
+						cancel(err)
+						return
+					}
+					item.data <- data
+				}()
+			}
+			select {
+			case queue <- item:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	for item := range queue {
+		var data []byte
+		if item.data != nil {
+			select {
+			case data = <-item.data:
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			}
+		}
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		if err := writeApplyOp(w, item.op, data); err != nil {
+			return err
+		}
+		if item.size > 0 {
+			mu.Lock()
+			reserved -= item.size
+			mu.Unlock()
+			select {
+			case released <- struct{}{}:
+			default:
+			}
+		}
+	}
+	return context.Cause(ctx)
+}
+
+func fetchApplyBlob(ctx context.Context, source store.Store, entry objects.Entry) ([]byte, error) {
+	r, err := store.OpenReader(ctx, source, "o/"+entry.SHA1)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	// Read into the reservation directly so even a corrupt oversized blob
+	// cannot make us buffer more than its declared size.
+	data := make([]byte, entry.Size)
+	if _, err := io.ReadFull(r, data); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("corrupt blob")
+		}
+		return nil, err
+	}
+	var extra [1]byte
+	if _, err := io.ReadFull(r, extra[:]); err != io.EOF {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("corrupt blob")
+	}
+	if store.GitHash("blob", data) != entry.SHA1 {
+		return nil, fmt.Errorf("corrupt blob")
+	}
+	return data, nil
+}
+
+func writeApplyOp(w io.Writer, op wire.Op, data []byte) error {
+	// Both production guests use a link operation, with the target in JSON.
+	if op.Op == "put" && op.Mode == "120000" {
+		if len(data) > wire.JSONMax {
+			return fmt.Errorf("JSON frame too large")
+		}
+		op.Op, op.Mode, op.Size, op.Target = "link", "", 0, string(data)
+		data = nil
+	}
+	if err := wire.Send(w, op); err != nil {
+		return err
+	}
+	for len(data) > 0 {
+		n := min(len(data), wire.DataMax)
+		if err := wire.Write(w, data[:n]); err != nil {
+			return err
+		}
+		data = data[n:]
+	}
+	return nil
 }
 
 type staged struct {
@@ -651,24 +763,6 @@ func (m *Manager) SessionCheckpoint(ctx context.Context, id string, baseline boo
 	return
 }
 
-const applyByteLimit int64 = 256 << 20
-
-func applyBatchEnd(ops []wire.Op, start, depth int) int {
-	var bytes int64
-	end := start
-	for end < len(ops) && end-start < depth {
-		if end > start && (ops[end].Op == "del") != (ops[start].Op == "del") {
-			break
-		}
-		size := ops[end].Size
-		if end > start && size > applyByteLimit-bytes {
-			break
-		}
-		bytes += size
-		end++
-	}
-	return end
-}
 func sendIndex(w io.Writer, entries []objects.Entry) error {
 	batch := []objects.Entry{}
 	size := len(`{"index":[]}`)

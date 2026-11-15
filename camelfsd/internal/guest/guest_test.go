@@ -452,3 +452,141 @@ func TestApplySyncsWorkspaceBeforeReply(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyInterruptedAndReplayed(t *testing.T) {
+	g := fixture(t)
+	tree := strings.Repeat("a", 40)
+	old := filepath.Join(g.repo, "obsolete", "file")
+	if err := os.MkdirAll(filepath.Dir(old), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("obsolete"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	files := []struct {
+		name, mode, data string
+		perm             os.FileMode
+	}{
+		{"script", "100755", "#!/bin/sh\n", 0755},
+		{"notes", "100644", "hello", 0644},
+	}
+	indexEntries := []map[string]any{}
+	for _, f := range files {
+		indexEntries = append(indexEntries, map[string]any{
+			"path": f.name, "mode": f.mode, "size": len(f.data), "sha1": tree,
+		})
+	}
+	indexEntries = append(indexEntries, map[string]any{
+		"path": "link", "mode": "120000", "size": len("notes"), "sha1": tree,
+	})
+	apply := func(interrupt bool) error {
+		t.Helper()
+		peer := streamListener(t, g, 5201, func(c net.Conn) error {
+			for _, frame := range []any{
+				wire.Header{V: 1, Kind: "apply", JobID: "j", FromTree: strings.Repeat("b", 40), ToTree: tree},
+				message{"index": indexEntries},
+				message{"indexEnd": true, "count": len(indexEntries)},
+				wire.Op{Op: "del", Path: "obsolete/file"},
+			} {
+				if err := wire.Send(c, frame); err != nil {
+					return err
+				}
+			}
+			for i, f := range files {
+				if err := wire.Send(c, wire.Op{Op: "put", Path: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
+					return err
+				}
+				if interrupt && i == 1 {
+					if err := c.(*net.UnixConn).CloseWrite(); err != nil {
+						return err
+					}
+					var reply struct {
+						Applied bool
+						Error   string
+					}
+					if err := wire.JSON(c, &reply); err != nil {
+						return err
+					}
+					if reply.Applied || !strings.Contains(reply.Error, "unexpected EOF in apply stream") {
+						return fmt.Errorf("interrupted apply reply: %+v", reply)
+					}
+					return nil
+				}
+				if err := wire.Write(c, []byte(f.data)); err != nil {
+					return err
+				}
+			}
+			if err := wire.Send(c, wire.Op{Op: "link", Path: "link", Target: "notes"}); err != nil {
+				return err
+			}
+			if err := wire.Send(c, wire.Op{End: true}); err != nil {
+				return err
+			}
+			var reply struct{ Applied bool }
+			if err := wire.JSON(c, &reply); err != nil {
+				return err
+			}
+			if !reply.Applied {
+				return fmt.Errorf("apply was not acknowledged")
+			}
+			return nil
+		})
+		_, err := g.apply(t.Context(), request{JobID: "j", TimeoutMs: 5000})
+		if peerErr := <-peer; peerErr != nil {
+			t.Fatal(peerErr)
+		}
+		return err
+	}
+	if err := apply(true); err == nil || !strings.Contains(err.Error(), "unexpected EOF in apply stream") {
+		t.Fatalf("interrupted apply returned %v", err)
+	}
+	if _, err := os.Stat(g.indexPath()); !os.IsNotExist(err) || g.index != nil {
+		t.Fatalf("interrupted apply saved an index: %v, %v", g.index, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(g.repo, "script")); err != nil || string(data) != files[0].data {
+		t.Fatalf("first write did not complete before interruption: %q (%v)", data, err)
+	}
+	// A killed guest can leave a temporary file behind without running defers.
+	if err := os.WriteFile(filepath.Join(g.repo, ".camelfs-tmp-orphan"), []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"retry", "replay"} {
+		if err := apply(false); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if g.index == nil || g.index.Tree != tree {
+			t.Fatalf("%s: wrong index: %+v", name, g.index)
+		}
+		if _, err := os.Stat(g.indexPath()); err != nil {
+			t.Fatalf("%s: index was not saved: %v", name, err)
+		}
+		list, err := os.ReadDir(g.repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, e := range list {
+			names = append(names, e.Name())
+		}
+		if !reflect.DeepEqual(names, []string{"link", "notes", "script"}) {
+			t.Fatalf("%s: unexpected workspace entries: %v", name, names)
+		}
+		for _, f := range files {
+			path := filepath.Join(g.repo, f.name)
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != f.data {
+				t.Fatalf("%s %s: data = %q (%v)", name, f.name, data, err)
+			}
+			st, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Mode().Perm() != f.perm {
+				t.Fatalf("%s %s: mode = %o, want %o", name, f.name, st.Mode().Perm(), f.perm)
+			}
+		}
+		if target, err := os.Readlink(filepath.Join(g.repo, "link")); err != nil || target != "notes" {
+			t.Fatalf("%s: link target = %q (%v)", name, target, err)
+		}
+	}
+}

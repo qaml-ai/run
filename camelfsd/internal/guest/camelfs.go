@@ -418,7 +418,7 @@ func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
 		}
 		return applyPut(ctx, r, path, mode, *op.Size)
 	case "del":
-		if err := unix.Unlink(path); err != nil {
+		if err := unix.Unlink(path); err != nil && err != unix.ENOENT {
 			return err
 		}
 		for dir := filepath.Dir(path); dir != g.repo; dir = filepath.Dir(dir) {
@@ -426,7 +426,7 @@ func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation) error {
 			if err == unix.ENOTEMPTY || err == unix.EEXIST {
 				break
 			}
-			if err != nil {
+			if err != nil && err != unix.ENOENT {
 				return err
 			}
 		}
@@ -489,9 +489,9 @@ func applyPut(ctx context.Context, r io.Reader, path string, mode os.FileMode, s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err = f.Sync(); err != nil {
-		return err
-	}
+	// A guest or host crash discards the workspace; a fresh boot reapplies
+	// the branch. Daemon recovery keeps the guest's page cache. Apply syncs
+	// the workspace before saving the index and exposing it as durable.
 	if err = f.Close(); err != nil {
 		return err
 	}
