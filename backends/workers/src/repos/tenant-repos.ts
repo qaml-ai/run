@@ -9,7 +9,7 @@ export type RepoRow = {
   bytes: number;
   files: number;
 };
-type LineageDeletion = { lineage: string; repo: string; attempts: number; nextAt: number };
+type LineageDeletion = { lineage: string; tenant: string; repo: string; attempts: number; nextAt: number };
 const firstRetryMs = 30_000;
 const maxRetryMs = 600_000;
 
@@ -18,7 +18,7 @@ export class TenantRepos {
   constructor(storage: DurableObjectStorage) { this.storage = storage; this.initialize(); }
   initialize() {
     this.storage.sql.exec('CREATE TABLE IF NOT EXISTS repos(id TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT UNIQUE, lineage TEXT NOT NULL, createdAt INTEGER NOT NULL, deletedAt INTEGER, bytes INTEGER NOT NULL DEFAULT 0, files INTEGER NOT NULL DEFAULT 0)');
-    this.storage.sql.exec('CREATE TABLE IF NOT EXISTS lineage_deletions(lineage TEXT PRIMARY KEY, repo TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, nextAt INTEGER NOT NULL)');
+    this.storage.sql.exec('CREATE TABLE IF NOT EXISTS lineage_deletions(lineage TEXT PRIMARY KEY, tenant TEXT NOT NULL, repo TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, nextAt INTEGER NOT NULL)');
   }
   row(id: string) { return this.storage.sql.exec<RepoRow>('SELECT * FROM repos WHERE id=?', id).toArray()[0] ?? null; }
   register(row: RepoRow, sourceId?: string) {
@@ -49,7 +49,7 @@ export class TenantRepos {
   deleted(id: string) {
     this.storage.sql.exec('UPDATE repos SET deletedAt=COALESCE(deletedAt,?) WHERE id=?', Date.now(), id);
   }
-  markTierRepoDeleted(id: string) {
+  markTierRepoDeleted(id: string, tenant: string) {
     return this.storage.transactionSync(() => {
       const row = this.row(id);
       if (!row) throw new RepoError('no_repo', 404, 'no_repo');
@@ -60,8 +60,8 @@ export class TenantRepos {
       if (live) return false;
       // Give the inline DELETE its first attempt, with a wake already scheduled if the caller disappears.
       this.storage.sql.exec(
-        'INSERT OR IGNORE INTO lineage_deletions(lineage,repo,nextAt) VALUES(?,?,?)',
-        row.lineage, id, Date.now() + firstRetryMs,
+        'INSERT OR IGNORE INTO lineage_deletions(lineage,tenant,repo,nextAt) VALUES(?,?,?,?)',
+        row.lineage, tenant, id, Date.now() + firstRetryMs,
       );
       return true;
     });

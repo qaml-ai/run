@@ -52,17 +52,17 @@ test("the last tombstone and deletion row commit together", async t => {
   const f = fixture(t);
   f.register("source");
   f.register("fork", "t:source", "source");
-  assert.equal(await f.tenant.markTierRepoDeleted("source"), false);
+  assert.equal(await f.tenant.markTierRepoDeleted("source", "t"), false);
   assert.deepEqual(f.pending(), []);
   assert.equal(await f.storage.getAlarm(), null);
   f.storage.sql.exec(`CREATE TRIGGER abort_deletion BEFORE INSERT ON lineage_deletions
     BEGIN SELECT RAISE(ABORT, 'cannot record deletion'); END`);
-  await assert.rejects(f.tenant.markTierRepoDeleted("fork"), /cannot record deletion/);
+  await assert.rejects(f.tenant.markTierRepoDeleted("fork", "t"), /cannot record deletion/);
   assert.equal(f.tenant.repoRow("fork")?.deletedAt, null);
   f.storage.sql.exec("DROP TRIGGER abort_deletion");
-  assert.equal(await f.tenant.markTierRepoDeleted("fork"), true);
+  assert.equal(await f.tenant.markTierRepoDeleted("fork", "t"), true);
   assert.equal(f.tenant.repoRow("fork")?.deletedAt, f.now());
-  assert.deepEqual(f.pending(), [{ lineage: "t:source", repo: "fork", attempts: 0, nextAt: f.now() + 30_000 }]);
+  assert.deepEqual(f.pending(), [{ lineage: "t:source", tenant: "t", repo: "fork", attempts: 0, nextAt: f.now() + 30_000 }]);
   assert.equal(await f.storage.getAlarm(), f.now() + 30_000);
   assert.deepEqual(f.deletes, []);
   f.advance(30_000);
@@ -76,7 +76,7 @@ test("inline DELETE preserves its error and a repeat resumes from the tombstone"
   f.register("repo");
   f.deleteReplies.push(reply(409, "held"));
   await assert.rejects(f.delete("repo"), { status: 409, code: "held" });
-  assert.deepEqual(f.pending(), [{ lineage: "t:repo", repo: "repo", attempts: 1, nextAt: f.now() + 30_000 }]);
+  assert.deepEqual(f.pending(), [{ lineage: "t:repo", tenant: "t", repo: "repo", attempts: 1, nextAt: f.now() + 30_000 }]);
   assert.equal(await f.storage.getAlarm(), f.now() + 30_000);
   assert.deepEqual(await f.delete("repo"), { deleted: true });
   assert.deepEqual(f.deletes, ["t:repo", "t:repo"]);
@@ -91,13 +91,13 @@ test("the alarm retries only due rows and caps the backoff", async t => {
   f.deleteReplies.push(new DOMException("timed out", "TimeoutError"));
   await assert.rejects(f.delete("first"), { status: 502, code: "transport_error" });
   f.advance(5_000);
-  await f.tenant.markTierRepoDeleted("second");
+  await f.tenant.markTierRepoDeleted("second", "t");
   assert.equal(await f.storage.getAlarm(), f.now() + 25_000);
   f.advance(25_000);
   f.deleteReplies.push(reply(503, "unavailable"));
   await f.fire();
   assert.deepEqual(f.deletes, ["t:first", "t:first"]);
-  assert.deepEqual(f.pending()[0], { lineage: "t:first", repo: "first", attempts: 2, nextAt: f.now() + 60_000 });
+  assert.deepEqual(f.pending()[0], { lineage: "t:first", tenant: "t", repo: "first", attempts: 2, nextAt: f.now() + 60_000 });
   assert.equal(await f.storage.getAlarm(), f.now() + 5_000);
   f.advance(5_000);
   await f.fire();
@@ -126,7 +126,7 @@ test("410 lineage_deleted and 404 not_found complete deletion inline and on alar
     f.deleteReplies.push(reply(status, code));
     assert.deepEqual(await f.delete(`inline-${status}`), { deleted: true });
     assert.deepEqual(f.pending(), []);
-    await f.tenant.markTierRepoDeleted(`alarm-${status}`);
+    await f.tenant.markTierRepoDeleted(`alarm-${status}`, "t");
     f.deleteReplies.push(reply(status, code));
     f.advance(30_000);
     await f.fire();
@@ -138,7 +138,7 @@ test("410 lineage_deleted and 404 not_found complete deletion inline and on alar
 test("account purge preserves pending work and succeeds once the tier confirms deletion", async t => {
   const f = fixture(t);
   f.register("repo");
-  await f.tenant.markTierRepoDeleted("repo");
+  await f.tenant.markTierRepoDeleted("repo", "t");
   const pending = f.pending();
   await assert.rejects(f.tenant.purgeAccountData(), /pending lineage deletions/);
   assert.deepEqual(f.pending(), pending);

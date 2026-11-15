@@ -81,7 +81,7 @@ export async function deleteRepo(env: RepoEnv, tenant: string, id: string) {
       if (error?.status !== 404 || error.code !== 'not_found') throw e;
     }
   }
-  if (await index.markTierRepoDeleted(id)) {
+  if (await index.markTierRepoDeleted(id, tenant)) {
     try { await deleteTierLineage(repo, row.lineage); }
     catch (e) {
       await index.lineageDeleteFailed(row.lineage);

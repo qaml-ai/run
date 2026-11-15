@@ -310,7 +310,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
     const recovery = (await createRepo(scoped, "t", { key: "recovery" })).info;
     const recoveryRepo = new HttpRepoClient(env, "t", index.row(recovery.id)!, "api:t");
     await recoveryRepo.delete();
-    assert.equal(index.markTierRepoDeleted(recovery.id), true);
+    assert.equal(index.markTierRepoDeleted(recovery.id, "t"), true);
     await recoveryRepo.deleteLineage("external-delete");
     await deleteRepo(scoped, "t", recovery.id);
   });

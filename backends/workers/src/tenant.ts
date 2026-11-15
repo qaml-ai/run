@@ -93,8 +93,8 @@ export class TenantAdmission extends DurableObject<TierEnv & { TEST_MODE?: strin
   registerRepo(row: RepoRow, sourceId?: string) { return this.repos.register(row, sourceId); }
   repoRow(id: string) { return this.repos.row(id); }
   listRepos(input: {after?: string; limit?: number} = {}) { return this.repos.list(input); }
-  async markTierRepoDeleted(id: string) {
-    const pending = this.repos.markTierRepoDeleted(id);
+  async markTierRepoDeleted(id: string, tenant: string) {
+    const pending = this.repos.markTierRepoDeleted(id, tenant);
     // SQLite coalesces the row write and alarm write into one commit when there is no intervening await.
     if (pending) await this.armLineageDeletion();
     return pending;
@@ -120,8 +120,8 @@ export class TenantAdmission extends DurableObject<TierEnv & { TEST_MODE?: strin
     for (let pending = this.repos.dueLineageDeletion(dueAt); pending; pending = this.repos.dueLineageDeletion(dueAt)) {
       const row = this.repos.row(pending.repo);
       if (!row) throw new Error("Missing repo for pending lineage deletion");
-      // A lineage is <tenant>:<original repo id>, including for forks.
-      const tenant = row.lineage.slice(0, row.lineage.lastIndexOf(":"));
+      // The tenant deleteRepo acted for, recorded with the row (never parsed from the lineage).
+      const tenant = pending.tenant;
       const repo = new HttpRepoClient(this.env, tenant, row, `api:${tenant}`);
       try { await deleteTierLineage(repo, row.lineage); }
       catch {
