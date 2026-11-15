@@ -37,6 +37,16 @@ func (s *Store) List(ctx context.Context, lineage, prefix, after string, limit i
 
 // scan follows DynamoDB pages even when a whole page contains expired refs.
 func (s *Store) scan(ctx context.Context, lineage, prefix, after string, visit func(Ref) (bool, error)) error {
+	return s.scanItems(ctx, lineage, prefix, after, func(item attributes) (bool, error) {
+		r, err := decode(item)
+		if err != nil {
+			return false, err
+		}
+		return visit(r)
+	})
+}
+
+func (s *Store) scanItems(ctx context.Context, lineage, prefix, after string, visit func(attributes) (bool, error)) error {
 	in := &dynamodb.QueryInput{
 		TableName: s.table, ConsistentRead: aws.Bool(true), Limit: aws.Int32(1000),
 		ExpressionAttributeNames:  map[string]string{"#lineage": "lineage"},
@@ -58,11 +68,7 @@ func (s *Store) scan(ctx context.Context, lineage, prefix, after string, visit f
 			return err
 		}
 		for _, item := range out.Items {
-			r, err := decode(item)
-			if err != nil {
-				return err
-			}
-			more, err := visit(r)
+			more, err := visit(item)
 			if err != nil || !more {
 				return err
 			}
@@ -89,7 +95,7 @@ func (s *Store) watch(ctx context.Context, lineage, name, agent, action string) 
 	if !ValidOwner(agent) {
 		return failure("invalid", 400)
 	}
-	_, err := s.update(ctx, lineage, name, live, action+" #watchers :agents",
+	_, err := s.update(ctx, existingRef, lineage, name, live, action+" #watchers :agents",
 		attributes{":now": num(s.now().UnixMilli()), ":agents": &types.AttributeValueMemberSS{Value: []string{agent}}},
 		types.ReturnValueNone)
 	if ddb.IsConditionFailed(err) {

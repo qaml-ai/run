@@ -43,7 +43,7 @@ func New(client Client, table string, now func() time.Time, commits Commits) *St
 	return &Store{client: client, table: aws.String(table), now: now, commits: commits}
 }
 
-// GuardLineages prevents ref updates once a lineage deletion has begun.
+// GuardLineages guards ref creation and identifies the lineage table for stamp recovery.
 func (s *Store) GuardLineages(table string) {
 	s.guard = aws.String(table)
 }
@@ -185,14 +185,22 @@ func decode(item attributes) (Ref, error) {
 	return r, err
 }
 
-func (s *Store) read(ctx context.Context, lineage, name string) (Ref, error) {
+func (s *Store) readItem(ctx context.Context, lineage, name string) (attributes, error) {
 	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: s.table, Key: key(lineage, name), ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
+		return nil, err
+	}
+	return out.Item, nil
+}
+
+func (s *Store) read(ctx context.Context, lineage, name string) (Ref, error) {
+	item, err := s.readItem(ctx, lineage, name)
+	if err != nil {
 		return Ref{}, err
 	}
-	return decode(out.Item)
+	return decode(item)
 }
 
 func (s *Store) Get(ctx context.Context, lineage, name string) (Ref, error) {
@@ -214,21 +222,31 @@ const heldBy = "(#holder = :holder AND #leaseEpoch = :epoch AND #leaseDeadline >
 
 var attributeAlias = regexp.MustCompile(`#[a-zA-Z]+`)
 
-func (s *Store) update(ctx context.Context, lineage, name, condition, update string, values attributes, returns types.ReturnValue) (*dynamodb.UpdateItemOutput, error) {
-	return s.updateTimed(ctx, lineage, name, condition, update, values, returns, nil)
+type writeClass uint8
+
+const (
+	existingRef writeClass = iota
+	createRef
+)
+
+func (s *Store) update(ctx context.Context, class writeClass, lineage, name, condition, update string, values attributes, returns types.ReturnValue) (*dynamodb.UpdateItemOutput, error) {
+	return s.updateTimed(ctx, class, lineage, name, condition, update, values, returns, nil)
 }
 
-func (s *Store) updateTimed(ctx context.Context, lineage, name, condition, update string, values attributes, returns types.ReturnValue, observe func(time.Duration)) (*dynamodb.UpdateItemOutput, error) {
+func (s *Store) updateTimed(ctx context.Context, class writeClass, lineage, name, condition, update string, values attributes, returns types.ReturnValue, observe func(time.Duration)) (*dynamodb.UpdateItemOutput, error) {
+	if class == existingRef {
+		condition = withStampCheck(condition)
+	}
 	names := map[string]string{}
 	for _, alias := range attributeAlias.FindAllString(condition+" "+update, -1) {
 		names[alias] = alias[1:]
 	}
-	if s.guard != nil {
+	if class == createRef && s.guard != nil {
 		input := &dynamodb.TransactWriteItemsInput{
 			TransactItems: []types.TransactWriteItem{
 				{ConditionCheck: &types.ConditionCheck{
 					TableName: s.guard, Key: attributes{"lineage": str(lineage)},
-					ConditionExpression:      aws.String("attribute_exists(#lineage) AND attribute_not_exists(#deletion) AND attribute_not_exists(#deletedAt)"),
+					ConditionExpression:      aws.String(activeLineage),
 					ExpressionAttributeNames: map[string]string{"#lineage": "lineage", "#deletion": "deletion", "#deletedAt": "deletedAt"},
 				}},
 				{Update: &types.Update{
@@ -249,11 +267,103 @@ func (s *Store) updateTimed(ctx context.Context, lineage, name, condition, updat
 		}
 		return &dynamodb.UpdateItemOutput{}, err
 	}
-	return s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	input := &dynamodb.UpdateItemInput{
 		TableName: s.table, Key: key(lineage, name), ConditionExpression: aws.String(condition),
 		UpdateExpression: aws.String(update), ExpressionAttributeNames: names, ExpressionAttributeValues: values,
 		ReturnValues: returns,
-	})
+	}
+	if class == existingRef {
+		input.ReturnValuesOnConditionCheckFailure = types.ReturnValuesOnConditionCheckFailureAllOld
+	}
+	for attempt := 0; ; attempt++ {
+		start := time.Now()
+		out, err := s.client.UpdateItem(ctx, input)
+		if observe != nil {
+			observe(time.Since(start))
+		}
+		var failed *types.ConditionalCheckFailedException
+		if class != existingRef || !errors.As(err, &failed) {
+			return out, err
+		}
+		item, readErr := s.readItem(ctx, lineage, name)
+		if readErr != nil {
+			return nil, readErr
+		}
+		stamp, stamped := item["deleting"].(*types.AttributeValueMemberS)
+		if !stamped {
+			// The failed write's own image says whether a stamp blocked it. A stamp gone by the reread was removed by a
+			// rollback racing this write (the renew-vs-rollback window): retry once against the original condition.
+			// An image DynamoDB did not return is treated the same, so a missing ALL_OLD can never surface a stamp as
+			// the caller's own condition failure (for Renew, that would read as fenced).
+			// An absent item (empty reread) was never stamped: its failure is the caller's own (no_ref, fenced, …).
+			blockedByStamp := len(item) > 0 && (len(failed.Item) == 0 || failed.Item["deleting"] != nil)
+			if blockedByStamp && attempt == 0 {
+				continue
+			}
+			if blockedByStamp {
+				return nil, failure("lineage_blocked", 409)
+			}
+			return out, err
+		}
+		if attempt != 0 || s.guard == nil {
+			return nil, failure("lineage_blocked", 409)
+		}
+		line, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+			TableName: s.guard, Key: attributes{"lineage": str(lineage)}, ConsistentRead: aws.Bool(true),
+		})
+		if err != nil {
+			return nil, err
+		}
+		deletion, _ := line.Item["deletion"].(*types.AttributeValueMemberS)
+		if line.Item["deletedAt"] != nil || (deletion != nil && deletion.Value == stamp.Value) {
+			return nil, failure("lineage_blocked", 409)
+		}
+		// A competing heal or a newer stamp may win the conditional removal.
+		// Retry once against the original write condition in either case.
+		if err := s.removeStamp(ctx, lineage, name, stamp.Value); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// withStampCheck adds the stamp fence to an existing-item condition. DynamoDB rejects redundant parentheses, so a
+// condition is wrapped only when it has a top-level OR (where the added AND would otherwise bind to one side).
+func withStampCheck(condition string) string {
+	if hasTopLevelOr(condition) {
+		return "(" + condition + ") AND attribute_not_exists(#deleting)"
+	}
+	return condition + " AND attribute_not_exists(#deleting)"
+}
+
+// hasTopLevelOr finds the OR keyword (any case, as a whole word) outside parentheses. Placeholders (#name, :value)
+// are skipped whole, so #ORIGIN or :or never count.
+func hasTopLevelOr(condition string) bool {
+	word := func(c byte) bool {
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	depth := 0
+	for i := 0; i < len(condition); i++ {
+		switch c := condition[i]; {
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == '#' || c == ':':
+			for i+1 < len(condition) && word(condition[i+1]) {
+				i++
+			}
+		case word(c):
+			j := i
+			for j < len(condition) && word(condition[j]) {
+				j++
+			}
+			if depth == 0 && strings.EqualFold(condition[i:j], "OR") {
+				return true
+			}
+			i = j - 1
+		}
+	}
+	return false
 }
 
 func targetUpdate(t Target, owner *string, expiresAt *int64, now int64, create bool) (string, attributes) {
@@ -314,7 +424,7 @@ func (s *Store) CreateBy(ctx context.Context, lineage, name string, t Target, ow
 		update, values := targetUpdate(t, owner, expiresAt, now, true)
 		values[":subject"], values[":epoch"] = str(subject), num(r.LeaseEpoch)
 		update = strings.Replace(update, "SET ", "SET #createdBy = :subject, ", 1)
-		_, err = s.update(ctx, lineage, name, absent+" AND (#leaseEpoch = :epoch OR attribute_not_exists(#leaseEpoch))", update, values, types.ReturnValueNone)
+		_, err = s.update(ctx, createRef, lineage, name, absent+" AND (#leaseEpoch = :epoch OR attribute_not_exists(#leaseEpoch))", update, values, types.ReturnValueNone)
 		if ddb.IsConditionFailed(err) {
 			continue
 		}

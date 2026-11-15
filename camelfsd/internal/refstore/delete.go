@@ -2,6 +2,13 @@ package refstore
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math/rand/v2"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qaml-ai/run/camelfsd/internal/ddb"
@@ -37,7 +44,7 @@ func (s *Store) Delete(ctx context.Context, lineage, name string, expect *string
 	if err := deleteCheck(r, expect, now); err != nil {
 		return err
 	}
-	_, err = s.update(ctx, lineage, name, "#version = :current AND "+live+" AND "+unheld, removeRef,
+	_, err = s.update(ctx, existingRef, lineage, name, "#version = :current AND "+live+" AND "+unheld, removeRef,
 		attributes{":current": str(r.Version), ":now": num(now)}, types.ReturnValueNone)
 	if !ddb.IsConditionFailed(err) {
 		return err
@@ -66,7 +73,7 @@ func (s *Store) DeleteOwned(ctx context.Context, lineage, owner string) (deleted
 			held = append(held, r.Name)
 			return true, nil
 		}
-		_, err := s.update(ctx, lineage, r.Name, "#owner = :owner AND #version = :current AND "+live+" AND "+unheld,
+		_, err := s.update(ctx, existingRef, lineage, r.Name, "#owner = :owner AND #version = :current AND "+live+" AND "+unheld,
 			removeRef, attributes{":owner": str(owner), ":current": str(r.Version), ":now": num(now)}, types.ReturnValueNone)
 		switch {
 		case err == nil:
@@ -96,7 +103,7 @@ func (s *Store) SweepExpired(ctx context.Context, lineage string) error {
 		if r.Version == "" || r.live(now) {
 			return true, nil
 		}
-		_, err := s.update(ctx, lineage, r.Name, "attribute_exists(#version) AND "+expired, removeRef,
+		_, err := s.update(ctx, existingRef, lineage, r.Name, "attribute_exists(#version) AND "+expired, removeRef,
 			attributes{":now": num(now)}, types.ReturnValueNone)
 		if ddb.IsConditionFailed(err) {
 			err = nil
@@ -118,20 +125,143 @@ func (s *Store) Held(ctx context.Context, lineage string) ([]string, error) {
 	return held, err
 }
 
-// ClearDeleting runs after the lineage is frozen and its leases have drained.
-// Ref writes are disabled by the lineage guard, so a partial sweep is retryable.
-func (s *Store) ClearDeleting(ctx context.Context, lineage string) error {
-	frozen := *s
-	frozen.guard = nil
-	return s.scan(ctx, lineage, "", "", func(r Ref) (bool, error) {
-		if r.Version == "" {
+// PendingDeletion accepts an undecided deletion, including a legacy clear
+// whose refs still need to be stamped and checked for leases.
+const PendingDeletion = "(attribute_not_exists(#clearing) OR attribute_type(#clearing, :boolType))"
+
+// StampDeleting holds each ref against ordinary writes. The lineage check
+// prevents a delayed sweeper from stamping after rollback or over a newer id.
+func (s *Store) StampDeleting(ctx context.Context, lineage, id string) error {
+	return s.scanItems(ctx, lineage, "", "", func(item attributes) (bool, error) {
+		if item["version"] == nil {
 			return true, nil
 		}
-		_, err := frozen.update(ctx, lineage, r.Name, "#version = :current", removeRef,
-			attributes{":current": str(r.Version)}, types.ReturnValueNone)
-		if ddb.IsConditionFailed(err) {
-			err = nil // Another delete request already swept this ref.
+		name := item["name"].(*types.AttributeValueMemberS).Value
+		err := retryTransactionConflict(ctx, func() error {
+			_, err := s.client.(transactionClient).TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+				TransactItems: []types.TransactWriteItem{
+					{ConditionCheck: &types.ConditionCheck{
+						TableName: s.guard, Key: attributes{"lineage": str(lineage)},
+						ConditionExpression:       aws.String("#deletion = :id AND " + PendingDeletion),
+						ExpressionAttributeNames:  map[string]string{"#deletion": "deletion", "#clearing": "clearing"},
+						ExpressionAttributeValues: attributes{":id": str(id), ":boolType": str("BOOL")},
+					}},
+					{Update: &types.Update{
+						TableName: s.table, Key: key(lineage, name),
+						ConditionExpression:       aws.String("attribute_exists(#version)"),
+						UpdateExpression:          aws.String("SET #deleting = :id"),
+						ExpressionAttributeNames:  map[string]string{"#version": "version", "#deleting": "deleting"},
+						ExpressionAttributeValues: attributes{":id": str(id)},
+					}},
+				},
+			})
+			return err
+		})
+		var canceled *types.TransactionCanceledException
+		if errors.As(err, &canceled) && len(canceled.CancellationReasons) == 2 &&
+			aws.ToString(canceled.CancellationReasons[0].Code) == "None" &&
+			aws.ToString(canceled.CancellationReasons[1].Code) == "ConditionalCheckFailed" {
+			return true, nil // The ref was removed after the query.
 		}
 		return err == nil, err
 	})
+}
+
+func (s *Store) removeStamp(ctx context.Context, lineage, name, id string) error {
+	return s.changeStampedRef(ctx, lineage, name, id, "REMOVE #deleting")
+}
+
+// UnstampDeleting removes only the stamps belonging to this deletion.
+func (s *Store) UnstampDeleting(ctx context.Context, lineage, id string) error {
+	return s.scanItems(ctx, lineage, "", "", func(item attributes) (bool, error) {
+		if stamp, ok := item["deleting"].(*types.AttributeValueMemberS); !ok || stamp.Value != id {
+			return true, nil
+		}
+		err := s.removeStamp(ctx, lineage, item["name"].(*types.AttributeValueMemberS).Value, id)
+		return err == nil, err
+	})
+}
+
+// ClearDeleting runs after all live refs are stamped and the held check passes.
+func (s *Store) ClearDeleting(ctx context.Context, lineage, id string) error {
+	return s.scanItems(ctx, lineage, "", "", func(item attributes) (bool, error) {
+		if item["version"] == nil {
+			return true, nil
+		}
+		// Every live ref was stamped before the held check passed, and nothing can unstamp or create one now. A live
+		// ref without this deletion's stamp means that invariant broke: stop rather than tombstone a lineage over it.
+		name := item["name"].(*types.AttributeValueMemberS).Value
+		if stamp, ok := item["deleting"].(*types.AttributeValueMemberS); !ok || stamp.Value != id {
+			return false, fmt.Errorf("lineage %s ref %s is live without deletion %s's stamp", lineage, name, id)
+		}
+		_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: s.table, Key: key(lineage, name),
+			ConditionExpression:       aws.String("#deleting = :id"),
+			UpdateExpression:          aws.String(removeRef),
+			ExpressionAttributeNames:  stampedNames(removeRef),
+			ExpressionAttributeValues: attributes{":id": str(id)},
+		})
+		return err == nil, err
+	})
+}
+
+func stampedNames(update string) map[string]string {
+	names := map[string]string{"#deleting": "deleting"}
+	for _, alias := range attributeAlias.FindAllString(update, -1) {
+		names[alias] = alias[1:]
+	}
+	return names
+}
+
+func (s *Store) changeStampedRef(ctx context.Context, lineage, name, id, update string) error {
+	names := map[string]string{"#deleting": "deleting"}
+	for _, alias := range attributeAlias.FindAllString(update, -1) {
+		names[alias] = alias[1:]
+	}
+	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: s.table, Key: key(lineage, name),
+		ConditionExpression:       aws.String("#deleting = :id"),
+		UpdateExpression:          aws.String(update),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: attributes{":id": str(id)},
+	})
+	if ddb.IsConditionFailed(err) {
+		return nil
+	}
+	return err
+}
+
+// stampConflictAttempts bounds the retries of one ref's stamp transaction against a concurrent write to the same ref
+// or lineage item (TransactionConflict), so a busy ref delays the DELETE instead of failing it with a 503.
+const stampConflictAttempts = 3
+
+func retryTransactionConflict(ctx context.Context, run func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := run()
+		if attempt >= stampConflictAttempts || !isTransactionConflict(err) {
+			return err
+		}
+		delay := time.Duration(10*attempt+rand.IntN(20)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+func isTransactionConflict(err error) bool {
+	var conflict *types.TransactionConflictException
+	if errors.As(err, &conflict) {
+		return true
+	}
+	var canceled *types.TransactionCanceledException
+	if errors.As(err, &canceled) {
+		for _, reason := range canceled.CancellationReasons {
+			if aws.ToString(reason.Code) == "TransactionConflict" {
+				return true
+			}
+		}
+	}
+	return false
 }

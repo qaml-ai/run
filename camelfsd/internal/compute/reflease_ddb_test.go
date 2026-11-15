@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/refstore"
 )
@@ -113,5 +115,61 @@ func TestDDBRefLeaseRecovery(t *testing.T) {
 	}
 	if got := must[VM](t)(c.Get(ctx, v.ID)); got.Phase != Stopping || got.StopCheckpoint {
 		t.Fatal(got)
+	}
+}
+
+func TestDDBRenewRefDuringDeletionRollback(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	_, refs := table(t, "lineage", "name")
+	_, lineages := table(t, "lineage")
+	c := f.fresh()
+	c.Refs = refstore.New(c.DB, refs, c.Now, nil)
+	c.Refs.GuardLineages(lineages)
+	req := f.request("renew", "pool")
+	req.Image = strings.Repeat("c", 64)
+	lineageKey := attrs{"lineage": s(req.Lineage)}
+	must[*dynamodb.PutItemOutput](t)(c.DB.PutItem(ctx, &dynamodb.PutItemInput{TableName: &lineages, Item: lineageKey}))
+	target := refstore.Target{Version: strings.Repeat("a", 40), Tree: strings.Repeat("b", 40)}
+	if err := c.Refs.Create(ctx, req.Lineage, req.Ref, target, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.register(req.Pool, "boot", 1)
+	must[VM](t)(c.Create(ctx, req))
+	must[VM](t)(c.Place(ctx, req.ID))
+	must[*dynamodb.UpdateItemOutput](t)(c.DB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &lineages, Key: lineageKey, UpdateExpression: aws.String("SET deletion = :id"),
+		ExpressionAttributeValues: attrs{":id": s("X")},
+	}))
+	// The VM acquires its lease after the pre-check but before the stamp.
+	v := must[VM](t)(c.MarkBooting(ctx, req.ID))
+	v = must[VM](t)(c.Started(ctx, req.ID, v.Host, v.HostEpoch, f.now))
+	if err := c.Refs.StampDeleting(ctx, req.Lineage, "X"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.now = f.now.Add(201 * time.Second)
+	var blocked *refstore.Error
+	if err := c.renewRef(ctx, v, f.now); !errors.As(err, &blocked) || blocked.Code != "lineage_blocked" {
+		t.Fatalf("renew during deletion = %v", err)
+	}
+	if got := must[VM](t)(c.Get(ctx, v.ID)); got.Phase != Running || got.RefLeaseDeadline != v.RefLeaseDeadline {
+		t.Fatalf("VM changed during failed renew: %+v", got)
+	}
+	if held := must[[]string](t)(c.Refs.Held(ctx, req.Lineage)); len(held) != 1 || held[0] != req.Ref {
+		t.Fatalf("post-stamp held refs = %v", held)
+	}
+	if err := c.Refs.UnstampDeleting(ctx, req.Lineage, "X"); err != nil {
+		t.Fatal(err)
+	}
+	must[*dynamodb.UpdateItemOutput](t)(c.DB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &lineages, Key: lineageKey, UpdateExpression: aws.String("REMOVE deletion"),
+	}))
+	if err := c.renewRef(ctx, v, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if got := must[VM](t)(c.Get(ctx, v.ID)); got.Phase != Running || got.RefLeaseEpoch != v.RefLeaseEpoch ||
+		got.RefLeaseDeadline != f.now.UnixMilli()+refLeaseTTL {
+		t.Fatalf("VM after successful renew: %+v", got)
 	}
 }

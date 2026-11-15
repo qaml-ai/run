@@ -366,7 +366,12 @@ func (c *retryClient) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput
 		return nil, fmt.Errorf("write %d did not pin %s", c.writes, want)
 	}
 	if c.writes <= c.failures {
-		return nil, &types.ConditionalCheckFailedException{}
+		// As DynamoDB does for an existing item under ReturnValuesOnConditionCheckFailure=ALL_OLD.
+		failed := &types.ConditionalCheckFailedException{}
+		if in.ReturnValuesOnConditionCheckFailure == types.ReturnValuesOnConditionCheckFailureAllOld {
+			failed.Item = attributes{"version": str(want)}
+		}
+		return nil, failed
 	}
 	return &dynamodb.UpdateItemOutput{}, nil
 }
@@ -379,9 +384,9 @@ func TestCasConditionFailure(t *testing.T) {
 		failures, writes int
 		staleCurrent     string
 	}{
-		{"retry succeeds", []string{base, base}, 1, 2, ""},
-		{"retry sees competing version", []string{base, other}, 1, 1, other},
-		{"second failure reports latest", []string{base, base, other}, 2, 2, other},
+		{"retry succeeds", []string{base, base, base}, 1, 2, ""},
+		{"retry sees competing version", []string{base, other, other}, 1, 1, other},
+		{"second failure reports latest", []string{base, base, base, other, other}, 2, 2, other},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &retryClient{versions: tc.versions, failures: tc.failures}
@@ -401,5 +406,25 @@ func TestCasConditionFailure(t *testing.T) {
 				t.Fatalf("reads = %d, writes = %d", client.reads, client.writes)
 			}
 		})
+	}
+}
+
+func TestWithStampCheck(t *testing.T) {
+	const fence = " AND attribute_not_exists(#deleting)"
+	for in, want := range map[string]string{
+		live:                               live + fence,
+		"#version = :current AND " + live:  "#version = :current AND " + live + fence,
+		"(#a = :a OR #b = :b) AND #c = :c": "(#a = :a OR #b = :b) AND #c = :c" + fence,
+		"#a = :a AND #b = :b OR #c = :c":   "(#a = :a AND #b = :b OR #c = :c)" + fence,
+		"#a = :a OR #b = :b":               "(#a = :a OR #b = :b)" + fence,
+		"#a = :a or #b = :b":               "(#a = :a or #b = :b)" + fence,
+		"#ORIGIN = :OR AND #Or = :origin":  "#ORIGIN = :OR AND #Or = :origin" + fence,
+		"(#a = :a AND #b = :b)":            "(#a = :a AND #b = :b)" + fence,
+		"attribute_exists(#ORDER)":         "attribute_exists(#ORDER)" + fence,
+		"(#a = :a)OR(#b = :b)":             "((#a = :a)OR(#b = :b))" + fence,
+	} {
+		if got := withStampCheck(in); got != want {
+			t.Errorf("withStampCheck(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

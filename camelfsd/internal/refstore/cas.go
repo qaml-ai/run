@@ -25,8 +25,8 @@ type Move struct {
 	APIWrite                  bool // Unfenced tier mutation; a live lease is reported as held.
 	// Known may supply the API write's head for a conditional move.
 	Known *Ref
-	// ObserveTransaction receives the guarded write's wall time, including failures.
-	ObserveTransaction func(time.Duration)
+	// ObserveWrite receives the conditional write's wall time, including failures.
+	ObserveWrite func(time.Duration)
 	// Prepare computes the response after validation but before the conditional write.
 	Prepare func(previous Ref) error
 	Fence   *Fence
@@ -139,8 +139,9 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 	// Recheck deadlines at the write, including after a long ancestry walk.
 	now = s.now().UnixMilli()
 	update, values := targetUpdate(Target{m.Version, m.Tree, m.Root}, m.Owner, m.ExpiresAt, now, prev == nil)
-	condition := absent
+	class, condition := createRef, absent
 	if prev != nil {
+		class = existingRef
 		values[":current"] = str(*prev)
 		condition = "#version = :current AND "
 		if isHeld {
@@ -150,22 +151,15 @@ func (s *Store) cas(ctx context.Context, lineage, name string, r Ref, m Move, no
 			condition += live + " AND " + unheld
 		}
 	}
-	old, err := s.updateTimed(ctx, lineage, name, condition, update, values, types.ReturnValueAllOld, m.ObserveTransaction)
+	old, err := s.updateTimed(ctx, class, lineage, name, condition, update, values, types.ReturnValueAllOld, m.ObserveWrite)
 	if ddb.IsConditionFailed(err) {
 		return Result{}, casConflict
 	}
 	if err != nil {
 		return Result{}, err
 	}
-	if prev != nil {
-		// A guarded transaction returns no old attributes. Its callers
-		// receive the same advisory snapshot as before.
-		if s.guard != nil {
-			result.Watchers = r.Watchers
-		}
-		if watchers, ok := old.Attributes["watchers"].(*types.AttributeValueMemberSS); ok {
-			result.Watchers = watchers.Value
-		}
+	if watchers, ok := old.Attributes["watchers"].(*types.AttributeValueMemberSS); prev != nil && ok {
+		result.Watchers = watchers.Value
 	}
 	return result, nil
 }

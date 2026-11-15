@@ -56,7 +56,7 @@ func (s *Store) Acquire(ctx context.Context, lineage, name, holder string, ttlMs
 			values[":next"] = num(lease.Epoch)
 			update += ", #holder = :holder, #leaseEpoch = :next"
 		}
-		_, err = s.update(ctx, lineage, name, condition, update, values, types.ReturnValueNone)
+		_, err = s.update(ctx, existingRef, lineage, name, condition, update, values, types.ReturnValueNone)
 		if !ddb.IsConditionFailed(err) {
 			return lease, err
 		}
@@ -85,7 +85,7 @@ func (s *Store) fencedUpdate(ctx context.Context, lineage, name string, fence Fe
 		return err
 	}
 	values[":holder"], values[":epoch"], values[":now"] = str(fence.Holder), num(fence.Epoch), num(now)
-	_, err := s.update(ctx, lineage, name, heldBy+" AND attribute_exists(#version)", update, values, types.ReturnValueNone)
+	_, err := s.update(ctx, existingRef, lineage, name, heldBy+" AND attribute_exists(#version)", update, values, types.ReturnValueNone)
 	if ddb.IsConditionFailed(err) {
 		r, err := s.Get(ctx, lineage, name)
 		if err != nil {

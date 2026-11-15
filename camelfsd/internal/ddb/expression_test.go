@@ -18,7 +18,7 @@ func TestExpressionAttributesAreAliased(t *testing.T) {
 	keywords := map[string]bool{
 		"SET": true, "ADD": true, "REMOVE": true, "DELETE": true,
 		"AND": true, "OR": true, "NOT": true, "BETWEEN": true, "IN": true,
-		"attribute_exists": true, "attribute_not_exists": true, "begins_with": true,
+		"attribute_exists": true, "attribute_not_exists": true, "attribute_type": true, "begins_with": true,
 		"if_not_exists": true, "list_append": true, "contains": true, "size": true,
 	}
 	for _, dir := range []string{"../api", "../refstore"} {
@@ -51,14 +51,14 @@ func TestExpressionAttributesAreAliased(t *testing.T) {
 				// Include fragments used to assemble condition and update expressions.
 				// A bare name on either side of an operator must still be detected.
 				if !strings.ContainsAny(value, "#:") &&
-					!regexp.MustCompile(`^(SET|ADD|REMOVE|DELETE) |^(attribute_exists|attribute_not_exists|begins_with)\(`).MatchString(value) {
+					!regexp.MustCompile(`^(SET|ADD|REMOVE|DELETE) |^(attribute_exists|attribute_not_exists|attribute_type|begins_with)\(`).MatchString(value) {
 					return true
 				}
 				if !strings.ContainsAny(value, " =(),<>") {
 					return true
 				}
 				if !strings.Contains(value, "#") && !strings.Contains(value, " = :") &&
-					!regexp.MustCompile(`^(SET|ADD|REMOVE|DELETE) [a-zA-Z_]|^(attribute_exists|attribute_not_exists|begins_with)\(`).MatchString(value) {
+					!regexp.MustCompile(`^(SET|ADD|REMOVE|DELETE) [a-zA-Z_]|^(attribute_exists|attribute_not_exists|attribute_type|begins_with)\(`).MatchString(value) {
 					return true
 				}
 				for _, word := range expressionWord.FindAllString(value, -1) {

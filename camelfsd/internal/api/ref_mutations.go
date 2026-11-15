@@ -106,7 +106,7 @@ func (s *StorageServer) moveHead(ctx context.Context, head refstore.Ref, kind, v
 	defer func() { timing.ddb += time.Since(start) }()
 	_, err := s.refs.Cas(ctx, head.Lineage, head.Name, refstore.Move{
 		Kind: kind, Version: version, Tree: tree, Parents: parents, Expect: &head.Version, RequireExisting: true, APIWrite: true, Known: &head,
-		ObserveTransaction: func(elapsed time.Duration) { timing.cas += elapsed },
+		ObserveWrite: func(elapsed time.Duration) { timing.cas += elapsed },
 		Prepare: func(refstore.Ref) error {
 			var usage refstore.Usage
 			var err error
