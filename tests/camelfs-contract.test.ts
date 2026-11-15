@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
@@ -287,23 +286,40 @@ test("camelFS storage client preserves too_deep and operation context", async t 
 
 
 async function refsTableFlags(t: import("node:test").TestContext, endpoint: string) {
-  const cli = promisify(execFile);
-  const run = (command: string, ...args: string[]) => cli("aws",
-    ["dynamodb", command, "--endpoint-url", endpoint, "--region", "us-west-2", ...args], {
-      env: { ...process.env, AWS_ACCESS_KEY_ID: "local", AWS_SECRET_ACCESS_KEY: "local",
-        AWS_SESSION_TOKEN: "", AWS_PAGER: "" },
+  // Plain DynamoDB JSON posts, not the aws CLI: measured on a slow sprite (rt-pool-1, 2026-11-15), each CLI
+  // invocation took 3-11 s of Python start-up, and the nine of them (three creates, three waits, three deletes) were
+  // 47 of this subtest's 50 s and alone pushed it past its 120 s budget while every daemon request ran in ms.
+  // DynamoDB Local does not verify signatures, but it partitions its data by the access key and region it reads from
+  // the credential scope, so this is the identity camelfsd's ddb.go uses against an endpoint (local / us-west-2).
+  const ddb = async (target: string, body: object): Promise<Record<string, any>> => {
+    const response = await fetch(endpoint, {
+      method: "POST", body: JSON.stringify(body), headers: {
+        "content-type": "application/x-amz-json-1.0", "x-amz-target": `DynamoDB_20120810.${target}`,
+        "x-amz-date": "20200101T000000Z",
+        authorization: "AWS4-HMAC-SHA256 Credential=local/20200101/us-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=local",
+      },
     });
+    const text = await response.text();
+    assert.equal(response.status, 200, `${target}: ${text}`);
+    return JSON.parse(text);
+  };
   const suffix = randomUUID();
   const tables = {
     refs: `contract-refs-${suffix}`, lineages: `contract-lineages-${suffix}`, marks: `contract-marks-${suffix}`,
   };
   for (const [kind, name] of Object.entries(tables)) {
     const keys = kind === "refs" ? ["lineage", "name"] : ["lineage"];
-    await run("create-table", "--table-name", name, "--billing-mode", "PAY_PER_REQUEST",
-      "--attribute-definitions", ...keys.map(key => `AttributeName=${key},AttributeType=S`),
-      "--key-schema", ...keys.map((key, i) => `AttributeName=${key},KeyType=${i ? "RANGE" : "HASH"}`));
-    t.after(async () => { await run("delete-table", "--table-name", name); });
-    await run("wait", "table-exists", "--table-name", name);
+    await ddb("CreateTable", {
+      TableName: name, BillingMode: "PAY_PER_REQUEST",
+      AttributeDefinitions: keys.map(AttributeName => ({ AttributeName, AttributeType: "S" })),
+      KeySchema: keys.map((AttributeName, i) => ({ AttributeName, KeyType: i ? "RANGE" : "HASH" })),
+    });
+    t.after(async () => { await ddb("DeleteTable", { TableName: name }); });
+    const deadline = Date.now() + 15_000;
+    while ((await ddb("DescribeTable", { TableName: name })).Table.TableStatus !== "ACTIVE") {
+      assert.ok(Date.now() < deadline, `${name} did not become ACTIVE`);
+      await delay(100);
+    }
   }
   return ["--ddb-endpoint", endpoint, "--refs-table", tables.refs, "--lineages-table", tables.lineages, "--marks-table", tables.marks];
 }
