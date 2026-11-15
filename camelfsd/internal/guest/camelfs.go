@@ -449,10 +449,11 @@ func (g *guest) applyOp(ctx context.Context, r io.Reader, op operation, replay b
 	}
 }
 
-// applyDel removes a file without creating its parents. A missing path is already deleted. A non-directory parent
-// or a directory at the path means the workspace does not match the apply's from-tree, which is an error, except on
-// a replay (a restarted daemon re-sending the same apply to the same VM): there a later op of this same apply has
-// already replaced the path (a directory became a file, or a file a directory), so the delete was already applied.
+// applyDel removes a file without creating its parents. On a normal apply the workspace matches the apply's
+// from-tree, so a missing path, a missing or non-directory parent, or a directory at the path means it diverged: an
+// error. On a replay (a restarted daemon re-sending the same apply to the same VM, computehost Recover) an earlier
+// attempt or a later op of this same apply already did the work (deleted it, or replaced the path with a directory
+// or a parent with a file), so each of those is already applied.
 func (g *guest) applyDel(rel string, replay bool) error {
 	if err := checkPath(rel); err != nil {
 		return err
@@ -463,7 +464,10 @@ func (g *guest) applyDel(rel string, replay bool) error {
 		dir = filepath.Join(dir, part)
 		st, err := os.Lstat(dir)
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			if replay {
+				return nil
+			}
+			return fmt.Errorf("delete %s: parent %s is missing (workspace diverged from the tree)", rel, part)
 		}
 		if err != nil {
 			return err
@@ -478,7 +482,10 @@ func (g *guest) applyDel(rel string, replay bool) error {
 	path := filepath.Join(dir, parts[len(parts)-1])
 	st, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		if replay {
+			return nil
+		}
+		return fmt.Errorf("delete %s: path is missing (workspace diverged from the tree)", rel)
 	}
 	if err != nil {
 		return err

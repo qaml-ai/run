@@ -531,7 +531,8 @@ func TestApplyInterruptedAndReplayed(t *testing.T) {
 			}
 			return nil
 		})
-		_, err := g.apply(t.Context(), request{JobID: "j", TimeoutMs: 5000})
+		// The interrupted attempt is a first apply; a retry onto the same workspace is Recover's replay.
+		_, err := g.apply(t.Context(), request{JobID: "j", Replay: !interrupt, TimeoutMs: 5000})
 		if peerErr := <-peer; peerErr != nil {
 			t.Fatal(peerErr)
 		}
@@ -667,6 +668,15 @@ func TestApplyReplayedTypeSwap(t *testing.T) {
 			if data, err := os.ReadFile(filepath.Join(g.repo, p.path)); err != nil || string(data) != p.data {
 				t.Fatalf("%s %s: %q (%v)", name, p.path, data, err)
 			}
+		}
+	}
+	// A delete of a missing path (and under a missing parent): already applied on a replay, divergence otherwise.
+	for _, del := range []string{"gone", "nodir/gone"} {
+		if err := apply(true, del); err != nil {
+			t.Fatalf("replayed delete of missing %s: %v", del, err)
+		}
+		if err := apply(false, del); err == nil || !strings.Contains(err.Error(), "workspace diverged") {
+			t.Fatalf("non-replay delete of missing %s: %v", del, err)
 		}
 	}
 	// The same deletes on a normal (non-replay) apply mean the workspace diverged from the tree: fail loudly.
