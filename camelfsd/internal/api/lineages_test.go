@@ -377,3 +377,43 @@ func TestLineageDeletionStampProtocol(t *testing.T) {
 		f.held(f.delete(), "main")
 	})
 }
+
+// A stamp whose lineage check fails for a reason the protocol does not know
+// (not a competing DELETE advancing the phase) must not spin the DELETE: it
+// re-reads the same state deletionStallLimit times and then answers 503, which
+// the runtime retries durably.
+func TestLineageDeletionStallIsBounded(t *testing.T) {
+	f := newDeletionFixture(t, "main")
+	attempts := 0
+	f.beforeStamp = func(string) error {
+		attempts++
+		return &types.TransactionCanceledException{
+			Message: aws.String("Transaction cancelled"),
+			CancellationReasons: []types.CancellationReason{
+				{Code: aws.String("ConditionalCheckFailed")}, {Code: aws.String("None")},
+			},
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	err := f.lineages.delete(ctx, deleteLineage, f.refs)
+	var got *storageError
+	if !errors.As(err, &got) || got.status != 503 || got.code != "unavailable" {
+		t.Fatalf("delete error = %#v, want 503 unavailable", err)
+	}
+	details, _ := got.details.(map[string]any)
+	if details["stalled"] != deletionStallLimit || details["phase"] != "" || details["deletion"] == "" {
+		t.Fatalf("details = %v", details)
+	}
+	if attempts != deletionStallLimit {
+		t.Fatalf("stamp attempts = %d, want %d", attempts, deletionStallLimit)
+	}
+	if item := f.item(); item.Deletion == "" || item.DeletionPhase != "" {
+		t.Fatalf("lineage after the stall = %+v, want the frozen deletion kept for the retry", item)
+	}
+	f.beforeStamp = nil
+	f.must(f.delete())
+	if f.item().DeletedAt == nil {
+		t.Fatal("the retried DELETE did not tombstone the lineage")
+	}
+}

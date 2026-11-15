@@ -127,7 +127,16 @@ func (s *lineageStore) rollbackDelete(ctx context.Context, l, id string, refs *r
 	return &storageError{409, "held", map[string]any{"held": held}}
 }
 
+// deletionStallLimit bounds delete's loop. Every continue expects the re-read
+// lineage to show a new deletion id or phase (its own step landed, or a
+// competing DELETE's did). An iteration that re-reads the same state is a
+// condition that fails for a reason the protocol does not know; after this many
+// the DELETE answers 503, which every runtime caller retries durably (L129).
+const deletionStallLimit = 8
+
 func (s *lineageStore) delete(ctx context.Context, l string, refs *refstore.Store) error {
+	var seen string
+	stalled := 0
 	for {
 		item, err := s.get(ctx, l)
 		if err != nil {
@@ -138,6 +147,15 @@ func (s *lineageStore) delete(ctx context.Context, l string, refs *refstore.Stor
 		}
 		if item.Lineage == "" {
 			return lineageMissing()
+		}
+		if state := item.Deletion + "/" + item.DeletionPhase; state == seen {
+			if stalled++; stalled >= deletionStallLimit {
+				return &storageError{503, "unavailable", map[string]any{
+					"deletion": item.Deletion, "phase": item.DeletionPhase, "stalled": stalled,
+				}}
+			}
+		} else {
+			seen = state
 		}
 		if item.Deletion == "" {
 			id := make([]byte, 16)
