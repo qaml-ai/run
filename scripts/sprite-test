@@ -23,6 +23,8 @@ sprite_prefix=rt-pool- sprite_pool=42 sprite_shards=8 sprite_dir=rt
 sprite_keep="node_modules/ /sandbox/v8-exec/target/"
 sprite_build_path=sandbox/v8-exec
 sprite_apt="unzip"
+# Sprites out of rotation (a sprite whose disk keeps failing; see SPRITE_SKIP in --help). None now.
+sprite_skip=""
 sprite_pg_env=AGENT_TEST_DATABASE_URL
 sprite_sha_env=CONTRACT_REVISION
 # The v8-exec binary is rebuilt unless target/release/.sources names this tree's sandbox/v8-exec and the binary's own
