@@ -291,8 +291,16 @@ func (s *Store) updateTimed(ctx context.Context, class writeClass, lineage, name
 		}
 		stamp, stamped := item["deleting"].(*types.AttributeValueMemberS)
 		if !stamped {
-			// Rollback may have removed the stamp since UpdateItem failed.
-			if failed.Item["deleting"] != nil {
+			// The failed write's own image says whether a stamp blocked it. A stamp gone by the reread was removed by a
+			// rollback racing this write (the renew-vs-rollback window): retry once against the original condition.
+			// An image DynamoDB did not return is treated the same, so a missing ALL_OLD can never surface a stamp as
+			// the caller's own condition failure (for Renew, that would read as fenced).
+			// An absent item (empty reread) was never stamped: its failure is the caller's own (no_ref, fenced, …).
+			blockedByStamp := len(item) > 0 && (len(failed.Item) == 0 || failed.Item["deleting"] != nil)
+			if blockedByStamp && attempt == 0 {
+				continue
+			}
+			if blockedByStamp {
 				return nil, failure("lineage_blocked", 409)
 			}
 			return out, err

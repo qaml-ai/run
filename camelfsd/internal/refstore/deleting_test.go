@@ -185,9 +185,61 @@ func TestDeletingRefWrites(t *testing.T) {
 			setDeletion("")
 		}
 		s.client = client
-		_, err = s.Renew(ctx, lineage, "main", fence, 2000)
-		wantError(t, err, "lineage_blocked", 409)
+		// The rollback lands between the stamped write's failure and its reread: the write retries once and the
+		// renew succeeds, never surfacing the stamp as fenced (review C3).
 		_, err = s.Renew(ctx, lineage, "main", fence, 2000)
 		must(t, err)
+		if client.writes != 2 {
+			t.Fatalf("writes = %d, want the failed write and one retry", client.writes)
+		}
 	})
+}
+
+type conflictClient struct {
+	*dynamodb.Client
+	conflicts, transactions int
+}
+
+func (c *conflictClient) TransactWriteItems(ctx context.Context, in *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	c.transactions++
+	if c.conflicts > 0 {
+		c.conflicts--
+		return nil, &types.TransactionCanceledException{CancellationReasons: []types.CancellationReason{
+			{Code: aws.String("None")}, {Code: aws.String("TransactionConflict")},
+		}}
+	}
+	return c.Client.TransactWriteItems(ctx, in, opts...)
+}
+
+// Review C2: a TransactionConflict on one ref's stamp is retried (bounded), not surfaced as a failed DELETE.
+func TestStampRetriesTransactionConflict(t *testing.T) {
+	target := Target{Version: id(1), Tree: id(2)}
+	for _, tc := range []struct {
+		name      string
+		conflicts int
+		ok        bool
+	}{{"absorbed", stampConflictAttempts - 1, true}, {"bounded", stampConflictAttempts, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, setDeletion := deletionStore(t)
+			ctx := t.Context()
+			must(t, s.Create(ctx, lineage, "main", target, nil, nil))
+			setDeletion("X")
+			client := &conflictClient{Client: s.client.(*dynamodb.Client), conflicts: tc.conflicts}
+			s.client = client
+			err := s.StampDeleting(ctx, lineage, "X")
+			if tc.ok {
+				must(t, err)
+				item, err := s.readItem(ctx, lineage, "main")
+				must(t, err)
+				if item["deleting"] == nil {
+					t.Fatal("stamp not written after the conflicts")
+				}
+			} else if !isTransactionConflict(err) {
+				t.Fatalf("err = %v, want the conflict after %d attempts", err, stampConflictAttempts)
+			}
+			if client.transactions != min(tc.conflicts+1, stampConflictAttempts) {
+				t.Fatalf("transactions = %d", client.transactions)
+			}
+		})
+	}
 }

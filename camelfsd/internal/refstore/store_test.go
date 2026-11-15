@@ -366,7 +366,12 @@ func (c *retryClient) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput
 		return nil, fmt.Errorf("write %d did not pin %s", c.writes, want)
 	}
 	if c.writes <= c.failures {
-		return nil, &types.ConditionalCheckFailedException{}
+		// As DynamoDB does for an existing item under ReturnValuesOnConditionCheckFailure=ALL_OLD.
+		failed := &types.ConditionalCheckFailedException{}
+		if in.ReturnValuesOnConditionCheckFailure == types.ReturnValuesOnConditionCheckFailureAllOld {
+			failed.Item = attributes{"version": str(want)}
+		}
+		return nil, failed
 	}
 	return &dynamodb.UpdateItemOutput{}, nil
 }

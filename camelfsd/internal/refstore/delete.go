@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -135,22 +137,25 @@ func (s *Store) StampDeleting(ctx context.Context, lineage, id string) error {
 			return true, nil
 		}
 		name := item["name"].(*types.AttributeValueMemberS).Value
-		_, err := s.client.(transactionClient).TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
-			TransactItems: []types.TransactWriteItem{
-				{ConditionCheck: &types.ConditionCheck{
-					TableName: s.guard, Key: attributes{"lineage": str(lineage)},
-					ConditionExpression:       aws.String("#deletion = :id AND " + PendingDeletion),
-					ExpressionAttributeNames:  map[string]string{"#deletion": "deletion", "#clearing": "clearing"},
-					ExpressionAttributeValues: attributes{":id": str(id), ":boolType": str("BOOL")},
-				}},
-				{Update: &types.Update{
-					TableName: s.table, Key: key(lineage, name),
-					ConditionExpression:       aws.String("attribute_exists(#version)"),
-					UpdateExpression:          aws.String("SET #deleting = :id"),
-					ExpressionAttributeNames:  map[string]string{"#version": "version", "#deleting": "deleting"},
-					ExpressionAttributeValues: attributes{":id": str(id)},
-				}},
-			},
+		err := retryTransactionConflict(ctx, func() error {
+			_, err := s.client.(transactionClient).TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+				TransactItems: []types.TransactWriteItem{
+					{ConditionCheck: &types.ConditionCheck{
+						TableName: s.guard, Key: attributes{"lineage": str(lineage)},
+						ConditionExpression:       aws.String("#deletion = :id AND " + PendingDeletion),
+						ExpressionAttributeNames:  map[string]string{"#deletion": "deletion", "#clearing": "clearing"},
+						ExpressionAttributeValues: attributes{":id": str(id), ":boolType": str("BOOL")},
+					}},
+					{Update: &types.Update{
+						TableName: s.table, Key: key(lineage, name),
+						ConditionExpression:       aws.String("attribute_exists(#version)"),
+						UpdateExpression:          aws.String("SET #deleting = :id"),
+						ExpressionAttributeNames:  map[string]string{"#version": "version", "#deleting": "deleting"},
+						ExpressionAttributeValues: attributes{":id": str(id)},
+					}},
+				},
+			})
+			return err
 		})
 		var canceled *types.TransactionCanceledException
 		if errors.As(err, &canceled) && len(canceled.CancellationReasons) == 2 &&
@@ -224,4 +229,39 @@ func (s *Store) changeStampedRef(ctx context.Context, lineage, name, id, update 
 		return nil
 	}
 	return err
+}
+
+// stampConflictAttempts bounds the retries of one ref's stamp transaction against a concurrent write to the same ref
+// or lineage item (TransactionConflict), so a busy ref delays the DELETE instead of failing it with a 503.
+const stampConflictAttempts = 3
+
+func retryTransactionConflict(ctx context.Context, run func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := run()
+		if attempt >= stampConflictAttempts || !isTransactionConflict(err) {
+			return err
+		}
+		delay := time.Duration(10*attempt+rand.IntN(20)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+func isTransactionConflict(err error) bool {
+	var conflict *types.TransactionConflictException
+	if errors.As(err, &conflict) {
+		return true
+	}
+	var canceled *types.TransactionCanceledException
+	if errors.As(err, &canceled) {
+		for _, reason := range canceled.CancellationReasons {
+			if aws.ToString(reason.Code) == "TransactionConflict" {
+				return true
+			}
+		}
+	}
+	return false
 }
