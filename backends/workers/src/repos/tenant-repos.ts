@@ -9,10 +9,17 @@ export type RepoRow = {
   bytes: number;
   files: number;
 };
+type LineageDeletion = { lineage: string; tenant: string; repo: string; attempts: number; nextAt: number };
+const firstRetryMs = 30_000;
+const maxRetryMs = 600_000;
+
 export class TenantRepos {
   private readonly storage: DurableObjectStorage;
   constructor(storage: DurableObjectStorage) { this.storage = storage; this.initialize(); }
-  initialize() { this.storage.sql.exec('CREATE TABLE IF NOT EXISTS repos(id TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT UNIQUE, lineage TEXT NOT NULL, createdAt INTEGER NOT NULL, deletedAt INTEGER, bytes INTEGER NOT NULL DEFAULT 0, files INTEGER NOT NULL DEFAULT 0)'); }
+  initialize() {
+    this.storage.sql.exec('CREATE TABLE IF NOT EXISTS repos(id TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT UNIQUE, lineage TEXT NOT NULL, createdAt INTEGER NOT NULL, deletedAt INTEGER, bytes INTEGER NOT NULL DEFAULT 0, files INTEGER NOT NULL DEFAULT 0)');
+    this.storage.sql.exec('CREATE TABLE IF NOT EXISTS lineage_deletions(lineage TEXT PRIMARY KEY, tenant TEXT NOT NULL, repo TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, nextAt INTEGER NOT NULL)');
+  }
   row(id: string) { return this.storage.sql.exec<RepoRow>('SELECT * FROM repos WHERE id=?', id).toArray()[0] ?? null; }
   register(row: RepoRow, sourceId?: string) {
     return this.storage.transactionSync(() => {
@@ -42,15 +49,37 @@ export class TenantRepos {
   deleted(id: string) {
     this.storage.sql.exec('UPDATE repos SET deletedAt=COALESCE(deletedAt,?) WHERE id=?', Date.now(), id);
   }
-  markTierRepoDeleted(id: string) {
+  markTierRepoDeleted(id: string, tenant: string) {
     return this.storage.transactionSync(() => {
       const row = this.row(id);
       if (!row) throw new RepoError('no_repo', 404, 'no_repo');
       this.deleted(id);
-      return this.storage.sql.exec(
+      const live = this.storage.sql.exec(
         'SELECT 1 FROM repos WHERE lineage=? AND deletedAt IS NULL LIMIT 1', row.lineage,
-      ).toArray().length === 0;
+      ).toArray().length > 0;
+      if (live) return false;
+      // Give the inline DELETE its first attempt, with a wake already scheduled if the caller disappears.
+      this.storage.sql.exec(
+        'INSERT OR IGNORE INTO lineage_deletions(lineage,tenant,repo,nextAt) VALUES(?,?,?,?)',
+        row.lineage, tenant, id, Date.now() + firstRetryMs,
+      );
+      return true;
     });
+  }
+  nextLineageDeletion() {
+    return this.storage.sql.exec<{ nextAt: number }>('SELECT nextAt FROM lineage_deletions ORDER BY nextAt LIMIT 1').toArray()[0]?.nextAt;
+  }
+  dueLineageDeletion(now: number) {
+    return this.storage.sql.exec<LineageDeletion>('SELECT * FROM lineage_deletions WHERE nextAt<=? ORDER BY nextAt,lineage LIMIT 1', now).toArray()[0];
+  }
+  lineageDeleted(lineage: string) {
+    this.storage.sql.exec('DELETE FROM lineage_deletions WHERE lineage=?', lineage);
+  }
+  lineageDeleteFailed(lineage: string) {
+    const row = this.storage.sql.exec<LineageDeletion>('SELECT * FROM lineage_deletions WHERE lineage=?', lineage).toArray()[0];
+    if (!row) return;
+    const delay = Math.min(maxRetryMs, firstRetryMs * 2 ** row.attempts);
+    this.storage.sql.exec('UPDATE lineage_deletions SET attempts=attempts+1,nextAt=? WHERE lineage=?', Date.now() + delay, lineage);
   }
   usage(id: string, bytes: number, files: number) { check(Number.isSafeInteger(bytes) && bytes >= 0 && Number.isSafeInteger(files) && files >= 0); this.storage.sql.exec('UPDATE repos SET bytes=?,files=? WHERE lineage=(SELECT lineage FROM repos WHERE id=?)', bytes, files, id); }
   used(exclude = "") {

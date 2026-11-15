@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { registerHooks } from "node:module";
-import { DatabaseSync } from "node:sqlite";
+import { repoSqliteStorage } from "./repo-sqlite-storage.ts";
 import test from "node:test";
 import { createLocalJWKSet, decodeJwt, jwtVerify } from "jose";
 import { serveFakeCamelfsd } from "./fake-camelfsd.ts";
@@ -262,6 +262,8 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
       registerRepo: index.register.bind(index),
       repoRow: index.row.bind(index),
       markTierRepoDeleted: index.markTierRepoDeleted.bind(index),
+      lineageDeleted: index.lineageDeleted.bind(index),
+      lineageDeleteFailed: index.lineageDeleteFailed.bind(index),
     }) } } as unknown as Parameters<typeof createRepo>[0];
     const source = (await createRepo(scoped, "t", { key: "source" })).info;
     const from = { repo: source.id };
@@ -308,7 +310,7 @@ test("runtime JWKS, repo HTTP methods, idempotency, quota and admin smoke agains
     const recovery = (await createRepo(scoped, "t", { key: "recovery" })).info;
     const recoveryRepo = new HttpRepoClient(env, "t", index.row(recovery.id)!, "api:t");
     await recoveryRepo.delete();
-    assert.equal(index.markTierRepoDeleted(recovery.id), true);
+    assert.equal(index.markTierRepoDeleted(recovery.id, "t"), true);
     await recoveryRepo.deleteLineage("external-delete");
     await deleteRepo(scoped, "t", recovery.id);
   });
@@ -366,15 +368,5 @@ test("notify requires a fresh signature and type, and records each watcher's del
 });
 
 function fixtureIndex(t: import("node:test").TestContext) {
-  const db = new DatabaseSync(":memory:");
-  t.after(() => db.close());
-  const storage = {
-    transactionSync: (fn: () => unknown) => fn(),
-    sql: { exec(sql: string, ...params: string[]) {
-      const stmt = db.prepare(sql);
-      return { toArray: () => stmt.all(...params), one: () => stmt.get(...params), ...(!stmt.columns().length && stmt.run(...params)) };
-    } },
-  } as unknown as DurableObjectStorage;
-  const repos = new TenantRepos(storage);
-  return repos;
+  return new TenantRepos(repoSqliteStorage(t).storage as never);
 }
