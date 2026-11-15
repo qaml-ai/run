@@ -256,6 +256,9 @@ func TestOldBootRecoveryDropsMountWithStagingImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer recovered.Close()
+	if _, err := os.Stat(filepath.Join(mountDir, "root.img")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unfinished staging image survived manager recovery, stat error = %v", err)
+	}
 	cfg.BootID = "boot-b"
 	cfg.Mounts = recovered
 	cfg.Post = func(_ context.Context, path string, _, out any) error {

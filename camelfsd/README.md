@@ -251,8 +251,8 @@ The host validates guest paths and modes before ack.
 
 The host's shared store budget defaults to 128 operations (`--fetch-depth`).
 A cold mount verifies chunks and writes them directly into a pristine staging
-image. The VM boots from a reflink clone while the host syncs and promotes the
-pristine image for subsequent mounts. Startup discards unfinished staging images.
+image. The host syncs and publishes it before cloning the published image for
+the VM. Startup discards unfinished staging images.
 The eviction sweep runs every minute. Above 80% disk usage it targets 60%,
 protecting live mounts, blank images, and snapshots.
 

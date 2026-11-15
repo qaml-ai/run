@@ -70,22 +70,14 @@ func TestColdMountPromotesPristineDisk(t *testing.T) {
 	}
 	id, _ := recordColdRoot(t, m, tree, disk)
 
-	entered, resume := make(chan struct{}), make(chan struct{})
-	t.Cleanup(func() { close(resume) })
-	m.syncRoot = func(f *os.File) error {
-		close(entered)
-		<-resume
-		return f.Sync()
-	}
 	first, err := m.Mount(t.Context(), coldRequest(tree, "first"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-entered
 	if first.Warm || first.Root != id {
 		t.Fatalf("first mount = %+v", first)
 	}
-	requireMissing(t, m.image(id))
+	requireMissing(t, filepath.Join(filepath.Dir(first.Dest), pristineImage))
 	got, err := os.ReadFile(first.Dest)
 	if err != nil || !bytes.Equal(got, disk) {
 		t.Fatalf("cold disk differs from root, read error = %v", err)
@@ -98,9 +90,6 @@ func TestColdMountPromotesPristineDisk(t *testing.T) {
 		t.Fatalf("write first session: %v\n%s", err, out)
 	}
 
-	resume <- struct{}{}
-	<-first.promotionDone
-	requireMissing(t, filepath.Join(filepath.Dir(first.Dest), pristineImage))
 	second, err := m.Mount(t.Context(), coldRequest(tree, "second"))
 	if err != nil {
 		t.Fatal(err)
@@ -116,51 +105,101 @@ func TestColdMountPromotesPristineDisk(t *testing.T) {
 	}
 }
 
-func TestColdMountRecoveryDiscardsUnfinishedDisk(t *testing.T) {
+func TestColdMountChunkOffsets(t *testing.T) {
 	m, tree := unit3(t)
-	disk := make([]byte, root.ChunkSize+512)
-	disk[root.ChunkSize] = 42
+	disk := make([]byte, 2*root.ChunkSize+512)
+	disk[0] = 17
+	disk[2*root.ChunkSize] = 42
+	disk[len(disk)-1] = 99
 	id, _ := recordColdRoot(t, m, tree, disk)
-
-	entered, resume := make(chan struct{}), make(chan struct{})
-	t.Cleanup(func() { close(resume) })
-	m.syncRoot = func(*os.File) error {
-		close(entered)
-		<-resume
-		return errors.New("injected sync failure")
-	}
-	v, err := m.Mount(t.Context(), coldRequest(tree, "old-boot"))
+	v, err := m.Mount(t.Context(), coldRequest(tree, "offsets"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-entered
-	requireMissing(t, m.image(id))
-	got, err := os.ReadFile(v.Dest)
-	if err != nil || !bytes.Equal(got, disk) {
-		t.Fatalf("sparse disk with partial tail differs from root, read error = %v", err)
+	for _, path := range []string{m.image(id), v.Dest} {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, disk) {
+			t.Fatalf("sparse disk with partial tail differs from root at %s, read error = %v", path, err)
+		}
 	}
-	stage := filepath.Join(filepath.Dir(v.Dest), pristineImage)
-	if _, err := os.Stat(stage); err != nil {
+}
+
+func TestColdMountRecoveryDiscardsUnfinishedDisk(t *testing.T) {
+	m, tree := unit3(t)
+	disk := make([]byte, root.ChunkSize)
+	disk[0] = 42
+	id, _ := recordColdRoot(t, m, tree, disk)
+
+	// A crash before sync completes leaves a session marker and staging image.
+	dir := filepath.Join(m.Data, "mounts", "interrupted")
+	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-
-	// Reopen against the disk state left by a crash while the sync is pending.
+	if err := os.WriteFile(filepath.Join(dir, "session"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, pristineImage), disk[:512], 0600); err != nil {
+		t.Fatal(err)
+	}
 	recovered, err := New(m.Config, m.Store, m.Refs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer recovered.Close()
-	requireMissing(t, stage)
+	requireMissing(t, dir)
 	requireMissing(t, m.image(id))
-	// Old-boot sessions are released by computehost after registration fences them.
-	if _, err := recovered.Release(context.Background(), v.JobID); err != nil {
+}
+
+type chunkGetHook struct {
+	store.Store
+	key    string
+	before func() error
+}
+
+func (s chunkGetHook) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == s.key {
+		if err := s.before(); err != nil {
+			return nil, err
+		}
+	}
+	return s.Store.Get(ctx, key)
+}
+
+func TestColdMountKeepsConcurrentPromotion(t *testing.T) {
+	m, tree := unit3(t)
+	disk := make([]byte, root.ChunkSize)
+	disk[0] = 17
+	id, r := recordColdRoot(t, m, tree, disk)
+
+	// Publish a competing image after the mount has observed the miss.
+	winner := filepath.Join(t.TempDir(), "winner.img")
+	if err := os.WriteFile(winner, disk, 0600); err != nil {
 		t.Fatal(err)
 	}
-	requireMissing(t, filepath.Dir(v.Dest))
-
-	resume <- struct{}{}
-	<-v.promotionDone
-	requireMissing(t, m.image(id))
+	m.Store = chunkGetHook{Store: m.Store, key: "l/c/" + r.Chunks["0"], before: func() error {
+		return os.Link(winner, m.image(id))
+	}}
+	v, err := m.Mount(t.Context(), coldRequest(tree, "race"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMissing(t, filepath.Join(filepath.Dir(v.Dest), pristineImage))
+	winnerInfo, err := os.Stat(winner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotedInfo, err := os.Stat(m.image(id))
+	if err != nil || !os.SameFile(winnerInfo, promotedInfo) {
+		t.Fatalf("winning image was replaced, stat error = %v", err)
+	}
+	sessionInfo, err := os.Stat(v.Dest)
+	if err != nil || os.SameFile(winnerInfo, sessionInfo) {
+		t.Fatalf("expected a separate session disk, stat error = %v", err)
+	}
+	got, err := os.ReadFile(v.Dest)
+	if err != nil || !bytes.Equal(got, disk) {
+		t.Fatalf("session disk differs from winning image, read error = %v", err)
+	}
 }
 
 func TestColdMountRejectsCorruptChunk(t *testing.T) {

@@ -36,19 +36,17 @@ type Config struct {
 type Manager struct {
 	pins map[string]map[string]bool
 	Config
-	Store           store.Store
-	Refs            refs.Repository
-	mu              sync.Mutex
-	mounts          map[string]*Mount
-	stop            chan struct{}
-	sweepMu         sync.Mutex
-	baselineSlot    chan struct{}
-	baselineWork    sync.WaitGroup
-	materializeWork sync.WaitGroup
-	syncRoot        func(*os.File) error
-	baselineCtx     context.Context
-	baselineCancel  context.CancelFunc
-	baselineBytes   int64 // Reserved logical bytes, guarded by mu.
+	Store          store.Store
+	Refs           refs.Repository
+	mu             sync.Mutex
+	mounts         map[string]*Mount
+	stop           chan struct{}
+	sweepMu        sync.Mutex
+	baselineSlot   chan struct{}
+	baselineWork   sync.WaitGroup
+	baselineCtx    context.Context
+	baselineCancel context.CancelFunc
+	baselineBytes  int64 // Reserved logical bytes, guarded by mu.
 }
 type Request struct {
 	JobID   string      `json:"jobId"`
@@ -70,7 +68,6 @@ type Mount struct {
 	Snapshot      int
 	Promoted      bool
 	needsBaseline bool
-	promotionDone <-chan struct{}
 }
 
 func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
@@ -128,7 +125,7 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
-	m := &Manager{Config: c, Store: s, syncRoot: (*os.File).Sync, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
+	m := &Manager{Config: c, Store: s, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
 	if err := m.recoverBaselines(); err != nil {
 		return nil, err
 	}
@@ -218,9 +215,6 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	v.Image = v.Dest
 	defer func() {
 		if err != nil {
-			if v.promotionDone != nil {
-				<-v.promotionDone
-			}
 			_ = os.RemoveAll(dir)
 		}
 	}()
@@ -267,17 +261,12 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 const pristineImage = "root.img"
 
 func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err error) {
-	job, id := v.JobID, v.Root
 	var bytesWritten atomic.Int64
-	var getMs float64
-	logResult := func(syncMs, promoteMs float64, err error) {
-		slog.Info("compute_materialize", "job", job, "root", id, "chunks", len(r.Chunks),
-			"bytes", bytesWritten.Load(), "getMs", getMs, "syncMs", syncMs, "promoteMs", promoteMs, "error", err)
-	}
+	var getMs, syncMs, linkMs, cloneMs float64
 	defer func() {
-		if err != nil {
-			logResult(0, 0, err)
-		}
+		slog.Info("compute_materialize", "job", v.JobID, "root", v.Root, "chunks", len(r.Chunks),
+			"bytes", bytesWritten.Load(), "getMs", getMs, "syncMs", syncMs, "linkMs", linkMs,
+			"cloneMs", cloneMs, "error", err)
 	}()
 
 	path := filepath.Join(filepath.Dir(v.Dest), pristineImage)
@@ -286,8 +275,13 @@ func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err e
 		return err
 	}
 	defer func() {
+		if f != nil {
+			err = errors.Join(err, f.Close())
+		}
 		if err != nil {
-			err = errors.Join(err, f.Close(), os.Remove(path))
+			if removeErr := os.Remove(path); !os.IsNotExist(removeErr) {
+				err = errors.Join(err, removeErr)
+			}
 		}
 	}()
 	if err := f.Truncate(r.VirtualSize); err != nil {
@@ -320,41 +314,31 @@ func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// The VM writes only to this clone. Sync and publication belong to the pristine file.
-	if err := cloneImage(path, v.Dest, false); err != nil {
+	start = time.Now()
+	err = f.Sync()
+	syncMs = ms(start)
+	err = errors.Join(err, f.Close())
+	f = nil
+	if err != nil {
 		return err
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	select {
-	case <-m.stop:
-		return context.Canceled
-	default:
+	base := m.image(v.Root)
+	start = time.Now()
+	err = os.Link(path, base)
+	linkMs = ms(start)
+	if err != nil && !os.IsExist(err) {
+		return err
 	}
-	done := make(chan struct{})
-	v.promotionDone = done
-	m.materializeWork.Add(1)
-	go func() {
-		defer m.materializeWork.Done()
-		defer close(done)
-		start := time.Now()
-		err := m.syncRoot(f)
-		syncMs := ms(start)
-		err = errors.Join(err, f.Close())
-		var promoteMs float64
-		if err == nil {
-			start := time.Now()
-			err = m.promote(path, id)
-			promoteMs = ms(start)
-		}
-		removeErr := os.Remove(path)
-		if !os.IsNotExist(removeErr) {
-			err = errors.Join(err, removeErr)
-		}
-		logResult(syncMs, promoteMs, err)
-	}()
-	return nil
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+
+	// The promoted image is immutable. Only the session clone goes to the VM.
+	start = time.Now()
+	err = cloneImage(base, v.Dest, false)
+	cloneMs = ms(start)
+	return err
 }
 func (m *Manager) promote(src, id string) error {
 	dst := m.image(id)
@@ -404,9 +388,6 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 	if e := m.recoverBaseline(v, false); e != nil {
 		return false, e
 	}
-	if v.promotionDone != nil {
-		<-v.promotionDone
-	}
 	if e := os.RemoveAll(filepath.Dir(v.Dest)); e != nil {
 		return false, e
 	}
@@ -422,9 +403,9 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 }
 
 func (m *Manager) Close() {
+	close(m.stop)
 	m.StopBaselines()
 	m.mu.Lock()
-	close(m.stop)
 	ids := make([]string, 0, len(m.mounts))
 	for id := range m.mounts {
 		ids = append(ids, id)
@@ -440,7 +421,6 @@ func (m *Manager) Close() {
 		}
 	}
 	m.baselineWork.Wait()
-	m.materializeWork.Wait()
 }
 
 func (m *Manager) lookup(id string) *Mount { m.mu.Lock(); defer m.mu.Unlock(); return m.mounts[id] }
