@@ -329,19 +329,41 @@ func (s *Store) updateTimed(ctx context.Context, class writeClass, lineage, name
 // withStampCheck adds the stamp fence to an existing-item condition. DynamoDB rejects redundant parentheses, so a
 // condition is wrapped only when it has a top-level OR (where the added AND would otherwise bind to one side).
 func withStampCheck(condition string) string {
-	depth := 0
-	for i := 0; i < len(condition); i++ {
-		switch condition[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		if depth == 0 && strings.HasPrefix(condition[i:], " OR ") {
-			return "(" + condition + ") AND attribute_not_exists(#deleting)"
-		}
+	if hasTopLevelOr(condition) {
+		return "(" + condition + ") AND attribute_not_exists(#deleting)"
 	}
 	return condition + " AND attribute_not_exists(#deleting)"
+}
+
+// hasTopLevelOr finds the OR keyword (any case, as a whole word) outside parentheses. Placeholders (#name, :value)
+// are skipped whole, so #ORIGIN or :or never count.
+func hasTopLevelOr(condition string) bool {
+	word := func(c byte) bool {
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	depth := 0
+	for i := 0; i < len(condition); i++ {
+		switch c := condition[i]; {
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == '#' || c == ':':
+			for i+1 < len(condition) && word(condition[i+1]) {
+				i++
+			}
+		case word(c):
+			j := i
+			for j < len(condition) && word(condition[j]) {
+				j++
+			}
+			if depth == 0 && strings.EqualFold(condition[i:j], "OR") {
+				return true
+			}
+			i = j - 1
+		}
+	}
+	return false
 }
 
 func targetUpdate(t Target, owner *string, expiresAt *int64, now int64, create bool) (string, attributes) {

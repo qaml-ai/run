@@ -410,11 +410,18 @@ func TestCasConditionFailure(t *testing.T) {
 }
 
 func TestWithStampCheck(t *testing.T) {
+	const fence = " AND attribute_not_exists(#deleting)"
 	for in, want := range map[string]string{
-		live:                               live + " AND attribute_not_exists(#deleting)",
-		"#version = :current AND " + live:  "#version = :current AND " + live + " AND attribute_not_exists(#deleting)",
-		"#a = :a OR #b = :b":               "(#a = :a OR #b = :b) AND attribute_not_exists(#deleting)",
-		"(#a = :a OR #b = :b) AND #c = :c": "(#a = :a OR #b = :b) AND #c = :c AND attribute_not_exists(#deleting)",
+		live:                               live + fence,
+		"#version = :current AND " + live:  "#version = :current AND " + live + fence,
+		"(#a = :a OR #b = :b) AND #c = :c": "(#a = :a OR #b = :b) AND #c = :c" + fence,
+		"#a = :a AND #b = :b OR #c = :c":   "(#a = :a AND #b = :b OR #c = :c)" + fence,
+		"#a = :a OR #b = :b":               "(#a = :a OR #b = :b)" + fence,
+		"#a = :a or #b = :b":               "(#a = :a or #b = :b)" + fence,
+		"#ORIGIN = :OR AND #Or = :origin":  "#ORIGIN = :OR AND #Or = :origin" + fence,
+		"(#a = :a AND #b = :b)":            "(#a = :a AND #b = :b)" + fence,
+		"attribute_exists(#ORDER)":         "attribute_exists(#ORDER)" + fence,
+		"(#a = :a)OR(#b = :b)":             "((#a = :a)OR(#b = :b))" + fence,
 	} {
 		if got := withStampCheck(in); got != want {
 			t.Errorf("withStampCheck(%q) = %q, want %q", in, got, want)
