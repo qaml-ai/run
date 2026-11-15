@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -50,4 +51,8 @@ func (s *treePuts) Put(ctx context.Context, key string, b []byte) error {
 	s.keys[key] = true
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *treePuts) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	return store.OpenReader(ctx, s.Store, key)
 }

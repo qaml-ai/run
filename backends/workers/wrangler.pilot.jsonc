@@ -193,7 +193,7 @@
     "CAMELFS_URL": "https://fs.camelai.dev",
     "CAMELFS_COMPUTE": "1",
     "CAMELFS_POOLS": "{\"default\":\"test\"}",
-    "GUEST_IMAGE_SHA256": "b349e90c1ff2e860408ca4ebfe7236292ab167983c95fbcdd253ea8893f04083",
+    "GUEST_IMAGE_SHA256": "4223dffccd338a69feb48fe2b139ff271738f5d54e097e63a23e35d086366089",
     "AGENT_OPEN_SIGNUP": "false",
     "AGENT_MAX_AGENTS": "2100",
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",

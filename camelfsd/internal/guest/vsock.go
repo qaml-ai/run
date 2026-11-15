@@ -15,6 +15,7 @@ import (
 type transport interface {
 	io.ReadWriteCloser
 	SetDeadline(time.Time) error
+	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
 }
 
