@@ -334,6 +334,10 @@ func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err e
 	if err != nil && !os.IsExist(err) {
 		return err
 	}
+	// Persist the published name (as image downloads do): without it a crash can drop the link and cost a re-fetch.
+	if err := store.SyncDir(filepath.Dir(base)); err != nil {
+		return err
+	}
 	if err := os.Remove(path); err != nil {
 		return err
 	}
