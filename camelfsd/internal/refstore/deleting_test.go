@@ -82,6 +82,26 @@ func TestDeletingRefWrites(t *testing.T) {
 		}
 	})
 
+	t.Run("clear_refuses_a_live_ref_without_this_deletion_stamp", func(t *testing.T) {
+		s, _, setDeletion := deletionStore(t)
+		ctx := t.Context()
+		for _, name := range []string{"stamped", "missed"} {
+			must(t, s.Create(ctx, lineage, name, target, nil, nil))
+		}
+		setDeletion("X")
+		must(t, s.StampDeleting(ctx, lineage, "X"))
+		// Break the invariant on purpose: one live ref loses its stamp.
+		must(t, s.removeStamp(ctx, lineage, "missed", "X"))
+		if err := s.ClearDeleting(ctx, lineage, "X"); err == nil {
+			t.Fatal("ClearDeleting cleared a lineage with a live unstamped ref")
+		}
+		item, err := s.readItem(ctx, lineage, "missed")
+		must(t, err)
+		if item["version"] == nil {
+			t.Fatalf("unstamped ref was cleared: %v", item)
+		}
+	})
+
 	t.Run("8_heal_cannot_remove_newer_stamp", func(t *testing.T) {
 		s, _, setDeletion := deletionStore(t)
 		ctx := t.Context()

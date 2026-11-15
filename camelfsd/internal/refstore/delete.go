@@ -3,6 +3,7 @@ package refstore
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -182,9 +183,29 @@ func (s *Store) ClearDeleting(ctx context.Context, lineage, id string) error {
 		if item["version"] == nil {
 			return true, nil
 		}
-		err := s.changeStampedRef(ctx, lineage, item["name"].(*types.AttributeValueMemberS).Value, id, removeRef)
+		// Every live ref was stamped before the held check passed, and nothing can unstamp or create one now. A live
+		// ref without this deletion's stamp means that invariant broke: stop rather than tombstone a lineage over it.
+		name := item["name"].(*types.AttributeValueMemberS).Value
+		if stamp, ok := item["deleting"].(*types.AttributeValueMemberS); !ok || stamp.Value != id {
+			return false, fmt.Errorf("lineage %s ref %s is live without deletion %s's stamp", lineage, name, id)
+		}
+		_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: s.table, Key: key(lineage, name),
+			ConditionExpression:       aws.String("#deleting = :id"),
+			UpdateExpression:          aws.String(removeRef),
+			ExpressionAttributeNames:  stampedNames(removeRef),
+			ExpressionAttributeValues: attributes{":id": str(id)},
+		})
 		return err == nil, err
 	})
+}
+
+func stampedNames(update string) map[string]string {
+	names := map[string]string{"#deleting": "deleting"}
+	for _, alias := range attributeAlias.FindAllString(update, -1) {
+		names[alias] = alias[1:]
+	}
+	return names
 }
 
 func (s *Store) changeStampedRef(ctx context.Context, lineage, name, id, update string) error {
