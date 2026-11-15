@@ -295,6 +295,11 @@ func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err e
 	start := time.Now()
 	err = store.Parallel(ctx, store.Depth(m.Store), keys, func(key string) error {
 		hash := r.Chunks[key]
+		// root.Decode validates offsets; a malformed key must still never become a write at offset 0.
+		off, err := strconv.ParseInt(key, 10, 64)
+		if err != nil || off < 0 || off >= r.VirtualSize || off%root.ChunkSize != 0 {
+			return fmt.Errorf("root %s: invalid chunk offset %q", v.Root, key)
+		}
 		b, err := source.Get(ctx, "c/"+hash)
 		if err != nil {
 			return fmt.Errorf("fetch chunk %s: %w", hash, err)
@@ -302,7 +307,6 @@ func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err e
 		if int64(len(b)) != root.ChunkSize || root.Hash(b) != hash {
 			return fmt.Errorf("chunk %s: size or hash mismatch", hash)
 		}
-		off, _ := strconv.ParseInt(key, 10, 64)
 		n, err := f.WriteAt(b[:min(root.ChunkSize, r.VirtualSize-off)], off)
 		bytesWritten.Add(int64(n))
 		return err

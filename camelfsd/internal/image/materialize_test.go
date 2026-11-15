@@ -229,3 +229,25 @@ func TestColdMountRejectsCorruptChunk(t *testing.T) {
 		})
 	}
 }
+
+func TestColdMountRejectsMalformedChunkOffset(t *testing.T) {
+	m, _ := unit3(t)
+	m.Store = store.WithDepth(store.Local{Dir: t.TempDir()}, 2)
+	hash := root.Hash(make([]byte, root.ChunkSize))
+	for _, key := range []string{"abc", "-262144", "524288", "100", ""} {
+		dir := filepath.Join(m.Data, "mounts", "bad-offset")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		v := &Mount{Request: Request{JobID: "bad-offset", Lineage: "l"}, Root: strings.Repeat("a", 64), Dest: filepath.Join(dir, "image.img")}
+		r := root.Root{V: 1, FSType: "ext4", VirtualSize: 2 * root.ChunkSize, Chunks: map[string]string{key: hash}}
+		if err := m.materialize(t.Context(), v, r); err == nil || !strings.Contains(err.Error(), "invalid chunk offset") {
+			t.Fatalf("key %q: materialize error = %v", key, err)
+		}
+		requireMissing(t, filepath.Join(dir, pristineImage))
+		requireMissing(t, m.image(v.Root))
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
