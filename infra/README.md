@@ -50,8 +50,7 @@ history has the cutover runbook.
 - `infra/ecs-deploy.sh`: build, push and deploy (see "Deploying changes").
 - `infra/apply.sh`: the guarded Terraform apply: production's prod.tfvars, a saved plan listing every change, no delete
   or replacement unless named in `ALLOW_DESTROY`, applied only after you type `apply` (`PLAN_ONLY=1` stops at the plan).
-- `infra/job-hosts/apply.sh`: the same guarded apply for the job-host pools' own root module and state
-  (`infra/job-hosts/README.md`).
+- `infra/job-hosts/kvm/`: setup of a camelFS compute host (`infra/job-hosts/README.md`).
 - `infra/camelfs/apply.sh`, `deploy.sh`, `jwks.sh`, `aop.sh`, `notify-key.sh`: the camelFS service (`camelfsd api` on
   Fargate, the DynamoDB tables, the objects bucket, the token keys), its own root module and state
   (`infra/camelfs/README.md`).

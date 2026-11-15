@@ -100,8 +100,8 @@ func (r *Repository) StageTreeParent(tree, parent string) {
 }
 
 type FlushTiming struct {
-	Put, Cache time.Duration
-	PutKeys    int
+	Put, UploadCache time.Duration
+	PutKeys          int
 }
 
 func (r *Repository) Flush(ctx context.Context) error {
@@ -141,7 +141,7 @@ func (r *Repository) FlushTimed(ctx context.Context, timing *FlushTiming) error 
 	}
 
 	start = time.Now()
-	defer func() { timing.Cache = time.Since(start) }()
+	defer func() { timing.UploadCache = time.Since(start) }()
 	// Import can queue reused trees. Resolve those before opening the
 	// transaction, and include any recovered membership in that transaction.
 	var memberships []membership

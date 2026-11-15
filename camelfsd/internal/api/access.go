@@ -177,12 +177,12 @@ func loggedAccess(w http.ResponseWriter, r *http.Request, route, lineage string,
 		ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 		if timing != nil {
 			phases = fmt.Sprintf(" prechecksMs=%.3f readMs=%.3f readWaves=%d buildMs=%.3f putMs=%.3f putKeys=%d cacheMs=%.3f",
-				ms(timing.prechecks), ms(timing.read), timing.readWaves, ms(timing.build), ms(timing.Put), timing.PutKeys, ms(timing.Cache))
+				ms(timing.prechecks), ms(timing.read), timing.readWaves, ms(timing.build), ms(timing.Put), timing.PutKeys, ms(timing.UploadCache))
 		}
 		if moves != nil {
 			phases = fmt.Sprintf(" objectsMs=%.3f putKeys=%d buildMs=%.3f ddbMs=%.3f ddbRetries=%d headMs=%.3f readTreeMs=%.3f diffMs=%.3f cacheMs=%.3f usageMs=%.3f casMs=%.3f",
 				ms(moves.objects.Put), moves.objects.PutKeys, ms(moves.build), ms(moves.ddb), moves.retries,
-				ms(moves.head), ms(moves.treeRead.read), ms(moves.diff), ms(moves.objects.Cache), ms(moves.usage), ms(moves.cas))
+				ms(moves.head), ms(moves.treeRead.read), ms(moves.diff), ms(moves.objects.UploadCache), ms(moves.usage), ms(moves.cas))
 		}
 		if reads != nil {
 			treeHits, treeMisses := reads.trees.hits.Load(), reads.trees.misses.Load()

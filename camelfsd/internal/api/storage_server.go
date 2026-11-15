@@ -21,7 +21,7 @@ type StorageServer struct {
 	refs        *refstore.Store
 	marksTable  string
 	lineages    *lineageStore
-	repo        func() *objects.Repository
+	repo        *objects.Repository
 	version     string
 	authorize   func(http.ResponseWriter, *http.Request) *http.Request
 	idemLocksMu sync.Mutex
@@ -30,7 +30,7 @@ type StorageServer struct {
 
 func NewStorageServer(repo *objects.Repository, version string, keys *auth.Keys) *StorageServer {
 	return &StorageServer{
-		repo:    func() *objects.Repository { return repo },
+		repo:    repo,
 		version: version,
 		authorize: func(w http.ResponseWriter, r *http.Request) *http.Request {
 			return authorizeToken(w, r, keys)
@@ -44,7 +44,7 @@ func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineag
 		now = time.Now
 	}
 	s.lineages = &lineageStore{client: client, table: aws.String(lineagesTable), now: now}
-	s.refs = refstore.New(client, refsTable, now, commitParents{s.repo()})
+	s.refs = refstore.New(client, refsTable, now, commitParents{s.repo})
 	s.refs.GuardLineages(lineagesTable)
 	s.marksTable = "marks"
 	if len(marksTable) != 0 {
@@ -54,16 +54,8 @@ func (s *StorageServer) ConfigureRefs(client *dynamodb.Client, refsTable, lineag
 
 func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
-	// /v1/health is the target-group probe; /v0/health stays until the probes move (expand/contract).
-	case r.Method == http.MethodGet && (r.URL.Path == "/v1/health" || r.URL.Path == "/v0/health"):
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/health":
 		jsonReply(w, http.StatusOK, map[string]string{"version": s.version})
-	case r.Method == http.MethodGet && r.URL.Path == "/v0/stats":
-		r = s.authorize(w, r)
-		if r == nil {
-			return
-		}
-		stats := s.repo().DB.DB.Stats()
-		jsonReply(w, http.StatusOK, map[string]int{"cacheConnections": stats.OpenConnections, "cacheInUse": stats.InUse})
 	case r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/"):
 		route := "/v1/vms"
 		if s.compute != nil {
@@ -76,13 +68,13 @@ func (s *StorageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/v1/lineages/"):
 		s.loggedStorage(w, r)
 	default:
-		http.NotFound(w, r)
+		authFail(w, http.StatusNotFound, "not_found", "route not found")
 	}
 }
 
 func (s *StorageServer) serveCompute(w http.ResponseWriter, r *http.Request) {
 	if s.compute == nil {
-		http.NotFound(w, r)
+		authFail(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	}
 	if r = s.authorize(w, r); r != nil {

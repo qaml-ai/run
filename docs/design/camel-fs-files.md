@@ -7,7 +7,7 @@ no back-compat, and migration is out of scope except for one note at the end.
 
 **Decided (Miguel, 2026-11-13 ~17:00): option C.** camel-fs is one AWS service, `camelfsd api`, a stateless
 Go tier in us-west-2 holding refs, leases and fences as DynamoDB conditional writes and the objects in DynamoDB and
-S3. Hosts run `camelfsd host`, and the runtime holds no ref. `RepoDO`, the tunnel and the shared bearer go.
+S3. Compute hosts run `camelfsd host --compute` ([§1](camel-fs-compute.md#1-one-host-process)), and the runtime holds no ref. `RepoDO`, the tunnel and the shared bearer go.
 §6 has the state split and §9 the contract; the sections in between say "the tier" where they said "the repo
 object".
 
@@ -542,7 +542,7 @@ path)` before any lookup by hash). camel-bots' move off project snapshots is mig
 This section is the build contract for the lanes working in parallel: the service (`proto-block`: the tier and its
 `refs` package), the runtime's files API and tools (`wf-repos`), and jobs and hosts (`wf-delegation`). Under option C
 (§6) it is the exact HTTP API of `camelfsd api`, a stateless Go tier behind an ALB in us-west-2. The
-callers are the runtime (Workers and Node, over HTTPS), the hosts (`camelfsd host` and `jobhost`, in-VPC) and,
+callers are the runtime (Workers and Node, over HTTPS), the hosts (`camelfsd host --compute`, in-VPC) and,
 from build step 5, customers on the public `/v1/repos`. Until step 1 lands, the same routes are served by the m8id's
 daemon behind the `CAMELFS` tunnel with the shared bearer (L30). Everything else about a host's daemon (mount, fork,
 release, the cache, the lazy origin, hydration) is unchanged and stays on the host's Unix socket.

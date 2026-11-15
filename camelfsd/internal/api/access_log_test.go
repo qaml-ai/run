@@ -86,7 +86,7 @@ func TestRefMoveAccessLogPhases(t *testing.T) {
 		timing.head = 5 * time.Millisecond
 		timing.treeRead.read = 6 * time.Millisecond
 		timing.diff = 7 * time.Millisecond
-		timing.objects.Cache = 8 * time.Millisecond
+		timing.objects.UploadCache = 8 * time.Millisecond
 		timing.usage = 9 * time.Millisecond
 		timing.cas = 10 * time.Millisecond
 		w.WriteHeader(http.StatusCreated)
@@ -101,7 +101,7 @@ func TestReadAccessLogPhases(t *testing.T) {
 	s := storageServer(t, store.Local{Dir: t.TempDir()})
 	blob := put(t, s, "l", "abc")
 	tree := commit(t, s, "l", "", []change{{Path: "nested/file", Blob: blob}})["tree"].(string)
-	if _, err := s.repository().DB.DB.Exec("DELETE FROM objects; DELETE FROM tree_sizes"); err != nil {
+	if _, err := s.repo.DB.DB.Exec("DELETE FROM objects; DELETE FROM tree_sizes"); err != nil {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer

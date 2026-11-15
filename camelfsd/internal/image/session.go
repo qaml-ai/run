@@ -26,6 +26,9 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 		if _, err := os.Stat(filepath.Join(dir, "session")); err != nil {
 			return fmt.Errorf("mount %s requires storage host cleanup: %w", id, err)
 		}
+		if err := os.Remove(filepath.Join(dir, pristineImage)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
 		if errors.Is(err, os.ErrNotExist) {
 			// No mount was handed to Firecracker before the state was saved.
@@ -40,7 +43,7 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 		var state struct {
 			JobID, Lineage, Root, Tree, Dest, Image, State, DM string
 			Fence                                              *refs.Fence
-			Apply                                              *Apply
+			Apply                                              *struct{ Files int }
 			Parent                                             refs.Value
 			Snapshot                                           int
 			Promoted, Warm                                     bool
@@ -49,11 +52,11 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 			return err
 		}
 		v := Mount{
-			Request: Request{JobID: state.JobID, Lineage: state.Lineage, Root: state.Root, Tree: state.Tree, Fence: state.Fence, Session: true},
-			Dest:    state.Dest, Image: state.Image, State: state.State, DM: state.DM, Parent: state.Parent,
+			Request: Request{JobID: state.JobID, Lineage: state.Lineage, Tree: state.Tree, Fence: state.Fence},
+			Dest:    state.Dest, Image: state.Image, State: state.State, Root: state.Root, Parent: state.Parent,
 			Snapshot: state.Snapshot, Promoted: state.Promoted, Warm: state.Warm, mu: new(sync.Mutex),
 		}
-		if v.JobID != id || v.Dest != filepath.Join(dir, "image.img") || v.Image != v.Dest || v.DM != "" {
+		if v.JobID != id || v.Dest != filepath.Join(dir, "image.img") || v.Image != v.Dest || state.DM != "" || !validMountFence(v.Fence) {
 			return fmt.Errorf("invalid session mount %s", id)
 		}
 		r, err := m.mountRoot(context.Background(), v.Lineage, v.Root)
@@ -64,7 +67,7 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 			return err
 		}
 		v.needsBaseline = r.Tree != v.Tree && (state.Apply == nil || state.Apply.Files > 0)
-		m.protect(id, r, v.Root)
+		m.protect(id, v.Root)
 		files, err := os.ReadDir(dir)
 		if err != nil {
 			return err
@@ -93,22 +96,14 @@ func (m *Manager) SessionStreams(ctx context.Context, id, path string, uid int, 
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if !v.Session {
-		return errors.New("expected a session mount")
-	}
 	if v.streams != nil {
 		v.streams.close()
 	}
-	v.Vsock = path
 	r, err := m.mountRoot(ctx, v.Lineage, v.Root)
 	if err != nil {
 		return err
 	}
-	return m.listenStreams(ctx, v, r.Tree, apply, uid)
-}
-
-func (m *Manager) SessionCheckpoint(ctx context.Context, id string, baseline bool, q CheckpointRequest, publish func(context.Context, Checkpoint) error) (Checkpoint, error) {
-	return m.streamCheckpoint(ctx, id, 0, baseline, publish, q)
+	return m.listenStreams(ctx, v, path, r.Tree, apply, uid)
 }
 
 // AdoptCheckpoint installs an already-published checkpoint after an
@@ -120,11 +115,10 @@ func (m *Manager) AdoptCheckpoint(ctx context.Context, id, commit, tree, root st
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	r, err := m.mountRoot(ctx, v.Lineage, root)
-	if err != nil {
+	if _, err := m.mountRoot(ctx, v.Lineage, root); err != nil {
 		return err
 	}
-	m.protect(id, r, root)
+	m.protect(id, root)
 	v.Parent.Commit, v.Parent.Tree, v.Parent.Root = commit, tree, root
 	v.Tree, v.Root, v.Promoted = tree, root, true
 	return m.save(v)

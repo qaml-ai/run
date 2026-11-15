@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func DMPrefix(data string) string {
+func dmPrefix(data string) string {
 	absolute, _ := filepath.Abs(data)
 	sum := sha256.Sum256([]byte(absolute))
 	return fmt.Sprintf("camelfs-%x-", sum[:4])
@@ -59,10 +59,10 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 		if e = json.Unmarshal(b, &v); e != nil {
 			return e
 		}
-		if v.DM != "" && v.DM != DMPrefix(data)+filepath.Base(filepath.Dir(p)) {
+		if v.DM != "" && v.DM != dmPrefix(data)+filepath.Base(filepath.Dir(p)) {
 			return fmt.Errorf("foreign dm device")
 		}
-		if v.OriginDM != "" && v.OriginDM != DMPrefix(data)+filepath.Base(filepath.Dir(p))+"-o" {
+		if v.OriginDM != "" && v.OriginDM != dmPrefix(data)+filepath.Base(filepath.Dir(p))+"-o" {
 			return fmt.Errorf("foreign origin device")
 		}
 		for _, loop := range []string{v.CowLoop, v.DestLoop} {
@@ -100,10 +100,7 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 		}
 	}
 	dirs, e := os.ReadDir(filepath.Join(data, "mounts"))
-	if os.IsNotExist(e) {
-		return nil
-	}
-	if e != nil {
+	if e != nil && !os.IsNotExist(e) {
 		return e
 	}
 	for _, d := range dirs {
@@ -111,7 +108,7 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 			return e
 		}
 	}
-	return nil
+	return os.RemoveAll(filepath.Join(data, "cache"))
 }
 func deviceNumber(v, prefix string) bool {
 	tail := strings.TrimPrefix(v, prefix)

@@ -377,11 +377,12 @@ test("Pi shared commits read their documents again when another commit landed wh
     };
     retired = commitWrites(first, [{ type: "document.retire", id }], context);
     await waiting(1);
-    again = commitWrites(second, [{ type: "document.retire", id }], context);
+    // Its rejection is expected, and can come before `retired` is awaited: assert on it now, so it is never unhandled.
+    again = assert.rejects(commitWrites(second, [{ type: "document.retire", id }], context), /Document \d+ is retired/);
     await waiting(2);
   } finally { await client.query("rollback"); client.release(); }
   await retired!;
-  await assert.rejects(again!, /Document \d+ is retired/);
+  await again!;
   await first.close(context);
   await second.close(context);
 });

@@ -260,6 +260,15 @@ func (l Local) Put(c context.Context, k string, b []byte) error {
 	}
 	return ioFailure(Atomic(path, b))
 }
+
+// SyncDir fsyncs a directory so a rename or link into it survives a crash.
+func SyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
+}
 func Atomic(p string, b []byte) error {
 	return atomicFile(p, b, os.Rename)
 }
@@ -449,7 +458,7 @@ func PutChunks(ctx context.Context, s Store, b map[string][]byte) (int, error) {
 	return n, e
 }
 
-const DefaultDepth = 64
+const DefaultDepth = 128
 
 // One shared budget covers foreground reads, prefetch, hydration and uploads.
 type limited struct {

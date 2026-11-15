@@ -13,25 +13,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/testguest"
-	"github.com/qaml-ai/run/camelfsd/internal/testutil"
 	"github.com/qaml-ai/run/camelfsd/internal/wire"
 )
 
 func baselineMount(t *testing.T, m *Manager, tree, job string) *Mount {
 	t.Helper()
-	v, err := m.Mount(t.Context(), Request{Session: true, Parent: strings.Repeat("a", 40),
-		Fence: &refs.Fence{Holder: "runtime", Epoch: 1}, Lineage: "l", Tree: tree, JobID: job,
-		Vsock: filepath.Join(testutil.SocketDir(t), "v")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return v
+	return mount3(t, m, tree, job)
 }
 
 func TestSessionBaseline(t *testing.T) {
@@ -42,7 +34,7 @@ func TestSessionBaseline(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, parent := unit3(t)
 			content := []byte("materialized file\n")
-			sha := fmtHash(content)
+			sha := sha256Hex(content)
 			_, err := m.objects("l").Upload(t.Context(), "l", sha, int64(len(content)), bytes.NewReader(content))
 			if err != nil {
 				t.Fatal(err)
@@ -53,18 +45,20 @@ func TestSessionBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			v := baselineMount(t, m, tree.Tree, "first")
-			if v.Root != "" || v.Apply == nil || v.Apply.Files != 1 {
+			if v.Root != "" || !m.NeedsBaseline(v.JobID) {
 				t.Fatalf("expected blank mount with apply delta: %+v", v)
 			}
 			dir := t.TempDir()
-			if err := testguest.Apply(v.Vsock, v.JobID, dir, filepath.Join(t.TempDir(), "index")); err != nil {
+			if err := testguest.Apply(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, dir, filepath.Join(t.TempDir(), "index")); err != nil {
 				t.Fatal(err)
 			}
 			// Populate the ext4 fixture from the applied file without a loop mount.
 			if out, err := exec.Command("debugfs", "-w", "-R", "write "+filepath.Join(dir, "hello")+" /hello", v.Image).CombinedOutput(); err != nil {
 				t.Fatalf("debugfs: %v %s", err, out)
 			}
-			guest := func(context.Context) error { return testguest.Baseline(v.Vsock, v.JobID, tree.Tree) }
+			guest := func(context.Context) error {
+				return testguest.Baseline(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, tree.Tree)
+			}
 			if name == "unchanged checkpoint" {
 				if !m.NeedsBaseline(v.JobID) {
 					t.Fatal("missing baseline was not detected")
@@ -136,9 +130,9 @@ func TestSessionBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			if name != "stop before publish" {
-				current, err := m.Status(t.Context(), v.JobID)
-				if err != nil || current.Root != id {
-					t.Fatalf("mount base was not updated: %+v %v", current, err)
+				current := m.lookup(v.JobID)
+				if current == nil || current.Root != id {
+					t.Fatalf("mount base was not updated: %+v", current)
 				}
 			}
 			assertNoBaseline := func(manager *Manager, id string) {
@@ -155,7 +149,7 @@ func TestSessionBaseline(t *testing.T) {
 				}
 			}
 			warm := baselineMount(t, m, tree.Tree, "second")
-			if !warm.Warm || warm.State != "warm" || warm.Apply != nil || warm.Root != id {
+			if !warm.Warm || warm.State != "warm" || warm.Root != id {
 				t.Fatalf("expected exact warm mount: %+v", warm)
 			}
 			assertNoBaseline(m, warm.JobID)
@@ -173,13 +167,13 @@ func TestSessionBaseline(t *testing.T) {
 			}
 			defer db.Close()
 			shared := m.Store.(*store.Uploaded).Store
-			other, err := New(Config{Data: otherData, VirtualSize: m.VirtualSize}, shared, cache.New(filepath.Join(otherData, "cache"), shared, 64), db)
+			other, err := New(Config{Data: otherData, VirtualSize: m.VirtualSize}, store.WithDepth(shared, 64), db)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer other.Close()
 			cold := baselineMount(t, other, tree.Tree, "other")
-			if cold.Warm || cold.State != "hydrated" || cold.Apply != nil || cold.Root != id {
+			if cold.Warm || cold.State != "hydrated" || cold.Root != id {
 				t.Fatalf("expected exact shared root materialization: %+v", cold)
 			}
 			assertNoBaseline(other, cold.JobID)
@@ -226,8 +220,13 @@ func TestBaselineDiskCapAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	var point Checkpoint
-	if _, err := m.uploadSnapshot(t.Context(), v.Request, base, snap.path(), tree,
-		[]chunk.Range{{Length: base.VirtualSize}}, &point); err != nil {
+	f, err := os.Open(snap.path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.uploadSnapshot(t.Context(), v.Lineage, v.Root, base, f, tree,
+		[]chunk.Range{{Length: base.VirtualSize}}, &point)
+	if err := errors.Join(err, f.Close()); err != nil {
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(baselineRecord{"l", tree, point.Root})
@@ -255,7 +254,7 @@ func TestBaselineDiskCapAndRecovery(t *testing.T) {
 func TestSessionBaselineFreezeTimeout(t *testing.T) {
 	m, parent := unit3(t)
 	content := []byte("file")
-	sha := fmtHash(content)
+	sha := sha256Hex(content)
 	if _, err := m.objects("l").Upload(t.Context(), "l", sha, int64(len(content)), bytes.NewReader(content)); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +269,7 @@ func TestSessionBaselineFreezeTimeout(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	defer slog.SetDefault(previous)
 	publish, discard := m.SessionBaseline(t.Context(), v.JobID, func(ctx context.Context) error {
-		c, err := (&net.Dialer{}).DialContext(ctx, "unix", v.Vsock+"_5200")
+		c, err := (&net.Dialer{}).DialContext(ctx, "unix", v.streams.paths[0])
 		if err != nil {
 			return err
 		}

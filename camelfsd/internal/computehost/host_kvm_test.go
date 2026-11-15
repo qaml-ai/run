@@ -25,7 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -350,7 +349,7 @@ func TestKVMComputeDaemonProcess(t *testing.T) {
 	db, err := refs.Open(filepath.Join(q.Data, "refs.db"))
 	must(err)
 	defer db.Close()
-	m, err := image.New(image.Config{Data: q.Data, RecoverSessions: true, VirtualSize: virtual}, local, cache.New(filepath.Join(q.Data, "cache"), local, depth), db)
+	m, err := image.New(image.Config{Data: q.Data, VirtualSize: virtual}, store.WithDepth(local, depth), db)
 	must(err)
 	defer m.Close()
 	// Enrollment is already persisted by the harness.

@@ -28,6 +28,8 @@ import type { Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 import { purgeStart } from "./account-purge.ts";
 
+export const COMPUTER_ATTACHED = "computer-attached";
+
 /** Erase a revoked account's journal only after the normal shutdown completed. */
 export async function purgeAccountDataImpl(this: AgentRuntime, invocation: AgentInvocation,
   tenant: string,
@@ -44,6 +46,7 @@ export async function purgeAccountDataImpl(this: AgentRuntime, invocation: Agent
     await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
     await this.closeWatchers(tenant, id);
     await this.ctx.storage.deleteAlarm();
+    await this.clearComputerAttached();
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.put("deleted", true);
   }
@@ -127,7 +130,7 @@ export async function armImpl(this: AgentRuntime, invocation: AgentInvocation,
         (child.background && child.status !== "running" && child.accepted && !child.notified && child.landedBy !== "wait"));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
-      config
+      config && await this.ctx.storage.get(COMPUTER_ATTACHED) !== false
         ? ((await new ComputerService(this.env, config.tenantId).nextDeadline(
             config.id, invocation,
           )) ?? Infinity)
@@ -216,6 +219,7 @@ export async function restorePendingImpl(this: AgentRuntime, invocation: AgentIn
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
     await timed(this, "restoreCancellations", () => this.restoreCancellations(invocation));
     await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions(invocation));
+    if (startConfig) await timed(this, "expireDecisions", () => expireDecisions(this, invocation));
     await timed(this, "delegation.recover", () => this.delegation.recover());
     await timed(this, "notifications.drain", () => this.notifications.drain(invocation));
     await timed(this, "outbox", async () => { await stageMissedEndings(this, await this.records()); await this.outbox.flush(); });
@@ -293,9 +297,11 @@ export async function wakeImpl(this: AgentRuntime, invocation: AgentInvocation) 
       await this.resumeKeptQueue();
       await this.restoreCancellations(invocation);
     }
-    if (conf)
+    if (conf && await this.ctx.storage.get(COMPUTER_ATTACHED) !== false)
       await this.serializeComputer(() =>
-        new ComputerService(this.env, conf.tenantId).sweepAgent(conf.id),
+        new ComputerService(this.env, conf.tenantId, undefined, {
+          agent: conf.id, clearComputerAttached: () => this.clearComputerAttached(),
+        }).sweepAgent(conf.id),
       ).catch(() =>
         console.error(
           JSON.stringify({ type: "computer_cleanup_failed", agent: conf.id }),
@@ -323,7 +329,8 @@ export async function wakeImpl(this: AgentRuntime, invocation: AgentInvocation) 
     const expire = this.admission.then(() => this.closeHumanInputs(invocation, "expired"));
     this.admission = expire.catch(() => {});
     await expire;
-    await expireDecisions(this, invocation);
+    const decisionDeadline = await this.ctx.storage.get<number>("decision-input-deadline");
+    if (decisionDeadline !== undefined && decisionDeadline <= Date.now()) await expireDecisions(this, invocation);
     this.kickInputPrompts();
     await this.restoreHostAdmissions(invocation);
     // Provider admission checks credit between calls. The watchdog enforces run limits.

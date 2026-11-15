@@ -303,7 +303,7 @@ func (s *StorageServer) refRoute(w http.ResponseWriter, r *http.Request, l strin
 	case "restore":
 		return s.refRestore(w, r, l, name, repo)
 	default:
-		http.NotFound(w, r)
+		authFail(w, http.StatusNotFound, "not_found", "route not found")
 	}
 	return nil
 }
@@ -409,7 +409,7 @@ func (s *StorageServer) HostCAS(ctx context.Context, l, name, commitID, expect, 
 			return nil, lineageDeleted()
 		}
 	}
-	return s.casRef(ctx, l, name, commitID, expect, rootID, nil, &refstore.Fence{Holder: holder, Epoch: epoch}, s.repo().ForLineage(l))
+	return s.casRef(ctx, l, name, commitID, expect, rootID, nil, &refstore.Fence{Holder: holder, Epoch: epoch}, s.repo.ForLineage(l))
 }
 
 func (s *StorageServer) leaseRoute(w http.ResponseWriter, r *http.Request, l, name, action string, claim *auth.Fence) error {

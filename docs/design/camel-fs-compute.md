@@ -17,43 +17,16 @@ This document covers five things:
 It builds on [camel-fs.md](camel-fs.md) §1.4–§1.5 (Firecracker on nested KVM; jobs and computers on one substrate)
 and on the job-hosts plan, whose image, netns pool, egress proxy and isolation suite stay.
 
-## 1. One host process: the TypeScript host agent folds into `camelfsd host`
+## 1. One host process
 
-Today a VM host runs two programs that talk over a Unix socket:
-
-| | `camelfsd host` (Go) | `jobhost` (TypeScript, Node) |
-|---|---|---|
-| owns | the block layer: images, the lazy origin (NBD), hydration, the chunk cache, mounts, checkpoints | enrollment, the WebSocket to the runtime, slots, Firecracker (`firecracker.ts`, `vm.ts`), the netns pool (`network.ts`), the egress proxy (`egress-proxy.ts`), the guest channel (`guest.ts` host side), the import proxy (`camelfsd.ts`) |
-| size | the daemon | ≈ 1,700 lines in `jobhost/` plus `shared/job-host-protocol.ts` |
-
-Inside each guest, `camel-guest` (also `jobhost/guest.ts`, run by `camel-init` behind `socat` on vsock 5000) runs
-Node.
-
-**After the merge**, one Go binary has three roles:
-
-- **`camelfsd host`** owns the block device, Firecracker, the slots and the guest channel in one process.
-  - Compute is a module behind `--compute` (K2a; the flag does not exist yet). Without the flag it is exactly today's storage-only host: no
-    Firecracker, no netns pool, no slots, no `/v1/vms` routes. With it, the host advertises its shape (vCPUs,
-    memory, slots, pool, features) and runs VMs.
-  - The module is the Go port of `vm.ts`/`firecracker.ts` (launcher, jailer, the `VmLauncher` seam kept as an
-    interface), `network.ts` (the netns pool), `egress-proxy.ts` and the host half of `guest.ts`. It also keeps the
-    `isolation-suite.ts` checks as Go tests run against a real host.
-  - The import proxy is not ported: the import is deleted by phase 2 (L82).
-- **`camelfsd guest`** is the same binary built static for the guest. It replaces Node's `camel-guest` and keeps
-  its op set:
-  - today's ops: `run`, `collect`, `free`, `exit`, `camelfs_apply`, `camelfs_checkpoint`, `camelfs_checkpointed`;
-  - added for sessions (§2): `exec` with a persistent shell, and streaming output;
-  - on vsock 5000 directly, with no `socat`.
-
-  The guest image no longer needs Node, which shrinks it and closes the guest-side Node limits (L39, L40). Its
-  `camel-init` replacement powers off cleanly with `reboot(LINUX_REBOOT_CMD_POWER_OFF)` (L62).
-- **`camelfsd api`** is the stateless tier (C1), which gains the compute routes of §2.
+Compute hosts run `camelfsd host --compute`.
 
 **Process model.** VMs must survive a `camelfsd` restart, or a daemon deploy kills every running VM on the host.
 - Each Firecracker runs under the jailer in its own systemd scope, not as a child that dies with the daemon.
 - `camelfsd host` persists its mount and VM state (`mounts`, `vms` tables in the host-local SQLite).
 - On start it re-adopts running VMs and their mounts instead of refusing a non-empty `mounts/`.
-- The lazy origin moves to ublk with user recovery, so a restart stalls a cold guest's I/O instead of failing it.
+- There is no lazy origin left (unit 11, #1093): a cold mount hydrates fully to a local file before Firecracker
+  starts, so no guest's I/O goes through `camelfsd` and a restart cannot fail it. ublk recovery (K2d) is obsolete.
 
 That is L15's v1 fix, and compute makes it a prerequisite rather than a wish (§5).
 
@@ -273,7 +246,7 @@ swap) and C4 (hosts do the CAS in-VPC, notify, `RepoDO` deleted). Compute slots 
 | K2a | **proto-block**: the launcher in `camelfsd host --compute`: Firecracker + jailer with each VM in its own systemd scope, taps and slots, the vsock guest channel | K1 | now |
 | K2b | **proto-block**: the egress proxy in Go | K2a, C3 | |
 | K2c | **proto-block**: the hostwire host side (#1016), and **only hostwire**: there is no Go port of today's runtime WebSocket, and the TypeScript `jobhost` keeps serving the pilot until K5 cuts over. It covers mTLS terminated in the Go server verifying `spiffe://camelfs/tier` (camel-fs-files.md §9.12), results to `results/<lineage>/<vm id>`, a persistent `vms` table with re-adoption on restart (L15's state half, L16), and the deletion of the `camelfs-host+jwt` code and of L101's host image pin. Tested end to end against K4c's tier | K2b, K4c | |
-| K2d | **proto-block**: ublk with user recovery (L15's restart-is-a-stall half), measured on the host before it is committed to | K2c | |
+| K2d | ~~**proto-block**: ublk with user recovery (L15's restart-is-a-stall half)~~ **obsolete**: unit 11 (#1093) deleted the NBD lazy origin, so nothing is left for ublk to recover | K2c | L15 closed, L19 obsolete |
 | K3 | **proto-block**: the synchronous checkpoint for sessions (per `bash` call that changed the tree, §6) | K2c, C4 (the in-VPC `cas`) | L45 obsolete |
 | K4 | **wf-durable**: the compute API (§2) and control in Go on the tier: `hosts`/`vms` on DynamoDB, phases, placement, host channel in-VPC, reconcile, host-lost sweep, `vm.*` hints; K4b the `usage` table and the deadline lease; K4d `GET /v1/usage` | C1, C2 | — |
 | K5 | **wf-durable**: the runtime side: the agent's VM row (§6), admission (balance > 0, no holds), the leased usage poller and settlement from pulled `usage.*` events, deadline extension, durable landing of `vm.*` events as outbox rows; `JobHost`, the registry and the WebSocket deleted | K4, C3 | — |
@@ -290,7 +263,7 @@ K4 starts after C2. Storage stays independent of all of K: a deployment without
 | L62 guest kernel panic instead of poweroff | open, next guest change | fixed by K1: the Go init calls `reboot(LINUX_REBOOT_CMD_POWER_OFF)` and verifies the guest exited |
 | L64 every host rebuilds the guest image with `debootstrap` | open | fixed by K1: built once in CI, content-addressed in the bucket, sha256-pinned; no Node in the guest |
 | L32 placement is not feature- or lineage-aware | open | fixed by K4 (warm-aware placement in the tier) |
-| L15 a daemon restart ends every cold-mounted job | open (v1 half) | **required** by K2c (state, re-adoption) and K2d (ublk recovery): one process owns VMs and devices, so restarts must re-adopt (persistent state, VMs in their own scopes, ublk recovery) |
+| L15 a daemon restart ends every cold-mounted job | open (v1 half) | closed: re-adoption by K2c (persistent state, VMs in their own scopes); the EIO half by deletion in unit 11 (#1093: no lazy origin, so no ublk recovery needed) |
 | L16 crash fencing waits out the 5-minute lease | open | fixed by K2c + C2: the host's boot epoch is in its lease holder, and the tier fences a restarted host's old leases on sight |
 | L45 one checkpoint at job end | open | obsolete under §6: no jobs; sessions checkpoint per call |
 

@@ -93,7 +93,7 @@ variable "pools" {
 }
 
 variable "enroll_roles" {
-  description = "Per pool, the instance role a host of that pool attests with at enrollment (camelfsd api --enroll-roles pool=arn,…; K4c): the job-hosts roles by their fixed names (infra/job-hosts/terraform/iam.tf), which need not exist yet. The tier takes a host's pool from the role it attests with, never from what the host says."
+  description = "Per pool, the instance role a host of that pool attests with at enrollment (camelfsd api --enroll-roles pool=arn,…; K4c): by default the job-hosts pool roles' fixed names, which were never created (the TypeScript job-host module is deleted); the first compute host's role is set here at the flip. The tier takes a host's pool from the role it attests with, never from what the host says."
   type        = map(string)
   default = {
     build = "arn:aws:iam::904534089871:role/camelrun-job-hosts-build-prod"

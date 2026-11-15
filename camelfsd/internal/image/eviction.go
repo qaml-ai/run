@@ -18,7 +18,7 @@ type victim struct {
 	used  time.Time
 }
 
-func (m *Manager) protect(job string, r root.Root, id string) {
+func (m *Manager) protect(job, id string) {
 	m.sweepMu.Lock()
 	defer m.sweepMu.Unlock()
 	if m.pins == nil {
@@ -28,9 +28,6 @@ func (m *Manager) protect(job string, r root.Root, id string) {
 		m.pins[job] = map[string]bool{}
 	}
 	m.pins[job][m.image(id)] = true
-	for _, h := range r.Chunks {
-		m.pins[job][filepath.Join(m.Cache.Dir, h[:2], h)] = true
-	}
 }
 func (m *Manager) unprotect(job string) { m.sweepMu.Lock(); delete(m.pins, job); m.sweepMu.Unlock() }
 func (m *Manager) maintain() {
@@ -41,21 +38,21 @@ func (m *Manager) maintain() {
 		case <-m.stop:
 			return
 		case <-t.C:
-			e := m.sweep(0)
+			e := m.sweep()
 			if e != nil {
 				log.Printf("op=evict error=%v", e)
 			}
 		}
 	}
 }
-func (m *Manager) sweep(incoming int64) error {
+func (m *Manager) sweep() error {
 	var st unix.Statfs_t
 	if e := unix.Statfs(m.Data, &st); e != nil {
 		return e
 	}
 	capacity := int64(st.Blocks) * int64(st.Bsize)
 	used := int64(st.Blocks-st.Bavail) * int64(st.Bsize)
-	if used+incoming <= capacity*80/100 {
+	if used <= capacity*80/100 {
 		return nil
 	}
 	_, e := m.evict(used, capacity*60/100, func() (int64, error) {
@@ -68,8 +65,7 @@ func (m *Manager) sweep(incoming int64) error {
 	return e
 }
 
-// evict is shared by the minute sweep and cold-mount admission. Live root
-// chunks, mount files and their promoted snapshots are never candidates.
+// The sweep protects promoted images pinned by live mounts.
 func (m *Manager) evict(used, low int64, usage ...func() (int64, error)) (freed int64, err error) {
 	m.sweepMu.Lock()
 	defer m.sweepMu.Unlock()
@@ -82,50 +78,44 @@ func (m *Manager) evict(used, low int64, usage ...func() (int64, error)) (freed 
 		}
 	}
 	var candidates []victim
-	for _, dir := range []string{m.Cache.Dir, filepath.Join(m.Data, "images")} {
-		e := filepath.WalkDir(dir, func(p string, d fs.DirEntry, e error) error {
-			if os.IsNotExist(e) {
-				return nil
-			}
-			if e != nil {
-				return e
-			}
-			if d.IsDir() {
-				return nil
-			}
-			name := d.Name()
-			valid := root.Hex(name, 64) || len(name) == 68 && root.Hex(name[:64], 64) && name[64:] == ".img"
-			if !valid || protected[p] {
-				return nil
-			}
-			info, e := d.Info()
-			if e != nil {
-				return e
-			}
-			if !info.Mode().IsRegular() {
-				return nil
-			}
-			var st unix.Stat_t
-			if e = unix.Lstat(p, &st); e != nil {
-				return e
-			}
-			candidates = append(candidates, victim{p, st.Blocks * 512, info.ModTime()})
+	e := filepath.WalkDir(filepath.Join(m.Data, "images"), func(p string, d fs.DirEntry, e error) error {
+		if os.IsNotExist(e) {
 			return nil
-		})
-		if e != nil {
-			return freed, e
 		}
+		if e != nil {
+			return e
+		}
+		if d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		valid := len(name) == 68 && root.Hex(name[:64], 64) && name[64:] == ".img"
+		if !valid || protected[p] {
+			return nil
+		}
+		info, e := d.Info()
+		if e != nil {
+			return e
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		var st unix.Stat_t
+		if e = unix.Lstat(p, &st); e != nil {
+			return e
+		}
+		candidates = append(candidates, victim{p, st.Blocks * 512, info.ModTime()})
+		return nil
+	})
+	if e != nil {
+		return freed, e
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].used.Before(candidates[j].used) })
 	for _, v := range candidates {
 		if used-freed <= low {
 			break
 		}
-		remove := os.Remove
-		if filepath.Dir(filepath.Dir(v.path)) == m.Cache.Dir {
-			remove = m.Cache.Remove
-		}
-		if e := remove(v.path); e != nil && !os.IsNotExist(e) {
+		if e := os.Remove(v.path); e != nil && !os.IsNotExist(e) {
 			return freed, e
 		}
 		freed += v.bytes

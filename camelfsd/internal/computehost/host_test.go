@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
+	"github.com/qaml-ai/run/camelfsd/internal/objects"
+	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"github.com/qaml-ai/run/camelfsd/internal/vmhost"
 )
@@ -200,5 +203,83 @@ func TestBadImageEndsStartFailed(t *testing.T) {
 				t.Fatalf("bad image was retained: %+v", ended)
 			}
 		})
+	}
+}
+
+func TestOldBootRecoveryDropsMountWithStagingImage(t *testing.T) {
+	t.Setenv("CAMELFSD_TEST_NO_REFLINK", "1")
+	data := t.TempDir()
+	local := store.Local{Dir: t.TempDir()}
+	db, err := refs.Open(filepath.Join(data, "refs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	imageConfig := image.Config{Data: data, VirtualSize: 16 << 20}
+	holder := hostwire.Holder{Host: "host", Boot: 1, Mount: "vm"}
+	spec := hostwire.BootSpec{ID: holder.Mount, Lease: hostwire.Lease{Holder: holder, Epoch: 3}}
+	cfg := Config{Data: data, BootID: "boot-a", HostID: holder.Host, Slots: 1,
+		Launcher: &vmhost.Launcher{Work: filepath.Join(data, "vms")}}
+	var mountDir string
+	func() {
+		m, err := image.New(imageConfig, local, db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer m.Close()
+		repo := &objects.Repository{DB: db, Store: local, TempDir: data}
+		tree, err := repo.ForLineage("l").Import(t.Context(), objects.Request{Lineage: "l", Files: map[string]objects.File{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := m.Mount(t.Context(), image.Request{JobID: spec.ID, Lineage: "l", Tree: tree.Tree,
+			Parent: strings.Repeat("a", 40), Fence: &refs.Fence{Holder: holder.String(), Epoch: spec.Lease.Epoch}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mountDir = filepath.Dir(v.Dest)
+		if err := os.WriteFile(filepath.Join(mountDir, "root.img"), []byte("unfinished staging image"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		h, err := Open(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer h.Close()
+		if err := h.save(new(session), record{Spec: spec}); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	recovered, err := image.New(imageConfig, local, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	if _, err := os.Stat(filepath.Join(mountDir, "root.img")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unfinished staging image survived manager recovery, stat error = %v", err)
+	}
+	cfg.BootID = "boot-b"
+	cfg.Mounts = recovered
+	cfg.Post = func(_ context.Context, path string, _, out any) error {
+		if path != "/register" {
+			return fmt.Errorf("unexpected tier call %s", path)
+		}
+		out.(*hostwire.Registered).BootEpoch = 2
+		return nil
+	}
+	h, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if err := h.Recover(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mountDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old mount still on disk, stat error = %v", err)
+	}
+	if len(h.vms) != 0 {
+		t.Fatal("old VM still in inventory")
 	}
 }

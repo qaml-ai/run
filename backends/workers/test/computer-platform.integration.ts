@@ -2,7 +2,28 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { startFixture } from './fixture.ts';
+
+async function computerFixture() {
+  const fixture = await startFixture({
+    entrypoint: fileURLToPath(new URL('./computer-hint-entry.ts', import.meta.url)),
+    vars: { TEST_HOOKS: '1' },
+  });
+  const env = {
+    HYPERDRIVE: { connectionString: fixture.databaseUrl }, API_TOKEN: fixture.token,
+    AGENTS: { getByName: (agent: string) => ({
+      async clearComputerAttached() {
+        const response = await fetch(`${fixture.url}/experimental/agents/${agent}/__test/computer-hint`, {
+          method: 'DELETE', headers: { authorization: `Bearer ${fixture.token}` },
+        });
+        assert.equal(response.status, 200);
+        return await response.json() as boolean;
+      },
+    }) },
+  };
+  return { ...fixture, env };
+}
 
 test('Worker computer API keeps credentials private, scopes tenants, and persists fake Lambda commands', async t => {
   let starts = 0, execs = 0, terminated = false;
@@ -70,12 +91,12 @@ test('Worker computer API keeps credentials private, scopes tenants, and persist
 
 test('computer attachment inheritance copies settings and credentials but never a session, and deletion detaches it', async t => {
   const { inheritComputer } = await import('../src/computers/service.ts');
-  const fixture = await startFixture(); t.after(() => fixture.stop());
+  const fixture = await computerFixture(); t.after(() => fixture.stop());
   const call = async (path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') => {
     const response = await fetch(fixture.url + path, { method, headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, json: await response.json() as any };
   };
-  const env = { HYPERDRIVE: { connectionString: fixture.databaseUrl }, API_TOKEN: fixture.token } as any;
+  const env = fixture.env as any;
   for (const subagents of [true, false]) {
     const parent = (await call('/v1/agents', { codeMode: false, fileTools: false })).json.id;
     const child = (await call('/v1/agents', { codeMode: false, fileTools: false })).json.id;
@@ -114,8 +135,8 @@ test('official E2B SDK creates and deletes only through the loopback fake endpoi
 
 test('browser tools need no shell command and provider calls retain the remaining lease', async t => {
   const { ComputerService } = await import('../src/computers/service.ts');
-  const fixture = await startFixture(); t.after(() => fixture.stop());
-  const env = { HYPERDRIVE: { connectionString: fixture.databaseUrl }, API_TOKEN: fixture.token } as any;
+  const fixture = await computerFixture(); t.after(() => fixture.stop());
+  const env = fixture.env as any;
   const calls: { operation: string; args: Record<string, any> }[] = [];
   const service = new ComputerService(env, 'camelrun-proto-local', () => ({
     create: async () => ({ id: 'fixture-session' }),
@@ -148,8 +169,8 @@ test('browser tools need no shell command and provider calls retain the remainin
 test('a Lambda exec checks only its machine, shares first use and idle resume, and refuses explicit stops', async t => {
   const { ComputerService } = await import('../src/computers/service.ts');
   const { shareComputer } = await import('../../../src/core/computer-share.ts');
-  const fixture = await startFixture(); t.after(() => fixture.stop());
-  const env = { HYPERDRIVE: { connectionString: fixture.databaseUrl }, API_TOKEN: fixture.token, TEST_MODE: '1', COMPUTER_MANAGED_ENABLED: '1' } as any;
+  const fixture = await computerFixture(); t.after(() => fixture.stop());
+  const env = { ...fixture.env, TEST_MODE: '1', COMPUTER_MANAGED_ENABLED: '1' } as any;
   const checked: string[] = [], commands: string[] = [];
   let running = true;
   const service = new ComputerService(env, 'camelrun-proto-local', (_env, _tenant, agent) => ({

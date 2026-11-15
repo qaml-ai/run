@@ -478,6 +478,18 @@ export function trackImpl(this: AgentRuntime,
     this.ctx.waitUntil(settled);
   }
 
+export async function flushCompletedSettlement(flush: (propagate: boolean) => Promise<void>) {
+  try {
+    await flush(true);
+  } catch (error) {
+    const status = (error as { status?: unknown } | null)?.status;
+    if (typeof status === "number" && status < 500) throw error;
+    throw Object.assign(new Error("The run has ended; its outcome is held until its charge is recorded. Retry after Retry-After."), {
+      status: 503, code: "SETTLEMENT_PENDING", retryAfter: 1, cause: error,
+    });
+  }
+}
+
 export async function settleImpl(this: AgentRuntime,
   id: string,
   waitMs: number,
@@ -494,7 +506,7 @@ export async function settleImpl(this: AgentRuntime,
     if (record.state === "completed") {
       // Completion and its receipt commit together. A concurrent observer must
       // also wait for settlement to release the tenant's busy-agent slot.
-      await flush(true);
+      await flushCompletedSettlement(flush);
       return record;
     }
     // Held for a batch (batch-queue.ts): Pi has nothing of it to wait on until a release gives it.
@@ -511,7 +523,7 @@ export async function settleImpl(this: AgentRuntime,
       } catch (error) {
         if (signal?.aborted) {
           const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
-          if (latest.state === "completed") await flush(true);
+          if (latest.state === "completed") await flushCompletedSettlement(flush);
           return latest;
         }
         throw error;
@@ -527,7 +539,7 @@ export async function settleImpl(this: AgentRuntime,
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") {
-        await flush(true);
+        await flushCompletedSettlement(flush);
         return current;
       }
       const completed: RequestRecord = {
@@ -589,7 +601,7 @@ export async function settleImpl(this: AgentRuntime,
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") {
-        await flush(true);
+        await flushCompletedSettlement(flush);
         return current;
       }
       if (await this.ctx.storage.get(`cancelled-request:${id}`)) await this.delegation.settleStopped(id);

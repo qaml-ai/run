@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guarded Terraform apply for the camelFS service (infra/camelfs/terraform), modelled on infra/job-hosts/apply.sh.
+# Guarded Terraform apply for the camelFS service (infra/camelfs/terraform).
 # Every run:
 #   1. fetches the service's settings (camelfs/prod.tfvars in the state bucket; none yet on the first run) and
 #      applies any <variable>=<value> arguments to them, showing the change;

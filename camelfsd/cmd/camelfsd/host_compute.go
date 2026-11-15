@@ -39,7 +39,7 @@ func addHostComputeFlags(f *flag.FlagSet) *hostComputeFlags {
 	f.BoolVar(&c.enabled, "compute", false, "run the session VM host")
 	f.StringVar(&c.listen, "listen-compute", "0.0.0.0:8792", "tier-to-host mTLS listener")
 	f.StringVar(&c.tier, "tier-hosts-endpoint", "", "tier host mTLS endpoint (host:port)")
-	f.StringVar(&c.tierCAPath, "tier-ca", "", "pinned tier CA PEM file (required with compute)")
+	f.StringVar(&c.tierCAPath, "tier-ca", "", "pinned tier CA PEM file")
 	f.StringVar(&c.enroll, "tier-enroll-url", "", "tier HTTPS enrollment URL")
 	f.StringVar(&c.pool, "pool", "", "AWS enrollment and placement pool (build or test)")
 	f.StringVar(&c.images, "images-store", "", "guest image S3 bucket and optional prefix")
@@ -66,7 +66,7 @@ func validEndpoint(endpoint string) bool {
 
 func (c *hostComputeFlags) validate() error {
 	if !c.enabled {
-		return nil
+		return errors.New("host requires --compute")
 	}
 	if !validEndpoint(c.tier) || c.enroll == "" || c.attestor != "aws" || (c.pool != "build" && c.pool != "test") ||
 		!strings.HasPrefix(c.images, "s3://") || c.slots <= 0 || c.slots > vmhost.MaxSlots ||

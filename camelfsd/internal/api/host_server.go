@@ -79,6 +79,10 @@ func NewHostServer(c *compute.Controller, pools, images []string, grace time.Dur
 }
 
 func (s *HostServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if _, pattern := s.routes.Handler(r); pattern == "" {
+		authFail(w, http.StatusNotFound, "not_found", "route not found")
+		return
+	}
 	s.routes.ServeHTTP(w, r)
 }
 

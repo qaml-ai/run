@@ -2,6 +2,7 @@ package computehost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http/httptest"
@@ -11,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -37,7 +37,7 @@ func TestSessionCheckpointNoChangeAndFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ref.Close()
-	m, err := image.New(image.Config{Data: data, VirtualSize: 16 << 20}, s, cache.New(filepath.Join(data, "cache"), s, 2), ref)
+	m, err := image.New(image.Config{Data: data, VirtualSize: 16 << 20}, store.WithDepth(s, 2), ref)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestSessionCheckpointNoChangeAndFenced(t *testing.T) {
 	}
 	version := strings.Repeat("a", 40)
 	holder := hostwire.Holder{Host: "host", Boot: 1, Mount: "vm"}
-	_, err = m.Mount(t.Context(), image.Request{JobID: "vm", Session: true, Lineage: "l", Tree: tree.Tree, Parent: version, Fence: &refs.Fence{Holder: holder.String(), Epoch: 3}})
+	_, err = m.Mount(t.Context(), image.Request{JobID: "vm", Lineage: "l", Tree: tree.Tree, Parent: version, Fence: &refs.Fence{Holder: holder.String(), Epoch: 3}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,8 +128,12 @@ func TestSessionCheckpointNoChangeAndFenced(t *testing.T) {
 	if err != refusal || w.Code != 409 || w.Body.String() != string(refusal.Body) || !rejected || casCalls != 1 || session.row.Pending != nil || session.row.Spec.Version != version {
 		t.Fatalf("CAS rejection: %v HTTP %d %s, rejected=%v calls=%d row=%+v", err, w.Code, w.Body, rejected, casCalls, session.row)
 	}
-	mount, err := m.Status(t.Context(), "vm")
-	if err != nil || mount.Parent.Commit != version || mount.Tree != tree.Tree {
+	raw, err := os.ReadFile(filepath.Join(data, "mounts", "vm", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mount image.Mount
+	if err := json.Unmarshal(raw, &mount); err != nil || mount.Parent.Commit != version || mount.Tree != tree.Tree {
 		t.Fatalf("mount advanced on refusal: %+v %v", mount, err)
 	}
 }

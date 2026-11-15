@@ -5,6 +5,7 @@ import { HttpError } from "../errors.ts";
 import { computerStarting, FORK_LIMITS, noSession } from "../../../../src/core/computer-fork.ts";
 import type { ChildComputerFork } from "../delegation.ts";
 import type { OperateSetup } from "./objects.ts";
+import { ComputerHintClearError } from "./attachment-hint.ts";
 import { ComputerService, inheritComputer, type ComputerEnv } from "./service.ts";
 
 type Env = ComputerEnv & { AGENTS: { idFromName(name: string): DurableObjectId } };
@@ -69,7 +70,7 @@ export async function forkComputerInto(env: Env & { AGENTS: { getByName(name: st
   try {
     if (fork.native && env.COMPUTER_CONTAINERS) for (const agent of agents) { await seedNative(env, agent, fork.native); seeded.push(agent); }
     if (fork.connection) forks = await service.forkInto(source, { id: fork.connection.seed, connection: fork.connection.connection!, provider: fork.connection.provider!, at: fork.connection.at! }, agents);
-  } catch (error) { await undo(); throw error; }
+  } catch (error) { if (!(error instanceof ComputerHintClearError)) await undo(); throw error; }
   for (const agent of agents) {
     // An agent that has run already gets its new computer tools at its next turn.
     if (fork.connection) await env.AGENTS.getByName(agent).fetch(new Request("https://computer.internal/__computer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tenant, operation: "refresh" }) })).then(response => response.body?.cancel());
@@ -100,7 +101,7 @@ export async function attachChildComputers(env: Env, tenant: string, parent: str
     await withSql(env, sql => shareComputer(sql, tenant, parent, child));
     return;
   }
-  await inheritComputer(env, tenant, parent, child, undefined, computer?.connection);
+  await inheritComputer(env, tenant, parent, child, computer?.connection);
   // A replay never replaces a child's disk: one already seeded keeps it.
   if (computer?.native && env.COMPUTER_CONTAINERS && !(await env.COMPUTER_CONTAINERS.getByName(nativeComputer(env, child)).forkedFrom())) await seedNative(env, child, computer.native);
 }

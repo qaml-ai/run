@@ -71,6 +71,7 @@ retry.
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
 | 503 | `COMPUTER_STARTING` | A computer did not answer within its bounded start (often a restore whose disk is loading on a new host); nothing was lost, call again in a few seconds |
 | 503 | `DATABASE_RETRY` | The database refused the request for now (a conflict with another request, or a statement timeout); retry after `Retry-After` |
+| 503 | `SETTLEMENT_PENDING` | The run has ended, but its outcome is held until its charge is recorded (a read of it, or the same request sent again). Retry after `Retry-After`; the SDKs keep waiting for the outcome within your `timeoutMs` / `timeout` |
 | 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |
 
