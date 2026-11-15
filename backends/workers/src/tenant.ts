@@ -2,15 +2,17 @@ import { guardAlarms } from "./alarm-guard.ts";
 import { DurableObject } from "cloudflare:workers";
 import { TenantWatchers } from "./tenant-watchers.ts";
 import { TenantRepos, type RepoRow } from "./repos/tenant-repos.ts";
+import { HttpRepoClient, deleteTierLineage } from "./repos/http-client.ts";
+import type { TierEnv } from "./camelfs/tier.ts";
 const agentOf = "CASE WHEN instr(id, ':') > 0 THEN substr(id, 1, instr(id, ':') - 1) ELSE id END";
 
 /** One tenant serializes admission. No fleet registry, heartbeat or PG advisory lock. */
-export class TenantAdmission extends DurableObject<Record<string, unknown>> {
+export class TenantAdmission extends DurableObject<TierEnv & { TEST_MODE?: string }> {
   private readonly watchers: TenantWatchers;
   private readonly repos: TenantRepos;
-  constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
+  constructor(ctx: DurableObjectState, env: TierEnv & { TEST_MODE?: string }) {
     super(ctx, env);
-    guardAlarms(this, ctx, "TenantAdmission", { test: (env as { TEST_MODE?: unknown }).TEST_MODE === "1" });
+    guardAlarms(this, ctx, "TenantAdmission", { test: env.TEST_MODE === "1" });
     this.watchers = new TenantWatchers(ctx.storage.sql, write => ctx.storage.transactionSync(write));
     this.repos = new TenantRepos(ctx.storage);
     ctx.storage.sql.exec(
@@ -91,15 +93,49 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   registerRepo(row: RepoRow, sourceId?: string) { return this.repos.register(row, sourceId); }
   repoRow(id: string) { return this.repos.row(id); }
   listRepos(input: {after?: string; limit?: number} = {}) { return this.repos.list(input); }
-  markTierRepoDeleted(id: string) { return this.repos.markTierRepoDeleted(id); }
+  async markTierRepoDeleted(id: string) {
+    const pending = this.repos.markTierRepoDeleted(id);
+    // SQLite coalesces the row write and alarm write into one commit when there is no intervening await.
+    if (pending) await this.armLineageDeletion();
+    return pending;
+  }
+  async lineageDeleted(lineage: string) {
+    this.repos.lineageDeleted(lineage);
+    await this.armLineageDeletion(true);
+  }
+  async lineageDeleteFailed(lineage: string) {
+    this.repos.lineageDeleteFailed(lineage);
+    await this.armLineageDeletion();
+  }
+  private async armLineageDeletion(clearWhenEmpty = false) {
+    const next = this.repos.nextLineageDeletion();
+    if (next !== undefined) await this.ctx.storage.setAlarm(next);
+    else if (clearWhenEmpty) await this.ctx.storage.deleteAlarm();
+  }
   repoUsage(id: string, bytes: number, files: number) { return this.repos.usage(id,bytes,files); }
   reposUsed(exclude?: string) { return this.repos.used(exclude); }
-  // The Volume-era TenantStorage left one pending alarm on the pilot (L90 sweep, 2026-11-14). This no-op consumes it
-  // when it fires: no table or state is read, and nothing re-arms it. Remove once no tenant reports a pending alarm.
-  async alarm() {}
+  // A leftover Volume-era alarm (L90) finds no deletions and does not re-arm.
+  async alarm() {
+    const dueAt = Date.now();
+    for (let pending = this.repos.dueLineageDeletion(dueAt); pending; pending = this.repos.dueLineageDeletion(dueAt)) {
+      const row = this.repos.row(pending.repo);
+      if (!row) throw new Error("Missing repo for pending lineage deletion");
+      // A lineage is <tenant>:<original repo id>, including for forks.
+      const tenant = row.lineage.slice(0, row.lineage.lastIndexOf(":"));
+      const repo = new HttpRepoClient(this.env, tenant, row, `api:${tenant}`);
+      try { await deleteTierLineage(repo, row.lineage); }
+      catch {
+        this.repos.lineageDeleteFailed(row.lineage);
+        continue;
+      }
+      this.repos.lineageDeleted(row.lineage);
+    }
+    await this.armLineageDeletion();
+  }
   /** Called after account deletion has stopped and purged every owned agent. */
   async purgeAccountData() {
-    await this.ctx.storage.deleteAlarm();
+    if (this.repos.nextLineageDeletion() !== undefined) throw new Error("Tenant has pending lineage deletions");
+    // SQLite deleteAll also clears the alarm. Start it before yielding after the pending-row check.
     await this.ctx.storage.deleteAll();
     this.watchers.initialize();
     this.repos.initialize();
