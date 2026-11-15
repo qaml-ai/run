@@ -3,14 +3,15 @@ package image
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"time"
 )
@@ -35,7 +37,6 @@ type Manager struct {
 	pins map[string]map[string]bool
 	Config
 	Store          store.Store
-	Cache          *cache.Cache
 	Refs           refs.Repository
 	mu             sync.Mutex
 	mounts         map[string]*Mount
@@ -69,7 +70,7 @@ type Mount struct {
 	needsBaseline bool
 }
 
-func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manager, error) {
+func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -124,7 +125,7 @@ func New(c Config, s store.Store, cache *cache.Cache, r refs.Repository) (*Manag
 	if db, ok := r.(*refs.DB); ok {
 		s = &store.Uploaded{Store: s, DB: db.DB}
 	}
-	m := &Manager{Config: c, Store: s, Cache: cache, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
+	m := &Manager{Config: c, Store: s, Refs: r, mounts: map[string]*Mount{}, stop: make(chan struct{}), baselineSlot: make(chan struct{}, 1)}
 	if err := m.recoverBaselines(); err != nil {
 		return nil, err
 	}
@@ -220,7 +221,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e = store.Atomic(filepath.Join(dir, "session"), nil); e != nil {
 		return nil, e
 	}
-	m.protect(v.JobID, r, v.Root)
+	m.protect(v.JobID, v.Root)
 	defer func() {
 		if err != nil {
 			m.unprotect(v.JobID)
@@ -240,7 +241,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	} else {
 		// Complete hydration before handing the disk to Firecracker. A live VM's
 		// disk must not depend on an NBD connection owned by this process.
-		e = m.materialize(ctx, v.Lineage, r, v.Dest)
+		e = m.materialize(ctx, v, r)
 		v.State = "hydrated"
 	}
 	if e != nil {
@@ -256,36 +257,96 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	copy := *v
 	return &copy, nil
 }
-func (m *Manager) materialize(ctx context.Context, lineage string, r root.Root, p string) error {
-	f, e := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	if e != nil {
-		return e
+
+const pristineImage = "root.img"
+
+func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err error) {
+	var bytesWritten atomic.Int64
+	var getMs, syncMs, linkMs, cloneMs float64
+	defer func() {
+		slog.Info("compute_materialize", "job", v.JobID, "root", v.Root, "chunks", len(r.Chunks),
+			"bytes", bytesWritten.Load(), "getMs", getMs, "syncMs", syncMs, "linkMs", linkMs,
+			"cloneMs", cloneMs, "error", err)
+	}()
+
+	path := filepath.Join(filepath.Dir(v.Dest), pristineImage)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err != nil {
+		return err
 	}
-	defer f.Close()
-	if e = f.Truncate(r.VirtualSize); e != nil {
-		return e
+	defer func() {
+		if f != nil {
+			err = errors.Join(err, f.Close())
+		}
+		if err != nil {
+			if removeErr := os.Remove(path); !os.IsNotExist(removeErr) {
+				err = errors.Join(err, removeErr)
+			}
+		}
+	}()
+	if err := f.Truncate(r.VirtualSize); err != nil {
+		return err
 	}
 	keys := make([]string, 0, len(r.Chunks))
 	for key := range r.Chunks {
 		keys = append(keys, key)
 	}
-	e = store.Parallel(store.Background(ctx), 64, keys, func(key string) error {
-		p, e := m.Cache.EnsureLineage(store.Background(ctx), lineage, r.Chunks[key])
-		if e != nil {
-			return e
+	source := store.ForLineage(m.Store, v.Lineage)
+	start := time.Now()
+	err = store.Parallel(ctx, store.Depth(m.Store), keys, func(key string) error {
+		hash := r.Chunks[key]
+		// root.Decode validates offsets; a malformed key must still never become a write at offset 0.
+		off, err := strconv.ParseInt(key, 10, 64)
+		if err != nil || off < 0 || off >= r.VirtualSize || off%root.ChunkSize != 0 {
+			return fmt.Errorf("root %s: invalid chunk offset %q", v.Root, key)
 		}
-		b, e := os.ReadFile(p)
-		if e != nil {
-			return e
+		b, err := source.Get(ctx, "c/"+hash)
+		if err != nil {
+			return fmt.Errorf("fetch chunk %s: %w", hash, err)
 		}
-		off, _ := strconv.ParseInt(key, 10, 64)
-		_, e = f.WriteAt(b[:min(int64(len(b)), r.VirtualSize-off)], off)
-		return e
+		if int64(len(b)) != root.ChunkSize || root.Hash(b) != hash {
+			return fmt.Errorf("chunk %s: size or hash mismatch", hash)
+		}
+		n, err := f.WriteAt(b[:min(root.ChunkSize, r.VirtualSize-off)], off)
+		bytesWritten.Add(int64(n))
+		return err
 	})
-	if e == nil {
-		e = f.Sync()
+	getMs = ms(start)
+	if err != nil {
+		return err
 	}
-	return e
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	start = time.Now()
+	err = f.Sync()
+	syncMs = ms(start)
+	err = errors.Join(err, f.Close())
+	f = nil
+	if err != nil {
+		return err
+	}
+
+	base := m.image(v.Root)
+	start = time.Now()
+	err = os.Link(path, base)
+	linkMs = ms(start)
+	if err != nil && !os.IsExist(err) {
+		return err
+	}
+	// Persist the published name (as image downloads do): without it a crash can drop the link and cost a re-fetch.
+	if err := store.SyncDir(filepath.Dir(base)); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+
+	// The promoted image is immutable. Only the session clone goes to the VM.
+	start = time.Now()
+	err = cloneImage(base, v.Dest, false)
+	cloneMs = ms(start)
+	return err
 }
 func (m *Manager) promote(src, id string) error {
 	dst := m.image(id)
@@ -304,7 +365,12 @@ func (m *Manager) promote(src, id string) error {
 	if e := clone(src, tmp); e != nil {
 		return e
 	}
-	return os.Rename(tmp, dst)
+	// Publish the complete clone atomically without replacing a concurrent winner.
+	e = os.Link(tmp, dst)
+	if os.IsExist(e) {
+		return nil
+	}
+	return e
 }
 func run(ctx context.Context, name string, args ...string) (string, error) {
 	out, e := exec.CommandContext(ctx, name, args...).CombinedOutput()

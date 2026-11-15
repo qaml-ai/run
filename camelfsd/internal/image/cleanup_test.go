@@ -21,6 +21,9 @@ func TestCleanupScoped(t *testing.T) {
 		t.Fatal("prefix")
 	}
 	for i, d := range []string{a, b} {
+		if err := os.MkdirAll(filepath.Join(d, "cache", "ab"), 0700); err != nil {
+			t.Fatal(err)
+		}
 		p := filepath.Join(d, "mounts", "j")
 		os.MkdirAll(p, 0700)
 		v := struct{ DM, OriginDM, CowLoop, NBD, DestLoop string }{DM: dmPrefix(d) + "j", OriginDM: dmPrefix(d) + "j-o", CowLoop: "/dev/loop2", NBD: "/dev/nbd" + string(rune('0'+i)), DestLoop: "/dev/loop" + string(rune('0'+i))}
@@ -44,6 +47,10 @@ func TestCleanupScoped(t *testing.T) {
 	}
 	if _, e := os.Stat(filepath.Join(b, "mounts", "j", "state.json")); e != nil {
 		t.Fatal(e)
+	}
+	requireMissing(t, filepath.Join(a, "cache"))
+	if _, err := os.Stat(filepath.Join(b, "cache")); err != nil {
+		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(filepath.Join(a, "mounts"))
 	if len(entries) != 0 {

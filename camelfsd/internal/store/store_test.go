@@ -41,13 +41,13 @@ func TestFetchDefaultsAndS3Pool(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if Depth(s) != 64 {
+	if Depth(s) != 128 {
 		t.Fatal(Depth(s))
 	}
 	remote := s.(*limited).Store.(*S3)
 	client := remote.Client.Options().HTTPClient.(*http.Client)
 	transport := client.Transport.(*http.Transport)
-	if transport.MaxIdleConnsPerHost != 64 || transport.MaxConnsPerHost != 64 || transport.DisableKeepAlives {
+	if transport.MaxIdleConnsPerHost != 128 || transport.MaxConnsPerHost != 128 || transport.DisableKeepAlives {
 		t.Fatal(transport)
 	}
 	custom, e := Open(context.Background(), "s3://example/prefix", "us-west-2", 7)

@@ -6,7 +6,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -95,8 +94,8 @@ func host(args []string) error {
 		return e
 	}
 	defer r.Close()
-	c := cache.New(filepath.Join(*data, "cache"), s, *fetchDepth)
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data}, s, c, r)
+	s = store.WithDepth(s, *fetchDepth)
+	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data}, s, r)
 	if e != nil {
 		return e
 	}

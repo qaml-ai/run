@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qaml-ai/run/camelfsd/internal/cache"
 	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
@@ -168,7 +167,7 @@ func TestSessionBaseline(t *testing.T) {
 			}
 			defer db.Close()
 			shared := m.Store.(*store.Uploaded).Store
-			other, err := New(Config{Data: otherData, VirtualSize: m.VirtualSize}, shared, cache.New(filepath.Join(otherData, "cache"), shared, 64), db)
+			other, err := New(Config{Data: otherData, VirtualSize: m.VirtualSize}, store.WithDepth(shared, 64), db)
 			if err != nil {
 				t.Fatal(err)
 			}

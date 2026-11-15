@@ -26,6 +26,9 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 		if _, err := os.Stat(filepath.Join(dir, "session")); err != nil {
 			return fmt.Errorf("mount %s requires storage host cleanup: %w", id, err)
 		}
+		if err := os.Remove(filepath.Join(dir, pristineImage)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
 		if errors.Is(err, os.ErrNotExist) {
 			// No mount was handed to Firecracker before the state was saved.
@@ -64,7 +67,7 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 			return err
 		}
 		v.needsBaseline = r.Tree != v.Tree && (state.Apply == nil || state.Apply.Files > 0)
-		m.protect(id, r, v.Root)
+		m.protect(id, v.Root)
 		files, err := os.ReadDir(dir)
 		if err != nil {
 			return err
@@ -112,11 +115,10 @@ func (m *Manager) AdoptCheckpoint(ctx context.Context, id, commit, tree, root st
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	r, err := m.mountRoot(ctx, v.Lineage, root)
-	if err != nil {
+	if _, err := m.mountRoot(ctx, v.Lineage, root); err != nil {
 		return err
 	}
-	m.protect(id, r, root)
+	m.protect(id, root)
 	v.Parent.Commit, v.Parent.Tree, v.Parent.Root = commit, tree, root
 	v.Tree, v.Root, v.Promoted = tree, root, true
 	return m.save(v)

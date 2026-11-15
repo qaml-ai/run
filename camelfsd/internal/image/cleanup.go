@@ -100,10 +100,7 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 		}
 	}
 	dirs, e := os.ReadDir(filepath.Join(data, "mounts"))
-	if os.IsNotExist(e) {
-		return nil
-	}
-	if e != nil {
+	if e != nil && !os.IsNotExist(e) {
 		return e
 	}
 	for _, d := range dirs {
@@ -111,7 +108,7 @@ func Cleanup(ctx context.Context, data string, commands DeviceCommands) error {
 			return e
 		}
 	}
-	return nil
+	return os.RemoveAll(filepath.Join(data, "cache"))
 }
 func deviceNumber(v, prefix string) bool {
 	tail := strings.TrimPrefix(v, prefix)
