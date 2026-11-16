@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { WebSocketServer } from "ws";
+import { setTimeout as sleep } from "node:timers/promises";
+import { WebSocket, WebSocketServer } from "ws";
 import { fakeModel } from "../../../tests/runtime-server.ts";
 import { callFixture, eventually } from "./voice-call-fixture.ts";
 
@@ -56,6 +57,8 @@ test("OpenAI brokers SDP, journals speech without a run, meters raw cost once, a
   const [sideband] = await connecting;
   assert.deepEqual(call.connect, { sdpAnswer: "sdp-answer" });
   assert.equal(offers[0], "sdp-offer");
+  await sleep(10_500);
+  assert.equal(sideband.readyState, WebSocket.OPEN, "The upgrade deadline must leave an established sideband open");
   const limited = await f.create({ provider: "openai", sdp: "sdp-offer" });
   assert.equal(limited.json.code, "VOICE_SESSION_LIMIT");
   assert.equal((await f.request(path + "/transcript", "POST", { speaker: "a", text: "override" })).json.code, "VOICE_TRANSCRIPT_SIDEBAND");
