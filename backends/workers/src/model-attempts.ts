@@ -243,7 +243,9 @@ export class ModelAttempts {
         const candidates = [typeof scoped === "string" ? scoped : undefined, resolved?.key, this.accounts.tenants.platformKey("openrouter")];
         const key = candidates.find(value => value && hash(value) === row.key_hash);
         if (!key || hash(key) !== row.key_hash) throw new Error("Original provider credential is unavailable; awaiting reconciliation with its account");
-        const response = await this.fetcher(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(row.generation_id)}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(10_000), this.stopping.signal]) });
+        // Workers fetch must be called without a ModelAttempts receiver.
+        const { fetcher } = this;
+        const response = await fetcher(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(row.generation_id)}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(10_000), this.stopping.signal]) });
         if (!response.ok) throw new Error(`Provider lookup HTTP ${response.status}`);
         const { data } = await response.json() as any;
         if (data?.id !== row.generation_id || !Number.isFinite(data.total_cost) || data.total_cost < 0 || !Number.isFinite(data.generation_time)) throw new Error("Provider usage is not final or is missing");
