@@ -14,7 +14,7 @@ import { agentRepoId, workspaceMount, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
 import { setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
-import { heldFileError, lastSaved, readVmToolFile, resolveVmFiles, vmEntry, vmList, vmOperation, vmRepoPath, vmHeld, vmStat, VmRouteError, type VmFilesProvider } from "./vm-route.ts";
+import { heldFileError, isRefHeld, normalizeRepoPath, RefHeldError } from "./repo-policy.ts";
 
 const TOOL_READ_BYTES = 1024 * 1024;
 export function repoTools(
@@ -29,7 +29,6 @@ export function repoTools(
   seen?: FileVersions,
   identity: Record<string,string> = {},
   scope?: RepoTreeScope,
-  vmFiles?: VmFilesProvider,
   invocation?: AgentInvocation,
 ) {
   const mountPath = async (raw: string, write = false) => {
@@ -55,30 +54,9 @@ export function repoTools(
         (base === "/" ? (p === "/" ? "" : p) : p.slice(base.length)),
     };
   };
-  const resolve = (t: Awaited<ReturnType<typeof mountPath>>) =>
-    resolveVmFiles(env, { tenant, agent: agentId, repo: t.mount.repo, ref: t.ref }, vmFiles, invocation);
-  const store = (t: Awaited<ReturnType<typeof mountPath>>) =>
-    agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity, scope, invocation);
   const target = async (raw: string, write = false) => {
     const t = await mountPath(raw, write);
-    const vm = await resolve(t);
-    return vm ? { ...t, vm, v: undefined } : { ...t, vm: undefined, v: await store(t) };
-  };
-  const refTarget = async (raw: string, write = false) => {
-    const t = await mountPath(raw, write);
-    const running = Boolean(await resolve(t));
-    if (write && running) throw new VmRouteError(409, vmHeld(t.ref), "held");
-    return { ...t, running, v: await store(t) };
-  };
-  const readFile = (t: Awaited<ReturnType<typeof target>>) =>
-    t.vm ? readVmToolFile(t.vm, t.ref, t.path, TOOL_READ_BYTES) : t.v.read(t.path, undefined, TOOL_READ_BYTES);
-  const listFiles = (t: Awaited<ReturnType<typeof target>>, pattern?: string) =>
-    t.vm ? vmList(t.vm, t.ref, t.path, pattern) : t.v.list(t.path, undefined, pattern);
-  const writeFile = async (t: Awaited<ReturnType<typeof target>>, bytes: Uint8Array, contentType: string, expected?: string) => {
-    if (!t.vm) return t.v.write(t.path, bytes, contentType, expected);
-    const vm = t.vm, path = vmRepoPath(t.path);
-    const written = await vmOperation(t.ref, () => vm.write(path, bytes, { expectSha256: expected }), t.show(t.path));
-    return { ...vmEntry(t.path, written), contentType };
+    return { ...t, v: await agentStore(env, tenant, t.mount.repo, t.ref, agentId, identity, scope, invocation) };
   };
   const output = (value: unknown) => ({
     output: [
@@ -88,7 +66,8 @@ export function repoTools(
       },
     ],
   });
-  const seenKey = (target: { mount: Mount; path: string; vm?: unknown }) => `${target.vm ? "vm:" : ""}${target.mount.repo}:${target.mount.ref ?? "main"}:${target.path}`;
+  const seenKey = (target: { mount: Mount; path: string }) =>
+    `${target.mount.repo}:${target.mount.ref ?? "main"}:${target.path}`;
   const stale = (target: { path: string; show(path: string): string }) =>
     new FileError(`${target.show(target.path)} changed since you last read it; read it again, then retry against its current content`, 412);
   const guard = async <T>(target: { path: string; ref?: string; show(path: string): string }, run: () => Promise<T>): Promise<T> => {
@@ -113,7 +92,7 @@ export function repoTools(
       }),
       async execute({ path, offset, limit, encoding, length }) {
         const t = await target(path);
-        const { file, bytes } = await readFile(t);
+        const { file, bytes } = await t.v.read(t.path, undefined, TOOL_READ_BYTES);
         seen?.remember(seenKey(t), file.blob);
         if (encoding === "base64") {
           const start = offset ?? 0,
@@ -141,7 +120,6 @@ export function repoTools(
               ? `\n[Continue at line ${start + count + 1}]`
               : ""),
         );
-        if (t.vm) result.output.push({ type: "text", text: JSON.stringify({ version: file.version }) });
         return result;
       },
     }),
@@ -165,8 +143,8 @@ export function repoTools(
           ? Buffer.from(content ?? text!, "base64")
           : new TextEncoder().encode(content ?? text);
 
-        const entry = await guard(t, () => writeFile(
-          t,
+        const entry = await guard(t, () => t.v.write(
+          t.path,
           bytes,
           declaredType(contentType) ??
             sniffContentType(
@@ -199,7 +177,7 @@ export function repoTools(
         const t = await target(
           path ?? (await getMounts())[0]?.path ?? "/workspace",
         );
-        const files = await listFiles(t),
+        const files = await t.v.list(t.path),
           entries = new Map<string, unknown>();
         for await (const file of files) {
           const rest = file.path.slice(t.path === "/" ? 1 : t.path.length + 1),
@@ -230,15 +208,7 @@ export function repoTools(
         const t = await target(path);
         if (caption && caption.length > 1000)
           throw new FileError("Caption exceeds 1000 characters");
-        // One path for presented files: always a saved repo version. On a running machine, save first (the host
-        // checkpoint, through the VM backend), then present the ref's version, so the link survives the machine's sleep.
-        const file = t.vm
-          ? await (async (vm) => {
-            const stat = await vmStat(vm, t.ref, t.path), file = vmEntry(t.path, stat);
-            const saved = await vmOperation(t.ref, () => vm.checkpoint());
-            return { ...file, version: saved.version };
-          })(t.vm)
-          : await t.v.stat(t.path);
+        const file = await t.v.stat(t.path);
         const presented: PresentedRepoFile = {
           type: "file",
           path: t.show(t.path),
@@ -273,7 +243,7 @@ export function repoTools(
       prepareArguments: editArguments as never,
       async execute({ path, edits }) {
         const t = await target(path, true),
-          { file, bytes } = await readFile(t);
+          { file, bytes } = await t.v.read(t.path, undefined, TOOL_READ_BYTES);
         const expected = seen?.get(seenKey(t));
         if (expected !== undefined && expected !== file.blob) throw stale(t);
         seen?.remember(seenKey(t), file.blob);
@@ -287,8 +257,8 @@ export function repoTools(
         }
         const edited = new TextEncoder().encode(text);
 
-        const written = await guard(t, () => writeFile(
-            t,
+        const written = await guard(t, () => t.v.write(
+            t.path,
             edited,
             file.contentType,
             file.blob,
@@ -308,7 +278,7 @@ export function repoTools(
         const t = await target(path ?? (await getMounts())[0]?.path ?? "/workspace");
         const count = Math.max(1, Math.min(limit ?? 1000, 1000));
         const paths: string[] = [];
-        for await (const file of await listFiles(t, pattern)) {
+        for await (const file of await t.v.list(t.path, undefined, pattern)) {
           if (paths.length === count) return output({ paths, truncated: true });
           paths.push(t.show(file.path));
         }
@@ -334,19 +304,15 @@ export function repoTools(
         if(regex) {try {RE2JS.compile(pattern,ignoreCase?RE2JS.CASE_INSENSITIVE:0);}catch(e){throw new FileError(`Invalid regular expression: ${(e as Error).message}`);}}
         const t = await target(path ?? (await getMounts())[0]?.path ?? "/workspace");
         const prefix = insideRepo(t.path);
-        const vm = t.vm;
-        const repoPath = vm && prefix ? vmRepoPath(t.path) : prefix;
-        const head = t.v ? await t.v.ctx.repo.ref(t.ref) : undefined;
-        if (t.v && !head) return output({ matches: [] });
+        const head = await t.v.ctx.repo.ref(t.ref);
+        if (!head) return output({ matches: [] });
         let file = false;
-        if (repoPath) {
-          if (vm) file = Boolean((await vmOperation(t.ref, () => vm.stat([repoPath])))[repoPath]);
-          else try { await t.v.stat(t.path); file = true; } catch (e) { if (!String(e).includes("FILE_404:")) throw e; }
+        if (prefix) {
+          try { await t.v.stat(t.path, head.version); file = true; }
+          catch (e) { if (!String(e).includes("FILE_404:")) throw e; }
         }
-        const input = { tree: head?.tree ?? "", q: pattern, regex, ignoreCase, path: repoPath ? repoPath + (file ? "" : "/**") : undefined, limit: Math.max(1, Math.min(limit ?? 100, 1000)) };
-        const result = vm
-          ? await vmOperation(t.ref, () => vm.grep(input))
-          : await t.v.ctx.storage.grep(t.v.ctx.lineage, input);
+        const input = { tree: head.tree, q: pattern, regex, ignoreCase, path: prefix ? prefix + (file ? "" : "/**") : undefined, limit: Math.max(1, Math.min(limit ?? 100, 1000)) };
+        const result = await t.v.ctx.storage.grep(t.v.ctx.lineage, input);
         return output({ ...result, matches: result.matches.filter(m => !glob || globMatch(m.path.slice(prefix ? prefix.length + 1 : 0), glob)).map(m => ({...m, path: t.show('/' + m.path)})) });
       },
     }),
@@ -356,17 +322,10 @@ export function repoTools(
       replay: "unsafe",
       parameters: obj({ path: str() }),
       async execute({ path }) {
-        const t = await target(path, true), p = vmRepoPath(t.path);
+        const t = await target(path, true), p = normalizeRepoPath(insideRepo(t.path));
         const expected = seen?.get(seenKey(t));
         const expect = expected === undefined ? undefined : { [p]: expected };
-        const version = await guard(t, async () => {
-          if (t.vm) {
-            const vm = t.vm;
-            await vmOperation(t.ref, () => vm.delete([p], expect ? { expectSha256: expect } : undefined), t.show(t.path));
-            return undefined;
-          }
-          return (await t.v.commit({ [p]: null }, expect, `delete ${p}`)).version;
-        });
+        const { version } = await guard(t, () => t.v.commit({ [p]: null }, expect, `delete ${p}`));
         seen?.remember(seenKey(t), "none");
         return output({ deleted: true, version });
       },
@@ -384,8 +343,8 @@ export function repoTools(
           recursive: opt(bool()),
         }),
         async execute({ from, to, overwrite, recursive }) {
-          const source = await refTarget(from, name === "mv"),
-            destination = await refTarget(to, true);
+          const source = await target(from, name === "mv"),
+            destination = await target(to, true);
           if (
             source.mount.repo === destination.mount.repo && source.v.ref === destination.v.ref &&
             (source.path === destination.path ||
@@ -403,6 +362,12 @@ export function repoTools(
             throw new FileError("At most 1000 files", 413);
           for(const file of files) { const prior=seen?.get(`${source.mount.repo}:${source.v.ref}:${file.path}`); if(prior!==undefined&&prior!==file.blob)throw stale({...source,path:file.path}); }
           const sameRef = source.mount.repo === destination.mount.repo && source.v.ref === destination.v.ref;
+          if (name === "mv" && !sameRef) {
+            // Moving across refs commits the destination first. Check the source lease before that write.
+            if (isRefHeld(await source.v.ctx.repo.ref(source.v.ref))) {
+              throw new RefHeldError("held", source.ref);
+            }
+          }
           const changes: WriteInput['changes'] = {}, expected: Record<string,string> = {};
           for (const file of files) {
             const path = destination.path + file.path.slice(source.path.length), p = insideRepo(path);
@@ -430,22 +395,17 @@ export function repoTools(
         },
       }),
     ),
-    ...versionTools(refTarget, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity, invocation),
+    ...versionTools(target, async () => workspaceMount(tenant, agentId, await getMounts()).path, output, agentId, identity, invocation),
   ];
 }
 function versionTools(
-  target: (path: string, write?: boolean) => Promise<{ v: Awaited<ReturnType<typeof agentStore>>; path: string; mount: Mount; running: boolean }>,
+  target: (path: string, write?: boolean) => Promise<{ v: Awaited<ReturnType<typeof agentStore>>; path: string; mount: Mount }>,
   workspace: () => Promise<string>,
   output: (value: unknown) => { output: {type: 'text'; text: string}[] },
   agent: string,
   identity: Record<string,string>,
   invocation?: AgentInvocation,
 ) {
-  const committed = (t: { running: boolean; v: { ref: string } }, value: unknown) => {
-    const result = output(value);
-    if (t.running) result.output.push({ type: 'text', text: lastSaved(t.v.ref) });
-    return result;
-  };
   const explicitWrite = async <T>(ref: string, run: () => Promise<T>) => {
     try { return await run(); }
     catch (error) { throw heldFileError(error, ref) ?? error; }
@@ -478,14 +438,14 @@ function versionTools(
     }}),
     defineTool({name:'history',description:"List a mount's versions, newest first. With a file path, only versions that changed it. Pass next as after to continue.",replay:'safe',parameters:obj({path:opt(str()),limit:opt(int()),after:opt(str())}),async execute({path,limit,after}) {
       const t = await target(path ?? await workspace());
-      return committed(t, await repoHistory(t.v.ctx, { ref: t.v.ref, path: insideRepo(t.path) || undefined, limit, after }));
+      return output(await repoHistory(t.v.ctx, { ref: t.v.ref, path: insideRepo(t.path) || undefined, limit, after }));
     }}),
     defineTool({name:'diff',description:'List the files that changed between two versions. By default, between the previous version and now.',replay:'safe',parameters:obj({from:opt(str()),to:opt(str()),path:opt(str())}),async execute({from,to,path}) {
       const t=await target(path ?? await workspace()), head=await t.v.ctx.repo.resolve(t.v.ref), current=await t.v.ctx.repo.commit(head.version);
       const a=from ? await resolve(t,from) : current?.parents[0] ? await t.v.ctx.repo.resolve(current.parents[0]) : {tree:'4b825dc642cb6eb9a060e54bf8d69288fbee4904'}, b=to ? await resolve(t,to) : head;
       const d=await t.v.ctx.storage.diff(t.v.ctx.lineage,a.tree,b.tree);
       const prefix=insideRepo(t.mount.subpath??'/');
-      return committed(t, d.changes.filter(c=>!prefix||c.path===prefix||c.path.startsWith(prefix+'/')).map(c=>`${c.status} ${c.path}`).join('\n'));
+      return output(d.changes.filter(c=>!prefix||c.path===prefix||c.path.startsWith(prefix+'/')).map(c=>`${c.status} ${c.path}`).join('\n'));
     }}),
   ];
 }

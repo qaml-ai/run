@@ -26,7 +26,7 @@ export async function agentStore(env: RepoEnv, tenant: string, repo: string, ref
       cache!.observe(workspaceRef, head);
     return head;
   };
-  const decorate = (entry: {path: string; blob: string; size: number}, version: string) => ({ ...entry, path: '/' + entry.path, version, contentType: sniffContentType(new Uint8Array(), entry.path) });
+  const decorate = (entry: Entry, version: string) => ({ ...entry, path: '/' + entry.path, version, contentType: sniffContentType(new Uint8Array(), entry.path) });
   const entryAt = async (path: string, version?: string) => {
     const p = insideRepo(path);
     if (!p) throw new FileError(`File not found: ${path}`, 404);

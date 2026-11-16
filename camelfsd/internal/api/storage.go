@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -354,12 +353,11 @@ func (s *StorageServer) storageRoute(w http.ResponseWriter, r *http.Request, l, 
 			return
 		}
 		if info.Size > 8<<20 {
-			file, e := blobFile(ctx, repo, info)
+			file, e := store.OpenVerifiedBlobFile(ctx, repo.Store, repo.TempDir, info.SHA1, info.Size)
 			if e != nil {
 				fail(e)
 				return
 			}
-			defer os.Remove(file.Name())
 			defer file.Close()
 			head := make([]byte, 512)
 			n, e := file.Read(head)
@@ -674,37 +672,4 @@ func (s *StorageServer) lockIdempotency(lineage, key string) func() {
 		}
 		s.idemLocksMu.Unlock()
 	}
-}
-
-// Verify the complete download before emitting headers, so store failures or
-// corruption cannot turn into a successful partial response.
-func blobFile(ctx context.Context, r *objects.Repository, b objects.Blob) (out *os.File, err error) {
-	src, e := store.OpenReader(ctx, r.Store, "o/"+b.SHA1)
-	if e != nil {
-		return nil, e
-	}
-	defer src.Close()
-	file, e := os.CreateTemp(r.TempDir, "camelfsd-read-")
-	if e != nil {
-		return nil, e
-	}
-	defer func() {
-		if err != nil {
-			file.Close()
-			os.Remove(file.Name())
-		}
-	}()
-	h := sha1.New()
-	fmt.Fprintf(h, "blob %d\x00", b.Size)
-	n, e := io.Copy(io.MultiWriter(file, h), io.LimitReader(src, b.Size+1))
-	if e != nil {
-		return nil, e
-	}
-	if n != b.Size || fmt.Sprintf("%x", h.Sum(nil)) != b.SHA1 {
-		return nil, fmt.Errorf("corrupt blob")
-	}
-	if _, e = file.Seek(0, io.SeekStart); e != nil {
-		return nil, e
-	}
-	return file, nil
 }

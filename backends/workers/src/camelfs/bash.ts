@@ -15,8 +15,6 @@ import type { TierClaims } from "./claims.ts";
 import { bashEnabled, TierError, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
-import { repoStorage } from "./repo-storage.ts";
-import { guestFiles, VM_FILES_STDOUT_BYTES, type VmFiles } from "./vm-files.ts";
 
 export const BASH_WORKDIR = '/workspace';
 export type BashEnv = HostPriceEnv & { CAMELFS_COMPUTE?: string; CAMELFS_POOLS?: string; GUEST_IMAGE_SHA256?: string; COMPUTER_INSTANCE?: string };
@@ -43,6 +41,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const isTier = (error: unknown, status: number, code: string) => error instanceof TierError && error.status === status && error.code === code;
 const vmStopped = (error: unknown) => isTier(error, 409, "not_running") || isTier(error, 409, "ended") || isTier(error, 409, "lease_expired");
+const retryableCheckpoint = (error: unknown) => !(error instanceof TierError) || error.status === 429 || error.status >= 500 || error.code === "checkpoint_in_progress";
 const computeBusy = "compute is busy, retry shortly";
 
 const unplacedMessage = {
@@ -55,7 +54,7 @@ type Branch = { branch: string; lineage: string; ref: string };
 type Vm = Branch & { vm_id: string; shell: string | null; state: "creating" | "running" | "stopped"; deadline: number; created_at: number };
 type Boot = ReturnType<typeof bootSpec> & { id: string; lineage: string; ref: string; deadline: number };
 type Intent = { vm: Vm; first: boolean; body: { execId: string; command: string; shell: string; cwd?: string; timeoutS: number } };
-type Checkpoint = { vm: Vm; callId: string; requestId?: string; agent?: string; message: string; time: number; started?: boolean };
+type Checkpoint = { vm: Vm; callId: string; requestId?: string; agent?: string; message: string; time: number };
 /**
  * The body of POST /v1/vms/{id}/checkpoint, as the compute host decodes it: hostwire.CheckpointRequest with its
  * trailers as camelfsd's image.Trailers, which refuses any key it does not know (agent, run, turn, job, kind,
@@ -68,8 +67,7 @@ export function checkpointBody(c: { message: string; time: number; agent?: strin
 type SessionResult = BashResult & { checkpointWarning?: string };
 type Receipt = { intent?: Intent; result?: SessionResult; checkpoint?: Checkpoint };
 type Args = { command: string; cwd?: string; timeoutSeconds?: number };
-type Head = { version: string; tree: string };
-type Status = { phase: string; code?: string; reason?: string; lastCheckpoint?: Head };
+type Status = { phase: string; code?: string; reason?: string; checkpointReceipt?: { id: string; changed: boolean } };
 
 function claims(vm: Branch): TierClaims {
   return { sub: "runtime:bash", lin: vm.lineage, acc: "w", refs: [vm.ref] };
@@ -91,7 +89,6 @@ function bootSpec(env: Env, conf: Config) {
 }
 
 export class BashSessions {
-  private readonly savedHeads = new Map<string, Head>();
   /** A stream silent this long is resumed from the exec tail (bashStream). Tests shorten it. */
   streamIdleMs = BASH_STREAM_IDLE_MS;
   private readonly locks = new Map<string, Promise<unknown>>();
@@ -125,8 +122,6 @@ export class BashSessions {
     )`);
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_boot (branch TEXT PRIMARY KEY, body TEXT NOT NULL, seq INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_shell_used (vm_id TEXT PRIMARY KEY)");
-    this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_heads (branch TEXT PRIMARY KEY, version TEXT NOT NULL, tree TEXT NOT NULL)");
-    this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_checkpoint_warnings (branch TEXT PRIMARY KEY, reason TEXT NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_renewal (vm_id TEXT PRIMARY KEY, next INTEGER NOT NULL, refused INTEGER NOT NULL, proposed INTEGER)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS agent_vm_deliveries (id TEXT PRIMARY KEY)");
     this.sql.exec(`CREATE TABLE IF NOT EXISTS agent_vm_calls (
@@ -143,37 +138,11 @@ export class BashSessions {
     finally { if (this.locks.get(branch) === settled) this.locks.delete(branch); }
   }
 
-  // File-tool ops (VmFiles) do not queue behind bash: each is its own one-off exec, so they run concurrently with a bash
-  // command and serialize only against a checkpoint in flight, so that a checkpoint sees a consistent tree. A checkpoint
-  // waits for the file ops already running; a file op waits for the checkpoint already running.
-  private readonly checkpointLocks = new Map<string, Promise<unknown>>();
-  private readonly fileOps = new Map<string, Set<Promise<unknown>>>();
-  private async checkpointLocked<T>(branch: string, action: () => Promise<T>): Promise<T> {
-    const next = (this.checkpointLocks.get(branch) ?? Promise.resolve())
-      .then(() => Promise.allSettled([...this.fileOps.get(branch) ?? []]))
-      .then(action);
-    const settled = next.catch(() => {});
-    this.checkpointLocks.set(branch, settled);
-    try { return await next; }
-    finally { if (this.checkpointLocks.get(branch) === settled) this.checkpointLocks.delete(branch); }
-  }
-  private async fileOp<T>(branch: string, action: () => Promise<T>): Promise<T> {
-    await this.checkpointLocks.get(branch);
-    const ops = this.fileOps.get(branch) ?? new Set<Promise<unknown>>();
-    this.fileOps.set(branch, ops);
-    const running = action();
-    const settled = running.catch(() => {});
-    ops.add(settled);
-    try { return await running; }
-    finally { ops.delete(settled); if (!ops.size && this.fileOps.get(branch) === ops) this.fileOps.delete(branch); }
-  }
-
   private row(branch: string) {
     return this.sql.exec<Vm>("SELECT * FROM agent_vms WHERE branch=?", branch).toArray()[0];
   }
 
   private stop(vmId: string) {
-    this.savedHeads.delete(vmId);
     this.sql.exec("UPDATE agent_vms SET state='stopped' WHERE vm_id=?", vmId);
   }
 
@@ -330,14 +299,27 @@ export class BashSessions {
     return running;
   }
 
-  completed(key: string) { return this.receipt(key)?.result; }
+  completed(key: string) {
+    const receipt = this.receipt(key);
+    return receipt?.checkpoint ? undefined : receipt?.result;
+  }
+
+  async recover(key: string) {
+    const branch = this.receipt(key)?.checkpoint?.vm.branch;
+    if (branch !== undefined) await this.serial(branch, () => this.checkpoints(branch));
+    return this.completed(key);
+  }
 
   async execute(conf: Config, branch: Branch, key: string, callId: string, requestId: string, args: Args, invocation?: AgentInvocation): Promise<SessionResult> {
     if (!invocation) return AgentInvocation.run(scope => this.execute(conf, branch, key, callId, requestId, args, scope));
+    const recovered = await this.recover(key);
+    if (recovered) return recovered;
     return this.serial(branch.branch, async () => {
+      const completed = this.completed(key);
+      if (completed) return completed;
+      await this.checkpoints(branch.branch);
       const previous = this.receipt(key);
       if (previous?.result) return previous.result;
-      await this.checkpointLocked(branch.branch, () => this.checkpoints(branch.branch));
       let intent = previous?.intent;
       const replay = !!intent;
       for (let attempt = 0; ; attempt++) {
@@ -359,7 +341,6 @@ export class BashSessions {
         const path = "/v1/vms/" + vm.vm_id + "/exec";
         let streamed: Awaited<ReturnType<typeof bashStream>>;
         try {
-          this.savedHeads.delete(vm.vm_id);
           streamed = await bashStream(this.env, { method: "POST", path, body, claims: claims(vm) }, body.execId, started + (body.timeoutS + 30) * 1000, () => {
             if (first) console.log(JSON.stringify({ type: "bash_vm_first_output", vm: vm.vm_id, firstOutputMs: Date.now() - vm.created_at }));
           }, undefined, this.streamIdleMs);
@@ -377,92 +358,14 @@ export class BashSessions {
         // The wake is durable before the receipt leaves a pending checkpoint.
         await this.arm(Date.now() + 1_000, invocation);
         this.storage.transactionSync(() => {
-          const warning = this.sql.exec<{ reason: string }>(
-            "DELETE FROM agent_vm_checkpoint_warnings WHERE branch=? RETURNING reason", branch.branch,
-          ).toArray()[0];
-          if (warning) {
-            result.checkpointWarning = `Warning: files from your previous command were not saved to your branch: ${warning.reason}\n`;
-            result.stdout = result.checkpointWarning + result.stdout;
-          }
           this.sql.exec("INSERT OR IGNORE INTO agent_vm_shell_used VALUES(?)", vm.vm_id);
           this.save(key, branch.branch, { result, checkpoint });
         });
-        this.scheduleCheckpoint(branch.branch);
+        await this.checkpoints(branch.branch);
         console.log(JSON.stringify({ type: "bash_exec", vm: vm.vm_id, callId, ms: ms ?? Date.now() - started, exitCode: result.exitCode, truncated: result.truncated, bytes }));
-        return result;
+        return this.completed(key)!;
       }
     });
-  }
-
-  runningFiles(lineage: string, ref: string, agent?: string): VmFiles | undefined {
-    const branch = JSON.stringify([lineage, ref]);
-    const vm = this.row(branch);
-    if (vm?.state !== "running") return;
-    const ensureRunning = () => {
-      const current = this.row(branch);
-      if (current?.state !== "running" || current.vm_id !== vm.vm_id) throw new HttpError(409, "the VM stopped; retry");
-    };
-    const onVm = <T>(work: () => Promise<T>) => this.fileOp(branch, async () => {
-      ensureRunning();
-      try {
-        const value = await work();
-        ensureRunning();
-        return value;
-      } catch (error) {
-        if (vmStopped(error))
-          this.stop(vm.vm_id);
-        ensureRunning();
-        throw error;
-      }
-    });
-    return guestFiles(
-      (execId, command, input, mutation) => onVm(async () => {
-        const timeoutS = 120;
-        const body = { execId, command, ...input, cwd: BASH_WORKDIR, timeoutS };
-        const checkpoint = { vm, callId: execId, ...(agent ? { agent } : {}), message: "Save VM file changes", time: Date.now() };
-        const key = JSON.stringify(["vmfiles", vm.vm_id]);
-        if (mutation) {
-          await AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope));
-          this.savedHeads.delete(vm.vm_id);
-          // Record the pending save before dispatch. The mutation can succeed even if its response is lost.
-          this.save(key, branch, { checkpoint });
-        }
-        try {
-          const { result } = await bashStream(this.env, {
-            method: "POST", path: "/v1/vms/" + vm.vm_id + "/exec", body, claims: claims(vm),
-          }, execId, Date.now() + (timeoutS + 30) * 1000, () => {}, VM_FILES_STDOUT_BYTES, this.streamIdleMs);
-          return result;
-        } finally {
-          if (mutation) this.scheduleCheckpoint(branch);
-        }
-      }),
-      () => this.checkpointLocked(branch, async () => {
-        ensureRunning();
-        await this.checkpoints(branch);
-        ensureRunning();
-        const saved = this.savedHeads.get(vm.vm_id);
-        if (saved) return saved;
-        const reply = await this.request<Head & { changed: boolean }>(vm, "POST", "/checkpoint", {
-          message: "Save VM file changes", time: Date.now(),
-        });
-        if (reply.changed) this.recordHead(vm, reply);
-        return this.rememberHead(vm, reply);
-      }),
-      bytes => onVm(() => repoStorage(this.env, claims(vm).sub).putBlob(vm.lineage, bytes)),
-    );
-  }
-
-  private scheduleCheckpoint(branch: string) {
-    this.defer(sleep(0)
-      .then(() => this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))))
-      .catch(() => AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope))));
-  }
-
-  private rememberHead(vm: Vm, { version, tree }: Head) {
-    const head = { version, tree };
-    const current = this.row(vm.branch);
-    if (current?.state === "running" && current.vm_id === vm.vm_id) this.savedHeads.set(vm.vm_id, head);
-    return head;
   }
 
   private async checkpoints(branch: string) {
@@ -470,45 +373,43 @@ export class BashSessions {
     for (const row of rows) {
       const { result, checkpoint } = JSON.parse(row.receipt) as { result?: SessionResult; checkpoint: Checkpoint };
       const { vm, callId, requestId } = checkpoint;
+      const receipt = hash(row.id);
       const started = Date.now();
-      let failure = result?.checkpointError;
       let changed: boolean | undefined;
-      try {
-        if (!result?.checkpointError) {
-          if (!checkpoint.started) this.save(row.id, branch, { result, checkpoint: { ...checkpoint, started: true } });
-          const reply = await this.request<Head & { diff: unknown; changed: boolean }>(vm, "POST", "/checkpoint", checkpointBody(checkpoint));
-          changed = reply.changed;
-          this.rememberHead(vm, reply);
-          if (changed) this.recordHead(vm, reply);
-          else if (checkpoint.started) {
-            const status = await this.request<Status>(vm, "GET");
-            if (status.lastCheckpoint?.version === reply.version) this.recordHead(vm, status.lastCheckpoint);
+      if (!result?.checkpointError) {
+        try {
+          ({ changed } = await this.request<{ changed: boolean }>(vm, "POST", "/checkpoint", checkpointBody(checkpoint), undefined, receipt));
+        } catch (error) {
+          const reason = (error instanceof TierError ? error.code : "checkpoint_failed").replace(/[\r\n]+/g, " ");
+          // Retain the durable receipt on an uncertain save. Recovery retries the checkpoint alone.
+          if (retryableCheckpoint(error)) {
+            console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, error: reason }));
+            throw error;
+          }
+          if (vmStopped(error) || reason === "vm_not_running") this.stop(vm.vm_id);
+          const status = await this.request<Status>(vm, "GET").catch(cause => {
+            if (retryableCheckpoint(cause)) throw cause;
+            return undefined;
+          });
+          const saved = status?.checkpointReceipt;
+          if (saved?.id === receipt && typeof saved.changed === "boolean") {
+            changed = saved.changed;
+          } else {
+            console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, error: reason }));
+            if (result) {
+              result.checkpointError = reason;
+              this.save(row.id, branch, { result, checkpoint });
+            }
           }
         }
-      } catch (error) {
-        const reason = (error instanceof TierError ? error.code : "checkpoint_failed").replace(/[\r\n]+/g, " ");
-        this.savedHeads.delete(vm.vm_id);
-        if (vmStopped(error))
-          this.stop(vm.vm_id);
-        failure = reason;
-        if (result) result.checkpointError = reason;
-        // Persist the warning and the bash failure together, before publishing the event.
-        this.storage.transactionSync(() => {
-          this.sql.exec("INSERT OR REPLACE INTO agent_vm_checkpoint_warnings VALUES(?,?)", branch, reason);
-          if (result) this.save(row.id, branch, { result, checkpoint });
-        });
       }
       if (requestId && result?.checkpointError) {
         await this.checkpointFailed(callId, requestId, result.checkpointError);
       }
       if (result) this.save(row.id, branch, { result });
       else this.sql.exec("DELETE FROM agent_vm_calls WHERE id=?", row.id);
-      console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, changed, error: failure }));
+      if (changed !== undefined) console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, changed }));
     }
-  }
-
-  private recordHead(vm: Vm, { version, tree }: Head) {
-    this.sql.exec("INSERT OR REPLACE INTO agent_vm_heads VALUES(?,?,?)", vm.branch, version, tree);
   }
 
   deadline() {
@@ -523,7 +424,8 @@ export class BashSessions {
     if (!invocation) return AgentInvocation.run(scope => this.wake(conf, scope));
     if (!bashEnabled(this.env)) return;
     for (const { branch } of this.sql.exec<{ branch: string }>("SELECT DISTINCT branch FROM agent_vm_calls WHERE checkpoint=1").toArray())
-      this.defer(this.serial(branch, () => this.checkpointLocked(branch, () => this.checkpoints(branch))));
+      this.defer(this.serial(branch, () => this.checkpoints(branch))
+        .catch(() => AgentInvocation.run(scope => this.arm(Date.now() + 1_000, scope))));
     if (this.renewing) return;
     this.renewing = true;
     try { await this.renew(conf, invocation); }
@@ -585,23 +487,24 @@ export function bashTool(runtime: AgentRuntime) {
       const conf = await runtime.config();
       const run = await runtime.currentRun(api);
       const key = JSON.stringify([run.id, api.callId]);
-      let result = runtime.bashSessions.completed(key);
-      if (!result) {
-        const mount = workspaceMount(conf.tenantId, conf.id, (conf.config.mounts ?? []) as Mount[]);
-        if (mount.mode !== "rw" || (mount.subpath && mount.subpath !== "/")) throw new Error("Bash requires a writable workspace root");
-        const { lineage, repo } = await repoContext(runtime.env as RepoEnv, conf.tenantId, mount.repo, `agent:${conf.id}`);
-        const ref = repo.tierRefName(mount.ref ?? "main");
-        try {
+      let result: SessionResult | undefined;
+      try {
+        result = await runtime.bashSessions.recover(key);
+        if (!result) {
+          const mount = workspaceMount(conf.tenantId, conf.id, (conf.config.mounts ?? []) as Mount[]);
+          if (mount.mode !== "rw" || (mount.subpath && mount.subpath !== "/")) throw new Error("Bash requires a writable workspace root");
+          const { lineage, repo } = await repoContext(runtime.env as RepoEnv, conf.tenantId, mount.repo, `agent:${conf.id}`);
+          const ref = repo.tierRefName(mount.ref ?? "main");
           result = await runtime.bashSessions.execute(conf, { branch: JSON.stringify([lineage, ref]), lineage, ref }, key, api.callId, run.id, args);
-        } catch (error) {
-          if (error instanceof BashVmUnplaced) return { output: [{ type: "text", text: error.message }], isError: true };
-          if (error instanceof TierError && error.status === 429) throw new HttpError(429, computeBusy);
-          throw error;
         }
+      } catch (error) {
+        if (error instanceof BashVmUnplaced) return { output: [{ type: "text", text: error.message }], isError: true };
+        if (error instanceof TierError && error.status === 429) throw new HttpError(429, computeBusy);
+        throw error;
       }
       const { checkpointWarning = "", ...structuredOutput } = result;
       const text = checkpointWarning + JSON.stringify({ ...structuredOutput, stdout: structuredOutput.stdout.slice(checkpointWarning.length) });
-      return { output: [{ type: "text", text }], structuredOutput, isError: !!structuredOutput.error };
+      return { output: [{ type: "text", text }], structuredOutput, isError: !!(structuredOutput.error || structuredOutput.checkpointError) };
     },
   });
 }

@@ -271,6 +271,9 @@ func vmStatus(vm compute.VM) map[string]any {
 	if vm.LastCheckpoint != nil {
 		body["lastCheckpoint"] = vm.LastCheckpoint
 	}
+	if vm.CheckpointReceipt != nil {
+		body["checkpointReceipt"] = vm.CheckpointReceipt
+	}
 	return body
 }
 

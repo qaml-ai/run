@@ -7,6 +7,7 @@ const { commitChanges, setRefToVersion, branch } = await import('../src/repos/wr
 const { mergeRefs } = await import('../src/repos/merge.ts');
 const { createRepo, repoContext, deleteRepo } = await import('../src/repos/registry.ts');
 const { repoTools } = await import("../src/repos/tools.ts");
+const { handleAgentFileRequest } = await import("../src/repos/agent-files.ts");
 const { agentRepoId, releaseAgentFiles } = await import("../src/repos/mounts.ts");
 const { PromptAttachments } = await import("../src/prompt-attachments.ts");
 const {configImpl}=await import('../src/agent-config.ts');
@@ -138,31 +139,77 @@ test('recursive copies and moves commit once, and pathless versions select the o
   assert.match((grep.output[0]as any).text,/a/);
 });
 
-test('version tools read committed history and report a held ref', async t => {
+test('a held workspace reads committed files and rejects file and version writes', async t => {
   const { env, create, write } = await fixture(t), ctx = await create({ key: 'agent:a' });
   const first = await write(ctx, { 'a.txt': { bytes: bytes('first') } });
   await write(ctx, { 'a.txt': { bytes: bytes('second') } });
-  const vm = new Proxy({}, { get: (_, key) => {
-    if (key !== 'then') assert.fail('version tools must not access the VM filesystem');
-  } });
-  let running = true;
-  const tools = repoTools(env, 't', 'a', async () => [{ repo: ctx.repoId, path: '/workspace', mode: 'rw' }],
-    undefined, undefined, undefined, {}, undefined, async () => running ? vm as never : undefined);
+  const tools = repoTools(env, 't', 'a', async () => [{ repo: ctx.repoId, path: '/workspace', mode: 'rw' }]);
   const run = (name: string, args: any) => tools.find(tool => tool.name === name)!.execute(args, {} as never, {} as never);
-  const note = { type: 'text', text: 'Showing main as last saved; a command still running on your machine may change it.' };
-  const historyArgs = { path: '/workspace/a.txt' };
-  const history = (await run('history', historyArgs)).output;
-  assert.equal(JSON.parse(history[0].text).versions.length, 2);
-  assert.deepEqual(history[1], note);
-  assert.deepEqual((await run('diff', {})).output, [{ type: 'text', text: 'modified a.txt' }, note]);
-  const held = { code: 'held', message: 'main is in use by your running machine, so this can\'t run now. Retry after the machine goes to sleep (about 10 seconds with no command running).' };
+  const path = '/workspace/a.txt';
+  const holder = { host: 'host', boot: 1, mount: 'mount' };
+  const { epoch } = await ctx.repo.acquire({ ref: 'main', holder, ttlMs: 10_000 });
+  const head = await ctx.repo.ref('main');
+  assert.deepEqual((await run('read', { path })).output, [{ type: 'text', text: 'second' }]);
+  assert.equal(JSON.parse((await run('history', { path })).output[0].text).versions.length, 2);
+  assert.deepEqual((await run('diff', {})).output, [{ type: 'text', text: 'modified a.txt' }]);
+  const held = { status: 409, code: 'held', message: /main is in use by your running machine/ };
+  await assert.rejects(run('write', { path, content: 'blocked' }), held);
+  await assert.rejects(run('delete', { path }), held);
   await assert.rejects(run('checkpoint', { message: 'held' }), held);
   await assert.rejects(run('restore', { version: first.version }), held);
+  assert.equal((await ctx.repo.ref('main'))?.version, head?.version);
+  await ctx.repo.release({ ref: 'main', holder, epoch });
+  await run('write', { path, content: 'saved' });
+  assert.deepEqual((await run('read', { path })).output, [{ type: 'text', text: 'saved' }]);
+});
 
-  running = false;
-  assert.deepEqual((await run('history', historyArgs)).output, history.slice(0, 1));
-  assert.deepEqual((await run('read', { path: '/workspace/a.txt' })).output, [{ type: 'text', text: 'second' }]);
-  await ctx.repo.acquire({ ref: 'main', holder: { host: 'host', boot: 1, mount: 'mount' }, ttlMs: 10_000 });
-  await assert.rejects(run('checkpoint', { message: 'raced a lease' }), held);
-  await assert.rejects(run('restore', { version: first.version }), held);
+test('agent file downloads carry the committed Git mode', async t => {
+  const { env, create, write } = await fixture(t), ctx = await create({ key: 'agent:a' });
+  const mounts = [{ repo: ctx.repoId, path: '/workspace', mode: 'rw' as const }];
+  const result = await write(ctx, {
+    'script.sh': { bytes: bytes('echo ready'), mode: '100755' },
+    'link': { bytes: bytes('script.sh'), mode: '120000' },
+  });
+  for (const [name, mode, content] of [['script.sh', '100755', 'echo ready'], ['link', '120000', 'script.sh']]) {
+    const response = await handleAgentFileRequest(new Request('https://agent.invalid/files'), env, 't', 'a', `/workspace/${name}`, mounts);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mode'), mode);
+    assert.equal(response.headers.get('x-file-version'), result.version);
+    assert.equal(await response.text(), content);
+  }
+});
+
+test('agent file writes reject a live lease before reading the body and still honor a later lease', async t => {
+  const { env, create, write, fake } = await fixture(t), ctx = await create({ key: 'agent:a' });
+  const mounts = [{ repo: ctx.repoId, path: '/workspace', mode: 'rw' as const }];
+  const result = await write(ctx, { 'draft.txt': { bytes: bytes('original') } });
+  const handle = (request: Request) => handleAgentFileRequest(request, env, 't', 'a', '/workspace/draft.txt', mounts);
+  const url = 'https://agent.invalid/files';
+  const holder = { host: 'host', boot: 1, mount: 'mount' };
+  const lease = await ctx.repo.acquire({ ref: 'main', holder, ttlMs: 10_000 });
+  const before = fake.calls.length;
+  const put = new Request(url, { method: 'PUT', body: 'blocked' });
+  const denied = await handle(put);
+  assert.equal(denied.status, 409);
+  assert.equal((await denied.json()).code, 'held');
+  assert.equal(put.bodyUsed, false);
+  assert.equal((await handle(new Request(url, { method: 'DELETE' }))).status, 409);
+  assert.ok(fake.calls.slice(before).every(call => call.startsWith('GET ')));
+  await ctx.repo.release({ ref: 'main', holder, epoch: lease.epoch });
+
+  let raced: Awaited<ReturnType<typeof ctx.repo.acquire>> | undefined;
+  const late = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      raced = await ctx.repo.acquire({ ref: 'main', holder, ttlMs: 10_000 });
+      controller.enqueue(bytes('raced'));
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const conflict = await handle(new Request(url, { method: 'PUT', body: late, duplex: 'half' } as RequestInit));
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).code, 'held');
+  assert.ok(raced);
+  assert.equal((await ctx.repo.ref('main'))?.version, result.version);
+  await ctx.repo.release({ ref: 'main', holder, epoch: raced.epoch });
+  assert.equal((await handle(new Request(url, { method: 'PUT', body: 'saved' }))).status, 201);
 });

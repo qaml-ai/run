@@ -39,12 +39,12 @@ function fixture(t: TestContext) {
       catch (error) { db.exec("ROLLBACK"); throw error; }
     },
   } as unknown as DurableObjectStorage;
-  const branch = { branch: "fork", lineage: "t:r", ref: "fork/child/main" };
+  const branch = { branch: JSON.stringify(["t:r", "fork/child/main"]), lineage: "t:r", ref: "fork/child/main" };
   const conf: Config = { tenantId: "t", id: "agent-with-dash", revision: 1, expiresAt: null, config: {} };
   const pending: Promise<unknown>[] = [];
   const errors: string[] = [];
-  const calls: { method: string; path: string; body: any }[] = [];
-  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string }; stopBody?: unknown }>();
+  const calls: { method: string; path: string; body: any; receipt?: string }[] = [];
+  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string }; checkpointReceipt?: { id: string; changed: boolean }; stopBody?: unknown }>();
   const results = new Map<string, string>();
   const flags = {
     refusal: undefined as { status: number; code?: string } | undefined,
@@ -69,7 +69,8 @@ function fixture(t: TestContext) {
   function fetchTier(url: URL, init: RequestInit) {
     const method = init.method!;
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ method, path: url.pathname + url.search, body });
+    const receipt = new Headers(init.headers).get("Idempotency-Key") ?? undefined;
+    calls.push({ method, path: url.pathname + url.search, body, receipt });
     const [, , , id, op, execId] = url.pathname.split("/");
     if (!id) {
       assert.equal(new Headers(init.headers).get("Idempotency-Key"), body.id);
@@ -100,6 +101,7 @@ function fixture(t: TestContext) {
       if (flags.checkpointError) return fail(502, "host_unreachable");
       const head = { version: "version", tree: "tree" };
       if (!flags.unchanged) vm.lastCheckpoint = head;
+      if (receipt) vm.checkpointReceipt = { id: receipt, changed: !flags.unchanged };
       return Response.json({ ...head, changed: !flags.unchanged, diff: [] });
     }
     if (method === "GET") {
@@ -148,18 +150,18 @@ function fixture(t: TestContext) {
   return { db, conf, flags, calls, errors, vms, row, run, replayTool, flush, restart, ended, get sessions() { return sessions; } };
 }
 
-test("creates once, reuses its shell, checkpoints after the result, and replaces an idle VM", async t => {
+test("creates once, reuses its shell, publishes its checkpoint before returning, and replaces an idle VM", async t => {
   const f = fixture(t);
   assert.equal((await f.run("one")).stdout, "ok");
   const first = f.row()!.vm_id;
   assert.equal(f.flags.pollerStarts, 1);
   assert.equal(f.calls.find(c => c.path.endsWith("/exec"))!.body.cwd, BASH_WORKDIR);
-  assert.equal(f.calls.filter(c => c.path.endsWith("/checkpoint")).length, 0);
-  await f.flush();
-  assert.equal(f.db.prepare("SELECT version FROM agent_vm_heads").get()?.version, "version");
+  assert.equal(f.calls.filter(c => c.path.endsWith("/checkpoint")).length, 1);
+  assert.equal(f.vms.get(first)?.lastCheckpoint?.version, "version");
   // The host refuses unknown trailer keys (camelfsd image.Trailers): the checkpoint body is checkpointBody's shape.
-  const sent = f.calls.find(c => c.path.endsWith("/checkpoint"))!.body;
+  const { body: sent, receipt } = f.calls.find(c => c.path.endsWith("/checkpoint"))!;
   assert.deepEqual(Object.keys(sent).sort(), ["message", "time", "trailers"]);
+  assert.match(receipt ?? "", /^[a-f0-9]{64}$/);
   assert.equal(sent.trailers.kind, "auto");
   assert.equal(sent.trailers.agent, "agent-with-dash");
   assert.equal(sent.trailers.run, "run");
@@ -248,31 +250,19 @@ for (const { status, code, spendsCredit, message } of [
   });
 }
 
-test("a checkpoint warning survives a restart and prefixes the next result once on its branch", async t => {
+test("a transient checkpoint failure holds the result, then restart retries the save without executing again", async t => {
   const f = fixture(t);
-  const warning = "Warning: files from your previous command were not saved to your branch: host_unreachable\n";
   f.flags.checkpointError = true;
-  await f.run("failed");
-  await f.flush();
-  f.restart();
+  await assert.rejects(f.run("pending"), { code: "host_unreachable" });
+  assert.equal(f.sessions.completed(JSON.stringify(["run", "pending"])), undefined);
+  assert.equal(f.flags.runs, 1);
+
   f.flags.checkpointError = false;
-
-  assert.equal((await f.run("other", { branch: "other", lineage: "t:r", ref: "fork/child/main" })).stdout, "ok");
-  assert.equal((await f.run("next")).stdout, warning + "ok");
-  const shown = await f.replayTool("next");
-  assert.equal(shown.structuredOutput?.stdout, warning + "ok");
-  const text = shown.output?.[0];
-  assert.equal(text?.type, "text");
-  if (text?.type !== "text") assert.fail("expected text output");
-  assert.ok(text.text.startsWith(warning));
-  assert.equal(JSON.parse(text.text.slice(warning.length)).stdout, "ok");
-  await f.flush();
-
   f.restart();
-  assert.deepEqual(await f.replayTool("next"), shown);
-  assert.equal((await f.run("after")).stdout, "ok");
-  assert.equal(f.flags.runs, 4);
-  await f.flush();
+  assert.equal((await f.run("pending")).stdout, "ok");
+  assert.equal(f.flags.runs, 1);
+  assert.equal(f.calls.filter(call => call.path.endsWith("/checkpoint")).length, 2);
+  assert.equal(f.vms.get(f.row()!.vm_id)?.lastCheckpoint?.version, "version");
 });
 
 test("replays each persisted boot/exec boundary without running twice", async t => {
@@ -290,7 +280,7 @@ test("replays each persisted boot/exec boundary without running twice", async t 
   assert.equal(f.vms.size, 1);
 });
 
-test("keeps exact byte windows, resumes a dropped stream, and records a checkpoint failure", async t => {
+test("keeps exact byte windows and resumes a dropped stream", async t => {
   const f = fixture(t);
   const half = BASH_OUTPUT_KEEP / 2;
   const head = "a".repeat(half), tail = "b".repeat(half);
@@ -307,36 +297,59 @@ test("keeps exact byte windows, resumes a dropped stream, and records a checkpoi
   assert.deepEqual(await f.run("dropped"), { stdout: "ok", stderr: "!", exitCode: 0, timedOut: false, truncated: false });
   await f.flush();
   f.flags.tailStatus = 410;
-  f.flags.checkpointError = true;
   const lost = await f.run("lost");
   assert.equal(lost.exitCode, null);
   assert.equal(lost.stdout, "ok");
   assert.equal(lost.truncated, true);
-  assert.equal(lost.checkpointError, undefined);
-  await f.flush();
-  assert.deepEqual(f.errors, ["host_unreachable"]);
-  assert.equal((await f.run("lost")).checkpointError, "host_unreachable");
 });
 
-
-test("recovers a pending checkpoint after restart and records its head only when changed", async t => {
+test("recovers a pending checkpoint through the alarm after the response was lost", async t => {
   const f = fixture(t);
-  f.flags.unchanged = true;
-  await f.run("unchanged");
-  await f.flush();
-  assert.equal(f.db.prepare("SELECT version FROM agent_vm_heads").get(), undefined);
-
-  f.flags.unchanged = false;
-  await f.run("pending");
-  const before = f.calls.filter(call => call.path.endsWith("/checkpoint")).length;
-  // Eviction before dispatch leaves the result and a pending checkpoint in SQLite.
+  f.flags.crashAfter = "/checkpoint";
+  await assert.rejects(f.run("pending"), /tier unreachable/);
+  assert.equal(f.sessions.completed(JSON.stringify(["run", "pending"])), undefined);
   f.restart();
+  f.flags.unchanged = true; // The previous request already saved the tree.
   await f.sessions.wake(f.conf);
   await f.flush();
-  assert.equal(f.calls.filter(call => call.path.endsWith("/checkpoint")).length, before + 1);
-  assert.equal(f.db.prepare("SELECT version FROM agent_vm_heads").get()?.version, "version");
+  assert.equal((await f.run("pending")).stdout, "ok");
+  assert.equal(f.flags.runs, 1);
+  assert.equal(f.calls.filter(call => call.path.endsWith("/checkpoint")).length, 2);
 });
 
+test("a VM that stopped before the checkpoint is a tool error", async t => {
+  const f = fixture(t);
+  await f.run("older");
+  f.flags.crash = "/checkpoint";
+  await assert.rejects(f.run("pending"), /tier unreachable/);
+  f.vms.get(f.row()!.vm_id)!.phase = "ended";
+  const result = await f.replayTool("pending");
+  assert.equal(result.structuredOutput?.checkpointError, "not_running");
+  assert.equal(result.isError, true);
+  assert.deepEqual(f.errors, ["not_running"]);
+  assert.equal(f.flags.runs, 2);
+});
+
+for (const unchanged of [false, true]) test(`an ended VM recovers the exact ${unchanged ? "no-op" : "published"} checkpoint after response loss`, async t => {
+  const f = fixture(t);
+  f.flags.unchanged = unchanged;
+  f.flags.crashAfter = "/checkpoint";
+  await assert.rejects(f.run("pending"), /tier unreachable/);
+  const vm = f.row()!.vm_id;
+  f.vms.get(vm)!.phase = "ended";
+  f.restart();
+  await f.ended("idle", vm);
+  // A transient failure reading the receipt keeps the same pending result.
+  f.flags.crash = vm;
+  await assert.rejects(f.replayTool("pending"), /tier unreachable/);
+  const result = await f.replayTool("pending");
+  assert.equal(result.structuredOutput?.stdout, "ok");
+  assert.equal(result.isError, false);
+  assert.deepEqual(f.errors, []);
+  assert.equal(f.flags.runs, 1);
+  const receipts = f.calls.filter(call => call.path.endsWith("/checkpoint")).map(call => call.receipt);
+  assert.equal(new Set(receipts).size, 1);
+});
 
 test("replays an ambiguous renewal with the same deadline", async t => {
   t.mock.timers.enable({ apis: ["Date"] });

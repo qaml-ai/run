@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -140,6 +141,9 @@ func TestDDBVMSessionProxy(t *testing.T) {
 		case vmPath + "/exec/missing":
 			authFail(w, 404, "exec_unknown", "unknown")
 		case vmPath + "/checkpoint":
+			if r.Header.Get("Idempotency-Key") != "" {
+				t.Error("tier receipt was forwarded to the host")
+			}
 			var q hostwire.CheckpointRequest
 			if err := json.NewDecoder(r.Body).Decode(&q); err != nil || q.Time == nil || *q.Time != 88 {
 				t.Errorf("checkpoint request: %+v, %v", q, err)
@@ -155,6 +159,10 @@ func TestDDBVMSessionProxy(t *testing.T) {
 			}
 			if n == 3 {
 				authFail(w, 409, "fenced", "fenced")
+				return
+			}
+			if n == 5 {
+				jsonReply(w, 200, json.RawMessage(`{"version":"saved","tree":"tree","diff":[]}`))
 				return
 			}
 			jsonReply(w, 200, hostwire.CheckpointReply{
@@ -216,6 +224,20 @@ func TestDDBVMSessionProxy(t *testing.T) {
 		return fmt.Sprintf(`{"execId":%q,"command":%q,"shell":"sh","timeoutS":120}`, id, command)
 	}
 	const save = `{"message":"save","trailers":{"kind":"manual"},"time":88}`
+	checkpoint := func(receipt string) *http.Request {
+		r := post("/checkpoint", save)
+		if receipt != "" {
+			r.Header.Set("Idempotency-Key", receipt)
+		}
+		return r
+	}
+	assertReceipt := func(id string, changed bool) {
+		t.Helper()
+		want := compute.CheckpointReceipt{ID: id, Changed: changed}
+		if got := get().CheckpointReceipt; got == nil || *got != want {
+			t.Fatalf("checkpoint receipt: %+v, want %+v", got, want)
+		}
+	}
 	shape := compute.Shape{VCPUs: 1, MemoryMiB: 1024, DiskGiB: 1}
 	check(c.Create(ctx, compute.CreateRequest{ID: "vm", Lineage: "tenant", Ref: "branch/main",
 		Pool: "build", Payer: "payer", Shape: shape, Session: &compute.Session{IdleStopS: 10},
@@ -312,13 +334,17 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	}
 
 	first := httptest.NewRecorder()
+	checkpointCtx, disconnectCheckpoint := context.WithCancel(ctx)
+	defer disconnectCheckpoint()
 	checkpointDone := make(chan struct{})
+	call(checkpoint("bad/key"), 400, "Idempotency-Key")
 	go func() {
-		s.ServeHTTP(first, post("/checkpoint", save))
+		s.ServeHTTP(first, checkpoint("saved-call").WithContext(checkpointCtx))
 		close(checkpointDone)
 	}()
 	awaitSessionSignal(t, ctx, checkpointEntered)
-	call(post("/checkpoint", save), 409, "checkpoint_in_progress")
+	call(checkpoint("in-flight-call"), 409, "checkpoint_in_progress")
+	disconnectCheckpoint()
 	close(checkpointAllowed)
 	awaitSessionSignal(t, ctx, checkpointDone)
 	if first.Code != 200 || !strings.Contains(first.Body.String(), `"changed":true`) {
@@ -328,6 +354,7 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	if saved == nil || saved.Version != "saved" || saved.Tree != "tree" || saved.At != clock.Load() {
 		t.Fatalf("lastCheckpoint: %+v", saved)
 	}
+	assertReceipt("saved-call", true)
 	clock.Add(1_000)
 	close(exitAllowed)
 	for {
@@ -348,9 +375,11 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	}
 
 	clock.Add(1_000)
-	call(post("/checkpoint", save), 200, `"changed":false`)
+	call(checkpoint("noop-call"), 200, `"changed":false`)
 	assertActivity()
-	call(post("/checkpoint", save), 409, "fenced")
+	assertReceipt("noop-call", false)
+	call(checkpoint("fenced-call"), 409, "fenced")
+	assertReceipt("noop-call", false)
 	if got := get().LastCheckpoint; got == nil || *got != *saved {
 		t.Fatalf("no-op or fenced checkpoint overwrote lastCheckpoint: %+v", got)
 	}
@@ -367,10 +396,16 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call(post("/checkpoint", save), 200, `"changed":true`)
+	call(checkpoint(""), 200, `"changed":true`)
 	if got := get().LastCheckpoint; got == nil || got.At != clock.Load() {
 		t.Fatalf("stale checkpoint did not complete: %+v", got)
 	}
+	assertReceipt("noop-call", false)
+	if err := c.FinishCheckpoint(ctx, "vm", "expired", nil, &compute.CheckpointReceipt{ID: "stale-owner"}); !errors.Is(err, compute.ErrCondition) {
+		t.Fatalf("stale owner recorded a receipt: %v", err)
+	}
+	call(checkpoint("malformed-host-reply"), 502, "host_unreachable")
+	assertReceipt("noop-call", false)
 	clock.Add(11_000)
 	if err := loop.Pass(ctx); err != nil {
 		t.Fatal(err)
@@ -402,6 +437,8 @@ func TestDDBVMSessionProxy(t *testing.T) {
 	if v := get(); v.Code != compute.Idle || v.EndVersion != "idle-version" || v.CheckpointError != "idle error" {
 		t.Fatalf("idle end: %+v", v)
 	}
+	call(checkpoint("noop-call"), 409, "not_running")
+	call(request("GET", "", "", "r", "runtime:test"), 200, `"checkpointReceipt":{"id":"noop-call","changed":false}`)
 
 	check(c.Create(ctx, compute.CreateRequest{ID: "other", Lineage: "tenant", Ref: "branch/main",
 		Pool: "build", Payer: "payer", Shape: shape, Session: &compute.Session{IdleStopS: 10},

@@ -194,6 +194,13 @@ func (v *vmAPI) checkpoint(w http.ResponseWriter, r *http.Request, claims auth.C
 	if err != nil {
 		return err
 	}
+	var receiptID string
+	if keys := r.Header.Values("Idempotency-Key"); len(keys) != 0 {
+		if len(keys) != 1 || !hostwire.MountID.MatchString(keys[0]) {
+			return invalid("Idempotency-Key: must be a single value matching %s", hostwire.MountID)
+		}
+		receiptID = keys[0]
+	}
 	var q hostwire.CheckpointRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := decodeStorage(r, &q); err != nil {
@@ -213,7 +220,7 @@ func (v *vmAPI) checkpoint(w http.ResponseWriter, r *http.Request, claims auth.C
 		if !finished {
 			save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			if err := v.controller.FinishCheckpoint(save, vm.ID, owner, nil); err != nil {
+			if err := v.controller.FinishCheckpoint(save, vm.ID, owner, nil, nil); err != nil {
 				slog.Error("vm_checkpoint_unlock_failed", "vm", vm.ID, "error", err)
 			}
 		}
@@ -227,10 +234,15 @@ func (v *vmAPI) checkpoint(w http.ResponseWriter, r *http.Request, claims auth.C
 		relayHostResponse(w, resp)
 		return nil
 	}
-	var result hostwire.CheckpointReply
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Version == "" || result.Tree == "" || result.Diff == nil {
+	var reply struct {
+		hostwire.CheckpointReply
+		Changed *bool `json:"changed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil || reply.Version == "" || reply.Tree == "" || reply.Diff == nil || receiptID != "" && reply.Changed == nil {
 		return hostUnreachable
 	}
+	result := reply.CheckpointReply
+	result.Changed = reply.Changed != nil && *reply.Changed
 	save, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer stop()
 	now := v.controller.Time()
@@ -238,8 +250,12 @@ func (v *vmAPI) checkpoint(w http.ResponseWriter, r *http.Request, claims auth.C
 	if result.Changed {
 		saved = &compute.Checkpoint{Version: result.Version, Tree: result.Tree, At: now.UnixMilli()}
 	}
+	var receipt *compute.CheckpointReceipt
+	if receiptID != "" {
+		receipt = &compute.CheckpointReceipt{ID: receiptID, Changed: result.Changed}
+	}
 	touchErr := v.controller.Touch(save, vm.ID, now)
-	if err := v.controller.FinishCheckpoint(save, vm.ID, owner, saved); err != nil {
+	if err := v.controller.FinishCheckpoint(save, vm.ID, owner, saved, receipt); err != nil {
 		return err
 	}
 	finished = true

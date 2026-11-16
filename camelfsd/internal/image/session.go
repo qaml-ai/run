@@ -103,7 +103,7 @@ func (m *Manager) SessionStreams(ctx context.Context, id, path string, uid int, 
 	if err != nil {
 		return err
 	}
-	return m.listenStreams(ctx, v, path, r.Tree, apply, uid)
+	return m.listenStreams(ctx, v, path, r.Tree, r.VirtualSize, apply, uid)
 }
 
 // AdoptCheckpoint installs an already-published checkpoint after an
