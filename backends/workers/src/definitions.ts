@@ -10,7 +10,7 @@ import { modelSettingsRefusal, resolveModel } from "./model-policy.ts";
 import { HttpError } from "./errors.ts";
 import { builtinWarnings } from "./builtin-warnings.ts";
 import { rejectWorkflow } from "./workflow-refusal.ts";
-import { computerSettingsInput } from "./computers/egress.ts";
+import { computerSettingsInput } from "./computers/settings.ts";
 import { sourceUrl } from "./tool-sources.ts";
 
 export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] }; /** The channel this definition was made for (deleted with it). */ channel?: string }; createdAt: number; updatedAt: number };

@@ -94,19 +94,7 @@ const rows = areas.map((area) => {
   return { area, ecs: side("ecs"), workers: side("workers") };
 });
 const report = {
-  runtimeNonTypeScript: [
-    {
-      file: "backends/workers/computers/parse.mjs",
-      lines: (
-        await readFile(
-          path.join(root, "backends/workers/computers/parse.mjs"),
-          "utf8",
-        )
-      )
-        .trimEnd()
-        .split("\n").length,
-    },
-  ],
+  runtimeNonTypeScript: [],
   // Sprite validation uses a committed git archive, which has no .git directory.
   sourceCommit: process.env.WORKERS_MEASURE_COMMIT ?? execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: root,

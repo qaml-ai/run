@@ -22,7 +22,7 @@ test("the Workers exposes bash and only the tools of an attached computer", () =
 
 /** The rows the computer checks read: agents (their configuration), computer_shares, computer_connections. */
 function world(agents: Record<string, { computer?: object }>, connections: string[] = []) {
-  const shares = new Map<string, string | null>(), touched: string[] = [];
+  const shares = new Map<string, string | null>();
   const sql = {
     async query(text: string, values: any[] = []) {
       const rows = (found: unknown[]) => ({ rows: found as any[], rowCount: found.length });
@@ -34,14 +34,12 @@ function world(agents: Record<string, { computer?: object }>, connections: strin
       throw new Error(`unexpected query: ${text}`);
     },
   };
-  const computers = { getByName(name: string) { touched.push(name); return { forkSnapshot: async () => ({ ok: false, code: "NO_SESSION" }), hasDisk: async () => false }; } };
   const env = (compute = true) => ({
-    COMPUTER_CONTAINERS: computers,
     ...(compute ? { CAMELFS_COMPUTE: "1", CAMELFS_URL: "https://example.invalid" } : {}),
     AGENTS: { idFromName: (name: string) => ({ toString: () => `do:${name}` }) },
   }) as never;
   const scoped = <T>(run: () => Promise<T>) => applyScope.run({ sql }, run);
-  return { sql, shares, touched, env, scoped };
+  return { sql, shares, env, scoped };
 }
 
 /** Agent ids as the directory makes them. */
@@ -72,15 +70,13 @@ test("a child shares only a computer its parent has: without one the default is 
     await attachChildComputers(w.env(false), "t", declared, c7, "share");
   });
   assert.deepEqual(Object.fromEntries(w.shares), { [sharer]: declared, [off]: null, [c1]: null, [c2]: declared, [c3]: connected, [c4]: declared, [c5]: null, [c6]: null, [c7]: null });
-  assert.deepEqual(w.touched, [], "deciding starts no container");
 });
 
-test("forking requires an attached session and reaches no legacy container", async () => {
+test("forking requires an attached session", async () => {
   const w = world({ [plain]: {}, [declared]: { computer: {} }, [target]: {} });
   const serialize = <T>(run: () => Promise<T>) => run();
   await w.scoped(async () => {
     await assert.rejects(forkChildComputers(w.env(), "t", plain, "b1", serialize), (error: any) => error.code === "NO_SESSION");
     await assert.rejects(forkComputerInto(w.env(), "t", declared, [target], serialize), (error: any) => error.code === "NO_SESSION");
   });
-  assert.deepEqual(w.touched, []);
 });

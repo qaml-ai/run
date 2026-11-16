@@ -163,16 +163,13 @@ export class ComputerService {
   }
   private async stop(c: any, lease: any) {
     if (!lease || lease.state === 'closed') return;
+    if (c.provider === 'container') throw new HttpError(409, 'The retired container lease is still open');
     await withSql(this.env, sql => sql.query("update computer_leases set state='closing',cleanup_at=$2 where id=$1", [lease.id, Date.now()]));
-    if (!lease.reference && c.provider !== 'container') {
+    if (!lease.reference) {
       await withSql(this.env, sql => sql.query("update computer_leases set state='uncertain',error='Creation outcome unknown; confirm provider cleanup' where id=$1", [lease.id]));
       throw new HttpError(409, 'Computer creation outcome unknown; confirm provider cleanup');
     }
-    try {
-      // The retired adapter named its DO after the lease, even if allocation never persisted a reference.
-      const ref = c.provider === 'container' ? { id: lease.id } : JSON.parse(await unseal(lease.reference, this.env));
-      await (await this.driver(c)).close(ref);
-    }
+    try { await (await this.driver(c)).close(JSON.parse(await unseal(lease.reference, this.env))); }
     catch { await withSql(this.env, sql => sql.query("update computer_leases set error='Cleanup failed; retrying' where id=$1", [lease.id])); throw new HttpError(502, 'Computer cleanup failed; it will be retried'); }
     await transaction(this.env, async sql => {
       await sql.query("update computer_leases set state='closed',closed_at=$2,reference=null,error=null where id=$1", [lease.id, Date.now()]);
@@ -281,7 +278,7 @@ export class ComputerService {
   }
   async remove(agent: string) { const c = await this.connection(agent); if (c.agent !== agent) throw new HttpError(409, SHARED_COMPUTER_CONTROL); return this.detach(c); }
   async nextDeadline(agent: string, invocation?: AgentInvocation): Promise<number | null> {
-    const row = await withSql(this.env, async sql => (await sql.query("select min(case when c.provider='container' and l.state in ('active','starting') then l.created_at when l.state='active' then l.expires_at when l.state='starting' then l.created_at+180000 else l.cleanup_at+300000 end) as due from computer_leases l join computer_connections c on c.id=l.connection where c.tenant=$1 and c.agent=$2 and (l.state in ('active','starting') or (l.state in ('closing','uncertain') and (l.reference is not null or c.provider='container')))", [this.tenant, agent])).rows[0], invocation);
+    const row = await withSql(this.env, async sql => (await sql.query("select min(case when l.state='active' then l.expires_at when l.state='starting' then l.created_at+180000 else l.cleanup_at+300000 end) as due from computer_leases l join computer_connections c on c.id=l.connection where c.tenant=$1 and c.agent=$2 and c.provider<>'container' and (l.state in ('active','starting') or (l.state in ('closing','uncertain') and l.reference is not null))", [this.tenant, agent])).rows[0], invocation);
     return row?.due == null ? null : Number(row.due);
   }
   async sweepAgent(agent: string) {
@@ -289,7 +286,7 @@ export class ComputerService {
     if (!c) return;
     if (c.revoked === null || c.revoked || c.purged_at || c.agent_expires_at && Number(c.agent_expires_at) <= Date.now()) { await this.detach(c); return; }
     const lease = await withSql(this.env, sql => latest(sql, c.id));
-    if (lease && lease.state !== 'closed' && (c.provider === 'container' || Number(lease.expires_at) <= Date.now() || ['closing','uncertain'].includes(lease.state) || lease.state === 'starting' && Number(lease.created_at) <= Date.now()-180000)) await this.stop(c, lease);
+    if (c.provider !== 'container' && lease && lease.state !== 'closed' && (Number(lease.expires_at) <= Date.now() || ['closing','uncertain'].includes(lease.state) || lease.state === 'starting' && Number(lease.created_at) <= Date.now()-180000)) await this.stop(c, lease);
   }
   /** The directory is already revoked when deletion reaches its owning DO. */
   async removeAgent(agent: string) {
@@ -372,7 +369,9 @@ async function dropSnapshot(env: ComputerEnv, row: { id: string; tenant: string 
       const current = await forkRows.lockForDrop(sql, row.id, force);
       if (!current) return false;
       const secret = await openSnapshot(env, current);
-      await remoteDriver(env, current.tenant, '', secret.provider as Provider, secret.credentials).dropSnapshot?.(snapshotRef(secret.ref));
+      // Legacy Cloudflare snapshots had no deletion RPC and expired upstream.
+      if (secret.provider !== "container")
+        await remoteDriver(env, current.tenant, '', secret.provider as Provider, secret.credentials).dropSnapshot?.(snapshotRef(secret.ref));
       await forkRows.dropped(sql, current.id, Date.now());
       return true;
     });
@@ -398,7 +397,7 @@ export async function dropTenantSnapshots(env: ComputerEnv, tenant: string) {
 
 /** Cron repairs missed alarms without holding a database connection during RPC. */
 export async function sweepComputers(env: ComputerEnv) {
-  const rows = await withSql(env, async sql => (await sql.query("select distinct c.tenant,c.agent from computer_connections c left join agents a on a.id=c.agent and a.tenant=c.tenant left join computer_leases l on l.connection=c.id and l.state<>'closed' where c.agent not like 'removed:%' and (a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1 or l.expires_at<=$1 or c.provider='container' and l.state in ('active','starting') or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state in ('closing','uncertain') and (l.reference is not null or c.provider='container'))) limit 100", [Date.now()])).rows);
+  const rows = await withSql(env, async sql => (await sql.query("select distinct c.tenant,c.agent from computer_connections c left join agents a on a.id=c.agent and a.tenant=c.tenant left join computer_leases l on l.connection=c.id and l.state<>'closed' where c.agent not like 'removed:%' and (a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1 or (c.provider<>'container' and (l.expires_at<=$1 or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state in ('closing','uncertain') and l.reference is not null)))) limit 100", [Date.now()])).rows);
   let failed = 0;
   for (const row of rows) {
     try {

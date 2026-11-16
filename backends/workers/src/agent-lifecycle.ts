@@ -43,8 +43,6 @@ export async function purgeAccountDataImpl(this: AgentRuntime, invocation: Agent
       if (pending.every(rows => rows.size === 0)) break;
       await this.flushBilling(invocation, true);
     }
-    const retired = await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
-    if (retired?.settled === false) throw new HttpError(503, "Computer usage settlement is pending");
     await this.closeWatchers(tenant, id);
     await this.ctx.storage.deleteAlarm();
     await this.clearComputerAttached();
