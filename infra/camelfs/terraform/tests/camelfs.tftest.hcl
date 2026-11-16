@@ -278,9 +278,10 @@ run "roles_and_policies" {
   assert {
     condition = (
       length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Effect == "Allow" && contains(flatten([statement.Action]), "dynamodb:PutItem")]) == 1
+      && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Sid if statement.Effect == "Allow" && contains(flatten([statement.Action]), "dynamodb:Query")] == ["ObjectsTable"]
       && length([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement if statement.Sid == "NoControlTables" && statement.Effect == "Deny" && length(statement.Resource) == 7]) == 1
     )
-    error_message = "The host policy writes the objects table only and explicitly denies the seven other tables."
+    error_message = "The host policy queries and writes only the objects table and explicitly denies the seven other tables."
   }
   assert {
     condition = (

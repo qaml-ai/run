@@ -155,6 +155,17 @@ func readBundleMember(ctx context.Context, s Store, lineage, id string, ref Bund
 // LocateBundles resolves packed members of an already published tree. Omitted
 // IDs use the original loose store. IDs are bare Git blob hashes.
 func LocateBundles(ctx context.Context, s Store, ids []string) (map[string]BundleRef, error) {
+	return locateBundles(ctx, s, ids, false)
+}
+
+// LocateBundlesForRestore requires a locator for each requested small blob
+// when a bundle catalog is configured. Stores without a catalog read loose
+// blobs through the existing restore path.
+func LocateBundlesForRestore(ctx context.Context, s Store, ids []string) (map[string]BundleRef, error) {
+	return locateBundles(ctx, s, ids, true)
+}
+
+func locateBundles(ctx context.Context, s Store, ids []string, restore bool) (map[string]BundleRef, error) {
 	b, lineage := bundleScope(s)
 	if b == nil {
 		return nil, nil
@@ -162,7 +173,11 @@ func LocateBundles(ctx context.Context, s Store, ids []string) (map[string]Bundl
 	if !Lineage(lineage) {
 		return nil, fmt.Errorf("bundle access requires a lineage")
 	}
-	locs, err := b.lookupBatch(ctx, lineage, ids)
+	lookup := b.lookupBatch
+	if restore {
+		lookup = b.lookupRestore
+	}
+	locs, err := lookup(ctx, lineage, ids)
 	if err != nil {
 		return nil, err
 	}

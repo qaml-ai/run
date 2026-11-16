@@ -340,10 +340,14 @@ The tier and compute hosts use the same `--objects-table` to resolve Git blob
 IDs. The table maps a lineage and blob ID to its size, SHA-256, S3 bundle
 and byte range. New files up to 64 KiB are packed into bundles of up to 8 MiB.
 The writer stores the immutable bundle before publishing its member locators.
-Large files use loose objects, and existing loose blobs remain readable.
+Large files use loose objects. File API reads can still serve existing loose
+blobs.
 
-Cold restores resolve small blobs in batches and fetch bundles shared by
-multiple files. Single-member reads fetch the verified byte range. The
+With the objects table configured, a cold restore requires a locator for
+each small blob. The host queries the lineage for large sets and uses one
+batch lookup for sets of up to 100 unique IDs. A lookup error or missing
+locator stops the restore. The host fetches bundles shared by multiple files.
+Single-member reads fetch the verified byte range. The
 `compute_apply_reads` log records lookup time and the number of loose, bundle
 and range reads.
 

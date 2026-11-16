@@ -265,7 +265,7 @@ locals {
       {
         Sid      = "ObjectsTable"
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [local.table_arns["objects"]]
       },
       # Belt and braces: whatever else is attached to a pool role later, a host never touches a ref, a lineage or a

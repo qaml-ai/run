@@ -29,6 +29,7 @@ type bundleTestDB struct {
 	after   func(locatorItem) error
 	retry   bool
 	batches int
+	query   func(context.Context, *dynamodb.QueryInput) (*dynamodb.QueryOutput, error)
 }
 
 func locatorTestKey(item locatorItem) string {
@@ -65,6 +66,13 @@ func (d *bundleTestDB) BatchGetItem(_ context.Context, in *dynamodb.BatchGetItem
 		}
 	}
 	return out, nil
+}
+
+func (d *bundleTestDB) Query(ctx context.Context, in *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	if d.query == nil {
+		return nil, fmt.Errorf("unexpected locator query")
+	}
+	return d.query(ctx, in)
 }
 
 func (d *bundleTestDB) PutItem(ctx context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
@@ -118,6 +126,12 @@ func TestBundleRoundTrip(t *testing.T) {
 		},
 	})
 	checkBundleRoundTrip(t, db, table)
+	b := &bundled{db: db, table: table}
+	id := smallID(newSmall([]byte("one")))
+	locations, err := b.queryLocations(t.Context(), "tenant:repo", map[string]struct{}{id: {}})
+	if err != nil || len(locations) != 1 || locations[id].Key == "" {
+		t.Fatalf("query locations = %v, %v", locations, err)
+	}
 }
 
 func TestBundleRoundTripInMemory(t *testing.T) {
