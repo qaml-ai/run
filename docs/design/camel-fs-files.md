@@ -426,15 +426,14 @@ Everything else (a mount of several repos, a workflow owning branches in several
 single-ref operations. A failure between them leaves each ref consistent and unmoved, never half-moved. Nothing in
 the model requires two refs to move together.
 
-**Build order** (from the study; each step a PR stack onto `camelfs/files-model`):
+**Original build order** (from the study, with each step a PR stack onto `camelfs/files-model`):
 
 1. `camelfsd api` behind an ALB (HTTP/2 off, after the 10-24 stalls) with runtime-signed tokens (§9.10), `CAMELFS`
    switched to HTTPS, the tunnel and the shared bearer deleted (L30).
-2. Miguel creates the DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`; on demand, PITR) and the IAM
+2. Provision the on-demand DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`) with PITR and the IAM
    roles (api, host). Tokens reuse the runtime's `RuntimeSigner` keys; the tier gets their JWKS as a file (§9.10).
 3. The Go `refs` package with the ref-move rules checked before a `version = :expect` condition, leases, fences, watchers and
-   the quota check (its bookkeeping waits on Miguel). Its contract
-   tests are ported from `RepoDO`'s tests and the strict fake.
+   the quota check, which uses those tables. Port its contract tests from `RepoDO` and the strict fake.
 4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted; the agent's VM row's lease and renew over
    HTTPS; the agent-side tree cache.
 5. Hosts do the CAS in-VPC, notify arrives as webhooks into outbox rows, the public `/v1/repos` moves onto the tier,
@@ -510,7 +509,7 @@ throughout):
 a `published/<n>` ref per pinned snapshot, keyed ids preserved), done lazily on first touch or by a sweep when the
 new model has run for a while.
 
-## 8. Decisions taken by default (Miguel may override)
+## 8. Design defaults
 
 Each remaining question was decided as recommended and
 marked **default**; a reversal is a small change to the named section. Already decided by Miguel, and written as

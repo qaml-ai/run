@@ -630,7 +630,7 @@ storage, so verify the drain before applying the `delete-container-computer`
 migration.
 
 1. Verify the drain-only version serves all traffic.
-2. From the drain-only checkout, run
+2. From the drain-only commit `2f1ba70e` (#1210), run
    `node backends/workers/scripts/pilot-drain-computers.mjs` for an inventory,
    then rerun with `--confirm`. The command uses the pilot namespace's
    [paginated Cloudflare inventory](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/)

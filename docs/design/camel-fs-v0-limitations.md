@@ -13,8 +13,8 @@ v1**; the ledger stays the full record either way. `small` means fix now (a boun
 in the next unit or PR that touches the area); `v1` means it needs design or a large build (a new tier, a new
 store, a new image pipeline, or something that only makes sense once volumes are lineages); `rule` marks a
 standing constraint rather than a limitation. Entries are never deleted; a fixed one keeps its id and its row.
-Anyone who hits something on v0 sends it to the ledger's owner (`fs-architect`), and it lands here in a small docs
-PR; whoever lands a fix says which rows it closes, and the rows flip to `fixed (#PR)`.
+New limitations land here in small docs PRs. A fix identifies the rows it closes and updates their status to
+`fixed (#PR)`.
 
 Numbers come from the v0 host (`m8id.4xlarge`, us-west-2, NVMe, real S3; `reference_camel_fs_proto_ec2`) unless
 the entry says otherwise. "Unit N" refers to the `camelfsd` v0 build units.
@@ -157,12 +157,10 @@ the entry says otherwise. "Unit N" refers to the `camelfsd` v0 build units.
 
 ## How to add an entry
 
-Send the ledger's owner: the area, what you hit, the number and where it came from (host, unit, branch, commit),
-and your guess at the fix if you have one. It becomes the next `L<n>` in a small docs PR from `main`, with a scope:
-`small` if it is a bounded change inside v0's shape (then it is fixed in the next unit or PR touching that area,
-per Miguel's rule), `v1` if it needs design or a large build. Do not number items yourself unless you have seen the
-ledger's current tail; ids are assigned here. When a fix lands, tell the owner which rows it closes; their status
-becomes `fixed (#PR)` and the rows stay.
+Check the ledger's current tail and add the next `L<n>`. Record the area, owner, measured impact and its
+source (host, unit, branch or commit), and a proposed fix when known. Use the `small` scope for a bounded
+change and `v1` for work that needs design or a large build. When a fix lands, keep the row and update
+its status to `fixed (#PR)`.
 
 Who fixes what, as of 2026-11-12: `camelfsd` units 4–5 (landed on `camelfs/daemon-v0` at `5456131a`) fixed L1, L13,
 L14 (measured on the 4 GiB stage), L20 and L54, landed L2's prefetch (its numbers wait on L61), with the unit 3 fix
