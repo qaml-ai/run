@@ -288,21 +288,12 @@ scripts.
   stops.
 - **Output limits:** the model sees at most 32 KiB of each stream: the head and the tail, cut in the middle, and
   the result says how many bytes were dropped (`truncated`). The full stream passes through the runtime and is not stored.
-- **Checkpoints:** after every `bash` call, the runtime asks for a checkpoint (§2), asynchronously once the tool
-  result has returned. The host answers `changed: false` as a no-op when the tree did not change (the runtime cannot
-  know that cheaply), and otherwise the ref moves and the change is a version. Checkpoints on a VM are serialized.
-  This is the cadence (the lead, 2026-11-14, as K5b builds it); an earlier K5 spec line that checkpointed only at
-  the end of a turn is superseded. The idle stop checkpoints first. The agent's
-  `checkpoint`/`restore`/`history`/`diff` tools are unchanged.
-- **File tools and the lease, plainly:** while a VM is running on a branch, it holds the branch's lease, and the
-  agent's file tools on that branch go into the VM (reads and writes run in the guest as one-off execs, §2; the next
-  checkpoint makes them durable).
-  - File operations run beside a running `bash` command. They serialize only against a checkpoint in flight: a
-    checkpoint waits for the file operations already running, and a file operation waits for a checkpoint already
-    running.
-  - A write that races a running command is accepted behaviour (the lead, 2026-11-14), not a limitation.
-  - When the VM is stopped, the branch is unheld, and file tools and API writes work on the ref directly. There is
-    never a second writer.
+- **Checkpoints:** after each `bash` call the runtime records the exec result and asks for a checkpoint before returning
+  success. A dropped response retries the checkpoint from the saved receipt. The command is never run again to recover
+  the checkpoint. An unchanged tree is a no-op. The idle stop also checkpoints before shutting down.
+- **File tools:** reads, listings, search and presentation use the committed repo version. A VM holds the write lease
+  while it is running. Repo writes to that branch return `409 held` until the lease is released. Live edits can be made
+  inside `bash` and are published by the same checkpoint.
 - **Sprite-like VMs: they sleep after seconds of inactivity and wake on the next call** (Miguel, 2026-11-14).
   Two tiers:
   - **v1 (now): idle stop with checkpoint.**

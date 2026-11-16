@@ -1,3 +1,5 @@
+import { HttpError } from "../errors.ts";
+
 export type Mode = "100644" | "100755" | "120000";
 export type Entry = { path: string; blob: string; mode: Mode; size: number };
 export type Version = { version: string; tree: string; parents: string[]; author: string; message: string; trailers: Record<string, string>; at: number };
@@ -40,4 +42,22 @@ export function ownership(owner?: string | null, expiresAt?: number | null) {
 }
 export function page(limit: number | undefined, fallback: number, max: number) {
   check(limit === undefined || (Number.isSafeInteger(limit) && limit > 0), "bad_limit"); return Math.min(limit ?? fallback, max);
+}
+
+// Model-facing text (reviewed by the lead, 2026-11-14): the model knows the VM as "your machine" (the bash tool).
+const vmHeld = (branch = "This branch") =>
+  `${branch} is in use by your running machine, so this can't run now. Retry after the machine goes to sleep (about 10 seconds with no command running).`;
+
+export class RefHeldError extends HttpError {
+  constructor(code: "held" | "fenced", branch?: string) {
+    super(409, vmHeld(branch));
+    this.code = code;
+  }
+
+  declare readonly code: string;
+}
+
+export function heldFileError(error: unknown, branch?: string) {
+  const code = repoErrorFrom(error)?.code;
+  return code === "held" || code === "fenced" ? new RefHeldError(code, branch) : undefined;
 }
