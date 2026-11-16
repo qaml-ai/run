@@ -61,12 +61,10 @@ one hour and is deleted in `finally`. No database password is handled. It
 returns only migration names (and, on a failure, the failing name and its
 SQLSTATE). A failed migration is rolled back and stops the deploy.
 
-Migrations are tracked by file name only; no checksum is kept. Never edit a
-migration after it is merged: add a new one. The script refuses to migrate or
-deploy when the database has applied a name this checkout lacks, that is, when
-it is ahead of the commit being deployed or a file was renamed. Keep migrations
-additive, so the running version keeps working on the new schema until its
-replacement is live.
+The migration registry tracks applied files by name. Put schema changes in
+a new additive migration so the running version can use the new schema until
+its replacement is live. Migration and deployment require the checkout to
+contain every applied file name.
 
 ```sh
 scripts/pilot-deploy --dry-run           # list pending migrations; change nothing

@@ -41,8 +41,8 @@ Decided 2026-11-13 (option C): one AWS service holds refs in DynamoDB; the per-r
 
 Agent VMs run on Firecracker hosts managed by the tier (`/v1/vms`, host enrollment, usage).
 
-- Done: launcher, host enrollment, usage, first-session apply pipeline (#1200, L120): first-ever apply of
-  50 MB 8.0→4.2 s, 500 MB ~12→7.2 s, 2 GB 28→15.5 s.
+- Done: launcher, host enrollment, usage, and the cold apply pipeline (#1200, L120). The original proto-host
+  file apply measured 50 MB 8.0→4.2 s, 500 MB ~12→7.2 s, and 2 GB 28→15.5 s.
 - Done on the pilot: Firecracker Bash, committed workspace reads and checkpoint recovery (#1208, #1211).
   The legacy Cloudflare container class and application are retired (#1210, #1212).
 - Shared workspace disk replicas are removed (#1209). Git commits hold the durable workspace.
