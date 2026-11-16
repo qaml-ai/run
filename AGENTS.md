@@ -107,14 +107,17 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
 **Where it stands (2026-11-16)**
 - The camel-fs tier serves the pilot: refs in DynamoDB (#1204 guards ref writes with deletion stamps), VMs on
   a Firecracker host, guest image chosen by `GUEST_IMAGE_SHA256` in `backends/workers/wrangler.pilot.jsonc`.
-- Next items: L132 (2 GB first apply is bound by vsock at ~200 MB/s, then guest disk writes),
-  L131 (small-file packing, design first), and converting
-  `tests/camelfs-refs-tier.ts` from the `aws` CLI to direct DynamoDB Local requests, as #1204 did for
-  `tests/camelfs-contract.test.ts`.
+- File tools read and write committed workspace versions, and successful Bash calls publish their checkpoint
+  before returning (#1208, #1211). The host keeps local reflink images. A cold host rebuilds from the committed
+  Git tree (#1209). Shared workspace-root and chunk replication are retired.
+- L131/L132 track cold-restore performance, and L133 records the measured cost of removing shared images.
+  The Firecracker daemon restart drill preserved the running VM, reattached its command, and reconciled
+  its checkpoint and usage. See `camelfsd/README.md` for the deployed build and measurements.
 - The pilot uses Firecracker for managed Bash. The legacy Cloudflare class and application are retired
   (#1210, #1212). The unused `CAMELFS_API_TOKEN` secret was removed from the pilot (L30).
-- The tier measured 69.6 ms p50 per ref write after #1204 (L89). The 50 ms target and the camel-bots
-  voice canary remain open.
+- The pilot passed the OpenAI Realtime browser and private Discord voice canaries. See
+  `backends/workers/PILOT.md` for the decoded audio results and billing checks.
+- The tier measured 69.6 ms p50 per ref write after #1204 (L89). The 50 ms target remains open.
 
 **Doing the work**
 - Tests run on sprites (see "Off the laptop"), not on your machine. For any `camelfsd/internal/refstore` change,

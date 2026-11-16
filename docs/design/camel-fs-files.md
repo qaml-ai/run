@@ -1,6 +1,6 @@
 # camelRun's file model: repos, refs and trees, and nothing else
 
-Status: design, 2026-11-13, for Miguel's review. Docs only. Miguel: "assume we're redesigning the system entirely
+Design dated 2026-11-13. Miguel: "assume we're redesigning the system entirely
 and remove concepts like the Volumes entirely. We'll figure out how to migrate." This document is that redesign:
 camelRun's file model with camelFS ([camel-fs.md](camel-fs.md)) as the **only** concept. Volumes are gone. There is
 no back-compat, and migration is out of scope except for one note at the end.
@@ -10,6 +10,10 @@ Go tier in us-west-2 holding refs, leases and fences as DynamoDB conditional wri
 S3. Compute hosts run `camelfsd host --compute` ([§1](camel-fs-compute.md#1-one-host-process)), and the runtime holds no ref. `RepoDO`, the tunnel and the shared bearer go.
 §6 has the state split and §9 the contract; the sections in between say "the tier" where they said "the repo
 object".
+
+The pilot removed shared workspace image roots and chunks in #1209 on 2026-11-16. Git objects hold the
+durable workspace. Image indexes and reflink files are host-local caches. References below to replicated
+workspace roots and chunks describe the earlier storage layout.
 
 **The invariant.** Every file anywhere in camelRun lives in a camelFS lineage. A named, mutable **ref** points at
 an immutable **tree**, and every change is a **commit**: a new tree, a commit object naming its parent and who made
@@ -148,8 +152,8 @@ not a public shape.
 **Inline files.** `job({ files })` and the agent's `job_run({ files })` (a job with a few inline files and no repo)
 become **one path**: the runtime commits the inline files onto a scratch `job/<id>` branch of the caller's repo (the
 workflow's repo, keyed `workflow:<id>`, or the agent's workspace) and the job runs at that ref like any other; the
-guest `files` op and `WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override. During the
-cut-over a plain string `at` still means a volume id, until the deletion phase removes volumes.
+guest `files` op and `WireJob.files` go. During the cut-over a plain string `at` still means a volume id,
+until the deletion phase removes volumes.
 
 **The agent's `job_run` tool** gains the same `at: { repo?, ref?, version? }` and `commit` as `job()`, with `repo`
 defaulting to the agent's own workspace, and its model-facing text changes from "`at` (a volume id) starts it with
@@ -422,15 +426,14 @@ Everything else (a mount of several repos, a workflow owning branches in several
 single-ref operations. A failure between them leaves each ref consistent and unmoved, never half-moved. Nothing in
 the model requires two refs to move together.
 
-**Build order** (from the study; each step a PR stack onto `camelfs/files-model`):
+**Original build order** (from the study, with each step a PR stack onto `camelfs/files-model`):
 
 1. `camelfsd api` behind an ALB (HTTP/2 off, after the 10-24 stalls) with runtime-signed tokens (§9.10), `CAMELFS`
    switched to HTTPS, the tunnel and the shared bearer deleted (L30).
-2. Miguel creates the DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`; on demand, PITR) and the IAM
+2. Provision the on-demand DynamoDB tables (`objects`, `refs`, `lineages`, `deliveries`) with PITR and the IAM
    roles (api, host). Tokens reuse the runtime's `RuntimeSigner` keys; the tier gets their JWKS as a file (§9.10).
 3. The Go `refs` package with the ref-move rules checked before a `version = :expect` condition, leases, fences, watchers and
-   the quota check (its bookkeeping waits on Miguel). Its contract
-   tests are ported from `RepoDO`'s tests and the strict fake.
+   the quota check, which uses those tables. Port its contract tests from `RepoDO` and the strict fake.
 4. The runtime's `RepoClient` swap (stub → HTTP), with `write.ts`'s loop deleted; the agent's VM row's lease and renew over
    HTTPS; the agent-side tree cache.
 5. Hosts do the CAS in-VPC, notify arrives as webhooks into outbox rows, the public `/v1/repos` moves onto the tier,
@@ -506,9 +509,9 @@ throughout):
 a `published/<n>` ref per pinned snapshot, keyed ids preserved), done lazily on first touch or by a sweep when the
 new model has run for a while.
 
-## 8. Decisions taken by default (Miguel may override)
+## 8. Design defaults
 
-Miguel is not reviewing tonight and wants this built, so each remaining question is decided as recommended and
+Each remaining question was decided as recommended and
 marked **default**; a reversal is a small change to the named section. Already decided by Miguel, and written as
 such above: the state split (§6, option C) and dropping projects and `publishTool` (§5).
 

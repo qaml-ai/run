@@ -8,10 +8,9 @@ Historical implementation plan. The Workers job-host plane was removed.
 > and §6. What this document says about jobs is the record of the replaced design.
 > Compute hosts run `camelfsd host --compute` ([§1](camel-fs-compute.md#1-one-host-process)).
 
-Phase 2 of [Durable multi-agent workflows](swarm-workflows.md) ("Our own job hosts"; phases table). It turns that
-section and the 2026-11-11 Firecracker spike into PR slices. **Nothing here creates AWS resources.** Every slice that
-touches AWS infrastructure lands as code and stops before `apply`; resources are created only after Miguel's go-ahead,
-through the guarded apply scripts, as camelRun's other infrastructure is.
+This was phase 2 of [Durable multi-agent workflows](swarm-workflows.md) ("Our own job hosts" in the phases table).
+The plan divided the Firecracker spike of 2026-11-11 into PR slices. The infrastructure slices carried code,
+plans, and commands. The apply scripts created AWS resources when invoked.
 
 ## What is decided (inputs, not options)
 
@@ -118,25 +117,24 @@ The admin dashboard gains cost per job by driver.
   instance identity document.
 
 
-Each slice is reviewable alone. Slices 1–4 need no AWS resources: they test against fakes, and a single host is used
-for the host-level tests only after the go-ahead.
+Slices 1–4 test against fakes. The host-level tests use a single AWS host.
 
 | # | Slice | Contents | Tests |
 |---|---|---|---|
-| 1 | Host image, as code | `infra/job-hosts/image/`: a Packer (or EC2 Image Builder) template for AL2023 arm64 kernel 6.18. It covers: grubby mempool (sized per pool); a boot unit that writes `pcie_slots`, formats the NVMe as XFS `reflink=1` and mounts it; Firecracker 1.18.0 pinned by sha256; the guest kernel (the host's EFI vmlinuz) and a dracut initrd that switch_roots into the job's ext4 root; nftables base rules (IMDS dropped, no forwarding but per-job chains); no SSH (SSM only) | Template validation in CI; a local script that checks the produced files' hashes. AMI build waits for the go-ahead |
+| 1 | Host image, as code | `infra/job-hosts/image/`: a Packer (or EC2 Image Builder) template for AL2023 arm64 kernel 6.18. It covers: grubby mempool (sized per pool); a boot unit that writes `pcie_slots`, formats the NVMe as XFS `reflink=1` and mounts it; Firecracker 1.18.0 pinned by sha256; the guest kernel (the host's EFI vmlinuz) and a dracut initrd that switch_roots into the job's ext4 root; nftables base rules (IMDS dropped, no forwarding but per-job chains); no SSH (SSM only) | Template validation in CI and a local script to check the produced files' hashes after the AMI build |
 | 2 | Guest side | `camel-guest`, a small static arm64 binary in the base rootfs, the vsock command channel. It runs the command with the job's pid cap and timeout, streams stdout and stderr with caps, runs `camel-sync` and the free-space check, and tars `/out`. It replaces the spike's `socat` + bash | Unit tests; an integration test in a local Firecracker on a KVM sprite (direct mode needs Nitro, so locally it runs plain KVM) |
 | 3 | Host agent | `jobhost/` (TypeScript on Node 22, one SEA binary). It: registers and heartbeats over the WebSocket; pulls images and snapshots from S3 (sha256 checked) into an LRU cache on NVMe; clones with reflink; keeps a pool of pre-made netns and taps; writes the Firecracker config and launches with `--no-api`; drives `camel-guest`; reports `started`, `destroyed` and timings; renews leases; drains on a spot interruption notice or SIGTERM. A fake-Firecracker mode runs it on any Linux box | Unit tests and the sim-style tests the runtime uses; the fake mode in Workers integration |
 | 4 | Runtime: hosts, placement, driver | An expand-only migration for `job_hosts`, `job_host_leases` and `job_snapshots` (`{ id, tenant, baseImage, sizeBytes, s3Key }` plus its hosts). Host enrollment (landed): the host signs an STS `GetCallerIdentity` request; the runtime checks it, sends it to STS, matches the role, and issues a short-lived credential bound to the instance id. The `JobHost` and `HostJob` Durable Objects, `placeJob`, `HostsJobDriver` and driver selection, on Workers only | Unit tests for placement (ties, draining, snapshot affinity, capacity races under concurrent places); a Workers integration test with the fake-mode host agent: admit, place, run, a rerun charged once, host loss turning into `container_failed`, and the retry by key |
 | 4b | Host-side sync (landed) | A tree past 16 MiB is fetched by the host from the runtime with a per-job token and a sha256 manifest, and written into the VM in pieces | Integration: a 17 MiB random file synced and hashed in the VM |
 | 5 | Snapshots | `saveSnapshot` on hosts promotes the job's clone to a snapshot (an upload to S3 with presigned multipart, then a `job_snapshots` row); the image cache records what each host holds and placement prefers holders; snapshot expiry and GC | Integration test with the fake host and a local S3 (MinIO) |
-| 6 | Isolation suite | The egress allowlist per job (registries and GitHub granted by the definition, the runtime API, nothing else), IMDS unreachable, no host services, no cross-job routes, the pid cap, disk full failing as `disk_low`. Written as a test suite the host agent runs against a real host | Runs on a real host after the go-ahead; until then, against a KVM sprite |
-| 7 | AWS infrastructure, as code | Root module `infra/job-hosts/terraform/` (own state; [README](../../infra/job-hosts/README.md)) and the guarded `infra/job-hosts/apply.sh`, for the resources listed below. Plan only | `tofu validate` and `tofu test` with mock providers (the trust-policy invariant among them); a plan against the prod account, read-only; apply after the go-ahead |
+| 6 | Isolation suite | The egress allowlist per job (registries and GitHub granted by the definition, the runtime API, nothing else), IMDS unreachable, no host services, no cross-job routes, the pid cap, disk full failing as `disk_low`. Written as a test suite the host agent runs against a real host | Runs on a real host, with a KVM Sprite for preflight |
+| 7 | AWS infrastructure, as code | Root module `infra/job-hosts/terraform/` (own state; [README](../../infra/job-hosts/README.md)) and the guarded `infra/job-hosts/apply.sh`, for the resources listed below. | `tofu validate` and `tofu test` with mock providers (the trust-policy invariant among them); a plan against the prod account. Applying the plan is a separate invocation |
 | 8 | Pools and scaling (pricing landed: `jobs/host-pricing.ts`, per pool from the hosts' on-demand price and a markup; hosts report their pool and placement keeps to it) | Queue-depth metric from the runtime; the test pool's target tracking; the build pool's fixed warm size with one build sandbox started before it is loaded (and nothing else placed on it); a drain on scale-in and spot notice | Fake-host integration; then a canary on real pools |
 | 9 | Acceptance run | The phase 2 dogfood: the camelCode review loop with jobs on our hosts, including a Bun-class build. Measure the four targets above and cost per job against Cloudflare, and publish the numbers in the design doc | Real pools |
 
-Order: slices 1–4 in parallel (image, guest, agent, runtime), then 5–6, then 7 at the go-ahead, then 8–9.
+Order: slices 1–4 in parallel (image, guest, agent, runtime), then 5–6, then 7, then 8–9.
 
-## AWS resources (none created yet; each needs Miguel's go-ahead)
+## AWS resources in the original plan
 
 In the camelRun prod account (904534089871) and `us-west-2`, all in OpenTofu:
 
@@ -180,8 +178,7 @@ Decided by Miguel (2026-11-12):
 - **Host agent language:** left to us: TypeScript (shared job types, `camel-sync`, our test harness; the hot path is
   Firecracker's, and the agent mostly does I/O).
 - **Pool maxima:** not answered, so the defaults stand: 4 build hosts and 16 test hosts.
-- **Applies:** Miguel runs every AWS change himself (image builds, `tofu apply`). Agents deliver code, plans and the
-  exact commands.
+- **Applies:** the implementation PRs carried code, plans and commands for the image build and `tofu apply`.
 
 Slices 1 and 6 have landed as code (2026-11-12): the image in `infra/job-hosts/image/` (its README says what is and is
 not verified without a Nitro host), the Firecracker launcher (`jobhost/firecracker.ts`), the per-job network and egress

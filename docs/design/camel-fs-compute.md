@@ -25,8 +25,9 @@ Compute hosts run `camelfsd host --compute`.
 - Each Firecracker runs under the jailer in its own systemd scope, not as a child that dies with the daemon.
 - `camelfsd host` persists its mount and VM state (`mounts`, `vms` tables in the host-local SQLite).
 - On start it re-adopts running VMs and their mounts instead of refusing a non-empty `mounts/`.
-- There is no lazy origin left (unit 11, #1093): a cold mount hydrates fully to a local file before Firecracker
-  starts, so no guest's I/O goes through `camelfsd` and a restart cannot fail it. ublk recovery (K2d) is obsolete.
+- Guest filesystem I/O uses a local image. A daemon restart reattaches the command stream while the VM
+  continues running. The live restart drill and its checkpoint and billing results are in
+  [the daemon README](../../camelfsd/README.md#pilot-rollout).
 
 That is L15's v1 fix, and compute makes it a prerequisite rather than a wish (§5).
 
@@ -299,15 +300,14 @@ scripts.
       branch, measured at ≈ 110–220 ms), and stops it.
     - `idleStopS` is one constant with a default of ≈ 10 **seconds**, at most 1 hour, counted only while no
       `exec` runs.
-    - The next `bash` call boots a fresh VM from the branch's latest tree. **Measured after K2f** (#1116, proto host,
-      create → first exec at 50 MB / 500 MB / 2 GB):
-      - the same host, on the same or a checkpointed tree: ≈ 0.6–0.7 s;
-      - a new host reusing the tree's shared root: 1.7 / 5.8 / 20.2 s (chunk download, ledger L119);
-      - a tree no host has a root for: 8.5 / 12.5 / 27.6 s (the per-file apply, L120);
-      - a host's guest image is prewarmed after it registers, so no wake waits for it (L112).
-        - **A fresh root per boot.** Every boot starts from the guest image's root filesystem, with the branch mounted
-      at `/workspace` (the shell starts there). Only `/workspace` is the branch; installed packages, `/tmp` and
-      the shell's environment are gone after a sleep.
+    - The next `bash` call boots a fresh VM from the branch's latest tree. With #1209, a same-host image
+      restores by reflink. A host without a cached image applies the committed tree in the guest.
+      At 50 / 500 / 2,000 MiB, paired pilot medians were 0.594 / 0.601 / 0.642 s for a same-host
+      checkpointed tree and 8.026 / 11.235 / 20.677 s for a cold restore. See L133 and
+      [the full measurements](../../camelfsd/README.md#firecracker-cold-restore-timings).
+    - A host prewarms its guest image after registration (L112).
+    - **A fresh guest root filesystem per boot.** Each VM mounts the branch at `/workspace`, where the shell
+      starts. Installed packages, `/tmp` and the shell's environment are gone after a sleep.
     - **Every stop checkpoints:** the idle stop, a requested stop and a `lease_expired` stop all checkpoint
       before the VM ends, so `/workspace` is always on the branch.
     - **Files persist, processes do not**, and the tool's description says so to the model.

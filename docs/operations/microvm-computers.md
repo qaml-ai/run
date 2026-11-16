@@ -33,7 +33,7 @@ port outside the AWS authenticated proxy.
 
 ## Build and rollout
 
-Production applies and image builds are performed by Miguel. From the repository:
+Run the production rollout from the repository with credentials for the target AWS account.
 
 1. Review `PLAN_ONLY=1 infra/apply.sh microvm_enabled=true`. Apply through
    `infra/apply.sh microvm_enabled=true` after reviewing the saved plan. This adds
