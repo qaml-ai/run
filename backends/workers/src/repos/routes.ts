@@ -5,14 +5,13 @@ import { sniffContentType, declaredType, downloadHeaders } from '../file-policy.
 import { withMoneyIdempotency } from '../money-idempotency.ts';
 import { StorageError } from './storage.ts';
 import { requireCamelfs } from '../camelfs/repo-storage.ts';
-import { RepoError, repoErrorFrom, check, normalizeRepoPath, page, type Entry, type Mode } from './repo-policy.ts';
+import { RepoError, repoErrorFrom, heldFileError, check, normalizeRepoPath, page, type Entry, type Mode } from './repo-policy.ts';
 import { createRepo, deleteRepo, repoContext, type RepoContext, type RepoEnv } from './registry.ts';
 import { versionEntries, statPaths, listFiles } from './reads.ts';
 import { commitChanges, setRefToVersion, branch, type WriteInput } from './write.ts';
 import { repoHistory } from './history.ts';
 import { mergeRefs } from './merge.ts';
 import { signRepoLink } from './links.ts';
-import { heldFileError } from './vm-route.ts';
 export const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 export function repoFailure(e: unknown): Response {
   const held = heldFileError(e);
