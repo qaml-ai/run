@@ -11,7 +11,7 @@ import { checkPassword, normalizeEmail } from "../src/account-passwords.ts";
 import { withPilotOperator, PILOT_URL } from "./pilot-operator.mjs";
 
 export async function readPassword(input = process.stdin, output = process.stderr) {
-  if (!input.isTTY || !output.isTTY) throw new Error("Run this command yourself in an interactive terminal.");
+  if (!input.isTTY || !output.isTTY) throw new Error("The hidden password prompt requires an interactive terminal.");
   // Readline owns raw mode and line editing; its output (including echo) is discarded.
   const muted = new Writable({ write(_chunk, _encoding, done) { done(); } });
   const wasRaw = input.isRaw;

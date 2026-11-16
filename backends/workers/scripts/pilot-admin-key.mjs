@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { withPilotOperator, PILOT_URL } from "./pilot-operator.mjs";
+import { mkdir, open, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export async function setupPilotAdmin(operator) {
@@ -13,26 +15,53 @@ export async function setupPilotAdmin(operator) {
       tenant: "pilot-admin", amount: 25_000_000, reason: "Internal pilot credit", idempotencyKey: "pilot-admin-initial-credit",
     } });
   } catch {
-    // Retain the tenant so the CTO can retry, but revoke the unreported key.
+    // Retain the tenant for a retry and revoke the unreported key.
     await operator.request(`/v1/tenants/pilot-admin/tokens/${created.token.id}`, { method: "DELETE" });
     throw new Error("Pilot admin credit setup failed; its new key was revoked. Run this command again to retry.");
   }
   return created;
 }
 
-// Run this yourself in a terminal. Do not run it through an agent or a CI job:
-// it deliberately displays the newly minted credential exactly once.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-if (!process.stdout.isTTY) {
-  console.error("Run this command yourself in an interactive terminal; it prints a usable API key once.");
-  process.exitCode = 1;
-} else {
+export async function writePilotAdminKey(file, run = withPilotOperator) {
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const output = await open(file, "wx", 0o600);
+  let saved = false;
   try {
-    const result = await withPilotOperator({ tenantIds: ["pilot-admin"] }, setupPilotAdmin);
-    console.log(`Pilot: ${PILOT_URL}\nTenant: ${result.tenant}\nAPI key (shown once; save it securely):\n${result.token.token}`);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : "Pilot admin setup failed.");
-    process.exitCode = 1;
+    await output.chmod(0o600);
+    return await run({ tenantIds: ["pilot-admin"] }, async operator => {
+      const { tenant, token } = await setupPilotAdmin(operator);
+      try {
+        await output.writeFile(`${token.token}\n`);
+        await output.sync();
+        saved = true;
+      } catch {
+        try {
+          await operator.request(`/v1/tenants/${tenant}/tokens/${token.id}`, { method: "DELETE" });
+        } catch {
+          throw new Error(`Could not save the pilot admin key. Revoke key ${token.id} on ${tenant} before retrying.`);
+        }
+        throw new Error("Could not save the pilot admin key. Its new key was revoked.");
+      }
+      return { tenant, keyId: token.id };
+    });
+  } finally {
+    try { await output.close(); }
+    finally { if (!saved) await unlink(file); }
   }
 }
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [file, extra] = process.argv.slice(2);
+  if (!file || file.startsWith("-") || extra !== undefined) {
+    console.error("usage: pilot-admin-key.mjs <key-file>");
+    process.exitCode = 2;
+  } else {
+    try {
+      const { tenant, keyId } = await writePilotAdminKey(file);
+      console.log(`Pilot: ${PILOT_URL}\nTenant: ${tenant}\nKey id: ${keyId}\nKey written to ${file} (mode 600)`);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Pilot admin setup failed.");
+      process.exitCode = 1;
+    }
+  }
 }

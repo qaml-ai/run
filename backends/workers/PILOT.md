@@ -91,8 +91,8 @@ Cloudflare rejects a binding to a nonexistent secret (error 10182).
 
 ## Operator key and model key
 
-The secret already exists. For a fresh setup, create it yourself; Wrangler
-prompts privately for its value in the pinned pilot account:
+For a fresh setup, create the secret in the pinned pilot account. Wrangler
+prompts privately for its value.
 
 ```sh
 cd backends/workers
@@ -100,7 +100,7 @@ node_modules/.bin/wrangler secrets-store secret create c8c66b0210e64900864182073
   --name CAMELRUN_PILOT_OPENROUTER_KEY --scopes workers --remote
 cd ../..
 scripts/pilot-deploy
-node backends/workers/scripts/pilot-admin-key.mjs
+node backends/workers/scripts/pilot-admin-key.mjs /path/outside/repo/pilot-admin.key
 ```
 
 The secret already exists; skip its creation on repeat deployments. The names-only check is:
@@ -110,14 +110,13 @@ backends/workers/node_modules/.bin/wrangler secrets-store secret list \
   c8c66b0210e64900864182073dcd5e09 -c backends/workers/wrangler.pilot.jsonc --per-page 100 --remote
 ```
 
-The admin command must run in your interactive terminal. It creates `pilot-admin`
-and an API key through the application's tenant/token paths, grants $25 of
-internal test credit, deletes its temporary bootstrap Worker, then displays the
-key once. It writes no credential to the repository. Store that key in your own
-password manager. Running it again mints a fresh key for the existing tenant;
-it does not recover or revoke older keys. The initial credit grant is
-idempotent. If the grant fails, the script revokes its unreported new key and
-keeps the tenant so a later run can retry.
+The admin command creates `pilot-admin` and an API key through the application's
+tenant/token paths, grants $25 of internal test credit, and writes the key to a
+new mode-0600 file. Choose a path outside the repository. The command prints the
+key ID and path and removes its temporary bootstrap Worker. Running it again
+with a new path mints another key, and older keys remain valid until revoked.
+The initial credit grant is idempotent. If the grant or save fails, the script
+revokes the new key and keeps the tenant for a retry.
 
 The key is a normal tenant API key, with read-only admin visibility via
 `ADMIN_TENANTS=pilot-admin`. Tenant provisioning and grants require the short-lived
@@ -133,7 +132,10 @@ curl https://run-pilot.camelai.dev/v1/agents \
   -H "Authorization: Bearer $PILOT_API_KEY"
 ```
 
-For password-only console sign-in on an existing tenant, run `node backends/workers/scripts/pilot-console-password.mjs pilot-camel-code <email>` from the repository root in your own terminal; it prompts twice with echo off for a 12–256 character password and sets it without creating a tenant.
+For password-only console sign-in on an existing tenant, run
+`node backends/workers/scripts/pilot-console-password.mjs pilot-camel-code <email>`
+from the repository root. The hidden terminal prompt asks twice for a 12–256
+character password.
 
 ## Validation
 
