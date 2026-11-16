@@ -8,8 +8,13 @@ The Workers job-host plane was removed.
 > and §6. What this document says about jobs is the record of the replaced design.
 > Compute hosts run `camelfsd host --compute` ([§1](camel-fs-compute.md#1-one-host-process)).
 
-Status: design, 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions; merged in #874; §6 records the v0 defaults he approved (questions 8, 9, 10, 12). Docs
-only; nothing here creates AWS resources (Miguel applies every AWS change himself). It supersedes the file half of
+The pilot removed shared workspace image roots and chunks in #1209 on 2026-11-16. A committed Git tree is the
+durable workspace. Hosts reuse local reflink images and reconstruct a cold workspace from Git objects. The
+root/chunk replication, lazy block devices and FIEMAP publication described below are historical. Current
+behavior and measured cold-start costs are in [the daemon README](../../camelfsd/README.md#session-mounts-and-guest-streams).
+
+Status as of 2026-11-12, revised the same day after an adversarial review and Miguel's substrate decisions,
+merged in #874. §6 records the selected v0 defaults (questions 8, 9, 10, 12). It supersedes the file half of
 [swarm-workflows.md](swarm-workflows.md) Part 2 (the repository object, layers, search, git without a VM,
 `camel-sync`), the disk half of [job-hosts-plan.md](job-hosts-plan.md) (S3 snapshots, host-side sync) and #869
 (whole-disk snapshots, parked). The host, VM, enrollment and placement halves of the job-hosts plan stand; this

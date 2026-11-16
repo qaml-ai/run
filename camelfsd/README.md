@@ -280,6 +280,31 @@ test cleanup deadline. The shared control published 31,687 chunks in the
 background over 161.65 s for the original tree. The two 7,900 MiB cold restores
 finished within the Worker's current 60 s Bash startup deadline.
 
+### Pilot rollout
+
+On November 16, 2026, the pilot began running host
+`04521b13beb0dd9dd32246dd435058953b72a50e` with an empty workspace cache.
+A Worker Bash call checkpointed a 257 MiB file. The next VM mounted a blank
+image, rebuilt a fresh Git tree, and verified the exact SHA-256 and a separately
+committed marker. It reached first exec in 6.402 s. A third VM reflinked the
+exact tree on the same host, reached first exec in 0.683 s, and verified the same
+digest and marker. The tier recorded the write and both no-op checkpoint
+receipts.
+
+A separate Bash command was running in a pilot VM during a daemon restart
+between 16:18:47 and 16:18:58 UTC. The new daemon adopted the same Firecracker
+process and kept the tier boot epoch. The Worker reattached to the command,
+received its output and exit code 0, and recorded the no-op checkpoint
+receipt. Two usage events reconciled to 100.489 seconds and 4,607 microdollars
+at ledger precision.
+
+After qualification, a fenced scan found one test host and zero legacy root
+references across 50 ref rows. The pilot retired 28 shared tree keys, 28 root
+manifests, and 1,394 chunks (365,638,179 bytes in total), plus 29 host-local
+workspace images, the old index, and the old baseline directory. An inventory
+comparison verified all 6,766 other current S3 keys were still present. S3
+retains noncurrent versions under the bucket's 35-day lifecycle.
+
 ### Rotating compute hosts
 
 1. Roll out large-blob tree restore support to every host that can hold a ref.

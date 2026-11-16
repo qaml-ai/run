@@ -45,6 +45,12 @@ Agent VMs run on Firecracker hosts managed by the tier (`/v1/vms`, host enrollme
   50 MB 8.0→4.2 s, 500 MB ~12→7.2 s, 2 GB 28→15.5 s.
 - Done on the pilot: Firecracker Bash, committed workspace reads and checkpoint recovery (#1208, #1211).
   The legacy Cloudflare container class and application are retired (#1210, #1212).
+- Shared workspace disk replicas are removed (#1209). Git commits hold the durable workspace.
+  Hosts keep local image caches for warm starts. Cold starts reconstruct committed files. The paired
+  benchmarks and the cold-start cost are recorded in L133.
+- The pilot's `bash` tool boots and reuses one VM per agent branch, fences it with the ref lease, and
+  checkpoints before returning success. The idle VM shuts down and its usage settles through durable
+  receipts. File tools operate on committed workspace versions without booting a VM.
 - Next: L132, the 2 GB bound. The host→guest vsock carries ~200 MB/s, then guest disk writes (~230 MB/s), then
   S3 head-of-line (3.3 s). Measure raw vsock throughput first; then bigger frames and buffers, or build the
   first tree into the image on the host.
@@ -81,12 +87,7 @@ CI and sprites must stay trustworthy.
 
 Ordered by payoff.
 
-1. **A `bash` tool that brings its own VM.** Replaces the agent-facing `job` and `computer` tools. The first call
-   boots a VM mounting the agent's ref; later calls reuse it. One VM per agent per branch, fenced by the ref's
-   lease; a persistent shell; automatic checkpoints when a command changes the tree; idle shutdown; VM-seconds
-   billed like jobs. File tools keep working without a VM, and `job()` stays in workflow code for fan-out.
-   Fan-out is through child agents, each with its own VM.
-2. **Retire the Node backend** once camel-bots runs on Workers. Removes the copy generators, the drift gate,
+1. **Retire the Node backend** once camel-bots runs on Workers. Removes the copy generators, the drift gate,
    dual-backend contract tests and every feature built twice. Before retiring it:
    - voice has a home (item 4 above);
    - per-turn SQL is down to tens of queries;
@@ -94,19 +95,17 @@ Ordered by payoff.
      contexts;
    - observability parity (the missing alarms, 5xx and health alarms, a fault-injection harness);
    - migration by fenced generation cutover: new agents first, camel-bots last, never both live.
-3. **Computers on our own hosts**, not Cloudflare containers. With item 1, "computer" stops being a separate
-   concept.
-4. **One lifetime rule: reachable from a ref.** Snapshots, pins, labels, read-set claims and the GC scripts go;
+2. **One lifetime rule: reachable from a ref.** Snapshots, pins, labels, read-set claims and the GC scripts go;
    one collector walks reachability from refs.
-5. **No second copies of files.** Temp snapshots, staged arguments, copied attachments and per-volume exports
+3. **No second copies of files.** Temp snapshots, staged arguments, copied attachments and per-volume exports
    become links to blobs or commits.
-6. **No import or sync layer.** Jobs and VMs mount a ref directly.
-7. **One storage number**: a counter on the repo, reconciled with S3 Inventory, with the quota check inside the
+4. **No import or sync layer.** Jobs and VMs mount a ref directly.
+5. **One storage number**: a counter on the repo, reconciled with S3 Inventory, with the quota check inside the
    ref CAS.
-8. **Search on the daemon**: grep over the tree on camel-fs, no caps; a trigram index later.
-9. **Fewer round trips on every write**: one daemon call and one ref call (target 150–200 ms for a job result,
+6. **Search on the daemon**: grep over the tree on camel-fs, no caps; a trigram index later.
+7. **Fewer round trips on every write**: one daemon call and one ref call (target 150–200 ms for a job result,
    from 945 ms).
-10. **Keep QuickJS for small scripts** (decided): it starts in milliseconds and needs no VM. `bash` is for real
+8. **Keep QuickJS for small scripts** (decided): it starts in milliseconds and needs no VM. `bash` is for real
     compute and files.
 
 What stays: Postgres for money (billing and admission stay transactional and audited), and the files API for
@@ -115,8 +114,8 @@ clients, with batched reads and edge caching by hash.
 ## Order
 
 1. Close the open measurements and rows above (L89, L131, L132), then the remaining Postgres and harness items.
-2. `bash` tool and computers on our hosts (items 1 and 3 together).
+2. Finish the camel-bots voice v2 canary on Workers.
 3. Move camel-bots to Workers.
 4. Retire the Node backend.
 
-Items 4–9 fall out along the way.
+Items 2–7 fall out along the way.

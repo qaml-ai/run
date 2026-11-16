@@ -1,6 +1,6 @@
 # camelRun's file model: repos, refs and trees, and nothing else
 
-Status: design, 2026-11-13, for Miguel's review. Docs only. Miguel: "assume we're redesigning the system entirely
+Design dated 2026-11-13. Miguel: "assume we're redesigning the system entirely
 and remove concepts like the Volumes entirely. We'll figure out how to migrate." This document is that redesign:
 camelRun's file model with camelFS ([camel-fs.md](camel-fs.md)) as the **only** concept. Volumes are gone. There is
 no back-compat, and migration is out of scope except for one note at the end.
@@ -10,6 +10,10 @@ Go tier in us-west-2 holding refs, leases and fences as DynamoDB conditional wri
 S3. Compute hosts run `camelfsd host --compute` ([§1](camel-fs-compute.md#1-one-host-process)), and the runtime holds no ref. `RepoDO`, the tunnel and the shared bearer go.
 §6 has the state split and §9 the contract; the sections in between say "the tier" where they said "the repo
 object".
+
+The pilot removed shared workspace image roots and chunks in #1209 on 2026-11-16. Git objects hold the
+durable workspace. Image indexes and reflink files are host-local caches. References below to replicated
+workspace roots and chunks describe the earlier storage layout.
 
 **The invariant.** Every file anywhere in camelRun lives in a camelFS lineage. A named, mutable **ref** points at
 an immutable **tree**, and every change is a **commit**: a new tree, a commit object naming its parent and who made
@@ -508,7 +512,7 @@ new model has run for a while.
 
 ## 8. Decisions taken by default (Miguel may override)
 
-Miguel is not reviewing tonight and wants this built, so each remaining question is decided as recommended and
+Each remaining question was decided as recommended and
 marked **default**; a reversal is a small change to the named section. Already decided by Miguel, and written as
 such above: the state split (§6, option C) and dropping projects and `publishTool` (§5).
 
