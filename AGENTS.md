@@ -102,6 +102,7 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
    with measured numbers; a residual becomes a new row.
 3. `camelfsd/README.md` and `infra/camelfs/README.md`: the daemon, the tier's AWS resources, and how it deploys.
 4. `backends/workers/README.md`: the Workers runtime and the pilot (`run-pilot.camelai.dev`, no external users).
+5. `docs/design/roadmap.md`: the plan. The tracks, their next items, what gets simpler after v0, and the order.
 
 **Where it stands (2026-11-15)**
 - The camel-fs tier serves the pilot: refs in DynamoDB (#1204 guards ref writes with deletion stamps), VMs on
