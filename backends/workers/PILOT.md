@@ -638,7 +638,10 @@ Before deleting the class:
    A temporary operator Worker calls `drain()` for each exact object ID and
    is removed at the end. The command exits nonzero if any object is unsettled
    or its RPC fails. Rerun after checking pilot logs until all objects settle.
-   Reconcile any `computer_charge_dropped` receipts before deleting the namespace.
+   The drain retains receipts the database refuses, including a missing payer
+   or a conflicting receipt. Reconcile the reported charge and retry using its
+   original ID. Check retained logs for `computer_charge_dropped` from versions
+   deployed before the drain and reconcile those receipts before class deletion.
 3. Verify the legacy deployment has no live container instances. Run both
    queries against pilot Postgres and reconcile any returned rows.
 

@@ -100,15 +100,17 @@ export class ComputerMeter {
   private idleMs: number;
   private now: () => number;
   private schedule: (at: number) => Promise<void>;
+  private readonly retainRejected: boolean;
   /** What the sessions this instance closed since its last `started` cost (USD): a job's whole run. */
   private spent = 0;
   spentUsd() { return this.spent; }
-  constructor(options: { store: MeterStore; billing: MeterBilling; idleMs: number; now?: () => number; schedule: (at: number) => Promise<void> }) {
+  constructor(options: { store: MeterStore; billing: MeterBilling; idleMs: number; now?: () => number; schedule: (at: number) => Promise<void>; retainRejected?: boolean }) {
     this.store = options.store;
     this.billing = options.billing;
     this.idleMs = options.idleMs;
     this.now = options.now ?? Date.now;
     this.schedule = options.schedule;
+    this.retainRejected = options.retainRejected === true;
   }
   admit(payer: ComputerPayer) {
     return this.billing.admit(payer);
@@ -250,7 +252,8 @@ export class ComputerMeter {
         await this.store.delete(key);
       } catch (error) {
         const reason = error instanceof Error ? error.message.slice(0, 200) : "unknown";
-        if (terminal(error)) {
+        // MONEY: The legacy namespace cannot be removed while any receipt needs reconciliation.
+        if (terminal(error) && !this.retainRejected) {
           console.error(JSON.stringify({ type: "computer_charge_dropped", reason, charge }));
           await this.store.delete(key);
           continue;

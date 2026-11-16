@@ -12,6 +12,8 @@ type Env = KeyEnv & WebhookEnv;
 export type ComputerDrainBinding = { COMPUTER_CONTAINERS?: DurableObjectNamespace<ContainerComputer> };
 
 const RETRY_MS = 60_000;
+const STOP_INTENT = "computer:retire-stop";
+type StopIntent = { at: number; cpu?: number };
 
 async function finalCpuUsec(container: Container): Promise<number | undefined> {
   try {
@@ -76,12 +78,22 @@ export class ContainerComputer extends DurableObject<Env> {
       billing: meterBilling(this.env),
       idleMs: COMPUTER_LIMITS.idleSeconds.default * 1000,
       schedule: at => storage.setAlarm(at),
+      retainRejected: true,
     });
     try {
+      let stop = await storage.get<StopIntent>(STOP_INTENT);
       if (container?.running) {
-        const cpu = await finalCpuUsec(container);
+        if (!stop) {
+          const cpu = await finalCpuUsec(container);
+          // MONEY: Persist the stop time and CPU sample before a destroy can outlive this invocation.
+          stop = { at: Date.now(), cpu };
+          await storage.put(STOP_INTENT, stop);
+        }
         if (container.running) await container.destroy();
-        await meter.stopped(cpu);
+      }
+      if (stop) {
+        await meter.stopped(stop.cpu, stop.at);
+        await storage.delete(STOP_INTENT);
       } else {
         await meter.alarm(false);
       }

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
 import test from "node:test";
-import { CHECKPOINT_MS, ComputerMeter, SETTLE_MARGIN_MS, CONTAINER_RATES, holdRate, secondRate, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
+import { CHECKPOINT_MS, ComputerMeter, SETTLE_MARGIN_MS, CONTAINER_RATES, holdRate, secondRate, type ComputerCharge, type MeterBilling, type MeterStore } from "../src/computers/meter.ts";
 import { AlarmWatch } from "./alarm-watch.ts";
 
 const payer = { tenant: "t1", agent: "a1" };
-function harness(options: { failCharges?: number; failStatus?: number } = {}) {
+function harness(options: { failCharges?: number; failStatus?: number; retainRejected?: boolean } = {}) {
   const data = new Map<string, unknown>(), charges: ComputerCharge[] = [], alarms: number[] = [], watch = new AlarmWatch("ComputerMeter");
   let now = 1_000_000, failures = options.failCharges ?? 0, refuse = false;
   const store: MeterStore = {
@@ -15,22 +16,23 @@ function harness(options: { failCharges?: number; failStatus?: number } = {}) {
       return new Map([...data].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value) as T]));
     },
   };
-  const meter = new ComputerMeter({
-    store, idleMs: 60_000, now: () => now, schedule: async at => { watch.armed(at); alarms.push(at); },
-    billing: {
-      async admit() { if (refuse) throw Object.assign(new Error("credit spent"), { status: 402 }); },
-      async charge(charge) {
-        if (failures > 0) { failures--; throw Object.assign(new Error("database unavailable"), options.failStatus ? { status: options.failStatus } : {}); }
-        // Exactly once per session id, as the durable receipt makes it.
-        if (!charges.some(c => c.id === charge.id)) charges.push(charge);
-      },
+  const billing: MeterBilling = {
+    async admit() { if (refuse) throw Object.assign(new Error("credit spent"), { status: 402 }); },
+    async charge(charge) {
+      if (failures > 0) { failures--; throw Object.assign(new Error("database unavailable"), options.failStatus ? { status: options.failStatus } : {}); }
+      // Exactly once per session id, as the durable receipt makes it.
+      if (!charges.some(c => c.id === charge.id)) charges.push(charge);
     },
+  };
+  const meter = new ComputerMeter({
+    store, billing, idleMs: 60_000, now: () => now, schedule: async at => { watch.armed(at); alarms.push(at); },
+    retainRejected: options.retainRejected,
   });
   // The meter's alarm, watched for hot loops (test/alarm-watch.ts); anything else the test does is an external event.
   const alarm = meter.alarm.bind(meter);
   meter.alarm = (running: boolean) => watch.fire(now, () => alarm(running));
   for (const name of ["started", "used", "stopped"] as const) { const call = meter[name].bind(meter) as (...args: any[]) => Promise<void>; (meter as any)[name] = (...args: any[]) => { watch.external(); return call(...args); }; }
-  return { meter, data, charges, alarms, advance: (ms: number) => { now += ms; }, now: () => now, refuse: () => { refuse = true; } };
+  return { meter, store, billing, data, charges, alarms, advance: (ms: number) => { now += ms; }, now: () => now, refuse: () => { refuse = true; } };
 }
 
 test("a container is charged from its start until it is destroyed, at its instance's rate", async () => {
@@ -141,6 +143,60 @@ test("failed charges back off; a charge the database refuses for good is dropped
   await gone.meter.stopped();
   assert.equal(await gone.meter.settled(), true, "an agent that no longer exists is not retried forever");
   assert.equal(gone.charges.length, 0);
+});
+
+test("legacy drain keeps rejected receipts until accounting accepts the original charge", async () => {
+  for (const failStatus of [404, 409]) {
+    const h = harness({ failCharges: 1, failStatus, retainRejected: true });
+    await h.meter.started(payer, "lite");
+    const session = await h.meter.openSession();
+    h.advance(5_000);
+    await h.meter.stopped();
+    assert.equal(await h.meter.settled(), false);
+    assert.equal(h.charges.length, 0);
+    assert.equal(h.alarms.at(-1), h.now() + 60_000);
+    h.advance(60_000);
+    await h.meter.alarm(false);
+    assert.equal(await h.meter.settled(), true);
+    assert.deepEqual(h.charges.map(charge => [charge.id, charge.seconds]), [[session?.id, 5]]);
+  }
+});
+
+test("a drain interrupted after destroy settles at its recorded time and CPU use", async t => {
+  const hooks = registerHooks({ resolve(specifier, context, next) {
+    if (context.parentURL?.endsWith("/computers/objects.ts")) {
+      if (specifier === "cloudflare:workers")
+        return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }", shortCircuit: true };
+      if (specifier === "./meter-billing.ts")
+        return { url: "data:text/javascript,export const meterBilling = env => env.billing;", shortCircuit: true };
+      if (specifier === "../postgres.ts")
+        return { url: "data:text/javascript,export const withSql = () => { throw new Error('Unexpected slot release'); };", shortCircuit: true };
+    }
+    return next(specifier, context);
+  } });
+  const { ContainerComputer } = await import("../src/computers/objects.ts").finally(() => hooks.deregister());
+  const h = harness();
+  t.mock.method(Date, "now", h.now);
+  const storage = { ...h.store, async setAlarm() {}, async deleteAlarm() {} };
+  const container = {
+    running: true,
+    async exec() {
+      return { stdout: new Response("usage_usec 2000000\n").body, exitCode: Promise.resolve(0) };
+    },
+    async destroy() {
+      this.running = false;
+      throw new Error("lost destroy response");
+    },
+  };
+  const open = () => new ContainerComputer({ storage, container } as unknown as DurableObjectState, { billing: h.billing } as never);
+  await h.meter.started(payer, "standard-1");
+  h.advance(10_000);
+  await assert.rejects(open().drain(), /lost destroy response/);
+  assert.equal(h.charges.length, 0);
+  h.advance(70_000);
+  await open().alarm();
+  assert.deepEqual(await open().drain(), { settled: true });
+  assert.deepEqual(h.charges.map(charge => [charge.seconds, charge.cpuSeconds]), [[10, 2]]);
 });
 
 const near = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);
