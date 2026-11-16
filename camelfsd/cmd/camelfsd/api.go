@@ -39,6 +39,8 @@ func apiRole(args []string) error {
 	maxTTL := f.Duration("token-max-ttl", auth.DefaultMaxTTL, "maximum token lifetime")
 	var computeFlags apiComputeFlags
 	computeFlags.bind(f)
+	var bundles bundleFlags
+	bundles.bind(f)
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -62,7 +64,7 @@ func apiRole(args []string) error {
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 
-	st, err := store.Open(ctx, *url, *region, *fetchDepth)
+	st, err := bundles.open(ctx, *url, *region, computeFlags.endpoint, *fetchDepth)
 	if err != nil {
 		return err
 	}

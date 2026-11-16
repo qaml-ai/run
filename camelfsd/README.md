@@ -334,6 +334,23 @@ canonical Git objects. In a versioned bucket, the lifecycle retains noncurrent
 versions. After retiring the old cache and current shared workspace objects, the
 previous binary can roll back with a fresh derived cache and rebuild from Git.
 
+## Small-file bundles
+
+The tier and compute hosts use the same `--objects-table` to resolve Git blob
+IDs. The table maps a lineage and blob ID to its size, SHA-256, S3 bundle
+and byte range. New files up to 64 KiB are packed into bundles of up to 8 MiB.
+The writer stores the immutable bundle before publishing its member locators.
+Large files use loose objects, and existing loose blobs remain readable.
+
+Cold restores resolve small blobs in batches and fetch bundles shared by
+multiple files. Single-member reads fetch the verified byte range. The
+`compute_apply_reads` log records lookup time and the number of loose, bundle
+and range reads.
+
+Use the same table on the tier and all compute hosts. A lineage cleanup
+includes its bundle prefix and locator rows. Reclaiming space within a
+partially live bundle requires compaction.
+
 ## Host and API roles
 
 `camelfsd host --compute` runs the session VM host and accepts tier pushes
@@ -370,8 +387,8 @@ pair together for new connections. A failed reload keeps the previous
 credentials.
 
 Each API node keeps its own SQLite caches, including its idempotency response
-cache. Nodes can share the same object store, which is the durable source of
-storage objects. `--fetch-depth` bounds concurrent store operations.
+cache. Nodes share the durable object store. `--fetch-depth` bounds concurrent
+store operations.
 
 Send `Authorization: Bearer <jwt>` for storage requests. The runtime signs
 the JWT using Ed25519 with `alg: "EdDSA"`, `typ: "camelfs+jwt"` and a `kid`

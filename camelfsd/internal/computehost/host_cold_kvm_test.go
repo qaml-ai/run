@@ -33,6 +33,7 @@ import (
 // TestKVMColdSessionBench measures create → first exec for a session whose branch tree is S MB, on a host that has
 // never seen the lineage (cold: fresh data dir, empty cache and refs.db, objects only in CAMELFSD_KVM_STORE), then a
 // second session of the same tree on the same host (warm). Each tree is 10k × 4 KiB files plus 1 MiB files up to S.
+// CAMELFSD_KVM_OBJECTS_TABLE enables bundled writes for the small files and bundle reads on each host.
 //
 //	CAMELFSD_KVM=1 CAMELFSD_KVM_COLD_MB=50,500,2000 CAMELFSD_KVM_STORE=s3://bucket/prefix GUEST_IMAGE=… go test -tags kvm
 func TestKVMColdSessionBench(t *testing.T) {
@@ -65,7 +66,9 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		parent = filepath.Dir(guestImage)
 	}
 	lineage := fmt.Sprintf("coldbench-%d-%d", mb, time.Now().UnixNano())
-	remote, err := store.Open(ctx, url, "us-west-2", 64)
+	t.Logf("benchmark lineage=%s", lineage)
+	objectsTable := os.Getenv("CAMELFSD_KVM_OBJECTS_TABLE")
+	remote, err := openBenchmarkStore(ctx, url, objectsTable, 64)
 	must(err)
 
 	// Seed: upload the blobs and the tree from a separate data dir, as the tier would have.
@@ -74,15 +77,41 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	must(err)
 	repo := &objects.Repository{DB: seedDB, Store: remote, TempDir: seed}
 	files := map[string]objects.File{}
+	start := time.Now()
+	batch := repo.ForLineage(lineage).BeginPublication()
+	smallIDs := make([]string, 0, 10000)
 	var mu sync.Mutex
 	var blobs []string // "<size> <path>"
 	for i := range 10000 {
-		blobs = append(blobs, fmt.Sprintf("4096 src/d%03d/f%05d.ts", i/100, i))
+		path := fmt.Sprintf("src/d%03d/f%05d.ts", i/100, i)
+		if objectsTable == "" {
+			blobs = append(blobs, "4096 "+path)
+			continue
+		}
+		raw := make([]byte, 4096)
+		_, err := rand.Read(raw)
+		must(err)
+		blob := batch.StageBlob(raw)
+		sum := sha256.Sum256(raw)
+		files[path] = objects.File{SHA256: hex.EncodeToString(sum[:])}
+		smallIDs = append(smallIDs, blob.SHA1)
+	}
+	if objectsTable != "" {
+		must(batch.Flush(ctx))
+		locations, err := store.LocateBundles(ctx, store.ForLineage(remote, lineage), smallIDs)
+		must(err)
+		packs := make(map[string]bool)
+		for _, location := range locations {
+			packs[location.Key] = true
+		}
+		if len(locations) != len(smallIDs) || len(packs) >= len(smallIDs) {
+			t.Fatalf("bundled %d of %d small blobs in %d packs", len(locations), len(smallIDs), len(packs))
+		}
+		t.Logf("seed bundles: %d blobs in %d packs", len(locations), len(packs))
 	}
 	for i := 0; i < mb-40; i++ {
 		blobs = append(blobs, fmt.Sprintf("%d assets/a%04d.bin", 1<<20, i))
 	}
-	start := time.Now()
 	must(store.Parallel(ctx, 64, blobs, func(item string) error {
 		sizeField, path, _ := strings.Cut(item, " ")
 		size, _ := strconv.Atoi(sizeField)
@@ -184,7 +213,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		must(os.MkdirAll(filepath.Join(data, "images"), 0700))
 		must(exec.Command("cp", "--reflink=always", guestImage, filepath.Join(data, "images", sha+".ext4")).Run())
 		cfg := kvmDaemonConfig{Data: data, Tier: strings.TrimPrefix(tier.URL, "https://"), HostID: cert.HostID, Kernel: kernel, Shape: shape,
-			Store: url, VirtualSize: int64(mb+1024) << 20}
+			Store: url, ObjectsTable: objectsTable, VirtualSize: int64(mb+1024) << 20}
 		config, err := json.Marshal(cfg)
 		must(err)
 		daemon := exec.Command(os.Args[0], "-test.run=^TestKVMComputeDaemonProcess$")
@@ -363,7 +392,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		raw, err := os.ReadFile(h.log)
 		must(err)
 		for _, line := range strings.Split(string(raw), "\n") {
-			if strings.Contains(line, "compute_boot") || strings.Contains(line, "compute_checkpoint") || strings.Contains(line, "compute_baseline") {
+			if strings.Contains(line, "compute_boot") || strings.Contains(line, "compute_apply") || strings.Contains(line, "compute_checkpoint") || strings.Contains(line, "compute_baseline") {
 				t.Log(line)
 			}
 		}

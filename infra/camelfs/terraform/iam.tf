@@ -7,9 +7,8 @@
 #              deliveries, hosts and vms. The token verification keys reach the task as an injected environment
 #              variable, so the task role reads no secret; the execution role reads that one secret for the
 #              injection.
-#   host       camelfsd --role host on the VM hosts: the lineage object keys (<lineage>/{o,t,k,r,c,ts,tr}/*, read and
-#              write, no delete), the guest image (read) and the objects table (trees and commits a checkpoint
-#              publishes), nothing else — every other prefix is denied by omission: a host moves no ref (it asks the tier, which checks
+#   host       camelfsd host on the VM hosts: the lineage object keys (read and write, no delete), the guest
+#              image (read) and the objects table (blob locators). A host moves no ref (it asks the tier, which checks
 #              its fence), reads no lineage registry and touches no control table; no secret at all: its identity
 #              is the certificate the tier issues it at enrollment (§9.12). Delivered as a customer-managed
 #              policy (host_policy_arn), attachable to any compute host's instance role (the proto host's
@@ -216,7 +215,7 @@ locals {
   # first; and the guest image under guest/ (K1), read only. Scoped to exactly those (the lead, 2026-11-14): anything
   # else in the bucket — another prefix, a future one — is denied by omission, not by a deny statement to keep up.
   # A lineage is one path segment and hashes are hex, so "*/o/*" cannot match a key outside a lineage's objects.
-  host_object_kinds = ["o", "t", "k", "r", "c", "ts", "tr"]
+  host_object_kinds = ["o", "p", "t", "k", "r", "c", "ts", "tr"]
   host_object_arns  = [for kind in local.host_object_kinds : "${aws_s3_bucket.objects.arn}/*/${kind}/*"]
   host_bucket_statements = [
     {
@@ -262,7 +261,7 @@ locals {
   host_policy = {
     Version = "2012-10-17"
     Statement = concat(local.host_bucket_statements, [
-      # Trees and commits a checkpoint publishes (L74). Reads of a tree by id on a cache miss.
+      # Shared locators for the blobs a checkpoint publishes and a restore reads.
       {
         Sid      = "ObjectsTable"
         Effect   = "Allow"

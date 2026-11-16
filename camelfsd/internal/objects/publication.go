@@ -80,12 +80,23 @@ func (r *Repository) OnBlobUpload(callback func(context.Context, Blob) error) {
 func (r *Repository) flushBlobs(ctx context.Context) error {
 	p := r.publication
 	ids := make([]string, 0, len(p.blobs))
-	for id := range p.blobs {
+	var small []store.SmallBlob
+	bundle := store.BundlesEnabled(r.Store)
+	for id, raw := range p.blobs {
+		if bundle && len(raw) <= store.BundleMaxBlob {
+			small = append(small, store.SmallBlob{Key: "o/" + id, SHA256: root.Hash(raw), Data: raw})
+			continue
+		}
 		ids = append(ids, id)
+	}
+	var smallDone chan error
+	if len(small) != 0 {
+		smallDone = make(chan error, 1)
+		go func() { smallDone <- r.PublishSmallBlobs(ctx, small, p.onBlob) }()
 	}
 	repo := *r
 	repo.publication = nil
-	return store.Parallel(ctx, min(16, len(ids)), ids, func(id string) error {
+	err := store.Parallel(ctx, min(16, len(ids)), ids, func(id string) error {
 		raw := p.blobs[id]
 		blob, err := repo.Upload(ctx, repo.lineage, root.Hash(raw), int64(len(raw)), bytes.NewReader(raw))
 		if err == nil && p.onBlob != nil {
@@ -93,6 +104,38 @@ func (r *Repository) flushBlobs(ctx context.Context) error {
 		}
 		return err
 	})
+	if smallDone != nil {
+		err = errors.Join(err, <-smallDone)
+	}
+	return err
+}
+
+// PublishSmallBlobs makes packed blobs visible to hash-based imports and
+// accounts for every durable write, including successes from a partial batch.
+func (r *Repository) PublishSmallBlobs(ctx context.Context, blobs []store.SmallBlob, onBlob func(context.Context, Blob) error) error {
+	written, writeErr := store.PutSmallBlobs(ctx, r.Store, blobs)
+	published := make(map[string]Blob, len(written))
+	keys := make([]string, 0, len(written))
+	var memberships []membership
+	for _, b := range blobs {
+		created, ok := written[b.Key]
+		if !ok {
+			continue
+		}
+		delete(written, b.Key)
+		blob := Blob{SHA1: strings.TrimPrefix(b.Key, "o/"), SHA256: b.SHA256, Size: int64(len(b.Data)), Existing: !created}
+		published[b.Key] = blob
+		keys = append(keys, b.Key)
+		memberships = append(memberships, membership{Lineage: r.lineage, ID: blob.SHA1, Kind: "blob", Blob: &blob})
+	}
+	cacheErr := r.cacheMemberships(ctx, memberships)
+	var accountingErr error
+	if onBlob != nil {
+		accountingErr = store.Parallel(ctx, min(16, len(keys)), keys, func(key string) error {
+			return onBlob(ctx, published[key])
+		})
+	}
+	return errors.Join(writeErr, cacheErr, accountingErr)
 }
 
 func (r *Repository) StageTreeParent(tree, parent string) {
