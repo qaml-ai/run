@@ -1,7 +1,6 @@
 import { HttpError } from '../errors.ts';
 import { PROVIDERS, boundedCommand, output, type ComputerDriver, type Credentials, type Provider } from './policy.ts';
 import { boundedResponse, microvmDriver, testEndpoint, type Fetcher, type MicrovmBindings } from './microvm.ts';
-import type { ComputerDrainBinding } from './objects.ts';
 import type { SnapshotRef } from '../../../../src/core/computer-fork.ts';
 
 export const BOAT_API = 'https://boat.dev/api/v1';
@@ -32,7 +31,7 @@ export function boatSnapshots(request: (path: string, body?: unknown, method?: s
     async drop(snapshot: SnapshotRef) { await request(`/saved-snapshots/${encodeURIComponent(snapshot.id)}`, undefined, 'DELETE', true); },
   };
 }
-export type RemoteBindings = ComputerDrainBinding & MicrovmBindings & {
+export type RemoteBindings = MicrovmBindings & {
   TEST_COMPUTER_ENDPOINT?: string;
   COMPUTER_TUNNEL_HOSTS?: string;
   /** A Worker service that hosts an optional provider SDK which cannot run in workerd. */
@@ -43,24 +42,9 @@ class ProviderHttpError extends Error {
   readonly status: number;
   constructor(status: number) { super(`Computer provider HTTP ${status}`); this.status = status; }
 }
-export function remoteDriver(env: RemoteBindings, tenant: string, agent: string, provider: Provider | 'container', credentials: Credentials, send: Fetcher = request => fetch(request)): ComputerDriver {
-  if (provider !== 'container' && !PROVIDERS.includes(provider)) throw new HttpError(400, 'Unsupported computer provider');
+export function remoteDriver(env: RemoteBindings, tenant: string, agent: string, provider: Provider, credentials: Credentials, send: Fetcher = request => fetch(request)): ComputerDriver {
+  if (!PROVIDERS.includes(provider)) throw new HttpError(400, 'Unsupported computer provider');
   if (provider === 'lambda') return microvmDriver(env, tenant, send);
-  if (provider === 'container') {
-    // Existing connection rows can still be closed. All new allocations and calls are refused.
-    const retired = () => { throw new HttpError(410, 'Cloudflare Containers have been retired'); };
-    return {
-      async create() { return retired(); },
-      async call() { return retired(); },
-      async dropSnapshot() {}, // Old Cloudflare snapshots expire on their original schedule.
-      async close(ref) {
-        const namespace = env.COMPUTER_CONTAINERS;
-        if (!namespace) throw new HttpError(503, 'Container settlement binding is missing');
-        if (!(await namespace.getByName(ref.id).purge()).settled)
-          throw new HttpError(503, 'Computer usage settlement is pending');
-      },
-    };
-  }
   const fake = testEndpoint(env.TEST_COMPUTER_ENDPOINT, env);
   if (provider === 'tunnel' && !fake && !(env.COMPUTER_TUNNEL_HOSTS ?? '').split(',').map(value => value.trim().toLowerCase()).includes(new URL(credentials.url).hostname.toLowerCase()))
     throw new HttpError(503, 'Tunnel host is not approved by the runtime');

@@ -30,38 +30,26 @@ test('Workers rejects the dropped Modal provider before contacting a provider ga
   assert.throws(() => remoteDriver(env, 'tenant', 'agent', 'modal' as Provider, { tokenId: 'id', tokenSecret: 'fixture' }), /Unsupported computer provider/);
   assert.equal(contacted, false);
 });
-test('Workers refuses to create the retired provider and can drain an old lease whose reference was never saved', async () => {
+test('the retired provider cannot allocate and closed leases still have a status', async () => {
   assert.throws(() => connectionInput({ agent: 'agent', provider: 'container' }, true), /Invalid computer connection/);
-  const purged: string[] = [];
-  let settled = false;
-  const env = {
-    COMPUTER_CONTAINERS: {
-      getByName(id: string) { return { async purge() { purged.push(id); return { settled }; } }; },
-    },
-  };
-  const lease = { id: 'legacy-session', state: 'starting', reference: null, expires_at: Date.now() + 60_000 };
+  const lease = { id: 'legacy-session', provider: 'container', state: 'closed', created_at: 10, expires_at: 120, closed_at: 100 };
   const connection = { id: 'legacy-connection', tenant: 'tenant', agent: 'agent', provider: 'container', revoked: false };
-  const statements: string[] = [];
   const sql = {
     async query(query: string) {
-      statements.push(query);
-      if (query.startsWith('select c.*,a.revoked')) return { rows: [connection] };
+      if (query.startsWith('select owner from computer_shares')) return { rows: [] };
+      if (query.startsWith('select c.* from computer_connections')) return { rows: [connection] };
       if (query.startsWith('select * from computer_leases')) return { rows: [lease] };
-      return { rows: [] };
+      throw new Error(`Unexpected query: ${query}`);
     },
   };
-  const service = new ComputerService(env as never, 'tenant');
-  service.credentials = async () => ({});
+  const service = new ComputerService({} as never, 'tenant');
   await applyScope.run({ sql: sql as never }, async () => {
-    await assert.rejects(service.sweepAgent('agent'), /Computer cleanup failed; it will be retried/);
-    assert.ok(statements.some(query => query.includes("error='Cleanup failed; retrying'")));
-    assert.ok(statements.every(query => !query.includes("state='closed'") && !query.startsWith('delete from computer_slots')));
-    settled = true;
-    await service.sweepAgent('agent');
+    const status = await service.status('agent');
+    assert.equal(status.connection.provider, 'container');
+    assert.equal(status.session?.state, 'closed');
+    assert.equal(status.session?.closedAt, 100);
+    await assert.rejects(service.call('agent', 'computer_start', {}, 'start'), /Cloudflare Containers have been retired/);
   });
-  assert.deepEqual(purged, ['legacy-session', 'legacy-session']);
-  assert.ok(statements.some(query => query.includes("state='closed'")));
-  assert.ok(statements.some(query => query.startsWith('delete from computer_slots')));
 });
 
 test('Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints', async () => {

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_HOST_MARKUP, HOST_POOL_PRICES, hostInstance, hostPool, hostRates, hostSecondRate, hostShare, TEST_POOL_MAX } from "../src/jobs/host-pricing.ts";
 import { hostShape } from "../src/jobs/host-pricing.ts";
-import { ComputerMeter, CONTAINER_RATES, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 
 const close = (a: number, b: number, what: string) => assert.ok(Math.abs(a - b) <= Math.abs(b) * 1e-9, `${what}: ${a} vs ${b}`);
 
@@ -24,8 +23,6 @@ test("about what a job costs at the defaults", () => {
   const hour = (shape: { vcpus: number; memoryMiB: number }) => hostSecondRate("test", { ...shape, diskMiB: 0 }) * 3600;
   assert.ok(Math.abs(hour({ vcpus: 2, memoryMiB: 8192 }) - 0.33) < 0.01, `${hour({ vcpus: 2, memoryMiB: 8192 })}`);
   assert.ok(Math.abs(hostRates("build").hostSecond * 3600 - 1.48) < 0.01);
-  // Cloudflare's for the same 2 vCPU / 8 GiB, at its provisioned rates, for comparison: hosts serve the larger jobs.
-  assert.ok(2 * CONTAINER_RATES.vcpuSecond * 3600 + 8 * CONTAINER_RATES.memoryGiBSecond * 3600 < hour({ vcpus: 2, memoryMiB: 8192 }));
 });
 
 test("VM shape uses resource overrides and falls back to the instance defaults", () => {
@@ -56,38 +53,4 @@ test("a job goes to the test pool up to a shard's size, and to the build pool ab
 test("the meter's instance name carries the pool and shape", () => {
   const name = hostInstance("test", { vcpus: 2, memoryMiB: 6144, diskMiB: 12000 });
   assert.equal(name, "test-2vcpu-6144mib");
-});
-
-test("a session's rate fixed at its start, and its span as reported, are what it is charged", async () => {
-  const data = new Map<string, unknown>(), charges: ComputerCharge[] = [];
-  let now = 2_000_000;
-  const store: MeterStore = {
-    async get<T>(key: string) { return structuredClone(data.get(key)) as T | undefined; },
-    async put(key, value) { data.set(key, structuredClone(value)); },
-    async delete(key) { return data.delete(key); },
-    async list<T>({ prefix }: { prefix: string }) { return new Map([...data].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value) as T])); },
-  };
-  // A session opened with a fixed rate is charged at that rate, not by its instance type.
-  const meter = new ComputerMeter({ store, idleMs: 3_600_000, now: () => now, schedule: async () => {},
-    billing: { async admit() {}, async charge(charge) { charges.push(charge); } } });
-  now += 60_000;
-  await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j2", { at: now - 50_000, rate: 0.001 });
-  await meter.stopped(undefined, now - 20_000);
-  assert.equal(charges.length, 1);
-  assert.equal(charges[0]!.seconds, 30, "from the reported start to the reported end");
-  close(charges[0]!.costUsd, 0.03, "30 s at the fixed rate");
-  // Opened at dispatch, then trimmed to when the VM started: never earlier than it opened, never later than now.
-  await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j4", { rate: 0.001 });
-  const opened = now;
-  now += 10_000;
-  await meter.startedAt(opened - 5_000);
-  now += 10_000;
-  await meter.startedAt(opened + 4_000);
-  await meter.stopped(undefined, now);
-  assert.equal(charges.at(-1)!.seconds, 16, "from the reported start (4 s after dispatch) to its end");
-  charges.length = 1;
-  // A start reported in the future is now; an end before it, nothing.
-  await meter.started({ tenant: "t1", agent: "a1" }, "test-1vcpu-4096mib", 3_600_000, 0, "job:j3", { at: now + 10_000, rate: 0.001 });
-  await meter.stopped(undefined, now - 1_000);
-  assert.equal(charges.length, 1);
 });

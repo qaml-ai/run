@@ -16,7 +16,6 @@ pilot credentials. All dates below are UTC.
 | Agent objects | `AGENTS` / `CamelAgent` | Durable journal, runs, schedules, human input, hibernatable sockets |
 | Tenant objects | `TENANTS` / `TenantAdmission` | Admission and counters |
 | Repos | `CAMELFS_URL` and `CAMELFS_NOTIFY_KEY` (required) | Tier origin and signing key for ref-moved notifications |
-| Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | Retained while legacy containers stop and settle usage. The deploy still builds `computers/Dockerfile`. |
 | Code-mode binding | `CODEMODE_SANDBOX` | External `CodemodeSandbox` class on `camelrun-pilot-codemode` |
 | Sandbox objects | `SANDBOX` / `CodemodeSandbox` | Local binding in the sandbox Worker |
 | Static assets | `PUBLIC_ASSETS` | Bundled API documentation and console assets |
@@ -606,42 +605,24 @@ on base `20443b49`: 9,729 bytes exceeds 9,216. No UI source changed in this work
 
 ## Retire legacy Cloudflare computers
 
-The first rollout removes the old agent `computer` tool and its operation API.
-The pilot keeps the `ContainerComputer` class, Docker image and legacy egress
-entrypoint through the drain. Existing alarms stop the container, settle its
-meter using the original charge IDs, and release any native admission slot.
-Agent deletion also waits for this settlement. Deleting the class would erase
-unsettled charges in the namespace. The pilot deploy still needs Docker to
-build the retained image.
+The first rollout disables the agent `computer` tool and operation API. It
+keeps the original class to stop running containers, settle usage under the
+original receipt IDs, and release admission slots. The pilot's legacy disks
+and snapshots are disposable. Deleting the class erases its Durable Object
+storage, so verify the drain before applying the `delete-container-computer`
+migration.
 
-The existing pilot's legacy container and snapshot data is disposable. When
-using this procedure in an environment with files to retain, export them while
-the version that supports the old operations still serves traffic.
-
-Before deleting the class:
-
-1. Verify the drain-only version serves all traffic. With a pilot-scoped
-   `CLOUDFLARE_API_TOKEN` in the environment, run the inventory from the
-   repository root:
-
-   ```sh
-   node backends/workers/scripts/pilot-drain-computers.mjs
-   ```
-
-   It lists every object in the pinned `ContainerComputer` namespace through the
-   [Durable Objects namespace API](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/),
-   including objects without stored data. The inventory needs Workers read
-   access and does not deploy a Worker.
-2. With Workers write access, rerun the same command with `--confirm`.
-   A temporary operator Worker calls `drain()` for each exact object ID and
-   is removed at the end. The command exits nonzero if any object is unsettled
-   or its RPC fails. Rerun after checking pilot logs until all objects settle.
-   The drain retains receipts the database refuses, including a missing payer
-   or a conflicting receipt. Reconcile the reported charge and retry using its
-   original ID. Check retained logs for `computer_charge_dropped` from versions
-   deployed before the drain and reconcile those receipts before class deletion.
-3. Verify the legacy deployment has no live container instances. Run both
-   queries against pilot Postgres and reconcile any returned rows.
+1. Verify the drain-only version serves all traffic.
+2. From the drain-only checkout, run
+   `node backends/workers/scripts/pilot-drain-computers.mjs` for an inventory,
+   then rerun with `--confirm`. The command uses the pilot namespace's
+   [paginated Cloudflare inventory](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/)
+   including objects without stored data. Rerun until every object reports
+   settled and the temporary operator Worker is gone. Check pilot logs for
+   `computer_charge_dropped` and reconcile any affected receipts.
+3. Verify the retired Cloudflare Container application has zero live
+   instances. Both queries against pilot Postgres return zero rows once the
+   drain is complete:
 
    ```sql
    select id, state from computer_leases where provider = 'container' and state <> 'closed';
@@ -650,10 +631,13 @@ Before deleting the class:
         or exists (select 1 from computer_connections c where c.id = s.machine and c.provider = 'container');
    ```
 
-4. Cloudflare snapshots expire 30 days after their latest restore. After the
-   drain checks pass, remove the legacy binding, container config, image,
-   egress entrypoint and class export. Append a Wrangler migration with
-   `"deleted_classes": ["ContainerComputer"]` to preserve migration history.
+   Reconcile any returned rows against Cloudflare and the charge receipts
+   before proceeding. Keep closed lease rows and accounting receipts for
+   drain verification.
+4. Deploy the class deletion and verify the retired namespace is absent.
+   Check for the legacy Container application and registry artifacts,
+   including `rootfs-snapshot-*` tags. Remove artifacts dedicated to the
+   retired provider.
 
 ## Limits and rollback
 
@@ -685,12 +669,12 @@ Deleting a Worker alone does not delete its Durable Object storage. Before
 deleting the Workers, remove any temporary `camelrun-pilot-bootstrap-*` Workers
 and any other external bindings to the pilot's classes. Prepare temporary copies
 of the API and sandbox Wrangler configurations with a no-op Worker entry point,
-no Durable Object bindings, no `containers`, no routes, no cron triggers, and no
-queue bindings. Retain their existing migrations (`v1`, and the API's `v2`) and
-append these migrations respectively:
+no Durable Object bindings, no routes, no cron triggers, and no queue
+bindings. Retain their entire existing migration history and append these
+migrations respectively:
 
 ```json
-{ "tag": "pilot-teardown-v3", "deleted_classes": ["CamelAgent", "TenantAdmission", "Volume", "ContainerComputer"] }
+{ "tag": "pilot-teardown-v3", "deleted_classes": ["CamelAgent", "TenantAdmission", "WorkflowCapacity", "WorkflowObject", "WorkflowResults", "CamelfsUsagePoller", "VoiceCall", "CamelfsSmoke"] }
 ```
 
 ```json
@@ -701,11 +685,7 @@ Remove the class exports from those temporary entry points as well. Deploy the
 API teardown configuration first: this removes its external binding to
 `camelrun-pilot-codemode`. Then deploy the sandbox teardown configuration. These
 [deletion migrations](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/)
-permanently remove all five namespaces and their stored data. Delete the
-computer's container application and its image repository too (`wrangler
-containers list`, `wrangler containers delete`, `wrangler containers images
-list` and `delete`): computer snapshots are `rootfs-snapshot-*` tags in that
-repository and go with it. Verify success
+permanently remove the remaining namespaces and their stored data. Verify success
 before deleting either Worker. Do not run `scripts/pilot-deploy` afterward;
 the original configuration is for an active pilot, not a retired deployment.
 

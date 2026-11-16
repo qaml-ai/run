@@ -5,11 +5,8 @@ import { publishPending, type WebhookEnv } from "../webhooks.ts";
 import { HttpError } from "../errors.ts";
 import type { ComputerCharge, ComputerPayer, MeterBilling } from "./meter.ts";
 
-/** The provider name container time is recorded under, with the instance type as its model. */
-export const CONTAINER_PROVIDER = "cloudflare";
-
 /**
- * Container time goes through the same accounting as the other platform-paid work (web calls, images): a durable
+ * Platform compute time goes through the same accounting as the other platform-paid work (web calls, images): a durable
  * receipt per session, then the usage record with `platform: true` and `kind: "computer"`, so a prepaid tenant is
  * charged and an unbilled one only sees it in its usage. Agent spend limits count it too.
  *
@@ -21,7 +18,7 @@ export const CONTAINER_PROVIDER = "cloudflare";
  * recorded under the workflow's id (usage rows, usage details with the workflow as agent and root, the receipt keyed by
  * the session). No end user is ever charged: a workflow's job has none.
  */
-export function meterBilling(env: KeyEnv & WebhookEnv, provider = CONTAINER_PROVIDER): MeterBilling {
+export function meterBilling(env: KeyEnv & WebhookEnv, provider: string): MeterBilling {
   return {
     async admit(payer: ComputerPayer, invocation) {
       const { accounts } = await keyServices(env);

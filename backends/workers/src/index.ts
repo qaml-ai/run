@@ -113,8 +113,6 @@ import { startUsagePoller } from "./camelfs/usage-poller.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 import { workflowRoutes } from "./workflow-routes.ts";
-export { ContainerComputer } from "./computers/objects.ts";
-export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
   if (

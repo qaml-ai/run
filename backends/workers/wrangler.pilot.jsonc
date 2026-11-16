@@ -61,10 +61,6 @@
         "name": "CODEMODE_SANDBOX",
         "class_name": "CodemodeSandbox",
         "script_name": "camelrun-pilot-codemode"
-      },
-      {
-        "name": "COMPUTER_CONTAINERS",
-        "class_name": "ContainerComputer"
       }
     ]
   },
@@ -119,19 +115,8 @@
     },
     { "tag": "delete-repo-do", "deleted_classes": ["RepoDO"] },
     { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] },
-    { "tag": "camelfs-smoke", "new_sqlite_classes": ["CamelfsSmoke"] }
-  ],
-  // Legacy binding and image retained while existing computers stop and settle their usage.
-  "containers": [
-    {
-      "class_name": "ContainerComputer",
-      "scheduling_policy": "durable_object",
-      "images": {
-        "workspace": {
-          "dockerfile": "./computers/Dockerfile"
-        }
-      }
-    }
+    { "tag": "camelfs-smoke", "new_sqlite_classes": ["CamelfsSmoke"] },
+    { "tag": "delete-container-computer", "deleted_classes": ["ContainerComputer"] }
   ],
   "hyperdrive": [
     {

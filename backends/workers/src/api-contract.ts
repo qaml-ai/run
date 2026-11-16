@@ -21,8 +21,8 @@ import { rejectWorkflow } from "./workflow-refusal.ts";
 
 export interface AgentConfiguration {
   networking?: Networking;
-  /** A definition's native computer settings (computers/egress.ts); agents take them only from their definition. */
-  computer?: import("./computers/egress.ts").ComputerSettings;
+  /** A definition's machine size and stored legacy settings. */
+  computer?: import("./computers/settings.ts").ComputerSettings;
   model?: string;
   systemPrompt?: string;
   systemPromptAppend?: string;

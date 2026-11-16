@@ -60,8 +60,8 @@ return HTTP 503 with `storage_unavailable` when `CAMELFS_URL` is missing.
 
 With `CAMELFS_COMPUTE=1`, the Workers agent can run `bash` on a camelFS
 Firecracker VM. It persists files under the writable workspace root to the
-agent's branch. See [the pilot runbook](PILOT.md#retire-legacy-cloudflare-computers)
-for the remaining legacy Container binding and settlement checks.
+agent's branch. The [pilot runbook](PILOT.md#retire-legacy-cloudflare-computers)
+records the checks required before deleting the retired Container namespace.
 
 Customer-supplied connections still use the `/v1/computers` API and offer the
 agent provider-specific shell or browser tools.

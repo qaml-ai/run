@@ -320,8 +320,6 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
             );
           await this.delegation.destroy();
           await this.harness.session().abort();
-          const retired = await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
-          if (retired?.settled === false) throw new HttpError(503, "Computer usage settlement is pending");
           await this.cancelHumanInputs();
           // Settling still reads configuration and writes durable charge receipts.
           // Keep it available until every accepted operation has drained.
