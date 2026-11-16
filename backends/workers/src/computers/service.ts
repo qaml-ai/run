@@ -163,7 +163,7 @@ export class ComputerService {
   }
   private async stop(c: any, lease: any) {
     if (!lease || lease.state === 'closed') return;
-    if (c.provider === 'container') throw new HttpError(409, 'The retired container lease still needs manual reconciliation');
+    if (c.provider === 'container') throw new HttpError(409, 'The retired container lease is still open');
     await withSql(this.env, sql => sql.query("update computer_leases set state='closing',cleanup_at=$2 where id=$1", [lease.id, Date.now()]));
     if (!lease.reference) {
       await withSql(this.env, sql => sql.query("update computer_leases set state='uncertain',error='Creation outcome unknown; confirm provider cleanup' where id=$1", [lease.id]));
