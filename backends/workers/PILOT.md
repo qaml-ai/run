@@ -26,20 +26,19 @@ pilot credentials. All dates below are UTC.
 | Analytics Engine | `camelrun_pilot` / `METRICS` | Runtime metrics |
 | Email Sending | `EMAIL` | Sender restricted to `camelrun@staging.camelai.dev` |
 | Cron | `*/5 * * * *` | Maintenance and outbox repair |
-| Inbox cron (configured for the next deploy) | `* * * * *` | Reconcile at most 100 stale human-input mirrors; other maintenance stays on the five-minute cron |
+| Inbox cron | `* * * * *` | Reconcile at most 100 stale human-input mirrors; other maintenance stays on the five-minute cron |
 | Model secret | `PILOT_OPENROUTER_KEY` | Account secret `CAMELRUN_PILOT_OPENROUTER_KEY`, store `c8c66b0210e64900864182073dcd5e09` |
 | Runtime secrets | `API_TOKEN`, `FILE_SIGNING_SECRET`, `AGENT_SECRETS_KEY` | Stable authentication, signing and encryption keys; values never displayed |
 
-The verified API version is `e19b0ab2-743b-4f63-80ca-3998c1deda77`.
-The sandbox version is `23b3d532-733f-4637-9456-a1ccc0f0a3d1`; the fake
-provider version is `da870c3e-d37c-4fcb-a787-b9ae9c81e17e`.
+The verified API version is `af633fd5-e5e3-48d3-b16b-0cf0f046687d` from `4158a2ec`.
+The sandbox version is `9f062010-7d7e-4959-ba33-e5cc62e11414`. The fake provider
+version is `57f7387b-cb4d-431e-83c7-e715282e12ed`.
 
 The API enables structured runtime logs. Automatic invocation logs and traces
 are disabled because Cloudflare does not guarantee redaction of the bearer
 credential in a WebSocket subprotocol. The sandbox and fake model Workers enable
 logs and traces. Query strings are redacted.
-The API uses Smart Placement. The database origin is PlanetScale in AWS us-east-1;
-this does not authorize access to the production camelRun AWS account or database.
+The API uses Smart Placement. Its PlanetScale database origin is in AWS us-east-1.
 
 From the repository root, install the pinned dependencies if needed, then deploy:
 
@@ -657,10 +656,64 @@ migration.
    including `rootfs-snapshot-*` tags. Remove artifacts dedicated to the
    retired provider.
 
+## Live pilot qualification (2026-11-16)
+
+- Repository and file checks covered keyed create and replay, conditional ref
+  writes, branch and history reads, deletion, a binary SDK upload, and a Bash
+  checkpoint. The compute tier ran `camelfs-prod-api:23` (`2f1ba70e`), and the
+  host ran `camelfsd` at `04521b13`. A 257 MiB file (269,484,032 bytes) kept its
+  exact SHA-256 across fresh cold and warm VM mounts. The live lease rejected a
+  competing ref update with HTTP 409. The ref stayed at the same version after
+  both read-only checkpoints, and replay after shutdown returned the original
+  run result. Four settled usage rows across three VMs matched 108.134 billed
+  seconds and 4,957 micro-USD in the ledger.
+- A separate live VM ran Bash across a daemon restart. The interval recorded
+  by the guest enclosed the restart, with the same guest boot ID, Firecracker
+  PID and host epoch. Bash returned the expected marker, the ref stayed at
+  the same version, and the final receipt recorded an unchanged checkpoint.
+  Two settled usage rows matched 100.489 billed seconds and 4,607 micro-USD in
+  the ledger. Both disposable tenants and their credentials were deleted.
+- Deletion of the two retired load-test accounts cleared 1,121 agent
+  registrations, 1,446 legacy volumes, and three API tokens. Twenty ref
+  rows retained only lease-epoch fences. Fresh listings found zero live
+  objects under the accounts' R2 and S3 prefixes.
+- The account-deletion check retained 15,681 settled accounting records and
+  ten older OpenRouter attempts with unresolved provider usage. Seven had
+  no posted charge, and three had posted estimates totaling 1,509 micro-USD.
+  Neither retired account had a tenant or end-user credit hold.
+- On pilot API `af633fd5`, the OpenAI Realtime browser canary returned HTTP
+  201, transcribed a 4.15-second synthetic clip and completed an `ask_agent`
+  turn. The browser decoded 550,080 samples of Opus audio, and the provider's
+  output transcript contained the returned calibration phrase. The original
+  event channel remained open at 13.929 seconds after negotiation. Two speech
+  responses reconciled to $0.00343672 of provider usage with a tenant-supplied
+  key and no platform debit. The call ended and the tenant and key were
+  removed. #1214 fixed the SDP form field, and #1215 limited the provider
+  deadline to the handshake.
+- The pinned camel-bots Node client at `50b1001c` kept both OpenAI Realtime
+  model profiles connected for over 20 seconds of idle time, with the media
+  transport and event channel open. Both pilot calls ended by request.
+- A private Discord canary used camel-bots `ea6fe721` with pilot API `af633fd5`.
+  The two clients negotiated DAVE v1. The receiver decoded all 50 Opus packets
+  in each one-second 440 Hz clip, with 99.7% of measured energy at the target
+  frequency. Between the clips it decoded all 109 packets in 2.18 seconds of
+  OpenAI speech. The camel-bots fix keeps idle provider RTP from blocking
+  queued clips. Both clients left, the pilot call ended, and the final checks
+  found zero live calls. The disposable tenant and its credentials were
+  deleted.
+- A fenced Node → Workers → Node transfer ran on Sprites at `30c4c04f` with
+  an isolated agent cohort and a fake model. Admission stayed closed during
+  the snapshot, and the source settled its active request before export. The
+  rehearsal preserved the agent ID and transcript. The independent destination
+  and return ledgers each recorded one new response. Separate fixtures replayed
+  transferred terminal receipts without a second model call and resumed each
+  backend's event stream with a fresh native cursor.
+
 ## Limits and rollback
 
-Channels and voice transport remain outside this port's parity scope. The fake
-provider is public and has no upstream credentials. Use it for tests.
+Live voice qualification covers OpenAI Realtime. ElevenLabs voice has workerd
+fixture coverage. The public fake model provider supports deterministic tests
+without upstream credentials.
 
 List versions and roll back API code:
 
@@ -703,12 +756,12 @@ Remove the class exports from those temporary entry points as well. Deploy the
 API teardown configuration first: this removes its external binding to
 `camelrun-pilot-codemode`. Then deploy the sandbox teardown configuration. These
 [deletion migrations](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/)
-permanently remove the remaining namespaces and their stored data. Verify success
-before deleting either Worker. Do not run `scripts/pilot-deploy` afterward;
-the original configuration is for an active pilot, not a retired deployment.
+permanently remove the remaining namespaces and their stored data. Once the
+migrations finish, delete both Workers. `scripts/pilot-deploy` provisions an
+active pilot, so running it again recreates the retired deployment.
 
 For temporary config copies saved beside the original files, run from the repo
-root after reviewing their contents:
+root:
 
 ```sh
 backends/workers/node_modules/.bin/wrangler deploy -c backends/workers/wrangler.pilot-teardown.jsonc
@@ -725,8 +778,8 @@ in the Cloudflare dashboard. Drain or purge the queue first. Empty the R2 bucket
 before its deletion command, using the dashboard's **Empty bucket** action or
 the S3 API with the operator's existing R2 authentication; the command refuses a
 nonempty bucket. Remove the temporary config copies and entry points afterward.
-Delete only pilot objects from Analytics Engine if supported, or let retention
-expire. Delete the pilot model secret only if no longer used. Do not delete the
-shared Secrets Store. Hyperdrive and PlanetScale were pre-existing test resources:
-remove them only after separately checking they have no remaining users. Never
-include AWS or production camelRun resources in teardown.
+Analytics Engine can delete pilot-specific objects where supported. Otherwise,
+those objects expire under retention. Delete the pilot model secret when its
+last consumer is gone. The Secrets Store is shared with other applications.
+Hyperdrive and PlanetScale predate the pilot. This teardown targets the
+Cloudflare pilot resources listed above.

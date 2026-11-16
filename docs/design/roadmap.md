@@ -64,7 +64,8 @@ The platform keeps the agent side of voice (provider sessions, the ask-agent too
 `say` and the jukebox live in camel-bots. Turn detection is the provider's.
 
 - Done: voice calls core, OpenAI sideband, ElevenLabs calls, SDK call shape, client-held calls on Workers.
-- Next: the camel-bots voice v2 canary behind `VOICE_V2`.
+- Pilot qualification passed for OpenAI Realtime in the browser and in a private camel-bots Discord canary.
+  See [the voice measurements](../../backends/workers/PILOT.md#live-pilot-qualification-2026-11-16).
 - Later: a `voice` field on the agent so `POST /v1/voice/sessions {agent}` is all a client needs; a browser
   example and SDK helper for the WebRTC and signed-URL handshakes; check provider SIP support for phone agents.
 
@@ -114,8 +115,5 @@ clients, with batched reads and edge caching by hash.
 ## Order
 
 1. Close the open measurements and rows above (L89, L131, L132), then the remaining Postgres and harness items.
-2. Finish the camel-bots voice v2 canary on Workers.
-3. Move camel-bots to Workers.
-4. Retire the Node backend.
-
-Items 2–7 fall out along the way.
+2. Move camel-bots to Workers.
+3. Retire the Node backend.

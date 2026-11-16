@@ -115,8 +115,9 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
   its checkpoint and usage. See `camelfsd/README.md` for the deployed build and measurements.
 - The pilot uses Firecracker for managed Bash. The legacy Cloudflare class and application are retired
   (#1210, #1212). The unused `CAMELFS_API_TOKEN` secret was removed from the pilot (L30).
-- The tier measured 69.6 ms p50 per ref write after #1204 (L89). The 50 ms target and the camel-bots
-  voice canary remain open.
+- The pilot passed the OpenAI Realtime browser and private Discord voice canaries. See
+  `backends/workers/PILOT.md` for the decoded audio results and billing checks.
+- The tier measured 69.6 ms p50 per ref write after #1204 (L89). The 50 ms target remains open.
 
 **Doing the work**
 - Tests run on sprites (see "Off the laptop"), not on your machine. For any `camelfsd/internal/refstore` change,
