@@ -97,6 +97,11 @@ type Checkpoint struct {
 	At      int64  `json:"at"`
 }
 
+type CheckpointReceipt struct {
+	ID      string `json:"id"`
+	Changed bool   `json:"changed"`
+}
+
 type CreateRequest struct {
 	ID, Lineage, Ref, Version string
 	Image, Pool, Payer        string
@@ -122,6 +127,7 @@ type VM struct {
 	FirstExecAt                             *int64
 	execs                                   []string
 	LastCheckpoint                          *Checkpoint
+	CheckpointReceipt                       *CheckpointReceipt
 	RequestedVersion                        string
 	RequestedDeadline                       int64
 	EndVersion                              string

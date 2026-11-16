@@ -42,6 +42,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const isTier = (error: unknown, status: number, code: string) => error instanceof TierError && error.status === status && error.code === code;
 const vmStopped = (error: unknown) => isTier(error, 409, "not_running") || isTier(error, 409, "ended") || isTier(error, 409, "lease_expired");
+const retryableCheckpoint = (error: unknown) => !(error instanceof TierError) || error.status === 429 || error.status >= 500 || error.code === "checkpoint_in_progress";
 const computeBusy = "compute is busy, retry shortly";
 
 const unplacedMessage = {
@@ -67,7 +68,7 @@ export function checkpointBody(c: { message: string; time: number; agent?: strin
 type SessionResult = BashResult & { checkpointWarning?: string };
 type Receipt = { intent?: Intent; result?: SessionResult; checkpoint?: Checkpoint };
 type Args = { command: string; cwd?: string; timeoutSeconds?: number };
-type Status = { phase: string; code?: string; reason?: string };
+type Status = { phase: string; code?: string; reason?: string; checkpointReceipt?: { id: string; changed: boolean } };
 
 function claims(vm: Branch): TierClaims {
   return { sub: "runtime:bash", lin: vm.lineage, acc: "w", refs: [vm.ref] };
@@ -372,20 +373,33 @@ export class BashSessions {
     for (const row of rows) {
       const { result, checkpoint } = JSON.parse(row.receipt) as { result?: SessionResult; checkpoint: Checkpoint };
       const { vm, callId, requestId } = checkpoint;
+      const receipt = hash(row.id);
       const started = Date.now();
       let changed: boolean | undefined;
       if (!result?.checkpointError) {
         try {
-          ({ changed } = await this.request<{ changed: boolean }>(vm, "POST", "/checkpoint", checkpointBody(checkpoint)));
+          ({ changed } = await this.request<{ changed: boolean }>(vm, "POST", "/checkpoint", checkpointBody(checkpoint), undefined, receipt));
         } catch (error) {
           const reason = (error instanceof TierError ? error.code : "checkpoint_failed").replace(/[\r\n]+/g, " ");
-          console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, error: reason }));
           // Retain the durable receipt on an uncertain save. Recovery retries the checkpoint alone.
-          if (!(error instanceof TierError) || error.status === 429 || error.status >= 500 || reason === "checkpoint_in_progress") throw error;
+          if (retryableCheckpoint(error)) {
+            console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, error: reason }));
+            throw error;
+          }
           if (vmStopped(error) || reason === "vm_not_running") this.stop(vm.vm_id);
-          if (result) {
-            result.checkpointError = reason;
-            this.save(row.id, branch, { result, checkpoint });
+          const status = await this.request<Status>(vm, "GET").catch(cause => {
+            if (retryableCheckpoint(cause)) throw cause;
+            return undefined;
+          });
+          const saved = status?.checkpointReceipt;
+          if (saved?.id === receipt && typeof saved.changed === "boolean") {
+            changed = saved.changed;
+          } else {
+            console.log(JSON.stringify({ type: "bash_checkpoint", vm: vm.vm_id, callId, ms: Date.now() - started, error: reason }));
+            if (result) {
+              result.checkpointError = reason;
+              this.save(row.id, branch, { result, checkpoint });
+            }
           }
         }
       }
