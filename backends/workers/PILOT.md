@@ -622,14 +622,23 @@ deployed version or arrange recovery before the old operations are retired.
 
 Before deleting the class:
 
-1. Confirm the drain-only version serves all traffic. Enumerate every old
-   object ID using the [Durable Objects namespace API](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/).
-   Follow the cursor and include objects without stored data.
-2. From an operator-controlled temporary Worker with a Durable Object binding
-   to that namespace (`class_name` and `script_name`), call `await COMPUTER_CONTAINERS.get(COMPUTER_CONTAINERS.idFromString(id)).drain()`
-   for each listed ID. Record failures and retry until every object returns
-   `settled: true`. Check Worker logs for `computer_charge_dropped` during the
-   drain and reconcile any affected receipts before deleting the namespace.
+1. Confirm the drain-only version serves all traffic and the legacy data
+   export above is complete. With a pilot-scoped `CLOUDFLARE_API_TOKEN` in the
+   environment, run the inventory from the repository root:
+
+   ```sh
+   node backends/workers/scripts/pilot-drain-computers.mjs
+   ```
+
+   It lists every object in the pinned `ContainerComputer` namespace through the
+   [Durable Objects namespace API](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/),
+   including objects without stored data. The inventory needs Workers read
+   access and does not deploy a Worker.
+2. With Workers write access, rerun the same command with `--confirm`.
+   A temporary operator Worker calls `drain()` for each exact object ID and
+   is removed at the end. The command exits nonzero if any object is unsettled
+   or its RPC fails. Rerun after checking pilot logs until all objects settle.
+   Reconcile any `computer_charge_dropped` receipts before deleting the namespace.
 3. Verify the legacy deployment has no live container instances. Run both
    queries against pilot Postgres and reconcile any returned rows.
 
@@ -641,8 +650,7 @@ Before deleting the class:
    ```
 
 4. Cloudflare snapshots expire 30 days after their latest restore. After the
-   drain checks pass and required disks have been exported, remove the temporary
-   Worker, the legacy
+   drain checks pass and required disks have been exported, remove the legacy
    binding, container config, image, egress entrypoint and class export. Append
    a new Wrangler migration with `"deleted_classes": ["ContainerComputer"]`
    without editing migration `v2`.
