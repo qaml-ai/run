@@ -26,9 +26,8 @@ Last updated 2026-11-16. Per-limitation status lives in the ledger
 
 The camel-fs tier is deployed and the Workers pilot uses it for refs, files and VMs.
 
-- Open: L89, the ref write latency. Measured 80.6 ms p50 before #1204; #1204 removes a transaction from every
-  existing-ref write, expected ~66 ms. Re-measure in region. The original target was ≤50 ms; the choice is to
-  restate it (≤85 ms) or move hot refs to S3 Express One Zone. Restating is recommended.
+- Open: L89, the ref write latency. After #1204 the tier measured 69.6 ms p50 in-region, down from 80.6 ms.
+  The Worker measured 89 ms p50 from Portland. The tier's ≤50 ms p50 target remains open.
 
 ### 2. Refs in DynamoDB, RepoDO deleted (mostly done)
 

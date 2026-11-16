@@ -616,7 +616,10 @@ The pilot completed the class and application retirement on 2026-11-16.
   The cleanup then deleted Cloudflare Container application `2530c7f9f1544cf59711c6d5ff5a1a8d`.
 - Workers Observability found zero `computer_charge_dropped` events for `camelrun-pilot` in the 24 hours
   through 15:27 UTC. Closed lease rows and accounting receipts were retained.
-- Cleanup of the dedicated legacy container registry is in progress.
+- The dedicated container registry has zero user tags after deletion of 557 rootfs snapshots, 557
+  rootfs-set tags, and four image tags. Four protected Cloudflare-managed btrfs artifacts remain.
+  Their manifest deletion returned HTTP 409 `SINGLETON_ARTIFACT_EXISTS`. The standard Wrangler
+  garbage-collection request timed out, and the repository-scoped request returned HTTP 404.
 
 ### Retirement procedure
 
