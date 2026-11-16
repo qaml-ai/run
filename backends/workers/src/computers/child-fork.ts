@@ -9,6 +9,12 @@ import { ComputerService, inheritComputer, type ComputerEnv } from "./service.ts
 
 type Env = ComputerEnv & { CAMELFS_COMPUTE?: string; CAMELFS_URL?: string };
 
+export async function hasBashComputer(env: Env, tenant: string, agent: string) {
+  if (!bashEnabled(env)) return false;
+  const entry = await new Directory(env, tenant).get(agent);
+  return !!entry && withSql(env, sql => hasComputer(sql, tenant, agent, entry.config?.computer !== undefined));
+}
+
 /** A snapshot per batch lets all children of one call fork the same connection. */
 export async function forkChildComputers(env: Env, tenant: string, parent: string, batch: string, serialize: <T>(run: () => Promise<T>) => Promise<T>): Promise<ChildComputerFork> {
   const owner = await withSql(env, sql => computerOwner(sql, tenant, parent));
@@ -39,9 +45,9 @@ export async function attachChildComputers(env: Env, tenant: string, parent: str
     const disabled = await withSql(env, sql => computerDisabled(sql, tenant, parent));
     const attached = await new ComputerService(env, tenant).hasConnection(parent);
     // Keep the declaration/share policy for inherited compute access. The bash tool still owns its per-agent VM.
-    const configured = bashEnabled(env) && await new Directory(env, tenant).get(parent);
-    const canShare = configured && await withSql(env, sql => hasComputer(sql, tenant, parent, configured.config?.computer !== undefined));
-    await withSql(env, sql => disabled || ((!attached || attached.provider === "container") && !canShare)
+    const attachedComputer = attached && attached.provider !== "container";
+    const canShare = !disabled && (attachedComputer || await hasBashComputer(env, tenant, parent));
+    await withSql(env, sql => !canShare
       ? disableComputer(sql, tenant, child)
       : shareComputer(sql, tenant, parent, child));
     return;

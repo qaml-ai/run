@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, body } from "./validation.ts";
 import { HumanInputs } from "./human.ts";
 import { Directory } from "./control.ts";
-import { attachChildComputers, forkChildComputers, releaseChildComputers } from "./computers/child-fork.ts";
+import { attachChildComputers, forkChildComputers, hasBashComputer, releaseChildComputers } from "./computers/child-fork.ts";
 import { Delegation } from "./delegation.ts";
 import { ownWorkflow } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
@@ -228,6 +228,10 @@ export function createDelegation(this: AgentRuntime): Delegation {
     inheritComputer: async (parent, child, computer) => {
       const conf = await this.config();
       await attachChildComputers(this.env, conf.tenantId, parent, child, computer);
+    },
+    hasComputer: async () => {
+      const conf = await this.config();
+      return hasBashComputer(this.env, conf.tenantId, conf.id);
     },
     forkComputer: async (batch) => {
       const conf = await this.config();
