@@ -676,10 +676,13 @@ migration.
   agents, 1,446 legacy volumes, and three API tokens. Twenty ref rows
   retained only lease-epoch fences. Fresh listings found zero current
   objects under the accounts' R2 and S3 prefixes.
-- The account-deletion check retained 15,681 settled accounting records and
-  ten older OpenRouter attempts with unresolved provider usage. Seven had
-  no posted charge, and three had posted estimates totaling 1,509 micro-USD.
-  Neither retired account had a tenant or end-user credit hold.
+- Account deletion preserved 15,681 settled attempts and ten older
+  OpenRouter attempts. After the Worker fetch fix (#1216), the scheduled
+  reconciler retried those ten and settled three at a total of 6,947 micro-USD.
+  Six had zero posted charge and remain pending after HTTP 404 from OpenRouter.
+  One retains a 1,213 micro-USD estimate pending terminal provider evidence.
+  Both retired accounts had zero live voice calls and zero tenant or end-user
+  credit holds.
 - On pilot API `af633fd5`, the OpenAI Realtime browser canary returned HTTP
   201, transcribed a 4.15-second synthetic clip and completed an `ask_agent`
   turn. The browser decoded 550,080 samples of Opus audio, and the provider's
