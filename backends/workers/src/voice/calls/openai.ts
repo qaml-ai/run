@@ -89,11 +89,19 @@ async function responseError(response: Response, key: string) {
 }
 
 async function openSideband(fetch: typeof globalThis.fetch, url: string, key: string, events: SidebandEvents): Promise<Sideband> {
-  const response = await fetch(url, {
-    headers: { ...auth(key), Upgrade: "websocket" }, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  const socket = response.webSocket;
-  if (response.status !== 101 || !socket) throw await responseError(response, key);
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(new DOMException("The WebSocket upgrade timed out", "TimeoutError")), TIMEOUT_MS);
+  let socket: WebSocket;
+  try {
+    const response = await fetch(url, {
+      headers: { ...auth(key), Upgrade: "websocket" }, redirect: "manual", signal: controller.signal,
+    });
+    if (response.status !== 101 || !response.webSocket) throw await responseError(response, key);
+    socket = response.webSocket;
+  } finally {
+    // An abort signal can close the socket after an upgrade in Workers.
+    clearTimeout(deadline);
+  }
   const safe = (detail: string) => redactDetail(detail, 200, [key]);
   let requested = false, limitsReported = false;
   socket.addEventListener("close", event => {
