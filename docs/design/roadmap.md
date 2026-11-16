@@ -1,7 +1,7 @@
 # Roadmap: camelRun on camel-fs
 
 The plan for getting from today's two backends to the target architecture, and what is simpler once we are there.
-Last updated 2026-11-15. Per-limitation status lives in the ledger
+Last updated 2026-11-16. Per-limitation status lives in the ledger
 ([camel-fs-v0-limitations.md](camel-fs-v0-limitations.md)); this doc is the order of work and the reasons.
 
 ## Target
@@ -18,7 +18,7 @@ Last updated 2026-11-15. Per-limitation status lives in the ledger
 - Every v0 shortcut is a ledger row; a fix closes its row with measured numbers.
 - No caches, TTLs or proactive limits by default. Measure first.
 - Schema and key changes are expand/contract: two deploys.
-- Small, verified PRs into `camelfs/files-model`; main only when the owner says.
+- Small, verified PRs into `camelfs/files-model`. The production cutover follows the readiness checks below.
 
 ## Tracks
 
@@ -44,6 +44,8 @@ Agent VMs run on Firecracker hosts managed by the tier (`/v1/vms`, host enrollme
 
 - Done: launcher, host enrollment, usage, first-session apply pipeline (#1200, L120): first-ever apply of
   50 MB 8.0→4.2 s, 500 MB ~12→7.2 s, 2 GB 28→15.5 s.
+- Done on the pilot: Firecracker Bash, committed workspace reads and checkpoint recovery (#1208, #1211).
+  The legacy Cloudflare container class and application are retired (#1210, #1212).
 - Next: L132, the 2 GB bound. The host→guest vsock carries ~200 MB/s, then guest disk writes (~230 MB/s), then
   S3 head-of-line (3.3 s). Measure raw vsock throughput first; then bigger frames and buffers, or build the
   first tree into the image on the host.
@@ -57,7 +59,7 @@ The platform keeps the agent side of voice (provider sessions, the ask-agent too
 `say` and the jukebox live in camel-bots. Turn detection is the provider's.
 
 - Done: voice calls core, OpenAI sideband, ElevenLabs calls, SDK call shape, client-held calls on Workers.
-- Next: the camel-bots voice v2 canary (behind `VOICE_V2`), with the owner's go.
+- Next: the camel-bots voice v2 canary behind `VOICE_V2`.
 - Later: a `voice` field on the agent so `POST /v1/voice/sessions {agent}` is all a client needs; a browser
   example and SDK helper for the WebRTC and signed-URL handshakes; check provider SIP support for phone agents.
 

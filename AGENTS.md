@@ -104,15 +104,16 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
 4. `backends/workers/README.md`: the Workers runtime and the pilot (`run-pilot.camelai.dev`, no external users).
 5. `docs/design/roadmap.md`: the plan. The tracks, their next items, what gets simpler after v0, and the order.
 
-**Where it stands (2026-11-15)**
+**Where it stands (2026-11-16)**
 - The camel-fs tier serves the pilot: refs in DynamoDB (#1204 guards ref writes with deletion stamps), VMs on
   a Firecracker host, guest image chosen by `GUEST_IMAGE_SHA256` in `backends/workers/wrangler.pilot.jsonc`.
 - Next items: re-measure the ref write p50 after #1204 (L89, expected ~66 ms); L132 (2 GB first apply is bound
   by vsock at ~200 MB/s, then guest disk writes); L131 (small-file packing, design first); convert
   `tests/camelfs-refs-tier.ts` from the `aws` CLI to direct DynamoDB Local requests, as #1204 did for
   `tests/camelfs-contract.test.ts`.
-- Open pilot work includes the 50 ms write target (L89), removing the unused `CAMELFS_API_TOKEN` secret (L30),
-  and the camel-bots voice canary.
+- The pilot uses Firecracker for managed Bash. The legacy Cloudflare class and application are retired
+  (#1210, #1212). The unused `CAMELFS_API_TOKEN` secret was removed from the pilot (L30).
+- Open work includes the 50 ms write target (L89) and the camel-bots voice canary.
 
 **Doing the work**
 - Tests run on sprites (see "Off the laptop"), not on your machine. For any `camelfsd/internal/refstore` change,

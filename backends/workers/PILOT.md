@@ -605,6 +605,19 @@ on base `20443b49`: 9,729 bytes exceeds 9,216. No UI source changed in this work
 
 ## Retire legacy Cloudflare computers
 
+The pilot completed the class and application retirement on 2026-11-16.
+
+- The drain-only rollout (#1210) served all traffic while 1,132 of 1,132 Durable Objects settled. Pilot
+  Postgres reported zero open legacy leases, native admission slots, and legacy snapshots. The fully
+  paginated Container inventory reported zero active instances.
+- Worker version `5ce12196` from `3bf5a993` (#1212) removed the `ContainerComputer` namespace and binding.
+  The cleanup then deleted Cloudflare Container application `2530c7f9f1544cf59711c6d5ff5a1a8d`.
+- Workers Observability found zero `computer_charge_dropped` events for `camelrun-pilot` in the 24 hours
+  through 15:27 UTC. Closed lease rows and accounting receipts were retained.
+- Cleanup of the dedicated legacy container registry is in progress.
+
+### Retirement procedure
+
 The first rollout disables the agent `computer` tool and operation API. It
 keeps the original class to stop running containers, settle usage under the
 original receipt IDs, and release admission slots. The pilot's legacy disks

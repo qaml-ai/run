@@ -995,9 +995,8 @@ phases below start from v0's code, not from scratch.
 
 ## 5. Phases after v0
 
-Each phase ships behind the previous one's API; each has a measurable bar and lists the AWS resources it needs
-(all as OpenTofu under `infra/camelfs/` and `infra/job-hosts/`, applied by Miguel). These stay rougher than v0 on
-purpose; v0's measurements will reshape them.
+Each phase ships behind the previous one's API. Each has a measurable bar and lists the AWS resources
+managed by OpenTofu under `infra/camelfs/` and `infra/job-hosts/`. The v0 measurements will refine these phases.
 
 ### Phase 1: production storage plane, API and the hosts driver (4 weeks). Beats today on every job
 
