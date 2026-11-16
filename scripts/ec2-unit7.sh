@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Reviewer only, on an approved disposable root-capable host. Never run in CI.
+# Historical unit 7 benchmark for a disposable root-capable host.
 # Usage: sudo scripts/ec2-unit7.sh SOCKET DATA SOURCE_IMAGE [RELATIVE_FIRST_FILE]
-# The daemon must use DATA and a store writable by the reviewer. SOURCE_IMAGE
+# The daemon uses DATA and needs a writable store. SOURCE_IMAGE
 # is an ext4 large-root image, <=4 GiB. Outputs JSON rows; no ublk comparison.
 set -euo pipefail
 [[ $EUID == 0 && $# -ge 3 ]] || { echo 'usage: sudo scripts/ec2-unit7.sh SOCKET DATA SOURCE_IMAGE [RELATIVE_FIRST_FILE]' >&2; exit 2; }

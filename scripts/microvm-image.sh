@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upload a source archive and build a version. Run only with operator approval.
+# Upload a source archive and build an image version.
 set -euo pipefail
 : "${AWS_REGION:?Set AWS_REGION}"
 : "${MICROVM_SOURCE_BUCKET:?Set MICROVM_SOURCE_BUCKET from the infra output}"
@@ -7,7 +7,7 @@ set -euo pipefail
 : "${MICROVM_BASE_IMAGE_ARN:?Select an ARM64 base with aws lambda-microvms list-managed-microvm-images}"
 : "${MICROVM_BUILD_LOG_GROUP:?Set MICROVM_BUILD_LOG_GROUP from the infra output}"
 if [[ ${CONFIRM:-} != build ]]; then
-  echo 'This uploads source and creates a billable image version. Set CONFIRM=build after reviewing the configuration.' >&2
+  echo 'This uploads source and creates a billable image version. Set CONFIRM=build to create it.' >&2
   exit 1
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
