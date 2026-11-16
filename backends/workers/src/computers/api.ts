@@ -26,7 +26,7 @@ export async function handleComputerRequest(request: Request, env: ComputerEnv, 
     if (!c) throw new HttpError(404, 'Unknown computer connection');
     return agentCall(env, auth.tenantId, c.agent, 'remove');
   }
-  // Fork a computer into other agents: by its connection (that connection only), or by its agent (every computer it has).
+  // Fork a connection into other agents, addressed by connection ID or owner.
   const fork = /^\/v1\/computers\/([^/]+)\/fork$/.exec(path) ?? /^\/v1\/agents\/([^/]+)\/computer\/fork$/.exec(path);
   if (fork && request.method === 'POST') {
     const byConnection = path.startsWith('/v1/computers/'), id = decodeURIComponent(fork[1]);
@@ -34,7 +34,7 @@ export async function handleComputerRequest(request: Request, env: ComputerEnv, 
     if (!source) throw new HttpError(404, 'Unknown computer connection');
     const agents = forkTargets(await body(request), source);
     await service.forkTargets(source, agents);
-    return agentCall(env, auth.tenantId, source, 'fork', { agents, connectionOnly: byConnection });
+    return agentCall(env, auth.tenantId, source, 'fork', { agents, byConnection });
   }
   const agent = /^\/v1\/agents\/([^/]+)\/computer(?:\/(stop|confirm-cleanup))?$/.exec(path);
   if (agent) {

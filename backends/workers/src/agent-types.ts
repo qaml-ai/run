@@ -2,7 +2,6 @@ import type { VoiceCall } from "./voice-call.ts";
 import type { BashEnv } from "./camelfs/bash.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
-import type { ComputerBindings } from "./computers/tool.ts";
 import type { ControlEnv, TurnReceipt } from "./control.ts";
 import type { FileBindings } from "./files.ts";
 import type { TenantAdmission } from "./tenant.ts";
@@ -74,8 +73,7 @@ export type RequestRecord = {
 };
 
 export interface Env
-  extends ComputerBindings,
-    ControlEnv,
+  extends ControlEnv,
     FileBindings,
     KeyEnv,
     AccountEnv,

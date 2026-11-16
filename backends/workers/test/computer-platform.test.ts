@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { connectionInput } from '../src/computers/service.ts';
+import { ComputerService, connectionInput } from '../src/computers/service.ts';
 import { microvmApi, microvmDriver, testEndpoint, boundedResponse } from '../src/computers/microvm.ts';
 import { remoteDriver } from '../src/computers/remote.ts';
 import { observe, microvmCost } from '../src/computers/microvm-policy.ts';
 import { PROVIDERS, type Provider } from '../src/computers/policy.ts';
+
+import { applyScope } from '../../../shared/apply-scope.ts';
 
 const fakeEnv = { AWS_ACCESS_KEY_ID: 'test-access', AWS_SECRET_ACCESS_KEY: 'test-secret', AWS_SESSION_TOKEN: 'test-session', AWS_REGION: 'us-west-2', MICROVM_IMAGE: 'fixture-image', TEST_MODE: '1', TEST_MICROVM_ENDPOINT: 'http://127.0.0.1:9999' };
 test('computer connection credentials, provider limits and managed admission match the API contract', () => {
@@ -28,6 +30,40 @@ test('Workers rejects the dropped Modal provider before contacting a provider ga
   assert.throws(() => remoteDriver(env, 'tenant', 'agent', 'modal' as Provider, { tokenId: 'id', tokenSecret: 'fixture' }), /Unsupported computer provider/);
   assert.equal(contacted, false);
 });
+test('Workers refuses to create the retired provider and can drain an old lease whose reference was never saved', async () => {
+  assert.throws(() => connectionInput({ agent: 'agent', provider: 'container' }, true), /Invalid computer connection/);
+  const purged: string[] = [];
+  let settled = false;
+  const env = {
+    COMPUTER_CONTAINERS: {
+      getByName(id: string) { return { async purge() { purged.push(id); return { settled }; } }; },
+    },
+  };
+  const lease = { id: 'legacy-session', state: 'starting', reference: null, expires_at: Date.now() + 60_000 };
+  const connection = { id: 'legacy-connection', tenant: 'tenant', agent: 'agent', provider: 'container', revoked: false };
+  const statements: string[] = [];
+  const sql = {
+    async query(query: string) {
+      statements.push(query);
+      if (query.startsWith('select c.*,a.revoked')) return { rows: [connection] };
+      if (query.startsWith('select * from computer_leases')) return { rows: [lease] };
+      return { rows: [] };
+    },
+  };
+  const service = new ComputerService(env as never, 'tenant');
+  service.credentials = async () => ({});
+  await applyScope.run({ sql: sql as never }, async () => {
+    await assert.rejects(service.sweepAgent('agent'), /Computer cleanup failed; it will be retried/);
+    assert.ok(statements.some(query => query.includes("error='Cleanup failed; retrying'")));
+    assert.ok(statements.every(query => !query.includes("state='closed'") && !query.startsWith('delete from computer_slots')));
+    settled = true;
+    await service.sweepAgent('agent');
+  });
+  assert.deepEqual(purged, ['legacy-session', 'legacy-session']);
+  assert.ok(statements.some(query => query.includes("state='closed'")));
+  assert.ok(statements.some(query => query.startsWith('delete from computer_slots')));
+});
+
 test('Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints', async () => {
   const requests: Request[] = [];
   const api = microvmApi(fakeEnv, async request => { requests.push(request); return Response.json({ ok: true }); });

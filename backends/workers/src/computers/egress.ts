@@ -12,7 +12,7 @@ import { ownAudience } from "../source-input-policy.ts";
 import type { ExchangeAuth } from "../exchange-auth.ts";
 import { GITHUB_HOSTS, githubAppAuthInput, type GitHubAppAuth } from "../../../../src/core/github-apps.ts";
 import type { RuntimeIdentity } from "../tool-identity.ts";
-import { INSTANCE_TYPES, type InstanceType } from "./provider.ts";
+import { INSTANCE_TYPES, type InstanceType } from "./meter.ts";
 
 export type EgressAuth = ExchangeAuth | GitHubAppAuth | VaultAuth;
 export type EgressGrant = { host: string; auth?: EgressAuth; scheme?: "bearer" | "basic" };

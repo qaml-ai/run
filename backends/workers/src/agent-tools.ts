@@ -1,4 +1,5 @@
-import { bashEnabled, bashTool } from "./camelfs/bash.ts";
+import { bashTool } from "./camelfs/bash.ts";
+import { bashEnabled } from "./camelfs/tier.ts";
 import { AgentInvocation } from "./agent-invocation.ts";
 import { workflowTools } from "./workflow-tools.ts";
 import { workflowsEnabled } from "./workflow-routes.ts";
@@ -21,10 +22,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
 import { COMPUTER_ATTACHED, startStuck } from "./agent-lifecycle.ts";
-import { computerOwner, computerDisabled, hasComputer } from "../../../src/core/computer-share.ts";
+import { computerDisabled } from "../../../src/core/computer-share.ts";
 import { withSql as shareSql } from "./postgres.ts";
-import { computerTool } from "./computers/tool.ts";
-import { computerSetup } from "./computers/agent-setup.ts";
 import { askHuman, makeAskUser, humanInputExtension } from "./human.ts";
 import { repoTools } from "./repos/tools.ts";
 import type { Mount } from "./repos/mounts.ts";
@@ -245,20 +244,8 @@ export async function enabledToolsImpl(this: AgentRuntime,
       new Set(this.workspaceToolNames),
       config,
       await this.computerNames(invocation),
-      await this.hasNativeComputer(config, invocation),
     );
   }
-
-/**
- * This agent has a native computer: the deployment binds them, and the agent shares its parent's or its configuration
- * declares `computer`. Read each turn (a share is recorded after the child is made); without one the `computer` tool is
- * neither offered nor listed, and nothing starts a container for it.
- */
-export async function hasNativeComputerImpl(this: AgentRuntime, config?: AgentConfiguration, invocation?: AgentInvocation) {
-  if (!this.env.COMPUTER_CONTAINERS) return false;
-  const conf = await this.config();
-  return shareSql(this.env, sql => hasComputer(sql, conf.tenantId, conf.id, (config ?? conf.config).computer !== undefined), invocation);
-}
 
 export function createHarness(this: AgentRuntime): PiHarness {
   return new PiHarness({
@@ -545,7 +532,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         const noComputer = await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id), invocation);
         registry.install({
           name: "camel.linux",
-          tools: noComputer ? [] : bashEnabled(this.env) ? [bashTool(this)] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
+          tools: noComputer || !bashEnabled(this.env) ? [] : [bashTool(this)],
         });
         const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
         registry.install({

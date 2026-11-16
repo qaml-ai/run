@@ -183,7 +183,7 @@ know (`--allow-host` for another dev runtime). Keys come from the environment on
   node … evals/workflows/local-runtime.ts --stop        # removes the database, and the key stored in it
   ```
 
-  It derives a config from `wrangler.computers.test.jsonc` into `backends/workers/.wrangler/evals/`
+  It derives a config from `wrangler.test.jsonc` into `backends/workers/.wrangler/evals/`
   (gitignored): real models, `AGENT_WORKFLOW_TENANTS` for the local tenant, a throwaway `.dev.vars` encryption key.
   It stores `OPENROUTER_API_KEY` on the local tenant through the API. The token is the local fixture operator token,
   not a credential. `--checkout <dir>` runs another checkout's Workers app, e.g. an unmerged branch.

@@ -15,8 +15,6 @@ import type { McpResult } from './attached-tools.ts';
 import { waitsForProgress } from './delegation-progress.ts';
 import { scriptOf } from './codemode-run.ts';
 import { computerChoice, forkBatch } from '../../../src/core/computer-fork.ts';
-import type { ComputerSnapshot } from './computers/provider.ts';
-import type { NativeForkOrigin } from './computers/native-fork.ts';
 import type { ChildPlace } from './child-parent.ts';
 import { ChildRows, CHILDREN_KV_PREFIX } from './children-table.ts';
 import type { ChildEnding, Receipt } from './ending-outbox.ts';
@@ -85,7 +83,7 @@ export interface DelegationHost {
    * attaches nothing, a fork (forkComputer's) starts the child's computers from the parent's snapshots.
    */
   inheritComputer?(parent: string, child: string, computer?: 'none' | 'share' | ChildComputerFork): Promise<void>;
-  /** This agent has a native computer (it declares one, or shares its parent's): what a child's own machine needs. */
+  /** Whether the parent declares or inherits compute access for a child with its own machine. */
   hasComputer?(): Promise<boolean>;
   /** Snapshot the parent's computers for a fork: once per batch (one call's children share it). Throws FORK_UNSUPPORTED or NO_SESSION. */
   forkComputer?(batch: string): Promise<ChildComputerFork>;
@@ -113,8 +111,8 @@ export interface DelegationHost {
   /** Stop a workflow this agent owns (its `WORKFLOWS` object's abort): a workflow child's cancel. False: there is no such workflow. */
   abortWorkflow?(workflowId: string): Promise<boolean>;
 }
-/** What a fork gives a child: a seed for its computer connection, and the native computer's snapshot. */
-export type ChildComputerFork = { connection?: { seed: string; connection?: string; provider?: string; at?: number }; native?: { snapshot: ComputerSnapshot; origin: NativeForkOrigin } };
+/** The connection snapshot used to seed a forked child's computer connection. */
+export type ChildComputerFork = { connection: { seed: string; connection: string; provider: string; at: number } };
 /** How often a wait_agent looks again for messages and progress while it waits (endings wake it at once). */
 export const WAIT_RECHECK_MS = 5000;
 const prefix = CHILDREN_KV_PREFIX;
@@ -426,10 +424,8 @@ export class Delegation {
           // Left out, a definition that declares its own computer keeps it; other children share their parent computer.
           choice = computerChoice(args.computer, !resolved?.id && !!resolved?.config?.computer);
           const childConf: Configuration = childConfig(config, resolved?.config, run.params);
-          // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
+          // The child can explicitly opt out of compute and computer connections.
           if (choice === 'none') delete childConf.computer;
-          // Its own machine (fresh, fork) from a parent that has one: a child whose configuration declares none gets the
-          // default computer. A parent without a computer gives none.
           else if (choice !== 'share' && !resolved?.id && childConf.computer === undefined && await this.host.hasComputer?.()) childConf.computer = {};
           const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id, place: { ...place, ...(admitted.payer !== undefined ? { payer: admitted.payer } : {}) } });
           let fork: ChildComputerFork | undefined;

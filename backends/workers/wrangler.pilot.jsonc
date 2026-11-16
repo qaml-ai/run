@@ -121,11 +121,7 @@
     { "tag": "voice-calls", "new_sqlite_classes": ["VoiceCall"] },
     { "tag": "camelfs-smoke", "new_sqlite_classes": ["CamelfsSmoke"] }
   ],
-  // Agent computers: one container per ContainerComputer DO, started and
-  // stopped by its code through ctx.container. Under the durable_object policy
-  // the code picks the image (from this map, pinned by digest at deploy) and the
-  // instance size (COMPUTER_INSTANCE) at each start; there is no max_instances.
-  // Deploying builds the Dockerfile, so the deploying machine needs Docker.
+  // Legacy binding and image retained while existing computers stop and settle their usage.
   "containers": [
     {
       "class_name": "ContainerComputer",
@@ -198,7 +194,6 @@
     "AGENT_MAX_AGENTS": "2100",
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",
     "TENANT_MAX_ACTIVE": "2100",
-    "COMPUTER_IMAGE": "workspace",
     "COMPUTER_INSTANCE": "standard-1",
     "AGENT_FREE_HOURLY_SPEND_USD": "100"
   },

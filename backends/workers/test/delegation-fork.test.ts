@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Delegation, type ChildComputerFork, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
 import { withSql, submitViaFetch } from './sql-storage.ts';
 
-// computer: "fork": the parent's snapshot is taken while the child is made (both take seconds on Cloudflare), and a
+// computer: "fork": the parent's connection snapshot is taken while the child is made, and a
 // fork that cannot be taken still fails the call with nothing kept.
 
 function world(fork: () => Promise<ChildComputerFork>, options: { definition?: Record<string, unknown>; existing?: boolean; parent?: Record<string, unknown>; hasComputer?: boolean } = {}) {
@@ -45,7 +45,7 @@ function world(fork: () => Promise<ChildComputerFork>, options: { definition?: R
   host.submitChild = submitViaFetch(host);
   return { host, values, order, removed, inherited, created };
 }
-const snapshot = { native: { snapshot: { id: 'snap', name: 'fork-x', size: 1, image: 'img', createdAt: 1, expiresAt: Date.now() + 86_400_000 }, origin: { parent: 'p', agent: 'parent', batch: 'b', at: 1 } } };
+const snapshot = { connection: { seed: 'snap', connection: 'connection', provider: 'sprites', at: 1 } };
 
 test('a fork is taken while the child is made, and the child starts from it', async () => {
   let take!: (value: ChildComputerFork) => void;

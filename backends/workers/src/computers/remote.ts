@@ -1,9 +1,7 @@
 import { HttpError } from '../errors.ts';
 import { PROVIDERS, boundedCommand, output, type ComputerDriver, type Credentials, type Provider } from './policy.ts';
 import { boundedResponse, microvmDriver, testEndpoint, type Fetcher, type MicrovmBindings } from './microvm.ts';
-import type { ComputerBindings } from './tool.ts';
-import { payerSetup } from './meter.ts';
-import { snapshotHandle, type ComputerSnapshot } from './provider.ts';
+import type { ComputerDrainBinding } from './objects.ts';
 import type { SnapshotRef } from '../../../../src/core/computer-fork.ts';
 
 export const BOAT_API = 'https://boat.dev/api/v1';
@@ -34,10 +32,7 @@ export function boatSnapshots(request: (path: string, body?: unknown, method?: s
     async drop(snapshot: SnapshotRef) { await request(`/saved-snapshots/${encodeURIComponent(snapshot.id)}`, undefined, 'DELETE', true); },
   };
 }
-/** A container snapshot as a computer DO starts from it. */
-const containerHandle = (ref: SnapshotRef): ComputerSnapshot => snapshotHandle({ id: ref.id, name: 'fork', size: ref.sizeBytes ?? 0, image: ref.image, createdAt: ref.createdAt, expiresAt: ref.expiresAt ?? ref.createdAt + 30 * 86_400_000 });
-
-export type RemoteBindings = ComputerBindings & MicrovmBindings & {
+export type RemoteBindings = ComputerDrainBinding & MicrovmBindings & {
   TEST_COMPUTER_ENDPOINT?: string;
   COMPUTER_TUNNEL_HOSTS?: string;
   /** A Worker service that hosts an optional provider SDK which cannot run in workerd. */
@@ -52,24 +47,18 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
   if (provider !== 'container' && !PROVIDERS.includes(provider)) throw new HttpError(400, 'Unsupported computer provider');
   if (provider === 'lambda') return microvmDriver(env, tenant, send);
   if (provider === 'container') {
-    const namespace = env.COMPUTER_CONTAINERS;
-    if (!namespace) throw new HttpError(503, 'Cloudflare Containers are not configured');
+    // Existing connection rows can still be closed. All new allocations and calls are refused.
+    const retired = () => { throw new HttpError(410, 'Cloudflare Containers have been retired'); };
     return {
-      async create(id, _seconds, _allocated, options) {
-        const computer = namespace.getByName(id), setup = { ...payerSetup({ tenant, agent }), externalPermit: true };
-        // A fork's session starts from the snapshot: the handle is plain data any computer DO can start from.
-        if (options?.from) await computer.startFromSnapshot(containerHandle(options.from), setup);
-        else await computer.operate({ op: 'exec', argv: ['true'] }, setup);
-        return { id };
+      async create() { return retired(); },
+      async call() { return retired(); },
+      async dropSnapshot() {}, // Old Cloudflare snapshots expire on their original schedule.
+      async close(ref) {
+        const namespace = env.COMPUTER_CONTAINERS;
+        if (!namespace) throw new HttpError(503, 'Container settlement binding is missing');
+        if (!(await namespace.getByName(ref.id).purge()).settled)
+          throw new HttpError(503, 'Computer usage settlement is pending');
       },
-      call: (ref, _op, args) => namespace.getByName(ref.id).operate({ op: 'exec', argv: ['bash', '-lc', args.command], timeoutMs: Math.min(args.timeoutSeconds * 1000, 120_000) }, { ...payerSetup({ tenant, agent }), externalPermit: true }),
-      async snapshot(ref, label) {
-        const taken = await namespace.getByName(ref.id).takeSnapshot(label.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80), { ...payerSetup({ tenant, agent }), externalPermit: true });
-        return { provider: 'container', id: taken.id, image: taken.image, sizeBytes: taken.size, createdAt: taken.createdAt, expiresAt: taken.expiresAt };
-      },
-      // Cloudflare has no Worker API to delete a snapshot; it expires 30 days after its latest restore.
-      async dropSnapshot() {},
-      async close(ref) { await namespace.getByName(ref.id).purge(); },
     };
   }
   const fake = testEndpoint(env.TEST_COMPUTER_ENDPOINT, env);

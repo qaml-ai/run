@@ -2,8 +2,8 @@
 
 The internal API is **https://run-pilot.camelai.dev**. This is a persistent,
 team-only experiment in Cloudflare account `85bbd288051330fb51ee1c86031a299b`.
-It is independent of production camelRun on AWS. Do not point it at production
-Postgres or use customer credentials. All dates below are UTC.
+It runs independently of production camelRun on AWS with pilot Postgres and
+pilot credentials. All dates below are UTC.
 
 ## Deployment
 
@@ -16,7 +16,7 @@ Postgres or use customer credentials. All dates below are UTC.
 | Agent objects | `AGENTS` / `CamelAgent` | Durable journal, runs, schedules, human input, hibernatable sockets |
 | Tenant objects | `TENANTS` / `TenantAdmission` | Admission and counters |
 | Repos | `CAMELFS_URL` and `CAMELFS_NOTIFY_KEY` (required) | Tier origin and signing key for ref-moved notifications |
-| Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | One container per agent through `ctx.container` (`durable_object` scheduling policy, `standard-1`); image `workspace` from `computers/Dockerfile` |
+| Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | Retained while legacy containers stop and settle usage. The deploy still builds `computers/Dockerfile`. |
 | Code-mode binding | `CODEMODE_SANDBOX` | External `CodemodeSandbox` class on `camelrun-pilot-codemode` |
 | Sandbox objects | `SANDBOX` / `CodemodeSandbox` | Local binding in the sandbox Worker |
 | Static assets | `PUBLIC_ASSETS` | Bundled API documentation and console assets |
@@ -78,15 +78,13 @@ scripts/pilot-deploy --migrations-only   # apply pending migrations; deploy no W
 The deploy script then creates
 missing named R2/Queue resources, deploys the sandbox and fake model before the
 API, and creates missing signing/encryption secrets without displaying values.
-Repeat deploys preserve those secrets and set the measured Hyperdrive limit to
-16 connections. `PILOT_ORIGIN_CONNECTION_LIMIT` overrides that value after an
-operator reviews database capacity. Never rotate `AGENT_SECRETS_KEY` casually:
-it encrypts stored provider credentials. Never put secrets in `vars`.
+Repeat deploys preserve those secrets. `AGENT_SECRETS_KEY` encrypts stored
+provider credentials. Store secret values in secret bindings.
 
-The CTO subsequently approved a larger pilot database and a 100-connection
-Hyperdrive origin limit, as measured below. An approved redeploy must set
-`PILOT_ORIGIN_CONNECTION_LIMIT=100` to preserve that setting; the script's
-default remains 16. The larger-database measurement did not redeploy the API.
+The larger pilot database was measured with a 100-connection Hyperdrive origin
+limit. Set `PILOT_ORIGIN_CONNECTION_LIMIT=100` on redeploy to preserve that
+setting. The script defaults to 16 when the variable is unset. The measurement
+used the existing API deployment.
 
 The platform model secret was created by the CTO on 2026-11-06. Deployments
 now require the real Secrets Store binding. No fallback manifest is used.
@@ -478,7 +476,7 @@ in PostgreSQL. The measured IAD Hyperdrive pool had three connections despite
 the configured global limit of 16. The results still reject 500 concurrent turns
 on this database.
 
-For a next CTO-approved capacity trial, about 64 origin connections backed by
+For the next capacity trial, about 64 origin connections backed by
 80–100 database slots is a reasonable starting point. That is a rough fourfold
 capacity hypothesis for the 250-turn load. At 500 concurrent turns, matching the
 15-second fake-model delay requires 33.3 turns/s, about eight times the measured
@@ -592,15 +590,9 @@ token revocation, spend-limit removal and unchanged balance and ledger.
 The complete integration results are in
 `measurements/workers-rebase-suites.json`.
 
-The native Docker computer case had an explicit skip on Sprites at the time,
-and forcing it failed on that same assertion on both `e6e9a8a7` and upstream
-`9de3ed55` (the Sprites then had no Docker at all: `docker` exited 127). The
-Ubuntu Workers integration CI job requires Docker and does not allow a skip.
-That Sprite result is not evidence that the native Docker case passed. Since
-2026-11-06 the skip is gone: `scripts/sprite-test` sets Docker up on every pool
-sprite and the case passes there with `WORKERS_REQUIRE_DOCKER=1`; see
-[README.md, "Docker on a sprite"](README.md#docker-on-a-sprite) for what that
-takes (runc 1.1, and a sidecar without the kernel's missing `xt_socket`).
+The native Docker computer case had an explicit skip on Sprites in that
+historical run. Subsequent integration runs required Docker for the old
+provider. The old native Docker fixture has since been retired.
 
 The previous full comparison on `76f56096` had 25 Workers failures: three
 JavaScript timeouts and 22 Python missing-result or timeout failures. None
@@ -612,27 +604,61 @@ or weakened assertion was added here.
 The broader source suite also reproduced its existing UI gzip budget failure
 on base `20443b49`: 9,729 bytes exceeds 9,216. No UI source changed in this work.
 
+## Retire legacy Cloudflare computers
+
+The first rollout removes the old agent `computer` tool and its operation API.
+The pilot keeps the `ContainerComputer` class, Docker image and legacy egress
+entrypoint through the drain. Existing alarms stop the container, settle its
+meter using the original charge IDs, and release any native admission slot.
+Agent deletion also waits for this settlement. Deleting the class would erase
+unsettled charges in the namespace. The pilot deploy still needs Docker to
+build the retained image.
+
+The existing pilot's legacy container and snapshot data is disposable. When
+using this procedure in an environment with files to retain, export them while
+the version that supports the old operations still serves traffic.
+
+Before deleting the class:
+
+1. Verify the drain-only version serves all traffic. With a pilot-scoped
+   `CLOUDFLARE_API_TOKEN` in the environment, run the inventory from the
+   repository root:
+
+   ```sh
+   node backends/workers/scripts/pilot-drain-computers.mjs
+   ```
+
+   It lists every object in the pinned `ContainerComputer` namespace through the
+   [Durable Objects namespace API](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/),
+   including objects without stored data. The inventory needs Workers read
+   access and does not deploy a Worker.
+2. With Workers write access, rerun the same command with `--confirm`.
+   A temporary operator Worker calls `drain()` for each exact object ID and
+   is removed at the end. The command exits nonzero if any object is unsettled
+   or its RPC fails. Rerun after checking pilot logs until all objects settle.
+   The drain retains receipts the database refuses, including a missing payer
+   or a conflicting receipt. Reconcile the reported charge and retry using its
+   original ID. Check retained logs for `computer_charge_dropped` from versions
+   deployed before the drain and reconcile those receipts before class deletion.
+3. Verify the legacy deployment has no live container instances. Run both
+   queries against pilot Postgres and reconcile any returned rows.
+
+   ```sql
+   select id, state from computer_leases where provider = 'container' and state <> 'closed';
+   select s.tenant, s.machine from computer_slots s
+     where s.machine like 'native:%'
+        or exists (select 1 from computer_connections c where c.id = s.machine and c.provider = 'container');
+   ```
+
+4. Cloudflare snapshots expire 30 days after their latest restore. After the
+   drain checks pass, remove the legacy binding, container config, image,
+   egress entrypoint and class export. Append a Wrangler migration with
+   `"deleted_classes": ["ContainerComputer"]` to preserve migration history.
+
 ## Limits and rollback
 
-The native computer is on: `COMPUTER_CONTAINERS` binds `ContainerComputer`
-(migration `v2`), one container per agent that its Durable Object starts, execs
-into, snapshots and stops through `ctx.container` under Cloudflare's
-`durable_object` scheduling policy. The code picks the image (`COMPUTER_IMAGE`,
-the `workspace` entry of the `images` map, which a deploy builds from
-`computers/Dockerfile` and pins by digest) and the size (`COMPUTER_INSTANCE`,
-`standard-1`) at each start; a container stops after 60 s idle. Agents that have
-a computer (their definition declares `computer`, or they were given one as a
-sub-agent) and code mode see the `computer` tool; its container time is charged as platform usage
-(`computer` kind, `cloudflare/standard-1`, at cost: about $0.038 an hour idle, $0.074 busy).
-A deploy needs Docker on the deploying machine. A
-new image digest makes earlier snapshots unusable (they are refused, not
-restored); snapshots expire 30 days after creation or their latest restore.
-Managed computers (`/v1/computers` with runtime credentials), external computer
-provider credentials and the PDF parser container stay off. To turn the native
-computer off, remove the binding and container entry and add a migration with
-`"deleted_classes": ["ContainerComputer"]`. Channels and voice transport
-remain outside this port's parity scope. The fake provider is public and has no
-upstream credentials; never use it as a real model proxy.
+Channels and voice transport remain outside this port's parity scope. The fake
+provider is public and has no upstream credentials. Use it for tests.
 
 List versions and roll back API code:
 

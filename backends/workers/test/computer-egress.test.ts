@@ -4,10 +4,8 @@ import {
   computerSettingsInput,
   egressDescription,
   forwardEgress,
-  CONTAINER_CA,
   type EgressGrant,
 } from "../src/computers/egress.ts";
-import { ContainerProvider, operate, type ComputerNetwork } from "../src/computers/provider.ts";
 
 const check = (value: unknown) => {
   const url = new URL(String(value));
@@ -160,119 +158,6 @@ test("TEST_MODE's loopback upstream keeps the path and names the granted host", 
   assert.equal(up.seen[0].headers.get("x-camelrun-egress-host"), "github.com");
 });
 
-function container() {
-  const calls: unknown[][] = [];
-  const store = new Map<string, unknown>();
-  const box = {
-    running: false,
-    images: { workspace: "img" },
-    start(options: unknown) { calls.push(["start", options]); this.running = true; },
-    async destroy() { calls.push(["destroy"]); this.running = false; },
-    async setInactivityTimeout(ms: number) { calls.push(["idle", ms]); },
-    async interceptOutboundHttps(host: string) { calls.push(["intercept", host]); },
-    async snapshotContainer() { return { id: "snap" }; },
-    async exec(argv: string[], options?: { env?: Record<string, string> }) {
-      calls.push(["exec", argv, options?.env]);
-      const empty = () => new ReadableStream<Uint8Array>({ start(c) { c.close(); } });
-      return { stdout: empty(), stderr: empty(), exitCode: Promise.resolve(0), kill() {} };
-    },
-  };
-  return {
-    calls,
-    box,
-    store: { async get<T>(key: string) { return store.get(key) as T | undefined; }, async put(key: string, value: unknown) { store.set(key, value); } },
-  };
-}
-
-test("a computer with grants starts online, intercepts each granted host and trusts the interception CA", async () => {
-  const { calls, box, store } = container();
-  const gateway = {} as Fetcher;
-  const network: ComputerNetwork = { key: "k1", egress: [{ grant: { host: "github.com" }, gateway }, { grant: { host: "registry.npmjs.org" }, gateway }], idleMs: 900_000 };
-  await operate(new ContainerProvider(box as never, store, undefined, Date.now, network), { op: "exec", argv: ["true"] });
-  const start = calls.find(call => call[0] === "start")![1] as { enableInternet: boolean; env: Record<string, string> };
-  assert.equal(start.enableInternet, true);
-  assert.equal(start.env.NODE_EXTRA_CA_CERTS, CONTAINER_CA);
-  assert.deepEqual(calls.filter(call => call[0] === "intercept").map(call => call[1]), ["github.com", "registry.npmjs.org"]);
-  assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")));
-  assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 900_000]);
-  // exec does not inherit start()'s env: the model's command gets the CA trust (npm failed SELF_SIGNED_CERT_IN_CHAIN).
-  const command = calls.filter(call => call[0] === "exec").at(-1)!;
-  assert.deepEqual(command[1], ["true"]);
-  assert.equal((command[2] as Record<string, string>).NODE_EXTRA_CA_CERTS, CONTAINER_CA);
-  assert.equal((command[2] as Record<string, string>).PIP_CERT, "/etc/ssl/certs/ca-certificates.crt");
-
-  // The same grants reuse the running machine; changed grants replace it.
-  calls.length = 0;
-  await operate(new ContainerProvider(box as never, store, undefined, Date.now, network), { op: "exec", argv: ["true"] });
-  assert.equal(calls.some(call => call[0] === "destroy" || call[0] === "start"), false);
-  await operate(new ContainerProvider(box as never, store, undefined, Date.now, { ...network, key: "k2", egress: [network.egress[0]] }), { op: "exec", argv: ["true"] });
-  assert.deepEqual(calls.filter(call => ["destroy", "start", "intercept"].includes(call[0] as string)).map(call => call[0] === "intercept" ? call[1] : call[0]), ["destroy", "start", "github.com"]);
-});
-
-test("a computer without grants starts online and trusts no CA", async () => {
-  const { calls, box, store } = container();
-  await operate(new ContainerProvider(box as never, store), { op: "exec", argv: ["true"] });
-  const start = calls.find(call => call[0] === "start")![1] as Record<string, unknown>;
-  assert.deepEqual(start, { image: "img", instance: "lite", enableInternet: true });
-  assert.deepEqual(calls.find(call => call[0] === "exec")![1], ["mkdir", "-p", "/workspace"]);
-  // Without grants nothing is intercepted, so no CA is trusted.
-  assert.equal(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")), false);
-  assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 60_000]);
-  assert.equal(calls.filter(call => call[0] === "exec").at(-1)![2], undefined, "no grants, no CA environment");
-});
-
-test("a forked child boots from the parent's snapshot (its seed), with this computer's grants", async () => {
-  const { calls, box, store } = container();
-  const network: ComputerNetwork = { key: "child", egress: [{ grant: { host: "github.com" }, gateway: {} as Fetcher }], idleMs: 60_000 };
-  const handle = { id: "parent-snap", name: "fork-a", size: 1, image: "img", createdAt: Date.now(), expiresAt: Date.now() + 86_400_000 };
-  const child = new ContainerProvider(box as never, store, undefined, Date.now, network);
-  await child.seed(handle, { parent: "parent-computer", agent: "parent", batch: "run:m1", at: Date.now() });
-  const result = await operate(child, { op: "exec", argv: ["true"] }) as Record<string, any>;
-  assert.equal(result.computer.restoredFrom, "fork");
-  const start = calls.find(call => call[0] === "start")![1] as Record<string, unknown>;
-  assert.deepEqual(start.containerSnapshot, { id: "parent-snap" });
-  assert.equal(start.enableInternet, true);
-  assert.deepEqual(calls.filter(call => call[0] === "intercept").map(call => call[1]), ["github.com"]);
-  // The snapshot's machine trusted its own CA; this machine's is trusted again.
-  assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")));
-});
-
-test("a sharing child's JSONB settings preserve the running machine despite reordered object keys", async () => {
-  const { calls, box, store } = container();
-  const key = JSON.stringify([[{ host: "github.com", auth: { type: "exchange", url: "https://app.example/token" } }], { tenant: "a", agent: "parent", definition: "lead" }, null]);
-  const reordered = JSON.stringify([[{ auth: { url: "https://app.example/token", type: "exchange" }, host: "github.com" }], { definition: "lead", agent: "parent", tenant: "a" }, null]);
-  const network = { key, egress: [], idleMs: 60_000 };
-  await operate(new ContainerProvider(box as never, store, undefined, Date.now, network), { op: "exec", command: "true" });
-  calls.length = 0;
-  await operate(new ContainerProvider(box as never, store, undefined, Date.now, { ...network, key: reordered }), { op: "exec", command: "true" });
-  assert.equal(calls.some(call => call[0] === "destroy" || call[0] === "start"), false);
-});
-
-test("exec takes a shell command, run with bash -lc, as well as an argv list", async () => {
-  const { calls, box, store } = container();
-  await operate(new ContainerProvider(box as never, store), { op: "exec", command: "cd /workspace && git status | head -3" });
-  assert.deepEqual(calls.filter(call => call[0] === "exec").at(-1)![1], ["bash", "-lc", "cd /workspace && git status | head -3"]);
-  await assert.rejects(operate(new ContainerProvider(box as never, store), { op: "exec", command: "" }), /Invalid command/);
-  await assert.rejects(operate(new ContainerProvider(box as never, store), { op: "exec", command: "true", argv: ["true"] } as never), /command or argv/);
-});
-
-test("a definition's instance size starts the machine at that size, and a new size replaces a running one", async () => {
-  const { calls, box, store } = container();
-  const at = (instance: "standard-2" | "standard-4") => new ContainerProvider(box as never, store, { image: "workspace", instance }, Date.now,
-    { key: JSON.stringify([[], null, instance]), egress: [], idleMs: 60_000 });
-  await operate(at("standard-2"), { op: "exec", command: "true" });
-  assert.equal((calls.find(call => call[0] === "start")![1] as { instance: string }).instance, "standard-2");
-  calls.length = 0;
-  await operate(at("standard-4"), { op: "exec", command: "true" });
-  assert.deepEqual(calls.filter(call => call[0] === "destroy" || call[0] === "start").map(call => call[0] === "start" ? (call[1] as { instance: string }).instance : call[0]), ["destroy", "standard-4"]);
-});
-
-test("the parent-link cache stays bounded, dropping the oldest entries", async () => {
-  const { rememberParent, parentCacheSize, PARENT_CACHE_ENTRIES } = await import("../src/computers/agent-setup.ts");
-  for (let i = 0; i < PARENT_CACHE_ENTRIES + 50; i++) rememberParent(`client_${i}`, i % 2 ? `parent_${i}` : null);
-  assert.equal(parentCacheSize(), PARENT_CACHE_ENTRIES);
-});
-
 test("limited gateway checks the destination even for an authenticated grant and never follows redirects", async () => {
   const { networkingInput } = await import("../../../src/core/vault.ts");
   const network = networkingInput({type:"limited",allowedHosts:["api.stripe.com"]});
@@ -338,11 +223,6 @@ test('exact dispatch wins over the wildcard and an empty MCP host list preserves
   const key=computerNetworkKey([exact],{tenant:'t'},{egress:[exact]});
   assert.equal(key,JSON.stringify([[exact],{tenant:'t'},null]));
   assert.equal(computerNetworkKey([exact],{tenant:'t'},{egress:[exact],mcpHosts:[]}),key);
-  const {calls,box,store}=container();
-  await operate(new ContainerProvider(box as never,store,undefined,Date.now,{key,egress:[],idleMs:60000}),{op:'exec',argv:['true']});
-  calls.length=0;
-  await operate(new ContainerProvider(box as never,store,undefined,Date.now,{key:computerNetworkKey([exact],{tenant:'t'},{mcpHosts:[]}),egress:[],idleMs:60000}),{op:'exec',argv:['true']});
-  assert.equal(calls.some(c=>c[0]==='start'||c[0]==='destroy'),false);
 });
 
 test('malformed percent encoding passes through non-vault requests but vault grants reject it',async()=>{

@@ -5,14 +5,14 @@ import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentRuntime } from "../agent-runtime.ts";
 import type { Config, Env } from "../agent-types.ts";
 import { meterBilling } from "../computers/meter-billing.ts";
-import { computerSpec } from "../computers/provider.ts";
+import { INSTANCE_TYPES } from "../computers/meter.ts";
 import { HttpError } from "../errors.ts";
 import { HOSTS_PROVIDER, hostPool, hostSecondRate, hostShape, type HostPriceEnv, type HostShape } from "../jobs/host-pricing.ts";
 import { workspaceMount, type Mount } from "../repos/mounts.ts";
 import { repoContext, type RepoEnv } from "../repos/registry.ts";
 import { BASH_STREAM_IDLE_MS, bashStream, type BashResult } from "./bash-stream.ts";
 import type { TierClaims } from "./claims.ts";
-import { TierError, tierConfigured, tierRequest } from "./tier.ts";
+import { bashEnabled, TierError, tierRequest } from "./tier.ts";
 import { encodeVmPayer, type VmPayer } from "./usage.ts";
 import { startUsagePoller } from "./usage-poller.ts";
 
@@ -33,7 +33,6 @@ export function tierPool(env: { CAMELFS_POOLS?: string }, shape: HostShape): str
     throw new Error(`no host pool for shape ${shape.vcpus} vCPU / ${shape.memoryMiB} MiB (CAMELFS_POOLS)`);
   return pool;
 }
-export const bashEnabled = (env: Env) => tierConfigured(env) && env.CAMELFS_COMPUTE === "1";
 
 // MONEY: renew a ten-minute credit lease after three minutes of elapsed lease time.
 const LEASE_MS = 600_000;
@@ -77,7 +76,8 @@ function claims(vm: Branch): TierClaims {
 function bootSpec(env: Env, conf: Config) {
   const image = env.GUEST_IMAGE_SHA256;
   if (!image || !/^[a-f0-9]{64}$/.test(image)) throw new Error("GUEST_IMAGE_SHA256 must name a published guest image");
-  const shape = hostShape({ instance: conf.config.computer?.instance ?? computerSpec(env).instance });
+  const instance = conf.config.computer?.instance ?? INSTANCE_TYPES.find(type => type === env.COMPUTER_INSTANCE) ?? "lite";
+  const shape = hostShape({ instance });
   const pool = tierPool(env, shape);
   // MONEY: the encoded payer fixes the rate at create, priced by the shape's class (hostPool) whatever tier pool it is
   // placed in. The usage poller settles independently of vm.ended.

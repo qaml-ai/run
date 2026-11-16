@@ -1,4 +1,4 @@
-import { bashEnabled } from "./camelfs/bash.ts";
+import { bashEnabled } from "./camelfs/tier.ts";
 import { drainRepoMoves, repoMoveDeadline } from "./camelfs/notify.ts";
 import { deliverRepoMoves } from "./repos/notify.ts";
 import type { RepoEnv } from "./repos/registry.ts";
@@ -43,7 +43,8 @@ export async function purgeAccountDataImpl(this: AgentRuntime, invocation: Agent
       if (pending.every(rows => rows.size === 0)) break;
       await this.flushBilling(invocation, true);
     }
-    await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
+    const retired = await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
+    if (retired?.settled === false) throw new HttpError(503, "Computer usage settlement is pending");
     await this.closeWatchers(tenant, id);
     await this.ctx.storage.deleteAlarm();
     await this.clearComputerAttached();

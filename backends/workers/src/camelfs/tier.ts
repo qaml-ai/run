@@ -4,6 +4,7 @@ import type { TierClaims } from "./claims.ts";
 export type TierEnv = IdentityEnv & { CAMELFS_URL?: string };
 
 export const tierConfigured = (env: { CAMELFS_URL?: string }) => !!env.CAMELFS_URL?.trim();
+export const bashEnabled = (env: { CAMELFS_COMPUTE?: string; CAMELFS_URL?: string }) => tierConfigured(env) && env.CAMELFS_COMPUTE === "1";
 
 export class TierError extends Error {
   readonly status: number;

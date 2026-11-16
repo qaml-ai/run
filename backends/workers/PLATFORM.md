@@ -61,8 +61,8 @@ in the account's container registry as `rootfs-snapshot-*` tags of the
 application's image repository, so deleting that repository deletes them.
 The Worker, DO namespace, container application and image repository (with its
 snapshots) were deleted; final inventories were empty and the Worker returned
-404. Reproduce with `node probes/computers/remote.mjs` (`--cleanup` reruns only
-the teardown). The earlier one-computer record,
+404. The [probe and its teardown command](https://github.com/qaml-ai/run/blob/30c4c04f0b0bafbcc8466eaf1ed0e0fb7713a400/backends/workers/probes/computers/remote.mjs)
+are preserved in the prototype revision. The earlier one-computer record,
 `measurements/platform-container-cloud.json` (2026-11-05, `lite`), took 7,090 ms
 through the first command.
 
@@ -125,7 +125,7 @@ A definition's `computer` configures its agents' native `container` computer:
   stops using are logged (`computer_snapshot_unused`) for their registry tags to
   be deleted, and otherwise expire 30 days after their last restore.
 
-`test/computers.integration.ts` (its second test) covers clone and push through a local
+The second [prototype integration test](https://github.com/qaml-ai/run/blob/30c4c04f0b0bafbcc8466eaf1ed0e0fb7713a400/backends/workers/test/computers.integration.ts) covered clone and push through a local
 `git http-backend` (`TEST_EGRESS_UPSTREAM` maps every granted host to a loopback
 origin, in TEST_MODE only), the exchange claims, that no credential is on the
 machine, that hosts without a grant are reached directly, and a child's fork. In local Docker the
