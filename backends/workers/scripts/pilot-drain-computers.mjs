@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { fetchWithoutRedirects } from "../../../src/core/no-redirect.ts";
 import { PILOT_ACCOUNT, withTemporaryWorker } from "./pilot-operator.mjs";
 
 const SCRIPT = "camelrun-pilot";
@@ -10,9 +11,8 @@ const OBJECT_ID = /^[0-9a-f]{64}$/;
 const CONCURRENCY = 8;
 
 async function cloudflareGet(url, token, send) {
-  const res = await send(url, {
+  const res = await fetchWithoutRedirects(send, url, {
     headers: { Authorization: `Bearer ${token}` },
-    redirect: "error",
     signal: AbortSignal.timeout(30_000),
   }).catch(() => null);
   if (!res?.ok) throw new Error(`Cloudflare inventory request failed (${res?.status ?? "network error"}).`);
@@ -94,7 +94,7 @@ export async function drainPilotComputers({
     await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
       for (const id of iterator) {
         const result = await request(`/drain/${id}`, {
-          method: "POST", redirect: "error", signal: AbortSignal.timeout(20_000),
+          method: "POST", redirect: "manual", signal: AbortSignal.timeout(20_000),
         }).catch(() => null);
         if (result?.status === "settled") continue;
         const status = result?.status === "pending" ? "pending" : "rpc_failed";
