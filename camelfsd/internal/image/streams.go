@@ -317,7 +317,7 @@ func sendApplyOps(ctx context.Context, w io.Writer, source store.Store, byPath m
 		}
 	}
 	lookupStart := time.Now()
-	locations, err := store.LocateBundles(ctx, source, ids)
+	locations, err := store.LocateBundlesForRestore(ctx, source, ids)
 	reads.lookup = time.Since(lookupStart)
 	if err != nil {
 		return err

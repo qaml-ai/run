@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 type BundleDB interface {
 	GetItem(context.Context, *dynamodb.GetItemInput, ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	BatchGetItem(context.Context, *dynamodb.BatchGetItemInput, ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error)
+	Query(context.Context, *dynamodb.QueryInput, ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	PutItem(context.Context, *dynamodb.PutItemInput, ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 }
 
@@ -31,6 +33,8 @@ type blobLocation struct {
 }
 
 type locatorItem = map[string]types.AttributeValue
+
+const locatorBatchSize = 100
 
 func objectKey(lineage, id string) locatorItem {
 	return locatorItem{
@@ -104,7 +108,7 @@ func (s *bundled) lookupBatch(ctx context.Context, lineage string, ids []string)
 		}
 	}
 	for len(keys) > 0 {
-		count := min(100, len(keys))
+		count := min(locatorBatchSize, len(keys))
 		request := map[string]types.KeysAndAttributes{
 			s.table: {Keys: keys[:count], ConsistentRead: aws.Bool(true)},
 		}
@@ -134,6 +138,90 @@ func (s *bundled) lookupBatch(ctx context.Context, lineage string, ids []string)
 				}
 			}
 		}
+	}
+	return result, nil
+}
+
+// On a cold restore the desired set usually spans most of the lineage. Query
+// reads up to one MiB per page, avoiding a round trip for every 100 blobs.
+func (s *bundled) lookupRestore(ctx context.Context, lineage string, ids []string) (map[string]blobLocation, error) {
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if !root.Hex(id, 40) {
+			return nil, fmt.Errorf("invalid blob ID")
+		}
+		wanted[id] = struct{}{}
+	}
+	var locs map[string]blobLocation
+	var err error
+	if len(wanted) <= locatorBatchSize {
+		locs, err = s.lookupBatch(ctx, lineage, ids)
+	} else {
+		locs, err = s.queryLocations(ctx, lineage, wanted)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if _, ok := locs[id]; !ok {
+			return nil, fmt.Errorf("missing bundle locator for %s/%s (%d of %d found)", lineage, id, len(locs), len(wanted))
+		}
+	}
+	return locs, nil
+}
+
+func (s *bundled) queryLocations(ctx context.Context, lineage string, wanted map[string]struct{}) (map[string]blobLocation, error) {
+	request := dynamodb.QueryInput{
+		TableName:                &s.table,
+		ConsistentRead:           aws.Bool(true),
+		KeyConditionExpression:   aws.String("#lineage = :lineage AND begins_with(#id, :prefix)"),
+		ExpressionAttributeNames: map[string]string{"#lineage": "lineage", "#id": "id"},
+		ExpressionAttributeValues: locatorItem{
+			":lineage": &types.AttributeValueMemberS{Value: lineage},
+			":prefix":  &types.AttributeValueMemberS{Value: "o/"},
+		},
+	}
+	result := make(map[string]blobLocation, len(wanted))
+	pages, rows := 0, 0
+	cursor := ""
+	for len(result) < len(wanted) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		page, err := s.db.Query(ctx, &request)
+		if err != nil {
+			return nil, fmt.Errorf("query bundle locators for %s: %w", lineage, ioFailure(err))
+		}
+		pages++
+		rows += len(page.Items)
+		for _, item := range page.Items {
+			id, ok := strings.CutPrefix(itemString(item, "id"), "o/")
+			if !ok || itemString(item, "lineage") != lineage {
+				return nil, fmt.Errorf("unexpected blob locator in lineage query")
+			}
+			if _, ok := wanted[id]; !ok {
+				continue
+			}
+			loc, err := parseLocation(item, lineage, id)
+			if err != nil {
+				return nil, err
+			}
+			result[id] = loc
+		}
+		if len(result) == len(wanted) {
+			slog.Info("compute_apply_locator_query", "pages", pages, "rows", rows, "requested", len(wanted))
+			break
+		}
+		key := page.LastEvaluatedKey
+		if len(key) == 0 {
+			break
+		}
+		next := itemString(key, "id")
+		if itemString(key, "lineage") != lineage || !strings.HasPrefix(next, "o/") || next <= cursor {
+			return nil, fmt.Errorf("invalid blob locator query cursor")
+		}
+		cursor = next
+		request.ExclusiveStartKey = key
 	}
 	return result, nil
 }
