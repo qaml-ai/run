@@ -4,11 +4,12 @@ import { agentRepoId, type Mount } from './mounts.ts';
 import type { FileBindings } from '../files.ts';
 import type { RepoEnv } from './registry.ts';
 import { FileError, normalizePath } from '../file-errors.ts';
-import { downloadHeaders, safeName } from '../file-policy.ts';
+import { safeName } from '../file-policy.ts';
 import { boundedBytes } from '../images.ts';
 import { streamFile, repoFailure } from './routes.ts';
 import type { RepoTreeCache } from './tree-cache.ts';
 import { signRepoLink } from './links.ts';
+import { isRefHeld, RepoError } from './repo-policy.ts';
 export type WrittenRepoFile = {path:string; version:string; size:number; contentType:string};
 export type PresentedRepoFile = (WrittenRepoFile & {type:'file'; repo:string; repoPath?:string; blob:string; caption?:string});
 export function mountTarget(mounts: Mount[], tenant: string, agent: string, raw?: string) {
@@ -27,7 +28,7 @@ export async function handleAgentFileRequest(request: Request, env: FileBindings
     const store=await agentStore(env as RepoEnv,tenant,t.mount.repo,t.mount.ref??'main',agent, { ...(request.headers.get("x-camel-run") ? {"Camel-Run":request.headers.get("x-camel-run")!} : {}), ...(request.headers.get("x-camel-call") ? {"Camel-Call":request.headers.get("x-camel-call")!} : {}) }, scope, invocation), p=insideRepo(t.inside);
     if(request.method==='GET') {
       const file=await store.stat(t.inside), v=await store.ctx.repo.resolve(file.version);
-      const response=await streamFile(request,store.ctx,v,{path:p,blob:file.blob,size:file.size,mode:'100644'});
+      const response=await streamFile(request,store.ctx,v,{path:p,blob:file.blob,size:file.size,mode:file.mode});
       const headers=new Headers(response.headers);headers.set('x-file-version',file.version);headers.set('etag',`"${file.version}"`);
       return new Response(response.body,{status:response.status,headers});
     }
@@ -36,6 +37,8 @@ export async function handleAgentFileRequest(request: Request, env: FileBindings
       const old=header ? await store.stat(t.inside) : undefined;
       if(old && old.version!==header) throw new FileError('File changed since the version given',412);
       const expected=request.headers.get('if-none-match')==='*' ? 'none' : old?.blob;
+      // Avoid reading the upload for a held ref. The tier checks again at the write.
+      if (isRefHeld(await store.ctx.repo.ref(store.ref))) throw new RepoError('held', 409, 'held');
       const result=await store.commit({[p]: request.method==='DELETE'?null:{bytes:await boundedBytes(request.body,256*2**20)}},expected?{[p]:expected}:{},`${request.method.toLowerCase()} ${p}`,{},op);
       return Response.json(request.method==='DELETE'?{deleted:true,version:result.version}:{...await store.stat(t.inside,result.version!),path:t.path,version:result.version,by:agent},{status:request.method==='PUT'?201:200});
     }
