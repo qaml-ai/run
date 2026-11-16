@@ -231,8 +231,6 @@ Owners: wf-durable (K4b the table and the deadline lease, K4d the route, K5 the 
     float of seconds.
   - **C5 Order independence:** `vm.ended` and the usage stream are independent, and nothing about money waits on
     `vm.ended`.
-- **Money-path review:** this section is the design; the implementation's money hunks (the event schema, the poller's
-  insert and cursor, the settlement, the deadline extension) go to the lead line by line before any of them merges.
 
 ## 5. Order, and the ledger rows this touches
 

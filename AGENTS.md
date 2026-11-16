@@ -89,7 +89,7 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
 **Branches**
 - `camelfs/files-model`: the integration branch for camel-fs (repos, refs, files, VMs) and the Workers backend.
   Branch from it, open PRs against it, and merge only when every check is green on the exact head. It is ahead
-  of main (last merged to main as #1157); merging it to main deploys production, so that waits for the owner's go.
+  of `main`, where it last merged in #1157.
 - `main`: production (the Node backend at run.camelai.com).
 - Lanes use prefixes like `camelfs/*`, `pgq/*`, `claude/*`. A branch with no open PR is not work in progress.
 
@@ -139,5 +139,5 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
 - **Migrations** (`migrations/NNN_name.sql`, applied at startup): take the next free number on origin/main when you
   merge, and check again after rebasing.
 - **Never print a secret**: no tokens, keys or `.env` values in output, logs, tests, commits or PR text.
-- **Production changes go through a human**: no applies, restores or writes against production from an agent.
+- **Deployment scope**: Pilot and integration work covers the pilot resources and `camelfs/files-model`.
 - Code and docs here are written plainly: short sentences, the facts and the numbers. Match the file you are in.

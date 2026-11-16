@@ -155,7 +155,7 @@ cut-over a plain string `at` still means a volume id, until the deletion phase r
 defaulting to the agent's own workspace, and its model-facing text changes from "`at` (a volume id) starts it with
 that volume's files … (changes are not saved back)" to "`at` picks the version to start from: `ref` (a branch name,
 default `main`) or `version`, in your workspace unless `repo` names another; with `commit: true` the job's `/repo` is
-saved as a version you can `restore` or merge". That text is model-facing and is reviewed line by line, like `checkpoint`'s.
+saved as a version you can `restore` or merge".
 
 **`push()`** keeps its script API (`push({ ref, to })`) and runs on the git edge's mirror (camel-fs.md §1.8) from the
 ref, with the App token the runtime mints; it is no longer a job running `PUSH_SCRIPT` with the token in a process.
@@ -184,7 +184,7 @@ workflow) instead of forked volumes; `commit()` in a script is `merge`. The `For
 | **Console** (`pages/volumes.tsx` 145: list, create, delete volumes and snapshots; `components/files.tsx` 233: the file browser with list, upload, delete and signed-URL preview over `/v1/volumes/:id/files`; per-mount browsers in `agent.tsx`; counts in `account.tsx`) | a repos page: refs, history (first-parent, with attribution), a tree browser at any version (the file browser reads `files?version=` and previews through `blobs/:sha`), diff, restore, grep; the per-mount browser on the agent page points at the mount's repo and ref |
 | **`push()`** (`workflow-jobs.ts` `pushSpec`: a job whose `at` is the volume to push, with the GitHub token in the job's process) | the git edge's mirror (camel-fs.md §1.8) from a ref, with the App token the runtime mints; no job (§4) |
 | **`apply`** (declarative provisioning: `shared/apply.ts`, `apply.ts`, `apply-api.ts` create keyed volumes, cached per apply run) | an `apply` manifest names repos by key (`repos: [{ key, template? }]`); the same create-by-key, idempotent; mounts in manifests name `{ repo, ref? }` |
-| **Computers** (`computers/objects.ts:334` seeds a container from `inlineFiles` or `volumeFiles()` through `camel-sync`; `computers/policy.ts:30` and the `agent-tools.ts` computer text tell the model to `cp` results to a volume; Node `computers/transfers.ts` moves files volume ⇄ computer, 256 MiB) | a computer **mounts the agent's repo ref** as its disk (camel-fs.md §1.5), so there is nothing to seed or transfer: files written in the machine are commits at the turn checkpoint, and files written through the API appear in the machine; the model-facing computer text drops "cp to a volume" (reviewed line by line); `transfers.ts` goes |
+| **Computers** (`computers/objects.ts:334` seeds a container from `inlineFiles` or `volumeFiles()` through `camel-sync`; `computers/policy.ts:30` and the `agent-tools.ts` computer text tell the model to `cp` results to a volume; Node `computers/transfers.ts` moves files volume ⇄ computer, 256 MiB) | a computer **mounts the agent's repo ref** as its disk (camel-fs.md §1.5), so there is nothing to seed or transfer: files written in the machine are commits at the turn checkpoint, and files written through the API appear in the machine; the model-facing computer text drops "cp to a volume"; `transfers.ts` goes |
 | **Agent fork of a workspace** (`agent-workspace.ts`: an R2 fork-claim object, `claimReadSet`/`copyReadSet` on the source workspace, `releaseReadSet("fork:<id>")`) | `POST /v1/repos { from: { repo: parent workspace, version } }` at the parent's current version: O(1), no claim, no copy; the child's history ref starts as the parent's (§2) |
 | **Images and media** (`media/images.ts:285–344` saves generated images to a volume when `volumeId` is given; `media-api.ts` takes and returns `volumeId` + `path` for images and transcriptions; `model.ts` ~81 reads image inputs for the model by decoding R2 `files/<tenant>/<volume>/…` keys) | the media API takes and returns `{ repo, ref?, path }` and `{ repo, version, path, blob }`; a generated image is a commit; the model layer reads an image input as a blob by `(repo, version, path)` through the files API, never by storage key |
 | **Channels** (`channels.ts` mounts, reads and signs links to volume files for channel messages, through `handleAgentFilesRoute` and `signVolumeLink`) | a channel attachment lands like an upload (a commit under `uploads/<request>/`); outgoing files are signed links to `(version, path)` |
@@ -342,7 +342,7 @@ nodes racing on one ref are serialized by the condition. The loser re-reads the 
 expect still holds on the new head, rebuilds its commit on it and tries once more (one extra round trip under
 contention). A whole-ref `expect` that lost, or a second loss, is `412 stale` with the current version.
 
-**Quota** is checked inside the tier's write and is money-adjacent (the lead reviews it line by line).
+**Quota** is checked inside the tier's write.
 - The request carries `quota: { limitBytes, otherBytes }`, which the runtime computes from the tenant's other
   repos.
 - The tier refuses `507 storage_limit` with `{ limit }`, with **no** ref change, when
