@@ -5,6 +5,7 @@ package computehost
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -195,7 +196,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		must(err)
 		daemon.Stderr = log
 		must(daemon.Start())
-		stop := func() { _ = daemon.Process.Kill(); _ = daemon.Wait(); log.Close() }
+		stop := sync.OnceFunc(func() { _ = daemon.Process.Kill(); _ = daemon.Wait(); log.Close() })
 		t.Cleanup(stop)
 		ready := make(chan string, 1)
 		go func() {
@@ -254,13 +255,52 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		t.Fatalf("no log line with %q", needles)
 		return ""
 	}
-	session := func(h host, id, at, version string, checkpoint bool) (time.Duration, string, string) {
+	stopVM := func(h host, id string) error {
+		// The shared image can still be publishing when the guest exits.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		path := "/v1/vms/" + id
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://"+h.endpoint+path+"/stop",
+			strings.NewReader(`{"checkpoint":false}`))
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted {
+			return fmt.Errorf("stop %s: HTTP %d", id, resp.StatusCode)
+		}
+		select {
+		case callback := <-ended:
+			if callback != "/vms/"+id+"/ended" {
+				return fmt.Errorf("stop %s: unexpected callback %s", id, callback)
+			}
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("stop %s: ended callback missing: %w", id, ctx.Err())
+		}
+	}
+	const markerPath = "/workspace/src/d000/f00000.ts"
+	marker := lineage + " checkpoint"
+	session := func(h host, phase, at, version string, checkpoint, readEdit bool) (time.Duration, string, string) {
 		t.Helper()
+		id := lineage + "-" + phase
 		spec := hostwire.BootSpec{ID: id, Lineage: lineage, Ref: "main", Version: version, Parent: version, Tree: at,
 			Image: sha, Shape: shape, Session: &hostwire.Session{IdleStopS: 3600},
 			Lease: hostwire.Lease{Holder: hostwire.Holder{Host: cert.HostID, Boot: 9, Mount: id}, Epoch: 1}}
 		begin := time.Now()
 		call(h, "POST", "/v1/vms", spec, 202)
+		stopped := false
+		t.Cleanup(func() {
+			if !stopped {
+				if err := stopVM(h, id); err != nil {
+					t.Errorf("cleanup: %v; host log: %s", err, h.log)
+				}
+			}
+		})
 		var shell hostwire.ShellCreated
 		for {
 			payload, _ := json.Marshal(hostwire.ShellRequest{})
@@ -281,10 +321,24 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		out := call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "first", Shell: shell.ShellID,
 			Command: "find /workspace -type f | wc -l; du -sm /workspace | cut -f1", TimeoutS: 120}, 200)
 		elapsed := time.Since(begin)
-		assertOutput(t, out, strconv.Itoa(len(files)))
+		count, _, _ := strings.Cut(coldExecOutput(t, out), "\n")
+		if count != strconv.Itoa(len(files)) {
+			t.Fatalf("workspace has %q files, want %d", count, len(files))
+		}
+		if readEdit {
+			out := call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "verify", Shell: shell.ShellID,
+				Command: "cat " + markerPath, TimeoutS: 20}, 200)
+			if got := coldExecOutput(t, out); got != marker+"\n" {
+				t.Fatalf("checkpoint marker in %s: got %q, want %q", phase, got, marker+"\n")
+			}
+		}
 		next, nextVersion := at, version
 		if checkpoint {
-			call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "edit", Shell: shell.ShellID, Command: "echo edit >> /workspace/src/d000/f00000.ts", TimeoutS: 20}, 200)
+			out := call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "edit", Shell: shell.ShellID,
+				Command: fmt.Sprintf("printf '%%s\\n' %q > %s", marker, markerPath), TimeoutS: 20}, 200)
+			if got := coldExecOutput(t, out); got != "" {
+				t.Fatalf("unexpected output from marker write: %q", got)
+			}
 			var reply hostwire.CheckpointReply
 			must(json.Unmarshal(call(h, "POST", "/v1/vms/"+id+"/checkpoint", hostwire.CheckpointRequest{Message: "bench"}, 200), &reply))
 			if !reply.Changed {
@@ -292,23 +346,19 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 			}
 			next, nextVersion = reply.Tree, reply.Version
 		}
-		call(h, "POST", "/v1/vms/"+id+"/stop", hostwire.Stop{Checkpoint: false}, 202)
-		select {
-		case <-ended:
-		case <-time.After(2 * time.Minute):
-			t.Fatal("ended callback missing")
-		}
+		must(stopVM(h, id))
+		stopped = true
 		return elapsed, next, nextVersion
 	}
 	base := strings.Repeat("a", 40)
 	a := startHost()
-	first, _, _ := session(a, "first-1", tree.Tree, base, false)
-	baseline := waitLog(a, "compute_baseline", "vm=first-1", "error=<nil>")
-	again, edited, editedVersion := session(a, "again-2", tree.Tree, base, true)
-	resumed, _, _ := session(a, "resume-3", edited, editedVersion, false)
+	first, _, _ := session(a, "first", tree.Tree, base, false, false)
+	baseline := waitLog(a, "compute_baseline", "vm="+lineage+"-first", "error=<nil>")
+	again, edited, editedVersion := session(a, "again", tree.Tree, base, true, false)
+	resumed, _, _ := session(a, "resume", edited, editedVersion, false, true)
 	a.stop()
 	b := startHost()
-	cross, _, _ := session(b, "cross-1", tree.Tree, base, false)
+	cross, _, _ := session(b, "cross", edited, editedVersion, false, true)
 	for _, h := range []host{a, b} {
 		raw, err := os.ReadFile(h.log)
 		must(err)
@@ -319,6 +369,43 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 	}
 	t.Logf("baseline: %s", baseline)
-	t.Logf("RESULT size_mb=%d files=%d first_ever_ms=%d same_host_same_tree_ms=%d same_host_checkpointed_ms=%d new_host_shared_root_ms=%d",
+	t.Logf("RESULT size_mb=%d files=%d first_ever_ms=%d same_host_same_tree_ms=%d same_host_checkpointed_ms=%d new_host_tree_rebuild_ms=%d",
 		mb, len(files), first.Milliseconds(), again.Milliseconds(), resumed.Milliseconds(), cross.Milliseconds())
+}
+
+func coldExecOutput(t *testing.T, response []byte) string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	for _, frame := range bytes.Split(response, []byte("\n\n")) {
+		event, payload, ok := bytes.Cut(frame, []byte("\ndata: "))
+		if !ok {
+			continue
+		}
+		switch string(event) {
+		case "event: stdout", "event: stderr":
+			var chunk hostwire.ExecChunk
+			if err := json.Unmarshal(payload, &chunk); err != nil {
+				t.Fatal(err)
+			}
+			if string(event) == "event: stdout" {
+				stdout.Write(chunk.Data)
+			} else {
+				stderr.Write(chunk.Data)
+			}
+		case "event: exit":
+			var exit struct {
+				hostwire.ExecExit
+				Code *int `json:"code"`
+			}
+			if err := json.Unmarshal(payload, &exit); err != nil {
+				t.Fatal(err)
+			}
+			if exit.Code == nil || *exit.Code != 0 || exit.TimedOut || exit.Truncated || stderr.Len() != 0 {
+				t.Fatalf("shell did not exit cleanly: %s, stderr=%q", payload, stderr.String())
+			}
+			return stdout.String()
+		}
+	}
+	t.Fatalf("missing shell exit: %s", response)
+	return ""
 }

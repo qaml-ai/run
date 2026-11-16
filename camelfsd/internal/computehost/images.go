@@ -41,6 +41,9 @@ type imageDownload struct {
 }
 
 func (i *images) scan() error {
+	if err := os.MkdirAll(i.dir, 0700); err != nil {
+		return err
+	}
 	files, err := os.ReadDir(i.dir)
 	if err != nil {
 		return err

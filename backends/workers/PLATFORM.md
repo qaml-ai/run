@@ -1,13 +1,13 @@
 # Platform parity experiment
 
-This branch adds Workers-native platform services. It is a draft integration
-candidate, not full parity or a production deployment. Channels and voice
-sessions are excluded. Standalone speech and transcription are included.
+This records the original Workers-native platform experiment and its measured
+checks. The pilot now uses [committed repos](../../docs/guides/files.md) for
+persistent files and [Firecracker](../../docs/design/camel-fs-compute.md) for
+Bash.
 
 ## Implemented and exercised in the prototype
 
-Workers now use [repos](../../docs/guides/files.md) for persistent files and
-image output. This table records the original prototype and its checks.
+The prototype included standalone speech and transcription.
 
 | Surface | Implementation and evidence |
 | --- | --- |
@@ -30,7 +30,7 @@ Current Node SDK/watch tests and selected Python SDK tests pass without changing
 the Node runtime. Browser negotiation uses the CORS-safelisted Accept header.
 The bearer credential is in the WebSocket subprotocol, not its URL.
 
-## Live experiments
+## Historical Cloudflare experiments
 
 `measurements/platform-files-cloud.json` records a run of the actual Volume class
 and upload implementation on Cloudflare. Concurrent CAS had one winner and one

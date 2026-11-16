@@ -114,7 +114,8 @@ func TestDDBHostTierContract(t *testing.T) {
 		return id
 	}
 	base := putCommit("", "base")
-	must(refStore.Create(ctx, lineage, name, refstore.Target{Version: base, Tree: tree}, nil, nil))
+	legacyRoot := strings.Repeat("b", 64)
+	must(refStore.Create(ctx, lineage, name, refstore.Target{Version: base, Tree: tree, Root: legacyRoot}, nil, nil))
 	const vmID = "contract-vm"
 	_, err = controller.Create(ctx, compute.CreateRequest{ID: vmID, Lineage: lineage, Ref: name, Pool: pool,
 		Payer: "payer", Image: strings.Repeat("a", 64), Shape: compute.Shape{VCPUs: 1, MemoryMiB: 1024, DiskMiB: 256},
@@ -143,8 +144,7 @@ func TestDDBHostTierContract(t *testing.T) {
 	}
 
 	commit := putCommit(base, "checkpoint")
-	root := strings.Repeat("b", 64)
-	r := record{Spec: spec, StartedAt: &started, Pending: &checkpointIntent{Commit: commit, Expect: base, Tree: tree, Root: root}}
+	r := record{Spec: spec, StartedAt: &started, Pending: &checkpointIntent{Commit: commit, Expect: base, Tree: tree}}
 	moved, err := h.cas(ctx, r, false)
 	must(err)
 	if moved.Version != commit || moved.Tree != tree || !moved.Changed {
@@ -154,7 +154,7 @@ func TestDDBHostTierContract(t *testing.T) {
 		t.Helper()
 		head, err := refStore.Get(ctx, lineage, name)
 		must(err)
-		if head.Target != (refstore.Target{Version: commit, Tree: tree, Root: root}) {
+		if head.Target != (refstore.Target{Version: commit, Tree: tree}) {
 			t.Fatalf("DynamoDB ref: %+v", head)
 		}
 	}
@@ -179,7 +179,7 @@ func TestDDBHostTierContract(t *testing.T) {
 		wantHead()
 	}
 	nextCommit := putCommit(commit, "next checkpoint")
-	r.Pending = &checkpointIntent{Commit: nextCommit, Expect: base, Tree: tree, Root: root}
+	r.Pending = &checkpointIntent{Commit: nextCommit, Expect: base, Tree: tree}
 	wantRefusal(r, 412, "stale", map[string]any{"current": commit})
 	r.Pending.Expect = commit
 	wrongEpoch := r

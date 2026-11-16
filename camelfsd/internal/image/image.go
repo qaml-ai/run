@@ -3,7 +3,6 @@ package image
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/apierr"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
@@ -11,15 +10,12 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/root"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
 	"log"
-	"log/slog"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"time"
 )
@@ -31,7 +27,6 @@ type Config struct {
 	MaxFiles                int
 	MaxBytes, MaxPathsBytes int64
 	BaselineDiskMax         int64
-	Now                     func() time.Time
 }
 type Manager struct {
 	pins map[string]map[string]bool
@@ -59,21 +54,18 @@ type Mount struct {
 	mu      *sync.Mutex
 	streams *streams
 	Request
-	Root          string `json:"root"`
+	BaseTree      string
+	CachedImage   string
 	Image         string `json:"image"`
 	Warm          bool   `json:"warm"`
 	State         string `json:"state"`
 	Dest          string
 	Parent        refs.Value
-	Snapshot      int
 	Promoted      bool
 	needsBaseline bool
 }
 
 func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
-	if c.Now == nil {
-		c.Now = time.Now
-	}
 	if c.StreamIdle == 0 {
 		c.StreamIdle = 30 * time.Second
 	}
@@ -83,7 +75,7 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 	if c.StreamIdle < 0 || c.ApplyMax < 0 {
 		return nil, apierr.Invalid("invalid stream deadlines")
 	}
-	for _, d := range []string{c.Data, filepath.Join(c.Data, "images"), filepath.Join(c.Data, "mounts")} {
+	for _, d := range []string{c.Data, imageDir(c.Data), filepath.Join(c.Data, "mounts")} {
 		if e := os.MkdirAll(d, 0700); e != nil {
 			return nil, e
 		}
@@ -92,7 +84,7 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 		return nil, e
 	}
 	if os.Getenv("CAMELFSD_TEST_NO_REFLINK") == "1" {
-		log.Print("test mode: reflink probe skipped, plain copies and whole-file checkpoint hashing")
+		log.Print("test mode: reflink probe skipped, plain image copies")
 	}
 	entries, e := os.ReadDir(filepath.Join(c.Data, "mounts"))
 	if e != nil {
@@ -136,18 +128,8 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 	go m.maintain()
 	return m, nil
 }
-func ms(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }
-func (m *Manager) load(ctx context.Context, lineage, id string) (root.Root, error) {
-	b, e := store.ForLineage(m.Store, lineage).Get(ctx, "r/"+id)
-	if e != nil {
-		return root.Root{}, e
-	}
-	if root.Hash(b) != id {
-		return root.Root{}, fmt.Errorf("root hash mismatch")
-	}
-	return root.Decode(b)
-}
-func (m *Manager) image(id string) string { return filepath.Join(m.Data, "images", id+".img") }
+func ms(t time.Time) float64              { return float64(time.Since(t).Microseconds()) / 1000 }
+func (m *Manager) image(id string) string { return filepath.Join(imageDir(m.Data), id+".img") }
 func (m *Manager) save(v *Mount) error {
 	b, e := json.Marshal(v)
 	if e != nil {
@@ -156,7 +138,7 @@ func (m *Manager) save(v *Mount) error {
 	if e = store.Atomic(filepath.Join(filepath.Dir(v.Dest), "state.json"), b); e != nil {
 		return e
 	}
-	return m.Refs.Mount(v.JobID, v.Lineage, "", v.Root, v.Tree, v.Image, v.State, v.Warm, v.Fence.Epoch)
+	return m.Refs.Mount(v.JobID, v.Lineage, "", v.CachedImage, v.Tree, v.Image, v.State, v.Warm, v.Fence.Epoch)
 }
 func validMountFence(fence *refs.Fence) bool {
 	return fence != nil && fence.Holder != "" && fence.Epoch > 0
@@ -196,17 +178,13 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if !ok {
 		return nil, os.ErrNotExist
 	}
-	treeRoot, e := m.baseRoot(ctx, q.Lineage, q.Tree)
+	baseTree, imageID, e := m.cachedAncestor(ctx, q.Lineage, q.Tree)
 	if e != nil {
 		return nil, e
 	}
-	v := &Mount{Request: q, Root: treeRoot, mu: new(sync.Mutex)}
-	v.Parent = refs.Value{Commit: q.Parent, Tree: q.Tree, Root: v.Root}
+	v := &Mount{Request: q, BaseTree: baseTree, CachedImage: imageID, mu: new(sync.Mutex)}
+	v.Parent = refs.Value{Commit: q.Parent, Tree: q.Tree}
 	v.Request.Parent = ""
-	r, e := m.mountRoot(ctx, v.Lineage, v.Root)
-	if e != nil {
-		return nil, e
-	}
 	dir := filepath.Join(m.Data, "mounts", q.JobID)
 	if e = os.Mkdir(dir, 0700); e != nil {
 		return nil, e
@@ -221,33 +199,27 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e = store.Atomic(filepath.Join(dir, "session"), nil); e != nil {
 		return nil, e
 	}
-	m.protect(v.JobID, v.Root)
-	defer func() {
-		if err != nil {
-			m.unprotect(v.JobID)
+	// Eviction may win after lookup and before the cache file is pinned.
+	base := blankImage(m.Data, m.VirtualSize)
+	if imageID != "" {
+		m.protect(v.JobID, imageID)
+		defer m.unprotect(v.JobID)
+		cached := m.image(imageID)
+		if st, err := os.Stat(cached); err == nil && st.Size() == m.VirtualSize {
+			store.TouchUsed(cached, time.Now())
+			base, v.Warm = cached, true
+		} else {
+			v.BaseTree, v.CachedImage = "", ""
 		}
-	}()
-	base := m.image(v.Root)
-	if v.Root == "" {
-		base = filepath.Join(m.Data, "images", fmt.Sprintf("blank-%d.img", m.VirtualSize))
 	}
-	if _, e = os.Stat(base); e == nil {
-		store.TouchUsed(base, time.Now())
-		e = clone(base, v.Dest)
-		v.Warm = true
+	if e = clone(base, v.Dest); e != nil {
+		return nil, e
+	}
+	v.State = "blank"
+	if v.Warm {
 		v.State = "warm"
-	} else if !os.IsNotExist(e) {
-		return nil, e
-	} else {
-		// Complete hydration before handing the disk to Firecracker. A live VM's
-		// disk must not depend on an NBD connection owned by this process.
-		e = m.materialize(ctx, v, r)
-		v.State = "hydrated"
 	}
-	if e != nil {
-		return nil, e
-	}
-	v.needsBaseline = r.Tree != v.Tree
+	v.needsBaseline = v.BaseTree != v.Tree
 	if e = m.save(v); e != nil {
 		return nil, e
 	}
@@ -258,120 +230,6 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	return &copy, nil
 }
 
-const pristineImage = "root.img"
-
-func (m *Manager) materialize(ctx context.Context, v *Mount, r root.Root) (err error) {
-	var bytesWritten atomic.Int64
-	var getMs, syncMs, linkMs, cloneMs float64
-	defer func() {
-		slog.Info("compute_materialize", "job", v.JobID, "root", v.Root, "chunks", len(r.Chunks),
-			"bytes", bytesWritten.Load(), "getMs", getMs, "syncMs", syncMs, "linkMs", linkMs,
-			"cloneMs", cloneMs, "error", err)
-	}()
-
-	path := filepath.Join(filepath.Dir(v.Dest), pristineImage)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if f != nil {
-			err = errors.Join(err, f.Close())
-		}
-		if err != nil {
-			if removeErr := os.Remove(path); !os.IsNotExist(removeErr) {
-				err = errors.Join(err, removeErr)
-			}
-		}
-	}()
-	if err := f.Truncate(r.VirtualSize); err != nil {
-		return err
-	}
-	keys := make([]string, 0, len(r.Chunks))
-	for key := range r.Chunks {
-		keys = append(keys, key)
-	}
-	source := store.ForLineage(m.Store, v.Lineage)
-	start := time.Now()
-	err = store.Parallel(ctx, store.Depth(m.Store), keys, func(key string) error {
-		hash := r.Chunks[key]
-		// root.Decode validates offsets; a malformed key must still never become a write at offset 0.
-		off, err := strconv.ParseInt(key, 10, 64)
-		if err != nil || off < 0 || off >= r.VirtualSize || off%root.ChunkSize != 0 {
-			return fmt.Errorf("root %s: invalid chunk offset %q", v.Root, key)
-		}
-		b, err := source.Get(ctx, "c/"+hash)
-		if err != nil {
-			return fmt.Errorf("fetch chunk %s: %w", hash, err)
-		}
-		if int64(len(b)) != root.ChunkSize || root.Hash(b) != hash {
-			return fmt.Errorf("chunk %s: size or hash mismatch", hash)
-		}
-		n, err := f.WriteAt(b[:min(root.ChunkSize, r.VirtualSize-off)], off)
-		bytesWritten.Add(int64(n))
-		return err
-	})
-	getMs = ms(start)
-	if err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	start = time.Now()
-	err = f.Sync()
-	syncMs = ms(start)
-	err = errors.Join(err, f.Close())
-	f = nil
-	if err != nil {
-		return err
-	}
-
-	base := m.image(v.Root)
-	start = time.Now()
-	err = os.Link(path, base)
-	linkMs = ms(start)
-	if err != nil && !os.IsExist(err) {
-		return err
-	}
-	// Persist the published name (as image downloads do): without it a crash can drop the link and cost a re-fetch.
-	if err := store.SyncDir(filepath.Dir(base)); err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil {
-		return err
-	}
-
-	// The promoted image is immutable. Only the session clone goes to the VM.
-	start = time.Now()
-	err = cloneImage(base, v.Dest, false)
-	cloneMs = ms(start)
-	return err
-}
-func (m *Manager) promote(src, id string) error {
-	dst := m.image(id)
-	if e := os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
-		return e
-	}
-	if _, e := os.Stat(dst); e == nil {
-		return nil
-	}
-	dir, e := os.MkdirTemp(filepath.Dir(dst), "promote-")
-	if e != nil {
-		return e
-	}
-	defer os.RemoveAll(dir)
-	tmp := filepath.Join(dir, "image.img")
-	if e := clone(src, tmp); e != nil {
-		return e
-	}
-	// Publish the complete clone atomically without replacing a concurrent winner.
-	e = os.Link(tmp, dst)
-	if os.IsExist(e) {
-		return nil
-	}
-	return e
-}
 func run(ctx context.Context, name string, args ...string) (string, error) {
 	out, e := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if e != nil {
@@ -393,9 +251,6 @@ func (m *Manager) Release(ctx context.Context, id string) (bool, error) {
 		v.streams.close()
 	}
 
-	if e := m.recoverBaseline(v, false); e != nil {
-		return false, e
-	}
 	if e := os.RemoveAll(filepath.Dir(v.Dest)); e != nil {
 		return false, e
 	}

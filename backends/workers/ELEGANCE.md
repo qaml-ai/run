@@ -1,6 +1,10 @@
 # Workers-native camelRun: the optimistic case
 
-This experiment makes coordination much smaller. An agent is a Durable Object,
+This records the architecture and measurements of the original Workers prototype.
+The pilot now uses [committed repos](../../docs/guides/files.md) for files and
+[Firecracker](../../docs/design/camel-fs-compute.md) for Bash.
+
+The prototype puts coordination in Durable Objects. An agent is a Durable Object,
 not a process whose owner must be discovered. Its journal, request queue, human
 input, alarms and live streams share one storage boundary. Postgres remains the
 financial authority. Shared files have their own coordination boundary, a volume
@@ -22,7 +26,7 @@ cleanup. The platform track ran scoped real Cloudflare volume and hibernation
 probes; [PLATFORM.md](PLATFORM.md) records cleanup and measured duration. These
 probes do not establish production performance or cost parity.
 
-## Architecture actually implemented
+## Architecture measured in the prototype
 
 ```mermaid
 flowchart TB

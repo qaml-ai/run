@@ -354,7 +354,6 @@ type checkpointIntent struct {
 	Commit string `json:"commit"`
 	Expect string `json:"expect"`
 	Tree   string `json:"tree"`
-	Root   string `json:"root"`
 }
 
 func (h *Host) checkpointRoute(w http.ResponseWriter, r *http.Request) {
@@ -437,7 +436,7 @@ func (h *Host) checkpoint(ctx context.Context, s *session, vm guestRequester, q 
 		point, err := h.Mounts.SessionCheckpoint(streamCtx, id, baseline, meta, func(ctx context.Context, point image.Checkpoint) error {
 			h.mu.Lock()
 			current := s.row
-			current.Pending = &checkpointIntent{point.Commit, r.Spec.Version, point.Tree, point.Root}
+			current.Pending = &checkpointIntent{point.Commit, r.Spec.Version, point.Tree}
 			err := h.save(s, current)
 			if err == nil {
 				r.Pending = current.Pending
@@ -504,10 +503,9 @@ func (h *Host) cas(ctx context.Context, r record, recovering bool) (out hostwire
 	body := struct {
 		Commit string          `json:"commit"`
 		Expect string          `json:"expect"`
-		Root   string          `json:"root"`
 		Holder hostwire.Holder `json:"holder"`
 		Epoch  int64           `json:"epoch"`
-	}{p.Commit, p.Expect, p.Root, q.Lease.Holder, q.Lease.Epoch}
+	}{p.Commit, p.Expect, q.Lease.Holder, q.Lease.Epoch}
 	path := "/lineages/" + url.PathEscape(q.Lineage) + "/refs/" + url.PathEscape(q.Ref) + "/cas"
 	err = h.Post(ctx, path, body, &out)
 	if err != nil && recovering {
@@ -547,7 +545,7 @@ func (h *Host) recoverCheckpoint(ctx context.Context, s *session, vm guestReques
 		return out, err
 	}
 	p := r.Pending
-	if err := h.Mounts.AdoptCheckpoint(ctx, r.Spec.ID, p.Commit, p.Tree, p.Root); err != nil {
+	if err := h.Mounts.AdoptCheckpoint(r.Spec.ID, p.Commit, p.Tree); err != nil {
 		return out, err
 	}
 	if err := h.checkpointed(ctx, vm, p.Tree, false); err != nil {

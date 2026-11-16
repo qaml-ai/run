@@ -3,7 +3,6 @@ package image
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -12,7 +11,7 @@ import (
 
 // Set CAMELFSD_XFS_TEST_DIR to an unprivileged writable XFS fixture. This test
 // never creates a filesystem or attaches devices.
-func TestPromotionSharesImageExtentsXFS(t *testing.T) {
+func TestCachedImageClonesIndependentlyXFS(t *testing.T) {
 	base := os.Getenv("CAMELFSD_XFS_TEST_DIR")
 	if base == "" {
 		base = t.TempDir()
@@ -49,45 +48,34 @@ func TestPromotionSharesImageExtentsXFS(t *testing.T) {
 	if e = f.Sync(); e != nil {
 		t.Fatal(e)
 	}
-	m := &Manager{Config: Config{Data: dir}}
-	if e = m.promote(src, "base"); e != nil {
-		t.Fatal(e)
+	snapshot := filepath.Join(dir, "snapshot.img")
+	if err := clone(src, snapshot); err != nil {
+		t.Fatal(err)
 	}
-	dst := m.image("base")
-	g, e := os.Open(dst)
-	if e != nil {
-		t.Fatal(e)
+	cached := filepath.Join(dir, "cached.img")
+	if err := os.Link(snapshot, cached); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{0x44}, 0); err != nil {
+		t.Fatal(err)
+	}
+	warm := filepath.Join(dir, "warm.img")
+	if err := clone(cached, warm); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(warm, []byte("changed by the new guest"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := os.Open(cached)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer g.Close()
-	a, e := readExtents(f)
-	if e != nil {
-		t.Fatal(e)
-	}
-	b, e := readExtents(g)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if len(a) == 0 || len(a) != len(b) {
-		t.Fatal("different extents")
-	}
-	for i, x := range a {
-		if x.Physical != b[i].Physical || x.Length != b[i].Length || x.Flags&0x2000 == 0 || b[i].Flags&0x2000 == 0 {
-			t.Fatal("promotion copied data instead of sharing extents")
-		}
-	}
-	for _, args := range [][]string{{"-B1", src, dst}, {"-B1", "--apparent-size", src, dst}} {
-		out, e := exec.Command("du", args...).CombinedOutput()
-		if e != nil {
-			t.Fatal(e)
-		}
-		t.Logf("du %v: %s", args, out)
-	}
-	// Releasing the mount image must leave the promoted inode intact.
-	if e = os.Remove(src); e != nil {
-		t.Fatal(e)
-	}
 	got := make([]byte, len(data))
-	if _, e = g.ReadAt(got, 0); e != nil || !bytes.Equal(got, data) {
-		t.Fatal("promoted data lost", e)
+	if _, err := g.ReadAt(got, 0); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("cached checkpoint changed", err)
 	}
 }

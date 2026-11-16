@@ -89,7 +89,7 @@ func host(args []string) error {
 	if e != nil {
 		return e
 	}
-	r, e := refs.Open(filepath.Join(*data, "refs.db"))
+	r, e := refs.Open(filepath.Join(*data, "workspace-cache.db"))
 	if e != nil {
 		return e
 	}

@@ -184,8 +184,8 @@ an active POST response stream ends with the call.
 
 The real-model check submits one run with `gpt-4o-mini` and a 16-token output
 limit. It records API usage, cost in USD, and durable model-attempt counters
-before deleting the throwaway tenant. Do not manually retry a failed real call:
-inspect those counters first, since the runtime can retry upstream requests.
+before deleting the throwaway tenant. Inspect those counters before retrying a
+failed real call, since the runtime can retry upstream requests.
 
 The twelve SSE-dependent cases once registered as accepted differences (direct
 SSE attachment, CORS content type, SSE proxies and explicit SSE watchers) pass
@@ -681,7 +681,7 @@ the $100 model-key cap is a separate spend limit, not an API capacity limit.
 Stop clients and schedules first. Delete pilot tenants through the application's
 account deletion path and wait for `state=deleted`. This revokes keys, deletes
 agents, end-user records and user files, and purges DO content. Accounting audit
-records are retained by application policy; do not describe them as erased.
+records remain available after account deletion.
 
 Deleting a Worker alone does not delete its Durable Object storage. Before
 deleting the Workers, remove any temporary `camelrun-pilot-bootstrap-*` Workers

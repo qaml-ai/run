@@ -48,7 +48,9 @@ func TestCleanupScoped(t *testing.T) {
 	if _, e := os.Stat(filepath.Join(b, "mounts", "j", "state.json")); e != nil {
 		t.Fatal(e)
 	}
-	requireMissing(t, filepath.Join(a, "cache"))
+	if _, err := os.Stat(filepath.Join(a, "cache")); !os.IsNotExist(err) {
+		t.Fatalf("cleaned cache still exists: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(b, "cache")); err != nil {
 		t.Fatal(err)
 	}

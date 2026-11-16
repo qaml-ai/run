@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -16,14 +15,14 @@ func TestLargeBlankIsSparseAndUsesExtents(t *testing.T) {
 		t.Skip(e)
 	}
 	data := t.TempDir()
-	if e := os.Mkdir(filepath.Join(data, "images"), 0700); e != nil {
+	if e := os.Mkdir(imageDir(data), 0700); e != nil {
 		t.Fatal(e)
 	}
 	c := Config{Data: data, VirtualSize: 64 << 30}
 	if e := blank(c); e != nil {
 		t.Fatal(e)
 	}
-	p := filepath.Join(data, "images", "blank-68719476736.img")
+	p := blankImage(data, c.VirtualSize)
 	var st unix.Stat_t
 	if e := unix.Stat(p, &st); e != nil {
 		t.Fatal(e)

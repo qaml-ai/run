@@ -159,9 +159,13 @@ func TestImageScanClearsCrashLeftovers(t *testing.T) {
 }
 
 func TestOpenFailsOnImageCacheScanError(t *testing.T) {
-	h, err := Open(t.Context(), Config{Data: t.TempDir()})
-	if h != nil || !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("Open = %v, %v, want missing images directory error", h, err)
+	data := t.TempDir()
+	if err := os.WriteFile(filepath.Join(data, "images"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := Open(t.Context(), Config{Data: data})
+	if h != nil || !errors.Is(err, unix.ENOTDIR) {
+		t.Fatalf("Open = %v, %v, want images path that is not a directory error", h, err)
 	}
 }
 
