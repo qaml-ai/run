@@ -12,7 +12,15 @@ test("OpenAI brokers SDP, journals speech without a run, meters raw cost once, a
     const parts: Buffer[] = [];
     for await (const part of request) parts.push(part);
     if (request.url === "/realtime/calls") {
-      offers.push(Buffer.concat(parts).toString());
+      const form = await new Response(Buffer.concat(parts).toString(), {
+        headers: { "Content-Type": request.headers["content-type"] ?? "" },
+      }).formData().catch(() => null);
+      const offer = form?.get("sdp");
+      if (typeof offer !== "string") {
+        response.writeHead(400).end("The SDP offer must be a multipart text field");
+        return;
+      }
+      offers.push(offer);
       response.writeHead(201, { Location: `/realtime/calls/provider-${offers.length}` }).end("sdp-answer");
     } else {
       hangups.push(request.url!);
@@ -47,7 +55,7 @@ test("OpenAI brokers SDP, journals speech without a run, meters raw cost once, a
   const path = `/v1/voice/sessions/${call.id}`;
   const [sideband] = await connecting;
   assert.deepEqual(call.connect, { sdpAnswer: "sdp-answer" });
-  assert.match(offers[0], /sdp-offer/);
+  assert.equal(offers[0], "sdp-offer");
   const limited = await f.create({ provider: "openai", sdp: "sdp-offer" });
   assert.equal(limited.json.code, "VOICE_SESSION_LIMIT");
   assert.equal((await f.request(path + "/transcript", "POST", { speaker: "a", text: "override" })).json.code, "VOICE_TRANSCRIPT_SIDEBAND");
