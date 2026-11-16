@@ -40,8 +40,8 @@ real credential. `POST /v1/agents` accepts `{"model":"test/echo"}`. Send
 `/clients/<id>/events`. `test/echo` also accepts `ask:Question`, `delegate:Task`
 and `code:<JavaScript>` to exercise the actual tool and journal paths.
 
-Do not run `wrangler deploy` with this fixture configuration. No deployment is
-needed for any result in this directory.
+The fixture configuration runs locally. Use `scripts/pilot-deploy.mjs` for the
+pilot deployment and its separate configuration.
 
 Key measured results (hibernation, load stages, parity totals, test timings) are
 summarized in [measurements/README.md](measurements/README.md).
