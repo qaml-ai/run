@@ -347,9 +347,30 @@ multiple files. Single-member reads fetch the verified byte range. The
 `compute_apply_reads` log records lookup time and the number of loose, bundle
 and range reads.
 
-Use the same table on the tier and all compute hosts. A lineage cleanup
-includes its bundle prefix and locator rows. Reclaiming space within a
-partially live bundle requires compaction.
+The pilot sets `api_extra_args = ["--objects-table", "camelfs-prod-objects"]`
+for the tier and `CAMELFSD_OBJECTS_TABLE=camelfs-prod-objects` in each host's
+`/etc/camel/kvm-host.conf`. Physical lineage cleanup includes the bundle
+prefix and locator rows. Reclaiming space within a partially live bundle
+requires compaction.
+
+### Pilot benchmark
+
+`TestKVMColdSessionBench` at `c07e186e` used the same pilot Firecracker
+machine and guest image in both arms. Each fresh-host rebuild used a new
+daemon data directory with no cached workspace image. Every trial seeded
+10,000 small files and added 1 MiB blobs to reach the workspace size. The
+50 MiB row shows three paired medians. The larger rows show one pair each.
+
+| Workspace | Fresh rebuild, loose | Fresh rebuild, bundled | Blob payload GETs, loose → bundled |
+| --- | ---: | ---: | ---: |
+| 50 MiB | 10.461 s | 4.720 s | 10,010 → 16 |
+| 500 MiB | 14.824 s | 8.737 s | 10,460 → 466 |
+| 2,000 MiB | 20.458 s | 19.157 s | 11,960 → 1,966 |
+
+The 50 MiB first boot took 9.595 s with loose files and 4.746 s with bundles.
+After a checkpoint, same-host reuse took 0.587 s and 0.591 s respectively.
+Five bundle GETs served the 10,000 small base files, and one range GET served
+the edited file. The locator reads took 2.374 s of the 4.720 s fresh rebuild.
 
 ## Host and API roles
 
