@@ -82,6 +82,49 @@ only this repo's configuration; the machinery is `scripts/sprite-test-core.sh`, 
 keeps too (change both). Options, leases, sync, retries and
 exit codes: `scripts/sprite-test --help`, the core's header and the `sprites-agent-runtime` skill.
 
+## Continuing the camel-fs and Workers work
+
+Most active work is not on main. Start here when you pick it up on a fresh machine.
+
+**Branches**
+- `camelfs/files-model`: the integration branch for camel-fs (repos, refs, files, VMs) and the Workers backend.
+  Branch from it, open PRs against it, and merge only when every check is green on the exact head. It is ahead
+  of main (last merged to main as #1157); merging it to main deploys production, so that waits for the owner's go.
+- `main`: production (the Node backend at run.camelai.com).
+- Lanes use prefixes like `camelfs/*`, `pgq/*`, `claude/*`. A branch with no open PR is not work in progress.
+
+**Read first, in this order**
+1. `docs/design/camel-fs.md`, then `camel-fs-files.md` and `camel-fs-compute.md`: the target architecture.
+   camelRun keeps agents and money; camel-fs (`camelfsd/`, one Go service on AWS plus Firecracker hosts) keeps
+   repos, refs (DynamoDB), objects (S3) and VMs; camel-bots keeps Discord audio.
+2. `docs/design/camel-fs-v0-limitations.md`: the ledger. Every known limitation is a row (L1 and up) with an owner
+   and a status. Its open rows are the backlog. A PR that fixes a row is followed by a ledger PR that closes it
+   with measured numbers; a residual becomes a new row.
+3. `camelfsd/README.md` and `infra/camelfs/README.md`: the daemon, the tier's AWS resources, and how it deploys.
+4. `backends/workers/README.md`: the Workers runtime and the pilot (`run-pilot.camelai.dev`, no external users).
+
+**Where it stands (2026-11-15)**
+- The camel-fs tier serves the pilot: refs in DynamoDB (#1204 guards ref writes with deletion stamps), VMs on
+  a Firecracker host, guest image chosen by `GUEST_IMAGE_SHA256` in `backends/workers/wrangler.pilot.jsonc`.
+- Next items: re-measure the ref write p50 after #1204 (L89, expected ~66 ms); L132 (2 GB first apply is bound
+  by vsock at ~200 MB/s, then guest disk writes); L131 (small-file packing, design first); convert
+  `tests/camelfs-refs-tier.ts` from the `aws` CLI to direct DynamoDB Local requests, as #1204 did for
+  `tests/camelfs-contract.test.ts`.
+- Waiting on the owner: the 50 ms write target (L89), deleting the unused pilot secret `CAMELFS_API_TOKEN` (L30),
+  and the camel-bots voice canary.
+
+**Doing the work**
+- Tests run on sprites (see "Off the laptop"), not on your machine. For any `camelfsd/internal/refstore` change,
+  the gate is the camelfsd Go suite with DynamoDB Local (zero skips) plus `tests/camelfs-contract.test.ts` and
+  `tests/camelfs-refs-tier.ts`; local runs skip the DynamoDB tests.
+- Deploy entry points: `node backends/workers/scripts/pilot-deploy.mjs` (pilot; `--dry-run` first),
+  `infra/camelfs/deploy.sh` (the tier's image) and `infra/camelfs/apply.sh` (its settings; plan with
+  `PLAN_ONLY=1`). A new guest image is added to `guest_images` (keep the old one), rolled to the host with
+  `infra/job-hosts/kvm/host-setup.sh`, then flipped in the pilot's config. `scripts/smoke-compute.ts` checks
+  the whole path. These need the owner's AWS and Cloudflare access; never create new cloud resources without
+  the owner.
+- Model-facing text (prompts, tool descriptions) and money paths get a line-by-line human review.
+
 ## Where things are written down
 
 - [docs/operations/README.md](docs/operations/README.md): layout, local development, CI and deploys, and the index
