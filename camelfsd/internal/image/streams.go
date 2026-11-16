@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -726,7 +727,7 @@ func (m *Manager) SessionCheckpoint(ctx context.Context, id string, baseline boo
 			}
 			m.discardBaseline(snap)
 		}
-		logBaseline(v.JobID, v.Tree, start, ms(start), Checkpoint{}, err)
+		logBaseline(v.JobID, v.Tree, start, ms(start), err)
 		wire.Send(c, map[string]any{"ack": false, "error": err.Error()})
 		return out, nil
 	}
@@ -755,20 +756,11 @@ func (m *Manager) SessionCheckpoint(ctx context.Context, id string, baseline boo
 		return out, fmt.Errorf("%w: %v", ErrBadStream, e)
 	}
 	defer os.RemoveAll(r.dir)
-	v.Snapshot++
-	snap := filepath.Join(filepath.Dir(v.Dest), fmt.Sprintf("snap-%d.img", v.Snapshot))
+	snap := filepath.Join(filepath.Dir(v.Dest), checkpointSnapshot)
 	defer os.Remove(snap)
-	if e = clone(v.Dest, snap); e != nil {
-		return out, e
-	}
-	f, e := os.Open(snap)
-	if e != nil {
-		return out, e
-	}
-	defer f.Close()
-	ranges, e := sessionRanges(f, prepared.quota, prepared.chunks)
-	if e != nil {
-		return out, e
+	if err := clone(v.Dest, snap); err != nil {
+		slog.Warn("checkpoint_image_capture_failed", "job", v.JobID, "error", err)
+		snap = ""
 	}
 	if err = wire.Send(c, map[string]bool{"ack": true}); err != nil {
 		return out, ErrStreamTimeout
@@ -802,7 +794,7 @@ func (m *Manager) SessionCheckpoint(ctx context.Context, id string, baseline boo
 	if e != nil {
 		return out, e
 	}
-	out, err = m.publishCheckpoint(ctx, v, tree.Tree, f, ranges, q, publish)
+	out, err = m.publishCheckpoint(ctx, v, tree.Tree, snap, q, publish)
 	out.FilesChanged = r.count
 	out.BytesReceived = r.bytes
 	out.WalkMs = r.walk
@@ -846,19 +838,17 @@ func sendIndex(w io.Writer, entries []objects.Entry) error {
 }
 
 type receiveBase struct {
-	quota  int64
-	chunks map[string]string
-	files  map[string]objects.File
-	sizes  map[string]int64
+	quota int64
+	files map[string]objects.File
+	sizes map[string]int64
 }
 
 func (m *Manager) prepareReceive(ctx context.Context, v *Mount) (out receiveBase, err error) {
-	r, err := m.mountRoot(ctx, v.Lineage, v.Root)
+	info, err := os.Stat(v.Dest)
 	if err != nil {
 		return out, err
 	}
-	out.quota = r.VirtualSize
-	out.chunks = r.Chunks
+	out.quota = info.Size()
 	// v0-limitation: L53
 	entries, err := m.entries(ctx, v.Lineage, v.Tree)
 	if err != nil {

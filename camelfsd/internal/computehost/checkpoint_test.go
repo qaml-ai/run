@@ -64,6 +64,17 @@ func TestSessionCheckpointNoChangeAndFenced(t *testing.T) {
 		if path != "/lineages/l/refs/fork%2Fvm/cas" {
 			t.Errorf("CAS path %s", path)
 		}
+		body, err := json.Marshal(q)
+		if err != nil {
+			t.Error(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			t.Error(err)
+		}
+		if _, present := fields["root"]; present {
+			t.Error("compute host sent local image metadata to the tier")
+		}
 		return refusal
 	}})
 	if err != nil {

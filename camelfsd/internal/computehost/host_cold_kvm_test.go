@@ -319,6 +319,6 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 	}
 	t.Logf("baseline: %s", baseline)
-	t.Logf("RESULT size_mb=%d files=%d first_ever_ms=%d same_host_same_tree_ms=%d same_host_checkpointed_ms=%d new_host_shared_root_ms=%d",
+	t.Logf("RESULT size_mb=%d files=%d first_ever_ms=%d same_host_same_tree_ms=%d same_host_checkpointed_ms=%d new_host_tree_rebuild_ms=%d",
 		mb, len(files), first.Milliseconds(), again.Milliseconds(), resumed.Milliseconds(), cross.Milliseconds())
 }

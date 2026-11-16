@@ -1,29 +1,43 @@
 package image
 
 import (
-	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
-	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"reflect"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestSparseHolesOnlyReadParentChunks(t *testing.T) {
-	const size = int64(4 << 30)
-	if got := rangesFromExtents(nil, size, nil); len(got) != 0 {
-		t.Fatal(got)
+func TestWorkspaceCacheLeavesLegacyImagesUntouched(t *testing.T) {
+	m, tree := unit3(t)
+	id := strings.Repeat("a", 64)
+	legacy := filepath.Join(m.Data, "images")
+	if err := os.Mkdir(legacy, 0700); err != nil {
+		t.Fatal(err)
 	}
-	got := rangesFromExtents(nil, size, map[string]string{"262144": "hash"})
-	want := []chunk.Range{{Offset: root.ChunkSize, Length: root.ChunkSize}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatal(got)
+	file := filepath.Join(legacy, id+".img")
+	f, err := os.Create(file)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A hole inside a parent chunk still hashes the chunk and catches a punch.
-	got = rangesFromExtents([]extent{{Logical: 0, Length: 4096, Flags: 0x2000}}, size, map[string]string{"0": "hash"})
-	want = []chunk.Range{{Offset: 4096, Length: root.ChunkSize - 4096}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatal(got)
+	if err := f.Truncate(m.VirtualSize); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Refs.RecordTree("l", tree, id); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.cachedTree("l", tree); err != nil || got != "" {
+		t.Fatalf("new cache selected a legacy image: %q (%v)", got, err)
+	}
+	if _, err := m.evict(m.VirtualSize, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("new cache eviction touched a legacy image: %v", err)
 	}
 }
 

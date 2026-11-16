@@ -238,7 +238,7 @@ func TestOldBootRecoveryDropsMountWithStagingImage(t *testing.T) {
 			t.Fatal(err)
 		}
 		mountDir = filepath.Dir(v.Dest)
-		if err := os.WriteFile(filepath.Join(mountDir, "root.img"), []byte("unfinished staging image"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(mountDir, "checkpoint.img"), []byte("unfinished staging image"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		h, err := Open(t.Context(), cfg)
@@ -256,7 +256,7 @@ func TestOldBootRecoveryDropsMountWithStagingImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer recovered.Close()
-	if _, err := os.Stat(filepath.Join(mountDir, "root.img")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(mountDir, "checkpoint.img")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unfinished staging image survived manager recovery, stat error = %v", err)
 	}
 	cfg.BootID = "boot-b"

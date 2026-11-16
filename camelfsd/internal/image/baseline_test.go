@@ -3,7 +3,6 @@ package image
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -13,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qaml-ai/run/camelfsd/internal/chunk"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -45,7 +43,7 @@ func TestSessionBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			v := baselineMount(t, m, tree.Tree, "first")
-			if v.Root != "" || !m.NeedsBaseline(v.JobID) {
+			if v.CachedImage != "" || !m.NeedsBaseline(v.JobID) {
 				t.Fatalf("expected blank mount with apply delta: %+v", v)
 			}
 			dir := t.TempDir()
@@ -55,6 +53,11 @@ func TestSessionBaseline(t *testing.T) {
 			// Populate the ext4 fixture from the applied file without a loop mount.
 			if out, err := exec.Command("debugfs", "-w", "-R", "write "+filepath.Join(dir, "hello")+" /hello", v.Image).CombinedOutput(); err != nil {
 				t.Fatalf("debugfs: %v %s", err, out)
+			}
+			for _, cmd := range []string{"mkdir /.git", "write " + filepath.Join(dir, "hello") + " /.git/marker"} {
+				if out, err := exec.Command("debugfs", "-w", "-R", cmd, v.Image).CombinedOutput(); err != nil {
+					t.Fatalf("debugfs: %v %s", err, out)
+				}
 			}
 			guest := func(context.Context) error {
 				return testguest.Baseline(strings.TrimSuffix(v.streams.paths[0], "_5200"), v.JobID, tree.Tree)
@@ -131,25 +134,25 @@ func TestSessionBaseline(t *testing.T) {
 			}
 			if name != "stop before publish" {
 				current := m.lookup(v.JobID)
-				if current == nil || current.Root != id {
+				if current == nil || current.CachedImage != id {
 					t.Fatalf("mount base was not updated: %+v", current)
 				}
 			}
 			assertNoBaseline := func(manager *Manager, id string) {
 				t.Helper()
 				publish, discard := manager.SessionBaseline(t.Context(), id, func(context.Context) error {
-					t.Error("exact-root mount requested a guest freeze")
+					t.Error("exact cached mount requested a guest freeze")
 					return errors.New("unexpected freeze")
 				})
 				if discard != nil {
 					discard()
 				}
 				if publish != nil || manager.NeedsBaseline(id) {
-					t.Fatal("exact-root mount needs a baseline")
+					t.Fatal("exact cached mount needs a baseline")
 				}
 			}
 			warm := baselineMount(t, m, tree.Tree, "second")
-			if !warm.Warm || warm.State != "warm" || warm.Root != id {
+			if !warm.Warm || warm.State != "warm" || warm.CachedImage != id {
 				t.Fatalf("expected exact warm mount: %+v", warm)
 			}
 			assertNoBaseline(m, warm.JobID)
@@ -159,6 +162,13 @@ func TestSessionBaseline(t *testing.T) {
 			}
 			if got, err := os.ReadFile(filepath.Join(dir, "restored")); err != nil || !bytes.Equal(got, content) {
 				t.Fatalf("warm image contents %q: %v", got, err)
+			}
+			marker := filepath.Join(dir, "marker")
+			if out, err := exec.Command("debugfs", "-R", "dump /.git/marker "+marker, warm.Image).CombinedOutput(); err != nil {
+				t.Fatalf("debugfs: %v %s", err, out)
+			}
+			if got, err := os.ReadFile(marker); err != nil || !bytes.Equal(got, content) {
+				t.Fatalf("same-host cache lost image-only data %q: %v", got, err)
 			}
 			otherData := t.TempDir()
 			db, err := refs.Open(filepath.Join(otherData, "refs.db"))
@@ -173,16 +183,17 @@ func TestSessionBaseline(t *testing.T) {
 			}
 			defer other.Close()
 			cold := baselineMount(t, other, tree.Tree, "other")
-			if cold.Warm || cold.State != "hydrated" || cold.Root != id {
-				t.Fatalf("expected exact shared root materialization: %+v", cold)
+			if cold.Warm || cold.State != "blank" || cold.CachedImage != "" {
+				t.Fatalf("expected a tree rebuild on another host: %+v", cold)
 			}
-			assertNoBaseline(other, cold.JobID)
-			out, err = exec.Command("debugfs", "-R", "dump /hello "+filepath.Join(dir, "shared"), cold.Image).CombinedOutput()
-			if err != nil {
-				t.Fatalf("debugfs: %v %s", err, out)
+			if err := testguest.Apply(strings.TrimSuffix(cold.streams.paths[0], "_5200"), cold.JobID, otherData, filepath.Join(t.TempDir(), "index")); err != nil {
+				t.Fatal(err)
 			}
-			if got, err := os.ReadFile(filepath.Join(dir, "shared")); err != nil || !bytes.Equal(got, content) {
-				t.Fatalf("shared image contents %q: %v", got, err)
+			if got, err := os.ReadFile(filepath.Join(otherData, "hello")); err != nil || !bytes.Equal(got, content) {
+				t.Fatalf("rebuilt file contents %q: %v", got, err)
+			}
+			if _, err := os.Stat(filepath.Join(otherData, ".git")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("tree rebuild restored image-only data: %v", err)
 			}
 			var commits int
 			if err := m.objects().DB.DB.QueryRow("SELECT count(*) FROM lineage_objects WHERE kind='commit'").Scan(&commits); err != nil || commits != 0 {
@@ -213,38 +224,13 @@ func TestBaselineDiskCapAndRecovery(t *testing.T) {
 	if err := clone(v.Dest, snap.path()); err != nil {
 		t.Fatal(err)
 	}
-	// Leave a complete intent just before promotion, plus an unrelated
-	// incomplete capture. Startup must publish one and discard the other.
-	base, err := m.mountRoot(t.Context(), "l", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var point Checkpoint
-	f, err := os.Open(snap.path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = m.uploadSnapshot(t.Context(), v.Lineage, v.Root, base, f, tree,
-		[]chunk.Range{{Length: base.VirtualSize}}, &point)
-	if err := errors.Join(err, f.Close()); err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(baselineRecord{"l", tree, point.Root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Atomic(filepath.Join(snap.dir, baselineIntent), body); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Atomic(filepath.Join(m.baselineDir(), "partial", "image.img"), []byte("partial")); err != nil {
-		t.Fatal(err)
-	}
+	// A snapshot that was never published is safe to discard on restart.
 	if err := m.recoverBaselines(); err != nil {
 		t.Fatal(err)
 	}
-	warm := baselineMount(t, m, tree, "recovered")
-	if !warm.Warm || warm.Root != point.Root {
-		t.Fatalf("complete baseline not recovered: %+v", warm)
+	cold := baselineMount(t, m, tree, "recovered")
+	if cold.Warm || cold.CachedImage != "" {
+		t.Fatalf("unpublished baseline reused: %+v", cold)
 	}
 	if files, err := os.ReadDir(m.baselineDir()); err != nil || len(files) != 0 {
 		t.Fatalf("baseline leftovers: %v %v", files, err)

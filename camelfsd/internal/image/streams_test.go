@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -244,7 +245,7 @@ func TestApplyCheckpointCommit(t *testing.T) {
 	}
 	m.Release(context.Background(), "j")
 	warm := mount3(t, m, out.Tree, "warm")
-	if warm.Root != out.Root || !warm.Warm {
+	if warm.CachedImage != checkpointImage("l", out.Commit) || !warm.Warm {
 		t.Fatal(warm)
 	}
 }
@@ -287,26 +288,42 @@ func TestAckThenPublishFailure(t *testing.T) {
 	}
 }
 
-func TestConcurrentPromotion(t *testing.T) {
-	m, _ := unit3(t)
-	src := filepath.Join(m.Data, "source.img")
-	b := []byte("identical immutable image")
-	if e := os.WriteFile(src, b, 0600); e != nil {
-		t.Fatal(e)
-	}
-	id := root.Hash(b)
-	done := make(chan error, 16)
-	for i := 0; i < 16; i++ {
-		go func() { done <- m.promote(src, id) }()
-	}
-	for i := 0; i < 16; i++ {
-		if e := <-done; e != nil {
-			t.Fatal(e)
-		}
-	}
-	got, e := os.ReadFile(m.image(id))
-	if e != nil || !bytes.Equal(b, got) {
-		t.Fatal(e)
+func TestRecoverPublishedCheckpointWithOrWithoutCachedImage(t *testing.T) {
+	for _, cache := range []bool{true, false} {
+		t.Run(fmt.Sprintf("cache=%t", cache), func(t *testing.T) {
+			m, tree := unit3(t)
+			v := mount3(t, m, tree, "interrupted")
+			oldCommit := v.Parent.Commit
+			snapshot := filepath.Join(filepath.Dir(v.Dest), checkpointSnapshot)
+			if err := clone(v.Dest, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			lostReply := errors.New("lost CAS reply")
+			point, err := m.publishCheckpoint(t.Context(), v, tree, snapshot, CheckpointRequest{}, func(context.Context, Checkpoint) error {
+				return lostReply
+			})
+			if !errors.Is(err, lostReply) || point.Commit == "" || v.Parent.Commit != oldCommit {
+				t.Fatalf("interrupted checkpoint: %+v (%v), mount %+v", point, err, v)
+			}
+			if id, err := m.cachedTree(v.Lineage, tree); err != nil || id != "" {
+				t.Fatalf("published a cache mapping before the CAS was known: %q (%v)", id, err)
+			}
+			if !cache {
+				if err := os.Remove(m.image(checkpointImage(v.Lineage, point.Commit))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := m.AdoptCheckpoint(v.JobID, point.Commit, tree); err != nil {
+				t.Fatal(err)
+			}
+			if v.Parent.Commit != point.Commit || v.Tree != tree {
+				t.Fatalf("committed checkpoint was not adopted: %+v", v)
+			}
+			restored := mount3(t, m, tree, "restored")
+			if restored.Warm != cache {
+				t.Fatalf("expected cache reuse %t: %+v", cache, restored)
+			}
+		})
 	}
 }
 

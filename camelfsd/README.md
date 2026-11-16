@@ -16,15 +16,13 @@ gofmt -l .
 ```
 
 Compute hosts require FICLONE under `--data` (normally XFS with reflink).
-`CAMELFSD_TEST_NO_REFLINK=1` uses copies and hashes whole images for unprivileged
-tests. Privileged loop and reflink tests skip when unsupported.
+`CAMELFSD_TEST_NO_REFLINK=1` uses copies for unprivileged tests. Privileged loop and reflink tests skip when unsupported.
 
 ## Durability and lineage scope
 
 Objects are <lineage>/o/<git-sha1> (raw blobs), <lineage>/t/<git-sha1>
-(Git trees), <lineage>/k/<git-sha1> (Git commits), <lineage>/r/<sha256>
-(canonical roots) and <lineage>/c/<sha256> (chunks). Git hashes include the
-object header; stored tree and commit payloads use Git's exact encoding. All
+(Git trees) and <lineage>/k/<git-sha1> (Git commits). Git hashes include the
+object header. Stored tree and commit payloads use Git's exact encoding. All
 created trees and commits reach the store before a successful response. Trees
 and commits are gathered into one publication with up to 64 uploads.
 Blobs stream through a temporary file, hashing SHA-256 and Git SHA-1, and use
@@ -32,7 +30,7 @@ one file-backed PUT. Unknown-length requests replay the file to compute the
 Git header after measuring its length. X-Camel-Sha256 mismatch is rejected
 before any upload. Blob uploads are capped at 5 GiB.
 
-refs.db is a host-local cache: mounts, tree_roots, tree_parents,
+`workspace-cache.db` is a host-local cache for mounts, tree roots, tree parents,
 lineage_blobs, lineage_objects, uploaded, objects, and idempotency. There is
 no refs table. Trees and commits are cached on write and on a cache miss;
 reads verify their ids before caching. Small blob reads are also cached.
@@ -65,7 +63,7 @@ by lineage and route. Replays return the original status and exact body
 without recomputing or uploading. Only mutations with the same lineage and
 idempotency key serialize through response publication; unrelated uploads
 proceed independently. Errors are retryable and are not cached. Response replay is
-host-local; wiping refs.db also wipes replay history. Deterministic commit
+local to the storage tier. Replacing `storage.db` also clears replay history. Deterministic commit
 ids require an explicit time in Unix seconds. Otherwise Idempotency-Key
 is the retry mechanism; the caller must preserve this cache across retries.
 
@@ -217,11 +215,12 @@ unavailable (503). Conflict lists are in error.details.conflicts.
 ## Session mounts and guest streams
 
 Every session mount names a tree, its 40-hex parent commit and the tier's
-lease fence with a holder and a positive epoch. Mounts resolve the newest
-local lineage/tree root, then the exact shared root, then up to 64 local
-tree ancestors, then the blank image (`--virtual-size`, default 1 GiB).
-The host reflinks a cached image and fully hydrates a cold image before
-starting Firecracker.
+lease fence with a holder and a positive epoch. The host reflinks a local image
+for the exact tree or one of up to 64 known ancestors. Without a local image it
+reflinks a blank workspace (`--virtual-size`, default 1 GiB) and the guest applies
+the Git tree. The Git tree preserves regular files, their executable bit and
+symlinks. A tree rebuild drops image-only state such as `.git`, empty directories,
+ownership, timestamps and xattrs. A local image can retain that state.
 
 When a session applies a nonempty file delta, the host captures a baseline
 before first exec. One publisher per host processes these snapshots after
@@ -235,14 +234,12 @@ length and carry up to 64 KiB of JSON or 1 MiB of data. The tree fields in
 stream headers can be empty on the first mount.
 
 A pending session checkpoint arms the guest connection. The host sends ready,
-validates the stream and captures a disk snapshot before ack. The guest thaws
-on ack, nack, EOF or deadline. The host publishes blobs, trees, the commit and
-the image root, then performs the fenced CAS at the tier before sending
-`checkpointed{tree}` to the guest.
-
-The host records the published objects and tree root before CAS.
-It advances the session mount only after CAS succeeds. Checkpoint messages
-and trailers use the Camel-* mapping.
+validates the stream and attempts a local reflink snapshot before ack. The guest
+thaws on ack, nack, EOF or deadline. The host publishes blobs, trees and the
+commit, records the checkpoint intent, and moves the ref through the fenced CAS
+before sending `checkpointed{tree}` to the guest. The host can recover that
+intent using the commit and tree even if the local image was evicted.
+Checkpoint messages and trailers use the Camel-* mapping.
 
 Stream limits default to 30s idle, 30m apply, and 120000 ms per checkpoint
 (maximum 600000 ms). The flags `--max-files`, `--max-bytes`, and
@@ -250,16 +247,30 @@ Stream limits default to 30s idle, 30m apply, and 120000 ms per checkpoint
 The host validates guest paths and modes before ack.
 
 The host's shared store budget defaults to 128 operations (`--fetch-depth`).
-A cold mount verifies chunks and writes them directly into a pristine staging
-image. The host syncs and publishes it before cloning the published image for
-the VM. Startup discards unfinished staging images.
-The eviction sweep runs every minute. Above 80% disk usage it targets 60%,
-protecting live mounts, blank images, and snapshots.
+Above 80% disk usage the eviction sweep targets 60% and keeps images that
+are being cloned or published.
 
-State lives in `images/`, `mounts/<jobId>/state.json`, `baselines/`,
-and `refs.db`. A data-directory lock excludes concurrent daemons. Startup
-recovers fenced session mounts and refuses unfenced mount state. Stop
-guests before running `camelfsd cleanup --data DIR` to clear old mount state and remove any legacy `cache/` directory.
+Workspace images, pending baseline snapshots and the derived index live in
+`workspace-images/`, `workspace-baselines/` and `workspace-cache.db`.
+Live mounts still use `mounts/<jobId>/state.json`. A data-directory lock
+excludes concurrent daemons. Startup discards incomplete local snapshots and
+recovers fenced mounts in the current format. Stop guests before running
+`camelfsd cleanup --data DIR` to clear old mount state and legacy `cache/`.
+
+### Rotating compute hosts
+
+1. Roll out large-blob tree restore support to every host that can hold a ref.
+2. Take one host out of placement. Let its VMs finish or stop with a checkpoint
+   and wait for its mounts to be released.
+3. Stop the host daemon, install the local-cache binary and restart it with the
+   same `--data`. The old cache and SQLite files stay available for rollback.
+4. Verify an empty-cache tree rebuild, a same-host warm boot and a checkpoint.
+   Return the host to placement, then rotate the next host.
+
+To roll back a host, drain it the same way and restart the previous binary with
+the same `--data`. Keep legacy S3 roots, chunk objects and permissions through
+the rollout and rollback window. Older hosts and the tier continue to support
+the optional `root` field.
 
 ## Host and API roles
 

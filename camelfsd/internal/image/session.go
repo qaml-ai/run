@@ -6,15 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
-	"github.com/qaml-ai/run/camelfsd/internal/refs"
 )
+
+const checkpointSnapshot = "checkpoint.img"
 
 func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 	for _, entry := range entries {
@@ -26,7 +26,7 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 		if _, err := os.Stat(filepath.Join(dir, "session")); err != nil {
 			return fmt.Errorf("mount %s requires storage host cleanup: %w", id, err)
 		}
-		if err := os.Remove(filepath.Join(dir, pristineImage)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(filepath.Join(dir, checkpointSnapshot)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
@@ -41,48 +41,22 @@ func (m *Manager) recoverSessions(entries []fs.DirEntry) error {
 			return err
 		}
 		var state struct {
-			JobID, Lineage, Root, Tree, Dest, Image, State, DM string
-			Fence                                              *refs.Fence
-			Apply                                              *struct{ Files int }
-			Parent                                             refs.Value
-			Snapshot                                           int
-			Promoted, Warm                                     bool
+			Mount
+			BaseTree *string
 		}
 		if err := json.Unmarshal(raw, &state); err != nil {
 			return err
 		}
-		v := Mount{
-			Request: Request{JobID: state.JobID, Lineage: state.Lineage, Tree: state.Tree, Fence: state.Fence},
-			Dest:    state.Dest, Image: state.Image, State: state.State, Root: state.Root, Parent: state.Parent,
-			Snapshot: state.Snapshot, Promoted: state.Promoted, Warm: state.Warm, mu: new(sync.Mutex),
+		if state.BaseTree == nil {
+			return fmt.Errorf("legacy mount %s must be drained before upgrading", id)
 		}
-		if v.JobID != id || v.Dest != filepath.Join(dir, "image.img") || v.Image != v.Dest || state.DM != "" || !validMountFence(v.Fence) {
+		v := state.Mount
+		v.BaseTree = *state.BaseTree
+		if v.JobID != id || v.Dest != filepath.Join(dir, "image.img") || v.Image != v.Dest || !validMountFence(v.Fence) {
 			return fmt.Errorf("invalid session mount %s", id)
 		}
-		r, err := m.mountRoot(context.Background(), v.Lineage, v.Root)
-		if err != nil {
-			return err
-		}
-		if err := m.recoverBaseline(&v, true); err != nil {
-			return err
-		}
-		v.needsBaseline = r.Tree != v.Tree && (state.Apply == nil || state.Apply.Files > 0)
-		m.protect(id, v.Root)
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			return err
-		}
-		for _, file := range files {
-			if strings.HasPrefix(file.Name(), "baseline-") && strings.HasSuffix(file.Name(), ".img") {
-				if err := os.Remove(filepath.Join(dir, file.Name())); err != nil {
-					return err
-				}
-			}
-			if strings.HasPrefix(file.Name(), "snap-") && strings.HasSuffix(file.Name(), ".img") {
-				number, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(file.Name(), "snap-"), ".img"))
-				v.Snapshot = max(v.Snapshot, number)
-			}
-		}
+		v.mu = new(sync.Mutex)
+		v.needsBaseline = v.BaseTree != v.Tree
 		m.mounts[id] = &v
 	}
 	return nil
@@ -99,27 +73,36 @@ func (m *Manager) SessionStreams(ctx context.Context, id, path string, uid int, 
 	if v.streams != nil {
 		v.streams.close()
 	}
-	r, err := m.mountRoot(ctx, v.Lineage, v.Root)
+	info, err := os.Stat(v.Dest)
 	if err != nil {
 		return err
 	}
-	return m.listenStreams(ctx, v, path, r.Tree, r.VirtualSize, apply, uid)
+	return m.listenStreams(ctx, v, path, v.BaseTree, info.Size(), apply, uid)
 }
 
-// AdoptCheckpoint installs an already-published checkpoint after an
-// interrupted CAS. The snapshot and root were published before the CAS.
-func (m *Manager) AdoptCheckpoint(ctx context.Context, id, commit, tree, root string) error {
+// AdoptCheckpoint resumes a checkpoint whose fenced CAS already succeeded.
+func (m *Manager) AdoptCheckpoint(id, commit, tree string) error {
 	v := m.lookup(id)
 	if v == nil {
 		return os.ErrNotExist
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if _, err := m.mountRoot(ctx, v.Lineage, root); err != nil {
-		return err
+	return m.adoptCheckpoint(v, commit, tree)
+}
+
+func (m *Manager) adoptCheckpoint(v *Mount, commit, tree string) error {
+	v.CachedImage, v.Promoted = "", false
+	imageID := checkpointImage(v.Lineage, commit)
+	if _, err := os.Stat(m.image(imageID)); err == nil {
+		if err := m.Refs.RecordTree(v.Lineage, tree, imageID); err != nil {
+			slog.Warn("checkpoint_image_index_failed", "job", v.JobID, "error", err)
+		} else {
+			v.CachedImage, v.Promoted = imageID, true
+		}
 	}
-	m.protect(id, root)
-	v.Parent.Commit, v.Parent.Tree, v.Parent.Root = commit, tree, root
-	v.Tree, v.Root, v.Promoted = tree, root, true
+	v.Parent.Commit, v.Parent.Tree = commit, tree
+	v.Tree, v.BaseTree = tree, tree
+	v.needsBaseline = false
 	return m.save(v)
 }

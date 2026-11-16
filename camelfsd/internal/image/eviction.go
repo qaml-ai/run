@@ -65,7 +65,7 @@ func (m *Manager) sweep() error {
 	return e
 }
 
-// The sweep protects promoted images pinned by live mounts.
+// The sweep protects images while they are published or cloned.
 func (m *Manager) evict(used, low int64, usage ...func() (int64, error)) (freed int64, err error) {
 	m.sweepMu.Lock()
 	defer m.sweepMu.Unlock()
@@ -78,7 +78,7 @@ func (m *Manager) evict(used, low int64, usage ...func() (int64, error)) (freed 
 		}
 	}
 	var candidates []victim
-	e := filepath.WalkDir(filepath.Join(m.Data, "images"), func(p string, d fs.DirEntry, e error) error {
+	e := filepath.WalkDir(imageDir(m.Data), func(p string, d fs.DirEntry, e error) error {
 		if os.IsNotExist(e) {
 			return nil
 		}
