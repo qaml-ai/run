@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CHECKPOINT_MS, ComputerMeter, SETTLE_MARGIN_MS, CONTAINER_RATES, holdRate, secondRate, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
-import { ContainerProvider, operate, type ProviderMeter } from "../src/computers/provider.ts";
 import { AlarmWatch } from "./alarm-watch.ts";
 
 const payer = { tenant: "t1", agent: "a1" };
@@ -100,51 +99,6 @@ test("a charge that fails stays unsettled and is retried once, never lost or dou
   assert.equal(await h.meter.settled(), true);
 });
 
-test("the provider asks the meter before every start and reports use and stops", async () => {
-  const events: string[] = [];
-  let refuse = false;
-  const meter: ProviderMeter = {
-    async admit() { events.push("admit"); if (refuse) throw new Error("credit spent"); },
-    async started(instance) { events.push(`started:${instance}`); },
-    async used() { events.push("used"); },
-    async stopped() { events.push("stopped"); },
-  };
-  const starts: unknown[] = [];
-  const container = {
-    running: false,
-    images: { workspace: "img" } as Record<string, string>,
-    start(options?: ContainerStartupOptions) { starts.push(options); this.running = true; },
-    async setInactivityTimeout() {},
-    async destroy() { this.running = false; },
-    async snapshotContainer() { return { id: "s1", size: 1 }; },
-    async exec(): Promise<ExecProcess> {
-      const empty = () => new ReadableStream({ start(c) { c.close(); } });
-      return { stdin: null, stdout: empty(), stderr: empty(), pid: 1, isPty: false, exitCode: Promise.resolve(0), output: async () => { throw new Error("unused"); }, kill() {}, resize() {} };
-    },
-  };
-  const data = new Map<string, unknown>();
-  const store = { async get<T>(key: string) { return data.get(key) as T | undefined; }, async put(key: string, value: unknown) { data.set(key, value); } };
-  const provider = new ContainerProvider(container, store, { image: "workspace", instance: "standard-2" }, Date.now, undefined, meter);
-  await operate(provider, { op: "exec", argv: ["true"] });
-  assert.deepEqual(events, ["admit", "started:standard-2", "used", "used"]);
-  events.length = 0;
-  await operate(provider, { op: "sleep" });
-  // Sleep saves the disk first: a paid operation on the running container, then the stop.
-  assert.deepEqual(events, ["admit", "used", "stopped"]);
-  refuse = true;
-  events.length = 0;
-  await assert.rejects(operate(provider, { op: "exec", argv: ["true"] }), /credit spent/);
-  assert.deepEqual(events, ["admit"], "a refused start starts nothing");
-  assert.equal(starts.length, 1);
-  // A running computer is admitted again on every operation: a refusal stops further use.
-  refuse = false;
-  await operate(provider, { op: "exec", argv: ["true"] });
-  refuse = true;
-  events.length = 0;
-  await assert.rejects(operate(provider, { op: "exec", argv: ["true"] }), /credit spent/);
-  assert.deepEqual(events, ["admit"]);
-});
-
 test("a session in constant use is charged every checkpoint, and continues as a new one", async () => {
   const h = harness();
   await h.meter.started(payer, "lite");
@@ -187,33 +141,6 @@ test("failed charges back off; a charge the database refuses for good is dropped
   await gone.meter.stopped();
   assert.equal(await gone.meter.settled(), true, "an agent that no longer exists is not retried forever");
   assert.equal(gone.charges.length, 0);
-});
-
-test("a container that does not come up is destroyed and reported: no blank computer passes for a restore", async () => {
-  const events: string[] = [];
-  const meter: ProviderMeter = { async admit() {}, async started() { events.push("started"); }, async used() {}, async stopped() { events.push("stopped"); } };
-  const container = {
-    running: false,
-    images: { workspace: "img" } as Record<string, string>,
-    start() { this.running = true; },
-    async setInactivityTimeout() {},
-    async destroy() { this.running = false; },
-    async snapshotContainer() { return { id: "s1", size: 1 }; },
-    async exec(): Promise<ExecProcess> {
-      return { stdin: null, stdout: null, stderr: null, pid: 1, isPty: false, exitCode: Promise.resolve(1), output: async () => { throw new Error("unused"); }, kill() {}, resize() {} };
-    },
-  };
-  const data = new Map<string, unknown>([["computer:image", "img-before"]]);
-  const store = { async get<T>(key: string) { return data.get(key) as T | undefined; }, async put(key: string, value: unknown) { data.set(key, value); } };
-  const provider = new ContainerProvider(container, store, undefined, Date.now, undefined, meter);
-  const handle = { id: "s1", name: "base", size: 1, image: "img", createdAt: Date.now(), expiresAt: Date.now() + 1000 };
-  await assert.rejects(provider.startFrom(handle, AbortSignal.timeout(1000)), /did not start/);
-  assert.equal(container.running, false);
-  assert.equal(data.get("computer:image"), "img-before", "the lineage is not rewritten for a restore that failed");
-  assert.equal(data.has("snapshot:base"), false, "no refreshed handle for a restore that failed");
-  await assert.rejects(operate(provider, { op: "exec", argv: ["true"] }), /did not start/);
-  assert.equal(container.running, false, "a first start whose readiness failed leaves nothing running");
-  assert.deepEqual(events, ["started", "stopped", "started", "stopped"]);
 });
 
 const near = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);

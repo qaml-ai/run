@@ -10,9 +10,6 @@ import { HttpError } from "./errors.ts";
 import { inputView } from "./decision-inputs.ts";
 import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
 import { repairInputMirrors } from "./agent-input-mirror.ts";
-import { computerOwner, NO_COMPUTER, SHARED_COMPUTER_CONTROL } from "../../../src/core/computer-share.ts";
-import { withSql as shareSql } from "./postgres.ts";
-import { computerSetup } from "./computers/agent-setup.ts";
 import { forkComputerInto } from "./computers/child-fork.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -23,8 +20,6 @@ import { withMoneyMetrics } from "./money-metrics.ts";
 import { type Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, object, body } from "./validation.ts";
-import { computerRequestParameters } from "./computers/tool.ts";
-import { compile } from "@earendil-works/pi-schema";
 import { humanInputView, HumanInputs } from "./human.ts";
 import { answerList } from "./input-policy.ts";
 import { handleAgentFileRequest, handleAgentFilesRoute } from "./files.ts";
@@ -325,8 +320,8 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
             );
           await this.delegation.destroy();
           await this.harness.session().abort();
-          // The native computer (container, snapshot handles, charged time), once no tool call can start it again.
-          await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
+          const retired = await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
+          if (retired?.settled === false) throw new HttpError(503, "Computer usage settlement is pending");
           await this.cancelHumanInputs();
           // Settling still reads configuration and writes durable charge receipts.
           // Keep it available until every accepted operation has drained.
@@ -362,9 +357,8 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
         await this.clearComputerAttached();
         // The fork route: its snapshot takes the serial queue itself (forkChildComputers), so it runs outside it.
         if (input.operation === "fork")
-          return json(await forkComputerInto(this.env, conf.tenantId, conf.id, input.args.agents, {
-            connectionOnly: !!input.args.connectionOnly, setup: async () => computerSetup(this.env, conf),
-            serialize: run => this.serializeComputer(run) }), 201);
+          return json(await forkComputerInto(this.env, conf.tenantId, conf.id, input.args.agents,
+            run => this.serializeComputer(run), input.args.byConnection === true), 201);
         return await this.serializeComputer(async () => {
           const service = new ComputerService(this.env, conf.tenantId, undefined, {
             agent: conf.id, clearComputerAttached: () => this.clearComputerAttached(),
@@ -420,25 +414,6 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
         return json({
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
         });
-      }
-      if (
-        path === "/__test/computer-fork" &&
-        this.env.TEST_HOOKS === "1" &&
-        request.method === "POST"
-      ) {
-        // Fork this agent's native computer into other agents' computers with the fork RPCs (native-fork.ts), as
-        // delegation does: one snapshot for the batch, each child seeded from it.
-        const namespace = this.env.COMPUTER_CONTAINERS;
-        if (!namespace) return json({ error: "Optional computer is not configured" }, 501);
-        const input = (await body(request)) as { batch: string; into: string[] };
-        const conf = await this.config(), parent = this.ctx.id.toString();
-        if (!(await this.hasNativeComputer(undefined, invocation))) return json({ error: NO_COMPUTER, code: "NO_COMPUTER" }, 409);
-        const answer = await namespace.getByName(parent).forkSnapshot(input.batch, await computerSetup(this.env, conf));
-        if (!answer.ok) return json(answer, 409);
-        const at = Date.now();
-        await Promise.all(input.into.map((agent) =>
-          namespace.getByName(this.env.AGENTS.idFromName(agent).toString()).seed(answer.snapshot, { parent, agent: conf.id, batch: input.batch, at })));
-        return json({ snapshot: answer.snapshot, children: input.into });
       }
       if (
         path === "/__test/settlement-state" &&
@@ -779,25 +754,6 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
         return request.headers.get("upgrade")?.toLowerCase() === "websocket"
           ? await this.webSocketEvents(invocation, request)
           : await this.events(invocation, request);
-      }
-      if (path === "/computer" && request.method === "POST") {
-        const inputBody = await body(request, 1100 * 1024);
-        if (!compile(computerRequestParameters).check(inputBody))
-          throw new BadRequest("Invalid computer request");
-        const { provider, ...input } = inputBody;
-        const namespace = this.env.COMPUTER_CONTAINERS;
-        if (!namespace)
-          return json({ error: "Optional computer is not configured" }, 501);
-        return json(
-          await (async () => {
-            const conf = await this.config();
-            // No computer, no container: an agent without one is refused before anything starts.
-            if (!(await this.hasNativeComputer(undefined, invocation))) throw new HttpError(409, NO_COMPUTER, "NO_COMPUTER");
-            const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id), invocation);
-            if (owner !== conf.id && ["sleep", "restore"].includes(input.op)) throw new BadRequest(SHARED_COMPUTER_CONTROL);
-            return namespace.getByName(this.env.AGENTS.idFromName(owner).toString()).operate(input as never, await computerSetup(this.env, conf));
-          })(),
-        );
       }
       if (
         path === "/files" ||

@@ -16,7 +16,7 @@ Postgres or use customer credentials. All dates below are UTC.
 | Agent objects | `AGENTS` / `CamelAgent` | Durable journal, runs, schedules, human input, hibernatable sockets |
 | Tenant objects | `TENANTS` / `TenantAdmission` | Admission and counters |
 | Repos | `CAMELFS_URL` and `CAMELFS_NOTIFY_KEY` (required) | Tier origin and signing key for ref-moved notifications |
-| Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | One container per agent through `ctx.container` (`durable_object` scheduling policy, `standard-1`); image `workspace` from `computers/Dockerfile` |
+| Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | Retained while legacy containers stop and settle usage. The deploy still builds `computers/Dockerfile`. |
 | Code-mode binding | `CODEMODE_SANDBOX` | External `CodemodeSandbox` class on `camelrun-pilot-codemode` |
 | Sandbox objects | `SANDBOX` / `CodemodeSandbox` | Local binding in the sandbox Worker |
 | Static assets | `PUBLIC_ASSETS` | Bundled API documentation and console assets |
@@ -592,15 +592,9 @@ token revocation, spend-limit removal and unchanged balance and ledger.
 The complete integration results are in
 `measurements/workers-rebase-suites.json`.
 
-The native Docker computer case had an explicit skip on Sprites at the time,
-and forcing it failed on that same assertion on both `e6e9a8a7` and upstream
-`9de3ed55` (the Sprites then had no Docker at all: `docker` exited 127). The
-Ubuntu Workers integration CI job requires Docker and does not allow a skip.
-That Sprite result is not evidence that the native Docker case passed. Since
-2026-11-06 the skip is gone: `scripts/sprite-test` sets Docker up on every pool
-sprite and the case passes there with `WORKERS_REQUIRE_DOCKER=1`; see
-[README.md, "Docker on a sprite"](README.md#docker-on-a-sprite) for what that
-takes (runc 1.1, and a sidecar without the kernel's missing `xt_socket`).
+The native Docker computer case had an explicit skip on Sprites in that
+historical run. Subsequent integration runs required Docker for the old
+provider. The old native Docker fixture has since been retired.
 
 The previous full comparison on `76f56096` had 25 Workers failures: three
 JavaScript timeouts and 22 Python missing-result or timeout failures. None
@@ -612,27 +606,51 @@ or weakened assertion was added here.
 The broader source suite also reproduced its existing UI gzip budget failure
 on base `20443b49`: 9,729 bytes exceeds 9,216. No UI source changed in this work.
 
+## Retire legacy Cloudflare computers
+
+The first rollout removes the old agent `computer` tool and its operation API.
+The pilot keeps the `ContainerComputer` class, Docker image and legacy egress
+entrypoint through the drain. Existing alarms stop the container, settle its
+meter using the original charge IDs, and release any native admission slot.
+Agent deletion also waits for this settlement. Deleting the class would erase
+unsettled charges in the namespace. The pilot deploy still needs Docker to
+build the retained image.
+
+Before deploying the drain-only version, check whether anyone still needs data
+from a legacy container or snapshot. Export those files using the currently
+deployed version or arrange recovery before the old operations are retired.
+
+Before deleting the class:
+
+1. Confirm the drain-only version serves all traffic. Enumerate every old
+   object ID using the [Durable Objects namespace API](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/subresources/objects/methods/list/).
+   Follow the cursor and include objects without stored data.
+2. From an operator-controlled temporary Worker with a Durable Object binding
+   to that namespace (`class_name` and `script_name`), call `await COMPUTER_CONTAINERS.get(COMPUTER_CONTAINERS.idFromString(id)).drain()`
+   for each listed ID. Record failures and retry until every object returns
+   `settled: true`. Check Worker logs for `computer_charge_dropped` during the
+   drain and reconcile any affected receipts before deleting the namespace.
+3. Verify the legacy deployment has no live container instances. Run both
+   queries against pilot Postgres and reconcile any returned rows.
+
+   ```sql
+   select id, state from computer_leases where provider = 'container' and state <> 'closed';
+   select s.tenant, s.machine from computer_slots s
+     where s.machine like 'native:%'
+        or exists (select 1 from computer_connections c where c.id = s.machine and c.provider = 'container');
+   ```
+
+4. Cloudflare snapshots expire 30 days after their latest restore. After the
+   drain checks pass and required disks have been exported, remove the temporary
+   Worker, the legacy
+   binding, container config, image, egress entrypoint and class export. Append
+   a new Wrangler migration with `"deleted_classes": ["ContainerComputer"]`
+   without editing migration `v2`.
+
 ## Limits and rollback
 
-The native computer is on: `COMPUTER_CONTAINERS` binds `ContainerComputer`
-(migration `v2`), one container per agent that its Durable Object starts, execs
-into, snapshots and stops through `ctx.container` under Cloudflare's
-`durable_object` scheduling policy. The code picks the image (`COMPUTER_IMAGE`,
-the `workspace` entry of the `images` map, which a deploy builds from
-`computers/Dockerfile` and pins by digest) and the size (`COMPUTER_INSTANCE`,
-`standard-1`) at each start; a container stops after 60 s idle. Agents that have
-a computer (their definition declares `computer`, or they were given one as a
-sub-agent) and code mode see the `computer` tool; its container time is charged as platform usage
-(`computer` kind, `cloudflare/standard-1`, at cost: about $0.038 an hour idle, $0.074 busy).
-A deploy needs Docker on the deploying machine. A
-new image digest makes earlier snapshots unusable (they are refused, not
-restored); snapshots expire 30 days after creation or their latest restore.
-Managed computers (`/v1/computers` with runtime credentials), external computer
-provider credentials and the PDF parser container stay off. To turn the native
-computer off, remove the binding and container entry and add a migration with
-`"deleted_classes": ["ContainerComputer"]`. Channels and voice transport
-remain outside this port's parity scope. The fake provider is public and has no
-upstream credentials; never use it as a real model proxy.
+Channels and voice transport remain outside this port's parity scope. The fake
+provider is public and has no upstream credentials. Use it for tests.
 
 List versions and roll back API code:
 

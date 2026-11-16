@@ -5,7 +5,6 @@ import { BadRequest, body } from "./validation.ts";
 import { HumanInputs } from "./human.ts";
 import { Directory } from "./control.ts";
 import { attachChildComputers, forkChildComputers, releaseChildComputers } from "./computers/child-fork.ts";
-import { computerSetup } from "./computers/agent-setup.ts";
 import { Delegation } from "./delegation.ts";
 import { ownWorkflow } from "./workflow-routes.ts";
 import type { WorkflowEnv } from "./workflow-object.ts";
@@ -230,10 +229,9 @@ export function createDelegation(this: AgentRuntime): Delegation {
       const conf = await this.config();
       await attachChildComputers(this.env, conf.tenantId, parent, child, computer);
     },
-    hasComputer: async () => this.hasNativeComputer(),
     forkComputer: async (batch) => {
       const conf = await this.config();
-      return forkChildComputers(this.env, conf.tenantId, conf.id, batch, async () => computerSetup(this.env, conf), run => this.serializeComputer(run));
+      return forkChildComputers(this.env, conf.tenantId, conf.id, batch, run => this.serializeComputer(run));
     },
     releaseComputer: async (child) => {
       const conf = await this.config();

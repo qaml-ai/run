@@ -15,19 +15,19 @@ export type ComputerEnv = ControlEnv & AttachmentHintEnv & RemoteBindings & { CO
 const id = () => `cmp_${crypto.randomUUID().replaceAll('-', '')}`;
 /** A fork snapshot's sealed reference: the snapshot and the provider account's credentials that drop it, bound to its row. */
 type SnapshotSecret = { snapshot: string; ref: SnapshotRef; provider: string; credentials: Credentials };
-const input = z.object({ agent: z.string().min(1), provider: z.enum([...PROVIDERS, 'container']), credentials: z.record(z.string(), z.string()).optional(),
+const input = z.object({ agent: z.string().min(1), provider: z.enum(PROVIDERS), credentials: z.record(z.string(), z.string()).optional(),
   subagents: z.boolean().optional(), forkable: z.boolean().optional(), leaseSeconds: z.number().int().min(60).max(86400).optional(), dailySeconds: z.number().int().min(60).max(86400).optional() }).strict();
 export function connectionInput(value: unknown, managedEnabled: boolean) {
   const parsed = input.safeParse(value);
   if (!parsed.success) throw new HttpError(400, 'Invalid computer connection');
-  const connection = parsed.data, managed = connection.credentials === undefined && ['lambda','boat','container'].includes(connection.provider);
+  const connection = parsed.data, managed = connection.credentials === undefined && ['lambda','boat'].includes(connection.provider);
   if (managed) {
     if (!managedEnabled) throw new HttpError(403, 'Managed computers are not available on this runtime');
     const leaseSeconds = connection.leaseSeconds ?? 7200, dailySeconds = connection.dailySeconds ?? 86400;
     if (leaseSeconds > 28800 || dailySeconds < leaseSeconds) throw new HttpError(400, 'Invalid computer time limits');
     return { ...connection, credentials: {}, leaseSeconds, dailySeconds, managed: true };
   }
-  if (connection.provider === 'lambda' || connection.provider === 'container') throw new HttpError(400, 'This provider uses runtime credentials');
+  if (connection.provider === 'lambda') throw new HttpError(400, 'This provider uses runtime credentials');
   const expected = connection.provider === 'tunnel' ? ['apiKey','url'] : ['apiKey'];
   const credentials = connection.credentials;
   if (!credentials || expected.some(k => !credentials[k]?.trim()) || Object.keys(credentials).some(k => ![...expected, ...(connection.provider === 'browserbase' ? ['projectId'] : [])].includes(k)) || Object.values(credentials).some(v => v.length > 16000)) throw new HttpError(400, `Credentials require ${expected.join(', ')}`);
@@ -89,16 +89,22 @@ export class ComputerService {
     if (envelope.connection !== c.id) throw new Error('Computer credential binding mismatch');
     return envelope.credentials;
   }
-  async tools(agent: string, invocation?: AgentInvocation) { const c = await this.hasConnection(agent, invocation); return c ? [...COMMON, ...(isBrowserProvider(c.provider) ? BROWSER : SHELL)] : []; }
+  async tools(agent: string, invocation?: AgentInvocation) {
+    const c = await this.hasConnection(agent, invocation);
+    if (!c) return [];
+    if (c.provider === 'container') return COMMON.filter(tool => tool.name !== 'computer_start');
+    return [...COMMON, ...(isBrowserProvider(c.provider) ? BROWSER : SHELL)];
+  }
   private async driver(c: any): Promise<ComputerDriver> { return this.factory(this.env, this.tenant, c.agent, c.provider, await this.credentials(c)); }
   /**
    * A fork snapshot of `parent`'s connection for one call (`batch`): taken once and shared by every child of that call,
    * as src/computers/service.ts does. Runs in the parent agent DO's serial queue, so it never races the parent's own
-   * computer calls. Answers undefined when the parent has no connection (its native computer may still fork).
+   * computer calls. Answers undefined when the parent has no connection.
    */
   async forkSnapshot(parent: string, batch: string): Promise<{ id: string; connection: string; provider: string; at: number } | undefined> {
     const c = await this.hasConnection(parent);
     if (!c) return undefined;
+    if (c.provider === 'container') throw forkUnsupported(c.provider);
     const existing = await withSql(this.env, sql => forkRows.batch(sql, c.id, batch));
     if (existing?.state === 'ready') return { id: existing.id, connection: c.id, provider: existing.provider, at: Number(existing.created_at) };
     if (isBrowserProvider(c.provider) || (!c.managed && !forkableProvider(c.provider))) throw forkUnsupported(c.provider);
@@ -158,14 +164,20 @@ export class ComputerService {
   private async stop(c: any, lease: any) {
     if (!lease || lease.state === 'closed') return;
     await withSql(this.env, sql => sql.query("update computer_leases set state='closing',cleanup_at=$2 where id=$1", [lease.id, Date.now()]));
-    if (!lease.reference) {
+    if (!lease.reference && c.provider !== 'container') {
       await withSql(this.env, sql => sql.query("update computer_leases set state='uncertain',error='Creation outcome unknown; confirm provider cleanup' where id=$1", [lease.id]));
       throw new HttpError(409, 'Computer creation outcome unknown; confirm provider cleanup');
     }
-    try { await (await this.driver(c)).close(JSON.parse(await unseal(lease.reference, this.env))); }
+    try {
+      // The retired adapter named its DO after the lease, even if allocation never persisted a reference.
+      const ref = c.provider === 'container' ? { id: lease.id } : JSON.parse(await unseal(lease.reference, this.env));
+      await (await this.driver(c)).close(ref);
+    }
     catch { await withSql(this.env, sql => sql.query("update computer_leases set error='Cleanup failed; retrying' where id=$1", [lease.id])); throw new HttpError(502, 'Computer cleanup failed; it will be retried'); }
-    await withSql(this.env, sql => sql.query("update computer_leases set state='closed',closed_at=$2,reference=null,error=null where id=$1", [lease.id, Date.now()]));
-    await withSql(this.env, sql => releaseComputer(sql, this.tenant, c.id));
+    await transaction(this.env, async sql => {
+      await sql.query("update computer_leases set state='closed',closed_at=$2,reference=null,error=null where id=$1", [lease.id, Date.now()]);
+      await releaseComputer(sql, this.tenant, c.id);
+    });
   }
   /** Mutations run inside the owning agent DO's serial queue. Never hold PG over provider I/O. */
   async call(agent: string, name: string, args: Record<string, any>, key: string) {
@@ -177,6 +189,8 @@ export class ComputerService {
         throw new HttpError(409, SHARED_COMPUTER_STOPPED, 'COMPUTER_STOPPED');
       throw error;
     }
+    if (c.provider === 'container' && name !== 'computer_status' && name !== 'computer_stop')
+      throw new HttpError(410, 'Cloudflare Containers have been retired');
     if (c.agent !== agent && ['computer_start', 'computer_stop'].includes(name)) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
     if (c.agent !== agent) key = `${agent}:${key}`;
     if (!(await this.tools(agent)).some(t => t.name === name)) throw new HttpError(400, 'Tool not supported by this computer');
@@ -267,7 +281,7 @@ export class ComputerService {
   }
   async remove(agent: string) { const c = await this.connection(agent); if (c.agent !== agent) throw new HttpError(409, SHARED_COMPUTER_CONTROL); return this.detach(c); }
   async nextDeadline(agent: string, invocation?: AgentInvocation): Promise<number | null> {
-    const row = await withSql(this.env, async sql => (await sql.query("select min(case when l.state='active' then l.expires_at when l.state='starting' then l.created_at+180000 else l.cleanup_at+300000 end) as due from computer_leases l join computer_connections c on c.id=l.connection where c.tenant=$1 and c.agent=$2 and (l.state in ('active','starting') or (l.state in ('closing','uncertain') and l.reference is not null))", [this.tenant, agent])).rows[0], invocation);
+    const row = await withSql(this.env, async sql => (await sql.query("select min(case when c.provider='container' and l.state in ('active','starting') then l.created_at when l.state='active' then l.expires_at when l.state='starting' then l.created_at+180000 else l.cleanup_at+300000 end) as due from computer_leases l join computer_connections c on c.id=l.connection where c.tenant=$1 and c.agent=$2 and (l.state in ('active','starting') or (l.state in ('closing','uncertain') and (l.reference is not null or c.provider='container')))", [this.tenant, agent])).rows[0], invocation);
     return row?.due == null ? null : Number(row.due);
   }
   async sweepAgent(agent: string) {
@@ -275,7 +289,7 @@ export class ComputerService {
     if (!c) return;
     if (c.revoked === null || c.revoked || c.purged_at || c.agent_expires_at && Number(c.agent_expires_at) <= Date.now()) { await this.detach(c); return; }
     const lease = await withSql(this.env, sql => latest(sql, c.id));
-    if (lease && lease.state !== 'closed' && (Number(lease.expires_at) <= Date.now() || ['closing','uncertain'].includes(lease.state) || lease.state === 'starting' && Number(lease.created_at) <= Date.now()-180000)) await this.stop(c, lease);
+    if (lease && lease.state !== 'closed' && (c.provider === 'container' || Number(lease.expires_at) <= Date.now() || ['closing','uncertain'].includes(lease.state) || lease.state === 'starting' && Number(lease.created_at) <= Date.now()-180000)) await this.stop(c, lease);
   }
   /** The directory is already revoked when deletion reaches its owning DO. */
   async removeAgent(agent: string) {
@@ -326,6 +340,7 @@ export async function inheritComputer(env: ComputerEnv, tenant: string, parent: 
     if (computer?.seed && !seed) throw new HttpError(409, "The fork's snapshot is gone; fork again");
     const c = (await sql.query(seed ? "select * from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%' for share" : 'select * from computer_connections where tenant=$1 and agent=$2 and subagents for share', [tenant, seed ? seed.connection : owner])).rows[0];
     if (!c) { if (seed) throw new HttpError(409, "The parent's computer connection was removed; nothing to fork"); return; }
+    if (c.provider === 'container') { if (seed) throw forkUnsupported(c.provider); return; }
     return { c, seed, agents: [child] };
   });
 }
@@ -383,7 +398,7 @@ export async function dropTenantSnapshots(env: ComputerEnv, tenant: string) {
 
 /** Cron repairs missed alarms without holding a database connection during RPC. */
 export async function sweepComputers(env: ComputerEnv) {
-  const rows = await withSql(env, async sql => (await sql.query("select distinct c.tenant,c.agent from computer_connections c left join agents a on a.id=c.agent and a.tenant=c.tenant left join computer_leases l on l.connection=c.id and l.state<>'closed' where c.agent not like 'removed:%' and (a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1 or l.expires_at<=$1 or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state in ('closing','uncertain') and l.reference is not null)) limit 100", [Date.now()])).rows);
+  const rows = await withSql(env, async sql => (await sql.query("select distinct c.tenant,c.agent from computer_connections c left join agents a on a.id=c.agent and a.tenant=c.tenant left join computer_leases l on l.connection=c.id and l.state<>'closed' where c.agent not like 'removed:%' and (a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1 or l.expires_at<=$1 or c.provider='container' and l.state in ('active','starting') or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state in ('closing','uncertain') and (l.reference is not null or c.provider='container'))) limit 100", [Date.now()])).rows);
   let failed = 0;
   for (const row of rows) {
     try {

@@ -1,6 +1,6 @@
 // A local Workers runtime for workflow evals: the Workers app of a checkout (default: this one) with workflows on, real
-// models, and native computers on local Docker. It derives a config from
-// backends/workers/wrangler.computers.test.jsonc into backends/workers/.wrangler/evals/
+// models. It derives a config from
+// backends/workers/wrangler.test.jsonc into backends/workers/.wrangler/evals/
 // (gitignored), with:
 // - vars: real models (TEST_MODEL off, camelrun/default) and AGENT_WORKFLOW_TENANTS for the local tenant;
 // - a throwaway .dev.vars (a random AGENT_SECRETS_KEY, so the tenant can store a provider key);
@@ -35,12 +35,11 @@ mkdirSync(out, { recursive: true });
 
 // Wrangler's JSONC: comments and trailing commas out, then JSON.
 const jsonc = (text: string) => JSON.parse(text.replace(/("(?:\\.|[^"\\])*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (_m, string) => string ?? "").replace(/,(\s*[}\]])/g, "$1"));
-const config = jsonc(readFileSync(join(workers, "wrangler.computers.test.jsonc"), "utf8"));
+const config = jsonc(readFileSync(join(workers, "wrangler.test.jsonc"), "utf8"));
 config.main = join(workers, config.main);
 config.vars = { ...config.vars, TEST_MODEL: "0", MODEL: "camelrun/default", AGENT_WORKFLOW_TENANTS: "camelrun-proto-local" };
 delete config.vars.TEST_HOOKS;
-for (const container of config.containers ?? []) for (const image of Object.values(container.images ?? {}) as { dockerfile?: string }[]) image.dockerfile = join(workers, "computers/Dockerfile");
-if (config.assets?.directory) config.assets.directory = join(workers, config.assets.directory);
+delete config.assets;
 writeFileSync(join(out, "wrangler.jsonc"), JSON.stringify(config, null, 2));
 if (!existsSync(join(out, ".dev.vars"))) writeFileSync(join(out, ".dev.vars"), `AGENT_SECRETS_KEY=${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
 

@@ -186,7 +186,7 @@ test("a crash between steps: a new object over the same storage picks up where t
 });
 
 test("every Wrangler config migrates WorkflowObject and WorkflowResults before repos, adds CamelfsUsagePoller, and deletes retired classes", () => {
-  const configs = ["wrangler.jsonc", "wrangler.test.jsonc", "wrangler.pilot.jsonc", "wrangler.computers.test.jsonc"];
+  const configs = ["wrangler.jsonc", "wrangler.test.jsonc", "wrangler.pilot.jsonc"];
   for (const name of configs) {
     const config = new Function(`return (${readFileSync(new URL(`../${name}`, import.meta.url), "utf8")});`)() as {
       durable_objects: { bindings: { name: string; class_name: string; script_name?: string }[] };

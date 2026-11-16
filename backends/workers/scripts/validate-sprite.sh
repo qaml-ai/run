@@ -83,15 +83,6 @@ finish() {
 trap finish EXIT
 # scripts/sprite-test-core.sh installs every package-lock.json in the tree (this one included) before the command.
 [[ -x node_modules/.bin/wrangler ]] || { echo "backends/workers/node_modules is not installed; run this through scripts/sprite-test" >&2; exit 1; }
-if [[ $mode == integration || $mode == compat ]]; then
-  # scripts/sprite-test sets Docker up on every pool sprite (docker_up in scripts/sprite-test-core.sh; README.md, "Docker on a sprite"), so the
-  # native computer tests run here as on CI, which allows them no skip.
-  if ! docker info >/dev/null 2>&1 || ! docker buildx version >/dev/null 2>&1; then
-    echo "Docker with Buildx is not running on this sprite; run this through scripts/sprite-test, which sets it up." >&2
-    exit 1
-  fi
-  export WORKERS_REQUIRE_DOCKER=1
-fi
 if [[ $mode == python || $mode == contract ]]; then
   if [[ ! -x "$HOME/.workers-python/bin/python3" ]]; then
     python3 -m venv "$HOME/.workers-python"

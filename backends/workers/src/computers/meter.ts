@@ -1,12 +1,6 @@
 import type { AgentInvocation } from "../agent-invocation.ts";
-import type { InstanceType } from "./provider.ts";
-import type { ComputerSetup } from "./egress.ts";
-
-/** The setup a runtime-made call (a managed session, a fork) gives a computer: no settings, only who pays. */
-export const payerSetup = (payer: { tenant: string; agent: string }): ComputerSetup => ({
-  settings: {},
-  identity: { issuer: "", claims: payer } as unknown as ComputerSetup["identity"],
-});
+export const INSTANCE_TYPES = ["lite", "standard-1", "standard-2", "standard-3", "standard-4"] as const;
+export type InstanceType = (typeof INSTANCE_TYPES)[number];
 
 /**
  * Cloudflare Containers' list rates (Workers Paid, after included usage): per vCPU-second, per GiB-second of memory
