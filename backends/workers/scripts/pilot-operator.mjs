@@ -99,8 +99,7 @@ export async function withTemporaryWorker({ prefix, entry: entrySource, bindings
 
 /** Credentials stay in process memory. The temporary Worker holds only a hash,
  * is limited to tenantIds, expires after one hour, and is deleted in finally.
- * callback results must not include credentials unless the caller is the CTO's
- * interactive, one-time key command. */
+ * Keep any credentials returned by the application out of output and logs. */
 export async function withPilotOperator(options, callback) {
   const tenantIds = options.tenantIds ?? options.tenants;
   if (!Array.isArray(tenantIds) || !tenantIds.length || tenantIds.length > 100 || tenantIds.some(id => !/^pilot-[a-z0-9-]{1,33}$/.test(id)))

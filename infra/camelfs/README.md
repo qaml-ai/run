@@ -227,7 +227,7 @@ This matches the C view's baseline (~$3.1–3.7k/month with the ref CAS as one c
 transaction with a quota counter) and camel-fs.md §1.13's shape (the two DynamoDB write lines dominate; tree
 segments cut them ~3× at 100×). Per API write: ≈ 19.75 µ$ (objects 17.5 + ref 1.25 + tier 1).
 
-## Commands (the lead applies, in order; Miguel approved the apply on 2026-11-13)
+## Initial AWS deployment
 
 Needs AWS credentials for `904534089871`, `tofu` (>= 1.10), `jq`, `curl`, `openssl`, and Docker with buildx for the
 image. No Cloudflare token: DNS is done in the Cloudflare dashboard (or API) by hand from the outputs. Every

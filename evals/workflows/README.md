@@ -170,9 +170,9 @@ eval viewer of its own, so reporting is JSON plus markdown, as `scripts/eval-age
 Never on a production tenant: the harness refuses `run.camelai.com`, `agents.camelai.dev` and other hosts it does not
 know (`--allow-host` for another dev runtime). Keys come from the environment only and are never written to results.
 
-- **The pilot** (`https://run-pilot.camelai.dev`): `AGENT_RUNTIME_TOKEN` is a pilot tenant API key. An operator mints
-  one with `node backends/workers/scripts/pilot-admin-key.mjs` in their own terminal (see `backends/workers/PILOT.md`)
-  and keeps it in a password manager. The pilot's platform OpenRouter key pays for model calls.
+- **The pilot** (`https://run-pilot.camelai.dev`): `AGENT_RUNTIME_TOKEN` is a pilot tenant API key. Mint one with
+  `node backends/workers/scripts/pilot-admin-key.mjs /path/outside/repo/pilot-admin.key`.
+  The command writes the key to the private file. The pilot's platform OpenRouter key pays for model calls.
 - **A local Workers dev runtime** with workflows and native computers on local Docker (`local-runtime.ts`):
 
   ```sh

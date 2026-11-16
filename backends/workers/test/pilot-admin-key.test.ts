@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 // The operator entry point is plain Node JavaScript; importing never runs its CLI.
 // @ts-ignore JavaScript operator helper has no declaration file.
-import { setupPilotAdmin } from "../scripts/pilot-admin-key.mjs";
+import { setupPilotAdmin, writePilotAdminKey } from "../scripts/pilot-admin-key.mjs";
 
 test("pilot admin credit failure revokes only the new key and leaves a retryable tenant", async () => {
   const calls: string[] = [];
@@ -36,4 +39,42 @@ test("pilot admin never retries a permanently deleted tenant identifier", async 
   let calls = 0;
   await assert.rejects(setupPilotAdmin({ async request() { calls++; return { tenants: 0, deleted_tenants: 1 }; } }), /cannot be reused/);
   assert.equal(calls, 1);
+});
+
+const fixtureToken = { id: "test-key-id", token: "unused-test-placeholder" };
+const fixtureOperator = { async request(path: string) {
+  if (path.startsWith("/pilot/inspect")) return { tenants: 1 };
+  if (path.endsWith("/tokens")) return fixtureToken;
+  return {};
+} };
+type Provision = (operator: typeof fixtureOperator) => Promise<unknown>;
+
+test("admin key output is private and an existing path cannot mint a second key", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "pilot-key-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "keys", "pilot-admin.key");
+  const result = await writePilotAdminKey(file, (options: unknown, provision: Provision) => {
+    assert.deepEqual(options, { tenantIds: ["pilot-admin"] });
+    return provision(fixtureOperator);
+  });
+  assert.deepEqual(result, { tenant: "pilot-admin", keyId: fixtureToken.id });
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  await assert.rejects(writePilotAdminKey(file, () => assert.fail("operator must not run")), { code: "EEXIST" });
+  assert.equal(await readFile(file, "utf8"), `${fixtureToken.token}\n`);
+});
+
+test("admin key output is removed after setup failure and retained after bootstrap cleanup failure", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "pilot-key-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "pilot-admin.key");
+  const setupFailure = new Error("bootstrap setup failed");
+  await assert.rejects(writePilotAdminKey(file, () => { throw setupFailure; }), setupFailure);
+  await assert.rejects(stat(file), { code: "ENOENT" });
+
+  const cleanupFailure = new Error("bootstrap cleanup failed");
+  await assert.rejects(writePilotAdminKey(file, async (_options: unknown, provision: Provision) => {
+    await provision(fixtureOperator);
+    throw cleanupFailure;
+  }), cleanupFailure);
+  assert.equal(await readFile(file, "utf8"), `${fixtureToken.token}\n`);
 });
