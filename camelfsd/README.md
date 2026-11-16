@@ -376,6 +376,26 @@ After a checkpoint, same-host reuse took 0.587 s and 0.591 s respectively.
 Five bundle GETs served the 10,000 small base files, and one range GET served
 the edited file. The locator reads took 2.374 s of the 4.720 s fresh rebuild.
 
+### Paged locator queries
+
+The pilot Firecracker test paired the bundled BatchGet baseline
+(`a27cc35b`) with the paged Query build (`55e6f5ba`) on the same
+`m8id.xlarge` host and guest image. Both arms restored the same files from
+S3 bundles and rebuilt the checkpoint tree using a fresh daemon data directory.
+The 50 MiB row reports the median of three pairs. The 500 MiB row reports
+one pair.
+
+| Workspace | First cold start, BatchGet → Query | Fresh rebuild, BatchGet → Query | Rebuild locator lookup, BatchGet → Query |
+| --- | ---: | ---: | ---: |
+| 50 MiB | 4.878 s → 2.476 s | 4.662 s → 2.607 s | 2.370 s → 0.243 s |
+| 500 MiB | 7.410 s → 5.454 s | 7.604 s → 6.035 s | 2.371 s → 0.235 s |
+
+Each restore found the 10,000 requested locators in three query pages.
+The checkpoint rebuild also read the locator for the edited file's previous
+content. Both arms made the same number of S3 payload requests. The 50 MiB
+same-host checkpoint reuse medians were 0.591 s with BatchGet and 0.590 s
+with Query.
+
 ## Host and API roles
 
 `camelfsd host --compute` runs the session VM host and accepts tier pushes
