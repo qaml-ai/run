@@ -257,6 +257,29 @@ excludes concurrent daemons. Startup discards incomplete local snapshots and
 recovers fenced mounts in the current format. Stop guests before running
 `camelfsd cleanup --data DIR` to clear old mount state and legacy `cache/`.
 
+### Firecracker cold restore timings
+
+On November 16, 2026, `TestKVMColdSessionBench` ran both implementations on the
+pilot's `m8id.xlarge` with the same guest image, XFS instance store and S3
+region. The shared-root control was `3d98b268` with the same benchmark fixture
+as the local-only candidate `b0087db4`. A fresh daemon and cache represented
+a new host. Each trial checkpointed
+an edit and checked its exact bytes in a same-host VM and again after a cold
+restore. The timings include VM creation through the first shell command.
+
+| Workspace | Files | Cold with shared roots | Cold from Git tree | Added cold time | Same-host after checkpoint, shared / local |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 50 MiB | 10,010 | 1.391 s | 8.026 s | 6.635 s | 0.594 s / 0.594 s |
+| 500 MiB | 10,460 | 2.714 s | 11.235 s | 8.521 s | 0.618 s / 0.601 s |
+| 2,000 MiB | 11,960 | 11.865 s | 20.677 s | 8.812 s | 0.659 s / 0.642 s |
+| 7,900 MiB | 17,860 | 43.062 s | 44.168 s | 1.106 s | 0.824 s / 0.796 s |
+
+The first three rows show medians from three alternating pairs. The 7,900 MiB
+row shows one result per implementation, including a control rerun with a longer
+test cleanup deadline. The shared control published 31,687 chunks in the
+background over 161.65 s for the original tree. The two 7,900 MiB cold restores
+finished within the Worker's current 60 s Bash startup deadline.
+
 ### Rotating compute hosts
 
 1. Roll out large-blob tree restore support to every host that can hold a ref.
@@ -268,9 +291,16 @@ recovers fenced mounts in the current format. Stop guests before running
    Return the host to placement, then rotate the next host.
 
 To roll back a host, drain it the same way and restart the previous binary with
-the same `--data`. Keep legacy S3 roots, chunk objects and permissions through
-the rollout and rollback window. Older hosts and the tier continue to support
-the optional `root` field.
+the same `--data`. Older hosts and the tier continue to support the optional
+`root` field.
+
+After all hosts have rotated and passed a live checkpoint and cold restore,
+retiring the shared workspace objects requires zero live ref roots. Retire the
+legacy `refs.db`, baseline snapshots and workspace `.img` files together with
+the lineage's `tr/`, `r/` and `c/` keys. Keep the guest `.ext4` files and the
+canonical Git objects. In a versioned bucket, the lifecycle retains noncurrent
+versions. After retiring the old cache and current shared workspace objects, the
+previous binary can roll back with a fresh derived cache and rebuild from Git.
 
 ## Host and API roles
 
