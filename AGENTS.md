@@ -111,7 +111,7 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
   by vsock at ~200 MB/s, then guest disk writes); L131 (small-file packing, design first); convert
   `tests/camelfs-refs-tier.ts` from the `aws` CLI to direct DynamoDB Local requests, as #1204 did for
   `tests/camelfs-contract.test.ts`.
-- Waiting on the owner: the 50 ms write target (L89), deleting the unused pilot secret `CAMELFS_API_TOKEN` (L30),
+- Open pilot work includes the 50 ms write target (L89), removing the unused `CAMELFS_API_TOKEN` secret (L30),
   and the camel-bots voice canary.
 
 **Doing the work**
@@ -122,9 +122,7 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
   `infra/camelfs/deploy.sh` (the tier's image) and `infra/camelfs/apply.sh` (its settings; plan with
   `PLAN_ONLY=1`). A new guest image is added to `guest_images` (keep the old one), rolled to the host with
   `infra/job-hosts/kvm/host-setup.sh`, then flipped in the pilot's config. `scripts/smoke-compute.ts` checks
-  the whole path. These need the owner's AWS and Cloudflare access; never create new cloud resources without
-  the owner.
-- Model-facing text (prompts, tool descriptions) and money paths get a line-by-line human review.
+  the whole path. Use AWS and Cloudflare credentials scoped to the deployment environment.
 
 ## Where things are written down
 

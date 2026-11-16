@@ -2,8 +2,8 @@
 
 The internal API is **https://run-pilot.camelai.dev**. This is a persistent,
 team-only experiment in Cloudflare account `85bbd288051330fb51ee1c86031a299b`.
-It is independent of production camelRun on AWS. Do not point it at production
-Postgres or use customer credentials. All dates below are UTC.
+It runs independently of production camelRun on AWS with pilot Postgres and
+pilot credentials. All dates below are UTC.
 
 ## Deployment
 
@@ -78,15 +78,13 @@ scripts/pilot-deploy --migrations-only   # apply pending migrations; deploy no W
 The deploy script then creates
 missing named R2/Queue resources, deploys the sandbox and fake model before the
 API, and creates missing signing/encryption secrets without displaying values.
-Repeat deploys preserve those secrets and set the measured Hyperdrive limit to
-16 connections. `PILOT_ORIGIN_CONNECTION_LIMIT` overrides that value after an
-operator reviews database capacity. Never rotate `AGENT_SECRETS_KEY` casually:
-it encrypts stored provider credentials. Never put secrets in `vars`.
+Repeat deploys preserve those secrets. `AGENT_SECRETS_KEY` encrypts stored
+provider credentials. Store secret values in secret bindings.
 
-The CTO subsequently approved a larger pilot database and a 100-connection
-Hyperdrive origin limit, as measured below. An approved redeploy must set
-`PILOT_ORIGIN_CONNECTION_LIMIT=100` to preserve that setting; the script's
-default remains 16. The larger-database measurement did not redeploy the API.
+The larger pilot database was measured with a 100-connection Hyperdrive origin
+limit. Set `PILOT_ORIGIN_CONNECTION_LIMIT=100` on redeploy to preserve that
+setting. The script defaults to 16 when the variable is unset. The measurement
+used the existing API deployment.
 
 The platform model secret was created by the CTO on 2026-11-06. Deployments
 now require the real Secrets Store binding. No fallback manifest is used.
@@ -478,7 +476,7 @@ in PostgreSQL. The measured IAD Hyperdrive pool had three connections despite
 the configured global limit of 16. The results still reject 500 concurrent turns
 on this database.
 
-For a next CTO-approved capacity trial, about 64 origin connections backed by
+For the next capacity trial, about 64 origin connections backed by
 80–100 database slots is a reasonable starting point. That is a rough fourfold
 capacity hypothesis for the 250-turn load. At 500 concurrent turns, matching the
 15-second fake-model delay requires 33.3 turns/s, about eight times the measured
@@ -616,15 +614,15 @@ Agent deletion also waits for this settlement. Deleting the class would erase
 unsettled charges in the namespace. The pilot deploy still needs Docker to
 build the retained image.
 
-Before deploying the drain-only version, check whether anyone still needs data
-from a legacy container or snapshot. Export those files using the currently
-deployed version or arrange recovery before the old operations are retired.
+The existing pilot's legacy container and snapshot data is disposable. When
+using this procedure in an environment with files to retain, export them while
+the version that supports the old operations still serves traffic.
 
 Before deleting the class:
 
-1. Confirm the drain-only version serves all traffic and the legacy data
-   export above is complete. With a pilot-scoped `CLOUDFLARE_API_TOKEN` in the
-   environment, run the inventory from the repository root:
+1. Verify the drain-only version serves all traffic. With a pilot-scoped
+   `CLOUDFLARE_API_TOKEN` in the environment, run the inventory from the
+   repository root:
 
    ```sh
    node backends/workers/scripts/pilot-drain-computers.mjs
@@ -653,10 +651,9 @@ Before deleting the class:
    ```
 
 4. Cloudflare snapshots expire 30 days after their latest restore. After the
-   drain checks pass and required disks have been exported, remove the legacy
-   binding, container config, image, egress entrypoint and class export. Append
-   a new Wrangler migration with `"deleted_classes": ["ContainerComputer"]`
-   without editing migration `v2`.
+   drain checks pass, remove the legacy binding, container config, image,
+   egress entrypoint and class export. Append a Wrangler migration with
+   `"deleted_classes": ["ContainerComputer"]` to preserve migration history.
 
 ## Limits and rollback
 
