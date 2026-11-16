@@ -305,6 +305,13 @@ workspace images, the old index, and the old baseline directory. An inventory
 comparison verified all 6,766 other current S3 keys were still present. S3
 retains noncurrent versions under the bucket's 35-day lifecycle.
 
+After account deletion, a separate inventory matched 20 deleted load-test
+lineages to 20 ref rows holding only lease fences. With zero live VMs in either
+account, the pilot removed 164 current Git objects (209,739,204 bytes) from
+those lineages. A fresh S3 listing found zero current keys under either
+account's prefixes. The existing 35-day lifecycle covers the noncurrent
+versions, and the lease fences remain in DynamoDB.
+
 ### Rotating compute hosts
 
 1. Roll out large-blob tree restore support to every host that can hold a ref.
