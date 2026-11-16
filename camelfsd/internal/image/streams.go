@@ -98,7 +98,7 @@ func (m *Manager) entries(ctx context.Context, lineage, t string) ([]objects.Ent
 }
 
 // v0-limitation: L53
-func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from string, apply bool, uid int) error {
+func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from string, workspaceBytes int64, apply bool, uid int) error {
 	var old, next []objects.Entry
 	if apply {
 		var e error
@@ -122,6 +122,9 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from strin
 		for _, f := range next {
 			p, ok := prev[f.Path]
 			if !ok || p.SHA1 != f.SHA1 || p.Mode != f.Mode {
+				if f.Size > workspaceBytes || f.Mode == "120000" && f.Size > 4096 {
+					return fmt.Errorf("apply blob exceeds workspace or symlink size")
+				}
 				ops = append(ops, wire.Op{Path: f.Path, Op: "put", Mode: f.Mode, Size: f.Size})
 			}
 			delete(prev, f.Path)
@@ -277,13 +280,11 @@ func (m *Manager) sendApply(c net.Conn, lineage, job string, a applyTrees, entri
 		byPath[f.Path] = f
 	}
 
-	if err := sendApplyOps(ctx, c, store.ForLineage(m.Store, lineage), byPath, ops, applyInflightBytes); err != nil {
+	if err := sendApplyOps(ctx, c, store.ForLineage(m.Store, lineage), byPath, ops, m.Data, applyInflightBytes); err != nil {
 		return err
 	}
 	return wire.Send(c, wire.Op{End: true, Files: a.Files, Bytes: a.Bytes})
 }
-
-const applyByteLimit int64 = 256 << 20
 
 // Reserve before fetching and release after sending. Each apply stream holds
 // at most 256 MiB of blob data, including reads and writes in progress.
@@ -295,7 +296,55 @@ type applyFetch struct {
 	data chan []byte
 }
 
-func sendApplyOps(parent context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, budget int64) error {
+func sendApplyOps(ctx context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, tempDir string, budget int64) error {
+	start := 0
+	for i, op := range ops {
+		if op.Op != "put" || op.Mode == "120000" || op.Size <= budget {
+			continue
+		}
+		// Drain the prefetched operations on either side of a large blob
+		// separately so only one large download is staged at a time.
+		if err := sendBufferedApplyOps(ctx, w, source, byPath, ops[start:i], budget); err != nil {
+			return err
+		}
+		if err := sendLargeApplyOp(ctx, w, source, byPath[op.Path].SHA1, op, tempDir); err != nil {
+			return err
+		}
+		start = i + 1
+	}
+	return sendBufferedApplyOps(ctx, w, source, byPath, ops[start:], budget)
+}
+
+func sendLargeApplyOp(ctx context.Context, w io.Writer, source store.Store, sha1 string, op wire.Op, tempDir string) error {
+	file, err := store.OpenVerifiedBlobFile(ctx, source, tempDir, sha1, op.Size)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := wire.Send(w, op); err != nil {
+		return err
+	}
+	buf := make([]byte, wire.DataMax)
+	for left := op.Size; left > 0; {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data := buf[:min(int64(len(buf)), left)]
+		if _, err := io.ReadFull(file, data); err != nil {
+			return err
+		}
+		if err := wire.Write(w, data); err != nil {
+			return err
+		}
+		left -= int64(len(data))
+	}
+	return nil
+}
+
+func sendBufferedApplyOps(parent context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, budget int64) error {
+	if len(ops) == 0 {
+		return context.Cause(parent)
+	}
 	ctx, cancel := context.WithCancelCause(parent)
 	depth := store.Depth(source)
 	slots := make(chan struct{}, depth)
@@ -317,7 +366,7 @@ func sendApplyOps(parent context.Context, w io.Writer, source store.Store, byPat
 			item := applyFetch{op: op}
 			if op.Op == "put" {
 				entry := byPath[op.Path]
-				if entry.Size > applyByteLimit || entry.Size > budget {
+				if entry.Size > budget {
 					cancel(fmt.Errorf("apply blob exceeds byte limit"))
 					return
 				}

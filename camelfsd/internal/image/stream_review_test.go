@@ -3,6 +3,7 @@ package image
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -179,9 +180,10 @@ func TestApplySendsInOrderWhileFetchingAhead(t *testing.T) {
 	defer client.Close()
 	client.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan error, 1)
+	tempDir := t.TempDir()
 	go func() {
 		defer server.Close()
-		done <- sendApplyOps(ctx, server, store.WithDepth(stub, 2), entries, ops, applyInflightBytes)
+		done <- sendApplyOps(ctx, server, store.WithDepth(stub, 2), entries, ops, tempDir, applyInflightBytes)
 	}()
 
 	// The third fetch starts before the first finishes, even with only two GET slots.
@@ -222,9 +224,10 @@ func TestApplyReservesBytesUntilSent(t *testing.T) {
 	defer client.Close()
 	client.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan error, 1)
+	tempDir := t.TempDir()
 	go func() {
 		defer server.Close()
-		done <- sendApplyOps(ctx, server, stub, entries, ops, budget)
+		done <- sendApplyOps(ctx, server, stub, entries, ops, tempDir, budget)
 	}()
 	started := map[string]bool{}
 	for range 2 {
@@ -254,6 +257,111 @@ func TestApplyReservesBytesUntilSent(t *testing.T) {
 	readApplyOp(t, client, ops[2], contents[2])
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+type zeroApplyReader struct{}
+
+func (zeroApplyReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestApplyRestoresBlobLargerThanPrefetchBudget(t *testing.T) {
+	const size = applyInflightBytes + 31
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", size)
+	if _, err := io.CopyN(h, zeroApplyReader{}, size); err != nil {
+		t.Fatal(err)
+	}
+	largeSHA := fmt.Sprintf("%x", h.Sum(nil))
+	smallSHA := store.GitHash("blob", []byte("small"))
+	stub := applyStoreStub{open: func(_ context.Context, key string) (io.ReadCloser, error) {
+		switch key {
+		case "l/o/" + largeSHA:
+			return io.NopCloser(io.LimitReader(zeroApplyReader{}, size)), nil
+		case "l/o/" + smallSHA:
+			return io.NopCloser(strings.NewReader("small")), nil
+		default:
+			return nil, fmt.Errorf("unexpected open: %s", key)
+		}
+	}}
+	entries := []objects.Entry{
+		{Path: "a", SHA1: smallSHA, Mode: "100644", Size: 5},
+		{Path: "b", SHA1: largeSHA, Mode: "100755", Size: size},
+		{Path: "c", SHA1: smallSHA, Mode: "100644", Size: 5},
+	}
+	var ops []wire.Op
+	for _, entry := range entries {
+		ops = append(ops, wire.Op{Path: entry.Path, Op: "put", Mode: entry.Mode, Size: entry.Size})
+	}
+	tempDir := t.TempDir()
+	m := &Manager{Config: Config{Data: tempDir, ApplyMax: 30 * time.Second}, Store: stub}
+	server, client := net.Pipe()
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(m.ApplyMax))
+	done := make(chan error, 1)
+	go func() {
+		defer server.Close()
+		done <- m.sendApply(server, "l", "large", applyTrees{Files: 3, Bytes: size + 10}, entries, ops)
+	}()
+	for range 3 {
+		var frame any
+		if err := wire.JSON(client, &frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readApplyOp(t, client, ops[0], "small")
+	readApplyOp(t, client, ops[1], "")
+	h.Reset()
+	fmt.Fprintf(h, "blob %d\x00", size)
+	for left := size; left > 0; {
+		b, err := wire.Read(client, wire.DataMax)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int64(len(b)) != min(left, int64(wire.DataMax)) {
+			t.Fatalf("unexpected apply frame length: %d (%d remaining)", len(b), left)
+		}
+		h.Write(b)
+		left -= int64(len(b))
+	}
+	if got := fmt.Sprintf("%x", h.Sum(nil)); got != largeSHA {
+		t.Fatalf("wrong streamed blob: %s, want %s", got, largeSHA)
+	}
+	readApplyOp(t, client, ops[2], "small")
+	readApplyOp(t, client, wire.Op{End: true, Files: 3, Bytes: size + 10}, "")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if files, err := os.ReadDir(tempDir); err != nil || len(files) != 0 {
+		t.Fatalf("apply temp directory = %v (%v)", files, err)
+	}
+}
+
+func TestApplyRejectsUnverifiedLargeBlob(t *testing.T) {
+	const data = "payload"
+	entry := objects.Entry{SHA1: store.GitHash("blob", []byte(data)), Size: int64(len(data))}
+	op := wire.Op{Path: "large", Op: "put", Mode: "100644", Size: entry.Size}
+	for _, tc := range []struct{ name, body string }{
+		{"short", "payloa"},
+		{"long", "payload!"},
+		{"wrong hash", "changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := applyStoreStub{open: func(_ context.Context, _ string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(tc.body)), nil
+			}}
+			tempDir := t.TempDir()
+			var w bytes.Buffer
+			err := sendApplyOps(t.Context(), &w, stub, map[string]objects.Entry{op.Path: entry}, []wire.Op{op}, tempDir, 4)
+			if err == nil || err.Error() != "corrupt blob" || w.Len() != 0 {
+				t.Fatalf("apply emitted %d bytes with error %v", w.Len(), err)
+			}
+			if files, err := os.ReadDir(tempDir); err != nil || len(files) != 0 {
+				t.Fatalf("apply temp directory = %v (%v)", files, err)
+			}
+		})
 	}
 }
 
