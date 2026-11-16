@@ -140,7 +140,8 @@ test("reconciliation survives a lost host, includes BYOK cost, and runs concurre
   const id = await begin(attempts);
   await attempts.event("payg","agent",true,true,{ type:"generation",id,generation:"gen-recovery-fixture" });
   await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1",[id]);
-  const fetcher: typeof fetch = async (_url, init) => {
+  const fetcher: typeof fetch = async function (this: unknown, _url, init) {
+    assert.equal(this, undefined, "Workers fetch rejects a ModelAttempts receiver");
     assert.equal(new Headers(init?.headers).get("Authorization"),`Bearer ${KEY}`);
     return Response.json({data:{ id:"gen-recovery-fixture", total_cost:0.01,is_byok:true,upstream_inference_cost:0.2,generation_time:150,cancelled:true,provider_responses:[{status:499}],native_tokens_prompt:100,native_tokens_completion:30 }});
   };
