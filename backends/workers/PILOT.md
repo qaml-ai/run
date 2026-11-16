@@ -30,7 +30,7 @@ pilot credentials. All dates below are UTC.
 | Model secret | `PILOT_OPENROUTER_KEY` | Account secret `CAMELRUN_PILOT_OPENROUTER_KEY`, store `c8c66b0210e64900864182073dcd5e09` |
 | Runtime secrets | `API_TOKEN`, `FILE_SIGNING_SECRET`, `AGENT_SECRETS_KEY` | Stable authentication, signing and encryption keys; values never displayed |
 
-The verified API version is `af633fd5-e5e3-48d3-b16b-0cf0f046687d` from `4158a2ec`.
+The verified API version is `364b144c-229c-4ee6-a3c8-7c56c344ae79` from `f91932d8` (#1216).
 The sandbox version is `9f062010-7d7e-4959-ba33-e5cc62e11414`. The fake provider
 version is `57f7387b-cb4d-431e-83c7-e715282e12ed`.
 
@@ -671,9 +671,10 @@ migration.
   the same version, and the final receipt recorded an unchanged checkpoint.
   Two settled usage rows matched 100.489 billed seconds and 4,607 micro-USD in
   the ledger. Both disposable tenants and their credentials were deleted.
-- Deletion of the two retired load-test accounts cleared 1,121 agent
-  registrations, 1,446 legacy volumes, and three API tokens. Twenty ref
-  rows retained only lease-epoch fences. Fresh listings found zero live
+- Both retired load-test accounts finished deletion, leaving zero owned
+  agents, legacy volumes, or API tokens. Before cleanup, they had 1,121
+  agents, 1,446 legacy volumes, and three API tokens. Twenty ref rows
+  retained only lease-epoch fences. Fresh listings found zero current
   objects under the accounts' R2 and S3 prefixes.
 - The account-deletion check retained 15,681 settled accounting records and
   ten older OpenRouter attempts with unresolved provider usage. Seven had

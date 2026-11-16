@@ -152,8 +152,8 @@ not a public shape.
 **Inline files.** `job({ files })` and the agent's `job_run({ files })` (a job with a few inline files and no repo)
 become **one path**: the runtime commits the inline files onto a scratch `job/<id>` branch of the caller's repo (the
 workflow's repo, keyed `workflow:<id>`, or the agent's workspace) and the job runs at that ref like any other; the
-guest `files` op and `WireJob.files` go. Default (wf-delegation's recommendation), Miguel may override. During the
-cut-over a plain string `at` still means a volume id, until the deletion phase removes volumes.
+guest `files` op and `WireJob.files` go. During the cut-over a plain string `at` still means a volume id,
+until the deletion phase removes volumes.
 
 **The agent's `job_run` tool** gains the same `at: { repo?, ref?, version? }` and `commit` as `job()`, with `repo`
 defaulting to the agent's own workspace, and its model-facing text changes from "`at` (a volume id) starts it with
