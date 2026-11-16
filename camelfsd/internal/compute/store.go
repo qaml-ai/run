@@ -116,6 +116,13 @@ func readVM(i item) VM {
 	if saved := i.object("lastCheckpoint"); saved != nil {
 		checkpoint = &Checkpoint{Version: saved.text("version"), Tree: saved.text("tree"), At: saved.number("at")}
 	}
+	var receipt *CheckpointReceipt
+	if saved := i.object("checkpointReceipt"); saved != nil {
+		id := saved.text("id")
+		if changed, ok := saved["changed"].(*types.AttributeValueMemberBOOL); id != "" && ok {
+			receipt = &CheckpointReceipt{ID: id, Changed: changed.Value}
+		}
+	}
 	return VM{
 		CreateRequest: req, Phase: Phase(i.text("phase")), CreatedAt: i.number("createdAt"), LeaseDeadline: deadline,
 		Host: i.text("host"), HostEpoch: i.number("hostEpoch"), PlacedAt: i.timestamp("placedAt"),
@@ -123,7 +130,7 @@ func readVM(i item) VM {
 		LastListedAt: i.timestamp("lastListedAt"), LastActivityAt: i.timestamp("lastActivityAt"), StopRequestedAt: i.timestamp("stopRequestedAt"), EndedAt: i.timestamp("endedAt"),
 		StopCheckpoint: i.flag("stopCheckpoint"), StopReason: EndCode(i.text("stopReason")), Code: EndCode(i.text("code")), Reason: i.text("reason"),
 		EndVersion: i.text("endVersion"), CheckpointError: i.text("checkpointError"),
-		FirstExecAt: i.timestamp("firstExecAt"), execs: i.set("execs"), LastCheckpoint: checkpoint,
+		FirstExecAt: i.timestamp("firstExecAt"), execs: i.set("execs"), LastCheckpoint: checkpoint, CheckpointReceipt: receipt,
 		RequestedVersion: i.text("requestedVersion"), RequestedDeadline: i.number("requestedDeadline"),
 		Tree: i.text("tree"), RefLeaseHolder: i.text("refLeaseHolder"), RefLeaseEpoch: i.number("refLeaseEpoch"),
 		RefLeaseDeadline: i.number("refLeaseDeadline"), RefLeaseReleased: i.flag("refLeaseReleased"), BilledTo: i.number("billedTo"), UsageSeq: i.number("usageSeq"),

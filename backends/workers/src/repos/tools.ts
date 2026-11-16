@@ -14,7 +14,7 @@ import { agentRepoId, workspaceMount, type Mount } from "./mounts.ts";
 import { agentStore, insideRepo, globMatch } from "./agent-store.ts";
 import { setRefToVersion, type WriteInput } from "./write.ts";
 import type { PresentedRepoFile, WrittenRepoFile } from "./agent-files.ts";
-import { heldFileError, normalizeRepoPath, RefHeldError } from "./repo-policy.ts";
+import { heldFileError, isRefHeld, normalizeRepoPath, RefHeldError } from "./repo-policy.ts";
 
 const TOOL_READ_BYTES = 1024 * 1024;
 export function repoTools(
@@ -364,8 +364,7 @@ export function repoTools(
           const sameRef = source.mount.repo === destination.mount.repo && source.v.ref === destination.v.ref;
           if (name === "mv" && !sameRef) {
             // Moving across refs commits the destination first. Check the source lease before that write.
-            const head = await source.v.ctx.repo.ref(source.v.ref);
-            if (head?.holder && head.leaseDeadline !== null && head.leaseDeadline > Date.now()) {
+            if (isRefHeld(await source.v.ctx.repo.ref(source.v.ref))) {
               throw new RefHeldError("held", source.ref);
             }
           }

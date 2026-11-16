@@ -43,8 +43,8 @@ function fixture(t: TestContext) {
   const conf: Config = { tenantId: "t", id: "agent-with-dash", revision: 1, expiresAt: null, config: {} };
   const pending: Promise<unknown>[] = [];
   const errors: string[] = [];
-  const calls: { method: string; path: string; body: any }[] = [];
-  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string }; stopBody?: unknown }>();
+  const calls: { method: string; path: string; body: any; receipt?: string }[] = [];
+  const vms = new Map<string, { phase: string; deadline: number; code?: string; reason?: string; lastCheckpoint?: { version: string; tree: string }; checkpointReceipt?: { id: string; changed: boolean }; stopBody?: unknown }>();
   const results = new Map<string, string>();
   const flags = {
     refusal: undefined as { status: number; code?: string } | undefined,
@@ -69,7 +69,8 @@ function fixture(t: TestContext) {
   function fetchTier(url: URL, init: RequestInit) {
     const method = init.method!;
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ method, path: url.pathname + url.search, body });
+    const receipt = new Headers(init.headers).get("Idempotency-Key") ?? undefined;
+    calls.push({ method, path: url.pathname + url.search, body, receipt });
     const [, , , id, op, execId] = url.pathname.split("/");
     if (!id) {
       assert.equal(new Headers(init.headers).get("Idempotency-Key"), body.id);
@@ -100,6 +101,7 @@ function fixture(t: TestContext) {
       if (flags.checkpointError) return fail(502, "host_unreachable");
       const head = { version: "version", tree: "tree" };
       if (!flags.unchanged) vm.lastCheckpoint = head;
+      if (receipt) vm.checkpointReceipt = { id: receipt, changed: !flags.unchanged };
       return Response.json({ ...head, changed: !flags.unchanged, diff: [] });
     }
     if (method === "GET") {
@@ -157,8 +159,9 @@ test("creates once, reuses its shell, publishes its checkpoint before returning,
   assert.equal(f.calls.filter(c => c.path.endsWith("/checkpoint")).length, 1);
   assert.equal(f.vms.get(first)?.lastCheckpoint?.version, "version");
   // The host refuses unknown trailer keys (camelfsd image.Trailers): the checkpoint body is checkpointBody's shape.
-  const sent = f.calls.find(c => c.path.endsWith("/checkpoint"))!.body;
+  const { body: sent, receipt } = f.calls.find(c => c.path.endsWith("/checkpoint"))!;
   assert.deepEqual(Object.keys(sent).sort(), ["message", "time", "trailers"]);
+  assert.match(receipt ?? "", /^[a-f0-9]{64}$/);
   assert.equal(sent.trailers.kind, "auto");
   assert.equal(sent.trailers.agent, "agent-with-dash");
   assert.equal(sent.trailers.run, "run");
@@ -316,6 +319,7 @@ test("recovers a pending checkpoint through the alarm after the response was los
 
 test("a VM that stopped before the checkpoint is a tool error", async t => {
   const f = fixture(t);
+  await f.run("older");
   f.flags.crash = "/checkpoint";
   await assert.rejects(f.run("pending"), /tier unreachable/);
   f.vms.get(f.row()!.vm_id)!.phase = "ended";
@@ -323,7 +327,28 @@ test("a VM that stopped before the checkpoint is a tool error", async t => {
   assert.equal(result.structuredOutput?.checkpointError, "not_running");
   assert.equal(result.isError, true);
   assert.deepEqual(f.errors, ["not_running"]);
+  assert.equal(f.flags.runs, 2);
+});
+
+for (const unchanged of [false, true]) test(`an ended VM recovers the exact ${unchanged ? "no-op" : "published"} checkpoint after response loss`, async t => {
+  const f = fixture(t);
+  f.flags.unchanged = unchanged;
+  f.flags.crashAfter = "/checkpoint";
+  await assert.rejects(f.run("pending"), /tier unreachable/);
+  const vm = f.row()!.vm_id;
+  f.vms.get(vm)!.phase = "ended";
+  f.restart();
+  await f.ended("idle", vm);
+  // A transient failure reading the receipt keeps the same pending result.
+  f.flags.crash = vm;
+  await assert.rejects(f.replayTool("pending"), /tier unreachable/);
+  const result = await f.replayTool("pending");
+  assert.equal(result.structuredOutput?.stdout, "ok");
+  assert.equal(result.isError, false);
+  assert.deepEqual(f.errors, []);
   assert.equal(f.flags.runs, 1);
+  const receipts = f.calls.filter(call => call.path.endsWith("/checkpoint")).map(call => call.receipt);
+  assert.equal(new Set(receipts).size, 1);
 });
 
 test("replays an ambiguous renewal with the same deadline", async t => {

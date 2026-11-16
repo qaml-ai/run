@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -39,16 +40,24 @@ func (c *Controller) BeginCheckpoint(ctx context.Context, id string) (string, er
 	return owner, err
 }
 
-// FinishCheckpoint records a successful host CAS and releases the slot in one write.
-func (c *Controller) FinishCheckpoint(ctx context.Context, id, owner string, saved *Checkpoint) error {
+// FinishCheckpoint records a successful checkpoint and releases the slot in one write.
+func (c *Controller) FinishCheckpoint(ctx context.Context, id, owner string, saved *Checkpoint, receipt *CheckpointReceipt) error {
 	expr := "REMOVE #checkpointing"
 	values := attrs{":owner": s(owner)}
+	var sets []string
 	if saved != nil {
-		expr = "SET #lastCheckpoint = :saved " + expr
+		sets = append(sets, "#lastCheckpoint = :saved")
 		values[":saved"] = m(attrs{"version": s(saved.Version), "tree": s(saved.Tree), "at": n(saved.At)})
 	}
+	if receipt != nil {
+		sets = append(sets, "#checkpointReceipt = :receipt")
+		values[":receipt"] = m(attrs{"id": s(receipt.ID), "changed": b(receipt.Changed)})
+	}
+	if len(sets) != 0 {
+		expr = "SET " + strings.Join(sets, ", ") + " " + expr
+	}
 	_, err := c.updateVM(ctx, id, "#checkpointing.#owner = :owner", expr, values)
-	if saved == nil && errors.Is(err, ErrCondition) {
+	if saved == nil && receipt == nil && errors.Is(err, ErrCondition) {
 		return nil
 	}
 	return err

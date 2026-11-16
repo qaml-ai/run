@@ -4,6 +4,11 @@ export type Mode = "100644" | "100755" | "120000";
 export type Entry = { path: string; blob: string; mode: Mode; size: number };
 export type Version = { version: string; tree: string; parents: string[]; author: string; message: string; trailers: Record<string, string>; at: number };
 export type Ref = { name: string; version: string; tree: string; root: string | null; owner: string | null; expiresAt: number | null; holder: string | null; leaseEpoch: number; leaseDeadline: number | null; updatedAt: number };
+
+export function isRefHeld(ref: Ref | null) {
+  return !!ref?.holder && ref.leaseDeadline !== null && ref.leaseDeadline > Date.now();
+}
+
 export class RepoError extends Error {
   readonly status: number;
   readonly code: string;
