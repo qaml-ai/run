@@ -12,6 +12,7 @@ EnvironmentFile=/etc/camel/kvm-host.conf
 ExecStart=/bin/sh -ec 'if [ -z "$${TIER_ENROLL_URL:-}" ] || [ -z "$${TIER_HOSTS_ENDPOINT:-}" ]; then \
         echo "camelfsd host is the compute host: set TIER_ENROLL_URL and TIER_HOSTS_ENDPOINT (kvm-host.conf.example)" >&2; exit 1; fi; \
     exec /usr/local/bin/camelfsd host --data /nvme/camelfs --store "$$CAMELFSD_STORE" --region "$$AWS_REGION" \
+        --objects-table "$${CAMELFSD_OBJECTS_TABLE:-}" \
         --virtual-size "$$CAMELFSD_VIRTUAL_SIZE" --compute --tier-enroll-url "$$TIER_ENROLL_URL" \
         --tier-hosts-endpoint "$$TIER_HOSTS_ENDPOINT" --tier-ca "$${TIER_CA:-/etc/camel/tier-ca.pem}" --pool "$$POOL" \
         --images-store "$${CAMELFSD_IMAGES_STORE:?}" --listen-compute "$${LISTEN_COMPUTE:-0.0.0.0:8792}" --slots "$$SLOTS" \

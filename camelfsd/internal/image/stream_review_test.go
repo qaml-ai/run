@@ -183,7 +183,7 @@ func TestApplySendsInOrderWhileFetchingAhead(t *testing.T) {
 	tempDir := t.TempDir()
 	go func() {
 		defer server.Close()
-		done <- sendApplyOps(ctx, server, store.WithDepth(stub, 2), entries, ops, tempDir, applyInflightBytes)
+		done <- sendApplyOps(ctx, server, store.WithDepth(stub, 2), entries, ops, tempDir, applyInflightBytes, new(applyReads))
 	}()
 
 	// The third fetch starts before the first finishes, even with only two GET slots.
@@ -227,7 +227,7 @@ func TestApplyReservesBytesUntilSent(t *testing.T) {
 	tempDir := t.TempDir()
 	go func() {
 		defer server.Close()
-		done <- sendApplyOps(ctx, server, stub, entries, ops, tempDir, budget)
+		done <- sendApplyOps(ctx, server, stub, entries, ops, tempDir, budget, new(applyReads))
 	}()
 	started := map[string]bool{}
 	for range 2 {
@@ -257,6 +257,75 @@ func TestApplyReservesBytesUntilSent(t *testing.T) {
 	readApplyOp(t, client, ops[2], contents[2])
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApplyReadsPackedBlobsInOrderWithOneGet(t *testing.T) {
+	const packedFile = "first"
+	const looseFile = "loose"
+	const target = "folder/target"
+	bundle := packedFile + target
+	bundleKey := "p/" + root.Hash([]byte(bundle))
+	packedSHA := store.GitHash("blob", []byte(packedFile))
+	looseSHA := store.GitHash("blob", []byte(looseFile))
+	linkSHA := store.GitHash("blob", []byte(target))
+	entries := map[string]objects.Entry{
+		"a": {SHA1: packedSHA, Size: int64(len(packedFile))},
+		"b": {SHA1: looseSHA, Size: int64(len(looseFile))},
+		"c": {SHA1: linkSHA, Size: int64(len(target))},
+	}
+	ops := []wire.Op{
+		{Path: "old", Op: "del"},
+		{Path: "a", Op: "put", Mode: "100755", Size: int64(len(packedFile))},
+		{Path: "b", Op: "put", Mode: "100644", Size: int64(len(looseFile))},
+		{Path: "c", Op: "put", Mode: "120000", Size: int64(len(target))},
+	}
+	locations := map[string]store.BundleRef{
+		packedSHA: {Key: bundleKey, SHA256: root.Hash([]byte(packedFile)), Size: int64(len(packedFile)), PackSize: int64(len(bundle))},
+		linkSHA:   {Key: bundleKey, SHA256: root.Hash([]byte(target)), Offset: int64(len(packedFile)), Size: int64(len(target)), PackSize: int64(len(bundle))},
+	}
+	var opened []string
+	source := store.ForLineage(applyStoreStub{open: func(_ context.Context, key string) (io.ReadCloser, error) {
+		opened = append(opened, key)
+		switch key {
+		case "l/" + bundleKey:
+			return io.NopCloser(strings.NewReader(bundle)), nil
+		case "l/o/" + looseSHA:
+			return io.NopCloser(strings.NewReader(looseFile)), nil
+		default:
+			return nil, fmt.Errorf("unexpected open: %s", key)
+		}
+	}}, "l")
+	var output bytes.Buffer
+	var reads applyReads
+	budget := int64(len(bundle) + len(looseFile))
+	if err := sendApplyWindows(t.Context(), &output, source, entries, ops, locations, budget, &reads); err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 2 || opened[0] != "l/"+bundleKey || opened[1] != "l/o/"+looseSHA {
+		t.Fatalf("unexpected object reads: %v", opened)
+	}
+	if reads.packs != 1 || reads.ranges != 0 || reads.bytes != int64(len(bundle)) {
+		t.Fatalf("unexpected packed reads: %+v", reads)
+	}
+	readApplyOp(t, &output, ops[0], "")
+	readApplyOp(t, &output, ops[1], packedFile)
+	readApplyOp(t, &output, ops[2], looseFile)
+	readApplyOp(t, &output, wire.Op{Path: "c", Op: "link", Target: target}, "")
+	if output.Len() != 0 {
+		t.Fatalf("unexpected trailing frames: %d bytes", output.Len())
+	}
+
+	// A delta touching one member reads that member within its own byte
+	// reservation even when the surrounding pack is larger than the budget.
+	opened = nil
+	reads = applyReads{}
+	if err := sendApplyWindows(t.Context(), &output, source, entries, ops[3:], locations, int64(len(target)), &reads); err != nil {
+		t.Fatal(err)
+	}
+	readApplyOp(t, &output, wire.Op{Path: "c", Op: "link", Target: target}, "")
+	if len(opened) != 1 || opened[0] != "l/"+bundleKey || reads.packs != 0 || reads.ranges != 1 || reads.bytes != int64(len(target)) {
+		t.Fatalf("unexpected sparse reads: %v, %+v", opened, reads)
 	}
 }
 
@@ -354,7 +423,7 @@ func TestApplyRejectsUnverifiedLargeBlob(t *testing.T) {
 			}}
 			tempDir := t.TempDir()
 			var w bytes.Buffer
-			err := sendApplyOps(t.Context(), &w, stub, map[string]objects.Entry{op.Path: entry}, []wire.Op{op}, tempDir, 4)
+			err := sendApplyOps(t.Context(), &w, stub, map[string]objects.Entry{op.Path: entry}, []wire.Op{op}, tempDir, 4, new(applyReads))
 			if err == nil || err.Error() != "corrupt blob" || w.Len() != 0 {
 				t.Fatalf("apply emitted %d bytes with error %v", w.Len(), err)
 			}

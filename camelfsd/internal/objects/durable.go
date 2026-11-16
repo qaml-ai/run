@@ -222,6 +222,26 @@ func (r *Repository) BlobInfos(ctx context.Context, l string, ids []string) (map
 		return out, nil
 	}
 
+	var recovered []membership
+	if len(missing) > 1 {
+		locations, err := store.LocateBundles(ctx, r.ForLineage(l).Store, missing)
+		if err != nil {
+			return nil, err
+		}
+		unresolved := missing[:0]
+		for _, id := range missing {
+			location, ok := locations[id]
+			if !ok {
+				unresolved = append(unresolved, id)
+				continue
+			}
+			blob := Blob{SHA1: id, SHA256: location.SHA256, Size: location.Size}
+			recovered = append(recovered, membership{Lineage: l, ID: id, Kind: "blob", Blob: &blob})
+			out[id] = BlobLookup{Blob: blob}
+		}
+		missing = unresolved
+	}
+
 	type lookup struct {
 		membership *membership
 		err        error
@@ -245,7 +265,6 @@ func (r *Repository) BlobInfos(ctx context.Context, l string, ids []string) (map
 	// A concurrent request may already have cached a blob since the first
 	// lookup. Re-query those ids together, and cache newly recovered rows.
 	var recheck []string
-	var recovered []membership
 	for i, id := range missing {
 		result := results[i]
 		switch {
@@ -259,20 +278,8 @@ func (r *Repository) BlobInfos(ctx context.Context, l string, ids []string) (map
 			recheck = append(recheck, id)
 		}
 	}
-	if len(recovered) > 0 {
-		tx, err := r.DB.DB.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		defer tx.Rollback()
-		for _, found := range recovered {
-			if err := cacheMembership(ctx, tx, found); err != nil {
-				return nil, err
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
+	if err := r.cacheMemberships(ctx, recovered); err != nil {
+		return nil, err
 	}
 	for start := 0; start < len(recheck); start += 500 {
 		if err := r.queryBlobInfos(ctx, l, recheck[start:min(start+500, len(recheck))], out); err != nil {
@@ -280,6 +287,23 @@ func (r *Repository) BlobInfos(ctx context.Context, l string, ids []string) (map
 		}
 	}
 	return out, nil
+}
+
+func (r *Repository) cacheMemberships(ctx context.Context, memberships []membership) error {
+	if len(memberships) == 0 {
+		return nil
+	}
+	tx, err := r.DB.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, found := range memberships {
+		if err := cacheMembership(ctx, tx, found); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) queryBlobInfos(ctx context.Context, l string, batch []string, out map[string]BlobLookup) error {

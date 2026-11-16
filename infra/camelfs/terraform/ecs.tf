@@ -34,7 +34,7 @@ locals {
 
   # The daemon's CLI, as merged on files-model. C1 (deployed first): `camelfsd api --listen --data --store --region
   # --token-issuer` with the runtime's JWKS from CAMELFS_JWKS. C2 adds --refs-table (api_features "refs");
-  # --objects-table / --lineages-table come with L74 (api_extra_args until the flags exist). K4c adds
+  # The pilot sets --objects-table through api_extra_args. K4c adds
   # --listen-enroll (the enrollment-only port behind the plain-TLS listener), --listen-hosts (host routes, mutual
   # TLS terminated by the tier, behind the NLB in TCP passthrough) and --hosts-ca (the Private CA the tier issues
   # host certificates and its own from; the key stays in memory, no file flags in production: wf-durable,

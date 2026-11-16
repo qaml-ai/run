@@ -7,7 +7,7 @@
 #
 # Key schemas (fs-infra ↔ proto-block, fs-architect, wf-durable, 2026-11-13; the attribute names below are the
 # whole contract this module imposes — everything else about an item is the daemon's):
-#   objects     lineage (S) + id (S)    id = "<kind>/<sha1>" (t/ trees, k/ commits); b (git bytes), generation
+#   objects     lineage (S) + id (S)    o/<sha1> blob locator with size, SHA-256 and optional bundle range
 #   refs        lineage (S) + name (S)  version, tree, root?, owner, expiresAt?, holder, leaseEpoch, leaseDeadline,
 #                                        updatedAt; the tier checks the move rules first (camel-fs-files.md §6:
 #                                        a new commit's parents[0] is current; a move to a recorded commit is a

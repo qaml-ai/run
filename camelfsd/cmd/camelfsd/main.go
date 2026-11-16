@@ -62,6 +62,9 @@ func host(args []string) error {
 	maxPaths := f.Int64("max-paths-bytes", 64<<20, "checkpoint path byte cap")
 	streamIdle := f.Duration("stream-idle", 30*time.Second, "guest stream idle timeout")
 	applyMax := f.Duration("apply-max", 30*time.Minute, "apply overall cap")
+	ddbEndpoint := f.String("ddb-endpoint", "", "DynamoDB Local endpoint for tests")
+	var bundles bundleFlags
+	bundles.bind(f)
 	compute := addHostComputeFlags(f)
 	if e := f.Parse(args); e != nil {
 		return e
@@ -85,7 +88,7 @@ func host(args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	s, e := store.Open(ctx, *url, *region, *fetchDepth)
+	s, e := bundles.open(ctx, *url, *region, *ddbEndpoint, *fetchDepth)
 	if e != nil {
 		return e
 	}
@@ -94,7 +97,6 @@ func host(args []string) error {
 		return e
 	}
 	defer r.Close()
-	s = store.WithDepth(s, *fetchDepth)
 	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data}, s, r)
 	if e != nil {
 		return e

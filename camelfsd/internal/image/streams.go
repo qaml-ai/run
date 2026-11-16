@@ -281,8 +281,13 @@ func (m *Manager) sendApply(c net.Conn, lineage, job string, a applyTrees, entri
 		byPath[f.Path] = f
 	}
 
-	if err := sendApplyOps(ctx, c, store.ForLineage(m.Store, lineage), byPath, ops, m.Data, applyInflightBytes); err != nil {
+	var reads applyReads
+	if err := sendApplyOps(ctx, c, store.ForLineage(m.Store, lineage), byPath, ops, m.Data, applyInflightBytes, &reads); err != nil {
 		return err
+	}
+	if reads.loose+reads.packs+reads.ranges > 0 {
+		slog.Info("compute_apply_reads", "vm", job, "locatorMs", reads.lookup.Milliseconds(), "looseReads", reads.loose,
+			"packGets", reads.packs, "rangeGets", reads.ranges, "bundleBytes", reads.bytes)
 	}
 	return wire.Send(c, wire.Op{End: true, Files: a.Files, Bytes: a.Bytes})
 }
@@ -292,20 +297,46 @@ func (m *Manager) sendApply(c net.Conn, lineage, job string, a applyTrees, entri
 const applyInflightBytes int64 = 256 << 20
 
 type applyFetch struct {
-	op   wire.Op
-	size int64
-	data chan []byte
+	op     wire.Op
+	size   int64
+	data   chan []byte
+	packed []byte
 }
 
-func sendApplyOps(ctx context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, tempDir string, budget int64) error {
+type applyReads struct {
+	lookup               time.Duration
+	loose, packs, ranges int
+	bytes                int64
+}
+
+func sendApplyOps(ctx context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, tempDir string, budget int64, reads *applyReads) error {
+	var ids []string
+	for _, op := range ops {
+		if op.Op == "put" && op.Size <= store.BundleMaxBlob && (op.Mode == "120000" || op.Size <= budget) {
+			ids = append(ids, byPath[op.Path].SHA1)
+		}
+	}
+	lookupStart := time.Now()
+	locations, err := store.LocateBundles(ctx, source, ids)
+	reads.lookup = time.Since(lookupStart)
+	if err != nil {
+		return err
+	}
+
 	start := 0
 	for i, op := range ops {
-		if op.Op != "put" || op.Mode == "120000" || op.Size <= budget {
+		if op.Op != "put" {
+			continue
+		}
+		if _, packed := locations[byPath[op.Path].SHA1]; !packed {
+			reads.loose++
+		}
+		if op.Mode == "120000" || op.Size <= budget {
 			continue
 		}
 		// Drain the prefetched operations on either side of a large blob
 		// separately so only one large download is staged at a time.
-		if err := sendBufferedApplyOps(ctx, w, source, byPath, ops[start:i], budget); err != nil {
+		if err := sendApplyWindows(ctx, w, source, byPath, ops[start:i], locations, budget, reads); err != nil {
 			return err
 		}
 		if err := sendLargeApplyOp(ctx, w, source, byPath[op.Path].SHA1, op, tempDir); err != nil {
@@ -313,7 +344,105 @@ func sendApplyOps(ctx context.Context, w io.Writer, source store.Store, byPath m
 		}
 		start = i + 1
 	}
-	return sendBufferedApplyOps(ctx, w, source, byPath, ops[start:], budget)
+	return sendApplyWindows(ctx, w, source, byPath, ops[start:], locations, budget, reads)
+}
+
+type applyBundle struct {
+	id   string
+	ref  store.BundleRef
+	full bool
+	data []byte
+}
+
+func sendApplyWindows(ctx context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, locations map[string]store.BundleRef, budget int64, reads *applyReads) error {
+	if len(locations) == 0 {
+		return sendBufferedApplyOps(ctx, w, source, byPath, ops, nil, nil, budget)
+	}
+	for start := 0; start < len(ops); {
+		var packBytes, maxLoose int64
+		var keys []string
+		packs := make(map[string]*applyBundle)
+		end := start
+		for ; end < len(ops); end++ {
+			op := ops[end]
+			if op.Op != "put" {
+				continue
+			}
+			entry := byPath[op.Path]
+			ref, packed := locations[entry.SHA1]
+			if !packed {
+				if entry.Size > budget-packBytes {
+					break
+				}
+				maxLoose = max(maxLoose, entry.Size)
+				continue
+			}
+			if ref.Size != entry.Size || !store.ValidateBundleRef(ref) {
+				return fmt.Errorf("corrupt blob bundle locator")
+			}
+			need := ref.Size
+			pack := packs[ref.Key]
+			if pack != nil {
+				if pack.ref.PackSize != ref.PackSize {
+					return fmt.Errorf("inconsistent blob bundle size")
+				}
+				if pack.full || pack.id == entry.SHA1 {
+					continue
+				}
+				need = ref.PackSize - pack.ref.Size
+			}
+			if need > budget-maxLoose-packBytes {
+				break
+			}
+			packBytes += need
+			if pack == nil {
+				keys = append(keys, ref.Key)
+				packs[ref.Key] = &applyBundle{id: entry.SHA1, ref: ref}
+			} else {
+				pack.full = true
+			}
+		}
+		if end == start {
+			return fmt.Errorf("apply blob exceeds byte limit")
+		}
+
+		// Share each fetched pack (or just one member for a sparse lookup).
+		// Leave the reserved remainder for loose reads and their ordered writes.
+		if len(keys) != 0 {
+			fetchCtx, cancel := context.WithCancelCause(ctx)
+			_ = store.Parallel(fetchCtx, min(store.Depth(source), len(keys)), keys, func(key string) error {
+				pack := packs[key]
+				var err error
+				if pack.full {
+					pack.data, err = store.ReadBundle(fetchCtx, source, key, pack.ref.PackSize)
+				} else {
+					pack.data, err = store.ReadBundleMember(fetchCtx, source, pack.id, pack.ref)
+				}
+				if err != nil {
+					cancel(err)
+				}
+				return err
+			})
+			err := context.Cause(fetchCtx)
+			cancel(nil)
+			if err != nil {
+				return err
+			}
+			for _, pack := range packs {
+				if pack.full {
+					reads.packs++
+				} else if pack.ref.Size > 0 {
+					reads.ranges++
+				}
+			}
+			reads.bytes += packBytes
+		}
+		if err := sendBufferedApplyOps(ctx, w, source, byPath, ops[start:end], locations, packs, budget-packBytes); err != nil {
+			return err
+		}
+		start = end
+	}
+	return context.Cause(ctx)
 }
 
 func sendLargeApplyOp(ctx context.Context, w io.Writer, source store.Store, sha1 string, op wire.Op, tempDir string) error {
@@ -342,7 +471,7 @@ func sendLargeApplyOp(ctx context.Context, w io.Writer, source store.Store, sha1
 	return nil
 }
 
-func sendBufferedApplyOps(parent context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, budget int64) error {
+func sendBufferedApplyOps(parent context.Context, w io.Writer, source store.Store, byPath map[string]objects.Entry, ops []wire.Op, locations map[string]store.BundleRef, packs map[string]*applyBundle, budget int64) error {
 	if len(ops) == 0 {
 		return context.Cause(parent)
 	}
@@ -365,8 +494,21 @@ func sendBufferedApplyOps(parent context.Context, w io.Writer, source store.Stor
 		defer close(queue)
 		for _, op := range ops {
 			item := applyFetch{op: op}
-			if op.Op == "put" {
-				entry := byPath[op.Path]
+			entry := byPath[op.Path]
+			ref, packed := locations[entry.SHA1]
+			switch {
+			case op.Op != "put":
+			case packed:
+				pack := packs[ref.Key]
+				item.packed = pack.data
+				if pack.full {
+					item.packed = pack.data[ref.Offset : ref.Offset+ref.Size]
+					if store.GitHash("blob", item.packed) != entry.SHA1 || fmt.Sprintf("%x", sha256.Sum256(item.packed)) != ref.SHA256 {
+						cancel(fmt.Errorf("corrupt packed blob"))
+						return
+					}
+				}
+			default:
 				if entry.Size > budget {
 					cancel(fmt.Errorf("apply blob exceeds byte limit"))
 					return
@@ -418,7 +560,7 @@ func sendBufferedApplyOps(parent context.Context, w io.Writer, source store.Stor
 	}()
 
 	for item := range queue {
-		var data []byte
+		data := item.packed
 		if item.data != nil {
 			select {
 			case data = <-item.data:
@@ -446,7 +588,7 @@ func sendBufferedApplyOps(parent context.Context, w io.Writer, source store.Stor
 }
 
 func fetchApplyBlob(ctx context.Context, source store.Store, entry objects.Entry) ([]byte, error) {
-	r, err := store.OpenReader(ctx, source, "o/"+entry.SHA1)
+	r, err := store.OpenLooseBlob(ctx, source, entry.SHA1)
 	if err != nil {
 		return nil, err
 	}
@@ -768,26 +910,7 @@ func (m *Manager) SessionCheckpoint(ctx context.Context, id string, baseline boo
 	c.Close()
 	publishing := time.Now()
 	repo := m.objects(v.Lineage)
-	keys := make([]string, len(r.blobs))
-	blobs := map[string]staged{}
-	for i, b := range r.blobs {
-		keys[i] = b.path
-		blobs[b.path] = b
-	}
-	e = store.Parallel(ctx, store.Depth(m.Store), keys, func(key string) error {
-		b := blobs[key]
-		f, e := os.Open(b.path)
-		if e != nil {
-			return e
-		}
-		defer f.Close()
-		if e = store.PutBlobFile(ctx, store.ForLineage(m.Store, v.Lineage), "o/"+b.sha1, f, b.sha256); e != nil {
-			return e
-		}
-		e = repo.Record(ctx, v.Lineage, b.sha1, "blob", &objects.Blob{SHA1: b.sha1, SHA256: b.sha256, Size: b.size})
-		return e
-	})
-	if e != nil {
+	if e = publishCheckpointBlobs(ctx, repo, r.blobs); e != nil {
 		return out, e
 	}
 	tree, e := repo.Import(ctx, objects.Request{Lineage: v.Lineage, ParentTree: v.Tree, Files: r.files})
@@ -802,6 +925,79 @@ func (m *Manager) SessionCheckpoint(ctx context.Context, id string, baseline boo
 	out.FreezeMs = r.freeze
 	out.PublishMs = ms(publishing)
 	return
+}
+
+func publishCheckpointBlobs(ctx context.Context, repo *objects.Repository, blobs []staged) error {
+	byID := make(map[string]staged, len(blobs))
+	var loose []string
+	var small []staged
+	bundle := store.BundlesEnabled(repo.Store)
+	for _, blob := range blobs {
+		if prior, ok := byID[blob.sha1]; ok {
+			if prior.sha256 != blob.sha256 || prior.size != blob.size {
+				return fmt.Errorf("conflicting checkpoint blob %s", blob.sha1)
+			}
+			continue
+		}
+		byID[blob.sha1] = blob
+		if bundle && blob.size <= store.BundleMaxBlob {
+			small = append(small, blob)
+		} else {
+			loose = append(loose, blob.sha1)
+		}
+	}
+	var smallDone chan error
+	if len(small) != 0 {
+		smallDone = make(chan error, 1)
+		go func() { smallDone <- publishCheckpointSmallBlobs(ctx, repo, small) }()
+	}
+	err := store.Parallel(ctx, min(store.Depth(repo.Store), len(loose)), loose, func(id string) error {
+		blob := byID[id]
+		f, err := os.Open(blob.path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = repo.PublishBlobFile(ctx, f, objects.Blob{SHA1: id, SHA256: blob.sha256, Size: blob.size})
+		return err
+	})
+	if smallDone != nil {
+		err = errors.Join(err, <-smallDone)
+	}
+	return err
+}
+
+func publishCheckpointSmallBlobs(ctx context.Context, repo *objects.Repository, blobs []staged) error {
+	// Keep both the byte buffers and the member metadata bounded while reading
+	// from the checkpoint spool. A pack corresponds to at most one window.
+	const maxMembers = 2048
+	for len(blobs) > 0 {
+		var size int64
+		count := 0
+		for count < min(len(blobs), maxMembers) && size+blobs[count].size <= store.BundleTargetBytes {
+			size += blobs[count].size
+			count++
+		}
+		items := make([]store.SmallBlob, 0, count)
+		for _, blob := range blobs[:count] {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			raw, err := os.ReadFile(blob.path)
+			if err != nil {
+				return err
+			}
+			if int64(len(raw)) != blob.size {
+				return fmt.Errorf("checkpoint blob size changed")
+			}
+			items = append(items, store.SmallBlob{Key: "o/" + blob.sha1, SHA256: blob.sha256, Data: raw})
+		}
+		if err := repo.PublishSmallBlobs(ctx, items, nil); err != nil {
+			return err
+		}
+		blobs = blobs[count:]
+	}
+	return nil
 }
 
 func sendIndex(w io.Writer, entries []objects.Entry) error {

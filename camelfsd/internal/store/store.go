@@ -42,7 +42,7 @@ func guestManifest(key string) bool {
 
 func valid(k string) bool {
 	_, p, h, ok := splitKey(k)
-	return ok && ((p == "c" || p == "r") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts" || p == "tr") && root.Hex(h, 40))
+	return ok && ((p == "c" || p == "r" || p == "p") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts" || p == "tr") && root.Hex(h, 40))
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
@@ -149,6 +149,11 @@ func PutBlobFileIfAbsent(ctx context.Context, s Store, key string, f *os.File, m
 		return false, e
 	}
 	switch v := s.(type) {
+	case *bundled:
+		if !root.Hex(sha, 64) {
+			return false, fmt.Errorf("invalid blob digest")
+		}
+		return v.putBlobFile(ctx, key, f, Info{Size: st.Size(), SHA256: sha})
 	case Local:
 		exists, e := v.Has(ctx, key)
 		if e != nil || exists {
@@ -251,7 +256,7 @@ func (l Local) Put(c context.Context, k string, b []byte) error {
 		}
 	}
 	path := filepath.Join(l.Dir, k)
-	if kind == "tr" {
+	if kind == "tr" || kind == "p" {
 		e := atomicFile(path, b, os.Link)
 		if errors.Is(e, os.ErrExist) {
 			return nil
@@ -372,7 +377,8 @@ func (s *S3) Put(c context.Context, k string, b []byte) error {
 	key := s.key(k)
 	input := &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)}
 	_, kind, _, _ := splitKey(k)
-	if kind == "tr" {
+	immutable := kind == "tr" || kind == "p"
+	if immutable {
 		input.IfNoneMatch = aws.String("*")
 	}
 	if kind == "o" {
@@ -382,7 +388,7 @@ func (s *S3) Put(c context.Context, k string, b []byte) error {
 		input.Body = bytes.NewReader(b)
 		_, e := s.Client.PutObject(c, input)
 		var apiErr smithy.APIError
-		if kind == "tr" && errors.As(e, &apiErr) {
+		if immutable && errors.As(e, &apiErr) {
 			switch apiErr.ErrorCode() {
 			case "PreconditionFailed":
 				return nil
@@ -476,6 +482,8 @@ func hasDepth(s Store) bool {
 		return hasDepth(v.Store)
 	case *Uploaded:
 		return hasDepth(v.Store)
+	case *bundled:
+		return hasDepth(v.Store)
 	}
 	return false
 }
@@ -497,6 +505,9 @@ func Depth(s Store) int {
 	}
 	if v, ok := s.(*limited); ok {
 		return cap(v.slots)
+	}
+	if v, ok := s.(*bundled); ok {
+		return Depth(v.Store)
 	}
 	return DefaultDepth
 }

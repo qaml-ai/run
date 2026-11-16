@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qaml-ai/run/camelfsd/internal/ddb"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
 	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
@@ -317,7 +318,21 @@ type kvmDaemonConfig struct {
 	Data, Tier, HostID, Kernel string
 	Shape                      hostwire.Shape
 	Store                      string // s3://… for the cold-host benchmark; empty uses <data>/objects
+	ObjectsTable               string // enables bundle reads and writes in the cold-host benchmark
 	VirtualSize                int64  // blank branch image size; 0 means 32 MiB
+}
+
+func openBenchmarkStore(ctx context.Context, url, objectsTable string, depth int) (store.Store, error) {
+	const region = "us-west-2"
+	s, err := store.Open(ctx, url, region, depth)
+	if err != nil || objectsTable == "" {
+		return s, err
+	}
+	client, err := ddb.Open(ctx, ddb.Config{Region: region})
+	if err != nil {
+		return nil, err
+	}
+	return store.WithBundles(s, client, objectsTable), nil
 }
 
 func TestKVMComputeDaemonProcess(t *testing.T) {
@@ -339,7 +354,7 @@ func TestKVMComputeDaemonProcess(t *testing.T) {
 	if q.Store != "" {
 		var err error
 		// The production host's depth (store.DefaultDepth, camelfsd host --fetch-depth's default).
-		local, err = store.Open(ctx, q.Store, "us-west-2", store.DefaultDepth)
+		local, err = openBenchmarkStore(ctx, q.Store, q.ObjectsTable, store.DefaultDepth)
 		must(err)
 		depth = store.DefaultDepth
 	}

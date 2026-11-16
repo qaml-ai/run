@@ -138,13 +138,18 @@ func (r *Repository) Upload(ctx context.Context, lineage, hash string, size int6
 	}
 	b.SHA256 = fmt.Sprintf("%x", h256.Sum(nil))
 	b.SHA1 = fmt.Sprintf("%x", h1.Sum(nil))
+	return r.PublishBlobFile(ctx, f, b)
+}
+
+// PublishBlobFile stores a blob already hashed during upload or checkpoint staging.
+func (r *Repository) PublishBlobFile(ctx context.Context, f *os.File, b Blob) (Blob, error) {
 	created, e := store.PutBlobFileIfAbsent(ctx, r.Store, "o/"+b.SHA1, f, b.SHA256)
 	b.Existing = !created
 	if e != nil {
 		return b, e
 	}
 
-	e = r.Record(ctx, lineage, b.SHA1, "blob", &b)
+	e = r.Record(ctx, r.lineage, b.SHA1, "blob", &b)
 	return b, e
 }
 

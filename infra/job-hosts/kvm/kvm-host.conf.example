@@ -12,6 +12,8 @@ JOB_VCPUS=4
 JOB_MEMORY_MIB=12288
 # Daemon object store URL (required; replace both placeholders).
 CAMELFSD_STORE='s3://<bucket>/camelfsd/<prefix>'
+# Shared DynamoDB objects table for small-file bundles on the tier and hosts.
+CAMELFSD_OBJECTS_TABLE=
 # A new lineage's blank image size in bytes: sparse, so a high default costs nothing up front (no proactive caps). 64 GiB:
 # mkfs writes ~0.5 GB of inode tables at this size unless the daemon's mkfs uses lazy init (unit 7 does). There is
 # no online grow yet (ledger L67), so this is the most a job's /repo can hold.
