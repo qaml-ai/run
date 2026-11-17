@@ -41,6 +41,8 @@ import (
 // image or a tree-cache row. The canonical arm disables prebuilt images only
 // in this test helper; camelfsd host always enables the normal prebuilt path.
 // Both arms replay the same committed tree and verify every regular file.
+const prebuiltQualificationVirtualSize int64 = 64 << 30
+
 func TestKVMPrebuiltSessionQualification(t *testing.T) {
 	if os.Getenv("CAMELFSD_KVM") != "1" || os.Getenv("CAMELFSD_KVM_PREBUILT") != "1" {
 		t.Skip("set CAMELFSD_KVM=1 and CAMELFSD_KVM_PREBUILT=1 on the exclusive KVM lane")
@@ -64,6 +66,9 @@ func TestKVMPrebuiltSessionQualification(t *testing.T) {
 	if sizes == "" {
 		sizes = "50"
 	}
+	// The pilot unit uses 64 GiB even for an almost empty workspace. A small
+	// virtual disk hides work proportional to holes in the image encoding.
+	t.Run("tiny64GiB", func(t *testing.T) { qualifyPrebuiltSession(t, url, guest, table, 0) })
 	for _, field := range strings.Split(sizes, ",") {
 		mb, err := strconv.Atoi(field)
 		if err != nil || mb < 41 {
@@ -110,7 +115,7 @@ func prebuiltMust(t *testing.T, err error) {
 
 func qualifyPrebuiltSession(t *testing.T, url, guest, table string, mb int) {
 	q := &prebuiltQualification{t: t, lineage: fmt.Sprintf("coldbench-%d-%d", mb, time.Now().UnixNano()), url: url,
-		parent: os.Getenv("CAMELFSD_KVM_WORK"), table: table, guest: guest, virtual: int64(mb+1024) << 20,
+		parent: os.Getenv("CAMELFSD_KVM_WORK"), table: table, guest: guest, virtual: prebuiltQualificationVirtualSize,
 		kernel: os.Getenv("GUEST_KERNEL"), started: map[string]bool{}, ended: map[string]hostwire.Ended{}}
 	if q.kernel == "" {
 		q.kernel = "/var/lib/camel/guest/vmlinux"
@@ -127,8 +132,12 @@ func qualifyPrebuiltSession(t *testing.T, url, guest, table string, mb int) {
 	q.commit = benchmarkStorageAPI(t, &objects.Repository{DB: db, Store: q.remote, TempDir: seed}, q.lineage)
 	files := map[string]objects.File{}
 	batch := q.repo.BeginPublication()
-	ids := make([]string, 0, 10000)
-	for i := range 10000 {
+	smallFiles := 10000
+	if mb == 0 {
+		smallFiles = 1
+	}
+	ids := make([]string, 0, smallFiles)
+	for i := range smallFiles {
 		raw := make([]byte, 4096)
 		_, err := rand.Read(raw)
 		prebuiltMust(t, err)
@@ -143,11 +152,11 @@ func qualifyPrebuiltSession(t *testing.T, url, guest, table string, mb int) {
 	for _, location := range locations {
 		packs[location.Key] = true
 	}
-	if len(locations) != 10000 || len(packs) == 0 || len(packs) >= 10000 {
+	if len(locations) != smallFiles || len(packs) == 0 || smallFiles > 1 && len(packs) >= smallFiles {
 		t.Fatalf("invalid bundled seed: %d locators in %d packs", len(locations), len(packs))
 	}
 	t.Logf("seed bundles: %d blobs in %d packs", len(locations), len(packs))
-	for i := range mb - 40 {
+	for i := range max(0, mb-40) {
 		raw := make([]byte, 1<<20)
 		_, err := rand.Read(raw)
 		prebuiltMust(t, err)
@@ -160,7 +169,7 @@ func qualifyPrebuiltSession(t *testing.T, url, guest, table string, mb int) {
 	imported, err := q.repo.Import(t.Context(), objects.Request{Lineage: q.lineage, Files: files})
 	prebuiltMust(t, err)
 	initial := q.commit(nil, imported.Tree, "", "")
-	t.Logf("PREBUILT_FIXTURE size_mb=%d files=%d commit=%s tree=%s", mb, len(files), initial.Commit, initial.Tree)
+	t.Logf("PREBUILT_FIXTURE size_mb=%d files=%d commit=%s tree=%s virtual_size_bytes=%d format=%d", mb, len(files), initial.Commit, initial.Tree, q.virtual, store.WorkspaceImageFormat)
 	q.setup()
 	const marker = "src/d000/f00000.ts"
 	const added = "src/api-added.ts"
@@ -181,6 +190,9 @@ func qualifyPrebuiltSession(t *testing.T, url, guest, table string, mb int) {
 		b := q.host(prebuilt)
 		q.session(b, mb, arm, "remote-hit", initial, files, marker, firstHash, false)
 		b.stop()
+	}
+	if mb == 0 {
+		return
 	}
 	// API changes use the public storage handler and produce new immutable trees.
 	editedText := q.lineage + " API edit\n"
@@ -434,7 +446,7 @@ func (q *prebuiltQualification) session(h *prebuiltQualificationHost, mb int, ar
 		}
 	})
 	var shell hostwire.ShellCreated
-	for time.Since(begin) < 10*time.Minute {
+	for time.Since(begin) < time.Minute {
 		payload, _ := json.Marshal(hostwire.ShellRequest{})
 		response, err := q.client.Post("https://"+h.endpoint+path+"/shells", "application/json", bytes.NewReader(payload))
 		prebuiltMust(t, err)
@@ -451,18 +463,21 @@ func (q *prebuiltQualification) session(h *prebuiltQualificationHost, mb int, ar
 		time.Sleep(20 * time.Millisecond)
 	}
 	if shell.ShellID == "" {
-		t.Fatal("qualification VM did not become ready")
+		t.Fatal("qualification VM exceeded the Worker's 60 s startup deadline")
 	}
 	run := func(execID, command string, stdin *string) string {
 		return coldExecOutput(t, h.call("POST", path+"/exec", hostwire.ExecRequest{ExecID: execID, Shell: shell.ShellID, Command: command, Stdin: stdin, TimeoutS: 120}, 200))
 	}
 	first := run("first", "sha256sum /workspace/"+firstPath, nil)
 	elapsed := time.Since(begin)
+	if elapsed >= time.Minute {
+		t.Fatalf("%s %s first read exceeded the Worker's 60 s startup deadline: %s", arm, phase, elapsed)
+	}
 	got, _, _ := strings.Cut(first, " ")
 	if got != firstSHA {
 		t.Fatalf("%s %s first hash %s, want %s", arm, phase, got, firstSHA)
 	}
-	t.Logf("PREBUILT_SESSION_METRIC size_mb=%d arm=%s phase=%s first_read_ms=%.3f commit=%s tree=%s", mb, arm, phase, float64(elapsed.Microseconds())/1000, target.Commit, target.Tree)
+	t.Logf("PREBUILT_SESSION_METRIC size_mb=%d arm=%s phase=%s first_read_ms=%.3f commit=%s tree=%s virtual_size_bytes=%d", mb, arm, phase, float64(elapsed.Microseconds())/1000, target.Commit, target.Tree, q.virtual)
 	paths := make([]string, 0, len(files))
 	for name, file := range files {
 		if file.Mode != "120000" {
@@ -490,6 +505,11 @@ func (q *prebuiltQualification) session(h *prebuiltQualificationHost, mb int, ar
 	raw, err := os.ReadFile(filepath.Join(h.data, "mounts", id, "state.json"))
 	prebuiltMust(t, err)
 	prebuiltMust(t, json.Unmarshal(raw, &mount))
+	workspace, err := os.Stat(mount.Image)
+	prebuiltMust(t, err)
+	if workspace.Size() != prebuiltQualificationVirtualSize {
+		t.Fatalf("workspace disk is %d bytes, want the pilot's 64 GiB", workspace.Size())
+	}
 	if h.prebuilt && (!mount.Warm || mount.BaseTree != target.Tree || mount.CachedImage == "") {
 		t.Fatalf("prebuilt startup did not mount the exact tree: %+v", mount)
 	}
