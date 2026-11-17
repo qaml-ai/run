@@ -498,7 +498,7 @@ func TestDDBPortableImageLargeLooseBlob(t *testing.T) {
 	if err := publication.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	large := bytes.Repeat([]byte("random-enough-for-locator-control"), 4000)
+	large := bytes.Repeat([]byte("x"), store.BundleMaxBlob+1)
 	sum := sha256.Sum256(large)
 	largeBlob, err := repo.Upload(ctx, "fixture", hex.EncodeToString(sum[:]), int64(len(large)), bytes.NewReader(large))
 	if err != nil {

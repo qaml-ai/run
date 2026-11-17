@@ -91,7 +91,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		return raw, err
 	}
 	objectsTable := os.Getenv("CAMELFSD_KVM_OBJECTS_TABLE")
-	mediumBundles := os.Getenv("CAMELFSD_KVM_MEDIUM_BUNDLES") == "1"
+	mediumBundles := options.mediumBundles
 	if mediumBundles && store.BundleMaxBlob != 1<<20 {
 		t.Fatal("medium-bundle mode requires build tags kvm,camelfs_medium_bundles")
 	}

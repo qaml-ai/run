@@ -9,8 +9,8 @@ import (
 )
 
 type coldSessionOptions struct {
-	packedMode, content                     string
-	packedParallel, cleanImage, imageRanges bool
+	packedMode, content                                    string
+	packedParallel, cleanImage, imageRanges, mediumBundles bool
 }
 
 // Parse the selected arm before opening a store or creating fixture files.
@@ -29,6 +29,7 @@ func parseColdSessionOptions(getenv func(string) string) (coldSessionOptions, er
 		{"CAMELFSD_KVM_PACKED_PARALLEL", &options.packedParallel},
 		{"CAMELFSD_KVM_CLEAN_IMAGE", &options.cleanImage},
 		{"CAMELFSD_KVM_IMAGE_RANGES", &options.imageRanges},
+		{"CAMELFSD_KVM_MEDIUM_BUNDLES", &options.mediumBundles},
 	} {
 		switch getenv(flag.name) {
 		case "", "0":
@@ -64,7 +65,8 @@ func TestColdSessionOptions(t *testing.T) {
 		want coldSessionOptions
 	}{
 		{name: "legacy-default"},
-		{name: "explicit-disabled", env: map[string]string{"PACKED_PARALLEL": "0", "CLEAN_IMAGE": "0", "IMAGE_RANGES": "0"}},
+		{name: "medium", env: map[string]string{"MEDIUM_BUNDLES": "1"}, want: coldSessionOptions{mediumBundles: true}},
+		{name: "explicit-disabled", env: map[string]string{"PACKED_PARALLEL": "0", "CLEAN_IMAGE": "0", "IMAGE_RANGES": "0", "MEDIUM_BUNDLES": "0"}},
 		{name: "canonical", env: map[string]string{"PACKED_APPLY": "control"}, want: coldSessionOptions{packedMode: "control"}},
 		{name: "plain", env: map[string]string{"PACKED_APPLY": "plain"}, want: coldSessionOptions{packedMode: "plain"}},
 		{name: "gzip", env: map[string]string{"PACKED_APPLY": "gzip"}, want: coldSessionOptions{packedMode: "gzip"}},
@@ -104,7 +106,7 @@ func TestColdSessionOptions(t *testing.T) {
 			}
 		})
 	}
-	for _, flag := range []string{"PACKED_PARALLEL", "CLEAN_IMAGE", "IMAGE_RANGES"} {
+	for _, flag := range []string{"PACKED_PARALLEL", "CLEAN_IMAGE", "IMAGE_RANGES", "MEDIUM_BUNDLES"} {
 		for _, value := range []string{"true", "false", "2", "-1", " 1"} {
 			t.Run(flag+"="+value, func(t *testing.T) {
 				_, err := parseColdSessionOptions(func(key string) string {
