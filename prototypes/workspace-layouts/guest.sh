@@ -19,7 +19,8 @@ if [ "$mode" = git ]; then
 elif [ "$mode" = block ]; then
     mount -t ext4 /dev/vda /ws
 else
-    mount -t ext4 -o ro,noload /dev/vda /base
+    dmsetup create verified --readonly --noudevsync --table "$(cat /x/verity)"
+    mount -t ext4 -o ro,noload /dev/dm-0 /base
 fi
 if [ "$mode" != block ]; then
     mount -t tmpfs tmpfs /scratch
@@ -29,7 +30,10 @@ if [ "$mode" != block ]; then
     if [ -f /x/deleted ]; then while IFS= read -r name; do rm "/ws/$name"; done < /x/deleted; fi
 fi
 cd /ws
-if [ "$action" = api ]; then
+if [ "$action" = corrupt ]; then
+    if cat data/00/00000 >/dev/null; then exit 1; fi
+    dmesg | grep -i 'verity.*corrupt' > /x/integrity-error
+elif [ "$action" = api ]; then
     printf 'api edit\n' > src/hot
 else
     if [ "$action" = recover ]; then test "$(cat src/hot)" = 'vm write'; else test "$(cat src/hot)" = 'api edit'; fi

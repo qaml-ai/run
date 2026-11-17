@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 sudo apt-get -qq update
-sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends qemu-system-x86 qemu-utils qemu-block-extra busybox-static linux-image-virtual cpio zstd kmod tcc
+sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends qemu-system-x86 qemu-utils qemu-block-extra busybox-static linux-image-virtual cpio zstd kmod tcc cryptsetup-bin dmsetup
 version=$(ls -v /boot/vmlinuz-* | tail -1)
 version=${version#/boot/vmlinuz-}
-if ! modinfo -k "$version" 9p >/dev/null 2>&1; then
+if ! modinfo -k "$version" 9p >/dev/null 2>&1 || ! modinfo -k "$version" dm_verity >/dev/null 2>&1; then
     sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y "linux-modules-extra-$version"
 fi
 out=$1

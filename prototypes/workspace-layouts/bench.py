@@ -57,6 +57,11 @@ class Origin(http.server.BaseHTTPRequestHandler):
             with file.open("rb") as f:
                 f.seek(a)
                 data = f.read(b-a+1)
+                fault = getattr(self.server, "fault", None)
+                if fault and fault[0] == name and a <= fault[1] <= b:
+                    data = bytearray(data)
+                    data[fault[1]-a] ^= 1
+                    self.server.fault_hits += 1
                 with self.server.lock:
                     self.server.total += len(data)
                 self.wfile.write(data)
@@ -188,7 +193,25 @@ def one(root, boot, out, mib, mode, server):
             f.truncate((mib*2+32)*MIB)
         run("mkfs.ext4","-q","-m","0","-E","lazy_itable_init=0,lazy_journal_init=0",
             "-d",files,image)
+        if mode == "hybrid":
+            blocks = image.stat().st_size // 4096
+            hashes = root/"verity-hashes"
+            fmt = run("veritysetup","format","--no-superblock","--data-blocks",str(blocks),
+                      "--data-block-size","4096","--hash-block-size","4096",image,hashes).decode()
+            info = dict(line.split(":",1) for line in fmt.splitlines() if ":" in line)
+            verity = (f"0 {blocks*8} verity 1 /dev/vda /dev/vda 4096 4096 {blocks} {blocks} "
+                      f"sha256 {info['Root hash'].strip()} {info['Salt'].strip()}")
+            # debugfs reads only our generated fixture to locate the fault-injection byte.
+            offset = int(run("debugfs","-R","bmap /data/00/00000 0",image).strip())
+            blocksize = int(next(s.split(":")[1] for s in run("dumpe2fs","-h",image).decode().splitlines() if s.startswith("Block size:")))
+            fault_byte = offset*blocksize
+            with image.open("ab") as target, hashes.open("rb") as src:
+                shutil.copyfileobj(src,target)
         base = publish(image)
+        if mode == "hybrid":
+            descriptor = root/"base-descriptor"
+            descriptor.write_text(json.dumps(dict(tree=git.base,object=base,verity=verity)))
+            descriptor_id = publish(descriptor)
     seed = git.base if git else base
     with catalog:
         catalog.execute("insert into heads values ('main',?)",(seed,))
@@ -200,6 +223,12 @@ def one(root, boot, out, mib, mode, server):
             x = session/"exchange"
             x.mkdir()
             (x/"request").write_text(f"{mode} {action}\n")
+            if mode == "hybrid":
+                descriptor_bytes = (origin/descriptor_id).read_bytes()
+                assert digest(descriptor_bytes)==descriptor_id
+                pinned = json.loads(descriptor_bytes)
+                assert pinned["tree"] == git.base
+                (x/"verity").write_text(pinned["verity"])
             if git:
                 git.deliver(rev,x,mode)
             delivery = sum(p.stat().st_size for p in x.iterdir() if p.name != "request")
@@ -209,7 +238,7 @@ def one(root, boot, out, mib, mode, server):
                 run("qemu-img","create","-q","-f","qcow2","-F",fmt,"-b",url+rev,session/"rw")
                 args = ["-drive",f"if=virtio,file={session}/rw,format=qcow2"]
             elif mode == "hybrid":
-                args = ["-drive",f"if=virtio,file={url+base},readonly=on,format=raw"]
+                args = ["-drive",f"if=virtio,file={url+pinned['object']},readonly=on,format=raw"]
             log = out/(root.name+"-"+action+".log")
             start_bytes = server.total
             cmd = ["qemu-system-x86_64","-machine","accel=tcg","-cpu","max","-m","640",
@@ -234,7 +263,7 @@ def one(root, boot, out, mib, mode, server):
                         proc.kill()
                     proc.wait()
             verification_started=clock()
-            if action != "api":
+            if action not in ("api","corrupt"):
                 got = {n:h for h,n in (s.split(None,1) for s in (x/"digests").read_text().splitlines())}
                 assert got == expected[action], (got.keys() ^ expected[action].keys())
                 stage = lambda name: float((x/name).read_text())
@@ -275,6 +304,15 @@ def one(root, boot, out, mib, mode, server):
     catalog=sqlite3.connect(root/"refs")
     for action,branch in (("recover","main"),("fork","fork")):
         _,rows["phases"][action]=boot_once(read(branch),action)
+    if mode == "hybrid":
+        server.fault = (base,fault_byte)
+        server.fault_hits=0
+        try:
+            _,rows["phases"]["corrupt"]=boot_once(read("main"),"corrupt")
+            assert server.fault_hits>0
+            rows["phases"]["corrupt"]["injected_responses"]=server.fault_hits
+        finally:
+            server.fault=None
     catalog.close()
     return rows
 
