@@ -1,0 +1,148 @@
+{
+  "early_failures": [
+    "BusyBox tar lacked list-file support; switched to explicit GNU tar"
+  ],
+  "mount_failures": [
+    {
+      "run": "no-fuse-final-64",
+      "mode": "hybrid",
+      "size_mib": 64,
+      "phase": "recover",
+      "outcome": "152 s harness timeout before first read"
+    },
+    {
+      "run": "no-fuse-debug",
+      "mode": "hybrid",
+      "size_mib": 8,
+      "phase": "corrupt",
+      "outcome": "124 s harness timeout at ext4 mount before injection outcome was established"
+    },
+    {
+      "sprite": "rt-pool-6",
+      "stage": "500 MiB fork",
+      "seconds_since_guest_workspace_start": 147.9,
+      "first_read_marker": false,
+      "termination": "SIGTERM to isolated QEMU repeat after stalled mount; guest required SIGKILL to exit"
+    }
+  ],
+  "persistent_http_repeats": [
+    {
+      "mode": "hybrid",
+      "payload_mib": 8,
+      "seed_s": 0.8384571100000358,
+      "phases": {
+        "api": {
+          "total_s": 0.01882020100038062
+        },
+        "edit": {
+          "file_delivery_bytes": 10433,
+          "prepare_s": 0.00751540000010209,
+          "first_s": 11.267775437000182,
+          "first_range_bytes": 1724928,
+          "build_s": 0.14000000000000057,
+          "scan_s": 0.47999999999999954,
+          "guest_first_s": 0.3200000000000003,
+          "upper_archive_bytes": 10240,
+          "publication_s": 0.031491200999880675,
+          "verification_s": 0.0005905699999857461,
+          "total_s": 12.09427866599981,
+          "range_bytes": 22327808
+        },
+        "recover": {
+          "file_delivery_bytes": 10444,
+          "prepare_s": 0.007477069999822561,
+          "first_s": 7.543111652999869,
+          "first_range_bytes": 1724928,
+          "build_s": 0.1299999999999999,
+          "scan_s": 0.45999999999999996,
+          "guest_first_s": 0.3200000000000003,
+          "publication_s": 1.2800001059076749e-06,
+          "verification_s": 0.0006059199999981502,
+          "total_s": 8.241066658999898,
+          "range_bytes": 22061568
+        },
+        "fork": {
+          "file_delivery_bytes": 10433,
+          "prepare_s": 0.007542419999936101,
+          "first_s": 6.7689729449998595,
+          "first_range_bytes": 1458688,
+          "build_s": 0.14000000000000057,
+          "scan_s": 0.4499999999999993,
+          "guest_first_s": 0.3200000000000003,
+          "publication_s": 1.0499998097657226e-06,
+          "verification_s": 0.000567600000067614,
+          "total_s": 7.44649611099976,
+          "range_bytes": 22061568
+        },
+        "corrupt": {
+          "file_delivery_bytes": 10444,
+          "prepare_s": 0.008318409999901633,
+          "publication_s": 1.2400000741763506e-06,
+          "verification_s": 1.2599998626683373e-06,
+          "total_s": 6.907852416999958,
+          "range_bytes": 1991168,
+          "injected_responses": 2
+        }
+      }
+    },
+    {
+      "mode": "hybrid",
+      "payload_mib": 8,
+      "seed_s": 0.55909566299988,
+      "phases": {
+        "api": {
+          "total_s": 0.017705080000268936
+        },
+        "edit": {
+          "file_delivery_bytes": 10433,
+          "prepare_s": 0.007307500000024447,
+          "first_s": 6.5941645319999225,
+          "first_range_bytes": 1724928,
+          "build_s": 0.13999999999999968,
+          "scan_s": 0.4900000000000002,
+          "guest_first_s": 0.3600000000000003,
+          "upper_archive_bytes": 10240,
+          "publication_s": 0.03404535100025896,
+          "verification_s": 0.0005524700000023586,
+          "total_s": 7.432907290999992,
+          "range_bytes": 22327808
+        },
+        "recover": {
+          "file_delivery_bytes": 10444,
+          "prepare_s": 0.00811706000013146,
+          "first_s": 6.873259436000353,
+          "first_range_bytes": 1724928,
+          "build_s": 0.16000000000000014,
+          "scan_s": 0.5700000000000003,
+          "guest_first_s": 0.4499999999999993,
+          "publication_s": 1.0200001270277426e-06,
+          "verification_s": 0.0005788199996459298,
+          "total_s": 7.708838035000099,
+          "range_bytes": 22061568
+        },
+        "fork": {
+          "file_delivery_bytes": 10433,
+          "prepare_s": 0.008393480999984604,
+          "first_s": 6.342871536000075,
+          "first_range_bytes": 1724928,
+          "build_s": 0.13999999999999968,
+          "scan_s": 0.5700000000000003,
+          "guest_first_s": 0.3799999999999999,
+          "publication_s": 1.1299998732283711e-06,
+          "verification_s": 0.0005999800000608957,
+          "total_s": 7.143092684000294,
+          "range_bytes": 22327808
+        },
+        "corrupt": {
+          "file_delivery_bytes": 10444,
+          "prepare_s": 0.008392079999794078,
+          "publication_s": 1.2399996194289997e-06,
+          "verification_s": 1.2400000741763506e-06,
+          "total_s": 6.899808156999825,
+          "range_bytes": 1991168,
+          "injected_responses": 2
+        }
+      }
+    }
+  ]
+}
