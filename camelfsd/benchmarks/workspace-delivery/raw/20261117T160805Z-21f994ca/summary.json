@@ -1,0 +1,44 @@
+{
+  "revisions": {
+    "baseline": {
+      "revision": "21f994ca8fa75191d762b76beb82c3d712e301dd",
+      "binarySha256": "21e55c8166a6ef4e54a6841803580219189159be07ca1d77ccbb6f43138cfb3c"
+    },
+    "packedplain": {
+      "revision": "21f994ca8fa75191d762b76beb82c3d712e301dd",
+      "binarySha256": "21e55c8166a6ef4e54a6841803580219189159be07ca1d77ccbb6f43138cfb3c"
+    },
+    "packedgzip": {
+      "revision": "21f994ca8fa75191d762b76beb82c3d712e301dd",
+      "binarySha256": "21e55c8166a6ef4e54a6841803580219189159be07ca1d77ccbb6f43138cfb3c"
+    },
+    "bundlemedium": {
+      "revision": "21f994ca8fa75191d762b76beb82c3d712e301dd",
+      "binarySha256": "21e55c8166a6ef4e54a6841803580219189159be07ca1d77ccbb6f43138cfb3c"
+    }
+  },
+  "trials": [
+    {
+      "sizeMiB": 500,
+      "round": 1,
+      "arm": "bundlemedium",
+      "lineages": [
+        "coldbench-500-1794932055753571603"
+      ],
+      "metrics": [
+        "host_cold_kvm_test.go:495: WORKSPACE_METRIC size_mb=500 phase=initial mode=control first_read_ms=6487.652",
+        "host_cold_kvm_test.go:503: 2026/11/17 16:15:04 INFO compute_apply_reads vm=coldbench-500-1794932055753571603-initial locatorMs=256 looseReads=0 packGets=145 rangeGets=88 bundleBytes=1303445504",
+        "host_cold_kvm_test.go:503: 2026/11/17 16:15:05 INFO compute_boot vm=coldbench-500-1794932055753571603-initial image=0.009 mount=43.341 first_exec=6397.384 syncMs=136 disk=3.963 assets=0.128 tap=4.32 policy=2.847 scope=1.076 vsock=357.722 error=<nil>",
+        "host_cold_kvm_test.go:475: PACKED_APPLY_API_EDIT size_mb=500 codec=control ms=209.477",
+        "host_cold_kvm_test.go:495: WORKSPACE_METRIC size_mb=500 phase=api-edit mode=control first_read_ms=5375.783",
+        "host_cold_kvm_test.go:503: 2026/11/17 16:15:17 INFO compute_apply_reads vm=coldbench-500-1794932055753571603-api-edit locatorMs=234 looseReads=0 packGets=145 rangeGets=89 bundleBytes=1303445554",
+        "host_cold_kvm_test.go:503: 2026/11/17 16:15:17 INFO compute_boot vm=coldbench-500-1794932055753571603-api-edit image=0.003 mount=42.748 first_exec=5287.558 syncMs=103 disk=2.123 assets=0.104 tap=0.56 policy=0.486 scope=1.846 vsock=354.962 error=<nil>",
+        "host_cold_kvm_test.go:482: PACKED_APPLY_API_ADD size_mb=500 codec=control ms=116.743",
+        "host_cold_kvm_test.go:495: WORKSPACE_METRIC size_mb=500 phase=api-add mode=control first_read_ms=11908.443",
+        "host_cold_kvm_test.go:503: 2026/11/17 16:15:33 INFO compute_apply_reads vm=coldbench-500-1794932055753571603-api-add locatorMs=209 looseReads=0 packGets=145 rangeGets=90 bundleBytes=1303445608",
+        "host_cold_kvm_test.go:503: 2026/11/17 16:15:34 INFO compute_boot vm=coldbench-500-1794932055753571603-api-add image=0.009 mount=40.744 first_exec=11822.242 syncMs=185 disk=2.111 assets=0.149 tap=3.286 policy=0.522 scope=4.304 vsock=349.514 error=<nil>",
+        "host_cold_kvm_test.go:507: PACKED_APPLY_RESULT size_mb=500 mode=control files=10460 initial_ms=6487.652 api_edit_fresh_ms=5375.783 api_add_fresh_ms=11908.443"
+      ]
+    }
+  ]
+}

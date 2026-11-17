@@ -1,0 +1,41 @@
+{
+  "source": "6fd0531e86df0fe5783de3a284c159b77749b1f4",
+  "binarySHA256": "b8c987ce9dee89f4419030735882b9a6c8cc936adcd3dbd8d71a9d5739199ce2",
+  "serverClientBinaryMatch": true,
+  "goValidation": {
+    "sprite": "rt-pool-8",
+    "run": "20261117-154640-4102250-1",
+    "exit": 0,
+    "commands": [
+      "go test -C camelfsd -count=1 -v ./cmd/warm-repo-probe",
+      "go vet -C camelfsd ./cmd/warm-repo-probe",
+      "go build -C camelfsd -o ../work/warmrepo-build/warm-repo-probe ./cmd/warm-repo-probe"
+    ]
+  },
+  "docsValidation": {
+    "sprite": "rt-pool-6",
+    "run": "20261117-154923-4104747-1",
+    "exit": 0,
+    "testsPassed": 2,
+    "commands": [
+      "npm run docs",
+      "node --experimental-strip-types --test --test-name-pattern=\"llms.txt\" tests/docs.test.ts"
+    ]
+  },
+  "cleanupValidation": {
+    "source": "53abcdf3c3f0becd4841db6488c1a8b56f872a27",
+    "sprite": "rt-pool-8",
+    "run": "20261117-171910-20241-1",
+    "exit": 0,
+    "checks": [
+      "Go roundtrip and fault tests",
+      "go vet command package",
+      "bash syntax",
+      "initial stale STOP",
+      "consecutive server rerun",
+      "TERM cleanup"
+    ],
+    "receipt": "lifecycle/results.json",
+    "testScript": "lifecycle/check.py"
+  }
+}
