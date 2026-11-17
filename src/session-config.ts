@@ -274,6 +274,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  */
 export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'computerLimit' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language' | 'queue' | 'networking'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
+  if (input.idleCompaction !== undefined) throw new HttpError(400, 'Idle compaction is available on the Workers backend');
   for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'computerLimit', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language', 'queue', 'networking'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.networking !== undefined) {
     input = { ...input, networking: networkingInput(input.networking) };

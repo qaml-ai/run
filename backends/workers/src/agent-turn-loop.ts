@@ -25,7 +25,8 @@ import { type RuntimeLimit } from "./run-limits.ts";
 import { enqueueTerminalEvents } from "./event-log.ts";
 import { fileOutputs } from "./file-output.ts";
 import { inputWebhook } from "./run-webhooks.ts";
-import { Config, RequestRecord, BillingReceipt, reqKey } from "./agent-types.ts";
+import { IdleCompactionDoc } from "./idle-compaction-schedule.ts";
+import { type Config, type RequestRecord, type BillingReceipt, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export async function currentRunImpl(this: AgentRuntime,
@@ -260,6 +261,20 @@ export async function onViewImpl(this: AgentRuntime,
       if (entry.kind === "camel.context" || entry.kind === "pi.reset") {
         this.lastEntry = Number(entry.id);
         continue;
+      }
+      if (entry.kind === "pi.compaction") {
+        const pi = await this.harness.pi();
+        const conversation = view.conversation.id;
+        const claim = await pi.snapshot(IdleCompactionDoc, conversation, BACKGROUND_CONTEXT);
+        const placed = claim?.taskId === undefined ? undefined :
+          await (await this.harness.storage()).submissionByRequest(conversation, `compaction:${claim.taskId}`, BACKGROUND_CONTEXT);
+        if (placed?.entry === entry.id) {
+          // Pi stores this checkpoint as a user message. Keep its history ordinal without opening a requester turn.
+          this.historyIndex.changed();
+          this.nextMessage++;
+          this.lastEntry = Number(entry.id);
+          continue;
+        }
       }
       if ((entry.kind === 'camel.prompt' || entry.kind === 'camel.steer') && entry.data && typeof entry.data === 'object' && Object.hasOwn(entry.data, 'logicalOwner')) {
         const data = entry.data as { requestId: string; logicalOwner: string | null };

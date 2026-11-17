@@ -27,6 +27,8 @@ test("configuration validates prompt, human input and exclusive lifetimes", () =
   const idle = configuration({idleTtlSeconds:600,humanInput:{expiresInSeconds:600}},"test/echo");
   assert.equal(idle.ttlSeconds,600);
   assert.equal(idle.config.idleTtlSeconds,600);
+  assert.equal(configuration({ idleCompaction: false }, "test/echo").config.idleCompaction, false);
+  assert.throws(() => configuration({ idleCompaction: "false" }, "test/echo"), /idleCompaction must be a boolean/);
   assert.deepEqual(idle.config.humanInput,{expiresInSeconds:600});
 });
 

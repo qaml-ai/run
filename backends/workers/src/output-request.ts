@@ -4,6 +4,10 @@ import { forcedToolChoice, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER } from "./output
 
 type Settings = { requestId?: string; thinkingLevel?: string; outputReminded?: boolean; output?: { schema?: Record<string, unknown> } };
 
+export function clearStructuredOutput(context: Pick<TranscriptContext, "messages">): TranscriptContext {
+  return normalizeContext({ messages: [...context.messages, { role: "system", content: "", sections: { structured_output: null }, toolsRemoved: [{ name: "final_output" }], timestamp: Date.now() }] });
+}
+
 /** The choice budget and text reminder belong to one user request, across its model calls. */
 export class OutputRequest {
   private request?: string;
@@ -30,7 +34,7 @@ export class OutputRequest {
         if (toolChoice !== undefined) this.count++;
       }
     } else {
-      context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", sections: { structured_output: null }, toolsRemoved: [{ name: "final_output" }], timestamp: Date.now() }] });
+      context = clearStructuredOutput(context);
     }
     return { context, toolChoice };
   }

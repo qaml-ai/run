@@ -185,6 +185,53 @@ test("fork retries resume the claimed history and file versions after interrupti
   assert.equal((await json(`/v1/agents/${ordinary.id}/configuration`)).name, "unrelated");
 });
 
+test("idle compaction can be disabled per agent and re-enabled", { timeout: 180000 }, async t => {
+  const fixture = await repoFixture();
+  t.after(() => fixture.stop());
+  async function request(path: string, input?: object, method = input === undefined ? "GET" : "POST", credentials: { token: string; key?: string } = { token: fixture.token }) {
+    const response = await fetch(fixture.url + path, {
+      method,
+      headers: {
+        Authorization: `Bearer ${credentials.token}`,
+        "content-type": "application/json",
+        ...(credentials.key ? { "idempotency-key": credentials.key } : {}),
+      },
+      body: input === undefined ? undefined : JSON.stringify(input),
+    });
+    const value = await response.json() as any;
+    assert.ok(response.ok, `${method} ${path}: ${response.status} ${JSON.stringify(value)}`);
+    return value;
+  }
+
+  const provision = { token: fixture.token, key: "idle-compaction-opt-out" };
+  const config = { idleCompaction: false, mounts: [{ workspace: false }] };
+  const agent = await request("/v1/agents", config, "POST", provision);
+  const path = `/v1/agents/${agent.id}`;
+  assert.equal((await request(path)).idleCompaction, false);
+
+  const upsert = await request("/v1/agents", { name: "renamed" }, "POST", provision);
+  const configured = async (id: string) => {
+    const completed = await request(`${path}/requests/${id}?wait=10`);
+    assert.equal(completed.outcome?.result?.configured, true, JSON.stringify(completed));
+  };
+  assert.equal(upsert.id, agent.id);
+  await configured(upsert.reconfigured.id);
+  assert.equal((await request(`${path}/configuration`)).idleCompaction, false);
+
+  const update = await request(`${path}/configuration`, { idleCompaction: true }, "PATCH");
+  await configured(update.id);
+  assert.equal((await request(`${path}/configuration`)).idleCompaction, true);
+
+  const scoped = { token: agent.token };
+  const optOut = await request(`/clients/${agent.id}/requests`, {
+    id: "disable-idle-compaction", method: "configure", params: { idleCompaction: false },
+  }, "POST", scoped);
+  await configured(optOut.id);
+  const latest = await request(`${path}/configuration`);
+  assert.equal(latest.idleCompaction, false);
+  assert.deepEqual(latest.mounts, []);
+});
+
 async function repoFixture() {
   return startFixture({entrypoint:fileURLToPath(new URL('./camelfs-worker.ts',import.meta.url))});
 }

@@ -1019,7 +1019,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, networking=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, definition_revision=None, human_input=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, on_input=None, builtins=None, delegate=None, workflows=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, networking=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, definition_revision=None, human_input=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, on_input=None, builtins=None, delegate=None, workflows=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None, idle_compaction=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `workflows` (with `delegate` settings, on a Workers runtime with workflows enabled): False turns the workflows builtin
         off; {"maxBudgetUsd": n} is the most one workflow the agent starts may spend (default $100).
@@ -1028,6 +1028,7 @@ class AgentRuntime(_RuntimeCalls):
         `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
         idempotency_key of yours, else one day). `idle_ttl_seconds`, instead, makes it live that long from its latest
         run, so one in use is kept and one left idle expires.
+        `idle_compaction=False` disables idle compaction for this agent on Workers.
         `mounts` (Mount and WorkspaceMount dicts) are the volumes its file tools see, beside its own workspace volume
         at /workspace unless they leave it out ({"workspace": False}) or place it ({"workspace": True, "path"?}). `key_scope` names a key scope
         (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
@@ -1043,7 +1044,7 @@ class AgentRuntime(_RuntimeCalls):
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, networking=networking, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              definition_revision=definition_revision, human_input=human_input, workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, computer_limit=computer_limit, model_headers=model_headers, builtins=builtins,
-                             delegate=delegate, workflows=workflows, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
+                             delegate=delegate, workflows=workflows, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, idle_compaction=idle_compaction)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if idle_ttl_seconds is not None:
@@ -1610,11 +1611,11 @@ class Voice:
 
 def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, definition_revision=None, human_input=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, workflows=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None, networking=None):
+                  delegate=None, workflows=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None, networking=None, idle_compaction=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"metadata": metadata, "definitionRevision": definition_revision, "humanInput": human_input, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "computerLimit": computer_limit, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "workflows": workflows, "mcpServers": mcp_servers, "prompt": prompt,
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "idleCompaction": idle_compaction, "builtins": builtins, "delegate": delegate, "workflows": workflows, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue, "networking": networking}
     if workspace_id is not _DEFAULT:
         optional["workspaceId"] = workspace_id
@@ -2566,10 +2567,10 @@ class AgentClient(_AgentCalls):
             attached.append({"path": response.json()["path"], **extra})
         return attached
 
-    async def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT):
+    async def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT, idle_compaction=None):
         """Change the model ("provider/model-id"), system prompt, thinking level, tools, max_output_tokens or temperature
-        between runs (None removes either of the last two)."""
-        params = {key: value for key, value in {"model": model, "systemPrompt": system_prompt, "thinkingLevel": thinking_level}.items() if value is not None}
+        between runs (None removes either of the last two). `idle_compaction=False` disables idle compaction on Workers."""
+        params = {key: value for key, value in {"model": model, "systemPrompt": system_prompt, "thinkingLevel": thinking_level, "idleCompaction": idle_compaction}.items() if value is not None}
         params.update({key: value for key, value in {"maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language}.items() if value is not _DEFAULT})
         if tools is not None:
             params["mcp"] = {"tools": [item.mcp_tool() for item in tools]}
@@ -3067,9 +3068,9 @@ class Agent:
             raise TypeError(f"steer() takes {', '.join(sorted(unknown))} only with wait=True")
         return await self.client.steer_message(text, from_=_sender(user) if user else None, **options)
 
-    async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT):
-        """Change its model, instructions, thinking level or tools between runs."""
-        return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language)
+    async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT, idle_compaction=None):
+        """Change its model, instructions, thinking level, tools or idle compaction between runs."""
+        return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, idle_compaction=idle_compaction)
 
     async def abort(self, *, queued=None, children=None):
         """Stop the agent: its running turn, and the runs queued behind it (each fails with code "cancelled"), so nothing
@@ -3325,7 +3326,7 @@ class Agents:
                      key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, workflows=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
-                     queue=None):
+                     queue=None, idle_compaction=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -3339,6 +3340,7 @@ class Agents:
         code_mode=False gives the agent no codemode: the model calls every tool directly, and with file_tools=False and no tools its
         prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
         already is not counted as an agent create; agent.config_hash says which configuration it asked for.
+        `idle_compaction=False` disables idle compaction for this agent on Workers.
         `initial_messages` (Pi messages: user, assistant, toolResult, compactionSummary) is the history the agent begins
         with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide). `import_messages`
         ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
@@ -3355,7 +3357,7 @@ class Agents:
                                                   model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, workflows=workflows, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
-                                                  queue=queue)
+                                                  queue=queue, idle_compaction=idle_compaction)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
                                  connection=connection, _sync=False)

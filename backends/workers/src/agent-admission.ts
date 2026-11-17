@@ -175,8 +175,11 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
     const current = await directory.get(conf.id);
     if (!current)
       throw Object.assign(new Error("Unknown agent"), { status: 404 });
+    const target = previous?.replaceConfiguration ? replacementParams : await configurationPatch(this.env, conf.tenantId, current.config, params);
+    // Omit unchanged mounts so Directory keeps the resolved list, including an agent with no workspace.
+    if (!previous?.replaceConfiguration && params.mounts === undefined) delete target.mounts;
     const updated = await directory.upsert(
-      previous?.replaceConfiguration ? replacementParams : await configurationPatch(this.env, conf.tenantId, current.config, params),
+      target,
       current.key ?? current.id,
       origin ?? conf.runtimeOrigin,
       undefined, false,

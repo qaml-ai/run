@@ -27,6 +27,7 @@ import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import type { Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 import { purgeStart } from "./account-purge.ts";
+import { abortIdleCompaction, idleCompactionDeadline, wakeIdleCompaction } from "./idle-compaction-schedule.ts";
 
 export const COMPUTER_ATTACHED = "computer-attached";
 
@@ -147,6 +148,7 @@ export async function armImpl(this: AgentRuntime, invocation: AgentInvocation,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.batchQueue.deadline(config),
+      await idleCompactionDeadline(this, config),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       await this.ctx.storage.get<number>("decision-input-deadline") ?? Infinity,
       deleted || (config.expiresAt && config.expiresAt <= Date.now()) ? Infinity : await this.limits.deadline(invocation),
@@ -313,7 +315,7 @@ export async function wakeImpl(this: AgentRuntime, invocation: AgentInvocation) 
       await this.ctx.storage.put("deleted", true);
       if (conf) await this.closeWatchers(conf.tenantId, conf.id);
       await this.delegation.destroy();
-      await this.harness.session().abort();
+      await Promise.all([this.harness.session().abort(), abortIdleCompaction(this)]);
       await this.cancelHumanInputs();
       // Unsettled turns are still charged from their durable receipts below.
       await this.flushBilling(invocation);
@@ -415,5 +417,6 @@ export async function wakeImpl(this: AgentRuntime, invocation: AgentInvocation) 
         );
       }
     }
+    await wakeIdleCompaction(this);
     await this.arm(undefined, invocation);
   }

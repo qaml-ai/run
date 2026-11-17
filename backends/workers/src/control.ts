@@ -200,6 +200,7 @@ export class Directory {
     if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     // An upsert that leaves its queue out keeps the one the agent has, as for its language.
     if (fields.queue === undefined && previousConfig?.queue !== undefined) config.queue = previousConfig.queue;
+    if (fields.idleCompaction === undefined && previousConfig?.idleCompaction !== undefined) config.idleCompaction = previousConfig.idleCompaction;
     if (fields.subject === undefined && previousConfig?.subject) config.subject = previousConfig.subject;
     const resolvedModel = await prepareApply(`agent-model:${JSON.stringify([this.tenantId, config, previousConfig?.model, previousEntry?.resolvedModel, fields.model === undefined])}`,
       () => validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined }));
@@ -224,6 +225,7 @@ export class Directory {
       if (fields.model === undefined) delete target.model;
       if (fields.language === undefined) delete target.language;
       if (fields.queue === undefined) delete target.queue;
+      if (fields.idleCompaction === undefined) delete target.idleCompaction;
       if (fields.metadata === undefined) delete target.metadata;
       const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
         method: 'POST', headers: { 'content-type': 'application/json' },

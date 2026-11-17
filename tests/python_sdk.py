@@ -18,6 +18,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -1764,6 +1765,67 @@ class SettlementPendingTest(unittest.IsolatedAsyncioTestCase):
                 client.close()
 
         await asyncio.to_thread(check_sync)
+
+
+class IdleCompactionSettingTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.session = {"id": "client_" + "a" * 40, "token": "agent-token", "expiresAt": None}
+        self.provisioning = []
+        self.configurations = []
+        self.transport = httpx.MockTransport(self.answer)
+
+    def answer(self, request):
+        self.assertEqual(request.method, "POST")
+        body = json.loads(request.content)
+        if request.url.path == "/v1/agents":
+            self.provisioning.append(body)
+            return httpx.Response(200, json=self.session)
+        self.assertEqual(request.url.path, f"/clients/{self.session['id']}/requests")
+        self.assertEqual(body["method"], "configure")
+        self.configurations.append(body["params"])
+        return httpx.Response(200, json={"id": body["id"], "state": "completed", "outcome": {"result": {}}})
+
+    def assert_provisioning_setting(self):
+        self.assertEqual(len(self.provisioning), 2)
+        self.assertIs(self.provisioning[0]["idleCompaction"], False)
+        self.assertNotIn("idleCompaction", self.provisioning[1])
+
+    async def test_create(self):
+        async with AgentRuntime(url="https://runtime.example", api_key="tenant-token") as runtime:
+            await runtime.http.aclose()
+            runtime.http = httpx.AsyncClient(transport=self.transport)
+            with patch.object(AgentClient, "connect", return_value=None):
+                await runtime.create_agent(tools=[], idle_compaction=False)
+                await runtime.create_agent(tools=[])
+        self.assert_provisioning_setting()
+
+    async def test_async_upsert_and_configure(self):
+        async with Agents(url="https://runtime.example", api_key="tenant-token") as agents:
+            await agents.runtime.http.aclose()
+            agents.runtime.http = httpx.AsyncClient(transport=self.transport)
+            agent = await agents.upsert("opt-out", idle_compaction=False)
+            await agents.upsert("default")
+            await agent.client.http.aclose()
+            agent.client.http = httpx.AsyncClient(transport=self.transport)
+            await agent.configure(idle_compaction=False)
+            await agent.configure(idle_compaction=True)
+            await agent.configure(instructions="Updated instructions")
+        self.assert_provisioning_setting()
+        self.assertEqual(self.configurations, [{"idleCompaction": False}, {"idleCompaction": True}, {"systemPrompt": "Updated instructions"}])
+
+    def test_sync_upsert_and_configure(self):
+        with sync.Agents(url="https://runtime.example", api_key="tenant-token") as agents:
+            agents.runtime.http.close()
+            agents.runtime.http = httpx.Client(transport=self.transport)
+            agent = agents.upsert("opt-out", idle_compaction=False)
+            agents.upsert("default")
+            agent.client.http.close()
+            agent.client.http = httpx.Client(transport=self.transport)
+            agent.configure(idle_compaction=False)
+            agent.configure(idle_compaction=True)
+            agent.configure(instructions="Updated instructions")
+        self.assert_provisioning_setting()
+        self.assertEqual(self.configurations, [{"idleCompaction": False}, {"idleCompaction": True}, {"systemPrompt": "Updated instructions"}])
 
 
 class PromptPayerTest(unittest.IsolatedAsyncioTestCase):

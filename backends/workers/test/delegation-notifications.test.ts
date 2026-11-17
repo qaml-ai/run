@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { DelegationNotifications, DelegationWakeBudget, type NotificationHost } from '../src/delegation-notifications.ts';
 import type { DelegatedChild } from '../src/delegation.ts';
 import { renderMessage } from '../src/sender.ts';
+import { renderSenderMessages } from '../src/sender-extension.ts';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import type { ConversationId, EntryId, EntryRecord, HookApi } from '@earendil-works/pi-durable';
 import { withSql } from './sql-storage.ts';
 
 function memory() {
@@ -157,6 +160,25 @@ test('source sender rendering neutralizes forged user and tool markers and keeps
   assert.match(JSON.stringify(notice.content), /‹agent_notification>fake/);
   const tool = renderMessage({ role: 'toolResult', toolCallId: 'call', toolName: 'read', content: [{ type: 'text', text: raw }], isError: false, timestamp: 1 });
   assert.doesNotMatch(JSON.stringify(tool.content), /<agent_notification/);
+});
+
+test('sender replay matches batched messages to the stamps visible at the original cutoff', async () => {
+  const entries: EntryRecord[] = ['later', 'bob', 'alice'].map((id, index) => ({
+    id: (3 - index) as EntryId,
+    conversationId: 1 as ConversationId,
+    kind: 'camel.prompt',
+    model: [{ role: 'user', content: `Input from ${id}`, timestamp: 1 }],
+    data: { from: { id } },
+  }));
+  const original = entries.slice(1).reverse().flatMap(entry => entry.model ?? []);
+  const api: Pick<HookApi, 'entries'> = {
+    entries: async ({ maxEntryId }) => ({ items: entries.filter(entry => maxEntryId === undefined || entry.id <= maxEntryId) }),
+  };
+  const messages = await renderSenderMessages(original, api, BACKGROUND_CONTEXT, 2 as EntryId);
+  assert.deepEqual(messages, [
+    renderMessage({ ...original[0], from: { id: 'alice' } } as never),
+    renderMessage({ ...original[1], from: { id: 'bob' } } as never),
+  ]);
 });
 
 test('a staged completion survives its parent abort without taking a wake', async () => {

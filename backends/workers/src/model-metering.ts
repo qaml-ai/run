@@ -42,7 +42,7 @@ export async function applyModelReceipt(env: KeyEnv, receipt: ModelReceipt, invo
 
 /** Every provider call, including Pi's native compaction, uses the source accounting stream. */
 export function meterProvider<P extends Provider<any>>(
-  provider: P, env: KeyEnv, context: () => Promise<ModelBillingContext>,
+  provider: P, env: KeyEnv, context: (idleCompaction?: boolean) => Promise<ModelBillingContext>,
   commit: (receipt: ModelReceipt, invocation: AgentInvocation) => Promise<void>,
   stopped?: (context: ModelBillingContext, stop: BillingRunStop) => Promise<void>,
   profile: <T>(action: () => T) => T = action => action(),
@@ -50,7 +50,7 @@ export function meterProvider<P extends Provider<any>>(
   const wrap = (stream: P['stream']) => ((model: Model<any>, transcript: any, options: any = {}) => {
     const output = createAssistantMessageEventStream();
     void profile(() => AgentInvocation.run(async invocation => {
-      const identity = await context();
+      const identity = await context(options.idleCompaction === true);
       const service = await modelAttempts(env, invocation);
       // The watchdog can return before provider accounting finishes. Own those
       // connections here, while sharing the tenant policy read from preflight.
