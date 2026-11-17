@@ -1,0 +1,29 @@
+{
+  "name": "@camelai/camelrun-next",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:worker": "XDG_CONFIG_HOME=/tmp/xdg WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run -c worker/wrangler.jsonc --outdir dist/worker",
+    "test:go": "cd camelfsd && go test ./...",
+    "test:ts": "XDG_CONFIG_HOME=/tmp/xdg WRANGLER_LOG_PATH=.wrangler/logs node --experimental-strip-types --disable-warning=ExperimentalWarning --test 'tests/*.test.ts'",
+    "test": "npm run typecheck && npm run test:go && npm run test:ts",
+    "bench:cf": "node scripts/bench-cloudflare.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "hono": "^4.13.16",
+    "jose": "^6.2.15",
+    "quickjs-wasi": "3.6.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@types/node": "^22",
+    "miniflare": "*",
+    "typescript": "^5.9.3",
+    "wrangler": "4.157.0",
+    "ws": "8.21.0"
+  }
+}

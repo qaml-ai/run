@@ -1,0 +1,55 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-worker-v2",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-01",
+  "compatibility_flags": ["nodejs_compat", "enhanced_error_serialization"],
+  "vars": {
+    "ADMIN_SECRET": "dev-admin-secret",
+    "VAULT_SECRET": "dev-vault-secret-change-in-production-32b",
+    "CAMELFS_URL": "http://127.0.0.1:8790",
+    "CAMELFS_SIGNING_KEY": "",
+    "CAMELFS_DEV_TOKEN": "dev-camelfs-token",
+    "DEFAULT_MODEL": "openrouter/meta/muse-ember"
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "camelrun-media-v2"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "EVENTS_QUEUE",
+        "queue": "camelrun-events-v2"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "camelrun-events-v2",
+        "max_batch_size": 25,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TENANT_DO",
+        "class_name": "TenantDO"
+      },
+      {
+        "name": "AGENT_DO",
+        "class_name": "AgentDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["TenantDO", "AgentDO"]
+    }
+  ]
+}

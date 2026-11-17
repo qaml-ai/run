@@ -1,0 +1,157 @@
+{
+  "workerName": "camelrun-v2-temp-bench-0563b277",
+  "baseUrl": "https://camelrun-v2-temp-bench-0563b277.miguel-85b.workers.dev",
+  "edgeColo": "PHX",
+  "deployMs": 5195.5,
+  "hasOpenRouterKey": true,
+  "benchmarks": {
+    "edgeHealthRttMs": {
+      "n": 10,
+      "min": 45.1,
+      "p50": 115.2,
+      "p95": 448.8,
+      "max": 448.8,
+      "mean": 136.3
+    },
+    "coldTenantProvisionMs": 333.9,
+    "coldAgentCreateSequentialMs": {
+      "n": 10,
+      "min": 359.4,
+      "p50": 521.1,
+      "p95": 710.1,
+      "max": 710.1,
+      "mean": 527.9
+    },
+    "coldAgentCreateBurst10": {
+      "wallClockForAll10Ms": 757.3,
+      "perAgentMs": {
+        "n": 10,
+        "min": 461.3,
+        "p50": 611.5,
+        "p95": 755.9,
+        "max": 755.9,
+        "mean": 618.1
+      }
+    },
+    "warmAgentGetMs": {
+      "n": 10,
+      "min": 94.2,
+      "p50": 105.5,
+      "p95": 164.1,
+      "max": 164.1,
+      "mean": 116.4
+    },
+    "instantForkAgentOnlyMs": {
+      "n": 5,
+      "min": 362,
+      "p50": 424,
+      "p95": 525.1,
+      "max": 525.1,
+      "mean": 448.9
+    },
+    "quickjsCodemodeMs": {
+      "coldFirstIsolateMs": 123.6,
+      "warmMs": {
+        "n": 5,
+        "min": 105,
+        "p50": 110.3,
+        "p95": 117.2,
+        "max": 117.2,
+        "mean": 110.6
+      }
+    },
+    "coldAgentToWorkingLiveLLM": {
+      "agentCreateMs": 364.4,
+      "runStartedEventMs": 398.3,
+      "timeFromZeroToRunStartedMs": 762.7,
+      "clientTtftMs": 1725.3,
+      "edgeOnlyLlmTtftMs": 1358,
+      "timeFromZeroToFirstTokenMs": 2089.7,
+      "runTotalMs": 1749.6,
+      "endToEndFromZeroMs": 2115.3,
+      "reply": "READY"
+    },
+    "warmAgentStreamingTurnsLiveLLM": {
+      "runStartedMs": {
+        "n": 3,
+        "min": 188.6,
+        "p50": 189.9,
+        "p95": 253.8,
+        "max": 253.8,
+        "mean": 210.8
+      },
+      "clientTtftMs": {
+        "n": 3,
+        "min": 1136.4,
+        "p50": 1203.2,
+        "p95": 2262.5,
+        "max": 2262.5,
+        "mean": 1534
+      },
+      "edgeOnlyLlmTtftMs": {
+        "n": 3,
+        "min": 906,
+        "p50": 1021,
+        "p95": 2052,
+        "max": 2052,
+        "mean": 1326.3
+      },
+      "totalTurnMs": {
+        "n": 3,
+        "min": 1159.2,
+        "p50": 1221.4,
+        "p95": 2310.1,
+        "max": 2310.1,
+        "mean": 1563.6
+      }
+    },
+    "parallel5AgentsCreateAndWorkLiveLLM": {
+      "wallClockAll5CompletedMs": 10899.1,
+      "zeroToRunStartedMs": {
+        "n": 5,
+        "min": 746.1,
+        "p50": 767,
+        "p95": 5798.2,
+        "max": 5798.2,
+        "mean": 2613.3
+      },
+      "zeroToFirstTokenMs": {
+        "n": 5,
+        "min": 1656,
+        "p50": 1978.9,
+        "p95": 10897.5,
+        "max": 10897.5,
+        "mean": 4569.9
+      },
+      "zeroToCompletedMs": {
+        "n": 5,
+        "min": 1716.3,
+        "p50": 2013.6,
+        "p95": 10898.1,
+        "max": 10898.1,
+        "mean": 4613.2
+      }
+    },
+    "camelfsAndVmOverTunnel": {
+      "note": "camelfsd hosted on miguel-agents VM via ephemeral trycloudflare tunnel (includes Edge<->VM tunnel RTT)",
+      "repoCreateMs": 435,
+      "agentWithRepoCreateMs": 484.4,
+      "coldWriteAndVmBashCommitMs": 782.8,
+      "warmVmBashAndAtomicCommitMs": {
+        "n": 5,
+        "min": 251.8,
+        "p50": 296.8,
+        "p95": 335.1,
+        "max": 335.1,
+        "mean": 298.1
+      },
+      "instantAgentPlusRepoForkMs": 821.4,
+      "liveAgentBashToolTurn": {
+        "runStartedMs": 221,
+        "firstToolCallMs": null,
+        "totalTurnWithBashAndLlmMs": 2386.5,
+        "reply": "Running that command to get the line count.6"
+      }
+    }
+  }
+}

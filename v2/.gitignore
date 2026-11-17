@@ -1,0 +1,8 @@
+node_modules
+.wrangler/
+dist/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+camelfsd/bin/
+.DS_Store
