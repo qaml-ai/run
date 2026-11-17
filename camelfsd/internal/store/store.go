@@ -42,13 +42,24 @@ func guestManifest(key string) bool {
 
 func valid(k string) bool {
 	_, p, h, ok := splitKey(k)
-	return ok && ((p == "c" || p == "r" || p == "p") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts" || p == "tr") && root.Hex(h, 40))
+	return ok && ((p == "c" || p == "r" || p == "p" || p == "i" || p == "w") && root.Hex(h, 64) || (p == "o" || p == "t" || p == "k" || p == "ts" || p == "tr") && root.Hex(h, 40))
 }
 func verify(k string, b []byte) error {
 	if !valid(k) {
 		return fmt.Errorf("invalid key")
 	}
 	_, p, h, _ := splitKey(k)
+	if p == "i" {
+		d, err := decodeWorkspaceImage(b)
+		if err != nil {
+			return err
+		}
+		key, err := d.key()
+		if err != nil || d.Lineage+"/"+key != k {
+			return fmt.Errorf("workspace image identity mismatch")
+		}
+		return nil
+	}
 	if p == "tr" {
 		if !root.Hex(string(b), 64) {
 			return fmt.Errorf("invalid tree root")
@@ -256,10 +267,13 @@ func (l Local) Put(c context.Context, k string, b []byte) error {
 		}
 	}
 	path := filepath.Join(l.Dir, k)
-	if kind == "tr" || kind == "p" {
+	if kind == "tr" || kind == "p" || kind == "i" || kind == "w" {
 		e := atomicFile(path, b, os.Link)
 		if errors.Is(e, os.ErrExist) {
 			return nil
+		}
+		if e == nil && (kind == "i" || kind == "w") {
+			e = SyncDir(filepath.Dir(path))
 		}
 		return ioFailure(e)
 	}
@@ -377,7 +391,7 @@ func (s *S3) Put(c context.Context, k string, b []byte) error {
 	key := s.key(k)
 	input := &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key, Body: bytes.NewReader(b)}
 	_, kind, _, _ := splitKey(k)
-	immutable := kind == "tr" || kind == "p"
+	immutable := kind == "tr" || kind == "p" || kind == "i" || kind == "w"
 	if immutable {
 		input.IfNoneMatch = aws.String("*")
 	}

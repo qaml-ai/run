@@ -293,12 +293,13 @@ run "roles_and_policies" {
   }
   assert {
     condition = (
-      toset(flatten([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "LineageObjectsReadWrite"])) == toset([for kind in ["o", "p", "t", "k", "r", "c", "ts", "tr"] : "arn:aws:s3:::camelfs-prod-904534089871/*/${kind}/*"])
+      toset(flatten([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "LineageObjectsReadWrite"])) == toset([for kind in ["o", "p", "t", "k", "r", "c", "ts", "tr", "i", "w"] : "arn:aws:s3:::camelfs-prod-904534089871/*/${kind}/*"])
+      && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "AbortWorkspaceImageUpload"] == [["arn:aws:s3:::camelfs-prod-904534089871/*/w/*"]]
       && [for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Resource if statement.Sid == "GuestImageRead"] == [["arn:aws:s3:::camelfs-prod-904534089871/guest/*"]]
       && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Effect == "Allow" && contains(flatten([statement.Resource]), "arn:aws:s3:::camelfs-prod-904534089871/*")])
-      && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Effect == "Allow" && anytrue([for action in flatten([statement.Action]) : startswith(action, "s3:") && !contains(["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes", "s3:ListBucket"], action)])])
+      && !anytrue([for statement in jsondecode(aws_iam_policy.host.policy).Statement : statement.Effect == "Allow" && anytrue([for action in flatten([statement.Action]) : startswith(action, "s3:") && !contains(["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes", "s3:ListBucket", "s3:AbortMultipartUpload"], action)])])
     )
-    error_message = "The host writes and reads only <lineage>/{o,t,k,r,c,ts,tr}/* and reads guest/*; never the whole bucket, never any other S3 action: everything else is denied by omission."
+    error_message = "The host writes and reads only explicit lineage kinds and reads guest/*; multipart abort is scoped to derived workspace payloads."
   }
   assert {
     condition = (
