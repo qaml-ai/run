@@ -271,7 +271,7 @@ func TestWorkspaceImageDescriptorIdentity(t *testing.T) {
 }
 
 func TestWorkspaceImageMultipartPublication(t *testing.T) {
-	for _, fault := range []string{"", "part", "complete"} {
+	for _, fault := range []string{"", "part", "complete", "abort"} {
 		t.Run(fault, func(t *testing.T) {
 			d, f := workspaceFixture(t, "multipart bytes")
 			var calls []string
@@ -301,7 +301,7 @@ func TestWorkspaceImageMultipartPublication(t *testing.T) {
 					if r.Header.Get("If-None-Match") != "*" {
 						t.Error("multipart completion was not conditional")
 					}
-					if fault == "complete" {
+					if fault == "complete" || fault == "abort" {
 						w.WriteHeader(412)
 						io.WriteString(w, "<Error><Code>PreconditionFailed</Code></Error>")
 						return
@@ -309,6 +309,11 @@ func TestWorkspaceImageMultipartPublication(t *testing.T) {
 					io.WriteString(w, `<CompleteMultipartUploadResult><ETag>"final"</ETag></CompleteMultipartUploadResult>`)
 				case r.Method == "DELETE" && q.Get("uploadId") == "owned-upload":
 					calls = append(calls, "abort")
+					if fault == "abort" {
+						w.WriteHeader(403)
+						io.WriteString(w, "<Error><Code>AccessDenied</Code></Error>")
+						return
+					}
 					w.WriteHeader(204)
 				default:
 					t.Errorf("unexpected multipart request %s %s", r.Method, r.URL)
@@ -320,7 +325,7 @@ func TestWorkspaceImageMultipartPublication(t *testing.T) {
 			if fault == "part" {
 				expected = "create,part,abort"
 			}
-			if fault == "complete" {
+			if fault == "complete" || fault == "abort" {
 				expected += ",abort"
 			}
 			if strings.Join(calls, ",") != expected || (err != nil) != (fault != "") {
@@ -329,6 +334,11 @@ func TestWorkspaceImageMultipartPublication(t *testing.T) {
 			if fault == "complete" {
 				if exists, _ := conditionalConflict(err); !exists {
 					t.Fatalf("lost concurrent winner status: %v", err)
+				}
+			}
+			if fault == "abort" {
+				if exists, retry := conditionalConflict(err); exists || retry {
+					t.Fatalf("ignored multipart cleanup failure: %v", err)
 				}
 			}
 		})

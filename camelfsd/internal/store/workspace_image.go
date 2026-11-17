@@ -260,7 +260,11 @@ func (s *S3) multipartWorkspaceFile(ctx context.Context, key string, f *os.File,
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			_, abortErr := s.Client.AbortMultipartUpload(cleanup, &s3.AbortMultipartUploadInput{Bucket: &s.Bucket, Key: &key, UploadId: upload.UploadId})
-			err = errors.Join(err, abortErr)
+			if abortErr != nil {
+				// A cleanup failure must not be mistaken for the original 412/409
+				// and silently accepted as another publisher's successful upload.
+				err = fmt.Errorf("abort workspace image upload: %w (upload failed: %v)", abortErr, err)
+			}
 		}
 	}()
 	var parts []types.CompletedPart
