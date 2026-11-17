@@ -138,6 +138,45 @@ func TestBundleRoundTripInMemory(t *testing.T) {
 	checkBundleRoundTrip(t, &bundleTestDB{rows: make(map[string]locatorItem), retry: true}, "objects")
 }
 
+func TestBundleMaximumMembersSpanPacks(t *testing.T) {
+	raw := Local{Dir: t.TempDir()}
+	db := &bundleTestDB{rows: make(map[string]locatorItem)}
+	s := ForLineage(WithBundles(raw, db, "objects"), "medium")
+	blobs := make([]SmallBlob, 9)
+	ids := make([]string, len(blobs))
+	for i := range blobs {
+		blobs[i] = newSmall(bytes.Repeat([]byte{byte(i)}, BundleMaxBlob))
+		ids[i] = smallID(blobs[i])
+	}
+	if _, err := PutSmallBlobs(t.Context(), s, blobs); err != nil {
+		t.Fatal(err)
+	}
+	locations, err := LocateBundlesForRestore(t.Context(), s, ids)
+	if err != nil || len(locations) != len(blobs) {
+		t.Fatalf("locations = %d, %v", len(locations), err)
+	}
+	packs := make(map[string]bool)
+	for _, blob := range blobs {
+		ref := locations[smallID(blob)]
+		if !ValidateBundleRef(ref) || ref.Size != BundleMaxBlob {
+			t.Fatalf("maximum member location = %+v", ref)
+		}
+		packs[ref.Key] = true
+		got, err := ReadBundleMember(t.Context(), s, smallID(blob), ref)
+		if err != nil || !bytes.Equal(got, blob.Data) {
+			t.Fatalf("maximum member read = %d bytes, %v", len(got), err)
+		}
+	}
+	wantPacks := (len(blobs)*BundleMaxBlob + BundleTargetBytes - 1) / BundleTargetBytes
+	if len(packs) != wantPacks {
+		t.Fatalf("maximum members used %d packs, want %d", len(packs), wantPacks)
+	}
+	tooLarge := newSmall(make([]byte, BundleMaxBlob+1))
+	if _, err := PutSmallBlobs(t.Context(), s, []SmallBlob{tooLarge}); err == nil {
+		t.Fatal("accepted a member above the maximum")
+	}
+}
+
 func checkBundleRoundTrip(t *testing.T, db BundleDB, table string) {
 	ctx := t.Context()
 	raw := Local{Dir: t.TempDir()}

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	BundleMaxBlob     = 64 << 10
+	BundleMaxBlob     = 1 << 20
 	BundleTargetBytes = 8 << 20
 	bundleConcurrency = 32
 )

@@ -131,8 +131,36 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 		t.Logf("seed bundles: %d blobs in %d packs", len(locations), len(packs))
 	}
+	mediumIDs := make([]string, 0, mb-40)
 	for i := 0; i < mb-40; i++ {
-		blobs = append(blobs, fmt.Sprintf("%d assets/a%04d.bin", 1<<20, i))
+		path := fmt.Sprintf("assets/a%04d.bin", i)
+		if objectsTable == "" {
+			blobs = append(blobs, fmt.Sprintf("%d %s", 1<<20, path))
+			continue
+		}
+		raw, err := seedBytes(path, 1<<20)
+		must(err)
+		blob := batch.StageBlob(raw)
+		mediumIDs = append(mediumIDs, blob.SHA1)
+		sum := sha256.Sum256(raw)
+		files[path] = objects.File{SHA256: hex.EncodeToString(sum[:])}
+	}
+	if objectsTable != "" {
+		must(batch.Flush(ctx))
+		locations, err := store.LocateBundlesForRestore(ctx, store.ForLineage(remote, lineage), mediumIDs)
+		must(err)
+		packs := make(map[string]bool)
+		for _, location := range locations {
+			if !store.ValidateBundleRef(location) || location.Size != 1<<20 {
+				t.Fatalf("invalid medium blob location: %+v", location)
+			}
+			packs[location.Key] = true
+		}
+		wantPacks := (mb - 40 + 7) / 8
+		if len(locations) != len(mediumIDs) || len(packs) != wantPacks {
+			t.Fatalf("bundled %d of %d medium blobs in %d packs, want %d", len(locations), len(mediumIDs), len(packs), wantPacks)
+		}
+		t.Logf("seed medium bundles: %d blobs in %d packs, max_blob_bytes=%d target_bytes=%d", len(locations), len(packs), store.BundleMaxBlob, store.BundleTargetBytes)
 	}
 	must(store.Parallel(ctx, 64, blobs, func(item string) error {
 		sizeField, path, _ := strings.Cut(item, " ")
