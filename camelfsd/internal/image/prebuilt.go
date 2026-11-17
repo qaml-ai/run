@@ -73,7 +73,7 @@ func (m *Manager) preparePrebuiltImage(ctx context.Context, q Request) (id strin
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	id = descriptor.RawSHA256
+	id = descriptor.ImageSHA256
 	m.protect(q.JobID, id)
 	if err := syncImage(imagePath); err != nil {
 		return "", err

@@ -29,7 +29,7 @@ func TestPrebuiltMountRejectsInvalidPayloadSizeBeforeRanges(t *testing.T) {
 			body := []byte("payload with a deliberately false descriptor length")
 			sha := root.Hash(body)
 			descriptor := store.WorkspaceImage{Format: store.WorkspaceImageFormat, Lineage: "l", Tree: tree.Tree,
-				Blob: "w/" + sha, SHA256: sha, RawSHA256: strings.Repeat("d", 64), VirtualSize: m.VirtualSize,
+				Blob: "w/" + sha, SHA256: sha, ImageSHA256: strings.Repeat("d", 64), VirtualSize: m.VirtualSize,
 				StoredSize: int64(len(body))}
 			if fault != "missing-payload" {
 				if err := source.Put(t.Context(), "l/"+descriptor.Blob, body); err != nil {

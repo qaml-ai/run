@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,18 +18,27 @@ import (
 func TestDecodePrebuiltImageIntegrity(t *testing.T) {
 	raw := make([]byte, 256<<10)
 	copy(raw[70000:], "verified workspace image")
+	input, err := os.CreateTemp(t.TempDir(), "sparse-image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	if _, err := input.Write(raw); err != nil {
+		t.Fatal(err)
+	}
 	var encoded bytes.Buffer
+	imageHash := sha256.New()
 	z := gzip.NewWriter(&encoded)
-	if _, err := z.Write(raw); err != nil {
+	if err := WriteSparseImage(t.Context(), io.MultiWriter(z, imageHash), input, int64(len(raw))); err != nil {
 		t.Fatal(err)
 	}
 	if err := z.Close(); err != nil {
 		t.Fatal(err)
 	}
-	encodedSum, rawSum := sha256.Sum256(encoded.Bytes()), sha256.Sum256(raw)
-	descriptor := store.WorkspaceImage{SHA256: hex.EncodeToString(encodedSum[:]), RawSHA256: hex.EncodeToString(rawSum[:]),
+	encodedSum := sha256.Sum256(encoded.Bytes())
+	descriptor := store.WorkspaceImage{SHA256: hex.EncodeToString(encodedSum[:]), ImageSHA256: hex.EncodeToString(imageHash.Sum(nil)),
 		StoredSize: int64(encoded.Len()), VirtualSize: int64(len(raw))}
-	for _, fault := range []string{"", "stored-digest", "raw-digest", "short-image", "long-image", "truncated-footer", "checksum", "trailing-bytes", "cancelled"} {
+	for _, fault := range []string{"", "stored-digest", "image-digest", "short-image", "long-image", "truncated-footer", "checksum", "trailing-bytes", "cancelled"} {
 		t.Run(fault, func(t *testing.T) {
 			want := descriptor
 			body := append([]byte(nil), encoded.Bytes()...)
@@ -36,8 +46,8 @@ func TestDecodePrebuiltImageIntegrity(t *testing.T) {
 			switch fault {
 			case "stored-digest":
 				want.SHA256 = strings.Repeat("a", 64)
-			case "raw-digest":
-				want.RawSHA256 = strings.Repeat("a", 64)
+			case "image-digest":
+				want.ImageSHA256 = strings.Repeat("a", 64)
 			case "short-image":
 				want.VirtualSize--
 			case "long-image":
@@ -55,7 +65,7 @@ func TestDecodePrebuiltImageIntegrity(t *testing.T) {
 			}
 			if fault == "truncated-footer" || fault == "checksum" || fault == "trailing-bytes" {
 				// Even a matching advertised encoded digest must not mask a
-				// structurally invalid gzip stream after all raw bytes arrived.
+				// structurally invalid gzip stream after all sparse records arrived.
 				sum := sha256.Sum256(body)
 				want.SHA256, want.StoredSize = hex.EncodeToString(sum[:]), int64(len(body))
 			}

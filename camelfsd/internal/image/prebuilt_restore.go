@@ -1,7 +1,6 @@
 package image
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -79,45 +78,19 @@ func decodePrebuiltImage(ctx context.Context, input io.Reader, descriptor store.
 			os.Remove(path)
 		}
 	}()
-	storedHash, rawHash := sha256.New(), sha256.New()
+	storedHash, imageHash := sha256.New(), sha256.New()
 	limited := &io.LimitedReader{R: io.TeeReader(input, storedHash), N: descriptor.StoredSize + 1}
 	z, err := gzip.NewReader(limited)
 	if err != nil {
 		return err
 	}
 	defer z.Close()
-	buffer, zero := make([]byte, 64<<10), make([]byte, 64<<10)
-	var size int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		n, readErr := z.Read(buffer)
-		if int64(n) > descriptor.VirtualSize-size {
-			return fmt.Errorf("workspace image exceeds declared size")
-		}
-		if n > 0 {
-			rawHash.Write(buffer[:n])
-			if !bytes.Equal(buffer[:n], zero[:n]) {
-				if _, err := file.WriteAt(buffer[:n], size); err != nil {
-					return err
-				}
-			}
-		}
-		size += int64(n)
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
-	if size != descriptor.VirtualSize || limited.N != 1 || hex.EncodeToString(storedHash.Sum(nil)) != descriptor.SHA256 ||
-		hex.EncodeToString(rawHash.Sum(nil)) != descriptor.RawSHA256 {
-		return fmt.Errorf("workspace image digest or size mismatch")
-	}
-	if err := file.Truncate(size); err != nil {
+	if err := ReadSparseImage(ctx, io.TeeReader(z, imageHash), file, descriptor.VirtualSize); err != nil {
 		return err
+	}
+	if limited.N != 1 || hex.EncodeToString(storedHash.Sum(nil)) != descriptor.SHA256 ||
+		hex.EncodeToString(imageHash.Sum(nil)) != descriptor.ImageSHA256 {
+		return fmt.Errorf("workspace image digest or size mismatch")
 	}
 	if err := file.Sync(); err != nil {
 		return err

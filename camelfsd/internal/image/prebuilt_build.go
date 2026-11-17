@@ -136,7 +136,7 @@ func (m *Manager) buildPrebuiltImage(ctx context.Context, q Request, dir string)
 		return out, err
 	}
 	defer artifact.Close()
-	storedHash, rawHash := sha256.New(), sha256.New()
+	storedHash, imageHash := sha256.New(), sha256.New()
 	z, err := gzip.NewWriterLevel(io.MultiWriter(artifact, storedHash), gzip.BestSpeed)
 	if err != nil {
 		return out, err
@@ -145,10 +145,10 @@ func (m *Manager) buildPrebuiltImage(ctx context.Context, q Request, dir string)
 	if err != nil {
 		return out, err
 	}
-	n, copyErr := io.Copy(io.MultiWriter(z, rawHash), prebuiltReader{ctx, input})
+	encodeErr := WriteSparseImage(ctx, io.MultiWriter(z, imageHash), input, m.VirtualSize)
 	inputErr, gzipErr := input.Close(), z.Close()
-	if copyErr != nil || inputErr != nil || gzipErr != nil || n != m.VirtualSize {
-		return out, fmt.Errorf("compress workspace image: bytes=%d read=%v close=%v gzip=%v", n, copyErr, inputErr, gzipErr)
+	if encodeErr != nil || inputErr != nil || gzipErr != nil {
+		return out, fmt.Errorf("compress sparse workspace image: encode=%v close=%v gzip=%v", encodeErr, inputErr, gzipErr)
 	}
 	if err := artifact.Sync(); err != nil {
 		return out, err
@@ -159,7 +159,7 @@ func (m *Manager) buildPrebuiltImage(ctx context.Context, q Request, dir string)
 	}
 	out.descriptor = store.WorkspaceImage{Format: store.WorkspaceImageFormat, Lineage: q.Lineage, Tree: q.Tree,
 		VirtualSize: m.VirtualSize, StoredSize: info.Size(), SHA256: hex.EncodeToString(storedHash.Sum(nil)),
-		RawSHA256: hex.EncodeToString(rawHash.Sum(nil))}
+		ImageSHA256: hex.EncodeToString(imageHash.Sum(nil))}
 	out.descriptor.Blob = "w/" + out.descriptor.SHA256
 	return out, artifact.Close()
 }
