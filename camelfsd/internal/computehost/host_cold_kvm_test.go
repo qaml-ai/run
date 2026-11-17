@@ -268,10 +268,22 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		if cleanImage != nil {
 			start := time.Now()
 			client, bucket, _ := portableImageS3(t, url)
-			reply, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(cleanKey)})
-			must(err)
-			must(restorePortableImage(ctx, reply.Body, *cleanImage, data, lineage))
-			must(reply.Body.Close())
+			if os.Getenv("CAMELFSD_KVM_IMAGE_RANGES") == "1" {
+				fetch := time.Now()
+				spool, ranges, err := downloadPortableRanges(ctx, client, bucket, cleanKey, data, cleanImage.CompressedSize)
+				must(err)
+				fetchTime := time.Since(fetch)
+				err = restorePortableImage(ctx, spool, *cleanImage, data, lineage)
+				spool.Close()
+				os.Remove(spool.Name())
+				must(err)
+				t.Logf("CLEAN_IMAGE_RANGE_FETCH ranges=%d ms=%d", ranges, fetchTime.Milliseconds())
+			} else {
+				reply, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(cleanKey)})
+				must(err)
+				must(restorePortableImage(ctx, reply.Body, *cleanImage, data, lineage))
+				must(reply.Body.Close())
+			}
 			restore = time.Since(start)
 			t.Logf("CLEAN_IMAGE_RESTORE tree=%s compressed_bytes=%d transfer_restore_ms=%d", cleanImage.Tree, cleanImage.CompressedSize, restore.Milliseconds())
 		}

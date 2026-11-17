@@ -522,7 +522,7 @@ func TestDDBPortableImageLargeLooseBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	image, err := buildPortableImage(ctx, repo, source, version, tree.Tree, t.TempDir(), 256<<20)
+	image, err := buildPortableImage(ctx, repo, source, version, tree.Tree, t.TempDir(), 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
