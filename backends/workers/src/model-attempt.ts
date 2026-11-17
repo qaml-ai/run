@@ -2,7 +2,7 @@
 /** The host can describe usage, but never chooses the tenant, key owner or billing policy. */
 /** Begin records the input estimate and the runtime-selected payer. Progress keeps the attempt active. */
 export type ModelAttemptEvent =
-  | { type: "begin"; id: string; provider: string; model: string; kind: "response" | "compaction"; at: number; keyHash: string; reconciliationDisabled?: string; reconciliationEligible?: boolean; context?: Pick<import("./money-host.ts").UsageRecord, "requestId" | "actor" | "identity" | "keyScope" | "bucket">; estimate?: AttemptEstimate; endUser?: { id: string; bucket: string } }
+  | { type: "begin"; id: string; provider: string; model: string; kind: "response" | "compaction"; background?: boolean; at: number; keyHash: string; reconciliationDisabled?: string; reconciliationEligible?: boolean; context?: Pick<import("./money-host.ts").UsageRecord, "requestId" | "actor" | "identity" | "keyScope" | "bucket">; estimate?: AttemptEstimate; endUser?: { id: string; bucket: string } }
   | { type: "generation"; id: string; generation: string }
   | { type: "progress"; id: string; chars: number }
   /**

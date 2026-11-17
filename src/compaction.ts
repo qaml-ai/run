@@ -16,7 +16,7 @@ import { capRequestImages } from "./request-images.ts";
 import { MODEL_INTERRUPTED } from "./model-errors.ts";
 import { deepseekContext, deepseekTarget } from "./deepseek-replay.ts";
 import { createHash } from "node:crypto";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type TranscriptContext } from "@earendil-works/pi-ai";
 import { IDLE_COMPACTION_CALL, IDLE_COMPACTION_SKIPPED, IDLE_SUMMARY_PROMPT, idleRequestOptions, type CachedRequest, type IdleCompactionDispatch } from "./model-idle-compaction.ts";
 import { modelIdlePayload, readModelIdleCache } from "./model-idle-compaction-payload.ts";
 
@@ -49,6 +49,16 @@ export function contextTokens(messages: AgentMessage[], fixedTokens = 0): number
 function fileChars(message: AgentMessage): number {
   const content = (message as { content?: unknown }).content;
   return Array.isArray(content) ? content.reduce((sum: number, block) => sum + (validFileRef(block) ? charsOf(block) : 0), 0) : 0;
+}
+
+/** Estimate the request's input and output hold, using an observed cached prefix when supplied. */
+export function estimateModelAttempt(model: Model<Api>, context: TranscriptContext, options: { maxTokens?: number }, cachedTokensOverride?: number) {
+  const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
+    ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
+  // The prefix the previous response read from or wrote to the provider's cache is likely read from it now, at its rate.
+  const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
+  const inputTokens = input(), cachedTokens = Math.min(inputTokens, cachedTokensOverride ?? (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
+  return { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
 }
 
 /** Where a call to a tenant's own endpoint carries its identity token, besides where the provider takes its key. */
@@ -309,12 +319,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
     // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
     // What the request's context comes to, as the host estimates it: the input billed when provider usage is missing.
-    const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
-      ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
-    // The prefix the previous response read from or wrote to the provider's cache is likely read from it now, at its rate.
-    const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
-    const inputTokens = input(), cachedTokens = Math.min(inputTokens, replay ? replay.replay.cachedTokens : (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
-    const estimate = { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
+    const estimate = estimateModelAttempt(model, context, options, replay?.replay.cachedTokens);
     const call = async (credentials: Credentials) => {
       let cachedRequest: CachedRequest | undefined;
       const headers = modelHeaders?.();
