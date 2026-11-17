@@ -1,0 +1,81 @@
+"""One serial NBD connection owns the writable disk. Checkpoints inspect it only while frozen."""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from volume import CHUNK, Volume, digest
+
+API_VERSION = 2
+
+
+def open(readonly):
+    return (
+        json.loads(Path(os.environ["TRIAL_MAP"]).read_bytes()),
+        Path(os.environ["TRIAL_CACHE"]),
+        Path(os.environ["TRIAL_DIRTY"]),
+        Volume(),
+    )
+
+
+def get_size(h):
+    return len(h[0]) * CHUNK
+
+
+def block(h, index):
+    blocks, cache, dirty, volume = h
+    path = dirty / str(index)
+    if path.exists():
+        return path.read_bytes()
+    key = blocks[index]
+    if key is None:
+        return bytes(CHUNK)
+    path = cache / key
+    if path.exists():
+        data = path.read_bytes()
+        if digest(data) != key:
+            raise OSError("NVMe cache integrity error")
+    else:
+        data = volume.read_object("blocks", key)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+    if len(data) != CHUNK:
+        raise OSError("bad chunk size")
+    return data
+
+
+def pread(h, buf, offset, flags):
+    done = 0
+    while done < len(buf):
+        index, start = divmod(offset + done, CHUNK)
+        n = min(CHUNK - start, len(buf) - done)
+        buf[done : done + n] = block(h, index)[start : start + n]
+        done += n
+
+
+def pwrite(h, buf, offset, flags):
+    done = 0
+    while done < len(buf):
+        index, start = divmod(offset + done, CHUNK)
+        n = min(CHUNK - start, len(buf) - done)
+        path = h[2] / str(index)
+        if not path.exists():
+            path.write_bytes(block(h, index))
+        with path.open("r+b") as f:
+            f.seek(start)
+            f.write(buf[done : done + n])
+        done += n
+
+
+def flush(h, flags):
+    for path in h[2].iterdir():
+        with path.open("rb") as f:
+            os.fsync(f.fileno())
+    fd = os.open(h[2], os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)

@@ -1,0 +1,41 @@
+{
+  "prefix": "unified-volume-trials/20261117-mwla7dbz-power",
+  "cases": [
+    {
+      "ref": "power-loss",
+      "edits": [
+        {
+          "ack": true,
+          "value": "67c7937365b74721967b177043421bfc",
+          "root": "9a8e365c8e2840e4acef67cdaec3ea0aa5c1451e95a910545f96ae61ba49f912",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 13401.934554999996,
+          "edit_and_bash_ms": 351.9926329999947,
+          "freeze_ms": 97.15974800000993,
+          "blocks_and_map_ms": 232.15747199999726,
+          "publish_ms": 39.44745500000124,
+          "thaw_ms": 12.78202999999678,
+          "elapsed_ms": 14135.787824000005
+        },
+        {
+          "ack": true,
+          "value": "702f9cecef294a5dbace69433120075d",
+          "root": "0b880da4c96db96c27182319d6b1d89444b00dd420e7d1a4b8b04b1e84a1898c",
+          "revision": 2,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 0.0005670000007285125,
+          "edit_and_bash_ms": 29.628314000007094,
+          "freeze_ms": 61.709948000000736,
+          "blocks_and_map_ms": 78.4421479999935,
+          "publish_ms": 34.65883200000519,
+          "thaw_ms": 13.018600999998853,
+          "elapsed_ms": 217.6901010000023
+        }
+      ],
+      "first_etag": "\"eb2c7a13a7e354a992758803d45aeab7\""
+    }
+  ],
+  "outer_vmm_signal": "SIGKILL",
+  "owner_ssh_exit": 255
+}
