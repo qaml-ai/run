@@ -1,0 +1,708 @@
+{
+  "lineages": [
+    "coldbench-50-1794938243240769380",
+    "coldbench-50-1794938675997082914",
+    "coldbench-500-1794938408883033601",
+    "coldbench-500-1794938839444296987"
+  ],
+  "trials": [
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 2193.897,
+      "commit": "03ec719dd77dd087847c8c12f2d0daa02280c5fa",
+      "tree": "b835150e14cbfd32447792d62f1d749b4ca4b0de"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 545.025,
+      "commit": "03ec719dd77dd087847c8c12f2d0daa02280c5fa",
+      "tree": "b835150e14cbfd32447792d62f1d749b4ca4b0de"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 2184.29,
+      "commit": "03ec719dd77dd087847c8c12f2d0daa02280c5fa",
+      "tree": "b835150e14cbfd32447792d62f1d749b4ca4b0de"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 4164.385,
+      "commit": "03ec719dd77dd087847c8c12f2d0daa02280c5fa",
+      "tree": "b835150e14cbfd32447792d62f1d749b4ca4b0de"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 561.138,
+      "commit": "03ec719dd77dd087847c8c12f2d0daa02280c5fa",
+      "tree": "b835150e14cbfd32447792d62f1d749b4ca4b0de"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 2062.991,
+      "commit": "03ec719dd77dd087847c8c12f2d0daa02280c5fa",
+      "tree": "b835150e14cbfd32447792d62f1d749b4ca4b0de"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 2314.672,
+      "commit": "9e20005a863347507768acaa0e2e3bb50a102126",
+      "tree": "35b09b283b69945dade17fddb91956fe5497f297"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 4067.458,
+      "commit": "9e20005a863347507768acaa0e2e3bb50a102126",
+      "tree": "35b09b283b69945dade17fddb91956fe5497f297"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 2145.182,
+      "commit": "c9202b485e85b61242e6bc535ef7581cdec71bab",
+      "tree": "53f46f4435885597677c0193483b1301dbb220d9"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 4308.785,
+      "commit": "c9202b485e85b61242e6bc535ef7581cdec71bab",
+      "tree": "53f46f4435885597677c0193483b1301dbb220d9"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 2298.726,
+      "commit": "c9202b485e85b61242e6bc535ef7581cdec71bab",
+      "tree": "53f46f4435885597677c0193483b1301dbb220d9"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 2163.751,
+      "commit": "0ceda880360a399eb04d3419c10a8c59694bd9bb",
+      "tree": "11f71ea2f6ff25be1d3e78fdc82aaa104a0d9f0e"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4419.261,
+      "commit": "0ceda880360a399eb04d3419c10a8c59694bd9bb",
+      "tree": "11f71ea2f6ff25be1d3e78fdc82aaa104a0d9f0e"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 2026.466,
+      "commit": "0ceda880360a399eb04d3419c10a8c59694bd9bb",
+      "tree": "11f71ea2f6ff25be1d3e78fdc82aaa104a0d9f0e"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "corrupt-prepare",
+      "firstReadMs": 1722.006,
+      "commit": "ee2fc40308f7e4e92965a3d0426bdd0824368afc",
+      "tree": "f90f5ad20153327eb930af419245d435d6d1584e"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 5323.786,
+      "commit": "c857825999420f4fd49b1306b707319b493a2928",
+      "tree": "63853e1150d262a212c93fbd929b1adbb54fadfd"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 556.197,
+      "commit": "c857825999420f4fd49b1306b707319b493a2928",
+      "tree": "63853e1150d262a212c93fbd929b1adbb54fadfd"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 6415.118,
+      "commit": "c857825999420f4fd49b1306b707319b493a2928",
+      "tree": "63853e1150d262a212c93fbd929b1adbb54fadfd"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 13996.705,
+      "commit": "c857825999420f4fd49b1306b707319b493a2928",
+      "tree": "63853e1150d262a212c93fbd929b1adbb54fadfd"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 554.986,
+      "commit": "c857825999420f4fd49b1306b707319b493a2928",
+      "tree": "63853e1150d262a212c93fbd929b1adbb54fadfd"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 3600.065,
+      "commit": "c857825999420f4fd49b1306b707319b493a2928",
+      "tree": "63853e1150d262a212c93fbd929b1adbb54fadfd"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 5235.921,
+      "commit": "176b9ee667c1047d32a008d16e6b83f947821513",
+      "tree": "68d7d3d11469cc691797f22a343bb51dec8b9558"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 15201.669,
+      "commit": "176b9ee667c1047d32a008d16e6b83f947821513",
+      "tree": "68d7d3d11469cc691797f22a343bb51dec8b9558"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 5375.076,
+      "commit": "03662e771cced3acf1eddae4466f4118bbd92b1a",
+      "tree": "335d491fede89712ab7e5180b392e7545a939d53"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 13563.618,
+      "commit": "03662e771cced3acf1eddae4466f4118bbd92b1a",
+      "tree": "335d491fede89712ab7e5180b392e7545a939d53"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 3857.082,
+      "commit": "03662e771cced3acf1eddae4466f4118bbd92b1a",
+      "tree": "335d491fede89712ab7e5180b392e7545a939d53"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 5939.331,
+      "commit": "a72c57d8b0dc61155e75302b69fd9ab9c28783c0",
+      "tree": "9e42494260d168c8446d923f4a790d7299cd57d4"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 14036.715,
+      "commit": "a72c57d8b0dc61155e75302b69fd9ab9c28783c0",
+      "tree": "9e42494260d168c8446d923f4a790d7299cd57d4"
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 3988.904,
+      "commit": "a72c57d8b0dc61155e75302b69fd9ab9c28783c0",
+      "tree": "9e42494260d168c8446d923f4a790d7299cd57d4"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 5343.773,
+      "commit": "5ee961153dd7e8277af8f3c3cdc85fa781b09775",
+      "tree": "95ded541a1c9391e74a825a396c750ddac679ad1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 556.429,
+      "commit": "5ee961153dd7e8277af8f3c3cdc85fa781b09775",
+      "tree": "95ded541a1c9391e74a825a396c750ddac679ad1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 2173.512,
+      "commit": "5ee961153dd7e8277af8f3c3cdc85fa781b09775",
+      "tree": "95ded541a1c9391e74a825a396c750ddac679ad1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 2277.289,
+      "commit": "5ee961153dd7e8277af8f3c3cdc85fa781b09775",
+      "tree": "95ded541a1c9391e74a825a396c750ddac679ad1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 538.824,
+      "commit": "5ee961153dd7e8277af8f3c3cdc85fa781b09775",
+      "tree": "95ded541a1c9391e74a825a396c750ddac679ad1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 2511.491,
+      "commit": "5ee961153dd7e8277af8f3c3cdc85fa781b09775",
+      "tree": "95ded541a1c9391e74a825a396c750ddac679ad1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 4716.952,
+      "commit": "39032e6a61c24c58c5b0cfec8865b4051a9a2690",
+      "tree": "febd3ed0377df0ef31ac985a34e3844e8d128840"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 2312.73,
+      "commit": "39032e6a61c24c58c5b0cfec8865b4051a9a2690",
+      "tree": "febd3ed0377df0ef31ac985a34e3844e8d128840"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 4290.166,
+      "commit": "9057a28e96d1398c2730a391c318252f3fe7d72b",
+      "tree": "209dcdb36891066b0f3e12bb718e5858c42338f3"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 2560.057,
+      "commit": "9057a28e96d1398c2730a391c318252f3fe7d72b",
+      "tree": "209dcdb36891066b0f3e12bb718e5858c42338f3"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 2007.495,
+      "commit": "9057a28e96d1398c2730a391c318252f3fe7d72b",
+      "tree": "209dcdb36891066b0f3e12bb718e5858c42338f3"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4761.281,
+      "commit": "1a198eabe4299af5f2e13638b761b65c9adb0a40",
+      "tree": "cb3b6e4cb59b60497f995747c39d443f67dc2e5b"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 2463.478,
+      "commit": "1a198eabe4299af5f2e13638b761b65c9adb0a40",
+      "tree": "cb3b6e4cb59b60497f995747c39d443f67dc2e5b"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 2118.167,
+      "commit": "1a198eabe4299af5f2e13638b761b65c9adb0a40",
+      "tree": "cb3b6e4cb59b60497f995747c39d443f67dc2e5b"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "corrupt-prepare",
+      "firstReadMs": 1815.903,
+      "commit": "7a884367e40ea886001be0c4b819d3b87d2c4f8d",
+      "tree": "2dbcd3525c3c5a80fec21fe8957f3d59d5809f2a"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 13945.983,
+      "commit": "6b353badbd327090304f1a2e1fe889f472d08819",
+      "tree": "9118fbde6e7555506bf56df6f83848c8d9aae381"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 630.615,
+      "commit": "6b353badbd327090304f1a2e1fe889f472d08819",
+      "tree": "9118fbde6e7555506bf56df6f83848c8d9aae381"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 4019.745,
+      "commit": "6b353badbd327090304f1a2e1fe889f472d08819",
+      "tree": "9118fbde6e7555506bf56df6f83848c8d9aae381"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 5365.631,
+      "commit": "6b353badbd327090304f1a2e1fe889f472d08819",
+      "tree": "9118fbde6e7555506bf56df6f83848c8d9aae381"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 534.195,
+      "commit": "6b353badbd327090304f1a2e1fe889f472d08819",
+      "tree": "9118fbde6e7555506bf56df6f83848c8d9aae381"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 6530.551,
+      "commit": "6b353badbd327090304f1a2e1fe889f472d08819",
+      "tree": "9118fbde6e7555506bf56df6f83848c8d9aae381"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 12736.812,
+      "commit": "5b6bd3e1b3a977a6da8949cd472f8a534f6e78ed",
+      "tree": "67b28cc98b6655c172b5b3bd044a668c578655de"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 5620.488,
+      "commit": "5b6bd3e1b3a977a6da8949cd472f8a534f6e78ed",
+      "tree": "67b28cc98b6655c172b5b3bd044a668c578655de"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 14006.652,
+      "commit": "326d5c49db99dcbb50f3b11de816f996195a36eb",
+      "tree": "65b78656ae74de67d6cfc373d4f9cea3be12b453"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 5444.752,
+      "commit": "326d5c49db99dcbb50f3b11de816f996195a36eb",
+      "tree": "65b78656ae74de67d6cfc373d4f9cea3be12b453"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 4851.362,
+      "commit": "326d5c49db99dcbb50f3b11de816f996195a36eb",
+      "tree": "65b78656ae74de67d6cfc373d4f9cea3be12b453"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 13324.567,
+      "commit": "2aba188b2b809339e71344a0be76103caa32811f",
+      "tree": "a561109aaa041577baeca805c7a6dad61d82ced1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4842.63,
+      "commit": "2aba188b2b809339e71344a0be76103caa32811f",
+      "tree": "a561109aaa041577baeca805c7a6dad61d82ced1"
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 13088.33,
+      "commit": "2aba188b2b809339e71344a0be76103caa32811f",
+      "tree": "a561109aaa041577baeca805c7a6dad61d82ced1"
+    }
+  ],
+  "medians": [
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 2352.6195
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 2313.701
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 2313.6145
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 2235.593
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 541.9245
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 2347.8905
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 4299.4755000000005
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 4392.205
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 2153.1105
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4590.271000000001
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 2072.3165
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "corrupt-prepare",
+      "firstReadMs": 1768.9545
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 4754.079
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 558.7835
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 2118.2515000000003
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 5409.914000000001
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 5428.2045
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 5390.9805
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 5344.708500000001
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 545.196
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 6472.834500000001
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 13785.135
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 13969.2405
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 4354.222
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 13680.641
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 8538.617
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 13971.344000000001
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 592.8005
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 3809.9049999999997
+    }
+  ]
+}

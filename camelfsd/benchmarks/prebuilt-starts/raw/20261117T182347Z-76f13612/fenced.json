@@ -1,0 +1,10 @@
+{
+    "epoch": "12",
+    "draining": true,
+    "lastSeenMs": "1794939853152",
+    "lost": null,
+    "restarting": null,
+    "free": "2",
+    "slots": "2",
+    "allocated": 0
+}

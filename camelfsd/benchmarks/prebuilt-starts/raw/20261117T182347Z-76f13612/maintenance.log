@@ -1,0 +1,1056 @@
+6bf910a1cc1bc29df3bb8a874a1c9f2a7f4427c89511fed2aad0b0308a0e4d8c  /usr/local/bin/camelfsd
+3c32afd566598bbc28bbeefb83c8e000a2aa31e817980114b19f7d316ad40f75  /usr/local/bin/camelfsd.commit
+a3516e0ed9d3127226761f8ffe71eff1e35d8f452537a12f473b9d10b6f60f18  /etc/systemd/system/camelfsd.service
+ba36096f57c82587967a58cfebffc581b1324d7f6251108733f63db48ed64f73  /etc/camel/kvm-host.conf
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1    221G   10G  211G   5% /nvme
+               total        used        free      shared  buff/cache   available
+Mem:           15701         686         660           2       14707       15015
+Swap:              0           0           0
+    prebuilt_session_kvm_test.go:172: PREBUILT_FIXTURE size_mb=0 files=1 commit=c1d7187e24302a49e53143b20f51cf2314e2f8fc tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 virtual_size_bytes=68719476736 format=2
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=0 arm=canonical-control phase=first-miss first_read_ms=690.266 commit=c1d7187e24302a49e53143b20f51cf2314e2f8fc tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=0 arm=canonical-control phase=local-hit first_read_ms=339.030 commit=c1d7187e24302a49e53143b20f51cf2314e2f8fc tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=0 arm=canonical-control phase=remote-hit first_read_ms=683.555 commit=c1d7187e24302a49e53143b20f51cf2314e2f8fc tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=0 arm=prebuilt phase=first-miss first_read_ms=838.184 commit=c1d7187e24302a49e53143b20f51cf2314e2f8fc tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=0 arm=prebuilt phase=local-hit first_read_ms=342.541 commit=c1d7187e24302a49e53143b20f51cf2314e2f8fc tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:24:45 INFO compute_prebuilt_image vm=coldbench-0-1794939861393902527-prebuilt-first-miss lineage=coldbench-0-1794939861393902527 tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 mode=build image=271e32f07083987359bc227681a5a98eae0d4b3a797cb2ad2dd2a866d6caa112 buildMs=184.271 publishMs=159.225 transferMs=0 ms=354.097 error=<nil>
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=0 arm=prebuilt phase=remote-hit first_read_ms=1179.293 commit=c1d7187e24302a49e53143b20f51cf2314e2f8fc tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:24:54 INFO compute_prebuilt_image vm=coldbench-0-1794939861393902527-prebuilt-remote-hit lineage=coldbench-0-1794939861393902527 tree=94efbe266847067ddd84e38cd4b04ef37be6f7c1 mode=remote image=271e32f07083987359bc227681a5a98eae0d4b3a797cb2ad2dd2a866d6caa112 buildMs=0 publishMs=0 transferMs=540.505 ms=562.91 error=<nil>
+    prebuilt_session_kvm_test.go:172: PREBUILT_FIXTURE size_mb=50 files=10010 commit=8f9678ec2340991dfecd82c3a26aa6756d74013b tree=fbc105300c9b058344b35e5add13266924e39bef virtual_size_bytes=68719476736 format=2
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=first-miss first_read_ms=2727.535 commit=8f9678ec2340991dfecd82c3a26aa6756d74013b tree=fbc105300c9b058344b35e5add13266924e39bef virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=local-hit first_read_ms=532.649 commit=8f9678ec2340991dfecd82c3a26aa6756d74013b tree=fbc105300c9b058344b35e5add13266924e39bef virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=remote-hit first_read_ms=2359.697 commit=8f9678ec2340991dfecd82c3a26aa6756d74013b tree=fbc105300c9b058344b35e5add13266924e39bef virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=first-miss first_read_ms=3933.281 commit=8f9678ec2340991dfecd82c3a26aa6756d74013b tree=fbc105300c9b058344b35e5add13266924e39bef virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=local-hit first_read_ms=557.839 commit=8f9678ec2340991dfecd82c3a26aa6756d74013b tree=fbc105300c9b058344b35e5add13266924e39bef virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:25:53 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-first-miss lineage=coldbench-50-1794939896379078202 tree=fbc105300c9b058344b35e5add13266924e39bef mode=build image=f88aeff485d44f8d583d4c0d754f08b7b00a6c18574eddaf90b1d9f1630102d8 buildMs=2469.562 publishMs=675.107 transferMs=0 ms=3231.241 error=<nil>
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=remote-hit first_read_ms=1700.912 commit=8f9678ec2340991dfecd82c3a26aa6756d74013b tree=fbc105300c9b058344b35e5add13266924e39bef virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:26:02 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-remote-hit lineage=coldbench-50-1794939896379078202 tree=fbc105300c9b058344b35e5add13266924e39bef mode=remote image=f88aeff485d44f8d583d4c0d754f08b7b00a6c18574eddaf90b1d9f1630102d8 buildMs=0 publishMs=0 transferMs=526.688 ms=574.083 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=api-edit first_read_ms=3067.786 commit=642546aae46f25a904d35b107cbca9eba68763e1 tree=41b085624c057e6630b683668ca12c0aa120333f virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=api-edit first_read_ms=5344.327 commit=642546aae46f25a904d35b107cbca9eba68763e1 tree=41b085624c057e6630b683668ca12c0aa120333f virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:26:24 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-api-edit lineage=coldbench-50-1794939896379078202 tree=41b085624c057e6630b683668ca12c0aa120333f mode=build image=001d45be6c995a5540e8bea5a06a53e05ac5884e814cb6b28c587bf1af44f2c5 buildMs=3922.179 publishMs=582.863 transferMs=0 ms=4594.658 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=api-add first_read_ms=2362.191 commit=80cae98649cfd0a326190301f281ac48c2e39d49 tree=228ab3e84ed84f40c6676a99f17107f151592b01 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=api-add first_read_ms=4128.105 commit=80cae98649cfd0a326190301f281ac48c2e39d49 tree=228ab3e84ed84f40c6676a99f17107f151592b01 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:26:44 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-api-add lineage=coldbench-50-1794939896379078202 tree=228ab3e84ed84f40c6676a99f17107f151592b01 mode=build image=4f71b2fe7bee33fe28e56535eff0ff104bdfc9cb6dd138e106ab0484c0054050 buildMs=2695.386 publishMs=646.563 transferMs=0 ms=3432.358 error=<nil>
+    prebuilt_session_kvm_test.go:219: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=checkpoint first_read_ms=1502.988 commit=80cae98649cfd0a326190301f281ac48c2e39d49 tree=228ab3e84ed84f40c6676a99f17107f151592b01 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:26:52 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-checkpoint lineage=coldbench-50-1794939896379078202 tree=228ab3e84ed84f40c6676a99f17107f151592b01 mode=remote image=4f71b2fe7bee33fe28e56535eff0ff104bdfc9cb6dd138e106ab0484c0054050 buildMs=0 publishMs=0 transferMs=442.766 ms=460.764 error=<nil>
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=checkpoint-recovery first_read_ms=2316.456 commit=6ccc68cbdfe1a6f5ec60985e075769d6b57ac2cf tree=52535bf4d39ff8b5e778c383810a0b7f198ddef1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=checkpoint-recovery first_read_ms=3710.087 commit=6ccc68cbdfe1a6f5ec60985e075769d6b57ac2cf tree=52535bf4d39ff8b5e778c383810a0b7f198ddef1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:27:13 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-checkpoint-recovery lineage=coldbench-50-1794939896379078202 tree=52535bf4d39ff8b5e778c383810a0b7f198ddef1 mode=build image=f6be20c7b997d3eee956391ea917d59b5665f0c9a962a86f2794017403e879a2 buildMs=2363.896 publishMs=577.763 transferMs=0 ms=3028.167 error=<nil>
+    prebuilt_session_kvm_test.go:243: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=checkpoint-remote first_read_ms=1549.876 commit=6ccc68cbdfe1a6f5ec60985e075769d6b57ac2cf tree=52535bf4d39ff8b5e778c383810a0b7f198ddef1 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:27:22 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-checkpoint-remote lineage=coldbench-50-1794939896379078202 tree=52535bf4d39ff8b5e778c383810a0b7f198ddef1 mode=remote image=f6be20c7b997d3eee956391ea917d59b5665f0c9a962a86f2794017403e879a2 buildMs=0 publishMs=0 transferMs=541.198 ms=577.402 error=<nil>
+    prebuilt_session_kvm_test.go:598: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=corrupt-prepare first_read_ms=712.178 commit=e800029345c3cf4905c86850384a388f47175bbe tree=46197c441a50a9a2f5f6fb3eda170e409433ecb5 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:27:30 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-prebuilt-corrupt-prepare lineage=coldbench-50-1794939896379078202 tree=46197c441a50a9a2f5f6fb3eda170e409433ecb5 mode=build image=6a6ac540e4a0346e18b6e376ac0c82975770b366a8afa5d8912828fef993bdb3 buildMs=94.272 publishMs=124.299 transferMs=0 ms=228.752 error=<nil>
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:27:36 INFO compute_prebuilt_image vm=coldbench-50-1794939896379078202-corrupt-reject lineage=coldbench-50-1794939896379078202 tree=46197c441a50a9a2f5f6fb3eda170e409433ecb5 mode=remote image="" buildMs=0 publishMs=0 transferMs=0 ms=48.085 error="restore prebuilt workspace: workspace image stored size mismatch"
+    prebuilt_session_kvm_test.go:637: PREBUILT_CORRUPTION_REJECTED tree=46197c441a50a9a2f5f6fb3eda170e409433ecb5 blob=w/08a3df31dc5b5b2161f5de67640bb0847c2d03ac2c1eb8bb49e02f934eaa8f9a code=start_failed
+    prebuilt_session_kvm_test.go:172: PREBUILT_FIXTURE size_mb=500 files=10460 commit=9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 virtual_size_bytes=68719476736 format=2
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=first-miss first_read_ms=4704.897 commit=9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=local-hit first_read_ms=551.272 commit=9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=remote-hit first_read_ms=4814.669 commit=9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=first-miss first_read_ms=12596.913 commit=9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=local-hit first_read_ms=557.073 commit=9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:29:50 INFO compute_prebuilt_image vm=coldbench-500-1794940059116947910-prebuilt-first-miss lineage=coldbench-500-1794940059116947910 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 mode=build image=bfc957797ee7609433bc2f9bc90686ce0ec21755621fed239bb1091b60fad1c0 buildMs=6808.03 publishMs=4965.486 transferMs=0 ms=11895.459 error=<nil>
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=remote-hit first_read_ms=3289.452 commit=9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:30:05 INFO compute_prebuilt_image vm=coldbench-500-1794940059116947910-prebuilt-remote-hit lineage=coldbench-500-1794940059116947910 tree=761c9b0eb7aa802fadf197f978120f6fd97a7b40 mode=remote image=bfc957797ee7609433bc2f9bc90686ce0ec21755621fed239bb1091b60fad1c0 buildMs=0 publishMs=0 transferMs=2140.768 ms=2169.774 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=api-edit first_read_ms=5246.594 commit=6b82fef422e55525113b1e576e7fa3e6b3f4fda3 tree=20ba19ece405cbbf229a05a6889dba87dc76f0c0 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=api-edit first_read_ms=13097.112 commit=6b82fef422e55525113b1e576e7fa3e6b3f4fda3 tree=20ba19ece405cbbf229a05a6889dba87dc76f0c0 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:30:36 INFO compute_prebuilt_image vm=coldbench-500-1794940059116947910-prebuilt-api-edit lineage=coldbench-500-1794940059116947910 tree=20ba19ece405cbbf229a05a6889dba87dc76f0c0 mode=build image=a60b9b395f1db45c5e9bd7bd44d3172666d5a9ce39cd03a83a95ad8805d76a69 buildMs=6860.189 publishMs=5402.308 transferMs=0 ms=12384.629 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=api-add first_read_ms=5732.656 commit=7c93d5b9396659039581f92e514162e66b708491 tree=f769c1fc9187a6cab42f1c878d4155c32cb0aa1f virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=api-add first_read_ms=12717.353 commit=7c93d5b9396659039581f92e514162e66b708491 tree=f769c1fc9187a6cab42f1c878d4155c32cb0aa1f virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:31:09 INFO compute_prebuilt_image vm=coldbench-500-1794940059116947910-prebuilt-api-add lineage=coldbench-500-1794940059116947910 tree=f769c1fc9187a6cab42f1c878d4155c32cb0aa1f mode=build image=da9f76fb2d678c5602252e9ad094854162ae8906304b65664f5131294ec70d1b buildMs=6931.511 publishMs=4957.559 transferMs=0 ms=12011.776 error=<nil>
+    prebuilt_session_kvm_test.go:219: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=checkpoint first_read_ms=3060.075 commit=7c93d5b9396659039581f92e514162e66b708491 tree=f769c1fc9187a6cab42f1c878d4155c32cb0aa1f virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:31:20 INFO compute_prebuilt_image vm=coldbench-500-1794940059116947910-prebuilt-checkpoint lineage=coldbench-500-1794940059116947910 tree=f769c1fc9187a6cab42f1c878d4155c32cb0aa1f mode=remote image=da9f76fb2d678c5602252e9ad094854162ae8906304b65664f5131294ec70d1b buildMs=0 publishMs=0 transferMs=2121.173 ms=2151.502 error=<nil>
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=checkpoint-recovery first_read_ms=5380.458 commit=faea0a8c9740a2551d11a5ff979ad741bc130fd4 tree=b9accd7b76dcedd16216339445a23986970b0360 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=checkpoint-recovery first_read_ms=15450.746 commit=faea0a8c9740a2551d11a5ff979ad741bc130fd4 tree=b9accd7b76dcedd16216339445a23986970b0360 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:32:00 INFO compute_prebuilt_image vm=coldbench-500-1794940059116947910-prebuilt-checkpoint-recovery lineage=coldbench-500-1794940059116947910 tree=b9accd7b76dcedd16216339445a23986970b0360 mode=build image=c450e80ec97e231f7ef5af8fdabd166752f48726fa6be11010224706619e097d buildMs=7550.065 publishMs=7084.125 transferMs=0 ms=14757.253 error=<nil>
+    prebuilt_session_kvm_test.go:243: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=checkpoint-remote first_read_ms=4438.123 commit=faea0a8c9740a2551d11a5ff979ad741bc130fd4 tree=b9accd7b76dcedd16216339445a23986970b0360 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:32:11 INFO compute_prebuilt_image vm=coldbench-500-1794940059116947910-prebuilt-checkpoint-remote lineage=coldbench-500-1794940059116947910 tree=b9accd7b76dcedd16216339445a23986970b0360 mode=remote image=c450e80ec97e231f7ef5af8fdabd166752f48726fa6be11010224706619e097d buildMs=0 publishMs=0 transferMs=3264.618 ms=3294.574 error=<nil>
+    prebuilt_session_kvm_test.go:172: PREBUILT_FIXTURE size_mb=0 files=1 commit=07567e59953a76e97c9c7c342f5bf4f507e6801f tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d virtual_size_bytes=68719476736 format=2
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=0 arm=prebuilt phase=first-miss first_read_ms=755.575 commit=07567e59953a76e97c9c7c342f5bf4f507e6801f tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=0 arm=prebuilt phase=local-hit first_read_ms=334.226 commit=07567e59953a76e97c9c7c342f5bf4f507e6801f tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:32:25 INFO compute_prebuilt_image vm=coldbench-0-1794940336335124291-prebuilt-first-miss lineage=coldbench-0-1794940336335124291 tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d mode=build image=335cd2d2324ce833394b91f7da037234f4f154bf4a4c0cc8765124a78d4e7d3c buildMs=195.897 publishMs=100.467 transferMs=0 ms=307.818 error=<nil>
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=0 arm=prebuilt phase=remote-hit first_read_ms=685.062 commit=07567e59953a76e97c9c7c342f5bf4f507e6801f tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:32:34 INFO compute_prebuilt_image vm=coldbench-0-1794940336335124291-prebuilt-remote-hit lineage=coldbench-0-1794940336335124291 tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d mode=remote image=335cd2d2324ce833394b91f7da037234f4f154bf4a4c0cc8765124a78d4e7d3c buildMs=0 publishMs=0 transferMs=59.442 ms=87.104 error=<nil>
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=0 arm=canonical-control phase=first-miss first_read_ms=636.812 commit=07567e59953a76e97c9c7c342f5bf4f507e6801f tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=0 arm=canonical-control phase=local-hit first_read_ms=335.513 commit=07567e59953a76e97c9c7c342f5bf4f507e6801f tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=0 arm=canonical-control phase=remote-hit first_read_ms=686.048 commit=07567e59953a76e97c9c7c342f5bf4f507e6801f tree=edd4a91da0e0834a255f2efbda5c53ac42b6485d virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:172: PREBUILT_FIXTURE size_mb=50 files=10010 commit=17cfdc2cd8e9d877493ba44fc949cae7306ba669 tree=507f1c48670607e4572765baf5679a1366baa804 virtual_size_bytes=68719476736 format=2
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=first-miss first_read_ms=5219.994 commit=17cfdc2cd8e9d877493ba44fc949cae7306ba669 tree=507f1c48670607e4572765baf5679a1366baa804 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=local-hit first_read_ms=553.162 commit=17cfdc2cd8e9d877493ba44fc949cae7306ba669 tree=507f1c48670607e4572765baf5679a1366baa804 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:33:29 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-first-miss lineage=coldbench-50-1794940371286100496 tree=507f1c48670607e4572765baf5679a1366baa804 mode=build image=141ef50be42fcd5cbd481b4e2d6ec055020ace8214204d73bd3cc266b7273090 buildMs=2821.234 publishMs=1678.107 transferMs=0 ms=4587.54 error=<nil>
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=remote-hit first_read_ms=1713.484 commit=17cfdc2cd8e9d877493ba44fc949cae7306ba669 tree=507f1c48670607e4572765baf5679a1366baa804 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:33:40 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-remote-hit lineage=coldbench-50-1794940371286100496 tree=507f1c48670607e4572765baf5679a1366baa804 mode=remote image=141ef50be42fcd5cbd481b4e2d6ec055020ace8214204d73bd3cc266b7273090 buildMs=0 publishMs=0 transferMs=602.726 ms=659.702 error=<nil>
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=first-miss first_read_ms=2321.062 commit=17cfdc2cd8e9d877493ba44fc949cae7306ba669 tree=507f1c48670607e4572765baf5679a1366baa804 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=local-hit first_read_ms=529.554 commit=17cfdc2cd8e9d877493ba44fc949cae7306ba669 tree=507f1c48670607e4572765baf5679a1366baa804 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=remote-hit first_read_ms=2260.868 commit=17cfdc2cd8e9d877493ba44fc949cae7306ba669 tree=507f1c48670607e4572765baf5679a1366baa804 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=api-edit first_read_ms=3306.866 commit=b264b8d351bcb29c15e5b90d7ce05927a1c7c0d3 tree=87da792f1ec6290288255a5fe009b07a4efc5363 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:34:10 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-api-edit lineage=coldbench-50-1794940371286100496 tree=87da792f1ec6290288255a5fe009b07a4efc5363 mode=build image=191b1e0cbb75f436ac020fa5d03e14b10b5a34e284a61edba8f1efc0898880fb buildMs=1907.051 publishMs=631.814 transferMs=0 ms=2622.123 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=api-edit first_read_ms=2298.703 commit=b264b8d351bcb29c15e5b90d7ce05927a1c7c0d3 tree=87da792f1ec6290288255a5fe009b07a4efc5363 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=api-add first_read_ms=4268.421 commit=060b727ee9b1db2e0ae0280456be7bdc504361a4 tree=2dedc1f3997d860d1c0e4d001f0bd685fbd49928 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:34:30 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-api-add lineage=coldbench-50-1794940371286100496 tree=2dedc1f3997d860d1c0e4d001f0bd685fbd49928 mode=build image=84e0365a01c49114ba5cb0f7dbdaa87f15b3fa1233872e541fda6b6d85e13620 buildMs=2812.897 publishMs=698.925 transferMs=0 ms=3596.09 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=api-add first_read_ms=3067.600 commit=060b727ee9b1db2e0ae0280456be7bdc504361a4 tree=2dedc1f3997d860d1c0e4d001f0bd685fbd49928 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:219: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=checkpoint first_read_ms=1381.042 commit=060b727ee9b1db2e0ae0280456be7bdc504361a4 tree=2dedc1f3997d860d1c0e4d001f0bd685fbd49928 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:34:46 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-checkpoint lineage=coldbench-50-1794940371286100496 tree=2dedc1f3997d860d1c0e4d001f0bd685fbd49928 mode=remote image=84e0365a01c49114ba5cb0f7dbdaa87f15b3fa1233872e541fda6b6d85e13620 buildMs=0 publishMs=0 transferMs=417.514 ms=441.046 error=<nil>
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=checkpoint-recovery first_read_ms=4820.064 commit=a9920a649ed28a73d6a7192399a10e6fa687ff1f tree=3bf8108cf5eab6476cadf3945a4249892cc1fa01 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:35:00 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-checkpoint-recovery lineage=coldbench-50-1794940371286100496 tree=3bf8108cf5eab6476cadf3945a4249892cc1fa01 mode=build image=e9288c4252cf8b47b5c20933e5f6c85ebbd6192d536497a1d1a8a283516bcadd buildMs=3278.774 publishMs=723.197 transferMs=0 ms=4099.826 error=<nil>
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=50 arm=canonical-control phase=checkpoint-recovery first_read_ms=2290.984 commit=a9920a649ed28a73d6a7192399a10e6fa687ff1f tree=3bf8108cf5eab6476cadf3945a4249892cc1fa01 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:243: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=checkpoint-remote first_read_ms=1377.247 commit=a9920a649ed28a73d6a7192399a10e6fa687ff1f tree=3bf8108cf5eab6476cadf3945a4249892cc1fa01 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:35:15 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-checkpoint-remote lineage=coldbench-50-1794940371286100496 tree=3bf8108cf5eab6476cadf3945a4249892cc1fa01 mode=remote image=e9288c4252cf8b47b5c20933e5f6c85ebbd6192d536497a1d1a8a283516bcadd buildMs=0 publishMs=0 transferMs=462.68 ms=485.333 error=<nil>
+    prebuilt_session_kvm_test.go:598: PREBUILT_SESSION_METRIC size_mb=50 arm=prebuilt phase=corrupt-prepare first_read_ms=742.538 commit=828e76e2ffb05075c89f1d4fe46ae58b6d693a6c tree=dbd6474b8dc5a2119bb8819b0e0e4296776d18d4 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:35:24 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-prebuilt-corrupt-prepare lineage=coldbench-50-1794940371286100496 tree=dbd6474b8dc5a2119bb8819b0e0e4296776d18d4 mode=build image=de5353613d0eaeff3767b8c620f022277a7b47b05b41d32576e3be02bc204601 buildMs=97.319 publishMs=165.013 transferMs=0 ms=272.461 error=<nil>
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:35:30 INFO compute_prebuilt_image vm=coldbench-50-1794940371286100496-corrupt-reject lineage=coldbench-50-1794940371286100496 tree=dbd6474b8dc5a2119bb8819b0e0e4296776d18d4 mode=remote image="" buildMs=0 publishMs=0 transferMs=0 ms=37.152 error="restore prebuilt workspace: workspace image stored size mismatch"
+    prebuilt_session_kvm_test.go:637: PREBUILT_CORRUPTION_REJECTED tree=dbd6474b8dc5a2119bb8819b0e0e4296776d18d4 blob=w/59d90536ded016f4e0cdd2e884c74672d739dda0cb3db662ff0d0edc539c685d code=start_failed
+    prebuilt_session_kvm_test.go:172: PREBUILT_FIXTURE size_mb=500 files=10460 commit=e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 virtual_size_bytes=68719476736 format=2
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=first-miss first_read_ms=12320.523 commit=e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=local-hit first_read_ms=560.300 commit=e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:37:01 INFO compute_prebuilt_image vm=coldbench-500-1794940532729424556-prebuilt-first-miss lineage=coldbench-500-1794940532729424556 tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 mode=build image=8ae3c8d082f0d5f273b39a475d68ca60a1ec9714254267063f568481881d959a buildMs=6502.774 publishMs=4989.869 transferMs=0 ms=11615.218 error=<nil>
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=remote-hit first_read_ms=3164.642 commit=e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:37:16 INFO compute_prebuilt_image vm=coldbench-500-1794940532729424556-prebuilt-remote-hit lineage=coldbench-500-1794940532729424556 tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 mode=remote image=8ae3c8d082f0d5f273b39a475d68ca60a1ec9714254267063f568481881d959a buildMs=0 publishMs=0 transferMs=2195.251 ms=2212.617 error=<nil>
+    prebuilt_session_kvm_test.go:184: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=first-miss first_read_ms=4811.723 commit=e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:188: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=local-hit first_read_ms=600.682 commit=e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:191: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=remote-hit first_read_ms=5581.654 commit=e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a tree=a31e56bc9c1df5eafc4304ccb5d2d6143a702019 virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=api-edit first_read_ms=13714.420 commit=311a1baff9a179b16f37916ed4edfbde57ac66cb tree=334cb86d7fb69c05f32bbfbc0817cdd06702b13f virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:38:05 INFO compute_prebuilt_image vm=coldbench-500-1794940532729424556-prebuilt-api-edit lineage=coldbench-500-1794940532729424556 tree=334cb86d7fb69c05f32bbfbc0817cdd06702b13f mode=build image=5e81f77b28b1869be91f8e492113d89b38775b7f004c88152a33eca586f833eb buildMs=7852.885 publishMs=4960.061 transferMs=0 ms=13009.053 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=api-edit first_read_ms=5213.856 commit=311a1baff9a179b16f37916ed4edfbde57ac66cb tree=334cb86d7fb69c05f32bbfbc0817cdd06702b13f virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=api-add first_read_ms=12721.421 commit=14a0d3fd82513c4a2c8d7fb3ebbbbaaf6866a3c7 tree=13be33b496a51e3c386761c5da233a02319b8e7e virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:38:37 INFO compute_prebuilt_image vm=coldbench-500-1794940532729424556-prebuilt-api-add lineage=coldbench-500-1794940532729424556 tree=13be33b496a51e3c386761c5da233a02319b8e7e mode=build image=275a0822e5e02beccc5bf1f24d556084108463abc7987ae81bdad5b022b80414 buildMs=6843.663 publishMs=5035.217 transferMs=0 ms=11999.583 error=<nil>
+    prebuilt_session_kvm_test.go:213: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=api-add first_read_ms=5096.707 commit=14a0d3fd82513c4a2c8d7fb3ebbbbaaf6866a3c7 tree=13be33b496a51e3c386761c5da233a02319b8e7e virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:219: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=checkpoint first_read_ms=3760.009 commit=14a0d3fd82513c4a2c8d7fb3ebbbbaaf6866a3c7 tree=13be33b496a51e3c386761c5da233a02319b8e7e virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:38:59 INFO compute_prebuilt_image vm=coldbench-500-1794940532729424556-prebuilt-checkpoint lineage=coldbench-500-1794940532729424556 tree=13be33b496a51e3c386761c5da233a02319b8e7e mode=remote image=275a0822e5e02beccc5bf1f24d556084108463abc7987ae81bdad5b022b80414 buildMs=0 publishMs=0 transferMs=2826.548 ms=2852.719 error=<nil>
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=checkpoint-recovery first_read_ms=12200.047 commit=450cd70629b42fe05f05dc31bd7f441090221dd5 tree=9f2d573a6594d366ce0ad5d2965423b10bb8766e virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:39:25 INFO compute_prebuilt_image vm=coldbench-500-1794940532729424556-prebuilt-checkpoint-recovery lineage=coldbench-500-1794940532729424556 tree=9f2d573a6594d366ce0ad5d2965423b10bb8766e mode=build image=db36f3c1e570a91cde79d41f322e0ce43ecdb8c0c7978a33635ce520612c0787 buildMs=6424.097 publishMs=4949.735 transferMs=0 ms=11496.707 error=<nil>
+    prebuilt_session_kvm_test.go:239: PREBUILT_SESSION_METRIC size_mb=500 arm=canonical-control phase=checkpoint-recovery first_read_ms=4601.223 commit=450cd70629b42fe05f05dc31bd7f441090221dd5 tree=9f2d573a6594d366ce0ad5d2965423b10bb8766e virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:243: PREBUILT_SESSION_METRIC size_mb=500 arm=prebuilt phase=checkpoint-remote first_read_ms=3910.183 commit=450cd70629b42fe05f05dc31bd7f441090221dd5 tree=9f2d573a6594d366ce0ad5d2965423b10bb8766e virtual_size_bytes=68719476736
+    prebuilt_session_kvm_test.go:370: 2026/11/17 18:39:47 INFO compute_prebuilt_image vm=coldbench-500-1794940532729424556-prebuilt-checkpoint-remote lineage=coldbench-500-1794940532729424556 tree=9f2d573a6594d366ce0ad5d2965423b10bb8766e mode=remote image=db36f3c1e570a91cde79d41f322e0ce43ecdb8c0c7978a33635ce520612c0787 buildMs=0 publishMs=0 transferMs=2922.634 ms=2943.539 error=<nil>
+coldbench-0-1794939861393902527: cleared 1 locator rows; image descriptors/payloads are S3-only
+coldbench-0-1794940336335124291: cleared 1 locator rows; image descriptors/payloads are S3-only
+coldbench-50-1794939896379078202: cleared 10006 locator rows; image descriptors/payloads are S3-only
+coldbench-50-1794940371286100496: cleared 10006 locator rows; image descriptors/payloads are S3-only
+coldbench-500-1794940059116947910: cleared 10005 locator rows; image descriptors/payloads are S3-only
+coldbench-500-1794940532729424556: cleared 10005 locator rows; image descriptors/payloads are S3-only
+Cleared 1924 objects under cold-bench/qualification/20261117T182347Z-76f13612/
+{
+  "format": 2,
+  "virtualSizeBytes": 68719476736,
+  "lineages": [
+    "coldbench-0-1794939861393902527",
+    "coldbench-0-1794940336335124291",
+    "coldbench-50-1794939896379078202",
+    "coldbench-50-1794940371286100496",
+    "coldbench-500-1794940059116947910",
+    "coldbench-500-1794940532729424556"
+  ],
+  "trials": [
+    {
+      "round": 1,
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 690.266,
+      "commit": "c1d7187e24302a49e53143b20f51cf2314e2f8fc",
+      "tree": "94efbe266847067ddd84e38cd4b04ef37be6f7c1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 339.03,
+      "commit": "c1d7187e24302a49e53143b20f51cf2314e2f8fc",
+      "tree": "94efbe266847067ddd84e38cd4b04ef37be6f7c1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 683.555,
+      "commit": "c1d7187e24302a49e53143b20f51cf2314e2f8fc",
+      "tree": "94efbe266847067ddd84e38cd4b04ef37be6f7c1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 838.184,
+      "commit": "c1d7187e24302a49e53143b20f51cf2314e2f8fc",
+      "tree": "94efbe266847067ddd84e38cd4b04ef37be6f7c1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 342.541,
+      "commit": "c1d7187e24302a49e53143b20f51cf2314e2f8fc",
+      "tree": "94efbe266847067ddd84e38cd4b04ef37be6f7c1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 1179.293,
+      "commit": "c1d7187e24302a49e53143b20f51cf2314e2f8fc",
+      "tree": "94efbe266847067ddd84e38cd4b04ef37be6f7c1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 2727.535,
+      "commit": "8f9678ec2340991dfecd82c3a26aa6756d74013b",
+      "tree": "fbc105300c9b058344b35e5add13266924e39bef",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 532.649,
+      "commit": "8f9678ec2340991dfecd82c3a26aa6756d74013b",
+      "tree": "fbc105300c9b058344b35e5add13266924e39bef",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 2359.697,
+      "commit": "8f9678ec2340991dfecd82c3a26aa6756d74013b",
+      "tree": "fbc105300c9b058344b35e5add13266924e39bef",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 3933.281,
+      "commit": "8f9678ec2340991dfecd82c3a26aa6756d74013b",
+      "tree": "fbc105300c9b058344b35e5add13266924e39bef",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 557.839,
+      "commit": "8f9678ec2340991dfecd82c3a26aa6756d74013b",
+      "tree": "fbc105300c9b058344b35e5add13266924e39bef",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 1700.912,
+      "commit": "8f9678ec2340991dfecd82c3a26aa6756d74013b",
+      "tree": "fbc105300c9b058344b35e5add13266924e39bef",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 3067.786,
+      "commit": "642546aae46f25a904d35b107cbca9eba68763e1",
+      "tree": "41b085624c057e6630b683668ca12c0aa120333f",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 5344.327,
+      "commit": "642546aae46f25a904d35b107cbca9eba68763e1",
+      "tree": "41b085624c057e6630b683668ca12c0aa120333f",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 2362.191,
+      "commit": "80cae98649cfd0a326190301f281ac48c2e39d49",
+      "tree": "228ab3e84ed84f40c6676a99f17107f151592b01",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 4128.105,
+      "commit": "80cae98649cfd0a326190301f281ac48c2e39d49",
+      "tree": "228ab3e84ed84f40c6676a99f17107f151592b01",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 1502.988,
+      "commit": "80cae98649cfd0a326190301f281ac48c2e39d49",
+      "tree": "228ab3e84ed84f40c6676a99f17107f151592b01",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 2316.456,
+      "commit": "6ccc68cbdfe1a6f5ec60985e075769d6b57ac2cf",
+      "tree": "52535bf4d39ff8b5e778c383810a0b7f198ddef1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 3710.087,
+      "commit": "6ccc68cbdfe1a6f5ec60985e075769d6b57ac2cf",
+      "tree": "52535bf4d39ff8b5e778c383810a0b7f198ddef1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 1549.876,
+      "commit": "6ccc68cbdfe1a6f5ec60985e075769d6b57ac2cf",
+      "tree": "52535bf4d39ff8b5e778c383810a0b7f198ddef1",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "corrupt-prepare",
+      "firstReadMs": 712.178,
+      "commit": "e800029345c3cf4905c86850384a388f47175bbe",
+      "tree": "46197c441a50a9a2f5f6fb3eda170e409433ecb5",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 4704.897,
+      "commit": "9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9",
+      "tree": "761c9b0eb7aa802fadf197f978120f6fd97a7b40",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 551.272,
+      "commit": "9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9",
+      "tree": "761c9b0eb7aa802fadf197f978120f6fd97a7b40",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 4814.669,
+      "commit": "9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9",
+      "tree": "761c9b0eb7aa802fadf197f978120f6fd97a7b40",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 12596.913,
+      "commit": "9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9",
+      "tree": "761c9b0eb7aa802fadf197f978120f6fd97a7b40",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 557.073,
+      "commit": "9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9",
+      "tree": "761c9b0eb7aa802fadf197f978120f6fd97a7b40",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 3289.452,
+      "commit": "9d6fdc3147bc84cd5d16bfbeec474e4e0d92eca9",
+      "tree": "761c9b0eb7aa802fadf197f978120f6fd97a7b40",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 5246.594,
+      "commit": "6b82fef422e55525113b1e576e7fa3e6b3f4fda3",
+      "tree": "20ba19ece405cbbf229a05a6889dba87dc76f0c0",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 13097.112,
+      "commit": "6b82fef422e55525113b1e576e7fa3e6b3f4fda3",
+      "tree": "20ba19ece405cbbf229a05a6889dba87dc76f0c0",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 5732.656,
+      "commit": "7c93d5b9396659039581f92e514162e66b708491",
+      "tree": "f769c1fc9187a6cab42f1c878d4155c32cb0aa1f",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 12717.353,
+      "commit": "7c93d5b9396659039581f92e514162e66b708491",
+      "tree": "f769c1fc9187a6cab42f1c878d4155c32cb0aa1f",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 3060.075,
+      "commit": "7c93d5b9396659039581f92e514162e66b708491",
+      "tree": "f769c1fc9187a6cab42f1c878d4155c32cb0aa1f",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 5380.458,
+      "commit": "faea0a8c9740a2551d11a5ff979ad741bc130fd4",
+      "tree": "b9accd7b76dcedd16216339445a23986970b0360",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 15450.746,
+      "commit": "faea0a8c9740a2551d11a5ff979ad741bc130fd4",
+      "tree": "b9accd7b76dcedd16216339445a23986970b0360",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 1,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 4438.123,
+      "commit": "faea0a8c9740a2551d11a5ff979ad741bc130fd4",
+      "tree": "b9accd7b76dcedd16216339445a23986970b0360",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 755.575,
+      "commit": "07567e59953a76e97c9c7c342f5bf4f507e6801f",
+      "tree": "edd4a91da0e0834a255f2efbda5c53ac42b6485d",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 334.226,
+      "commit": "07567e59953a76e97c9c7c342f5bf4f507e6801f",
+      "tree": "edd4a91da0e0834a255f2efbda5c53ac42b6485d",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 685.062,
+      "commit": "07567e59953a76e97c9c7c342f5bf4f507e6801f",
+      "tree": "edd4a91da0e0834a255f2efbda5c53ac42b6485d",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 636.812,
+      "commit": "07567e59953a76e97c9c7c342f5bf4f507e6801f",
+      "tree": "edd4a91da0e0834a255f2efbda5c53ac42b6485d",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 335.513,
+      "commit": "07567e59953a76e97c9c7c342f5bf4f507e6801f",
+      "tree": "edd4a91da0e0834a255f2efbda5c53ac42b6485d",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 686.048,
+      "commit": "07567e59953a76e97c9c7c342f5bf4f507e6801f",
+      "tree": "edd4a91da0e0834a255f2efbda5c53ac42b6485d",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 5219.994,
+      "commit": "17cfdc2cd8e9d877493ba44fc949cae7306ba669",
+      "tree": "507f1c48670607e4572765baf5679a1366baa804",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 553.162,
+      "commit": "17cfdc2cd8e9d877493ba44fc949cae7306ba669",
+      "tree": "507f1c48670607e4572765baf5679a1366baa804",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 1713.484,
+      "commit": "17cfdc2cd8e9d877493ba44fc949cae7306ba669",
+      "tree": "507f1c48670607e4572765baf5679a1366baa804",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 2321.062,
+      "commit": "17cfdc2cd8e9d877493ba44fc949cae7306ba669",
+      "tree": "507f1c48670607e4572765baf5679a1366baa804",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 529.554,
+      "commit": "17cfdc2cd8e9d877493ba44fc949cae7306ba669",
+      "tree": "507f1c48670607e4572765baf5679a1366baa804",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 2260.868,
+      "commit": "17cfdc2cd8e9d877493ba44fc949cae7306ba669",
+      "tree": "507f1c48670607e4572765baf5679a1366baa804",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 3306.866,
+      "commit": "b264b8d351bcb29c15e5b90d7ce05927a1c7c0d3",
+      "tree": "87da792f1ec6290288255a5fe009b07a4efc5363",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 2298.703,
+      "commit": "b264b8d351bcb29c15e5b90d7ce05927a1c7c0d3",
+      "tree": "87da792f1ec6290288255a5fe009b07a4efc5363",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 4268.421,
+      "commit": "060b727ee9b1db2e0ae0280456be7bdc504361a4",
+      "tree": "2dedc1f3997d860d1c0e4d001f0bd685fbd49928",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 3067.6,
+      "commit": "060b727ee9b1db2e0ae0280456be7bdc504361a4",
+      "tree": "2dedc1f3997d860d1c0e4d001f0bd685fbd49928",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 1381.042,
+      "commit": "060b727ee9b1db2e0ae0280456be7bdc504361a4",
+      "tree": "2dedc1f3997d860d1c0e4d001f0bd685fbd49928",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4820.064,
+      "commit": "a9920a649ed28a73d6a7192399a10e6fa687ff1f",
+      "tree": "3bf8108cf5eab6476cadf3945a4249892cc1fa01",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 2290.984,
+      "commit": "a9920a649ed28a73d6a7192399a10e6fa687ff1f",
+      "tree": "3bf8108cf5eab6476cadf3945a4249892cc1fa01",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 1377.247,
+      "commit": "a9920a649ed28a73d6a7192399a10e6fa687ff1f",
+      "tree": "3bf8108cf5eab6476cadf3945a4249892cc1fa01",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "corrupt-prepare",
+      "firstReadMs": 742.538,
+      "commit": "828e76e2ffb05075c89f1d4fe46ae58b6d693a6c",
+      "tree": "dbd6474b8dc5a2119bb8819b0e0e4296776d18d4",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 12320.523,
+      "commit": "e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a",
+      "tree": "a31e56bc9c1df5eafc4304ccb5d2d6143a702019",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 560.3,
+      "commit": "e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a",
+      "tree": "a31e56bc9c1df5eafc4304ccb5d2d6143a702019",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 3164.642,
+      "commit": "e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a",
+      "tree": "a31e56bc9c1df5eafc4304ccb5d2d6143a702019",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 4811.723,
+      "commit": "e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a",
+      "tree": "a31e56bc9c1df5eafc4304ccb5d2d6143a702019",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 600.682,
+      "commit": "e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a",
+      "tree": "a31e56bc9c1df5eafc4304ccb5d2d6143a702019",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 5581.654,
+      "commit": "e57cbb9601bc90e2e0d4ac05fd72a8e3e47e839a",
+      "tree": "a31e56bc9c1df5eafc4304ccb5d2d6143a702019",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 13714.42,
+      "commit": "311a1baff9a179b16f37916ed4edfbde57ac66cb",
+      "tree": "334cb86d7fb69c05f32bbfbc0817cdd06702b13f",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 5213.856,
+      "commit": "311a1baff9a179b16f37916ed4edfbde57ac66cb",
+      "tree": "334cb86d7fb69c05f32bbfbc0817cdd06702b13f",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 12721.421,
+      "commit": "14a0d3fd82513c4a2c8d7fb3ebbbbaaf6866a3c7",
+      "tree": "13be33b496a51e3c386761c5da233a02319b8e7e",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 5096.707,
+      "commit": "14a0d3fd82513c4a2c8d7fb3ebbbbaaf6866a3c7",
+      "tree": "13be33b496a51e3c386761c5da233a02319b8e7e",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 3760.009,
+      "commit": "14a0d3fd82513c4a2c8d7fb3ebbbbaaf6866a3c7",
+      "tree": "13be33b496a51e3c386761c5da233a02319b8e7e",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 12200.047,
+      "commit": "450cd70629b42fe05f05dc31bd7f441090221dd5",
+      "tree": "9f2d573a6594d366ce0ad5d2965423b10bb8766e",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4601.223,
+      "commit": "450cd70629b42fe05f05dc31bd7f441090221dd5",
+      "tree": "9f2d573a6594d366ce0ad5d2965423b10bb8766e",
+      "virtualSizeBytes": 68719476736
+    },
+    {
+      "round": 2,
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 3910.183,
+      "commit": "450cd70629b42fe05f05dc31bd7f441090221dd5",
+      "tree": "9f2d573a6594d366ce0ad5d2965423b10bb8766e",
+      "virtualSizeBytes": 68719476736
+    }
+  ],
+  "medians": [
+    {
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 663.539
+    },
+    {
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 337.27149999999995
+    },
+    {
+      "sizeMiB": 0,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 684.8015
+    },
+    {
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 796.8795
+    },
+    {
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 338.3835
+    },
+    {
+      "sizeMiB": 0,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 932.1775
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 2714.8954999999996
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 2683.2445
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 2303.7200000000003
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 2524.2985
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 531.1015
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 2310.2825000000003
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 4198.263
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 4325.5965
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 1442.0149999999999
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4265.0755
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 1463.5615
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "corrupt-prepare",
+      "firstReadMs": 727.358
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 4576.6375
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 555.5005000000001
+    },
+    {
+      "sizeMiB": 50,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 1707.1979999999999
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-add",
+      "firstReadMs": 5414.681500000001
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "api-edit",
+      "firstReadMs": 5230.225
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 4990.8405
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "first-miss",
+      "firstReadMs": 4758.3099999999995
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "local-hit",
+      "firstReadMs": 575.9770000000001
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "canonical-control",
+      "phase": "remote-hit",
+      "firstReadMs": 5198.1615
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-add",
+      "firstReadMs": 12719.386999999999
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "api-edit",
+      "firstReadMs": 13405.766
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint",
+      "firstReadMs": 3410.042
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-recovery",
+      "firstReadMs": 13825.396499999999
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "checkpoint-remote",
+      "firstReadMs": 4174.153
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "first-miss",
+      "firstReadMs": 12458.718
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "local-hit",
+      "firstReadMs": 558.6865
+    },
+    {
+      "sizeMiB": 500,
+      "arm": "prebuilt",
+      "phase": "remote-hit",
+      "firstReadMs": 3227.047
+    }
+  ]
+}

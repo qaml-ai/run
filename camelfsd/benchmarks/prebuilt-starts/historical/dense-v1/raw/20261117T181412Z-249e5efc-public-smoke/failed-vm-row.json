@@ -1,0 +1,48 @@
+{
+    "Item": {
+        "lastCheckpoint": {
+            "M": {
+                "at": {
+                    "N": "1794939381912"
+                },
+                "tree": {
+                    "S": "4df5bf74301f374b4fe484e2dbdc44f2c95352bc"
+                },
+                "version": {
+                    "S": "908d62902f56aee5c9472afbaa4712ad7bf2c206"
+                }
+            }
+        },
+        "lineage": {
+            "S": "pilot-prebuilt-0eb69ff738:repo_39af91f1c399b3d9ae8d51c2"
+        },
+        "code": {
+            "S": "stopped"
+        },
+        "host": {
+            "S": "i-06fa9b78a2a9d188b"
+        },
+        "billedTo": {
+            "N": "1794939386078"
+        },
+        "phase": {
+            "S": "ended"
+        },
+        "startedAt": {
+            "N": "1794939380231"
+        },
+        "checkpointReceipt": {
+            "M": {
+                "changed": {
+                    "BOOL": true
+                },
+                "id": {
+                    "S": "aeb808c8e5520ee620d43a992418537081cc2ac29eea4f6204d71338f4b086f1"
+                }
+            }
+        },
+        "endedAt": {
+            "N": "1794939386132"
+        }
+    }
+}

@@ -1,0 +1,7 @@
+source=76f136125550e33f7d32784b35093f6367a0488b
+MainPID=132670
+ActiveState=active
+SubState=running
+ee18bda5d8adc05a0a662712af5d65db6769662cf5d21bd8fd8712d30eb17707  /usr/local/bin/camelfsd
+a3516e0ed9d3127226761f8ffe71eff1e35d8f452537a12f473b9d10b6f60f18  /etc/systemd/system/camelfsd.service
+00ee258fa9ddc8e3ce87b671d9b308e59e71020cbaf961fbfe395b5136fa31bf  /etc/camel/kvm-host.conf
