@@ -61,6 +61,12 @@ func TestKVMColdSessionBench(t *testing.T) {
 }
 
 func coldSession(t *testing.T, url, guestImage string, mb int) {
+	options, err := parseColdSessionOptions(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packedMode, packedParallel := options.packedMode, options.packedParallel
+	cleanMode, content := options.cleanImage, options.content
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -74,18 +80,6 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	}
 	lineage := fmt.Sprintf("coldbench-%d-%d", mb, time.Now().UnixNano())
 	t.Logf("benchmark lineage=%s", lineage)
-	packedMode := os.Getenv("CAMELFSD_KVM_PACKED_APPLY")
-	if packedMode != "" && packedMode != "control" && packedMode != "plain" && packedMode != "gzip" {
-		t.Fatal("CAMELFSD_KVM_PACKED_APPLY must be control, plain or gzip")
-	}
-	packedParallel := os.Getenv("CAMELFSD_KVM_PACKED_PARALLEL") == "1"
-	if packedParallel && packedMode != "plain" {
-		t.Fatal("CAMELFSD_KVM_PACKED_PARALLEL requires CAMELFSD_KVM_PACKED_APPLY=plain")
-	}
-	content := os.Getenv("CAMELFSD_KVM_CONTENT")
-	if content != "" && content != "random" && content != "source" {
-		t.Fatal("CAMELFSD_KVM_CONTENT must be random or source")
-	}
 	t.Logf("benchmark content=%s", content)
 	seedBytes := func(path string, size int) ([]byte, error) {
 		if content == "source" && strings.HasPrefix(path, "src/") {
@@ -219,10 +213,6 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	t.Cleanup(tier.Close)
 	client := &http.Client{Timeout: 10 * time.Minute, Transport: &http.Transport{DisableKeepAlives: true, TLSClientConfig: tierClientTLS(cert, tierPair)}}
 
-	cleanMode := os.Getenv("CAMELFSD_KVM_CLEAN_IMAGE") == "1"
-	if cleanMode && packedMode != "control" {
-		t.Fatal("clean-image mode requires CAMELFSD_KVM_PACKED_APPLY=control")
-	}
 	var cleanImage *portableImage
 	var cleanKey string
 	prepareClean := func(version, tree string) {
@@ -268,7 +258,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		if cleanImage != nil {
 			start := time.Now()
 			client, bucket, _ := portableImageS3(t, url)
-			if os.Getenv("CAMELFSD_KVM_IMAGE_RANGES") == "1" {
+			if options.imageRanges {
 				fetch := time.Now()
 				spool, ranges, err := downloadPortableRanges(ctx, client, bucket, cleanKey, data, cleanImage.CompressedSize)
 				must(err)
