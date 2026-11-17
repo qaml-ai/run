@@ -22,7 +22,7 @@ def stop(p):
             p.kill()
             p.wait()
 
-def run(work, out, mib, delay_ms):
+def run(work, out, mib, delay_ms,batch):
     out.mkdir(parents=True,exist_ok=True)
     clock = time.monotonic
     start = clock()
@@ -32,7 +32,7 @@ def run(work, out, mib, delay_ms):
     sums = {str(p.relative_to(files)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     store = Store(work/"origin.sqlite")
     seed = store.commit("main",None,((str(p.relative_to(files)),"644",p.read_bytes()) for p in paths))
-    report = {"mib":mib,"origin_delay_ms":delay_ms,"files":len(paths),"fixture_and_seed_s":clock()-start,"phases":{}}
+    report = {"mib":mib,"batch":batch,"origin_delay_ms":delay_ms,"files":len(paths),"fixture_and_seed_s":clock()-start,"phases":{}}
     start = clock()
     edited = store.commit("main",seed,[("src/hot","644",b"api edit\n")])
     report["api_edit_s"] = clock()-start
@@ -59,7 +59,7 @@ def run(work, out, mib, delay_ms):
         thread = threading.Thread(target=origin.serve_forever,daemon=True)
         thread.start()
         stats = {"manifest_bytes":len(manifest),"index_bytes":idx.stat().st_size, "index_s":clock()-t}
-        env = dict(os.environ,SNAP_MODULE=str(HERE),SNAP_PORT=str(origin.server_port),
+        env = dict(os.environ,SNAP_MODULE=str(HERE),SNAP_PORT=str(origin.server_port),SNAP_BATCH=str(batch),
                    SNAP_MANIFEST=str(session/"manifest"),SNAP_MANIFEST_HASH=hash_bytes(manifest),
                    SNAP_VERSION=version,SNAP_FIRST=str(x/"first"),SNAP_STATS=str(session/"first.json"),
                    SNAP_TOTAL=str(session/"total.json"))
@@ -104,6 +104,7 @@ def run(work, out, mib, delay_ms):
             stats["source_bytes"],stats["device_bytes"],stats["device_reads"] = json.loads((session/"total.json").read_text())
         else:
             assert "corrupt chunk" in (out/(action+"-device.log")).read_text()
+        stats["origin_requests"]=origin.requests
         report["phases"][action] = stats
         return x
 
@@ -142,4 +143,4 @@ def run(work, out, mib, delay_ms):
     print(json.dumps(report),flush=True)
 
 if __name__ == "__main__":
-    run(Path(sys.argv[1]),Path(sys.argv[2]).resolve(),int(sys.argv[3]),float(sys.argv[4]) if len(sys.argv)>4 else 0)
+    run(Path(sys.argv[1]),Path(sys.argv[2]).resolve(),int(sys.argv[3]),float(sys.argv[4]) if len(sys.argv)>4 else 0,int(sys.argv[5]) if len(sys.argv)>5 else 16)

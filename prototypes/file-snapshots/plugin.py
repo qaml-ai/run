@@ -1,5 +1,6 @@
 """Private read-only nbdkit endpoint for one pinned file snapshot."""
-import functools
+from collections import OrderedDict
+import struct
 import http.client
 import json
 import os
@@ -16,16 +17,40 @@ def open(readonly):
         raise IOError("mount metadata mismatch")
     connection = http.client.HTTPConnection("127.0.0.1",int(os.environ["SNAP_PORT"]),timeout=10)
     stats = [0,0,0]
-    @functools.lru_cache(maxsize=128)
+    files = json.loads(raw)
+    order = list(dict.fromkeys(key for _,info in sorted(files.items()) if info[0]!="link" for key in info[2]))
+    positions = {key:i for i,key in enumerate(order)}
+    cache = OrderedDict()
+    last = None
+    width = int(os.environ["SNAP_BATCH"])
     def fetch(key):
-        connection.request("GET","/"+key)
-        response = connection.getresponse()
-        data = response.read()
-        if response.status != 200 or hash_bytes(data) != key:
-            raise IOError("missing or corrupt chunk "+key)
-        stats[0] += len(data)
-        return data
-    device = Device(json.loads(raw),fetch)
+        nonlocal last
+        pos = positions[key]
+        contiguous = last is not None and last+1==pos
+        last = pos
+        if key not in cache:
+            keys = [k for k in order[pos:pos+(width if contiguous else 1)] if k not in cache]
+            connection.request("POST","/chunks",body=json.dumps(keys))
+            response = connection.getresponse()
+            data = response.read()
+            if response.status != 200:
+                raise IOError(f"chunk service returned {response.status}")
+            offset = 0
+            for k in keys:
+                length, = struct.unpack_from(">I",data,offset)
+                block = data[offset+4:offset+4+length]
+                offset += 4+length
+                if len(block)!=length or hash_bytes(block)!=k:
+                    raise IOError("missing or corrupt chunk "+k)
+                cache[k] = block
+                stats[0] += length
+            if offset != len(data):
+                raise IOError("unexpected bytes after chunk batch")
+            while len(cache)>128:
+                cache.popitem(last=False)
+        cache.move_to_end(key)
+        return cache[key]
+    device = Device(files,fetch)
     return device,stats,connection
 
 def get_size(h):
