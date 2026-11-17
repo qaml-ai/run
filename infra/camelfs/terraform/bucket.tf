@@ -1,4 +1,4 @@
-# The object store: blobs, chunks, roots, tree-size sidecars, packs and search shards, and (until L74 closes) trees
+# The object store: blobs, chunks, roots, tree-size sidecars, packs, derived workspace images and search shards, and (until L74 closes) trees
 # and commits, keyed <lineage>/<kind>/<hash> exactly as camelfsd writes them today (camelfsd/README.md, "Durability
 # and lineage scope"); plus one prefix outside any lineage: <guest_image_prefix>guest/<sha256>… (the
 # content-addressed guest image, K1, put by CI). No results/ prefix: VM results are not stored (L102, 2026-11-14).
@@ -45,7 +45,7 @@ resource "aws_s3_bucket" "objects" {
   bucket = local.bucket_name
 
   lifecycle {
-    # Every lineage's objects. Nothing here is reproducible.
+    # Canonical objects and derived workspace images share this protected bucket.
     prevent_destroy = true
   }
 }

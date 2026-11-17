@@ -487,3 +487,19 @@ resume an interrupted sweep. The final conditional write records `deletedAt`.
 Subsequent requests return `410 lineage_deleted`. An exact replay of a successful
 keyed lineage deletion returns its original `204` while the idempotency entry
 is available.
+
+Prebuilt workspace images use two derived object kinds within that same lineage
+prefix. `i/<identity-sha256>` is an immutable descriptor for an exact tree, disk
+size and image recipe. It names `w/<compressed-sha256>`, uploaded before the
+descriptor becomes visible. Hosts discover the exact descriptor without listing
+objects or adding a DynamoDB table. Only a missing descriptor starts a build.
+Invalid descriptors and unavailable or corrupt referenced payloads fail the start.
+
+Lineage deletion fences refs and ends its VMs. It does not physically remove S3
+objects. The collector is not implemented yet. A physical lineage purge includes
+both `i/` and `w/` after its builders and VMs have stopped. These derived kinds
+are separate from canonical Git objects and blob quota. A future collector must
+retain each descriptor's payload or remove the descriptor with it, rather than
+applying Git-blob reachability to image payloads. Concurrent losing builds can
+leave unreferenced `w/` payloads for collection. S3's existing noncurrent-version
+retention also applies to deleted image objects.
