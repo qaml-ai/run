@@ -20,7 +20,7 @@ MIB = 1024 ** 2
 clock = time.monotonic
 
 def run(*args, **kw):
-    return sp.run(args, check=True, stdout=sp.PIPE, **kw).stdout
+    return sp.run(args, check=True, **({"stdout":sp.PIPE} | kw)).stdout
 
 def digest(b):
     return hashlib.sha256(b).hexdigest()
@@ -129,7 +129,8 @@ class Git:
 
     def deliver(self, rev, exchange, mode):
         if mode == "git":
-            (exchange/"base.tar").write_bytes(self.git("archive", rev))
+            with (exchange/"base.tar").open("wb") as f:
+                self.git("archive", rev, stdout=f)
             return
         raw = self.git("diff", "--name-status", "--no-renames", "-z", self.base, rev)
         fields = raw.decode().split("\0")[:-1]
@@ -137,7 +138,8 @@ class Git:
         for status, name in zip(fields[::2], fields[1::2]):
             (deleted if status == "D" else paths).append(name)
         if paths:
-            (exchange/"patch.tar").write_bytes(self.git("archive",rev,"--",*paths))
+            with (exchange/"patch.tar").open("wb") as f:
+                self.git("archive",rev,"--",*paths,stdout=f)
         (exchange/"deleted").write_text("".join(n+"\n" for n in deleted))
 
     def checkpoint(self, rev, exchange):
@@ -241,7 +243,7 @@ def one(root, boot, out, mib, mode, server):
                 args = ["-drive",f"if=virtio,file={url+pinned['object']},readonly=on,format=raw"]
             log = out/(root.name+"-"+action+".log")
             start_bytes = server.total
-            cmd = ["qemu-system-x86_64","-machine","accel=tcg","-cpu","max","-m","640",
+            cmd = ["qemu-system-x86_64","-machine","accel=tcg","-cpu","max","-m",str(max(640,2*mib+320)),
                    "-nodefaults","-nographic","-no-reboot","-serial","stdio","-kernel",boot/"kernel",
                    "-initrd",boot/"init.gz","-append","console=ttyS0 quiet panic=1 rdinit=/init",
                    "-virtfs",f"local,path={x},mount_tag=exchange,security_model=none",*args]
@@ -250,7 +252,7 @@ def one(root, boot, out, mib, mode, server):
                 proc = sp.Popen(cmd,stdout=f,stderr=sp.STDOUT)
                 try:
                     while proc.poll() is None:
-                        if clock()-t > 100:
+                        if clock()-t > 120+mib/2:
                             raise TimeoutError(log.read_text(errors="replace")[-3500:])
                         if "first_s" not in stats and (x/"reached").exists():
                             stats.update(first_s=clock()-t,first_range_bytes=server.total-start_bytes)
@@ -321,6 +323,7 @@ def main():
     p.add_argument("out",type=Path)
     p.add_argument("--mib",type=int,default=64)
     p.add_argument("--rounds",type=int,default=2)
+    p.add_argument("--modes",nargs="+",choices=("hybrid","block","git"),default=["block","git","hybrid"])
     args=p.parse_args()
     out=args.out.resolve()
     out.mkdir(parents=True,exist_ok=True)
@@ -335,7 +338,7 @@ def main():
             server.total=0
             threading.Thread(target=server.serve_forever,daemon=True).start()
             for i in range(args.rounds):
-                order=["block","git","hybrid"]
+                order=args.modes
                 for mode in order if i%2==0 else reversed(order):
                     name=f"{i}-{mode}"
                     root=tmp/name
