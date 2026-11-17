@@ -14,6 +14,7 @@ class ChunkOrigin(ThreadingHTTPServer):
 
 
 class ReadChunk(BaseHTTPRequestHandler):
+    disable_nagle_algorithm = True
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):
