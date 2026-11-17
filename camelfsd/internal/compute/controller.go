@@ -96,7 +96,7 @@ func (c *Controller) place(ctx context.Context, v VM, now int64) (VM, error) {
 
 func (c *Controller) placeOnHosts(ctx context.Context, v VM, now int64, hosts []Host) (VM, error) {
 	id := v.ID
-	for _, h := range rankImage(hosts, v.Shape, c.hostCutoff(now), v.Image) {
+	for _, h := range rankLineage(hosts, v.Shape, c.hostCutoff(now), v.Image, v.Lineage) {
 		vm := change(c.Tables.VMs, vmKey(id), "#phase = :requested AND #leaseDeadline > :now",
 			"SET #phase = :placed, #host = :host, #hostEpoch = :epoch, #placedAt = :now",
 			attrs{":requested": s(string(Requested)), ":placed": s(string(Placed)), ":host": s(h.Host),

@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/root"
-	"os"
-	"path/filepath"
 )
 
 func imageDir(data string) string { return filepath.Join(data, "workspace-images") }
@@ -70,8 +71,7 @@ func (m *Manager) objects(lineages ...string) *objects.Repository {
 	return repo
 }
 
-// cachedAncestor finds a compatible image on this host. An evicted image
-// and a ref written on a different host both fall back to the Git tree.
+// cachedAncestor follows tree hints left by this host's checkpoints.
 func (m *Manager) cachedAncestor(ctx context.Context, lineage, tree string) (string, string, error) {
 	repo := m.objects(lineage)
 	if repo == nil {
@@ -94,6 +94,77 @@ func (m *Manager) cachedAncestor(ctx context.Context, lineage, tree string) (str
 		}
 	}
 	return "", "", nil
+}
+
+// A bounded first-parent walk covers short bursts of API writes without
+// walking a repository's history during boot.
+const cachedCommitHops = 4
+
+func (m *Manager) cachedCommitAncestor(ctx context.Context, lineage, tree, version string) (string, string, error) {
+	repo := m.objects(lineage)
+	var hasImages bool
+	err := repo.DB.DB.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM tree_roots WHERE lineage=?)", lineage).Scan(&hasImages)
+	if err != nil || !hasImages {
+		return "", "", err
+	}
+	for hop := 0; hop <= cachedCommitHops; hop++ {
+		commit, found, err := repo.CommitAncestry(ctx, lineage, version)
+		if err != nil {
+			return "", "", err
+		}
+		// A fork can preserve parent IDs outside the destination lineage.
+		if !found {
+			if hop == 0 {
+				return "", "", fmt.Errorf("boot commit %s is missing", version)
+			}
+			break
+		}
+		if hop == 0 && commit.Tree != tree {
+			return "", "", fmt.Errorf("boot commit %s does not name tree %s", version, tree)
+		}
+		if commit.Tree != tree {
+			id, err := m.cachedTree(lineage, commit.Tree)
+			if err != nil || id != "" {
+				return commit.Tree, id, err
+			}
+			tree = commit.Tree
+		}
+		if len(commit.Parents) == 0 {
+			break
+		}
+		version = commit.Parents[0]
+	}
+	return "", "", nil
+}
+
+// A newly tracked path can collide with image-only files and directories.
+// The guest also removes temporary files before apply and omits that
+// namespace when checkpointing.
+func (m *Manager) canReuseCommitImage(ctx context.Context, lineage, base, target string) (bool, error) {
+	old, err := m.entries(ctx, lineage, base)
+	if err != nil {
+		return false, err
+	}
+	const tempPrefix = ".camelfs-tmp-"
+	for _, entry := range old {
+		if strings.HasPrefix(entry.Path, tempPrefix) || strings.Contains(entry.Path, "/"+tempPrefix) {
+			return false, nil
+		}
+	}
+	next, err := m.entries(ctx, lineage, target)
+	if err != nil {
+		return false, err
+	}
+	i := 0
+	for _, entry := range next {
+		for i < len(old) && old[i].Path < entry.Path {
+			i++
+		}
+		if i == len(old) || old[i].Path != entry.Path {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (m *Manager) cachedTree(lineage, tree string) (string, error) {

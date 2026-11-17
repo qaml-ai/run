@@ -1,7 +1,9 @@
 package compute
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"slices"
 	"strings"
@@ -89,6 +91,10 @@ func compareFree(a, b Host) int {
 }
 
 func rankImage(hosts []Host, shape Shape, cutoff int64, image string) []Host {
+	return rankLineage(hosts, shape, cutoff, image, "")
+}
+
+func rankLineage(hosts []Host, shape Shape, cutoff int64, image, lineage string) []Host {
 	var candidates []Host
 	for _, h := range hosts {
 		if h.Free > 0 && !h.Draining && !h.Restarting && liveHost(h, cutoff) &&
@@ -103,6 +109,15 @@ func rankImage(hosts []Host, shape Shape, cutoff int64, image string) []Host {
 				return -1
 			}
 			return 1
+		}
+		if lineage != "" {
+			// Rendezvous hashing keeps each lineage's relative host ordering
+			// stable as other hosts enter or leave the eligible set.
+			aScore := sha256.Sum256([]byte(lineage + "\x00" + a.Host))
+			bScore := sha256.Sum256([]byte(lineage + "\x00" + b.Host))
+			if order := bytes.Compare(bScore[:], aScore[:]); order != 0 {
+				return order
+			}
 		}
 		return compareFree(a, b)
 	})
