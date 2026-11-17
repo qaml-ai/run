@@ -5,11 +5,14 @@ package computehost
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +34,7 @@ import (
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
+	"github.com/qaml-ai/run/camelfsd/internal/vmhost"
 )
 
 // This qualification uses ordinary daemon VM requests. It never injects an
@@ -426,8 +430,7 @@ func (q *prebuiltQualification) session(h *prebuiltQualificationHost, mb int, ar
 	stopped := false
 	t.Cleanup(func() {
 		if !stopped {
-			h.call("POST", path+"/stop", hostwire.Stop{Checkpoint: false}, 202)
-			q.waitEnded(id)
+			h.cleanupVM(id)
 		}
 	})
 	var shell hostwire.ShellCreated
@@ -608,9 +611,43 @@ func (q *prebuiltQualification) corruptArtifact(initial apiBenchmarkCommit) {
 	prebuiltMust(t, err)
 	defer db.Close()
 	root, err := db.TreeRoot(q.lineage, target.Tree)
-	prebuiltMust(t, err)
-	if root != "" {
-		t.Fatalf("corrupt artifact published a tree-cache entry: %s", root)
+	if !errors.Is(err, sql.ErrNoRows) || root != "" {
+		t.Fatalf("corrupt artifact published a tree-cache entry: root=%s error=%v", root, err)
 	}
 	t.Logf("PREBUILT_CORRUPTION_REJECTED tree=%s blob=%s code=%s", target.Tree, descriptor.Blob, ended.Code)
+}
+
+// Go cancels t.Context before running cleanups. Keep the daemon alive while a
+// bounded independent cleanup stops its VM, then destroy that exact owned VM
+// if the host API is unavailable. Never leave a scope after an assertion fails.
+func (h *prebuiltQualificationHost) cleanupVM(id string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.q.t.Context()), time.Minute)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, "POST", "https://"+h.endpoint+"/v1/vms/"+id+"/stop", strings.NewReader(`{"checkpoint":false}`))
+	if err == nil {
+		var response *http.Response
+		response, err = h.q.client.Do(request)
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusNotFound {
+				err = fmt.Errorf("cleanup stop HTTP %d", response.StatusCode)
+			}
+		}
+	}
+	for err == nil && ctx.Err() == nil {
+		h.q.mu.Lock()
+		_, done := h.q.ended[id]
+		h.q.mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	h.q.t.Errorf("VM %s needed direct cleanup: %v", id, errors.Join(err, ctx.Err()))
+	destroyCtx, destroyCancel := context.WithTimeout(context.WithoutCancel(h.q.t.Context()), time.Minute)
+	defer destroyCancel()
+	launcher := &vmhost.Launcher{Work: filepath.Join(h.data, "compute"), PolicyDir: filepath.Join(h.data, "policy"), KVM: true}
+	if err := launcher.Destroy(destroyCtx, id); err != nil {
+		h.q.t.Errorf("destroy VM %s: %v", id, err)
+	}
 }
