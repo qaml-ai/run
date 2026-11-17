@@ -270,6 +270,9 @@ func (l Local) Put(c context.Context, k string, b []byte) error {
 	if kind == "tr" || kind == "p" || kind == "i" || kind == "w" {
 		e := atomicFile(path, b, os.Link)
 		if errors.Is(e, os.ErrExist) {
+			if kind == "i" || kind == "w" {
+				return ioFailure(SyncDir(filepath.Dir(path)))
+			}
 			return nil
 		}
 		if e == nil && (kind == "i" || kind == "w") {

@@ -205,7 +205,7 @@ func putWorkspaceFile(ctx context.Context, s Store, key string, f *os.File, size
 		}
 		err = os.Link(tmp.Name(), dst)
 		if errors.Is(err, os.ErrExist) {
-			return nil
+			return ioFailure(SyncDir(filepath.Dir(dst)))
 		}
 		if err == nil {
 			err = SyncDir(filepath.Dir(dst))
