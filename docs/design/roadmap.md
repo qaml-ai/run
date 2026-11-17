@@ -47,8 +47,9 @@ Agent VMs run on Firecracker hosts managed by the tier (`/v1/vms`, host enrollme
   The legacy Cloudflare container class and application are retired (#1210, #1212).
 - Git commits hold the durable workspace. Hosts keep local reflink images for warm starts and share
   disposable prebuilt ext4 artifacts for exact committed trees. The first cold miss builds and publishes
-  its artifact synchronously; subsequent cold hosts download and verify it. API edits select the new
-  tree without a background image producer. Legacy workspace-root/chunk replication remains retired
+  its sparse extent artifact synchronously; subsequent cold hosts download and verify it without
+  scanning unused disk space. API edits select the new tree without a background image producer.
+  Legacy workspace-root/chunk replication remains retired
   (#1209). L133 retains the historical cost of that retirement; the workspace-delivery measurements
   separate ready-artifact restore from preparation and upload.
 - The pilot's `bash` tool boots and reuses one VM per agent branch, fences it with the ref lease, and

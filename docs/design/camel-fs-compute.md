@@ -302,7 +302,8 @@ scripts.
       `exec` runs.
     - The next `bash` call boots a fresh VM from the branch's latest tree. A same-host image restores
       by reflink. A host without a usable local image restores the exact tree's shared prebuilt ext4
-      artifact. If its descriptor is absent, that start builds and publishes a clean image from canonical
+      artifact. Its compressed extent stream preserves sparse holes without scanning the virtual disk.
+      If its descriptor is absent, that start builds and publishes a clean image from canonical
       Git files before booting. Storage and integrity errors fail the start. API edits select a new tree;
       compatible local ancestors can still apply a delta. See
       [the mount path](../../camelfsd/README.md#session-mounts-and-guest-streams) and

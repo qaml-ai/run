@@ -109,7 +109,8 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
   a Firecracker host, guest image chosen by `GUEST_IMAGE_SHA256` in `backends/workers/wrangler.pilot.jsonc`.
 - File tools read and write committed workspace versions, and successful Bash calls publish their checkpoint
   before returning (#1208, #1211). The host keeps local reflink images and normal starts share clean prebuilt
-  ext4 artifacts for an exact lineage, Git tree, disk size and recipe. An absent descriptor builds synchronously
+  ext4 artifacts for an exact lineage, Git tree, disk size and recipe. Compressed extent streams preserve sparse
+  holes; qualification uses the pilot's actual 64 GiB virtual disk. An absent descriptor builds synchronously
   from verified canonical files. Storage and integrity failures fail the start. Shared workspace-root and chunk
   replication remain retired; the new images are disposable derivatives of Git files.
 - L131/L132 track cold-restore performance, and L133 records the earlier cost of removing shared images.
