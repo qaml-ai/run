@@ -323,6 +323,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 	}
 	const markerPath = "/workspace/src/d000/f00000.ts"
+	const addedPath = "/workspace/src/api-added.ts"
 	marker := lineage + " checkpoint"
 	session := func(h host, phase, at, version string, checkpoint bool, readEdit string) (time.Duration, string, string) {
 		t.Helper()
@@ -359,8 +360,14 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 		const scan = "find /workspace -type f | wc -l; du -sm /workspace | cut -f1"
 		command := scan
+		readPath := markerPath
+		expectedCount := len(files)
+		if phase == "api-add" {
+			readPath = addedPath
+			expectedCount++
+		}
 		if packedMode != "" {
-			command = "sha256sum " + markerPath
+			command = "sha256sum " + readPath
 		} else if readEdit != "" {
 			command = "cat " + markerPath
 		}
@@ -388,8 +395,8 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 				Command: scan, TimeoutS: 120}, 200)
 		}
 		count, _, _ := strings.Cut(coldExecOutput(t, out), "\n")
-		if count != strconv.Itoa(len(files)) {
-			t.Fatalf("workspace has %q files, want %d", count, len(files))
+		if count != strconv.Itoa(expectedCount) {
+			t.Fatalf("workspace has %q files, want %d", count, expectedCount)
 		}
 		next, nextVersion := at, version
 		if checkpoint {
@@ -419,13 +426,19 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		apiMarker := lineage + " packed API edit"
 		var phases []time.Duration
 		target := root
-		for _, phase := range []string{"initial", "api-edit"} {
+		for _, phase := range []string{"initial", "api-edit", "api-add"} {
 			readEdit := ""
 			if phase == "api-edit" {
 				apiStart := time.Now()
 				target = commit([]string{root.Commit}, "", strings.TrimPrefix(markerPath, "/workspace/"), apiMarker+"\n")
 				t.Logf("PACKED_APPLY_API_EDIT size_mb=%d codec=%s ms=%.3f", mb, packedMode, float64(time.Since(apiStart).Microseconds())/1000)
 				readEdit = apiMarker
+			}
+			if phase == "api-add" {
+				apiStart := time.Now()
+				readEdit = lineage + " packed API addition"
+				target = commit([]string{target.Commit}, "", strings.TrimPrefix(addedPath, "/workspace/"), readEdit+"\n")
+				t.Logf("PACKED_APPLY_API_ADD size_mb=%d codec=%s ms=%.3f", mb, packedMode, float64(time.Since(apiStart).Microseconds())/1000)
 			}
 			prepared = nil
 			if packedMode != "control" {
@@ -450,8 +463,8 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 				}
 			}
 		}
-		t.Logf("PACKED_APPLY_RESULT size_mb=%d mode=%s files=%d initial_ms=%.3f api_edit_fresh_ms=%.3f",
-			mb, packedMode, len(files), float64(phases[0].Microseconds())/1000, float64(phases[1].Microseconds())/1000)
+		t.Logf("PACKED_APPLY_RESULT size_mb=%d mode=%s files=%d initial_ms=%.3f api_edit_fresh_ms=%.3f api_add_fresh_ms=%.3f",
+			mb, packedMode, len(files), float64(phases[0].Microseconds())/1000, float64(phases[1].Microseconds())/1000, float64(phases[2].Microseconds())/1000)
 		return
 	}
 
