@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -263,7 +262,7 @@ func fill(ctx context.Context, data, manifestPath, url, region, table string) er
 		}
 	}()
 	for v := range ready {
-		_, err = fmt.Fprintf(w, "M %s inline %s\ndata %d\n", v.entry.Mode, strconv.Quote(v.entry.Path), v.entry.Size)
+		_, err = fmt.Fprintf(w, "M %s inline %s\ndata %d\n", v.entry.Mode, quoteGitPath(v.entry.Path), v.entry.Size)
 		var reader io.Reader = bytes.NewReader(v.data)
 		if v.file != nil {
 			reader = v.file
@@ -317,4 +316,25 @@ func fill(ctx context.Context, data, manifestPath, url, region, table string) er
 		"tree": m.Tree, "files": len(entries), "bytes": m.Bytes, "packs": len(packs),
 		"metadataAndPacksMs": metadataMs, "ms": time.Since(start).Seconds() * 1000})
 	return nil
+}
+
+// Git's C-style path quoting accepts three-digit octal byte escapes. Go's
+// string quoting can emit hexadecimal or Unicode escapes that Git does not use.
+func quoteGitPath(path string) string {
+	var quoted strings.Builder
+	quoted.WriteByte('"')
+	for i := range len(path) {
+		value := path[i]
+		switch {
+		case value == '\\' || value == '"':
+			quoted.WriteByte('\\')
+			quoted.WriteByte(value)
+		case value < 0x20 || value >= 0x7f:
+			fmt.Fprintf(&quoted, "\\%03o", value)
+		default:
+			quoted.WriteByte(value)
+		}
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
 }

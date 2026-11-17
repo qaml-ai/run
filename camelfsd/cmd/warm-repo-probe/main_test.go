@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,7 +31,17 @@ func TestCanonicalGitServiceRoundtrip(t *testing.T) {
 	defer db.Close()
 	repo := &objects.Repository{DB: db, Store: store.Local{Dir: source}, TempDir: parent}
 	files := map[string]objects.File{}
-	for path, raw := range map[string][]byte{"src/d000/f00000.ts": []byte("first"), "bin/run": []byte("#!/bin/sh\n"), "sym": []byte("bin/run")} {
+	contents := map[string][]byte{
+		"src/d000/f00000.ts":          []byte("first"),
+		"bin/run":                     []byte("#!/bin/sh\n"),
+		"sym":                         []byte("bin/run"),
+		"control/escape\x1b-and-\x01": []byte("control bytes"),
+		"control/new\nline\tfile":     []byte("newline and tab"),
+		"unicode/naïve-資料-🙂.txt":      []byte("Unicode path"),
+		"unicode/zero\u200bwidth.txt": []byte("nonprinting Unicode"),
+		"quotes/a\"b\\c.txt":          []byte("quote and backslash"),
+	}
+	for path, raw := range contents {
 		blob, err := repo.Upload(ctx, "l", root.Hash(raw), int64(len(raw)), bytes.NewReader(raw))
 		if err != nil {
 			t.Fatal(err)
@@ -78,6 +89,17 @@ func TestCanonicalGitServiceRoundtrip(t *testing.T) {
 	}
 	server := httptest.NewServer(s)
 	defer server.Close()
+	for path, want := range contents {
+		response, err := request(ctx, http.DefaultClient, server.URL, "/repos/"+m.Commit+"/files/"+url.PathEscape(path), "fixture")
+		if err != nil {
+			t.Fatalf("read path %q: %v", path, err)
+		}
+		got, err := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if err != nil || closeErr != nil || !bytes.Equal(got, want) || response.Header.Get("ETag") != `"`+store.GitHash("blob", want)+`"` {
+			t.Fatalf("read path %q: bytes=%q read=%v close=%v", path, got, err, closeErr)
+		}
+	}
 	if err = client(ctx, server.URL, m, "fixture", 1); err != nil {
 		t.Fatal(err)
 	}
