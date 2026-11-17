@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/qaml-ai/run/camelfsd/internal/api"
 	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
@@ -217,8 +219,31 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	t.Cleanup(tier.Close)
 	client := &http.Client{Timeout: 10 * time.Minute, Transport: &http.Transport{DisableKeepAlives: true, TLSClientConfig: tierClientTLS(cert, tierPair)}}
 
+	cleanMode := os.Getenv("CAMELFSD_KVM_CLEAN_IMAGE") == "1"
+	if cleanMode && packedMode != "control" {
+		t.Fatal("clean-image mode requires CAMELFSD_KVM_PACKED_APPLY=control")
+	}
+	var cleanImage *portableImage
+	var cleanKey string
+	prepareClean := func(version, tree string) {
+		t.Helper()
+		if !cleanMode {
+			return
+		}
+		artifactDir := t.TempDir()
+		db, err := refs.OpenStorage(filepath.Join(artifactDir, "producer.db"))
+		must(err)
+		defer db.Close()
+		producer := (&objects.Repository{DB: db, Store: remote, TempDir: artifactDir}).ForLineage(lineage)
+		value, err := buildPortableImage(ctx, producer, store.ForLineage(remote, lineage), version, tree, artifactDir, int64(mb+1024)<<20)
+		must(err)
+		client, bucket, prefix := portableImageS3(t, url)
+		cleanKey = uploadPortableImage(t, client, bucket, prefix, lineage, value)
+		cleanImage = &value
+	}
 	type host struct {
 		endpoint, log string
+		restore       time.Duration
 		stop          func()
 	}
 	var prepared *image.PackedApply
@@ -239,6 +264,17 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 		must(os.MkdirAll(filepath.Join(data, "images"), 0700))
 		must(exec.Command("cp", "--reflink=always", guestImage, filepath.Join(data, "images", sha+".ext4")).Run())
+		var restore time.Duration
+		if cleanImage != nil {
+			start := time.Now()
+			client, bucket, _ := portableImageS3(t, url)
+			reply, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(cleanKey)})
+			must(err)
+			must(restorePortableImage(ctx, reply.Body, *cleanImage, data, lineage))
+			must(reply.Body.Close())
+			restore = time.Since(start)
+			t.Logf("CLEAN_IMAGE_RESTORE tree=%s compressed_bytes=%d transfer_restore_ms=%d", cleanImage.Tree, cleanImage.CompressedSize, restore.Milliseconds())
+		}
 		cfg := kvmDaemonConfig{Data: data, Tier: strings.TrimPrefix(tier.URL, "https://"), HostID: cert.HostID, Kernel: kernel, Shape: shape,
 			Store: url, ObjectsTable: objectsTable, VirtualSize: int64(mb+1024) << 20, PackedApply: prepared, PackedParallel: packedParallel}
 		config, err := json.Marshal(cfg)
@@ -265,7 +301,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}()
 		select {
 		case addr := <-ready:
-			return host{addr, logPath, stop}
+			return host{addr, logPath, restore, stop}
 		case <-time.After(time.Minute):
 			t.Fatal("daemon did not start")
 		}
@@ -390,7 +426,20 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 		out := call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "first", Shell: shell.ShellID,
 			Command: command, TimeoutS: 120}, 200)
-		elapsed := time.Since(begin)
+		elapsed := time.Since(begin) + h.restore
+		if cleanMode {
+			state, err := os.ReadFile(filepath.Join(filepath.Dir(h.log), "mounts", id, "state.json"))
+			must(err)
+			var mount struct {
+				Warm                  bool
+				BaseTree, CachedImage string
+			}
+			must(json.Unmarshal(state, &mount))
+			if !mount.Warm || mount.BaseTree != at || mount.CachedImage != cleanImage.SHA256 {
+				t.Fatalf("clean image cache was not used: %+v", mount)
+			}
+			t.Logf("CLEAN_IMAGE_USED phase=%s tree=%s image=%s warm=true", phase, at, mount.CachedImage)
+		}
 		if packedMode != "" {
 			got, _, _ := strings.Cut(coldExecOutput(t, out), " ")
 			expected := files[strings.TrimPrefix(markerPath, "/workspace/")].SHA256
@@ -401,7 +450,11 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 			if got != expected {
 				t.Fatalf("first read hash %s: got %s, want %s", phase, got, expected)
 			}
-			t.Logf("WORKSPACE_METRIC size_mb=%d phase=%s mode=%s first_read_ms=%.3f", mb, phase, packedMode, float64(elapsed.Microseconds())/1000)
+			mode := packedMode
+			if cleanMode {
+				mode = "image"
+			}
+			t.Logf("WORKSPACE_METRIC size_mb=%d phase=%s mode=%s first_read_ms=%.3f", mb, phase, mode, float64(elapsed.Microseconds())/1000)
 			out = call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "scan", Shell: shell.ShellID,
 				Command: scan, TimeoutS: 120}, 200)
 		} else if readEdit != "" {
@@ -467,14 +520,20 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 					mb, phase, packedMode, float64(time.Since(build).Microseconds())/1000, packed.Size, packed.RawSize, packed.Bytes,
 					packed.Blob, packed.SHA256, packed.RawSHA256, packed.Commit, packed.Tree)
 			}
+			prepareClean(target.Commit, target.Tree)
 			h := startHost()
 			elapsed, _, _ := session(h, phase, target.Tree, target.Commit, false, readEdit)
 			phases = append(phases, elapsed)
-			waitLog(h, "compute_baseline", "vm="+lineage+"-"+phase, "error=<nil>")
+			if !cleanMode {
+				waitLog(h, "compute_baseline", "vm="+lineage+"-"+phase, "error=<nil>")
+			}
 			h.stop()
 			raw, err := os.ReadFile(h.log)
 			must(err)
 			for _, line := range strings.Split(string(raw), "\n") {
+				if cleanMode && strings.Contains(line, "compute_apply_reads") {
+					t.Fatalf("clean image unexpectedly fetched canonical blob content: %s", line)
+				}
 				if strings.Contains(line, "compute_boot") || strings.Contains(line, "compute_apply") || strings.Contains(line, "compute_baseline") {
 					t.Log(line)
 				}
