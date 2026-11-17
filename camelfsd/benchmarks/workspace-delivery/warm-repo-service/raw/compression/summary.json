@@ -1,0 +1,57 @@
+{
+  "default": {
+    "fill": {
+      "bytes": 523304960,
+      "commit": "6939592df90728885c469bd0e3b564daeea149b2",
+      "event": "warm_repo_fill",
+      "files": 10460,
+      "lineage": "warmrepo-500-1794930966052076608",
+      "metadataAndPacksMs": 56.216915,
+      "ms": 38790.409901,
+      "packs": 0,
+      "source": "/tmp/warmrepo-compression.ZV1seE/seed/canonical",
+      "tree": "2b95f626587d4f302b0e5648e7142d642781ac79"
+    },
+    "cpu": {
+      "userSeconds": 36.877598,
+      "systemSeconds": 3.768475
+    },
+    "gitDirectoryBytes": 524179205,
+    "fsckExit": 0
+  },
+  "0": {
+    "fill": {
+      "bytes": 523304960,
+      "commit": "6939592df90728885c469bd0e3b564daeea149b2",
+      "event": "warm_repo_fill",
+      "files": 10460,
+      "lineage": "warmrepo-500-1794930966052076608",
+      "metadataAndPacksMs": 68.282185,
+      "ms": 24490.670235999998,
+      "packs": 0,
+      "source": "/tmp/warmrepo-compression.ZV1seE/seed/canonical",
+      "tree": "2b95f626587d4f302b0e5648e7142d642781ac79"
+    },
+    "cpu": {
+      "userSeconds": 22.664555999999997,
+      "systemSeconds": 3.9871359999999996
+    },
+    "gitDirectoryBytes": 524203802,
+    "fsckExit": 0
+  },
+  "sourceCommit": "6fd0531e86df0fe5783de3a284c159b77749b1f4",
+  "sprite": "rt-pool-8",
+  "run": "20261117-155556-4108937-1",
+  "exit": 0,
+  "order": [
+    "default",
+    "0"
+  ],
+  "notes": [
+    "Same local source data, fresh destination per fill. Source caches may be warmer for second fill.",
+    "All canonical hashes and trees verified by exact fill command; full native Git fsck also passed.",
+    "CPU is child-process accumulated user and system time per fill, including Go and Git. Individual processes were not profiled.",
+    "Raw maxRSSKiB from RUSAGE_CHILDREN is a cumulative high-water mark including previous completed children. It does not support a per-fill memory comparison.",
+    "Temporary fixture and both Git repositories were removed by EXIT cleanup."
+  ]
+}

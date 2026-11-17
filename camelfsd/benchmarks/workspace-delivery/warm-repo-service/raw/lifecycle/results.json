@@ -1,0 +1,23 @@
+[
+  {
+    "case": "first",
+    "exit": 0,
+    "serverReaped": true,
+    "temporaryStateRemoved": true,
+    "staleStopRemoved": true
+  },
+  {
+    "case": "rerun",
+    "exit": 0,
+    "serverReaped": true,
+    "temporaryStateRemoved": true,
+    "staleStopRemoved": true
+  },
+  {
+    "case": "term",
+    "exit": 143,
+    "serverReaped": true,
+    "temporaryStateRemoved": true,
+    "staleStopRemoved": true
+  }
+]

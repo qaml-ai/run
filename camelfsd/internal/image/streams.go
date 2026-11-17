@@ -101,7 +101,12 @@ func (m *Manager) entries(ctx context.Context, lineage, t string) ([]objects.Ent
 // v0-limitation: L53
 func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from string, workspaceBytes int64, apply bool, uid int) error {
 	var old, next []objects.Entry
-	if apply {
+	if apply && m.PackedApply != nil {
+		if err := m.validatePackedApply(ctx, v); err != nil {
+			return err
+		}
+	}
+	if apply && m.PackedApply == nil {
 		var e error
 		if from != v.Tree {
 			old, e = m.entries(ctx, v.Lineage, from)
@@ -143,6 +148,9 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from strin
 	a := applyTrees{FromTree: from, ToTree: v.Tree, Files: len(ops)}
 	for _, op := range ops {
 		a.Bytes += op.Size
+	}
+	if apply && m.PackedApply != nil {
+		a.Files, a.Bytes = m.PackedApply.Files, m.PackedApply.Bytes
 	}
 	if apply {
 		v.needsBaseline = a.Files > 0
@@ -270,6 +278,13 @@ func (m *Manager) sendApply(c net.Conn, lineage, job string, a applyTrees, entri
 	if e := wire.Send(c, wire.Header{V: 1, Kind: "apply", JobID: job, FromTree: a.FromTree, ToTree: a.ToTree}); e != nil {
 		return e
 	}
+	if m.PackedApply != nil {
+		return m.replayPackedApply(ctx, c, lineage, a.ToTree)
+	}
+	return m.sendApplyBody(ctx, c, lineage, job, a, entries, ops)
+}
+
+func (m *Manager) sendApplyBody(ctx context.Context, c io.Writer, lineage, job string, a applyTrees, entries []objects.Entry, ops []wire.Op) error {
 	if e := sendIndex(c, entries); e != nil {
 		return e
 	}

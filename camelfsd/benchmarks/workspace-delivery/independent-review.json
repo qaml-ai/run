@@ -1,0 +1,55 @@
+{
+  "checkedAt": "2026-11-17",
+  "trials": 23,
+  "phases": 69,
+  "restoredScopes": [
+    {
+      "run": "20261117T153951Z-f8831868",
+      "free": 2,
+      "allocated": 0,
+      "epoch": "10"
+    },
+    {
+      "run": "20261117T154851Z-1a566035",
+      "free": 2,
+      "allocated": 0,
+      "epoch": "11"
+    },
+    {
+      "run": "20261117T155154Z-49671f85",
+      "free": 2,
+      "allocated": 0,
+      "epoch": "11"
+    },
+    {
+      "run": "20261117T160805Z-21f994ca",
+      "free": 2,
+      "allocated": 0,
+      "epoch": "11"
+    }
+  ],
+  "rawMeasurementsMatch": true,
+  "combinedMedianMs": {
+    "random/50/baseline": 2219.949,
+    "random/50/image": 1623.742,
+    "random/50/imageparallel": 1403.561,
+    "random/50/packedgzip": 2301.218,
+    "random/50/packedparallel": 1821.811,
+    "random/50/packedplain": 2202.135,
+    "random/500/baseline": 4900.719,
+    "random/500/bundlemedium": 6487.652,
+    "random/500/image": 10070.679,
+    "random/500/imageparallel": 3102.234,
+    "random/500/packedgzip": 10881.094000000001,
+    "random/500/packedparallel": 6110.53,
+    "random/500/packedplain": 9828.533500000001,
+    "source/50/baseline": 2302.679,
+    "source/50/packedgzip": 1646.609
+  },
+  "manifestHashesMatch": true,
+  "markdownTargetsExist": true,
+  "finalHostHealthy": true,
+  "finalServiceChecksumPassed": true,
+  "ownedRunFoldersRemoved": 4,
+  "finalEvidenceHashesMatch": true
+}

@@ -1,0 +1,147 @@
+kvm-packed: OK
+2026-11-17T15:40:07Z start logs-workspace/50MiB-1-baseline.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=initial mode=control first_read_ms=2276.891
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=50 codec=control ms=269.283
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-edit mode=control first_read_ms=2464.562
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-add mode=control first_read_ms=2235.447
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=50 mode=control files=10010 initial_ms=2276.891 api_edit_fresh_ms=2464.562 api_add_fresh_ms=2235.447
+2026-11-17T15:41:02Z start logs-workspace/50MiB-1-packedplain.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=initial codec=plain ms=1688.172 stored_bytes=53287975 raw_bytes=53287975 logical_bytes=51445760 blob=30c0aa7652f230ca9472aab5ff359f1d277b76ba sha256=d93b0fb7a86b17adb1108f56dc542e7da61157076915c4f839bef0a78344041f raw_sha256=d93b0fb7a86b17adb1108f56dc542e7da61157076915c4f839bef0a78344041f commit=77e8d0f5f023216e410c19a4b996859d4a0c4a06 tree=6cf2809a7332dc2f750010f74e7109260231ec2e
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=initial mode=plain first_read_ms=2272.627
+    host_cold_kvm_test.go:462: 2026/11/17 15:41:40 INFO compute_apply_archive codec=plain tree=6cf2809a7332dc2f750010f74e7109260231ec2e storedBytes=53287975 rawBytes=53287975 fetchMs=714.978 verifyMs=43.47700000000009 sendMs=732.948 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=50 codec=plain ms=109.682
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-edit codec=plain ms=1218.242 stored_bytes=53283924 raw_bytes=53283924 logical_bytes=51441713 blob=2c3bb3daa54595a52abcc9a35ff6d9afc7e4c724 sha256=e70c47f00668d0f6e013df7eccffb1b45532821cc6a7f437e0d12907afa0ea87 raw_sha256=e70c47f00668d0f6e013df7eccffb1b45532821cc6a7f437e0d12907afa0ea87 commit=5a87ff5397411d0a8f212f3996d135e63b44d527 tree=a2416c123878cb7f8ad410db60bfa303effd7354
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-edit mode=plain first_read_ms=2131.643
+    host_cold_kvm_test.go:462: 2026/11/17 15:41:50 INFO compute_apply_archive codec=plain tree=a2416c123878cb7f8ad410db60bfa303effd7354 storedBytes=53283924 rawBytes=53283924 fetchMs=588 verifyMs=43.389999999999986 sendMs=777.6170000000001 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-add codec=plain ms=1331.202 stored_bytes=53284153 raw_bytes=53284153 logical_bytes=51441766 blob=edef0d02cad8f6f36cd0f14c60cc78d726d8749a sha256=40e83a604344293bdbc494b7a44dc4f14193d72f50f683e2e6e8e09167c11c69 raw_sha256=40e83a604344293bdbc494b7a44dc4f14193d72f50f683e2e6e8e09167c11c69 commit=d00e6e3bf11d25e521d0158e1e7000f9946167c5 tree=27c160701c80a62dd93713ae6842d9ae7b60aa2a
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-add mode=plain first_read_ms=2864.080
+    host_cold_kvm_test.go:462: 2026/11/17 15:42:00 INFO compute_apply_archive codec=plain tree=27c160701c80a62dd93713ae6842d9ae7b60aa2a storedBytes=53284153 rawBytes=53284153 fetchMs=1301.366 verifyMs=43.565000000000055 sendMs=712.844 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=50 mode=plain files=10010 initial_ms=2272.627 api_edit_fresh_ms=2131.643 api_add_fresh_ms=2864.080
+2026-11-17T15:42:02Z start logs-workspace/50MiB-1-packedgzip.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=initial codec=gzip ms=1474.500 stored_bytes=52480865 raw_bytes=53287975 logical_bytes=51445760 blob=ff8f8390ff3a582f12cb2ca137ad930b75306bec sha256=e69ba9311ac160eedc89cbc912fa9c80d9e75e298e6dda74f905272d027108ee raw_sha256=f9c4768d15be9b5bdabad284e04674c16fc4c5deea63db14fce7115ce91f0b82 commit=8a3b4a00185dfba23a9c97fa39d3ac5893a992af tree=2fd3e26abf18a50e61ac36a0146605ba4a3a6ea9
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=initial mode=gzip first_read_ms=2065.487
+    host_cold_kvm_test.go:462: 2026/11/17 15:42:36 INFO compute_apply_archive codec=gzip tree=2fd3e26abf18a50e61ac36a0146605ba4a3a6ea9 storedBytes=52480865 rawBytes=53287975 fetchMs=660.551 verifyMs=50.08499999999992 sendMs=738.637 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=50 codec=gzip ms=117.948
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-edit codec=gzip ms=1288.813 stored_bytes=52476815 raw_bytes=53283924 logical_bytes=51441713 blob=ce83fce718118eb518bd5b19e2c1db4f24d440ed sha256=a4be48645869401891719ab8a2a6e9df9640e34b006781ebf57a17d0c45a8d2b raw_sha256=8b8418fe561bd88c852b51e167c0bddd4b559207db866d76e3861425184bb089 commit=11b4cb39291158c2237c2a8751f75e7a8917729d tree=6bb52150ccad623a2165a9224e4d9fd1c9d516a6
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-edit mode=gzip first_read_ms=3074.471
+    host_cold_kvm_test.go:462: 2026/11/17 15:42:47 INFO compute_apply_archive codec=gzip tree=6bb52150ccad623a2165a9224e4d9fd1c9d516a6 storedBytes=52476815 rawBytes=53283924 fetchMs=1531.272 verifyMs=48.95900000000006 sendMs=704.9570000000001 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-add codec=gzip ms=1398.845 stored_bytes=52476852 raw_bytes=53284153 logical_bytes=51441766 blob=cb85d878ec37b33f310ea103fff0e502a6fc1dce sha256=5ed10da654572fd87787bab7670e5ebd84f1a317a07c655f6c1c70effbe38aeb raw_sha256=1cfff4571745102023776280e59dd292aa62f7650546e9efb51a1387fc02ba74 commit=ceb0c4ec2b3c69ded4bf4bd3c925d014bfa98373 tree=94034e86ec43beb35d5007bbf88adbdb96cba5ab
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-add mode=gzip first_read_ms=2388.869
+    host_cold_kvm_test.go:462: 2026/11/17 15:42:57 INFO compute_apply_archive codec=gzip tree=94034e86ec43beb35d5007bbf88adbdb96cba5ab storedBytes=52476852 rawBytes=53284153 fetchMs=812.014 verifyMs=48.428999999999974 sendMs=706.499 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=50 mode=gzip files=10010 initial_ms=2065.487 api_edit_fresh_ms=3074.471 api_add_fresh_ms=2388.869
+2026-11-17T15:42:59Z start logs-workspace/50MiB-2-packedplain.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=initial codec=plain ms=2463.250 stored_bytes=53287975 raw_bytes=53287975 logical_bytes=51445760 blob=4018b74f93f4f6b3afdefb441a351315360efd4d sha256=4ccb32fc3b5a673952ac4b4515042bc2f3030075d6195828c8400fe13f27c93c raw_sha256=4ccb32fc3b5a673952ac4b4515042bc2f3030075d6195828c8400fe13f27c93c commit=46f39bcd37fd23027789eba3253ea4edcd263b5d tree=daa501fa91fc8ebf053bd811389cf53a9038f68f
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=initial mode=plain first_read_ms=2050.091
+    host_cold_kvm_test.go:462: 2026/11/17 15:43:38 INFO compute_apply_archive codec=plain tree=daa501fa91fc8ebf053bd811389cf53a9038f68f storedBytes=53287975 rawBytes=53287975 fetchMs=680.229 verifyMs=42.938999999999965 sendMs=688.7789999999999 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=50 codec=plain ms=102.559
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-edit codec=plain ms=1160.909 stored_bytes=53283924 raw_bytes=53283924 logical_bytes=51441713 blob=11aa4460067ac2ebb102e04d083861c8bd3dcfea sha256=ca9f7b6920e5cf8c5138172312fc1348eef036613b6abc7756711dc5a7345f9a raw_sha256=ca9f7b6920e5cf8c5138172312fc1348eef036613b6abc7756711dc5a7345f9a commit=760ffeac985f3d6fa9e2562380713513872e4e61 tree=cbbee9f3c16bdbbc77774cbfe30d01c6a10afe52
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-edit mode=plain first_read_ms=2409.153
+    host_cold_kvm_test.go:462: 2026/11/17 15:43:48 INFO compute_apply_archive codec=plain tree=cbbee9f3c16bdbbc77774cbfe30d01c6a10afe52 storedBytes=53283924 rawBytes=53283924 fetchMs=968.483 verifyMs=42.510000000000105 sendMs=720.215 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-add codec=plain ms=1180.455 stored_bytes=53284153 raw_bytes=53284153 logical_bytes=51441766 blob=94d1e3f22ad66c5d5c31f4a64b32b120e5934e40 sha256=ab0322f4f57c2514d0a521bbbf8f82e0d374b3e13cbedb603a9e3e6a55902948 raw_sha256=ab0322f4f57c2514d0a521bbbf8f82e0d374b3e13cbedb603a9e3e6a55902948 commit=c714b185919cf6c839c7df2b3ced5c51f1993967 tree=b09b00fbb1940d1c57ef68d610720f73a4ece77d
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-add mode=plain first_read_ms=2012.866
+    host_cold_kvm_test.go:462: 2026/11/17 15:43:57 INFO compute_apply_archive codec=plain tree=b09b00fbb1940d1c57ef68d610720f73a4ece77d storedBytes=53284153 rawBytes=53284153 fetchMs=547.709 verifyMs=42.659000000000106 sendMs=718.3100000000001 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=50 mode=plain files=10010 initial_ms=2050.091 api_edit_fresh_ms=2409.153 api_add_fresh_ms=2012.866
+2026-11-17T15:44:00Z start logs-workspace/50MiB-2-packedgzip.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=initial codec=gzip ms=1570.970 stored_bytes=52480744 raw_bytes=53287975 logical_bytes=51445760 blob=91cccc609f210cc8bd9b8d824418b3718c4e724f sha256=8b5a85eff9d4cad1f8321d57bc6f8545301a0f239f35e23853dfbee356318aaf raw_sha256=de1a3a881af6e39e0ef0cfaebd586cdda306f4de81b2e56a125628eeb501ca3f commit=cdf78669029bbbb2e1de600b29bd2087ff4ada5b tree=84751c4367de4c2d73a56a604097c5d779aa3be8
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=initial mode=gzip first_read_ms=2071.350
+    host_cold_kvm_test.go:462: 2026/11/17 15:44:37 INFO compute_apply_archive codec=gzip tree=84751c4367de4c2d73a56a604097c5d779aa3be8 storedBytes=52480744 rawBytes=53287975 fetchMs=592.092 verifyMs=50.76800000000003 sendMs=720.0010000000001 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=50 codec=gzip ms=110.959
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-edit codec=gzip ms=1123.256 stored_bytes=52476694 raw_bytes=53283924 logical_bytes=51441713 blob=a14688843977751ba1e2176356880f50b0e11dda sha256=aa7327952f64b78c54205edc928fba1549deb2058daf8ff85e6c1b91e990d356 raw_sha256=15cbee8645548442def4b820c77b42c05b89accd3bc1f28ed4fdb92706d2945b commit=6bfedc059967ae11b2e967dc6e6907daf4bc2d6d tree=0e7a8ada5538f1b1c3df0039856bf1e3026b24d6
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-edit mode=gzip first_read_ms=2257.976
+    host_cold_kvm_test.go:462: 2026/11/17 15:44:47 INFO compute_apply_archive codec=gzip tree=0e7a8ada5538f1b1c3df0039856bf1e3026b24d6 storedBytes=52476694 rawBytes=53283924 fetchMs=795.707 verifyMs=49.714000000000055 sendMs=711.8050000000001 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=50 phase=api-add codec=gzip ms=1154.403 stored_bytes=52476863 raw_bytes=53284153 logical_bytes=51441766 blob=e86e064bcedea8b99f9687dda380e80203f78490 sha256=9bcc5de7ad0c1b05d7fce465e3dbbba4f7791f8f5863cabe281122031a962f14 raw_sha256=a615cbfd917e6a19fba5f81e27d047dbe6558710ea0000d107c8e8254331902e commit=79ba5995322676d8eeb49b1587f284e6cde707c4 tree=b4ae7309afed1565c7f75389ff85092302e18a2b
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-add mode=gzip first_read_ms=2344.460
+    host_cold_kvm_test.go:462: 2026/11/17 15:44:57 INFO compute_apply_archive codec=gzip tree=b4ae7309afed1565c7f75389ff85092302e18a2b storedBytes=52476863 rawBytes=53284153 fetchMs=800.178 verifyMs=48.940000000000055 sendMs=742.8569999999999 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=50 mode=gzip files=10010 initial_ms=2071.350 api_edit_fresh_ms=2257.976 api_add_fresh_ms=2344.460
+2026-11-17T15:44:59Z start logs-workspace/50MiB-2-baseline.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=initial mode=control first_read_ms=2087.627
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=50 codec=control ms=256.569
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-edit mode=control first_read_ms=2204.451
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=50 phase=api-add mode=control first_read_ms=2190.404
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=50 mode=control files=10010 initial_ms=2087.627 api_edit_fresh_ms=2204.451 api_add_fresh_ms=2190.404
+2026-11-17T15:45:52Z start logs-workspace/500MiB-1-packedgzip.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=initial codec=gzip ms=6734.330 stored_bytes=524421345 raw_bytes=525230891 logical_bytes=523304960 blob=b2142ec6cf1f7e35157a0acbd3d43a27ef34d783 sha256=f262f89859ee3d020b69eef88fa1a819fb72ab59ce8d9e4db11f5644bd86462f raw_sha256=d819aaaa0e134168924a01b03eeda935ff9023864e12d0ee7ff886b992816d5f commit=aa200f82818eb01c6513c9ff0927a2d67f6bb69f tree=6e3188ae337883e43857dbfb233b5a8f7885312a
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=initial mode=gzip first_read_ms=12875.026
+    host_cold_kvm_test.go:462: 2026/11/17 15:46:48 INFO compute_apply_archive codec=gzip tree=6e3188ae337883e43857dbfb233b5a8f7885312a storedBytes=524421345 rawBytes=525230891 fetchMs=8906.775 verifyMs=464.97299999999996 sendMs=2816.737000000001 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=500 codec=gzip ms=109.118
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-edit codec=gzip ms=6362.268 stored_bytes=524417312 raw_bytes=525226841 logical_bytes=523300914 blob=cbcb8876d96294e1c926a7583e2f84a1f59efa32 sha256=8c6b2450d5e54dc16361bc17e3300f3b982aa9d5ced176f288a066c417dc68a9 raw_sha256=792590f6906a345686309f8bc4723929bff23521f83e42f69e7687c3c8ba901a commit=6f73421d6c76c8a640a6471f2f04c1d8a0cf3e9c tree=c15f325050ebf35ab963b932f82694635888f1c3
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-edit mode=gzip first_read_ms=10416.620
+    host_cold_kvm_test.go:462: 2026/11/17 15:47:10 INFO compute_apply_archive codec=gzip tree=c15f325050ebf35ab963b932f82694635888f1c3 storedBytes=524417312 rawBytes=525226841 fetchMs=5440.734 verifyMs=462.2509999999993 sendMs=2525.340000000001 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-add codec=gzip ms=6553.577 stored_bytes=524417363 raw_bytes=525227071 logical_bytes=523300968 blob=3d2facd38c39eefd165d0905f137a1c6366a35b1 sha256=8853d2b42ebf4d81a1486ee1496ee4e3e8ba8fb1fb2963ed4bd00a3f9f2b1913 raw_sha256=db2c4e0a7c9a875349935ddecc1c0838a50924da1f5a59c99fba3f83821001f0 commit=61eaed962ae4f3f1d654f029592abb48fa4a0e36 tree=fd27bf423bb5a0e13d5903e03921705268bf80fd
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-add mode=gzip first_read_ms=11020.733
+    host_cold_kvm_test.go:462: 2026/11/17 15:47:33 INFO compute_apply_archive codec=gzip tree=fd27bf423bb5a0e13d5903e03921705268bf80fd storedBytes=524417363 rawBytes=525227071 fetchMs=5948.65 verifyMs=462.7470000000003 sendMs=2587.5469999999996 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=500 mode=gzip files=10460 initial_ms=12875.026 api_edit_fresh_ms=10416.620 api_add_fresh_ms=11020.733
+2026-11-17T15:47:36Z start logs-workspace/500MiB-1-packedplain.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=initial codec=plain ms=7130.791 stored_bytes=525230891 raw_bytes=525230891 logical_bytes=523304960 blob=d45fac7bfc078d3eecb1b849f9b02f6bb2e6c23a sha256=cb277748e1ee44c453218fa22cddf5a5fcf276bfc3d3b25aee6207ba9463a63f raw_sha256=cb277748e1ee44c453218fa22cddf5a5fcf276bfc3d3b25aee6207ba9463a63f commit=e1b456e40ee22e5c088ade4a0752f8a79b0ec339 tree=9c0139a1d3cb5a4119cbe059e8183a278d2fb946
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=initial mode=plain first_read_ms=9419.709
+    host_cold_kvm_test.go:462: 2026/11/17 15:48:25 INFO compute_apply_archive codec=plain tree=9c0139a1d3cb5a4119cbe059e8183a278d2fb946 storedBytes=525230891 rawBytes=525230891 fetchMs=5274.346 verifyMs=426.6180000000004 sendMs=2711.6139999999996 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=500 codec=plain ms=116.725
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-edit codec=plain ms=6533.051 stored_bytes=525226841 raw_bytes=525226841 logical_bytes=523300914 blob=111f14fa3ba9e02ee498c1ca27f7cfdc0e29fe23 sha256=4b85530aac84a48addd7d9db021d753739bab3f46e9718a907c083640dc09a86 raw_sha256=4b85530aac84a48addd7d9db021d753739bab3f46e9718a907c083640dc09a86 commit=1528199272fb1919fc346bf7be61cc3ee56139f8 tree=0c6f54deff02b6e5ef364654292430ac67163776
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-edit mode=plain first_read_ms=9415.903
+    host_cold_kvm_test.go:462: 2026/11/17 15:48:46 INFO compute_apply_archive codec=plain tree=0c6f54deff02b6e5ef364654292430ac67163776 storedBytes=525226841 rawBytes=525226841 fetchMs=5274.69 verifyMs=422.9860000000008 sendMs=2428.2689999999993 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-add codec=plain ms=6983.896 stored_bytes=525227071 raw_bytes=525227071 logical_bytes=523300968 blob=c52b021ea7d04f74bda455bb2fafb182b86e7eba sha256=28d0ed353a2e5541595f281a9f42e6d24743ea6898aad91de37b2a31d98a8f54 raw_sha256=28d0ed353a2e5541595f281a9f42e6d24743ea6898aad91de37b2a31d98a8f54 commit=acd78d462d9fad1b3ab251fd4ddf4e2a65b0d32c tree=7efa13448bf1cb3505060c6d10db86960fa73b02
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-add mode=plain first_read_ms=10237.358
+    host_cold_kvm_test.go:462: 2026/11/17 15:49:08 INFO compute_apply_archive codec=plain tree=7efa13448bf1cb3505060c6d10db86960fa73b02 storedBytes=525227071 rawBytes=525227071 fetchMs=5274.481 verifyMs=426.8200000000006 sendMs=2502.6760000000004 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=500 mode=plain files=10460 initial_ms=9419.709 api_edit_fresh_ms=9415.903 api_add_fresh_ms=10237.358
+2026-11-17T15:49:12Z start logs-workspace/500MiB-1-baseline.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=initial mode=control first_read_ms=4624.813
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=500 codec=control ms=244.184
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-edit mode=control first_read_ms=5027.765
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-add mode=control first_read_ms=4773.673
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=500 mode=control files=10460 initial_ms=4624.813 api_edit_fresh_ms=5027.765 api_add_fresh_ms=4773.673
+2026-11-17T15:50:14Z start logs-workspace/500MiB-2-packedplain.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=initial codec=plain ms=7030.011 stored_bytes=525230891 raw_bytes=525230891 logical_bytes=523304960 blob=b60994bb9b95f9128a2039fc4ad3e335ef653010 sha256=9a1e65049751ef501c5219c096aa33915e7d91295b38b60f44bffbc958f85b55 raw_sha256=9a1e65049751ef501c5219c096aa33915e7d91295b38b60f44bffbc958f85b55 commit=3883fbff436ecdd771ae4a03522bb09b559262b7 tree=6d4e937ac863ee657e82bb5f9a163419b08b2400
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=initial mode=plain first_read_ms=13353.111
+    host_cold_kvm_test.go:462: 2026/11/17 15:51:09 INFO compute_apply_archive codec=plain tree=6d4e937ac863ee657e82bb5f9a163419b08b2400 storedBytes=525230891 rawBytes=525230891 fetchMs=8709.433 verifyMs=424.7149999999983 sendMs=2850.616 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=500 codec=plain ms=125.356
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-edit codec=plain ms=6631.435 stored_bytes=525226841 raw_bytes=525226841 logical_bytes=523300914 blob=039f6f1a90c4dd7d76d256c05d64519efe71ac2d sha256=037046fca462fa209c7016f1c40834c001c9e0d520a8963bec50da264425cb63 raw_sha256=037046fca462fa209c7016f1c40834c001c9e0d520a8963bec50da264425cb63 commit=2c7fbf11a44aea938f9dbb750aac5903a0a80e0d tree=dcb7a47af7bcc2b3d5c15e2cbdec51ba3ecf55c9
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-edit mode=plain first_read_ms=10695.631
+    host_cold_kvm_test.go:462: 2026/11/17 15:51:32 INFO compute_apply_archive codec=plain tree=dcb7a47af7bcc2b3d5c15e2cbdec51ba3ecf55c9 storedBytes=525226841 rawBytes=525226841 fetchMs=6484.298 verifyMs=423.6270000000004 sendMs=2655.1320000000005 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-add codec=plain ms=6586.695 stored_bytes=525227071 raw_bytes=525227071 logical_bytes=523300968 blob=0eb3567385b82489d82656819e275fa99211fd80 sha256=5a29cd19bd6afd6638c4d10b1fde44d1def7bac0e761e6d9bff07b5e2510c31f raw_sha256=5a29cd19bd6afd6638c4d10b1fde44d1def7bac0e761e6d9bff07b5e2510c31f commit=cb340f7aa0b5a9e0d5b1b403f72dbc54acb142f1 tree=825f9e1adfd5da1845b1089c813184541aaf2cae
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-add mode=plain first_read_ms=9369.834
+    host_cold_kvm_test.go:462: 2026/11/17 15:51:54 INFO compute_apply_archive codec=plain tree=825f9e1adfd5da1845b1089c813184541aaf2cae storedBytes=525227071 rawBytes=525227071 fetchMs=5289.249 verifyMs=418.2449999999999 sendMs=2549.197000000001 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=500 mode=plain files=10460 initial_ms=13353.111 api_edit_fresh_ms=10695.631 api_add_fresh_ms=9369.834
+2026-11-17T15:51:55Z start logs-workspace/500MiB-2-baseline.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=initial mode=control first_read_ms=4582.436
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=500 codec=control ms=231.012
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-edit mode=control first_read_ms=6550.327
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-add mode=control first_read_ms=6105.637
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=500 mode=control files=10460 initial_ms=4582.436 api_edit_fresh_ms=6550.327 api_add_fresh_ms=6105.637
+2026-11-17T15:53:01Z start logs-workspace/500MiB-2-packedgzip.log
+    host_cold_kvm_test.go:119: seed bundles: 10000 blobs in 5 packs
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=initial codec=gzip ms=6670.545 stored_bytes=524421183 raw_bytes=525230891 logical_bytes=523304960 blob=8fc1e925ea99a008271895d44dba90ecb189f133 sha256=b75c650706a9478f43de1349faf739f90c4e5b91c90bbeb5864017ef02e12351 raw_sha256=bebe2c8c9192953021493078a6eaa6114e0da1a1e157d27f323ca5365b8cf774 commit=638bf52062a4ee7ff8b874bb489c530dfcd3f473 tree=8ae36fd957825e6f8d64389d4292ab08cf8fa036
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=initial mode=gzip first_read_ms=10741.455
+    host_cold_kvm_test.go:462: 2026/11/17 15:53:50 INFO compute_apply_archive codec=gzip tree=8ae36fd957825e6f8d64389d4292ab08cf8fa036 storedBytes=524421183 rawBytes=525230891 fetchMs=5564.479 verifyMs=461.89300000000003 sendMs=2826.0780000000004 error=<nil>
+    host_cold_kvm_test.go:434: PACKED_APPLY_API_EDIT size_mb=500 codec=gzip ms=131.984
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-edit codec=gzip ms=6606.767 stored_bytes=524417225 raw_bytes=525226841 logical_bytes=523300914 blob=496aecf418c90e7d53452c28ef30207b004179b1 sha256=933627968717aaa61bc84e5dce51e9f8468a16ab5c846a6877bc325869a68543 raw_sha256=ff472d716443520765428e628ef6538337c5965b5ee9d31f1da18090acfef33b commit=dd91c2bf524a2e89c5f7aec9ba284430c7b6a034 tree=50d8cb8e06042460d15b9a30c8e437223a90ad16
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-edit mode=gzip first_read_ms=11847.764
+    host_cold_kvm_test.go:462: 2026/11/17 15:54:14 INFO compute_apply_archive codec=gzip tree=50d8cb8e06042460d15b9a30c8e437223a90ad16 storedBytes=524417225 rawBytes=525226841 fetchMs=7184.517 verifyMs=461.9380000000001 sendMs=2558.437 error=<nil>
+    host_cold_kvm_test.go:449: PACKED_APPLY_BUILD size_mb=500 phase=api-add codec=gzip ms=6825.277 stored_bytes=524417277 raw_bytes=525227071 logical_bytes=523300968 blob=cb94f6a23149f3ff16b90e82db88a237c286cd25 sha256=3ed65118f37abf3fa4c90de8d27f798d9c4d9e068dd16752acb778a1ed843102 raw_sha256=4a9817eb3805a7af7fdf2dbad327bb11aa0e05eba17c1a51d8679af6ae9a8a04 commit=8aa414752bfee349a6d0a6c0488e478b61df93ec tree=2671764ff57753cb5e023681a735e37277604456
+    host_cold_kvm_test.go:454: WORKSPACE_METRIC size_mb=500 phase=api-add mode=gzip first_read_ms=9906.164
+    host_cold_kvm_test.go:462: 2026/11/17 15:54:36 INFO compute_apply_archive codec=gzip tree=2671764ff57753cb5e023681a735e37277604456 storedBytes=524417277 rawBytes=525227071 fetchMs=5427.726 verifyMs=460.0470000000005 sendMs=2653.915 error=<nil>
+    host_cold_kvm_test.go:466: PACKED_APPLY_RESULT size_mb=500 mode=gzip files=10460 initial_ms=10741.455 api_edit_fresh_ms=11847.764 api_add_fresh_ms=9906.164
+maintain.sh: line 151: unexpected EOF while looking for matching `"'
+coldbench-50-1794930007546612396: cleared 10002 locator rows
+coldbench-50-1794930062485149089: cleared 10002 locator rows
+coldbench-50-1794930122432225958: cleared 10002 locator rows
+coldbench-50-1794930179197977719: cleared 10002 locator rows
+coldbench-50-1794930240343540903: cleared 10002 locator rows
+coldbench-50-1794930299171636367: cleared 10002 locator rows
+coldbench-500-1794930352908756301: cleared 10002 locator rows
+coldbench-500-1794930456654699776: cleared 10002 locator rows
+coldbench-500-1794930552019323120: cleared 10002 locator rows
+coldbench-500-1794930614431936254: cleared 10002 locator rows
+coldbench-500-1794930715521576851: cleared 10002 locator rows
+coldbench-500-1794930781076587394: cleared 10002 locator rows
+Cleared 5556 objects under cold-bench/qualification/20261117T153951Z-f8831868/

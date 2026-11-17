@@ -18,6 +18,10 @@ gofmt -l .
 Compute hosts require FICLONE under `--data` (normally XFS with reflink).
 `CAMELFSD_TEST_NO_REFLINK=1` uses copies for unprivileged tests. Privileged loop and reflink tests skip when unsupported.
 
+The [workspace delivery experiments](benchmarks/workspace-delivery/README.md)
+contain prepared apply, clean ext4 and warm Git prototypes, reproduction commands,
+and the native cold-start measurements.
+
 ## Durability and lineage scope
 
 Objects are <lineage>/o/<git-sha1> (raw blobs), <lineage>/t/<git-sha1>

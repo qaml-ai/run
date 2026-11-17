@@ -6,8 +6,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -24,7 +26,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/qaml-ai/run/camelfsd/internal/api"
+	"github.com/qaml-ai/run/camelfsd/internal/auth"
 	"github.com/qaml-ai/run/camelfsd/internal/hostwire"
+	"github.com/qaml-ai/run/camelfsd/internal/image"
 	"github.com/qaml-ai/run/camelfsd/internal/objects"
 	"github.com/qaml-ai/run/camelfsd/internal/refs"
 	"github.com/qaml-ai/run/camelfsd/internal/store"
@@ -54,6 +61,12 @@ func TestKVMColdSessionBench(t *testing.T) {
 }
 
 func coldSession(t *testing.T, url, guestImage string, mb int) {
+	options, err := parseColdSessionOptions(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packedMode, packedParallel := options.packedMode, options.packedParallel
+	cleanMode, content := options.cleanImage, options.content
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -67,7 +80,27 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	}
 	lineage := fmt.Sprintf("coldbench-%d-%d", mb, time.Now().UnixNano())
 	t.Logf("benchmark lineage=%s", lineage)
+	t.Logf("benchmark content=%s", content)
+	seedBytes := func(path string, size int) ([]byte, error) {
+		if content == "source" && strings.HasPrefix(path, "src/") {
+			text := []byte(fmt.Sprintf("// %s\nexport type Item = { id: string; active: boolean; tags: string[] };\nexport function activeItems(items: Item[]): Item[] {\n  return items.filter(item => item.active).map(item => ({ ...item, tags: [...item.tags].sort() }));\n}\n", path))
+			return bytes.Repeat(text, (size+len(text)-1)/len(text))[:size], nil
+		}
+		raw := make([]byte, size)
+		_, err := rand.Read(raw)
+		return raw, err
+	}
 	objectsTable := os.Getenv("CAMELFSD_KVM_OBJECTS_TABLE")
+	mediumBundles := options.mediumBundles
+	if mediumBundles && store.BundleMaxBlob != 1<<20 {
+		t.Fatal("medium-bundle mode requires build tags kvm,camelfs_medium_bundles")
+	}
+	if !mediumBundles && store.BundleMaxBlob != 64<<10 {
+		t.Fatal("medium-bundle benchmark build requires CAMELFSD_KVM_MEDIUM_BUNDLES=1")
+	}
+	if mediumBundles && objectsTable == "" {
+		t.Fatal("medium-bundle mode requires CAMELFSD_KVM_OBJECTS_TABLE")
+	}
 	remote, err := openBenchmarkStore(ctx, url, objectsTable, 64)
 	must(err)
 
@@ -88,8 +121,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 			blobs = append(blobs, "4096 "+path)
 			continue
 		}
-		raw := make([]byte, 4096)
-		_, err := rand.Read(raw)
+		raw, err := seedBytes(path, 4096)
 		must(err)
 		blob := batch.StageBlob(raw)
 		sum := sha256.Sum256(raw)
@@ -109,14 +141,42 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 		t.Logf("seed bundles: %d blobs in %d packs", len(locations), len(packs))
 	}
+	mediumIDs := make([]string, 0, mb-40)
 	for i := 0; i < mb-40; i++ {
-		blobs = append(blobs, fmt.Sprintf("%d assets/a%04d.bin", 1<<20, i))
+		path := fmt.Sprintf("assets/a%04d.bin", i)
+		if !mediumBundles {
+			blobs = append(blobs, fmt.Sprintf("%d %s", 1<<20, path))
+			continue
+		}
+		raw, err := seedBytes(path, 1<<20)
+		must(err)
+		blob := batch.StageBlob(raw)
+		mediumIDs = append(mediumIDs, blob.SHA1)
+		sum := sha256.Sum256(raw)
+		files[path] = objects.File{SHA256: hex.EncodeToString(sum[:])}
+	}
+	if mediumBundles {
+		must(batch.Flush(ctx))
+		locations, err := store.LocateBundlesForRestore(ctx, store.ForLineage(remote, lineage), mediumIDs)
+		must(err)
+		packs := make(map[string]bool)
+		for _, location := range locations {
+			if !store.ValidateBundleRef(location) || location.Size != 1<<20 {
+				t.Fatalf("invalid medium blob location: %+v", location)
+			}
+			packs[location.Key] = true
+		}
+		wantPacks := (mb - 40 + 7) / 8
+		if len(locations) != len(mediumIDs) || len(packs) != wantPacks {
+			t.Fatalf("bundled %d of %d medium blobs in %d packs, want %d", len(locations), len(mediumIDs), len(packs), wantPacks)
+		}
+		t.Logf("seed medium bundles: %d blobs in %d packs, max_blob_bytes=%d target_bytes=%d", len(locations), len(packs), store.BundleMaxBlob, store.BundleTargetBytes)
 	}
 	must(store.Parallel(ctx, 64, blobs, func(item string) error {
 		sizeField, path, _ := strings.Cut(item, " ")
 		size, _ := strconv.Atoi(sizeField)
-		raw := make([]byte, size)
-		if _, err := rand.Read(raw); err != nil {
+		raw, err := seedBytes(path, size)
+		if err != nil {
 			return err
 		}
 		sum := sha256.Sum256(raw)
@@ -191,10 +251,30 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	t.Cleanup(tier.Close)
 	client := &http.Client{Timeout: 10 * time.Minute, Transport: &http.Transport{DisableKeepAlives: true, TLSClientConfig: tierClientTLS(cert, tierPair)}}
 
+	var cleanImage *portableImage
+	var cleanKey string
+	prepareClean := func(version, tree string) {
+		t.Helper()
+		if !cleanMode {
+			return
+		}
+		artifactDir := t.TempDir()
+		db, err := refs.OpenStorage(filepath.Join(artifactDir, "producer.db"))
+		must(err)
+		defer db.Close()
+		producer := (&objects.Repository{DB: db, Store: remote, TempDir: artifactDir}).ForLineage(lineage)
+		value, err := buildPortableImage(ctx, producer, store.ForLineage(remote, lineage), version, tree, artifactDir, int64(mb+1024)<<20)
+		must(err)
+		client, bucket, prefix := portableImageS3(t, url)
+		cleanKey = uploadPortableImage(t, client, bucket, prefix, lineage, value)
+		cleanImage = &value
+	}
 	type host struct {
 		endpoint, log string
+		restore       time.Duration
 		stop          func()
 	}
+	var prepared *image.PackedApply
 	startHost := func() host {
 		t.Helper()
 		data, err := os.MkdirTemp(parent, "cold-session-")
@@ -212,8 +292,31 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 		must(os.MkdirAll(filepath.Join(data, "images"), 0700))
 		must(exec.Command("cp", "--reflink=always", guestImage, filepath.Join(data, "images", sha+".ext4")).Run())
+		var restore time.Duration
+		if cleanImage != nil {
+			start := time.Now()
+			client, bucket, _ := portableImageS3(t, url)
+			if options.imageRanges {
+				fetch := time.Now()
+				spool, ranges, err := downloadPortableRanges(ctx, client, bucket, cleanKey, data, cleanImage.CompressedSize)
+				must(err)
+				fetchTime := time.Since(fetch)
+				err = restorePortableImage(ctx, spool, *cleanImage, data, lineage)
+				spool.Close()
+				os.Remove(spool.Name())
+				must(err)
+				t.Logf("CLEAN_IMAGE_RANGE_FETCH ranges=%d ms=%d", ranges, fetchTime.Milliseconds())
+			} else {
+				reply, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(cleanKey)})
+				must(err)
+				must(restorePortableImage(ctx, reply.Body, *cleanImage, data, lineage))
+				must(reply.Body.Close())
+			}
+			restore = time.Since(start)
+			t.Logf("CLEAN_IMAGE_RESTORE tree=%s compressed_bytes=%d transfer_restore_ms=%d", cleanImage.Tree, cleanImage.CompressedSize, restore.Milliseconds())
+		}
 		cfg := kvmDaemonConfig{Data: data, Tier: strings.TrimPrefix(tier.URL, "https://"), HostID: cert.HostID, Kernel: kernel, Shape: shape,
-			Store: url, ObjectsTable: objectsTable, VirtualSize: int64(mb+1024) << 20}
+			Store: url, ObjectsTable: objectsTable, VirtualSize: int64(mb+1024) << 20, PackedApply: prepared, PackedParallel: packedParallel}
 		config, err := json.Marshal(cfg)
 		must(err)
 		daemon := exec.Command(os.Args[0], "-test.run=^TestKVMComputeDaemonProcess$")
@@ -238,7 +341,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}()
 		select {
 		case addr := <-ready:
-			return host{addr, logPath, stop}
+			return host{addr, logPath, restore, stop}
 		case <-time.After(time.Minute):
 			t.Fatal("daemon did not start")
 		}
@@ -313,8 +416,9 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		}
 	}
 	const markerPath = "/workspace/src/d000/f00000.ts"
+	const addedPath = "/workspace/src/api-added.ts"
 	marker := lineage + " checkpoint"
-	session := func(h host, phase, at, version string, checkpoint, readEdit bool) (time.Duration, string, string) {
+	session := func(h host, phase, at, version string, checkpoint bool, readEdit string) (time.Duration, string, string) {
 		t.Helper()
 		id := lineage + "-" + phase
 		spec := hostwire.BootSpec{ID: id, Lineage: lineage, Ref: "main", Version: version, Parent: version, Tree: at,
@@ -347,19 +451,62 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		out := call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "first", Shell: shell.ShellID,
-			Command: "find /workspace -type f | wc -l; du -sm /workspace | cut -f1", TimeoutS: 120}, 200)
-		elapsed := time.Since(begin)
-		count, _, _ := strings.Cut(coldExecOutput(t, out), "\n")
-		if count != strconv.Itoa(len(files)) {
-			t.Fatalf("workspace has %q files, want %d", count, len(files))
+		const scan = "find /workspace -type f | wc -l; du -sm /workspace | cut -f1"
+		command := scan
+		readPath := markerPath
+		expectedCount := len(files)
+		if phase == "api-add" {
+			readPath = addedPath
+			expectedCount++
 		}
-		if readEdit {
-			out := call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "verify", Shell: shell.ShellID,
-				Command: "cat " + markerPath, TimeoutS: 20}, 200)
-			if got := coldExecOutput(t, out); got != marker+"\n" {
-				t.Fatalf("checkpoint marker in %s: got %q, want %q", phase, got, marker+"\n")
+		if packedMode != "" {
+			command = "sha256sum " + readPath
+		} else if readEdit != "" {
+			command = "cat " + markerPath
+		}
+		out := call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "first", Shell: shell.ShellID,
+			Command: command, TimeoutS: 120}, 200)
+		elapsed := time.Since(begin) + h.restore
+		if cleanMode {
+			state, err := os.ReadFile(filepath.Join(filepath.Dir(h.log), "mounts", id, "state.json"))
+			must(err)
+			var mount struct {
+				Warm                  bool
+				BaseTree, CachedImage string
 			}
+			must(json.Unmarshal(state, &mount))
+			if !mount.Warm || mount.BaseTree != at || mount.CachedImage != cleanImage.SHA256 {
+				t.Fatalf("clean image cache was not used: %+v", mount)
+			}
+			t.Logf("CLEAN_IMAGE_USED phase=%s tree=%s image=%s warm=true", phase, at, mount.CachedImage)
+		}
+		if packedMode != "" {
+			got, _, _ := strings.Cut(coldExecOutput(t, out), " ")
+			expected := files[strings.TrimPrefix(markerPath, "/workspace/")].SHA256
+			if readEdit != "" {
+				digest := sha256.Sum256([]byte(readEdit + "\n"))
+				expected = hex.EncodeToString(digest[:])
+			}
+			if got != expected {
+				t.Fatalf("first read hash %s: got %s, want %s", phase, got, expected)
+			}
+			mode := packedMode
+			if cleanMode {
+				mode = "image"
+			}
+			t.Logf("WORKSPACE_METRIC size_mb=%d phase=%s mode=%s first_read_ms=%.3f", mb, phase, mode, float64(elapsed.Microseconds())/1000)
+			out = call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "scan", Shell: shell.ShellID,
+				Command: scan, TimeoutS: 120}, 200)
+		} else if readEdit != "" {
+			if got := coldExecOutput(t, out); got != readEdit+"\n" {
+				t.Fatalf("marker in %s: got %q, want %q", phase, got, readEdit+"\n")
+			}
+			out = call(h, "POST", "/v1/vms/"+id+"/exec", hostwire.ExecRequest{ExecID: "scan", Shell: shell.ShellID,
+				Command: scan, TimeoutS: 120}, 200)
+		}
+		count, _, _ := strings.Cut(coldExecOutput(t, out), "\n")
+		if count != strconv.Itoa(expectedCount) {
+			t.Fatalf("workspace has %q files, want %d", count, expectedCount)
 		}
 		next, nextVersion := at, version
 		if checkpoint {
@@ -379,15 +526,80 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		stopped = true
 		return elapsed, next, nextVersion
 	}
-	base := strings.Repeat("a", 40)
+	tierDB, err := refs.OpenStorage(filepath.Join(seed, "storage.db"))
+	must(err)
+	defer tierDB.Close()
+	commit := benchmarkStorageAPI(t, &objects.Repository{DB: tierDB, Store: remote, TempDir: seed}, lineage)
+	root := commit(nil, tree.Tree, "", "")
+	if packedMode != "" {
+		generator := &image.Manager{Config: image.Config{Data: seed}, Store: remote, Refs: tierDB}
+		apiMarker := lineage + " packed API edit"
+		var phases []time.Duration
+		target := root
+		for _, phase := range []string{"initial", "api-edit", "api-add"} {
+			readEdit := ""
+			if phase == "api-edit" {
+				apiStart := time.Now()
+				target = commit([]string{root.Commit}, "", strings.TrimPrefix(markerPath, "/workspace/"), apiMarker+"\n")
+				t.Logf("PACKED_APPLY_API_EDIT size_mb=%d codec=%s ms=%.3f", mb, packedMode, float64(time.Since(apiStart).Microseconds())/1000)
+				readEdit = apiMarker
+			}
+			if phase == "api-add" {
+				apiStart := time.Now()
+				readEdit = lineage + " packed API addition"
+				target = commit([]string{target.Commit}, "", strings.TrimPrefix(addedPath, "/workspace/"), readEdit+"\n")
+				t.Logf("PACKED_APPLY_API_ADD size_mb=%d codec=%s ms=%.3f", mb, packedMode, float64(time.Since(apiStart).Microseconds())/1000)
+			}
+			prepared = nil
+			if packedMode != "control" {
+				build := time.Now()
+				packed, err := generator.PreparePackedApply(ctx, lineage, target.Commit, target.Tree, packedMode)
+				must(err)
+				prepared = &packed
+				t.Logf("PACKED_APPLY_BUILD size_mb=%d phase=%s codec=%s ms=%.3f stored_bytes=%d raw_bytes=%d logical_bytes=%d blob=%s sha256=%s raw_sha256=%s commit=%s tree=%s",
+					mb, phase, packedMode, float64(time.Since(build).Microseconds())/1000, packed.Size, packed.RawSize, packed.Bytes,
+					packed.Blob, packed.SHA256, packed.RawSHA256, packed.Commit, packed.Tree)
+			}
+			prepareClean(target.Commit, target.Tree)
+			h := startHost()
+			elapsed, _, _ := session(h, phase, target.Tree, target.Commit, false, readEdit)
+			phases = append(phases, elapsed)
+			if !cleanMode {
+				waitLog(h, "compute_baseline", "vm="+lineage+"-"+phase, "error=<nil>")
+			}
+			h.stop()
+			raw, err := os.ReadFile(h.log)
+			must(err)
+			for _, line := range strings.Split(string(raw), "\n") {
+				if cleanMode && strings.Contains(line, "compute_apply_reads") {
+					t.Fatalf("clean image unexpectedly fetched canonical blob content: %s", line)
+				}
+				if strings.Contains(line, "compute_boot") || strings.Contains(line, "compute_apply") || strings.Contains(line, "compute_baseline") {
+					t.Log(line)
+				}
+			}
+		}
+		t.Logf("PACKED_APPLY_RESULT size_mb=%d mode=%s files=%d initial_ms=%.3f api_edit_fresh_ms=%.3f api_add_fresh_ms=%.3f",
+			mb, packedMode, len(files), float64(phases[0].Microseconds())/1000, float64(phases[1].Microseconds())/1000, float64(phases[2].Microseconds())/1000)
+		return
+	}
+
 	a := startHost()
-	first, _, _ := session(a, "first", tree.Tree, base, false, false)
+	first, _, _ := session(a, "first", tree.Tree, root.Commit, false, "")
 	baseline := waitLog(a, "compute_baseline", "vm="+lineage+"-first", "error=<nil>")
-	again, edited, editedVersion := session(a, "again", tree.Tree, base, true, false)
-	resumed, _, _ := session(a, "resume", edited, editedVersion, false, true)
+	again, edited, editedVersion := session(a, "again", tree.Tree, root.Commit, true, "")
+	resumed, _, _ := session(a, "resume", edited, editedVersion, false, marker)
+	apiMarker := lineage + " API edit"
+	target := commit([]string{editedVersion}, "", strings.TrimPrefix(markerPath, "/workspace/"), apiMarker+"\n")
+	if target.Tree == edited || target.Commit == editedVersion {
+		t.Fatal("API edit did not produce a new tree and commit")
+	}
+	editResume, _, _ := session(a, "api-edit", target.Tree, target.Commit, false, apiMarker)
 	a.stop()
 	b := startHost()
-	cross, _, _ := session(b, "cross", edited, editedVersion, false, true)
+	cross, _, _ := session(b, "cross", target.Tree, target.Commit, false, apiMarker)
+	t.Logf("API_EDIT_RESULT size_mb=%d files=%d exact_ms=%d same_host_edit_ms=%d empty_host_edit_ms=%d target=%s",
+		mb, len(files), resumed.Milliseconds(), editResume.Milliseconds(), cross.Milliseconds(), target.Tree)
 	for _, h := range []host{a, b} {
 		raw, err := os.ReadFile(h.log)
 		must(err)
@@ -400,6 +612,67 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	t.Logf("baseline: %s", baseline)
 	t.Logf("RESULT size_mb=%d files=%d first_ever_ms=%d same_host_same_tree_ms=%d same_host_checkpointed_ms=%d new_host_tree_rebuild_ms=%d",
 		mb, len(files), first.Milliseconds(), again.Milliseconds(), resumed.Milliseconds(), cross.Milliseconds())
+}
+
+type apiBenchmarkCommit struct {
+	Commit string `json:"commit"`
+	Tree   string `json:"tree"`
+}
+
+func benchmarkStorageAPI(t *testing.T, repo *objects.Repository, lineage string) func([]string, string, string, string) apiBenchmarkCommit {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b64 := base64.RawURLEncoding.EncodeToString
+	jwks := fmt.Sprintf(`{"keys":[{"kid":"bench","kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","x":"%s"}]}`, b64(public))
+	keys, err := auth.Load("", &jwks, auth.Options{Typ: auth.RuntimeType, Audience: auth.RuntimeAudience, Issuer: "benchmark", MaxTTL: auth.DefaultMaxTTL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := api.NewStorageServer(repo, "benchmark", keys)
+	return func(parents []string, baseTree, path, edit string) apiBenchmarkCommit {
+		t.Helper()
+		now := time.Now()
+		payload, err := json.Marshal(map[string]any{"iss": "benchmark", "aud": auth.RuntimeAudience, "sub": "runtime:benchmark",
+			"lin": lineage, "acc": "w", "refs": []string{"main"}, "iat": now.Unix(), "exp": now.Add(time.Minute).Unix()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unsigned := b64([]byte(`{"kid":"bench","alg":"EdDSA","typ":"camelfs+jwt"}`)) + "." + b64(payload)
+		token := unsigned + "." + b64(ed25519.Sign(private, []byte(unsigned)))
+		call := func(method, route string, raw []byte, out any) {
+			t.Helper()
+			req := httptest.NewRequest(method, "/v1/lineages/"+lineage+"/"+route, bytes.NewReader(raw))
+			req.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			server.ServeHTTP(w, req)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("storage API %s %s: %d %s", method, route, w.Code, w.Body.String())
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		changes := []map[string]string{}
+		if path != "" {
+			var upload struct{ Blob string }
+			call(http.MethodPut, "blobs", []byte(edit), &upload)
+			changes = append(changes, map[string]string{"path": path, "blob": upload.Blob})
+		}
+		body := map[string]any{"parents": append([]string{}, parents...), "changes": changes, "author": "agent:benchmark", "message": "API edit trial"}
+		if baseTree != "" {
+			body["baseTree"] = baseTree
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reply apiBenchmarkCommit
+		call(http.MethodPost, "commits", raw, &reply)
+		return reply
+	}
 }
 
 func coldExecOutput(t *testing.T, response []byte) string {

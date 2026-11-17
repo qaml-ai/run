@@ -27,6 +27,8 @@ type Config struct {
 	MaxFiles                int
 	MaxBytes, MaxPathsBytes int64
 	BaselineDiskMax         int64
+	PackedApply             *PackedApply // benchmark fixture only; no runtime flag
+	PackedParallel          bool         // benchmark fixture only; no runtime flag
 }
 type Manager struct {
 	pins map[string]map[string]bool
