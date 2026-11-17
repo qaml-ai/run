@@ -64,7 +64,7 @@ cd /
 if [ "$mode" != block ] && [ "$action" = edit ]; then
     cd /scratch/u
     find . -type c > /x/whiteouts
-    find . \( -type f -o -type l \) -print0 | tar cf /x/upper.tar --null -T -
+    find . \( -type f -o -type l \) -print0 | /bin/gnu-tar cf /x/upper.tar --null -T -
     cd /
 fi
 sync
